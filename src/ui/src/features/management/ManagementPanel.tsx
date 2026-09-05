@@ -20,6 +20,11 @@ import { QueryError } from "../../components/QueryError";
 import { toErrorMessage } from "../../api/http";
 import { ConfirmButton } from "../../components/ConfirmButton";
 import { Dialog } from "../../components/Dialog";
+import {
+  DatasetPicker,
+  datasetRestrictionLabel,
+  selectedDatasetIds,
+} from "./DatasetPicker";
 import "./management.css";
 
 /** `ManagedTables["tables"]`'s element type. */
@@ -100,7 +105,7 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
   const keyMutation = useMutation({
     mutationFn: (input: {
       name?: string;
-      dataset_id?: string;
+      dataset_ids?: string[];
       scopes: IngestScope[];
     }) => createApiKey(tenant, input),
     onSuccess: (result) => {
@@ -183,7 +188,7 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
                 <div>
                   <strong>{key.name || "Unnamed key"}</strong>
                   <span>
-                    {key.dataset_id || "all datasets"} ·{" "}
+                    {datasetRestrictionLabel(key)} ·{" "}
                     {key.scopes?.join(", ") || "legacy unrestricted"}
                   </span>
                 </div>
@@ -205,23 +210,20 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
             onSubmit={(event) => {
               event.preventDefault();
               const data = new FormData(event.currentTarget);
+              const datasetIds = selectedDatasetIds(data);
               keyMutation.mutate({
                 name: String(data.get("name") ?? "").trim() || undefined,
-                dataset_id:
-                  String(data.get("dataset") ?? "").trim() || undefined,
+                dataset_ids: datasetIds.length > 0 ? datasetIds : undefined,
                 scopes: scopes.filter((scope) => data.has(scope)),
               });
             }}
           >
             <input name="name" placeholder="collector-production" />
-            <select name="dataset" defaultValue="">
-              <option value="">All datasets</option>
-              {who.datasets.map((dataset) => (
-                <option key={dataset.id} value={dataset.id}>
-                  {dataset.id}
-                </option>
-              ))}
-            </select>
+            <DatasetPicker
+              idPrefix="manage-create"
+              datasets={who.datasets}
+              checked={() => false}
+            />
             <fieldset>
               <legend>Ingestion scopes</legend>
               {scopes.map((scope) => (

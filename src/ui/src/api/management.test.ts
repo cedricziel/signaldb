@@ -46,7 +46,7 @@ describe("management API", () => {
         JSON.stringify({
           id: "key-1",
           key: "sdbk_secret",
-          dataset_id: "prod",
+          dataset_ids: ["prod"],
           scopes: ["metrics:write"],
         }),
         { status: 201, headers: { "Content-Type": "application/json" } },
@@ -57,7 +57,7 @@ describe("management API", () => {
 
     const result = await createApiKey("acme", {
       name: "collector",
-      dataset_id: "prod",
+      dataset_ids: ["prod"],
       scopes: ["metrics:write"],
     });
 
@@ -68,7 +68,7 @@ describe("management API", () => {
     expect(req.method).toBe("POST");
     expect(await req.clone().json()).toEqual({
       name: "collector",
-      dataset_id: "prod",
+      dataset_ids: ["prod"],
       scopes: ["metrics:write"],
     });
     // The interceptor applies the request-scoped tenant headers.
@@ -110,12 +110,12 @@ describe("management API", () => {
     });
   });
 
-  it("updates a live key's scopes and dataset via PATCH", async () => {
+  it("updates a live key's scopes and dataset restriction via PATCH", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({
         id: "key-1",
         name: "collector",
-        dataset_id: "prod",
+        dataset_ids: ["prod"],
         scopes: ["schema:read", "traces:write"],
         revoked: false,
         created_at: "2026-08-01T00:00:00Z",
@@ -125,7 +125,7 @@ describe("management API", () => {
 
     const result = await updateApiKey("acme", "key-1", {
       scopes: ["schema:read", "traces:write"],
-      dataset_id: "prod",
+      dataset_ids: ["prod"],
     });
     expect(result.scopes).toEqual(["schema:read", "traces:write"]);
 
@@ -134,7 +134,32 @@ describe("management API", () => {
     expect(req.method).toBe("PATCH");
     expect(await req.clone().json()).toEqual({
       scopes: ["schema:read", "traces:write"],
-      dataset_id: "prod",
+      dataset_ids: ["prod"],
+    });
+  });
+
+  it("clears a live key's dataset restriction via clear_dataset_restriction", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        id: "key-1",
+        name: "collector",
+        dataset_ids: null,
+        scopes: ["schema:read"],
+        revoked: false,
+        created_at: "2026-08-01T00:00:00Z",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await updateApiKey("acme", "key-1", {
+      scopes: ["schema:read"],
+      clear_dataset_restriction: true,
+    });
+
+    const req = fetchMock.mock.calls[0]?.[0] as Request;
+    expect(await req.clone().json()).toEqual({
+      scopes: ["schema:read"],
+      clear_dataset_restriction: true,
     });
   });
 

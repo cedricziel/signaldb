@@ -110,6 +110,7 @@ async fn setup_traces_test() -> (axum::Router, TempDir) {
             schema_config: None,
             limits: None,
         }],
+        dataset_restriction_rollout_complete: false,
     };
 
     let service_bootstrap = ServiceBootstrap::new(

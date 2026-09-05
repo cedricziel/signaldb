@@ -70,8 +70,18 @@ export function ConsentView() {
   const [context, setContext] = useState<ConsentContextResponse | null>(null);
   const [needsLogin, setNeedsLogin] = useState(false);
   const [selectedTenant, setSelectedTenant] = useState<string | null>(null);
+  // D5: an explicit choice, not a checklist that means "everything" when
+  // empty. Reset to "all" whenever the selected tenant changes (below) so a
+  // restriction chosen for one tenant never silently carries over to another.
+  const [datasetMode, setDatasetMode] = useState<"all" | "only">("all");
+  const [selectedDatasetIds, setSelectedDatasetIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDatasetMode("all");
+    setSelectedDatasetIds([]);
+  }, [selectedTenant]);
 
   useEffect(() => {
     // While login is required, wait — the LoginPanel's onSuccess flips
@@ -141,6 +151,12 @@ export function ConsentView() {
       setError("Choose a tenant to grant access to.");
       return;
     }
+    if (approved && datasetMode === "only" && selectedDatasetIds.length === 0) {
+      // Redundant with the disabled submit button below (D5) — the server
+      // also rejects an empty array (D1a), but this avoids a round trip.
+      setError("Choose at least one dataset, or switch to all datasets.");
+      return;
+    }
     setBusy(true);
     setError(null);
     submitConsentDecision({
@@ -153,6 +169,7 @@ export function ConsentView() {
       resource: params.resource ?? undefined,
       tenant: selectedTenant ?? "",
       approved,
+      ...(datasetMode === "only" ? { dataset_ids: selectedDatasetIds } : {}),
     })
       .then((redirect) => {
         window.location.href = redirect;
@@ -164,6 +181,12 @@ export function ConsentView() {
   };
 
   const single = context.tenants.length === 1 ? context.tenants[0] : null;
+  const currentTenant = context.tenants.find((t) => t.id === selectedTenant);
+  // "All datasets" is always a valid submission; "only these" needs at least
+  // one box checked (D5) — never sent as an empty array (D1a).
+  const canSubmit =
+    context.tenants.length > 0 &&
+    (datasetMode === "all" || selectedDatasetIds.length > 0);
 
   return (
     <Dialog label="Authorize access" className="login-panel consent-panel">
@@ -220,6 +243,58 @@ export function ConsentView() {
         )}
       </div>
 
+      {currentTenant && (
+        <div className="consent-field">
+          <span className="consent-field-label">Access</span>
+          <ul className="consent-dataset-modes">
+            <li>
+              <label>
+                <input
+                  type="radio"
+                  name="dataset-mode"
+                  checked={datasetMode === "all"}
+                  onChange={() => setDatasetMode("all")}
+                />
+                <span>All datasets in {currentTenant.id}</span>
+              </label>
+            </li>
+            <li>
+              <label>
+                <input
+                  type="radio"
+                  name="dataset-mode"
+                  checked={datasetMode === "only"}
+                  onChange={() => setDatasetMode("only")}
+                />
+                <span>Only these datasets:</span>
+              </label>
+            </li>
+          </ul>
+          {datasetMode === "only" && (
+            <ul className="consent-datasets">
+              {currentTenant.datasets.map((dataset) => (
+                <li key={dataset.id}>
+                  <label>
+                    <input
+                      type="checkbox"
+                      checked={selectedDatasetIds.includes(dataset.id)}
+                      onChange={(event) =>
+                        setSelectedDatasetIds((prev) =>
+                          event.target.checked
+                            ? [...prev, dataset.id]
+                            : prev.filter((id) => id !== dataset.id),
+                        )
+                      }
+                    />
+                    <span>{dataset.name}</span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+      )}
+
       {error && (
         <p className="login-error" role="alert">
           {error}
@@ -238,7 +313,7 @@ export function ConsentView() {
         <button
           type="button"
           className="consent-approve"
-          disabled={busy || context.tenants.length === 0}
+          disabled={busy || !canSubmit}
           onClick={() => decide(true)}
         >
           {busy ? "Authorizing…" : "Authorize"}

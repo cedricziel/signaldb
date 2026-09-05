@@ -156,11 +156,22 @@ pub mod types {
     ///      "type": "string"
     ///    },
     ///    "dataset_id": {
-    ///      "description": "Dataset the key is restricted to, if any.",
+    ///      "description": "Deprecated: see [`CreateApiKeyResponse::dataset_id`].",
+    ///      "deprecated": true,
     ///      "type": [
     ///        "string",
     ///        "null"
     ///      ]
+    ///    },
+    ///    "dataset_ids": {
+    ///      "description": "Dataset set the key is restricted to, if any; `null` is unrestricted.",
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
     ///    },
     ///    "id": {
     ///      "description": "Unique key identifier.",
@@ -198,9 +209,12 @@ pub mod types {
     pub struct ApiKeyResponse {
         ///ISO 8601 creation timestamp.
         pub created_at: ::std::string::String,
-        ///Dataset the key is restricted to, if any.
+        ///Deprecated: see [`CreateApiKeyResponse::dataset_id`].
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_id: ::std::option::Option<::std::string::String>,
+        ///Dataset set the key is restricted to, if any; `null` is unrestricted.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///Unique key identifier.
         pub id: ::std::string::String,
         ///Optional human-readable name.
@@ -700,14 +714,57 @@ pub mod types {
             Default::default()
         }
     }
-    /**Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user
-    is authenticated by their session cookie; `tenant` is their chosen grant.*/
+    /**A dataset within a tenant the consenting user may restrict a grant to
+    (D5).*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user\nis authenticated by their session cookie; `tenant` is their chosen grant.",
+    ///  "description": "A dataset within a tenant the consenting user may restrict a grant to\n(D5).",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "id",
+    ///    "name"
+    ///  ],
+    ///  "properties": {
+    ///    "id": {
+    ///      "description": "Dataset id.",
+    ///      "type": "string"
+    ///    },
+    ///    "name": {
+    ///      "description": "Dataset name.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConsentDataset {
+        ///Dataset id.
+        pub id: ::std::string::String,
+        ///Dataset name.
+        pub name: ::std::string::String,
+    }
+    impl ConsentDataset {
+        pub fn builder() -> builder::ConsentDataset {
+            Default::default()
+        }
+    }
+    /**Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user
+    is authenticated by their session cookie; `tenant` is their chosen grant.
+
+    The legacy singular `dataset_id` field is not accepted (removed in the
+    multi-dataset-key-restriction change, D8): a request body carrying it is
+    rejected rather than silently ignored, since dropping it would grant
+    unrestricted access when the caller asked for a restricted one.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user\nis authenticated by their session cookie; `tenant` is their chosen grant.\n\nThe legacy singular `dataset_id` field is not accepted (removed in the\nmulti-dataset-key-restriction change, D8): a request body carrying it is\nrejected rather than silently ignored, since dropping it would grant\nunrestricted access when the caller asked for a restricted one.",
     ///  "type": "object",
     ///  "required": [
     ///    "approved",
@@ -734,6 +791,17 @@ pub mod types {
     ///        "string",
     ///        "null"
     ///      ]
+    ///    },
+    ///    "dataset_ids": {
+    ///      "description": "Dataset set to restrict the grant to (D5/D6). Omitted or `null`\ngrants unrestricted access to the tenant — today's only behavior,\nand `#[serde(default)]` so a decision from a client built before\nthis change (which omits the field entirely) keeps working\nunmodified. A non-empty array restricts the grant to exactly that\nset; every named dataset must belong to `tenant`. An explicit empty\narray is rejected (D1a), as is any non-empty selection while\n`[auth].dataset_restriction_rollout_complete` is `false` (stricter\nthan the API-key rule — OAuth has no legacy column to fall back to).",
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      },
+    ///      "minItems": 1
     ///    },
     ///    "redirect_uri": {
     ///      "description": "The redirect URI to return to (must be registered for the client).",
@@ -764,11 +832,13 @@ pub mod types {
     ///      "description": "The tenant the user grants access to (must be one they belong to).",
     ///      "type": "string"
     ///    }
-    ///  }
+    ///  },
+    ///  "additionalProperties": false
     ///}
     /// ```
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
     pub struct ConsentDecision {
         ///Whether the user approved (`true`) or denied (`false`).
         pub approved: bool,
@@ -778,6 +848,17 @@ pub mod types {
         pub code_challenge: ::std::string::String,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub code_challenge_method: ::std::option::Option<::std::string::String>,
+        /**Dataset set to restrict the grant to (D5/D6). Omitted or `null`
+        grants unrestricted access to the tenant — today's only behavior,
+        and `#[serde(default)]` so a decision from a client built before
+        this change (which omits the field entirely) keeps working
+        unmodified. A non-empty array restricts the grant to exactly that
+        set; every named dataset must belong to `tenant`. An explicit empty
+        array is rejected (D1a), as is any non-empty selection while
+        `[auth].dataset_restriction_rollout_complete` is `false` (stricter
+        than the API-key rule — OAuth has no legacy column to fall back to).*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///The redirect URI to return to (must be registered for the client).
         pub redirect_uri: ::std::string::String,
         ///Requested resource (audience); must match the configured MCP resource.
@@ -838,10 +919,18 @@ pub mod types {
     ///  "description": "A tenant the consenting user may grant a connector access to.",
     ///  "type": "object",
     ///  "required": [
+    ///    "datasets",
     ///    "id",
     ///    "role"
     ///  ],
     ///  "properties": {
+    ///    "datasets": {
+    ///      "description": "Datasets in the tenant, so the consent screen can offer a per-tenant\n\"only these datasets\" checklist (D5).",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/ConsentDataset"
+    ///      }
+    ///    },
     ///    "id": {
     ///      "description": "Tenant id.",
     ///      "type": "string"
@@ -855,6 +944,9 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ConsentTenant {
+        /**Datasets in the tenant, so the consent screen can offer a per-tenant
+        "only these datasets" checklist (D5).*/
+        pub datasets: ::std::vec::Vec<ConsentDataset>,
         ///Tenant id.
         pub id: ::std::string::String,
         pub role: MembershipRole,
@@ -947,24 +1039,34 @@ pub mod types {
     `scopes` is required and non-empty: a key's permissions are always
     explicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,
     `profiles:write`, `traces:read`, `logs:read`, `metrics:read`,
-    `profiles:read`, `schema:read`, `schema:write`.*/
+    `profiles:read`, `schema:read`, `schema:write`.
+
+    The legacy singular `dataset_id` field is not accepted here (removed in
+    the multi-dataset-key-restriction change): a request body carrying it is
+    rejected with a validation error rather than silently ignored, since
+    dropping it would create an unrestricted key when the caller asked for a
+    restricted one.*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Request body for creating a new API key.\n\n`scopes` is required and non-empty: a key's permissions are always\nexplicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,\n`profiles:write`, `traces:read`, `logs:read`, `metrics:read`,\n`profiles:read`, `schema:read`, `schema:write`.",
+    ///  "description": "Request body for creating a new API key.\n\n`scopes` is required and non-empty: a key's permissions are always\nexplicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,\n`profiles:write`, `traces:read`, `logs:read`, `metrics:read`,\n`profiles:read`, `schema:read`, `schema:write`.\n\nThe legacy singular `dataset_id` field is not accepted here (removed in\nthe multi-dataset-key-restriction change): a request body carrying it is\nrejected with a validation error rather than silently ignored, since\ndropping it would create an unrestricted key when the caller asked for a\nrestricted one.",
     ///  "type": "object",
     ///  "required": [
     ///    "scopes"
     ///  ],
     ///  "properties": {
-    ///    "dataset_id": {
-    ///      "description": "Optional dataset the key is restricted to.",
+    ///    "dataset_ids": {
+    ///      "description": "Dataset set the key is restricted to. Omitted or `null` creates an\nunrestricted key; a non-empty array restricts it to exactly that set.\nAn explicit empty array, or a duplicate name within the set, is\nrejected.",
     ///      "type": [
-    ///        "string",
+    ///        "array",
     ///        "null"
-    ///      ]
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      },
+    ///      "minItems": 1
     ///    },
     ///    "name": {
     ///      "description": "Optional human-readable name for the key.",
@@ -980,15 +1082,20 @@ pub mod types {
     ///        "type": "string"
     ///      }
     ///    }
-    ///  }
+    ///  },
+    ///  "additionalProperties": false
     ///}
     /// ```
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
     pub struct CreateApiKeyRequest {
-        ///Optional dataset the key is restricted to.
+        /**Dataset set the key is restricted to. Omitted or `null` creates an
+        unrestricted key; a non-empty array restricts it to exactly that set.
+        An explicit empty array, or a duplicate name within the set, is
+        rejected.*/
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-        pub dataset_id: ::std::option::Option<::std::string::String>,
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///Optional human-readable name for the key.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
@@ -1020,11 +1127,22 @@ pub mod types {
     ///      "type": "string"
     ///    },
     ///    "dataset_id": {
-    ///      "description": "Dataset the key is restricted to, if any.",
+    ///      "description": "Deprecated: the single dataset the key is restricted to, derived from\n`dataset_ids` as `Some` only when it names exactly one dataset (and\n`None` for both unrestricted and multi-dataset keys). Response-only —\nno request body accepts this field anymore. Prefer `dataset_ids`.",
+    ///      "deprecated": true,
     ///      "type": [
     ///        "string",
     ///        "null"
     ///      ]
+    ///    },
+    ///    "dataset_ids": {
+    ///      "description": "Dataset set the key is restricted to, if any; `null` is unrestricted.",
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
     ///    },
     ///    "id": {
     ///      "description": "Unique key identifier.",
@@ -1056,9 +1174,15 @@ pub mod types {
     pub struct CreateApiKeyResponse {
         ///ISO 8601 creation timestamp.
         pub created_at: ::std::string::String,
-        ///Dataset the key is restricted to, if any.
+        /**Deprecated: the single dataset the key is restricted to, derived from
+        `dataset_ids` as `Some` only when it names exactly one dataset (and
+        `None` for both unrestricted and multi-dataset keys). Response-only —
+        no request body accepts this field anymore. Prefer `dataset_ids`.*/
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_id: ::std::option::Option<::std::string::String>,
+        ///Dataset set the key is restricted to, if any; `null` is unrestricted.
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///Unique key identifier.
         pub id: ::std::string::String,
         ///The raw API key (only shown once at creation time).
@@ -2905,10 +3029,21 @@ pub mod types {
     ///      "type": "string"
     ///    },
     ///    "dataset_id": {
+    ///      "description": "Deprecated: derived from `dataset_ids`, `Some` only for a\nsingle-dataset restriction. Use `dataset_ids`.",
+    ///      "deprecated": true,
     ///      "type": [
     ///        "string",
     ///        "null"
     ///      ]
+    ///    },
+    ///    "dataset_ids": {
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
     ///    },
     ///    "id": {
     ///      "type": "string"
@@ -2938,8 +3073,12 @@ pub mod types {
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ManageApiKeyResponse {
         pub created_at: ::std::string::String,
+        /**Deprecated: derived from `dataset_ids`, `Some` only for a
+        single-dataset restriction. Use `dataset_ids`.*/
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_id: ::std::option::Option<::std::string::String>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         pub id: ::std::string::String,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
@@ -2952,22 +3091,33 @@ pub mod types {
             Default::default()
         }
     }
-    ///`ManageCreateApiKeyRequest`
+    /**`dataset_ids` mirrors [`signaldb_api::CreateApiKeyRequest`] (D1a): omitted
+    or `null` creates an unrestricted key, a non-empty array restricts it,
+    and an explicit empty array or duplicate name is rejected. The legacy
+    singular `dataset_id` field is not accepted — `deny_unknown_fields`
+    rejects a request body still sending it, rather than silently dropping
+    it and creating an unrestricted key when the caller asked for a
+    restricted one.*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
+    ///  "description": "`dataset_ids` mirrors [`signaldb_api::CreateApiKeyRequest`] (D1a): omitted\nor `null` creates an unrestricted key, a non-empty array restricts it,\nand an explicit empty array or duplicate name is rejected. The legacy\nsingular `dataset_id` field is not accepted — `deny_unknown_fields`\nrejects a request body still sending it, rather than silently dropping\nit and creating an unrestricted key when the caller asked for a\nrestricted one.",
     ///  "type": "object",
     ///  "required": [
     ///    "scopes"
     ///  ],
     ///  "properties": {
-    ///    "dataset_id": {
+    ///    "dataset_ids": {
     ///      "type": [
-    ///        "string",
+    ///        "array",
     ///        "null"
-    ///      ]
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      },
+    ///      "minItems": 1
     ///    },
     ///    "name": {
     ///      "type": [
@@ -2981,14 +3131,16 @@ pub mod types {
     ///        "type": "string"
     ///      }
     ///    }
-    ///  }
+    ///  },
+    ///  "additionalProperties": false
     ///}
     /// ```
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
     pub struct ManageCreateApiKeyRequest {
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-        pub dataset_id: ::std::option::Option<::std::string::String>,
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
         pub scopes: ::std::vec::Vec<::std::string::String>,
@@ -3083,10 +3235,21 @@ pub mod types {
     ///  ],
     ///  "properties": {
     ///    "dataset_id": {
+    ///      "description": "Deprecated: see [`ApiKeyResponse::dataset_id`].",
+    ///      "deprecated": true,
     ///      "type": [
     ///        "string",
     ///        "null"
     ///      ]
+    ///    },
+    ///    "dataset_ids": {
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
     ///    },
     ///    "id": {
     ///      "type": "string"
@@ -3112,8 +3275,11 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ManageCreatedApiKey {
+        ///Deprecated: see [`ApiKeyResponse::dataset_id`].
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_id: ::std::option::Option<::std::string::String>,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         pub id: ::std::string::String,
         pub key: ::std::string::String,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -3434,21 +3600,32 @@ pub mod types {
         }
     }
     /**Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.
-    Absent fields are left untouched.*/
+    Absent fields are left untouched. `dataset_ids`/`clear_dataset_restriction`
+    mirror [`signaldb_api::UpdateApiKeyRequest`] (D1a); the legacy singular
+    `dataset_id` field is rejected via `deny_unknown_fields` rather than
+    silently dropped.*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.\nAbsent fields are left untouched.",
+    ///  "description": "Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.\nAbsent fields are left untouched. `dataset_ids`/`clear_dataset_restriction`\nmirror [`signaldb_api::UpdateApiKeyRequest`] (D1a); the legacy singular\n`dataset_id` field is rejected via `deny_unknown_fields` rather than\nsilently dropped.",
     ///  "type": "object",
     ///  "properties": {
-    ///    "dataset_id": {
-    ///      "description": "Replacement dataset restriction.",
+    ///    "clear_dataset_restriction": {
+    ///      "description": "Clear an existing dataset restriction back to unrestricted. Must not\nbe combined with a non-empty `dataset_ids` in the same request.",
+    ///      "type": "boolean"
+    ///    },
+    ///    "dataset_ids": {
+    ///      "description": "Replacement dataset set (non-empty; an explicit empty array is\nrejected). Omitted/`null` leaves the current restriction unchanged.\nMutually exclusive with `clear_dataset_restriction: true`.",
     ///      "type": [
-    ///        "string",
+    ///        "array",
     ///        "null"
-    ///      ]
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      },
+    ///      "minItems": 1
     ///    },
     ///    "scopes": {
     ///      "description": "Replacement scope list (non-empty, drawn from the shared vocabulary).",
@@ -3460,15 +3637,23 @@ pub mod types {
     ///        "type": "string"
     ///      }
     ///    }
-    ///  }
+    ///  },
+    ///  "additionalProperties": false
     ///}
     /// ```
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
     pub struct ManageUpdateApiKeyRequest {
-        ///Replacement dataset restriction.
+        /**Clear an existing dataset restriction back to unrestricted. Must not
+        be combined with a non-empty `dataset_ids` in the same request.*/
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-        pub dataset_id: ::std::option::Option<::std::string::String>,
+        pub clear_dataset_restriction: ::std::option::Option<bool>,
+        /**Replacement dataset set (non-empty; an explicit empty array is
+        rejected). Omitted/`null` leaves the current restriction unchanged.
+        Mutually exclusive with `clear_dataset_restriction: true`.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///Replacement scope list (non-empty, drawn from the shared vocabulary).
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub scopes: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
@@ -3476,7 +3661,8 @@ pub mod types {
     impl ::std::default::Default for ManageUpdateApiKeyRequest {
         fn default() -> Self {
             Self {
-                dataset_id: Default::default(),
+                clear_dataset_restriction: Default::default(),
+                dataset_ids: Default::default(),
                 scopes: Default::default(),
             }
         }
@@ -5916,21 +6102,31 @@ pub mod types {
     }
     /**Request body for updating a live API key's scopes and/or dataset restriction.
 
-    Absent fields are left untouched. Revoked keys cannot be updated.*/
+    Absent fields are left untouched. Revoked keys cannot be updated. The
+    legacy singular `dataset_id` field is not accepted (see
+    [`CreateApiKeyRequest`]).*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Request body for updating a live API key's scopes and/or dataset restriction.\n\nAbsent fields are left untouched. Revoked keys cannot be updated.",
+    ///  "description": "Request body for updating a live API key's scopes and/or dataset restriction.\n\nAbsent fields are left untouched. Revoked keys cannot be updated. The\nlegacy singular `dataset_id` field is not accepted (see\n[`CreateApiKeyRequest`]).",
     ///  "type": "object",
     ///  "properties": {
-    ///    "dataset_id": {
-    ///      "description": "New dataset restriction.",
+    ///    "clear_dataset_restriction": {
+    ///      "description": "Clear an existing dataset restriction back to unrestricted. Must not\nbe combined with a non-empty `dataset_ids` in the same request.",
+    ///      "type": "boolean"
+    ///    },
+    ///    "dataset_ids": {
+    ///      "description": "Replacement dataset set (non-empty; an explicit empty array is\nrejected). Omitted/`null` leaves the current restriction unchanged.\nMutually exclusive with `clear_dataset_restriction: true`.",
     ///      "type": [
-    ///        "string",
+    ///        "array",
     ///        "null"
-    ///      ]
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      },
+    ///      "minItems": 1
     ///    },
     ///    "scopes": {
     ///      "description": "New scope list (replaces the current one; must be non-empty).",
@@ -5942,15 +6138,23 @@ pub mod types {
     ///        "type": "string"
     ///      }
     ///    }
-    ///  }
+    ///  },
+    ///  "additionalProperties": false
     ///}
     /// ```
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
     pub struct UpdateApiKeyRequest {
-        ///New dataset restriction.
+        /**Clear an existing dataset restriction back to unrestricted. Must not
+        be combined with a non-empty `dataset_ids` in the same request.*/
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-        pub dataset_id: ::std::option::Option<::std::string::String>,
+        pub clear_dataset_restriction: ::std::option::Option<bool>,
+        /**Replacement dataset set (non-empty; an explicit empty array is
+        rejected). Omitted/`null` leaves the current restriction unchanged.
+        Mutually exclusive with `clear_dataset_restriction: true`.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///New scope list (replaces the current one; must be non-empty).
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub scopes: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
@@ -5958,7 +6162,8 @@ pub mod types {
     impl ::std::default::Default for UpdateApiKeyRequest {
         fn default() -> Self {
             Self {
-                dataset_id: Default::default(),
+                clear_dataset_restriction: Default::default(),
+                dataset_ids: Default::default(),
                 scopes: Default::default(),
             }
         }
@@ -6299,6 +6504,16 @@ pub mod types {
     ///    "dataset": {
     ///      "type": "string"
     ///    },
+    ///    "dataset_ids": {
+    ///      "description": "The credential's own dataset-set restriction, if any; `null`/absent\nmeans unrestricted. See [`WhoamiResponse::dataset_ids`].",
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
     ///    "tenant": {
     ///      "$ref": "#/components/schemas/WhoamiTenant"
     ///    },
@@ -6313,6 +6528,10 @@ pub mod types {
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct WhoamiIdentityResponse {
         pub dataset: ::std::string::String,
+        /**The credential's own dataset-set restriction, if any; `null`/absent
+        means unrestricted. See [`WhoamiResponse::dataset_ids`].*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         pub tenant: WhoamiTenant,
         ///Stable authenticated user ID. Empty for API key credentials.
         pub user_id: ::std::string::String,
@@ -6505,6 +6724,10 @@ pub mod types {
                 ::std::option::Option<::std::string::String>,
                 ::std::string::String,
             >,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
             id: ::std::result::Result<::std::string::String, ::std::string::String>,
             name: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
@@ -6524,6 +6747,7 @@ pub mod types {
                 Self {
                     created_at: Err("no value supplied for created_at".to_string()),
                     dataset_id: Ok(Default::default()),
+                    dataset_ids: Ok(Default::default()),
                     id: Err("no value supplied for id".to_string()),
                     name: Ok(Default::default()),
                     revoked_at: Ok(Default::default()),
@@ -6550,6 +6774,18 @@ pub mod types {
                 self.dataset_id = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                self
+            }
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_ids = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn id<T>(mut self, value: T) -> Self
@@ -6603,6 +6839,7 @@ pub mod types {
                 Ok(Self {
                     created_at: value.created_at?,
                     dataset_id: value.dataset_id?,
+                    dataset_ids: value.dataset_ids?,
                     id: value.id?,
                     name: value.name?,
                     revoked_at: value.revoked_at?,
@@ -6615,6 +6852,7 @@ pub mod types {
                 Self {
                     created_at: Ok(value.created_at),
                     dataset_id: Ok(value.dataset_id),
+                    dataset_ids: Ok(value.dataset_ids),
                     id: Ok(value.id),
                     name: Ok(value.name),
                     revoked_at: Ok(value.revoked_at),
@@ -7413,12 +7651,70 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct ConsentDataset {
+            id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConsentDataset {
+            fn default() -> Self {
+                Self {
+                    id: Err("no value supplied for id".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                }
+            }
+        }
+        impl ConsentDataset {
+            pub fn id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConsentDataset> for super::ConsentDataset {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConsentDataset,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    id: value.id?,
+                    name: value.name?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConsentDataset> for ConsentDataset {
+            fn from(value: super::ConsentDataset) -> Self {
+                Self {
+                    id: Ok(value.id),
+                    name: Ok(value.name),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct ConsentDecision {
             approved: ::std::result::Result<bool, ::std::string::String>,
             client_id: ::std::result::Result<::std::string::String, ::std::string::String>,
             code_challenge: ::std::result::Result<::std::string::String, ::std::string::String>,
             code_challenge_method: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
             >,
             redirect_uri: ::std::result::Result<::std::string::String, ::std::string::String>,
@@ -7443,6 +7739,7 @@ pub mod types {
                     client_id: Err("no value supplied for client_id".to_string()),
                     code_challenge: Err("no value supplied for code_challenge".to_string()),
                     code_challenge_method: Ok(Default::default()),
+                    dataset_ids: Ok(Default::default()),
                     redirect_uri: Err("no value supplied for redirect_uri".to_string()),
                     resource: Ok(Default::default()),
                     scope: Ok(Default::default()),
@@ -7490,6 +7787,18 @@ pub mod types {
                 self.code_challenge_method = value.try_into().map_err(|e| {
                     format!("error converting supplied value for code_challenge_method: {e}")
                 });
+                self
+            }
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_ids = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn redirect_uri<T>(mut self, value: T) -> Self
@@ -7553,6 +7862,7 @@ pub mod types {
                     client_id: value.client_id?,
                     code_challenge: value.code_challenge?,
                     code_challenge_method: value.code_challenge_method?,
+                    dataset_ids: value.dataset_ids?,
                     redirect_uri: value.redirect_uri?,
                     resource: value.resource?,
                     scope: value.scope?,
@@ -7568,6 +7878,7 @@ pub mod types {
                     client_id: Ok(value.client_id),
                     code_challenge: Ok(value.code_challenge),
                     code_challenge_method: Ok(value.code_challenge_method),
+                    dataset_ids: Ok(value.dataset_ids),
                     redirect_uri: Ok(value.redirect_uri),
                     resource: Ok(value.resource),
                     scope: Ok(value.scope),
@@ -7618,18 +7929,33 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct ConsentTenant {
+            datasets: ::std::result::Result<
+                ::std::vec::Vec<super::ConsentDataset>,
+                ::std::string::String,
+            >,
             id: ::std::result::Result<::std::string::String, ::std::string::String>,
             role: ::std::result::Result<super::MembershipRole, ::std::string::String>,
         }
         impl ::std::default::Default for ConsentTenant {
             fn default() -> Self {
                 Self {
+                    datasets: Err("no value supplied for datasets".to_string()),
                     id: Err("no value supplied for id".to_string()),
                     role: Err("no value supplied for role".to_string()),
                 }
             }
         }
         impl ConsentTenant {
+            pub fn datasets<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::ConsentDataset>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.datasets = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for datasets: {e}"));
+                self
+            }
             pub fn id<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::string::String>,
@@ -7657,6 +7983,7 @@ pub mod types {
                 value: ConsentTenant,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    datasets: value.datasets?,
                     id: value.id?,
                     role: value.role?,
                 })
@@ -7665,6 +7992,7 @@ pub mod types {
         impl ::std::convert::From<super::ConsentTenant> for ConsentTenant {
             fn from(value: super::ConsentTenant) -> Self {
                 Self {
+                    datasets: Ok(value.datasets),
                     id: Ok(value.id),
                     role: Ok(value.role),
                 }
@@ -7672,8 +8000,8 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct CreateApiKeyRequest {
-            dataset_id: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
             >,
             name: ::std::result::Result<
@@ -7688,21 +8016,23 @@ pub mod types {
         impl ::std::default::Default for CreateApiKeyRequest {
             fn default() -> Self {
                 Self {
-                    dataset_id: Ok(Default::default()),
+                    dataset_ids: Ok(Default::default()),
                     name: Ok(Default::default()),
                     scopes: Err("no value supplied for scopes".to_string()),
                 }
             }
         }
         impl CreateApiKeyRequest {
-            pub fn dataset_id<T>(mut self, value: T) -> Self
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
                 T::Error: ::std::fmt::Display,
             {
-                self.dataset_id = value
+                self.dataset_ids = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn name<T>(mut self, value: T) -> Self
@@ -7732,7 +8062,7 @@ pub mod types {
                 value: CreateApiKeyRequest,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
-                    dataset_id: value.dataset_id?,
+                    dataset_ids: value.dataset_ids?,
                     name: value.name?,
                     scopes: value.scopes?,
                 })
@@ -7741,7 +8071,7 @@ pub mod types {
         impl ::std::convert::From<super::CreateApiKeyRequest> for CreateApiKeyRequest {
             fn from(value: super::CreateApiKeyRequest) -> Self {
                 Self {
-                    dataset_id: Ok(value.dataset_id),
+                    dataset_ids: Ok(value.dataset_ids),
                     name: Ok(value.name),
                     scopes: Ok(value.scopes),
                 }
@@ -7752,6 +8082,10 @@ pub mod types {
             created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
             dataset_id: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
             >,
             id: ::std::result::Result<::std::string::String, ::std::string::String>,
@@ -7770,6 +8104,7 @@ pub mod types {
                 Self {
                     created_at: Err("no value supplied for created_at".to_string()),
                     dataset_id: Ok(Default::default()),
+                    dataset_ids: Ok(Default::default()),
                     id: Err("no value supplied for id".to_string()),
                     key: Err("no value supplied for key".to_string()),
                     name: Ok(Default::default()),
@@ -7796,6 +8131,18 @@ pub mod types {
                 self.dataset_id = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                self
+            }
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_ids = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn id<T>(mut self, value: T) -> Self
@@ -7847,6 +8194,7 @@ pub mod types {
                 Ok(Self {
                     created_at: value.created_at?,
                     dataset_id: value.dataset_id?,
+                    dataset_ids: value.dataset_ids?,
                     id: value.id?,
                     key: value.key?,
                     name: value.name?,
@@ -7859,6 +8207,7 @@ pub mod types {
                 Self {
                     created_at: Ok(value.created_at),
                     dataset_id: Ok(value.dataset_id),
+                    dataset_ids: Ok(value.dataset_ids),
                     id: Ok(value.id),
                     key: Ok(value.key),
                     name: Ok(value.name),
@@ -10285,6 +10634,10 @@ pub mod types {
                 ::std::option::Option<::std::string::String>,
                 ::std::string::String,
             >,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
             id: ::std::result::Result<::std::string::String, ::std::string::String>,
             name: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
@@ -10301,6 +10654,7 @@ pub mod types {
                 Self {
                     created_at: Err("no value supplied for created_at".to_string()),
                     dataset_id: Ok(Default::default()),
+                    dataset_ids: Ok(Default::default()),
                     id: Err("no value supplied for id".to_string()),
                     name: Ok(Default::default()),
                     revoked: Err("no value supplied for revoked".to_string()),
@@ -10327,6 +10681,18 @@ pub mod types {
                 self.dataset_id = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                self
+            }
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_ids = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn id<T>(mut self, value: T) -> Self
@@ -10380,6 +10746,7 @@ pub mod types {
                 Ok(Self {
                     created_at: value.created_at?,
                     dataset_id: value.dataset_id?,
+                    dataset_ids: value.dataset_ids?,
                     id: value.id?,
                     name: value.name?,
                     revoked: value.revoked?,
@@ -10392,6 +10759,7 @@ pub mod types {
                 Self {
                     created_at: Ok(value.created_at),
                     dataset_id: Ok(value.dataset_id),
+                    dataset_ids: Ok(value.dataset_ids),
                     id: Ok(value.id),
                     name: Ok(value.name),
                     revoked: Ok(value.revoked),
@@ -10401,8 +10769,8 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct ManageCreateApiKeyRequest {
-            dataset_id: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
             >,
             name: ::std::result::Result<
@@ -10417,21 +10785,23 @@ pub mod types {
         impl ::std::default::Default for ManageCreateApiKeyRequest {
             fn default() -> Self {
                 Self {
-                    dataset_id: Ok(Default::default()),
+                    dataset_ids: Ok(Default::default()),
                     name: Ok(Default::default()),
                     scopes: Err("no value supplied for scopes".to_string()),
                 }
             }
         }
         impl ManageCreateApiKeyRequest {
-            pub fn dataset_id<T>(mut self, value: T) -> Self
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
                 T::Error: ::std::fmt::Display,
             {
-                self.dataset_id = value
+                self.dataset_ids = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn name<T>(mut self, value: T) -> Self
@@ -10461,7 +10831,7 @@ pub mod types {
                 value: ManageCreateApiKeyRequest,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
-                    dataset_id: value.dataset_id?,
+                    dataset_ids: value.dataset_ids?,
                     name: value.name?,
                     scopes: value.scopes?,
                 })
@@ -10470,7 +10840,7 @@ pub mod types {
         impl ::std::convert::From<super::ManageCreateApiKeyRequest> for ManageCreateApiKeyRequest {
             fn from(value: super::ManageCreateApiKeyRequest) -> Self {
                 Self {
-                    dataset_id: Ok(value.dataset_id),
+                    dataset_ids: Ok(value.dataset_ids),
                     name: Ok(value.name),
                     scopes: Ok(value.scopes),
                 }
@@ -10591,6 +10961,10 @@ pub mod types {
                 ::std::option::Option<::std::string::String>,
                 ::std::string::String,
             >,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
             id: ::std::result::Result<::std::string::String, ::std::string::String>,
             key: ::std::result::Result<::std::string::String, ::std::string::String>,
             name: ::std::result::Result<
@@ -10606,6 +10980,7 @@ pub mod types {
             fn default() -> Self {
                 Self {
                     dataset_id: Ok(Default::default()),
+                    dataset_ids: Ok(Default::default()),
                     id: Err("no value supplied for id".to_string()),
                     key: Err("no value supplied for key".to_string()),
                     name: Ok(Default::default()),
@@ -10622,6 +10997,18 @@ pub mod types {
                 self.dataset_id = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                self
+            }
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_ids = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn id<T>(mut self, value: T) -> Self
@@ -10672,6 +11059,7 @@ pub mod types {
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
                     dataset_id: value.dataset_id?,
+                    dataset_ids: value.dataset_ids?,
                     id: value.id?,
                     key: value.key?,
                     name: value.name?,
@@ -10683,6 +11071,7 @@ pub mod types {
             fn from(value: super::ManageCreatedApiKey) -> Self {
                 Self {
                     dataset_id: Ok(value.dataset_id),
+                    dataset_ids: Ok(value.dataset_ids),
                     id: Ok(value.id),
                     key: Ok(value.key),
                     name: Ok(value.name),
@@ -11241,8 +11630,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct ManageUpdateApiKeyRequest {
-            dataset_id: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
+            clear_dataset_restriction:
+                ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
             >,
             scopes: ::std::result::Result<
@@ -11253,20 +11644,33 @@ pub mod types {
         impl ::std::default::Default for ManageUpdateApiKeyRequest {
             fn default() -> Self {
                 Self {
-                    dataset_id: Ok(Default::default()),
+                    clear_dataset_restriction: Ok(Default::default()),
+                    dataset_ids: Ok(Default::default()),
                     scopes: Ok(Default::default()),
                 }
             }
         }
         impl ManageUpdateApiKeyRequest {
-            pub fn dataset_id<T>(mut self, value: T) -> Self
+            pub fn clear_dataset_restriction<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T: ::std::convert::TryInto<::std::option::Option<bool>>,
                 T::Error: ::std::fmt::Display,
             {
-                self.dataset_id = value
+                self.clear_dataset_restriction = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for clear_dataset_restriction: {e}")
+                });
+                self
+            }
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_ids = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn scopes<T>(mut self, value: T) -> Self
@@ -11288,7 +11692,8 @@ pub mod types {
                 value: ManageUpdateApiKeyRequest,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
-                    dataset_id: value.dataset_id?,
+                    clear_dataset_restriction: value.clear_dataset_restriction?,
+                    dataset_ids: value.dataset_ids?,
                     scopes: value.scopes?,
                 })
             }
@@ -11296,7 +11701,8 @@ pub mod types {
         impl ::std::convert::From<super::ManageUpdateApiKeyRequest> for ManageUpdateApiKeyRequest {
             fn from(value: super::ManageUpdateApiKeyRequest) -> Self {
                 Self {
-                    dataset_id: Ok(value.dataset_id),
+                    clear_dataset_restriction: Ok(value.clear_dataset_restriction),
+                    dataset_ids: Ok(value.dataset_ids),
                     scopes: Ok(value.scopes),
                 }
             }
@@ -14769,8 +15175,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct UpdateApiKeyRequest {
-            dataset_id: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
+            clear_dataset_restriction:
+                ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
             >,
             scopes: ::std::result::Result<
@@ -14781,20 +15189,33 @@ pub mod types {
         impl ::std::default::Default for UpdateApiKeyRequest {
             fn default() -> Self {
                 Self {
-                    dataset_id: Ok(Default::default()),
+                    clear_dataset_restriction: Ok(Default::default()),
+                    dataset_ids: Ok(Default::default()),
                     scopes: Ok(Default::default()),
                 }
             }
         }
         impl UpdateApiKeyRequest {
-            pub fn dataset_id<T>(mut self, value: T) -> Self
+            pub fn clear_dataset_restriction<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T: ::std::convert::TryInto<::std::option::Option<bool>>,
                 T::Error: ::std::fmt::Display,
             {
-                self.dataset_id = value
+                self.clear_dataset_restriction = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for clear_dataset_restriction: {e}")
+                });
+                self
+            }
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_ids = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn scopes<T>(mut self, value: T) -> Self
@@ -14816,7 +15237,8 @@ pub mod types {
                 value: UpdateApiKeyRequest,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
-                    dataset_id: value.dataset_id?,
+                    clear_dataset_restriction: value.clear_dataset_restriction?,
+                    dataset_ids: value.dataset_ids?,
                     scopes: value.scopes?,
                 })
             }
@@ -14824,7 +15246,8 @@ pub mod types {
         impl ::std::convert::From<super::UpdateApiKeyRequest> for UpdateApiKeyRequest {
             fn from(value: super::UpdateApiKeyRequest) -> Self {
                 Self {
-                    dataset_id: Ok(value.dataset_id),
+                    clear_dataset_restriction: Ok(value.clear_dataset_restriction),
+                    dataset_ids: Ok(value.dataset_ids),
                     scopes: Ok(value.scopes),
                 }
             }
@@ -15212,6 +15635,10 @@ pub mod types {
         #[derive(Clone, Debug)]
         pub struct WhoamiIdentityResponse {
             dataset: ::std::result::Result<::std::string::String, ::std::string::String>,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
             tenant: ::std::result::Result<super::WhoamiTenant, ::std::string::String>,
             user_id: ::std::result::Result<::std::string::String, ::std::string::String>,
         }
@@ -15219,6 +15646,7 @@ pub mod types {
             fn default() -> Self {
                 Self {
                     dataset: Err("no value supplied for dataset".to_string()),
+                    dataset_ids: Ok(Default::default()),
                     tenant: Err("no value supplied for tenant".to_string()),
                     user_id: Err("no value supplied for user_id".to_string()),
                 }
@@ -15233,6 +15661,18 @@ pub mod types {
                 self.dataset = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for dataset: {e}"));
+                self
+            }
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_ids = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn tenant<T>(mut self, value: T) -> Self
@@ -15263,6 +15703,7 @@ pub mod types {
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
                     dataset: value.dataset?,
+                    dataset_ids: value.dataset_ids?,
                     tenant: value.tenant?,
                     user_id: value.user_id?,
                 })
@@ -15272,6 +15713,7 @@ pub mod types {
             fn from(value: super::WhoamiIdentityResponse) -> Self {
                 Self {
                     dataset: Ok(value.dataset),
+                    dataset_ids: Ok(value.dataset_ids),
                     tenant: Ok(value.tenant),
                     user_id: Ok(value.user_id),
                 }

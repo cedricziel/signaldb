@@ -58,7 +58,7 @@ fn test_tenant_context() -> TenantContext {
         dataset_slug: "test-dataset".to_string(),
         api_key_name: Some("test-key".to_string()),
         api_key_scopes: None,
-        api_key_dataset_id: None,
+        api_key_dataset_ids: None,
         user_id: None,
         role: None,
         is_instance_admin: false,

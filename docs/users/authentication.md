@@ -127,7 +127,18 @@ The vocabulary is shared:
 | `schema:write`                                                  | Creating, replacing, validating, and deleting custom schema registries                                                     |
 | `tenant:manage`                                                 | The [tenant management API](#tenant-management-api) for the key's own tenant: datasets, API keys, memberships, schema view |
 
-Keys may additionally be restricted to one dataset (`--dataset` / `dataset_id`).
+Keys may additionally be restricted to a **set** of datasets within their
+tenant (`--dataset`, repeatable / `dataset_ids`). Omitting it leaves the key
+unrestricted — reachable against every dataset in its tenant, same as today.
+An explicit empty set (`dataset_ids: []`) is rejected as invalid everywhere:
+it never means "unrestricted" or "deny everything" — a caller that wants
+unrestricted omits the field, and one that wants to remove an existing
+restriction uses the dedicated clear signal below. A restriction naming two
+or more datasets is refused by every surface until the operator confirms a
+one-time rollout precondition (see "Multi-dataset rollout" below); a
+single-dataset restriction has no such precondition and behaves exactly as
+before this feature existed.
+
 Keys defined in `signaldb.toml` (and keys that predate scopes) carry no scope
 list and remain unrestricted for ingest, query, and schema access — with one
 deliberate exception: `tenant:manage` is **explicit only**. A legacy unscoped
@@ -147,9 +158,49 @@ signaldb-cli --admin-key <admin-key> admin api-key update acme <key-id> \
 
 Over HTTP this is `PATCH /api/v1/admin/tenants/{id}/api-keys/{key_id}` (or
 `/api/v1/manage/tenants/{id}/api-keys/{key_id}` for a tenant-admin session)
-with a body of `{"scopes": [...], "dataset_id": "..."}`; absent fields are
-left untouched, and revoked keys cannot be updated. Listing keys on any
-surface shows each key's scopes.
+with a body of `{"scopes": [...], "dataset_ids": [...]}`; a field omitted
+from the body is left untouched (including `dataset_ids` — omitting it
+never changes an existing restriction), and revoked keys cannot be updated.
+Restricting a key to a set replaces its restriction entirely (it is never
+merged with a previous one); clearing an existing restriction back to
+unrestricted is a separate, explicit `clear_dataset_restriction: true`
+(`--clear-dataset-restriction` on the CLI) sent with no `dataset_ids` —
+sending both together in the same request is rejected as contradictory, and
+`dataset_ids: []` is rejected on update exactly as on create (see above).
+Listing keys on any surface shows each key's scopes and its dataset set (or
+that it is unrestricted).
+
+**Legacy field removed.** A create or update request that still sends the
+old, singular `dataset_id` field is rejected outright, naming the field and
+pointing at `dataset_ids` — it is never silently accepted or dropped, since
+silently dropping it would create an *unrestricted* key when the caller
+asked for a restricted one. A key created before this change with a single
+dataset keeps working identically after it, and its restriction is visible
+in `dataset_ids` as a one-element set.
+
+### Multi-dataset rollout
+
+A key restriction naming two or more datasets is refused, with an error
+naming the `dataset_restriction_rollout_complete` config key, until an
+operator sets `[auth] dataset_restriction_rollout_complete = true`
+(`SIGNALDB__AUTH__DATASET_RESTRICTION_ROLLOUT_COMPLETE=1`; same
+defaults → TOML → environment precedence as every other setting) — default
+`false`, so a fresh deployment and every deployment upgrading into this
+feature start in the safe state with no action required. This exists
+because the multi-element case can't fall back to the legacy single-dataset
+column an older binary understands: during a rolling upgrade, a node still
+running old code would treat such a key as *unrestricted* rather than
+refusing it, which is the opposite of what the restriction is for. A
+single-dataset restriction has no such precondition — it round-trips
+correctly through old and new code alike, and is always safe to create,
+update, or roll back to.
+
+The same rollout flag applies, more strictly, to the OAuth connector's
+dataset restriction (see [MCP server](mcp.md#claudeai-and-chatgpt-oauth-connector)):
+since OAuth tokens have no legacy single-dataset column at all, *any*
+non-empty restriction — not only a multi-element one — is refused until the
+flag is set, because an old node has never enforced a dataset restriction
+on an OAuth token and would treat one as unrestricted.
 
 Tenants and datasets created through the Admin API or CLI are usable for
 both ingest and query the moment they are created — no service restart and
@@ -191,7 +242,7 @@ each is reachable through `signaldb-sdk`, not only raw HTTP:
 
 | Method | Path                                        | Returns                                                                          | SDK operation            | CLI / MCP                                                                        |
 | ------ | ------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------ | -------------------------------------------------------------------------------- |
-| GET    | `/api/v1/whoami`                            | The authenticated tenant (id, slug, name), its datasets, and the default dataset | `whoami`                 | `signaldb-cli whoami` / `server_info`                                            |
+| GET    | `/api/v1/whoami`                            | The authenticated tenant (id, slug, name), its datasets, and the default dataset — filtered to the caller's own dataset restriction, if any (`dataset_ids` in the response names it) | `whoami`                 | `signaldb-cli whoami` / `server_info`                                            |
 | GET    | `/api/v1/tenants`                           | All configured tenants, filtered to the caller's own                             | `list_tenants_self`      | `signaldb-cli tenant show` / `tenant_info` (single-item view of the same tenant) |
 | GET    | `/api/v1/tenants/{tenant_id}`               | Tenant details                                                                   | `get_tenant_self`        | `signaldb-cli tenant show` / `tenant_info`                                       |
 | GET    | `/api/v1/tenants/{tenant_id}/tables`        | The tenant's provisioned tables, grouped by dataset                              | `list_tenant_tables`     | `signaldb-cli tenant table list` / `tenant_list_tables`                          |
@@ -220,6 +271,13 @@ never reach another tenant. It accepts either of two credentials:
 - an **API key carrying `tenant:manage`** for that tenant. Ingest-only keys,
   read-only keys, and legacy unscoped keys are refused with `403` and the
   message `Tenant administrator role or tenant:manage scope required`.
+
+A credential carrying a non-empty dataset restriction — an API key (even one
+with `tenant:manage`) or an OAuth session held by a tenant-admin user — is
+refused for **every** management-API operation, regardless of scope or
+role: a narrower, dataset-scoped grant does not get a workaround path to
+widen itself by creating or updating other credentials. Use an unrestricted
+credential for management operations.
 
 Tenant _creation_ (`POST /api/v1/manage/tenants`) stays instance-admin-only;
 API-key automation creates tenants through the admin API

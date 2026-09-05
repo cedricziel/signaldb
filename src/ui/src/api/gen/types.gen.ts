@@ -49,9 +49,15 @@ export type ApiKeyResponse = {
      */
     created_at: string;
     /**
-     * Dataset the key is restricted to, if any.
+     * Deprecated: see [`CreateApiKeyResponse::dataset_id`].
+     *
+     * @deprecated
      */
     dataset_id?: string | null;
+    /**
+     * Dataset set the key is restricted to, if any; `null` is unrestricted.
+     */
+    dataset_ids?: Array<string> | null;
     /**
      * Unique key identifier.
      */
@@ -176,8 +182,28 @@ export type ConsentContextResponse = {
 };
 
 /**
+ * A dataset within a tenant the consenting user may restrict a grant to
+ * (D5).
+ */
+export type ConsentDataset = {
+    /**
+     * Dataset id.
+     */
+    id: string;
+    /**
+     * Dataset name.
+     */
+    name: string;
+};
+
+/**
  * Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user
  * is authenticated by their session cookie; `tenant` is their chosen grant.
+ *
+ * The legacy singular `dataset_id` field is not accepted (removed in the
+ * multi-dataset-key-restriction change, D8): a request body carrying it is
+ * rejected rather than silently ignored, since dropping it would grant
+ * unrestricted access when the caller asked for a restricted one.
  */
 export type ConsentDecision = {
     /**
@@ -193,6 +219,18 @@ export type ConsentDecision = {
      */
     code_challenge: string;
     code_challenge_method?: string | null;
+    /**
+     * Dataset set to restrict the grant to (D5/D6). Omitted or `null`
+     * grants unrestricted access to the tenant — today's only behavior,
+     * and `#[serde(default)]` so a decision from a client built before
+     * this change (which omits the field entirely) keeps working
+     * unmodified. A non-empty array restricts the grant to exactly that
+     * set; every named dataset must belong to `tenant`. An explicit empty
+     * array is rejected (D1a), as is any non-empty selection while
+     * `[auth].dataset_restriction_rollout_complete` is `false` (stricter
+     * than the API-key rule — OAuth has no legacy column to fall back to).
+     */
+    dataset_ids?: Array<string> | null;
     /**
      * The redirect URI to return to (must be registered for the client).
      */
@@ -232,6 +270,11 @@ export type ConsentDecisionResponse = {
  */
 export type ConsentTenant = {
     /**
+     * Datasets in the tenant, so the consent screen can offer a per-tenant
+     * "only these datasets" checklist (D5).
+     */
+    datasets: Array<ConsentDataset>;
+    /**
      * Tenant id.
      */
     id: string;
@@ -253,12 +296,21 @@ export type CostMode = 'metadata' | 'sampled_scan' | 'none';
  * explicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,
  * `profiles:write`, `traces:read`, `logs:read`, `metrics:read`,
  * `profiles:read`, `schema:read`, `schema:write`.
+ *
+ * The legacy singular `dataset_id` field is not accepted here (removed in
+ * the multi-dataset-key-restriction change): a request body carrying it is
+ * rejected with a validation error rather than silently ignored, since
+ * dropping it would create an unrestricted key when the caller asked for a
+ * restricted one.
  */
 export type CreateApiKeyRequest = {
     /**
-     * Optional dataset the key is restricted to.
+     * Dataset set the key is restricted to. Omitted or `null` creates an
+     * unrestricted key; a non-empty array restricts it to exactly that set.
+     * An explicit empty array, or a duplicate name within the set, is
+     * rejected.
      */
-    dataset_id?: string | null;
+    dataset_ids?: Array<string> | null;
     /**
      * Optional human-readable name for the key.
      */
@@ -278,9 +330,18 @@ export type CreateApiKeyResponse = {
      */
     created_at: string;
     /**
-     * Dataset the key is restricted to, if any.
+     * Deprecated: the single dataset the key is restricted to, derived from
+     * `dataset_ids` as `Some` only when it names exactly one dataset (and
+     * `None` for both unrestricted and multi-dataset keys). Response-only —
+     * no request body accepts this field anymore. Prefer `dataset_ids`.
+     *
+     * @deprecated
      */
     dataset_id?: string | null;
+    /**
+     * Dataset set the key is restricted to, if any; `null` is unrestricted.
+     */
+    dataset_ids?: Array<string> | null;
     /**
      * Unique key identifier.
      */
@@ -781,15 +842,31 @@ export type LogicalType = 'string' | 'bool' | 'int64' | 'float64' | 'timestamp_n
 
 export type ManageApiKeyResponse = {
     created_at: string;
+    /**
+     * Deprecated: derived from `dataset_ids`, `Some` only for a
+     * single-dataset restriction. Use `dataset_ids`.
+     *
+     * @deprecated
+     */
     dataset_id?: string | null;
+    dataset_ids?: Array<string> | null;
     id: string;
     name?: string | null;
     revoked: boolean;
     scopes?: Array<string> | null;
 };
 
+/**
+ * `dataset_ids` mirrors [`signaldb_api::CreateApiKeyRequest`] (D1a): omitted
+ * or `null` creates an unrestricted key, a non-empty array restricts it,
+ * and an explicit empty array or duplicate name is rejected. The legacy
+ * singular `dataset_id` field is not accepted — `deny_unknown_fields`
+ * rejects a request body still sending it, rather than silently dropping
+ * it and creating an unrestricted key when the caller asked for a
+ * restricted one.
+ */
 export type ManageCreateApiKeyRequest = {
-    dataset_id?: string | null;
+    dataset_ids?: Array<string> | null;
     name?: string | null;
     scopes: Array<string>;
 };
@@ -811,7 +888,13 @@ export type ManageCreateTenantRequest = {
  * absent `name`/`dataset_id`), preserving the wire format.
  */
 export type ManageCreatedApiKey = {
+    /**
+     * Deprecated: see [`ApiKeyResponse::dataset_id`].
+     *
+     * @deprecated
+     */
     dataset_id?: string | null;
+    dataset_ids?: Array<string> | null;
     id: string;
     key: string;
     name?: string | null;
@@ -888,13 +971,23 @@ export type ManageSchemaResponse = {
 
 /**
  * Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.
- * Absent fields are left untouched.
+ * Absent fields are left untouched. `dataset_ids`/`clear_dataset_restriction`
+ * mirror [`signaldb_api::UpdateApiKeyRequest`] (D1a); the legacy singular
+ * `dataset_id` field is rejected via `deny_unknown_fields` rather than
+ * silently dropped.
  */
 export type ManageUpdateApiKeyRequest = {
     /**
-     * Replacement dataset restriction.
+     * Clear an existing dataset restriction back to unrestricted. Must not
+     * be combined with a non-empty `dataset_ids` in the same request.
      */
-    dataset_id?: string | null;
+    clear_dataset_restriction?: boolean;
+    /**
+     * Replacement dataset set (non-empty; an explicit empty array is
+     * rejected). Omitted/`null` leaves the current restriction unchanged.
+     * Mutually exclusive with `clear_dataset_restriction: true`.
+     */
+    dataset_ids?: Array<string> | null;
     /**
      * Replacement scope list (non-empty, drawn from the shared vocabulary).
      */
@@ -1475,13 +1568,22 @@ export type Trace = {
 /**
  * Request body for updating a live API key's scopes and/or dataset restriction.
  *
- * Absent fields are left untouched. Revoked keys cannot be updated.
+ * Absent fields are left untouched. Revoked keys cannot be updated. The
+ * legacy singular `dataset_id` field is not accepted (see
+ * [`CreateApiKeyRequest`]).
  */
 export type UpdateApiKeyRequest = {
     /**
-     * New dataset restriction.
+     * Clear an existing dataset restriction back to unrestricted. Must not
+     * be combined with a non-empty `dataset_ids` in the same request.
      */
-    dataset_id?: string | null;
+    clear_dataset_restriction?: boolean;
+    /**
+     * Replacement dataset set (non-empty; an explicit empty array is
+     * rejected). Omitted/`null` leaves the current restriction unchanged.
+     * Mutually exclusive with `clear_dataset_restriction: true`.
+     */
+    dataset_ids?: Array<string> | null;
     /**
      * New scope list (replaces the current one; must be non-empty).
      */
@@ -1566,6 +1668,11 @@ export type ValueOrigin = 'registry' | 'statistics' | 'sampled';
  */
 export type WhoamiIdentityResponse = {
     dataset: string;
+    /**
+     * The credential's own dataset-set restriction, if any; `null`/absent
+     * means unrestricted. See [`WhoamiResponse::dataset_ids`].
+     */
+    dataset_ids?: Array<string> | null;
     tenant: WhoamiTenant;
     /**
      * Stable authenticated user ID. Empty for API key credentials.

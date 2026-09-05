@@ -344,6 +344,13 @@ pub struct WhoamiResponse {
     pub dataset: String,
     pub datasets: Vec<WhoamiDataset>,
     pub default_dataset: Option<String>,
+    /// The credential's own dataset-set restriction (`TenantContext::
+    /// api_key_dataset_ids`), if any; `null`/absent means unrestricted.
+    /// Callers that need to know which of `datasets` they may actually
+    /// query (e.g. the MCP `discover_datasets`/`tenant_list_tables` tools)
+    /// read this rather than assuming every listed dataset is reachable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dataset_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -367,6 +374,44 @@ pub struct WhoamiIdentityResponse {
     pub dataset: String,
     /// Stable authenticated user ID. Empty for API key credentials.
     pub user_id: String,
+    /// The credential's own dataset-set restriction, if any; `null`/absent
+    /// means unrestricted. See [`WhoamiResponse::dataset_ids`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_ids: Option<Vec<String>>,
+}
+
+/// D10: narrow `datasets`/`default_dataset` to a dataset-restricted
+/// credential's own set, exactly as the MCP `discover_datasets`/
+/// `tenant_list_tables` tools do. `restriction` is `ctx.api_key_dataset_ids`
+/// — `None` (unrestricted) leaves both inputs unchanged.
+///
+/// A restricted `default_dataset` outside the restriction has no safe value
+/// to fall back to in general (D4 case 4: two or more allowed datasets have
+/// no principled default), except the one case D4 case 3 gives an answer
+/// for — a single-element restriction *is* the credential's effective
+/// default when no dataset is requested explicitly — so that element is
+/// substituted; anything else is omitted rather than naming a dataset the
+/// credential cannot always default to.
+fn apply_dataset_restriction(
+    datasets: Vec<WhoamiDataset>,
+    default_dataset: Option<String>,
+    restriction: Option<&[String]>,
+) -> (Vec<WhoamiDataset>, Option<String>) {
+    let Some(allowed) = restriction else {
+        return (datasets, default_dataset);
+    };
+    let datasets = datasets
+        .into_iter()
+        .filter(|d| common::auth::dataset_allowed(Some(allowed), &d.id))
+        .collect();
+    let default_dataset = match default_dataset {
+        Some(d) if common::auth::dataset_allowed(Some(allowed), &d) => Some(d),
+        _ => match allowed {
+            [only] => Some(only.clone()),
+            _ => None,
+        },
+    };
+    (datasets, default_dataset)
 }
 
 /// GET /api/v1/whoami
@@ -483,6 +528,11 @@ pub async fn whoami<S: RouterState>(
                 return error_response(500, "Failed to resolve datasets".to_string());
             }
         }
+        let (datasets, default_dataset) = apply_dataset_restriction(
+            datasets,
+            default_dataset,
+            ctx.api_key_dataset_ids.as_deref(),
+        );
         let response = WhoamiResponse {
             user,
             memberships,
@@ -495,6 +545,7 @@ pub async fn whoami<S: RouterState>(
             dataset: ctx.dataset_id.clone(),
             datasets,
             default_dataset,
+            dataset_ids: ctx.api_key_dataset_ids.clone(),
         };
         return Json(response).into_response();
     }
@@ -518,6 +569,19 @@ pub async fn whoami<S: RouterState>(
         }
     };
 
+    let datasets = datasets
+        .into_iter()
+        .map(|d| WhoamiDataset {
+            is_default: Some(d.name.as_str()) == tenant.default_dataset.as_deref(),
+            slug: d.name.clone(),
+            id: d.name,
+        })
+        .collect();
+    let (datasets, default_dataset) = apply_dataset_restriction(
+        datasets,
+        tenant.default_dataset,
+        ctx.api_key_dataset_ids.as_deref(),
+    );
     let response = WhoamiResponse {
         user,
         memberships,
@@ -529,15 +593,9 @@ pub async fn whoami<S: RouterState>(
         },
         user_id: ctx.user_id.clone().unwrap_or_default(),
         dataset: ctx.dataset_id.clone(),
-        datasets: datasets
-            .into_iter()
-            .map(|d| WhoamiDataset {
-                is_default: Some(d.name.as_str()) == tenant.default_dataset.as_deref(),
-                slug: d.name.clone(),
-                id: d.name,
-            })
-            .collect(),
-        default_dataset: tenant.default_dataset,
+        datasets,
+        default_dataset,
+        dataset_ids: ctx.api_key_dataset_ids.clone(),
     };
     Json(response).into_response()
 }
@@ -871,7 +929,7 @@ mod tests {
             .header("x-tenant-id", "acme")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"name":"metrics-only","dataset_id":"analytics","scopes":["metrics:write"]}"#,
+                r#"{"name":"metrics-only","dataset_ids":["analytics"],"scopes":["metrics:write"]}"#,
             ))
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
@@ -879,6 +937,7 @@ mod tests {
         let body = json_body(response).await;
         assert!(body["key"].as_str().unwrap().starts_with("sdbk_"));
         assert_eq!(body["dataset_id"], "analytics");
+        assert_eq!(body["dataset_ids"], serde_json::json!(["analytics"]));
         assert_eq!(body["scopes"][0], "metrics:write");
     }
 
@@ -1049,9 +1108,10 @@ mod tests {
 
         // Dataset restriction can be updated too; scopes preserved.
         let (status, body) =
-            manage_patch_key(&app, &cookie, &key_id, r#"{"dataset_id":"staging"}"#).await;
+            manage_patch_key(&app, &cookie, &key_id, r#"{"dataset_ids":["staging"]}"#).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["dataset_id"], "staging");
+        assert_eq!(body["dataset_ids"], serde_json::json!(["staging"]));
         assert_eq!(body["scopes"], serde_json::json!(["metrics:read"]));
 
         // Validation errors.
@@ -1059,7 +1119,7 @@ mod tests {
             manage_patch_key(&app, &cookie, &key_id, r#"{"scopes":["schema:admin"]}"#).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
         let (status, _) =
-            manage_patch_key(&app, &cookie, &key_id, r#"{"dataset_id":"nope"}"#).await;
+            manage_patch_key(&app, &cookie, &key_id, r#"{"dataset_ids":["nope"]}"#).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let (status, _) =
             manage_patch_key(&app, &cookie, "missing", r#"{"scopes":["schema:read"]}"#).await;
@@ -1309,6 +1369,197 @@ mod tests {
         assert_eq!(datasets[1]["is_default"], false);
         // No cross-tenant data leaks into the response.
         assert!(!body.to_string().contains("globex"));
+    }
+
+    #[tokio::test]
+    async fn whoami_omits_dataset_ids_for_an_unrestricted_credential() {
+        let app = test_app().await;
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", "Bearer acme-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        let body = json_body(res).await;
+        assert!(
+            body.get("dataset_ids").is_none() || body["dataset_ids"].is_null(),
+            "unrestricted credential must not report a dataset_ids restriction: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn whoami_reports_the_credentials_dataset_restriction() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant(
+                    "acme",
+                    "acme-key",
+                    &[("production", true), ("staging", false)],
+                    Some("production"),
+                )],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &common::auth::Authenticator::hash_api_key("restricted-key"),
+                Some("restricted"),
+                Some(&["production".to_string()]),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let app = create_router(RouterAppState::new(catalog, config));
+
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", "Bearer restricted-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["dataset_ids"], serde_json::json!(["production"]));
+    }
+
+    /// D10: a config-defined tenant can still be reached through a
+    /// database-backed, dataset-restricted API key (created via the
+    /// management API rather than the TOML `api_keys` list) — `whoami`'s
+    /// config-tenant branch must filter `datasets`/`default_dataset` for it
+    /// exactly as the database-tenant branch does, even though the tenant
+    /// itself is config-defined.
+    #[tokio::test]
+    async fn whoami_filters_datasets_and_default_for_a_restricted_key_on_a_config_tenant() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant(
+                    "acme",
+                    "acme-key",
+                    &[("production", true), ("staging", false)],
+                    Some("production"),
+                )],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        // Restricted to "staging" only — excludes the tenant's own default
+        // dataset ("production"), the edge case D4's resolution order
+        // requires callers to handle explicitly.
+        catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &common::auth::Authenticator::hash_api_key("staging-only-key"),
+                Some("staging-only"),
+                Some(&["staging".to_string()]),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let app = create_router(RouterAppState::new(catalog, config));
+
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", "Bearer staging-only-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        let dataset_ids: Vec<&str> = body["datasets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            dataset_ids,
+            vec!["staging"],
+            "restricted credential must not see an unlisted dataset's name: {body}"
+        );
+        // A single-element restriction resolves to that element (D4 case 3),
+        // so the credential's effective default is "staging", never the
+        // tenant's actual default ("production"), which falls outside it.
+        assert_eq!(body["default_dataset"], "staging");
+    }
+
+    /// Same as above, for the database-backed-tenant branch (a tenant not
+    /// declared in TOML config at all).
+    #[tokio::test]
+    async fn whoami_filters_datasets_and_default_for_a_restricted_key_on_a_db_tenant() {
+        let app = test_app().await;
+        let cookie = admin_cookie(&app).await;
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/manage/tenants")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "acme")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"id":"newco","name":"New Co","default_dataset":"production"}"#,
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/manage/tenants/newco/datasets")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "newco")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"staging"}"#))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/manage/tenants/newco/api-keys")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "newco")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"name":"staging-only","dataset_ids":["staging"],"scopes":["metrics:write"]}"#,
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let created = json_body(response).await;
+        let secret = created["key"].as_str().unwrap().to_string();
+
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", format!("Bearer {secret}"))
+            .header("x-tenant-id", "newco")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        let dataset_ids: Vec<&str> = body["datasets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            dataset_ids,
+            vec!["staging"],
+            "restricted credential must not see an unlisted dataset's name: {body}"
+        );
+        assert_eq!(body["default_dataset"], "staging");
     }
 
     #[tokio::test]

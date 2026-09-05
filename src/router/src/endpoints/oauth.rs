@@ -391,7 +391,13 @@ async fn authorize<S: RouterState>(
 
 /// Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user
 /// is authenticated by their session cookie; `tenant` is their chosen grant.
+///
+/// The legacy singular `dataset_id` field is not accepted (removed in the
+/// multi-dataset-key-restriction change, D8): a request body carrying it is
+/// rejected rather than silently ignored, since dropping it would grant
+/// unrestricted access when the caller asked for a restricted one.
 #[derive(Debug, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ConsentDecision {
     /// The requesting client's `client_id`.
     client_id: String,
@@ -414,6 +420,18 @@ pub struct ConsentDecision {
     tenant: String,
     /// Whether the user approved (`true`) or denied (`false`).
     approved: bool,
+    /// Dataset set to restrict the grant to (D5/D6). Omitted or `null`
+    /// grants unrestricted access to the tenant — today's only behavior,
+    /// and `#[serde(default)]` so a decision from a client built before
+    /// this change (which omits the field entirely) keeps working
+    /// unmodified. A non-empty array restricts the grant to exactly that
+    /// set; every named dataset must belong to `tenant`. An explicit empty
+    /// array is rejected (D1a), as is any non-empty selection while
+    /// `[auth].dataset_restriction_rollout_complete` is `false` (stricter
+    /// than the API-key rule — OAuth has no legacy column to fall back to).
+    #[schema(min_items = 1)]
+    #[serde(default)]
+    dataset_ids: Option<Vec<String>>,
 }
 
 /// Result of a consent decision: the URL the browser should navigate to (the
@@ -568,6 +586,34 @@ pub(crate) async fn authorize_decision<S: RouterState>(
             "requested scope contains no supported read scope",
         )
     })?;
+
+    // Dataset-set restriction (D5/D6): validated before any code is minted,
+    // so a rejected decision never persists one. `None`/omitted is always
+    // unrestricted, unaffected by the rollout gate.
+    if let Some(ids) = d.dataset_ids.as_ref() {
+        common::catalog::check_oauth_dataset_restriction_rollout_gate(
+            ids,
+            state.config().auth.dataset_restriction_rollout_complete,
+        )
+        .map_err(|message| OAuthError::bad_request("invalid_request", message))?;
+        common::catalog::validate_dataset_id_set(ids)
+            .map_err(|e| OAuthError::bad_request("invalid_request", e.to_string()))?;
+        if let Some(missing) = state
+            .catalog()
+            .find_dataset_not_in_tenant(&d.tenant, ids)
+            .await
+            .map_err(|e| OAuthError::server_error(format!("dataset lookup failed: {e}")))?
+        {
+            return Err(OAuthError::bad_request(
+                "invalid_request",
+                format!(
+                    "dataset '{missing}' does not exist in tenant '{}'",
+                    d.tenant
+                ),
+            ));
+        }
+    }
+
     let code = generate_oauth_token(TokenKind::AuthorizationCode);
     let ttl = chrono::Duration::from_std(state.config().mcp.oauth.authorization_code_ttl)
         .map_err(|e| OAuthError::server_error(format!("invalid authorization_code_ttl: {e}")))?;
@@ -579,6 +625,7 @@ pub(crate) async fn authorize_decision<S: RouterState>(
             &user.id,
             &d.tenant,
             &scopes,
+            d.dataset_ids.as_deref(),
             &d.redirect_uri,
             &d.code_challenge,
             resource.as_deref(),
@@ -600,6 +647,16 @@ pub(crate) struct ConsentContextQuery {
     client_id: String,
 }
 
+/// A dataset within a tenant the consenting user may restrict a grant to
+/// (D5).
+#[derive(Debug, Serialize, ToSchema)]
+pub struct ConsentDataset {
+    /// Dataset id.
+    id: String,
+    /// Dataset name.
+    name: String,
+}
+
 /// A tenant the consenting user may grant a connector access to.
 #[derive(Debug, Serialize, ToSchema)]
 pub struct ConsentTenant {
@@ -607,6 +664,9 @@ pub struct ConsentTenant {
     id: String,
     /// The user's role in the tenant.
     role: common::catalog::MembershipRole,
+    /// Datasets in the tenant, so the consent screen can offer a per-tenant
+    /// "only these datasets" checklist (D5).
+    datasets: Vec<ConsentDataset>,
 }
 
 /// Context the consent screen renders: the requesting client and the tenants
@@ -681,17 +741,14 @@ pub(crate) async fn consent_context<S: RouterState>(
         .map_err(|e| OAuthError::server_error(format!("client lookup failed: {e}")))?
         .ok_or_else(|| OAuthError::bad_request("invalid_client", "unknown client_id"))?;
 
-    let tenants = if user.is_instance_admin {
+    let tenant_roles: Vec<(String, common::catalog::MembershipRole)> = if user.is_instance_admin {
         state
             .catalog()
             .list_tenants()
             .await
             .map_err(|e| OAuthError::server_error(format!("tenant lookup failed: {e}")))?
             .into_iter()
-            .map(|t| ConsentTenant {
-                id: t.id,
-                role: common::catalog::MembershipRole::Admin,
-            })
+            .map(|t| (t.id, common::catalog::MembershipRole::Admin))
             .collect()
     } else {
         state
@@ -700,12 +757,27 @@ pub(crate) async fn consent_context<S: RouterState>(
             .await
             .map_err(|e| OAuthError::server_error(format!("membership lookup failed: {e}")))?
             .into_iter()
-            .map(|m| ConsentTenant {
-                id: m.tenant_id,
-                role: m.role,
-            })
+            .map(|m| (m.tenant_id, m.role))
             .collect()
     };
+
+    let tenants = futures::future::try_join_all(tenant_roles.into_iter().map(|(id, role)| {
+        let catalog = state.catalog();
+        async move {
+            let datasets = catalog
+                .get_datasets(&id)
+                .await
+                .map_err(|e| OAuthError::server_error(format!("dataset lookup failed: {e}")))?
+                .into_iter()
+                .map(|d| ConsentDataset {
+                    id: d.id,
+                    name: d.name,
+                })
+                .collect();
+            Ok::<_, OAuthError>(ConsentTenant { id, role, datasets })
+        }
+    }))
+    .await?;
 
     Ok(Json(ConsentContextResponse {
         client_name: client.client_name,
@@ -827,6 +899,7 @@ async fn token_authorization_code<S: RouterState>(
         &grant.user_id,
         &grant.tenant_id,
         &grant.scopes,
+        grant.dataset_ids.as_deref(),
         grant.resource.as_deref(),
     )
     .await
@@ -871,12 +944,16 @@ async fn token_refresh<S: RouterState>(
         .await
         .map_err(|e| OAuthError::server_error(format!("failed to revoke refresh token: {e}")))?;
 
+    // D6: the replacement pair carries the dataset restriction read off the
+    // *presented* refresh-token row, not any access token (which may already
+    // be expired or otherwise unavailable by the time a refresh happens).
     issue_tokens(
         state,
         &grant.client_id,
         &grant.user_id,
         &grant.tenant_id,
         &grant.scopes,
+        grant.dataset_ids.as_deref(),
         grant.resource.as_deref(),
     )
     .await
@@ -890,6 +967,7 @@ async fn issue_tokens<S: RouterState>(
     user_id: &str,
     tenant_id: &str,
     scopes: &[String],
+    dataset_ids: Option<&[String]>,
     resource: Option<&str>,
 ) -> Result<Response, OAuthError> {
     let oauth = &state.config().mcp.oauth;
@@ -906,6 +984,7 @@ async fn issue_tokens<S: RouterState>(
             user_id,
             tenant_id,
             scopes,
+            dataset_ids,
             resource,
             now + access_ttl,
         )
@@ -923,6 +1002,7 @@ async fn issue_tokens<S: RouterState>(
             user_id,
             tenant_id,
             scopes,
+            dataset_ids,
             resource,
             now + refresh_ttl,
         )
@@ -1010,6 +1090,7 @@ mod tests {
                 &user.id,
                 "acme",
                 &["traces:read".to_string()],
+                None,
                 "https://claude.ai/cb",
                 PKCE_CHALLENGE,
                 Some("https://signaldb.example.com/mcp"),
@@ -1571,5 +1652,369 @@ mod tests {
         .await;
         assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
         assert_eq!(body_json(replay).await["error"], "invalid_grant");
+    }
+
+    // ---- multi-dataset-key-restriction phase 3: OAuth consent + tokens ----
+
+    /// Like [`seed_user_session`], but also creates each named dataset in the
+    /// tenant so a test can exercise a per-tenant dataset restriction.
+    async fn seed_user_session_with_datasets(
+        catalog: &Catalog,
+        tenant: &str,
+        datasets: &[&str],
+    ) -> String {
+        let cookie = seed_user_session(catalog, tenant).await;
+        for name in datasets {
+            catalog.create_dataset(tenant, name).await.unwrap();
+        }
+        cookie
+    }
+
+    /// App + catalog sharing an in-memory DB, with the mixed-version
+    /// dataset-restriction rollout gate already open — needed by every test
+    /// that exercises a genuinely restricted OAuth grant.
+    async fn app_and_catalog_with_rollout_complete() -> (axum::Router, Catalog) {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let mut config = Configuration::default();
+        config.mcp.oauth = oauth_config();
+        config.auth.dataset_restriction_rollout_complete = true;
+        let app = create_router(RouterAppState::new(catalog.clone(), config));
+        (app, catalog)
+    }
+
+    async fn post_decision(
+        app: &axum::Router,
+        cookie: &str,
+        body: &str,
+    ) -> axum::response::Response {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/authorize/decision")
+                    .header("content-type", "application/json")
+                    .header("cookie", format!("signaldb_session={cookie}"))
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    async fn get_consent_context(
+        app: &axum::Router,
+        cookie: &str,
+        client_id: &str,
+    ) -> axum::response::Response {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/oauth/consent/context?client_id={client_id}"))
+                    .header("cookie", format!("signaldb_session={cookie}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn consent_context_includes_each_tenants_datasets() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_client(&catalog).await;
+        let cookie =
+            seed_user_session_with_datasets(&catalog, "acme", &["production", "staging"]).await;
+
+        let res = get_consent_context(&app, &cookie, "client-1").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let doc = body_json(res).await;
+        let tenants = doc["tenants"].as_array().unwrap();
+        let acme = tenants
+            .iter()
+            .find(|t| t["id"] == "acme")
+            .expect("acme tenant present");
+        let datasets = acme["datasets"].as_array().unwrap_or_else(|| {
+            panic!("expected a `datasets` array on the consent tenant: {acme:?}")
+        });
+        let names: Vec<&str> = datasets
+            .iter()
+            .map(|d| d["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"production"), "{datasets:?}");
+        assert!(names.contains(&"staging"), "{datasets:?}");
+        assert!(
+            datasets
+                .iter()
+                .all(|d| d["id"].as_str().is_some_and(|s| !s.is_empty())),
+            "{datasets:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn decision_omitting_dataset_ids_grants_unrestricted_access() {
+        // Simulates a client built before this change: the field is absent
+        // from the JSON body entirely, not merely `null`.
+        let (app, catalog) = app_and_catalog().await;
+        seed_client(&catalog).await;
+        let cookie = seed_user_session(&catalog, "acme").await;
+
+        let res = post_decision(
+            &app,
+            &cookie,
+            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant":"acme","approved":true}"#,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let doc = body_json(res).await;
+        let redirect = doc["redirect"].as_str().unwrap();
+        let code = Url::parse(redirect)
+            .unwrap()
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .map(|(_, v)| v.into_owned())
+            .unwrap();
+        let grant = catalog
+            .consume_authorization_code(&hash_oauth_token(&code))
+            .await
+            .unwrap()
+            .expect("code was stored");
+        assert_eq!(grant.dataset_ids, None);
+    }
+
+    #[tokio::test]
+    async fn decision_rejects_empty_dataset_ids_array() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_client(&catalog).await;
+        let cookie = seed_user_session(&catalog, "acme").await;
+
+        let res = post_decision(
+            &app,
+            &cookie,
+            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant":"acme","approved":true,"dataset_ids":[]}"#,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn decision_rejects_dataset_not_belonging_to_tenant() {
+        let (app, catalog) = app_and_catalog_with_rollout_complete().await;
+        seed_client(&catalog).await;
+        let cookie = seed_user_session_with_datasets(&catalog, "acme", &["production"]).await;
+
+        let res = post_decision(
+            &app,
+            &cookie,
+            &format!(
+                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","tenant":"acme","approved":true,"dataset_ids":["staging"]}}"#
+            ),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn decision_accepts_restricted_dataset_ids_and_propagates_to_code_and_tokens() {
+        let (app, catalog) = app_and_catalog_with_rollout_complete().await;
+        seed_client(&catalog).await;
+        let cookie =
+            seed_user_session_with_datasets(&catalog, "acme", &["production", "staging"]).await;
+
+        let res = post_decision(
+            &app,
+            &cookie,
+            &format!(
+                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","scope":"traces:read","tenant":"acme","approved":true,"dataset_ids":["production"]}}"#
+            ),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let doc = body_json(res).await;
+        let redirect = doc["redirect"].as_str().unwrap();
+        let code = Url::parse(redirect)
+            .unwrap()
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .map(|(_, v)| v.into_owned())
+            .unwrap();
+
+        let res = post_token(
+            &app,
+            format!(
+                "grant_type=authorization_code&code={code}&code_verifier={PKCE_VERIFIER}\
+                 &redirect_uri=https%3A%2F%2Fclaude.ai%2Fcb&client_id=client-1"
+            ),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let tokens = body_json(res).await;
+        let access = catalog
+            .get_valid_access_token(&hash_oauth_token(tokens["access_token"].as_str().unwrap()))
+            .await
+            .unwrap()
+            .expect("access token stored");
+        let refresh = catalog
+            .get_valid_refresh_token(&hash_oauth_token(tokens["refresh_token"].as_str().unwrap()))
+            .await
+            .unwrap()
+            .expect("refresh token stored");
+        assert_eq!(access.dataset_ids, Some(vec!["production".to_string()]));
+        assert_eq!(refresh.dataset_ids, Some(vec!["production".to_string()]));
+    }
+
+    /// D6: a refresh must read `dataset_ids` from the presented
+    /// `oauth_refresh_tokens` row, not from the access token issued alongside
+    /// it — the original access token is revoked before refresh happens here,
+    /// so an implementation that tried to read it would fail loudly instead
+    /// of coincidentally passing.
+    #[tokio::test]
+    async fn refresh_propagates_dataset_restriction_from_refresh_token_row_not_access_token() {
+        let (app, catalog) = app_and_catalog_with_rollout_complete().await;
+        seed_client(&catalog).await;
+        let cookie =
+            seed_user_session_with_datasets(&catalog, "acme", &["production", "staging"]).await;
+
+        let res = post_decision(
+            &app,
+            &cookie,
+            &format!(
+                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","scope":"traces:read","tenant":"acme","approved":true,"dataset_ids":["production"]}}"#
+            ),
+        )
+        .await;
+        let doc = body_json(res).await;
+        let redirect = doc["redirect"].as_str().unwrap();
+        let code = Url::parse(redirect)
+            .unwrap()
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .map(|(_, v)| v.into_owned())
+            .unwrap();
+
+        let tokens = body_json(
+            post_token(
+                &app,
+                format!(
+                    "grant_type=authorization_code&code={code}&code_verifier={PKCE_VERIFIER}\
+                     &redirect_uri=https%3A%2F%2Fclaude.ai%2Fcb&client_id=client-1"
+                ),
+            )
+            .await,
+        )
+        .await;
+        let access_raw = tokens["access_token"].as_str().unwrap().to_string();
+        let refresh_raw = tokens["refresh_token"].as_str().unwrap().to_string();
+
+        // The original access token is gone before the refresh happens.
+        catalog
+            .revoke_access_token(&hash_oauth_token(&access_raw))
+            .await
+            .unwrap();
+        assert!(
+            catalog
+                .get_valid_access_token(&hash_oauth_token(&access_raw))
+                .await
+                .unwrap()
+                .is_none(),
+            "access token must be gone before refresh"
+        );
+
+        let res = post_token(
+            &app,
+            format!("grant_type=refresh_token&refresh_token={refresh_raw}&client_id=client-1"),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let doc = body_json(res).await;
+        let new_access = catalog
+            .get_valid_access_token(&hash_oauth_token(doc["access_token"].as_str().unwrap()))
+            .await
+            .unwrap()
+            .expect("new access token stored");
+        let new_refresh = catalog
+            .get_valid_refresh_token(&hash_oauth_token(doc["refresh_token"].as_str().unwrap()))
+            .await
+            .unwrap()
+            .expect("new refresh token stored");
+        assert_eq!(new_access.dataset_ids, Some(vec!["production".to_string()]));
+        assert_eq!(
+            new_refresh.dataset_ids,
+            Some(vec!["production".to_string()]),
+            "the new refresh token must carry the restriction too, not only the access token"
+        );
+    }
+
+    /// With `[auth].dataset_restriction_rollout_complete` at its default
+    /// `false`, any non-empty `dataset_ids` on a consent decision is
+    /// rejected naming the config key — stricter than the API-key rule,
+    /// since OAuth has no legacy column to fall back to. Omitting
+    /// `dataset_ids` is unaffected, and the same restricted decision
+    /// succeeds once the gate is open.
+    #[tokio::test]
+    async fn decision_gates_nonempty_dataset_ids_on_rollout_flag() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_client(&catalog).await;
+        let cookie = seed_user_session_with_datasets(&catalog, "acme", &["production"]).await;
+
+        let res = post_decision(
+            &app,
+            &cookie,
+            &format!(
+                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","tenant":"acme","approved":true,"dataset_ids":["production"]}}"#
+            ),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(res).await;
+        assert!(
+            body["error_description"]
+                .as_str()
+                .unwrap()
+                .contains("dataset_restriction_rollout_complete"),
+            "{body}"
+        );
+
+        let res = post_decision(
+            &app,
+            &cookie,
+            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant":"acme","approved":true}"#,
+        )
+        .await;
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "unrestricted grant is unaffected by the gate"
+        );
+
+        let (gated_app, gated_catalog) = app_and_catalog_with_rollout_complete().await;
+        seed_client(&gated_catalog).await;
+        let gated_cookie =
+            seed_user_session_with_datasets(&gated_catalog, "acme", &["production"]).await;
+        let res = post_decision(
+            &gated_app,
+            &gated_cookie,
+            &format!(
+                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","tenant":"acme","approved":true,"dataset_ids":["production"]}}"#
+            ),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK, "{}", body_json(res).await);
+    }
+
+    /// D8: a decision body still carrying the legacy singular `dataset_id`
+    /// field is rejected loudly rather than silently dropped.
+    #[tokio::test]
+    async fn decision_rejects_legacy_dataset_id_field() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_client(&catalog).await;
+        let cookie = seed_user_session(&catalog, "acme").await;
+
+        let res = post_decision(
+            &app,
+            &cookie,
+            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant":"acme","approved":true,"dataset_id":"production"}"#,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
     }
 }

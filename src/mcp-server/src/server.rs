@@ -235,9 +235,10 @@ struct CreateApiKeyParams {
     /// tenant — datasets, API keys, memberships, schema — through the
     /// management API; explicit only, never implied by an unscoped key).
     scopes: Vec<String>,
-    /// Optional dataset the key is restricted to.
+    /// Dataset set the key is restricted to (non-empty; a bare empty array
+    /// is rejected). Omitted or `null` creates an unrestricted key.
     #[serde(default)]
-    dataset_id: Option<String>,
+    dataset_ids: Option<Vec<String>>,
 }
 
 /// Parameters for `update_api_key_scopes`.
@@ -251,9 +252,15 @@ struct UpdateApiKeyScopesParams {
     /// Replacement scope list (non-empty). Omit to keep the current scopes.
     #[serde(default)]
     scopes: Option<Vec<String>>,
-    /// Replacement dataset restriction. Omit to keep the current one.
+    /// Replacement dataset set (non-empty; a bare empty array is rejected).
+    /// Omit to keep the current restriction. Mutually exclusive with
+    /// `clear_dataset_restriction: true`.
     #[serde(default)]
-    dataset_id: Option<String>,
+    dataset_ids: Option<Vec<String>>,
+    /// Clear an existing dataset restriction back to unrestricted. Must not
+    /// be combined with a non-empty `dataset_ids`.
+    #[serde(default)]
+    clear_dataset_restriction: bool,
 }
 
 /// Parameters for `get_profile`.
@@ -889,6 +896,20 @@ fn check_tenant_scope(parts: &Parts, expected: &str) -> Result<(), ErrorData> {
     }
 }
 
+/// Whether `dataset` is visible to a credential carrying `restriction`
+/// (`None` = unrestricted, every dataset visible) — design D10. Local to
+/// this crate rather than reusing `common::auth::dataset_allowed`: this
+/// server holds no auth dependency (see the `common` dependency comment in
+/// `Cargo.toml`), it only forwards the caller's credential to the router.
+/// This filters an already-authorized listing for display; it enforces
+/// nothing the router itself does not already enforce on the data path.
+fn dataset_visible(restriction: Option<&[String]>, dataset: &str) -> bool {
+    match restriction {
+        None => true,
+        Some(allowed) => allowed.iter().any(|d| d == dataset),
+    }
+}
+
 /// Reject an empty `scopes` list on API-key creation (platform-admin and
 /// tenant-management variants share this validation).
 fn require_nonempty_scopes(scopes: &[String]) -> Result<(), ErrorData> {
@@ -901,15 +922,35 @@ fn require_nonempty_scopes(scopes: &[String]) -> Result<(), ErrorData> {
     Ok(())
 }
 
-/// Reject an API-key update with neither `scopes` nor `dataset_id` set
-/// (platform-admin and tenant-management variants share this validation).
+/// Reject an API-key update with none of `scopes`, `dataset_ids`, or
+/// `clear_dataset_restriction` set (platform-admin and tenant-management
+/// variants share this validation).
 fn require_any_update(
     scopes: &Option<Vec<String>>,
-    dataset_id: &Option<String>,
+    dataset_ids: &Option<Vec<String>>,
+    clear_dataset_restriction: bool,
 ) -> Result<(), ErrorData> {
-    if scopes.is_none() && dataset_id.is_none() {
+    if scopes.is_none() && dataset_ids.is_none() && !clear_dataset_restriction {
         return Err(ErrorData::invalid_params(
-            "nothing to update: pass `scopes` and/or `dataset_id`",
+            "nothing to update: pass `scopes`, `dataset_ids`, and/or `clear_dataset_restriction`",
+            None,
+        ));
+    }
+    Ok(())
+}
+
+/// Reject `clear_dataset_restriction: true` combined with a non-empty
+/// `dataset_ids` in the same update request (D1a) — checked before any
+/// router request is made, since the server-side validation this mirrors
+/// would otherwise be the only thing catching a contradictory request the
+/// client should never have sent in the first place.
+fn require_no_contradictory_dataset_update(
+    dataset_ids: &Option<Vec<String>>,
+    clear_dataset_restriction: bool,
+) -> Result<(), ErrorData> {
+    if clear_dataset_restriction && dataset_ids.as_ref().is_some_and(|ids| !ids.is_empty()) {
+        return Err(ErrorData::invalid_params(
+            "`clear_dataset_restriction: true` cannot be combined with a non-empty `dataset_ids`",
             None,
         ));
     }
@@ -1070,9 +1111,10 @@ struct TenantCreateApiKeyParams {
     /// `schema:read`, `schema:write`, `tenant:manage` (manage this tenant's
     /// datasets, API keys, memberships, and schema view; explicit only).
     scopes: Vec<String>,
-    /// Optional dataset the key is restricted to.
+    /// Dataset set the key is restricted to (non-empty; a bare empty array
+    /// is rejected). Omitted or `null` creates an unrestricted key.
     #[serde(default)]
-    dataset_id: Option<String>,
+    dataset_ids: Option<Vec<String>>,
 }
 
 /// Parameters for `tenant_revoke_api_key`.
@@ -1098,9 +1140,15 @@ struct TenantUpdateApiKeyParams {
     /// Replacement scope list (non-empty). Omit to keep the current scopes.
     #[serde(default)]
     scopes: Option<Vec<String>>,
-    /// Replacement dataset restriction. Omit to keep the current one.
+    /// Replacement dataset set (non-empty; a bare empty array is rejected).
+    /// Omit to keep the current restriction. Mutually exclusive with
+    /// `clear_dataset_restriction: true`.
     #[serde(default)]
-    dataset_id: Option<String>,
+    dataset_ids: Option<Vec<String>>,
+    /// Clear an existing dataset restriction back to unrestricted. Must not
+    /// be combined with a non-empty `dataset_ids`.
+    #[serde(default)]
+    clear_dataset_restriction: bool,
 }
 
 /// Tenant membership role, shared by `tenant_upsert_membership`.
@@ -1843,14 +1891,24 @@ impl McpServer {
             }
         };
 
+        // D10: a dataset-restricted credential must not see the name (or
+        // table count) of a dataset outside its restriction, not even one
+        // that is otherwise provisioned and empty.
+        let restriction = identity.dataset_ids.as_deref();
+        let visible_datasets: Vec<_> = tables
+            .datasets
+            .iter()
+            .filter(|dataset| dataset_visible(restriction, &dataset.dataset))
+            .collect();
+
         let mut markdown = format!(
             "- Tenant: **{}** (`{}`)\n",
             identity.tenant.name, identity.tenant.id
         );
-        if tables.datasets.is_empty() {
+        if visible_datasets.is_empty() {
             markdown.push_str("  - (no datasets provisioned yet)\n");
         } else {
-            for dataset in &tables.datasets {
+            for dataset in visible_datasets {
                 let current = if dataset.dataset == identity.dataset {
                     " (current)"
                 } else {
@@ -1956,7 +2014,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Create an API key for a tenant carrying exactly the given `scopes` (required, at least one; e.g. traces:write, schema:read) and optionally restricted to `dataset_id` (admin API; requires administrative credentials). The raw secret is returned once."
+        description = "Create an API key for a tenant carrying exactly the given `scopes` (required, at least one; e.g. traces:write, schema:read) and optionally restricted to a set of datasets via `dataset_ids` (admin API; requires administrative credentials). The raw secret is returned once."
     )]
     async fn create_api_key(
         &self,
@@ -1971,7 +2029,7 @@ impl McpServer {
             .body(signaldb_sdk::types::CreateApiKeyRequest {
                 name: p.name,
                 scopes: p.scopes,
-                dataset_id: p.dataset_id,
+                dataset_ids: p.dataset_ids,
             })
             .send()
             .await
@@ -1980,14 +2038,15 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Update the scopes and/or dataset restriction of a live API key without rotating its secret (admin API; requires administrative credentials). Revoked keys cannot be updated; the change applies to the key's next request."
+        description = "Update the scopes and/or dataset restriction of a live API key without rotating its secret (admin API; requires administrative credentials). `dataset_ids` replaces the restriction (non-empty, or omit to leave it unchanged); `clear_dataset_restriction: true` removes it back to unrestricted and must not be combined with a non-empty `dataset_ids`. Revoked keys cannot be updated; the change applies to the key's next request."
     )]
     async fn update_api_key_scopes(
         &self,
         Extension(parts): Extension<Parts>,
         Parameters(p): Parameters<UpdateApiKeyScopesParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        require_any_update(&p.scopes, &p.dataset_id)?;
+        require_no_contradictory_dataset_update(&p.dataset_ids, p.clear_dataset_restriction)?;
+        require_any_update(&p.scopes, &p.dataset_ids, p.clear_dataset_restriction)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .update_api_key()
@@ -1995,7 +2054,8 @@ impl McpServer {
             .key_id(&p.key_id)
             .body(signaldb_sdk::types::UpdateApiKeyRequest {
                 scopes: p.scopes,
-                dataset_id: p.dataset_id,
+                dataset_ids: p.dataset_ids,
+                clear_dataset_restriction: Some(p.clear_dataset_restriction),
             })
             .send()
             .await
@@ -2310,7 +2370,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Create an API key for the caller's own tenant, carrying exactly the given `scopes` (required, at least one) and optionally restricted to `dataset_id` (management API; tenant-admin session or an API key carrying `tenant:manage`). The raw secret is returned once."
+        description = "Create an API key for the caller's own tenant, carrying exactly the given `scopes` (required, at least one) and optionally restricted to a set of datasets via `dataset_ids` (management API; tenant-admin session or an API key carrying `tenant:manage`). The raw secret is returned once."
     )]
     async fn tenant_create_api_key(
         &self,
@@ -2325,7 +2385,7 @@ impl McpServer {
             .body(signaldb_sdk::types::ManageCreateApiKeyRequest {
                 name: p.name,
                 scopes: p.scopes,
-                dataset_id: p.dataset_id,
+                dataset_ids: p.dataset_ids,
             })
             .send()
             .await
@@ -2355,14 +2415,15 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Update the scopes and/or dataset restriction of one of the caller's own tenant's API keys, without rotating its secret (management API; tenant-admin session or an API key carrying `tenant:manage`)."
+        description = "Update the scopes and/or dataset restriction of one of the caller's own tenant's API keys, without rotating its secret (management API; tenant-admin session or an API key carrying `tenant:manage`). `dataset_ids` replaces the restriction (non-empty, or omit to leave it unchanged); `clear_dataset_restriction: true` removes it back to unrestricted and must not be combined with a non-empty `dataset_ids`."
     )]
     async fn tenant_update_api_key(
         &self,
         Parameters(p): Parameters<TenantUpdateApiKeyParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        require_any_update(&p.scopes, &p.dataset_id)?;
+        require_no_contradictory_dataset_update(&p.dataset_ids, p.clear_dataset_restriction)?;
+        require_any_update(&p.scopes, &p.dataset_ids, p.clear_dataset_restriction)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .manage_update_api_key()
@@ -2370,7 +2431,8 @@ impl McpServer {
             .key_id(&p.key_id)
             .body(signaldb_sdk::types::ManageUpdateApiKeyRequest {
                 scopes: p.scopes,
-                dataset_id: p.dataset_id,
+                dataset_ids: p.dataset_ids,
+                clear_dataset_restriction: Some(p.clear_dataset_restriction),
             })
             .send()
             .await
@@ -2482,7 +2544,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List the caller's own tenant's provisioned signal tables (tenant self-service API; the caller's tenant credential).",
+        description = "List the caller's own tenant's provisioned signal tables (tenant self-service API; the caller's tenant credential). Filtered to the caller's own dataset restriction, if any (D10): a dataset outside it never appears here.",
         annotations(read_only_hint = true)
     )]
     async fn tenant_list_tables(
@@ -2491,13 +2553,31 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         let client = self.router_client(&parts, None)?;
-        let resp = client
+        let mut tables = client
             .list_tenant_tables()
             .tenant_id(&p.tenant_id)
             .send()
             .await
-            .map_err(|e| map_sdk_err(e, "tenant_list_tables"))?;
-        json_result(&resp.into_inner())
+            .map_err(|e| map_sdk_err(e, "tenant_list_tables"))?
+            .into_inner();
+        // D10: hide any dataset outside the caller's own restriction — set
+        // once per request by the auth middleware alongside
+        // `audit::CallerTenant`. `dataset_visible` no-ops both `retain`
+        // calls below when the caller is unrestricted.
+        let restriction = parts
+            .extensions
+            .get::<audit::CallerDatasetIds>()
+            .and_then(|r| r.0.as_deref());
+        tables
+            .datasets
+            .retain(|dataset| dataset_visible(restriction, &dataset.dataset));
+        tables.tables.retain(|table| {
+            table
+                .dataset
+                .as_deref()
+                .is_none_or(|dataset| dataset_visible(restriction, dataset))
+        });
+        json_result(&tables)
     }
 
     #[tool(
@@ -3452,6 +3532,62 @@ mod tests {
         serde_json::from_str(&text.text).expect("tool result is JSON")
     }
 
+    /// Like [`mock_json_router`], but returns the full raw HTTP request text
+    /// (headers + body) it received instead of only asserting a prefix, so a
+    /// test can inspect the JSON body the client actually sent — e.g. proving
+    /// a parameter was forwarded rather than dropped.
+    async fn mock_capturing_router(
+        expected_prefix: &'static str,
+        status: u16,
+        response_body: &'static str,
+    ) -> (String, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = [0_u8; 8192];
+            let request_len = socket.read(&mut request).await.expect("read request");
+            let request = std::str::from_utf8(&request[..request_len])
+                .expect("request is UTF-8")
+                .to_string();
+            assert!(
+                request.starts_with(expected_prefix),
+                "unexpected request, wanted prefix {expected_prefix:?}: {request}"
+            );
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        response_body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write response headers");
+            socket
+                .write_all(response_body.as_bytes())
+                .await
+                .expect("write body");
+            request
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    /// Extract and parse the JSON body from a request captured by
+    /// [`mock_capturing_router`].
+    fn captured_json_body(request: &str) -> serde_json::Value {
+        let body = request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .expect("request has a body");
+        serde_json::from_str(body).expect("request body is JSON")
+    }
+
     #[tokio::test]
     async fn discover_profile_types_lists_types_via_router() {
         let (base_url, router) = mock_json_router(
@@ -3888,6 +4024,161 @@ mod tests {
             "wrong staging table count: {}",
             text.text
         );
+        router.await.expect("mock router task panicked");
+    }
+
+    /// D10: a dataset-restricted credential's `discover_datasets` listing
+    /// never names a dataset outside its restriction, even one that is
+    /// provisioned in the tenant.
+    #[tokio::test]
+    async fn discover_datasets_hides_datasets_outside_the_callers_restriction() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let router = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept whoami request");
+            let mut request = [0_u8; 4096];
+            let _request_len = socket.read(&mut request).await.expect("read request");
+            let body = br#"{"user_id":"","tenant":{"id":"acme","slug":"acme","name":"Acme Corp"},"dataset":"production","dataset_ids":["production"]}"#;
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write whoami response headers");
+            socket.write_all(body).await.expect("write whoami body");
+            drop(socket);
+
+            let (mut socket, _) = listener.accept().await.expect("accept tables request");
+            let mut request = [0_u8; 4096];
+            let _request_len = socket.read(&mut request).await.expect("read request");
+            let body = br#"{"tenant_id":"acme","tables":[],"datasets":[{"dataset":"production","tables":[{"name":"traces","schema_type":"traces","description":"d"}]},{"dataset":"staging","tables":[{"name":"logs","schema_type":"logs","description":"d"}]}]}"#;
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write tables response headers");
+            socket.write_all(body).await.expect("write tables body");
+        });
+        let server = McpServer::new(format!("http://{addr}"), std::time::Duration::from_secs(1));
+
+        let result = server
+            .discover_datasets(Extension(valid_parts()))
+            .await
+            .expect("discover_datasets succeeds");
+
+        let ContentBlock::Text(text) = &result.content[0] else {
+            panic!("discover_datasets returns a text result");
+        };
+        assert!(
+            text.text.contains("`production`"),
+            "the restricted dataset must still be listed: {}",
+            text.text
+        );
+        assert!(
+            !text.text.contains("staging"),
+            "a dataset outside the restriction must not appear, even by name: {}",
+            text.text
+        );
+        router.await.expect("mock router task panicked");
+    }
+
+    /// D10: `tenant_list_tables` filters both the flat `tables` list and the
+    /// per-dataset `datasets` grouping to the caller's restriction — an
+    /// unlisted dataset must not appear in either shape.
+    #[tokio::test]
+    async fn tenant_list_tables_hides_datasets_outside_the_callers_restriction() {
+        let (base_url, router) = mock_json_router(
+            "GET /api/v1/tenants/acme/tables",
+            r#"{"tenant_id":"acme","tables":[
+                {"name":"traces","schema_type":"traces","description":"d","dataset":"production"},
+                {"name":"logs","schema_type":"logs","description":"d","dataset":"staging"}
+            ],"datasets":[
+                {"dataset":"production","tables":[{"name":"traces","schema_type":"traces","description":"d","dataset":"production"}]},
+                {"dataset":"staging","tables":[{"name":"logs","schema_type":"logs","description":"d","dataset":"staging"}]}
+            ]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+        let mut parts = valid_parts();
+        parts.extensions.insert(audit::CallerDatasetIds(Some(vec![
+            "production".to_string(),
+        ])));
+
+        let result = server
+            .tenant_list_tables(
+                Parameters(TenantOnlyParams {
+                    tenant_id: "acme".to_string(),
+                }),
+                Extension(parts),
+            )
+            .await
+            .expect("tenant_list_tables succeeds");
+
+        let body = text_json(&result);
+        let datasets: Vec<&str> = body["datasets"]
+            .as_array()
+            .expect("datasets array")
+            .iter()
+            .map(|d| d["dataset"].as_str().expect("dataset name"))
+            .collect();
+        assert_eq!(datasets, vec!["production"], "got {body}");
+        let tables: Vec<&str> = body["tables"]
+            .as_array()
+            .expect("tables array")
+            .iter()
+            .map(|t| t["dataset"].as_str().expect("table dataset"))
+            .collect();
+        assert_eq!(tables, vec!["production"], "got {body}");
+        router.await.expect("mock router task panicked");
+    }
+
+    /// An unrestricted credential's `tenant_list_tables` result is unchanged
+    /// — every dataset the router reports is still listed.
+    #[tokio::test]
+    async fn tenant_list_tables_is_unfiltered_for_an_unrestricted_credential() {
+        let (base_url, router) = mock_json_router(
+            "GET /api/v1/tenants/acme/tables",
+            r#"{"tenant_id":"acme","tables":[
+                {"name":"traces","schema_type":"traces","description":"d","dataset":"production"},
+                {"name":"logs","schema_type":"logs","description":"d","dataset":"staging"}
+            ],"datasets":[
+                {"dataset":"production","tables":[{"name":"traces","schema_type":"traces","description":"d","dataset":"production"}]},
+                {"dataset":"staging","tables":[{"name":"logs","schema_type":"logs","description":"d","dataset":"staging"}]}
+            ]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        let result = server
+            .tenant_list_tables(
+                Parameters(TenantOnlyParams {
+                    tenant_id: "acme".to_string(),
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("tenant_list_tables succeeds");
+
+        let body = text_json(&result);
+        assert_eq!(
+            body["datasets"].as_array().expect("datasets array").len(),
+            2
+        );
+        assert_eq!(body["tables"].as_array().expect("tables array").len(), 2);
         router.await.expect("mock router task panicked");
     }
 
@@ -4476,6 +4767,246 @@ mod tests {
         assert!(
             result.completion.values.is_empty(),
             "a downstream failure must degrade to no suggestions, not an error"
+        );
+    }
+
+    // ---- API-key tool dataset_ids / clear_dataset_restriction (phase 5.1
+    // of multi-dataset-key-restriction) ----
+
+    #[tokio::test]
+    async fn create_api_key_forwards_dataset_ids() {
+        let (base_url, router) = mock_capturing_router(
+            "POST /api/v1/admin/tenants/acme/api-keys",
+            201,
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1","key":"secret","scopes":["traces:read"],"dataset_ids":["production","staging"]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .create_api_key(
+                Extension(valid_parts()),
+                Parameters(CreateApiKeyParams {
+                    tenant_id: "acme".to_string(),
+                    name: None,
+                    scopes: vec!["traces:read".to_string()],
+                    dataset_ids: Some(vec!["production".to_string(), "staging".to_string()]),
+                }),
+            )
+            .await
+            .expect("create_api_key succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(
+            body["dataset_ids"],
+            serde_json::json!(["production", "staging"])
+        );
+    }
+
+    #[tokio::test]
+    async fn tenant_create_api_key_forwards_dataset_ids() {
+        let (base_url, router) = mock_capturing_router(
+            "POST /api/v1/manage/tenants/acme/api-keys",
+            201,
+            r#"{"id":"key-1","key":"secret","scopes":["traces:read"],"dataset_ids":["production"]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .tenant_create_api_key(
+                Parameters(TenantCreateApiKeyParams {
+                    tenant_id: "acme".to_string(),
+                    name: None,
+                    scopes: vec!["traces:read".to_string()],
+                    dataset_ids: Some(vec!["production".to_string()]),
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("tenant_create_api_key succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(body["dataset_ids"], serde_json::json!(["production"]));
+    }
+
+    #[tokio::test]
+    async fn update_api_key_scopes_forwards_dataset_ids_and_clear_flag() {
+        let (base_url, router) = mock_capturing_router(
+            "PATCH /api/v1/admin/tenants/acme/api-keys/key-1",
+            200,
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1"}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .update_api_key_scopes(
+                Extension(valid_parts()),
+                Parameters(UpdateApiKeyScopesParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: Some(vec!["production".to_string()]),
+                    clear_dataset_restriction: false,
+                }),
+            )
+            .await
+            .expect("update_api_key_scopes succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(body["dataset_ids"], serde_json::json!(["production"]));
+    }
+
+    #[tokio::test]
+    async fn update_api_key_scopes_forwards_clear_dataset_restriction() {
+        let (base_url, router) = mock_capturing_router(
+            "PATCH /api/v1/admin/tenants/acme/api-keys/key-1",
+            200,
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1"}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .update_api_key_scopes(
+                Extension(valid_parts()),
+                Parameters(UpdateApiKeyScopesParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: None,
+                    clear_dataset_restriction: true,
+                }),
+            )
+            .await
+            .expect("update_api_key_scopes succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(body["clear_dataset_restriction"], serde_json::json!(true));
+    }
+
+    #[tokio::test]
+    async fn tenant_update_api_key_forwards_dataset_ids_and_clear_flag() {
+        let (base_url, router) = mock_capturing_router(
+            "PATCH /api/v1/manage/tenants/acme/api-keys/key-1",
+            200,
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1","revoked":false}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .tenant_update_api_key(
+                Parameters(TenantUpdateApiKeyParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: Some(vec!["staging".to_string()]),
+                    clear_dataset_restriction: false,
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("tenant_update_api_key succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(body["dataset_ids"], serde_json::json!(["staging"]));
+    }
+
+    #[tokio::test]
+    async fn tenant_update_api_key_forwards_clear_dataset_restriction() {
+        let (base_url, router) = mock_capturing_router(
+            "PATCH /api/v1/manage/tenants/acme/api-keys/key-1",
+            200,
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1","revoked":false}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .tenant_update_api_key(
+                Parameters(TenantUpdateApiKeyParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: None,
+                    clear_dataset_restriction: true,
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("tenant_update_api_key succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(body["clear_dataset_restriction"], serde_json::json!(true));
+    }
+
+    /// D1a: `clear_dataset_restriction: true` together with a non-empty
+    /// `dataset_ids` is contradictory and must be rejected before any router
+    /// request is made — the router base URL is deliberately invalid so the
+    /// test fails loudly if the handler tries to reach it anyway.
+    #[tokio::test]
+    async fn update_api_key_scopes_rejects_contradictory_dataset_update_without_calling_router() {
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+
+        let err = server
+            .update_api_key_scopes(
+                Extension(valid_parts()),
+                Parameters(UpdateApiKeyScopesParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: Some(vec!["production".to_string()]),
+                    clear_dataset_restriction: true,
+                }),
+            )
+            .await
+            .expect_err("a contradictory dataset_ids + clear_dataset_restriction must be rejected");
+
+        assert!(
+            err.message.contains("dataset_ids")
+                && err.message.contains("clear_dataset_restriction"),
+            "got {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn tenant_update_api_key_rejects_contradictory_dataset_update_without_calling_router() {
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+
+        let err = server
+            .tenant_update_api_key(
+                Parameters(TenantUpdateApiKeyParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: Some(vec!["production".to_string(), "staging".to_string()]),
+                    clear_dataset_restriction: true,
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect_err("a contradictory dataset_ids + clear_dataset_restriction must be rejected");
+
+        assert!(
+            err.message.contains("dataset_ids")
+                && err.message.contains("clear_dataset_restriction"),
+            "got {}",
+            err.message
         );
     }
 }

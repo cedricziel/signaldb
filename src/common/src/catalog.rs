@@ -27,6 +27,30 @@ fn decode_json_vec_opt(json: Option<String>) -> Result<Option<Vec<String>>, sqlx
     json.map(decode_json_vec).transpose()
 }
 
+/// Add `column TEXT` to `table` if it doesn't already exist, via `PRAGMA
+/// table_info` (SQLite has no native `ADD COLUMN IF NOT EXISTS`) — the same
+/// gate `api_keys`' `dataset_id`/`scopes`/`created_by_user_id` columns use.
+/// `table` and `column` are always compile-time literals from call sites in
+/// this module, never user input.
+async fn ensure_sqlite_text_column(
+    pool: &SqlitePool,
+    table: &str,
+    column: &str,
+) -> Result<(), sqlx::Error> {
+    let columns = query(&format!("PRAGMA table_info({table})"))
+        .fetch_all(pool)
+        .await?;
+    let has_column = columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == column);
+    if !has_column {
+        query(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"))
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
 /// Canonicalize an email address for identity comparison: trim whitespace
 /// and lowercase, so the `users.email` UNIQUE constraint applies to the
 /// canonical form identically on SQLite and PostgreSQL.
@@ -230,6 +254,7 @@ impl Catalog {
                         .execute(pool)
                         .await?;
                 }
+                ensure_sqlite_text_column(pool, "api_keys", "dataset_ids").await?;
 
                 let create_datasets = r#"
                 CREATE TABLE IF NOT EXISTS datasets (
@@ -423,6 +448,7 @@ impl Catalog {
                     user_id TEXT NOT NULL,
                     tenant_id TEXT NOT NULL,
                     scopes TEXT NOT NULL,
+                    dataset_ids TEXT,
                     redirect_uri TEXT NOT NULL,
                     code_challenge TEXT NOT NULL,
                     resource TEXT,
@@ -443,6 +469,7 @@ impl Catalog {
                     user_id TEXT NOT NULL,
                     tenant_id TEXT NOT NULL,
                     scopes TEXT NOT NULL,
+                    dataset_ids TEXT,
                     resource TEXT,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     expires_at TEXT NOT NULL,
@@ -461,6 +488,7 @@ impl Catalog {
                     user_id TEXT NOT NULL,
                     tenant_id TEXT NOT NULL,
                     scopes TEXT NOT NULL,
+                    dataset_ids TEXT,
                     resource TEXT,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     expires_at TEXT NOT NULL,
@@ -480,6 +508,15 @@ impl Catalog {
                 )
                 .execute(pool)
                 .await?;
+                // Idempotent guard for a table created before `dataset_ids`
+                // existed (SQLite has no native `ADD COLUMN IF NOT EXISTS`).
+                for table in [
+                    "oauth_authorization_codes",
+                    "oauth_access_tokens",
+                    "oauth_refresh_tokens",
+                ] {
+                    ensure_sqlite_text_column(pool, table, "dataset_ids").await?;
+                }
             }
             Catalog::Postgres(pool) => {
                 // PostgreSQL schema
@@ -542,6 +579,9 @@ impl Catalog {
                     .execute(pool)
                     .await?;
                 query("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS created_by_user_id TEXT")
+                    .execute(pool)
+                    .await?;
+                query("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS dataset_ids TEXT")
                     .execute(pool)
                     .await?;
 
@@ -727,6 +767,7 @@ impl Catalog {
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
                     scopes TEXT NOT NULL,
+                    dataset_ids TEXT,
                     redirect_uri TEXT NOT NULL,
                     code_challenge TEXT NOT NULL,
                     resource TEXT,
@@ -745,6 +786,7 @@ impl Catalog {
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
                     scopes TEXT NOT NULL,
+                    dataset_ids TEXT,
                     resource TEXT,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     expires_at TIMESTAMPTZ NOT NULL
@@ -761,6 +803,7 @@ impl Catalog {
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
                     scopes TEXT NOT NULL,
+                    dataset_ids TEXT,
                     resource TEXT,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     expires_at TIMESTAMPTZ NOT NULL
@@ -778,8 +821,23 @@ impl Catalog {
                 )
                 .execute(pool)
                 .await?;
+                for table in [
+                    "oauth_authorization_codes",
+                    "oauth_access_tokens",
+                    "oauth_refresh_tokens",
+                ] {
+                    query(&format!(
+                        "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS dataset_ids TEXT"
+                    ))
+                    .execute(pool)
+                    .await?;
+                }
             }
         }
+
+        // D2's one-time-per-row backfill: safe to run on every boot, since a
+        // row already synced by new code never matches its WHERE clause.
+        self.backfill_api_key_dataset_ids().await?;
 
         Ok(())
     }
@@ -1378,7 +1436,15 @@ pub struct ApiKeyRecord {
     pub id: String,
     pub tenant_id: String,
     pub name: Option<String>,
+    /// Legacy single-dataset column (D2): kept as a dual-write projection
+    /// of `dataset_ids` (`ids[0]` when it has exactly one element, `NULL`
+    /// otherwise) so an old-code node's reads stay correct.
     pub dataset_id: Option<String>,
+    /// Dataset-set restriction (D1/D2): `None` is unrestricted, `Some` is
+    /// the exact set. Dual-read: authoritative from the `dataset_ids`
+    /// column when present, else derived from the legacy `dataset_id`
+    /// column.
+    pub dataset_ids: Option<Vec<String>>,
     pub scopes: Option<Vec<String>>,
     pub created_by_user_id: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -1390,10 +1456,205 @@ pub struct ApiKeyRecord {
 pub struct ApiKeyAuthRecord {
     pub tenant_id: String,
     pub name: Option<String>,
-    /// A bound dataset, or `None` for any dataset in the tenant.
-    pub dataset_id: Option<String>,
+    /// Dataset-set restriction; see [`ApiKeyRecord::dataset_ids`].
+    pub dataset_ids: Option<Vec<String>>,
     /// Explicit scopes, or `None` for a legacy unrestricted key.
     pub scopes: Option<Vec<String>>,
+}
+
+/// Tri-state update to a live API key's dataset-set restriction (D1a/D2b).
+///
+/// The predecessor `dataset_id: Option<&str>` parameter this replaces could
+/// only express "leave unchanged" (`None`) or "set" (`Some`) through a
+/// `COALESCE`-based `UPDATE` — a `NULL` can never win a `COALESCE`, so
+/// there was no way to express "clear an existing restriction."
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DatasetRestrictionUpdate {
+    /// Leave the existing restriction (or lack of one) untouched.
+    Keep,
+    /// Clear any restriction back to unrestricted: both `dataset_ids` and
+    /// the legacy `dataset_id` become `NULL`.
+    Clear,
+    /// Replace the restriction with exactly this set. Validated the same
+    /// way as the create path (`upsert_scoped_api_key`): an empty or
+    /// duplicate-containing set is rejected.
+    Set(Vec<String>),
+}
+
+impl DatasetRestrictionUpdate {
+    /// Construct the tri-state update from an update request's two
+    /// dataset-restriction fields (D1a), validating their combination before
+    /// any catalog call:
+    ///
+    /// - `dataset_ids: Some(ids)` (non-empty) with `clear_dataset_restriction:
+    ///   false` → [`Self::Set`], replacing the restriction.
+    /// - `dataset_ids: None` with `clear_dataset_restriction: true` →
+    ///   [`Self::Clear`].
+    /// - Both absent/`false` → [`Self::Keep`], leaving the restriction
+    ///   untouched.
+    /// - An explicit empty array or a duplicate name is rejected
+    ///   unconditionally (via [`validate_dataset_id_set`]), regardless of
+    ///   `clear_dataset_restriction`.
+    /// - A non-empty `dataset_ids` combined with `clear_dataset_restriction:
+    ///   true` is rejected as a contradictory request.
+    ///
+    /// This is the single implementation of D1a's rule; the HTTP-layer
+    /// admin and management API handlers both call it rather than
+    /// re-approximating the same combination logic independently.
+    pub fn from_request(
+        dataset_ids: Option<Vec<String>>,
+        clear_dataset_restriction: bool,
+    ) -> Result<Self, sqlx::Error> {
+        match dataset_ids {
+            Some(ids) if !ids.is_empty() && clear_dataset_restriction => Err(sqlx::Error::Protocol(
+                "clear_dataset_restriction cannot be combined with a non-empty dataset_ids in the same request"
+                    .to_string(),
+            )),
+            Some(ids) => {
+                validate_dataset_id_set(&ids)?;
+                Ok(Self::Set(ids))
+            }
+            None if clear_dataset_restriction => Ok(Self::Clear),
+            None => Ok(Self::Keep),
+        }
+    }
+}
+
+/// Validate a create request's `dataset_ids` field (D1a) ahead of
+/// [`Catalog::upsert_scoped_api_key`]: `None` stays `None` (unrestricted),
+/// `Some` is rejected up front when empty or duplicate-containing, via the
+/// same [`validate_dataset_id_set`] the catalog write path itself applies.
+pub fn validate_create_dataset_ids(
+    dataset_ids: Option<Vec<String>>,
+) -> Result<Option<Vec<String>>, sqlx::Error> {
+    match dataset_ids {
+        Some(ids) => {
+            validate_dataset_id_set(&ids)?;
+            Ok(Some(ids))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Reject `dataset_ids` naming two or more datasets while the mixed-version
+/// rollout gate (`[auth].dataset_restriction_rollout_complete`, D2) is not
+/// yet `true`. Single-element and unrestricted sets are unaffected by the
+/// flag; callers only invoke this for a non-empty, already-validated set
+/// (e.g. the `Set` arm of [`DatasetRestrictionUpdate`] or a create request's
+/// `dataset_ids`). Shared by the admin and management API create/update
+/// handlers so the "two or more" threshold and message can't drift between
+/// them.
+pub fn check_dataset_restriction_rollout_gate(
+    dataset_ids: &[String],
+    rollout_complete: bool,
+) -> Result<(), String> {
+    if dataset_ids.len() >= 2 && !rollout_complete {
+        return Err(format!(
+            "dataset_ids names {} datasets; multi-dataset API-key restrictions require \
+             [auth].dataset_restriction_rollout_complete = true (currently false)",
+            dataset_ids.len()
+        ));
+    }
+    Ok(())
+}
+
+/// Reject a non-empty `dataset_ids` OAuth consent decision while the
+/// mixed-version rollout gate (`[auth].dataset_restriction_rollout_complete`,
+/// D2) is not yet `true`. Stricter than
+/// [`check_dataset_restriction_rollout_gate`]'s two-or-more threshold:
+/// OAuth tokens have no legacy `dataset_id` column to fall back to (D2's
+/// "Residual, documented limitation" section), so *any* non-empty
+/// restriction is unsafe until every authenticating node runs the new
+/// binary — including a single-dataset one. Callers only invoke this for an
+/// already non-empty, validated set (the empty case is D1a's separate,
+/// unconditional rejection).
+pub fn check_oauth_dataset_restriction_rollout_gate(
+    dataset_ids: &[String],
+    rollout_complete: bool,
+) -> Result<(), String> {
+    if !dataset_ids.is_empty() && !rollout_complete {
+        return Err(format!(
+            "dataset_ids names {} dataset(s); OAuth dataset restrictions require \
+             [auth].dataset_restriction_rollout_complete = true (currently false)",
+            dataset_ids.len()
+        ));
+    }
+    Ok(())
+}
+
+/// Reject an empty or duplicate-containing dataset-id set (D1a). Shared by
+/// every path that writes a dataset-id set — the API-key create path
+/// (`upsert_scoped_api_key`), the API-key update path
+/// (`update_api_key_scopes`'s `Set` variant, via [`DatasetRestrictionUpdate::from_request`]),
+/// and the OAuth grant paths — so none of them can drift into checking a
+/// different rule.
+pub fn validate_dataset_id_set(ids: &[String]) -> Result<(), sqlx::Error> {
+    if ids.is_empty() {
+        return Err(sqlx::Error::Protocol(
+            "dataset_ids must not be empty; omit the field (or send null) for an unrestricted key"
+                .to_string(),
+        ));
+    }
+    let mut seen = std::collections::HashSet::with_capacity(ids.len());
+    for id in ids {
+        if !seen.insert(id.as_str()) {
+            return Err(sqlx::Error::Protocol(format!(
+                "dataset_ids contains duplicate dataset '{id}'"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Validate and JSON-encode a dataset-id set for the `dataset_ids` column
+/// (D1).
+fn encode_dataset_ids_json(ids: &[String]) -> Result<String, sqlx::Error> {
+    validate_dataset_id_set(ids)?;
+    serde_json::to_string(ids)
+        .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize dataset_ids: {e}")))
+}
+
+/// Project a validated, non-empty dataset-id set onto the D2 storage
+/// representation: the JSON-array-in-TEXT `dataset_ids` column (always) and
+/// the legacy single-value `dataset_id` column (only when the set has
+/// exactly one element, `NULL` otherwise — an empty set is unreachable,
+/// [`validate_dataset_id_set`] already rejected it).
+fn project_dataset_id_set(ids: &[String]) -> Result<(String, Option<String>), sqlx::Error> {
+    let json = encode_dataset_ids_json(ids)?;
+    let legacy = match ids {
+        [single] => Some(single.clone()),
+        _ => None,
+    };
+    Ok((json, legacy))
+}
+
+/// Dual-read (D2): the `dataset_ids` column is authoritative when non-NULL;
+/// otherwise the set is derived from the legacy `dataset_id` column exactly
+/// as before this column existed.
+fn decode_dataset_id_set(
+    dataset_ids: Option<String>,
+    legacy_dataset_id: Option<&str>,
+) -> Result<Option<Vec<String>>, sqlx::Error> {
+    match dataset_ids {
+        Some(json) => decode_json_vec(json).map(Some),
+        None => Ok(legacy_dataset_id.map(|id| vec![id.to_string()])),
+    }
+}
+
+/// Read the `dataset_id`/`dataset_ids` pair off a fetched `api_keys` row and
+/// apply the [`decode_dataset_id_set`] dual-read. Generic over the row type
+/// so the same code serves both the SQLite and PostgreSQL branches of each
+/// caller.
+fn decode_dataset_fields<R: Row>(
+    row: &R,
+) -> Result<(Option<String>, Option<Vec<String>>), sqlx::Error>
+where
+    for<'a> &'a str: sqlx::ColumnIndex<R>,
+    for<'a> Option<String>: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+{
+    let dataset_id: Option<String> = row.get("dataset_id");
+    let dataset_ids = decode_dataset_id_set(row.get("dataset_ids"), dataset_id.as_deref())?;
+    Ok((dataset_id, dataset_ids))
 }
 
 /// Dataset record from database
@@ -1507,6 +1768,9 @@ pub struct OAuthAuthorizationCode {
     pub user_id: String,
     pub tenant_id: String,
     pub scopes: Vec<String>,
+    /// Dataset-set restriction chosen at consent (D1/D6). `None` is
+    /// unrestricted.
+    pub dataset_ids: Option<Vec<String>>,
     pub redirect_uri: String,
     pub code_challenge: String,
     pub resource: Option<String>,
@@ -1523,6 +1787,10 @@ pub struct OAuthTokenRecord {
     pub user_id: String,
     pub tenant_id: String,
     pub scopes: Vec<String>,
+    /// Dataset-set restriction (D1/D6). `None` is unrestricted. There is no
+    /// legacy column here — OAuth never had dataset restriction before this
+    /// column existed, unlike `api_keys`' `dataset_id`.
+    pub dataset_ids: Option<Vec<String>>,
     pub resource: Option<String>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
@@ -2185,16 +2453,20 @@ impl Catalog {
             .await
     }
 
-    /// Create or return an API key with optional dataset and scope restrictions.
+    /// Create or return an API key with optional dataset-set and scope
+    /// restrictions.
     ///
     /// `scopes = None` preserves legacy unrestricted-key behavior. New
     /// user-created keys should always pass an explicit, non-empty scope list.
+    /// `dataset_ids = Some(&[])` or a set containing a duplicate name is
+    /// rejected (D1a) — omit the argument (or pass `None`) for an
+    /// unrestricted key.
     pub async fn upsert_scoped_api_key(
         &self,
         tenant_id: &str,
         key_hash: &str,
         name: Option<&str>,
-        dataset_id: Option<&str>,
+        dataset_ids: Option<&[String]>,
         scopes: Option<&[String]>,
         created_by_user_id: Option<&str>,
     ) -> Result<String, sqlx::Error> {
@@ -2205,6 +2477,13 @@ impl Catalog {
             .map_err(|error| {
                 sqlx::Error::Protocol(format!("failed to serialize API key scopes: {error}"))
             })?;
+        let (dataset_ids_json, dataset_id_legacy) = match dataset_ids {
+            Some(ids) => {
+                let (json, legacy) = project_dataset_id_set(ids)?;
+                (Some(json), legacy)
+            }
+            None => (None, None),
+        };
 
         match self {
             Catalog::Sqlite(pool) => {
@@ -2225,17 +2504,18 @@ impl Catalog {
                 // Insert new key
                 let stmt = r#"
                 INSERT INTO api_keys (
-                    id, key_hash, tenant_id, name, dataset_id, scopes,
+                    id, key_hash, tenant_id, name, dataset_id, dataset_ids, scopes,
                     created_by_user_id, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 "#;
                 query(stmt)
                     .bind(&key_id)
                     .bind(key_hash)
                     .bind(tenant_id)
                     .bind(name)
-                    .bind(dataset_id)
+                    .bind(&dataset_id_legacy)
+                    .bind(&dataset_ids_json)
                     .bind(&scopes_json)
                     .bind(created_by_user_id)
                     .bind(&now)
@@ -2256,17 +2536,18 @@ impl Catalog {
 
                 let stmt = r#"
                 INSERT INTO api_keys (
-                    id, key_hash, tenant_id, name, dataset_id, scopes,
+                    id, key_hash, tenant_id, name, dataset_id, dataset_ids, scopes,
                     created_by_user_id
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 "#;
                 query(stmt)
                     .bind(&key_id)
                     .bind(key_hash)
                     .bind(tenant_id)
                     .bind(name)
-                    .bind(dataset_id)
+                    .bind(&dataset_id_legacy)
+                    .bind(&dataset_ids_json)
                     .bind(&scopes_json)
                     .bind(created_by_user_id)
                     .execute(pool)
@@ -2284,32 +2565,34 @@ impl Catalog {
     ) -> Result<Option<ApiKeyAuthRecord>, sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
-                let row = query("SELECT tenant_id, name, dataset_id, scopes FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL")
+                let row = query("SELECT tenant_id, name, dataset_id, dataset_ids, scopes FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL")
                     .bind(key_hash)
                     .fetch_optional(pool)
                     .await?;
 
                 row.map(|r| {
+                    let (_, dataset_ids) = decode_dataset_fields(&r)?;
                     Ok(ApiKeyAuthRecord {
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
-                        dataset_id: r.get("dataset_id"),
+                        dataset_ids,
                         scopes: decode_json_vec_opt(r.get("scopes"))?,
                     })
                 })
                 .transpose()
             }
             Catalog::Postgres(pool) => {
-                let row = query("SELECT tenant_id, name, dataset_id, scopes FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL")
+                let row = query("SELECT tenant_id, name, dataset_id, dataset_ids, scopes FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL")
                     .bind(key_hash)
                     .fetch_optional(pool)
                     .await?;
 
                 row.map(|r| {
+                    let (_, dataset_ids) = decode_dataset_fields(&r)?;
                     Ok(ApiKeyAuthRecord {
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
-                        dataset_id: r.get("dataset_id"),
+                        dataset_ids,
                         scopes: decode_json_vec_opt(r.get("scopes"))?,
                     })
                 })
@@ -2339,17 +2622,22 @@ impl Catalog {
         Ok(())
     }
 
-    /// Update the scopes and/or dataset restriction of a live API key.
+    /// Update the scopes and/or dataset-set restriction of a live API key.
     ///
-    /// `None` leaves that attribute untouched. Returns `false` when the key
-    /// does not exist or is revoked (revoked keys are immutable). Because the
-    /// tenant context is rebuilt from the key row on every request, the change
-    /// applies to the next request made with the key.
+    /// `scopes = None` leaves scopes untouched. `dataset_update` is a
+    /// tri-state (D2b): [`DatasetRestrictionUpdate::Keep`] leaves the
+    /// restriction untouched, [`DatasetRestrictionUpdate::Clear`] nulls both
+    /// the `dataset_ids` and legacy `dataset_id` columns, and
+    /// [`DatasetRestrictionUpdate::Set`] replaces the restriction (rejecting
+    /// an empty or duplicate-containing set, D1a). Returns `false` when the
+    /// key does not exist or is revoked (revoked keys are immutable).
+    /// Because the tenant context is rebuilt from the key row on every
+    /// request, the change applies to the next request made with the key.
     pub async fn update_api_key_scopes(
         &self,
         key_id: &str,
         scopes: Option<&[String]>,
-        dataset_id: Option<&str>,
+        dataset_update: DatasetRestrictionUpdate,
     ) -> Result<bool, sqlx::Error> {
         let scopes_json = scopes
             .map(serde_json::to_string)
@@ -2357,31 +2645,154 @@ impl Catalog {
             .map_err(|error| {
                 sqlx::Error::Protocol(format!("failed to serialize API key scopes: {error}"))
             })?;
-        let rows_affected = match self {
-            Catalog::Sqlite(pool) => query(
-                "UPDATE api_keys SET scopes = COALESCE(?, scopes), \
-                     dataset_id = COALESCE(?, dataset_id) \
+        let rows_affected = match (self, dataset_update) {
+            (Catalog::Sqlite(pool), DatasetRestrictionUpdate::Keep) => query(
+                "UPDATE api_keys SET scopes = COALESCE(?, scopes) WHERE id = ? AND revoked_at IS NULL",
+            )
+            .bind(&scopes_json)
+            .bind(key_id)
+            .execute(pool)
+            .await?
+            .rows_affected(),
+            (Catalog::Sqlite(pool), DatasetRestrictionUpdate::Clear) => query(
+                "UPDATE api_keys SET scopes = COALESCE(?, scopes), dataset_ids = NULL, dataset_id = NULL \
                      WHERE id = ? AND revoked_at IS NULL",
             )
             .bind(&scopes_json)
-            .bind(dataset_id)
             .bind(key_id)
+            .execute(pool)
+            .await?
+            .rows_affected(),
+            (Catalog::Sqlite(pool), DatasetRestrictionUpdate::Set(ids)) => {
+                let (dataset_ids_json, dataset_id_legacy) = project_dataset_id_set(&ids)?;
+                query(
+                    "UPDATE api_keys SET scopes = COALESCE(?, scopes), dataset_ids = ?, dataset_id = ? \
+                         WHERE id = ? AND revoked_at IS NULL",
+                )
+                .bind(&scopes_json)
+                .bind(&dataset_ids_json)
+                .bind(&dataset_id_legacy)
+                .bind(key_id)
+                .execute(pool)
+                .await?
+                .rows_affected()
+            }
+            (Catalog::Postgres(pool), DatasetRestrictionUpdate::Keep) => query(
+                "UPDATE api_keys SET scopes = COALESCE($1, scopes) WHERE id = $2 AND revoked_at IS NULL",
+            )
+            .bind(&scopes_json)
+            .bind(key_id)
+            .execute(pool)
+            .await?
+            .rows_affected(),
+            (Catalog::Postgres(pool), DatasetRestrictionUpdate::Clear) => query(
+                "UPDATE api_keys SET scopes = COALESCE($1, scopes), dataset_ids = NULL, dataset_id = NULL \
+                     WHERE id = $2 AND revoked_at IS NULL",
+            )
+            .bind(&scopes_json)
+            .bind(key_id)
+            .execute(pool)
+            .await?
+            .rows_affected(),
+            (Catalog::Postgres(pool), DatasetRestrictionUpdate::Set(ids)) => {
+                let (dataset_ids_json, dataset_id_legacy) = project_dataset_id_set(&ids)?;
+                query(
+                    "UPDATE api_keys SET scopes = COALESCE($1, scopes), dataset_ids = $2, dataset_id = $3 \
+                         WHERE id = $4 AND revoked_at IS NULL",
+                )
+                .bind(&scopes_json)
+                .bind(&dataset_ids_json)
+                .bind(&dataset_id_legacy)
+                .bind(key_id)
+                .execute(pool)
+                .await?
+                .rows_affected()
+            }
+        };
+        Ok(rows_affected > 0)
+    }
+
+    /// Rows whose legacy `dataset_id` predates the `dataset_ids` column and
+    /// have not yet been synced onto it (D2's backfill `SELECT`).
+    async fn pending_api_key_dataset_id_backfill(
+        &self,
+    ) -> Result<Vec<(String, String)>, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let rows = query(
+                    "SELECT id, dataset_id FROM api_keys WHERE dataset_id IS NOT NULL AND dataset_ids IS NULL",
+                )
+                .fetch_all(pool)
+                .await?;
+                Ok(rows
+                    .iter()
+                    .map(|r| (r.get("id"), r.get("dataset_id")))
+                    .collect())
+            }
+            Catalog::Postgres(pool) => {
+                let rows = query(
+                    "SELECT id, dataset_id FROM api_keys WHERE dataset_id IS NOT NULL AND dataset_ids IS NULL",
+                )
+                .fetch_all(pool)
+                .await?;
+                Ok(rows
+                    .iter()
+                    .map(|r| (r.get("id"), r.get("dataset_id")))
+                    .collect())
+            }
+        }
+    }
+
+    /// Compare-and-swap backfill of a single row (D2): writes `dataset_ids`
+    /// derived from `dataset_id_at_read` only if the row's `dataset_id`
+    /// still matches that value and `dataset_ids` is still NULL. A
+    /// concurrent legacy write to `dataset_id` between the backfill's
+    /// `SELECT` and this call makes it a no-op instead of persisting a
+    /// `dataset_ids` value derived from data that's already stale — the row
+    /// is picked up correctly by the next boot's backfill pass instead.
+    /// Returns the number of rows affected (0 or 1).
+    async fn apply_api_key_dataset_id_backfill(
+        &self,
+        id: &str,
+        dataset_id_at_read: &str,
+    ) -> Result<u64, sqlx::Error> {
+        let dataset_ids_json = serde_json::to_string(&[dataset_id_at_read]).map_err(|e| {
+            sqlx::Error::Protocol(format!("failed to serialize dataset_ids backfill: {e}"))
+        })?;
+        let rows_affected = match self {
+            Catalog::Sqlite(pool) => query(
+                "UPDATE api_keys SET dataset_ids = ? \
+                     WHERE id = ? AND dataset_id = ? AND dataset_ids IS NULL",
+            )
+            .bind(&dataset_ids_json)
+            .bind(id)
+            .bind(dataset_id_at_read)
             .execute(pool)
             .await?
             .rows_affected(),
             Catalog::Postgres(pool) => query(
-                "UPDATE api_keys SET scopes = COALESCE($1, scopes), \
-                     dataset_id = COALESCE($2, dataset_id) \
-                     WHERE id = $3 AND revoked_at IS NULL",
+                "UPDATE api_keys SET dataset_ids = $1 \
+                     WHERE id = $2 AND dataset_id = $3 AND dataset_ids IS NULL",
             )
-            .bind(&scopes_json)
-            .bind(dataset_id)
-            .bind(key_id)
+            .bind(&dataset_ids_json)
+            .bind(id)
+            .bind(dataset_id_at_read)
             .execute(pool)
             .await?
             .rows_affected(),
         };
-        Ok(rows_affected > 0)
+        Ok(rows_affected)
+    }
+
+    /// One-time-per-row backfill (D2), run at startup from `init()` and safe
+    /// to call again on every boot: a row new code has already written is
+    /// never selected again (its `dataset_ids` is no longer NULL).
+    async fn backfill_api_key_dataset_ids(&self) -> Result<(), sqlx::Error> {
+        for (id, dataset_id) in self.pending_api_key_dataset_id_backfill().await? {
+            self.apply_api_key_dataset_id_backfill(&id, &dataset_id)
+                .await?;
+        }
+        Ok(())
     }
 
     /// Create a dataset for a tenant
@@ -2665,12 +3076,32 @@ impl Catalog {
         }
     }
 
+    /// Find the first element of `dataset_ids` that is not a dataset of
+    /// `tenant_id`, or `None` if every element belongs to the tenant.
+    /// Shared membership check for every surface that validates a
+    /// caller-supplied dataset set against a tenant (API-key admin/management
+    /// create-update, OAuth consent) so the same `get_datasets` lookup and
+    /// membership rule isn't reimplemented at each call site.
+    pub async fn find_dataset_not_in_tenant(
+        &self,
+        tenant_id: &str,
+        dataset_ids: &[String],
+    ) -> Result<Option<String>, sqlx::Error> {
+        let datasets = self.get_datasets(tenant_id).await?;
+        let existing: std::collections::HashSet<&str> =
+            datasets.iter().map(|d| d.name.as_str()).collect();
+        Ok(dataset_ids
+            .iter()
+            .find(|id| !existing.contains(id.as_str()))
+            .cloned())
+    }
+
     /// List API keys for a tenant
     pub async fn list_api_keys(&self, tenant_id: &str) -> Result<Vec<ApiKeyRecord>, sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
                 let rows = query(
-                    "SELECT id, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE tenant_id = ? ORDER BY created_at DESC",
+                    "SELECT id, tenant_id, name, dataset_id, dataset_ids, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE tenant_id = ? ORDER BY created_at DESC",
                 )
                 .bind(tenant_id)
                 .fetch_all(pool)
@@ -2679,11 +3110,13 @@ impl Catalog {
                 rows.iter()
                     .map(|r| {
                         let revoked_at: Option<String> = r.get("revoked_at");
+                        let (dataset_id, dataset_ids) = decode_dataset_fields(r)?;
                         Ok(ApiKeyRecord {
                             id: r.get("id"),
                             tenant_id: r.get("tenant_id"),
                             name: r.get("name"),
-                            dataset_id: r.get("dataset_id"),
+                            dataset_id,
+                            dataset_ids,
                             scopes: decode_json_vec_opt(r.get("scopes"))?,
                             created_by_user_id: r.get("created_by_user_id"),
                             created_at: parse_rfc3339(r.get("created_at"))?,
@@ -2694,7 +3127,7 @@ impl Catalog {
             }
             Catalog::Postgres(pool) => {
                 let rows = query(
-                    "SELECT id, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE tenant_id = $1 ORDER BY created_at DESC",
+                    "SELECT id, tenant_id, name, dataset_id, dataset_ids, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE tenant_id = $1 ORDER BY created_at DESC",
                 )
                 .bind(tenant_id)
                 .fetch_all(pool)
@@ -2702,11 +3135,13 @@ impl Catalog {
 
                 rows.iter()
                     .map(|r| {
+                        let (dataset_id, dataset_ids) = decode_dataset_fields(r)?;
                         Ok(ApiKeyRecord {
                             id: r.get("id"),
                             tenant_id: r.get("tenant_id"),
                             name: r.get("name"),
-                            dataset_id: r.get("dataset_id"),
+                            dataset_id,
+                            dataset_ids,
                             scopes: decode_json_vec_opt(r.get("scopes"))?,
                             created_by_user_id: r.get("created_by_user_id"),
                             created_at: r.get("created_at"),
@@ -2723,7 +3158,7 @@ impl Catalog {
         match self {
             Catalog::Sqlite(pool) => {
                 let row = query(
-                    "SELECT id, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE id = ?",
+                    "SELECT id, tenant_id, name, dataset_id, dataset_ids, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE id = ?",
                 )
                 .bind(key_id)
                 .fetch_optional(pool)
@@ -2731,11 +3166,13 @@ impl Catalog {
 
                 row.map(|r| {
                     let revoked_at: Option<String> = r.get("revoked_at");
+                    let (dataset_id, dataset_ids) = decode_dataset_fields(&r)?;
                     Ok(ApiKeyRecord {
                         id: r.get("id"),
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
-                        dataset_id: r.get("dataset_id"),
+                        dataset_id,
+                        dataset_ids,
                         scopes: decode_json_vec_opt(r.get("scopes"))?,
                         created_by_user_id: r.get("created_by_user_id"),
                         created_at: parse_rfc3339(r.get("created_at"))?,
@@ -2746,18 +3183,20 @@ impl Catalog {
             }
             Catalog::Postgres(pool) => {
                 let row = query(
-                    "SELECT id, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE id = $1",
+                    "SELECT id, tenant_id, name, dataset_id, dataset_ids, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE id = $1",
                 )
                 .bind(key_id)
                 .fetch_optional(pool)
                 .await?;
 
                 row.map(|r| {
+                    let (dataset_id, dataset_ids) = decode_dataset_fields(&r)?;
                     Ok(ApiKeyRecord {
                         id: r.get("id"),
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
-                        dataset_id: r.get("dataset_id"),
+                        dataset_id,
+                        dataset_ids,
                         scopes: decode_json_vec_opt(r.get("scopes"))?,
                         created_by_user_id: r.get("created_by_user_id"),
                         created_at: r.get("created_at"),
@@ -3443,6 +3882,9 @@ impl Catalog {
     }
 
     /// Store a single-use authorization code, keyed by its hash.
+    ///
+    /// `dataset_ids = Some(&[])` or a set containing a duplicate name is
+    /// rejected (D1a), same as an API key's.
     #[allow(clippy::too_many_arguments)]
     pub async fn create_authorization_code(
         &self,
@@ -3451,6 +3893,7 @@ impl Catalog {
         user_id: &str,
         tenant_id: &str,
         scopes: &[String],
+        dataset_ids: Option<&[String]>,
         redirect_uri: &str,
         code_challenge: &str,
         resource: Option<&str>,
@@ -3458,17 +3901,19 @@ impl Catalog {
     ) -> Result<(), sqlx::Error> {
         let scopes_json = serde_json::to_string(scopes)
             .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize scopes: {e}")))?;
+        let dataset_ids_json = dataset_ids.map(encode_dataset_ids_json).transpose()?;
         let now = Utc::now();
         match self {
             Catalog::Sqlite(pool) => {
                 query(
-                    "INSERT INTO oauth_authorization_codes (code_hash, client_id, user_id, tenant_id, scopes, redirect_uri, code_challenge, resource, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO oauth_authorization_codes (code_hash, client_id, user_id, tenant_id, scopes, dataset_ids, redirect_uri, code_challenge, resource, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(code_hash)
                 .bind(client_id)
                 .bind(user_id)
                 .bind(tenant_id)
                 .bind(&scopes_json)
+                .bind(&dataset_ids_json)
                 .bind(redirect_uri)
                 .bind(code_challenge)
                 .bind(resource)
@@ -3479,13 +3924,14 @@ impl Catalog {
             }
             Catalog::Postgres(pool) => {
                 query(
-                    "INSERT INTO oauth_authorization_codes (code_hash, client_id, user_id, tenant_id, scopes, redirect_uri, code_challenge, resource, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                    "INSERT INTO oauth_authorization_codes (code_hash, client_id, user_id, tenant_id, scopes, dataset_ids, redirect_uri, code_challenge, resource, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
                 )
                 .bind(code_hash)
                 .bind(client_id)
                 .bind(user_id)
                 .bind(tenant_id)
                 .bind(&scopes_json)
+                .bind(&dataset_ids_json)
                 .bind(redirect_uri)
                 .bind(code_challenge)
                 .bind(resource)
@@ -3506,7 +3952,7 @@ impl Catalog {
         &self,
         code_hash: &str,
     ) -> Result<Option<OAuthAuthorizationCode>, sqlx::Error> {
-        let cols = "client_id, user_id, tenant_id, scopes, redirect_uri, code_challenge, resource, created_at, expires_at";
+        let cols = "client_id, user_id, tenant_id, scopes, dataset_ids, redirect_uri, code_challenge, resource, created_at, expires_at";
         let record = match self {
             Catalog::Sqlite(pool) => {
                 let row = query(&format!(
@@ -3522,6 +3968,7 @@ impl Catalog {
                         user_id: r.get("user_id"),
                         tenant_id: r.get("tenant_id"),
                         scopes: decode_json_vec(r.get("scopes"))?,
+                        dataset_ids: decode_json_vec_opt(r.get("dataset_ids"))?,
                         redirect_uri: r.get("redirect_uri"),
                         code_challenge: r.get("code_challenge"),
                         resource: r.get("resource"),
@@ -3544,6 +3991,7 @@ impl Catalog {
                         user_id: r.get("user_id"),
                         tenant_id: r.get("tenant_id"),
                         scopes: decode_json_vec(r.get("scopes"))?,
+                        dataset_ids: decode_json_vec_opt(r.get("dataset_ids"))?,
                         redirect_uri: r.get("redirect_uri"),
                         code_challenge: r.get("code_challenge"),
                         resource: r.get("resource"),
@@ -3560,6 +4008,9 @@ impl Catalog {
     }
 
     /// Store an opaque access token, keyed by its hash, and return the grant.
+    ///
+    /// `dataset_ids = Some(&[])` or a set containing a duplicate name is
+    /// rejected (D1a).
     #[allow(clippy::too_many_arguments)]
     pub async fn create_access_token(
         &self,
@@ -3568,6 +4019,7 @@ impl Catalog {
         user_id: &str,
         tenant_id: &str,
         scopes: &[String],
+        dataset_ids: Option<&[String]>,
         resource: Option<&str>,
         expires_at: DateTime<Utc>,
     ) -> Result<OAuthTokenRecord, sqlx::Error> {
@@ -3578,6 +4030,7 @@ impl Catalog {
             user_id,
             tenant_id,
             scopes,
+            dataset_ids,
             resource,
             expires_at,
         )
@@ -3585,6 +4038,9 @@ impl Catalog {
     }
 
     /// Store an opaque refresh token, keyed by its hash, and return the grant.
+    ///
+    /// `dataset_ids = Some(&[])` or a set containing a duplicate name is
+    /// rejected (D1a).
     #[allow(clippy::too_many_arguments)]
     pub async fn create_refresh_token(
         &self,
@@ -3593,6 +4049,7 @@ impl Catalog {
         user_id: &str,
         tenant_id: &str,
         scopes: &[String],
+        dataset_ids: Option<&[String]>,
         resource: Option<&str>,
         expires_at: DateTime<Utc>,
     ) -> Result<OAuthTokenRecord, sqlx::Error> {
@@ -3603,6 +4060,7 @@ impl Catalog {
             user_id,
             tenant_id,
             scopes,
+            dataset_ids,
             resource,
             expires_at,
         )
@@ -3619,6 +4077,7 @@ impl Catalog {
         user_id: &str,
         tenant_id: &str,
         scopes: &[String],
+        dataset_ids: Option<&[String]>,
         resource: Option<&str>,
         expires_at: DateTime<Utc>,
     ) -> Result<OAuthTokenRecord, sqlx::Error> {
@@ -3626,10 +4085,11 @@ impl Catalog {
         let now = Utc::now();
         let scopes_json = serde_json::to_string(scopes)
             .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize scopes: {e}")))?;
+        let dataset_ids_json = dataset_ids.map(encode_dataset_ids_json).transpose()?;
         match self {
             Catalog::Sqlite(pool) => {
                 query(&format!(
-                    "INSERT INTO {table} (id, token_hash, client_id, user_id, tenant_id, scopes, resource, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    "INSERT INTO {table} (id, token_hash, client_id, user_id, tenant_id, scopes, dataset_ids, resource, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 ))
                 .bind(&id)
                 .bind(token_hash)
@@ -3637,6 +4097,7 @@ impl Catalog {
                 .bind(user_id)
                 .bind(tenant_id)
                 .bind(&scopes_json)
+                .bind(&dataset_ids_json)
                 .bind(resource)
                 .bind(now.to_rfc3339())
                 .bind(expires_at.to_rfc3339())
@@ -3645,7 +4106,7 @@ impl Catalog {
             }
             Catalog::Postgres(pool) => {
                 query(&format!(
-                    "INSERT INTO {table} (id, token_hash, client_id, user_id, tenant_id, scopes, resource, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+                    "INSERT INTO {table} (id, token_hash, client_id, user_id, tenant_id, scopes, dataset_ids, resource, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
                 ))
                 .bind(&id)
                 .bind(token_hash)
@@ -3653,6 +4114,7 @@ impl Catalog {
                 .bind(user_id)
                 .bind(tenant_id)
                 .bind(&scopes_json)
+                .bind(&dataset_ids_json)
                 .bind(resource)
                 .bind(now)
                 .bind(expires_at)
@@ -3666,6 +4128,7 @@ impl Catalog {
             user_id: user_id.to_string(),
             tenant_id: tenant_id.to_string(),
             scopes: scopes.to_vec(),
+            dataset_ids: dataset_ids.map(<[String]>::to_vec),
             resource: resource.map(str::to_owned),
             created_at: now,
             expires_at,
@@ -3696,7 +4159,7 @@ impl Catalog {
         table: &str,
         token_hash: &str,
     ) -> Result<Option<OAuthTokenRecord>, sqlx::Error> {
-        let cols = "id, client_id, user_id, tenant_id, scopes, resource, created_at, expires_at";
+        let cols = "id, client_id, user_id, tenant_id, scopes, dataset_ids, resource, created_at, expires_at";
         match self {
             Catalog::Sqlite(pool) => {
                 let row = query(&format!(
@@ -3713,6 +4176,7 @@ impl Catalog {
                         user_id: r.get("user_id"),
                         tenant_id: r.get("tenant_id"),
                         scopes: decode_json_vec(r.get("scopes"))?,
+                        dataset_ids: decode_json_vec_opt(r.get("dataset_ids"))?,
                         resource: r.get("resource"),
                         created_at: parse_rfc3339(r.get("created_at"))?,
                         expires_at: parse_rfc3339(r.get("expires_at"))?,
@@ -3734,6 +4198,7 @@ impl Catalog {
                         user_id: r.get("user_id"),
                         tenant_id: r.get("tenant_id"),
                         scopes: decode_json_vec(r.get("scopes"))?,
+                        dataset_ids: decode_json_vec_opt(r.get("dataset_ids"))?,
                         resource: r.get("resource"),
                         created_at: r.get("created_at"),
                         expires_at: r.get("expires_at"),
@@ -4176,6 +4641,65 @@ mod multi_tenancy_tests {
         hex::encode(hasher.finalize())
     }
 
+    /// Read the raw legacy `dataset_id` column for a key, bypassing
+    /// [`ApiKeyAuthRecord`] (which no longer carries that field) — for
+    /// asserting the column's on-disk state directly.
+    async fn raw_api_key_dataset_id(catalog: &Catalog, key_hash: &str) -> Option<String> {
+        let Catalog::Sqlite(pool) = catalog else {
+            panic!("expected a SQLite catalog");
+        };
+        query("SELECT dataset_id FROM api_keys WHERE key_hash = ?")
+            .bind(key_hash)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+            .get("dataset_id")
+    }
+
+    #[test]
+    fn dataset_restriction_update_from_request_covers_every_combination() {
+        // Both absent -> Keep.
+        assert_eq!(
+            DatasetRestrictionUpdate::from_request(None, false).unwrap(),
+            DatasetRestrictionUpdate::Keep
+        );
+        // Non-empty ids, clear false -> Set.
+        assert_eq!(
+            DatasetRestrictionUpdate::from_request(Some(vec!["a".to_string()]), false).unwrap(),
+            DatasetRestrictionUpdate::Set(vec!["a".to_string()])
+        );
+        // No ids, clear true -> Clear.
+        assert_eq!(
+            DatasetRestrictionUpdate::from_request(None, true).unwrap(),
+            DatasetRestrictionUpdate::Clear
+        );
+        // Empty ids is rejected unconditionally, clear flag notwithstanding.
+        assert!(DatasetRestrictionUpdate::from_request(Some(vec![]), false).is_err());
+        assert!(DatasetRestrictionUpdate::from_request(Some(vec![]), true).is_err());
+        // Duplicate name is rejected, same as the catalog write path.
+        assert!(
+            DatasetRestrictionUpdate::from_request(
+                Some(vec!["a".to_string(), "a".to_string()]),
+                false
+            )
+            .is_err()
+        );
+        // Non-empty ids together with clear:true is a contradictory request.
+        assert!(DatasetRestrictionUpdate::from_request(Some(vec!["a".to_string()]), true).is_err());
+    }
+
+    #[test]
+    fn validate_create_dataset_ids_rejects_empty_and_duplicate_but_passes_through_none_and_valid_sets()
+     {
+        assert_eq!(validate_create_dataset_ids(None).unwrap(), None);
+        assert_eq!(
+            validate_create_dataset_ids(Some(vec!["a".to_string(), "b".to_string()])).unwrap(),
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
+        assert!(validate_create_dataset_ids(Some(vec![])).is_err());
+        assert!(validate_create_dataset_ids(Some(vec!["a".to_string(), "a".to_string()])).is_err());
+    }
+
     /// An on-disk SQLite catalog must run in WAL journal mode so that concurrent
     /// writers don't serialize behind an exclusive rollback lock.
     #[tokio::test]
@@ -4281,8 +4805,8 @@ mod multi_tenancy_tests {
         let validation = validation.unwrap();
         assert_eq!(validation.tenant_id, "acme");
         assert_eq!(validation.name, Some("test-key".to_string()));
-        assert_eq!(validation.dataset_id, None);
         assert_eq!(validation.scopes, None);
+        assert_eq!(raw_api_key_dataset_id(&catalog, &key_hash).await, None);
 
         // Try to create the same key again (should return existing ID)
         let duplicate_id = catalog
@@ -4381,7 +4905,7 @@ mod multi_tenancy_tests {
                 "acme",
                 &key_hash,
                 Some("metrics"),
-                Some("production"),
+                Some(&["production".to_string()]),
                 Some(&scopes),
                 Some("user-1"),
             )
@@ -4389,8 +4913,11 @@ mod multi_tenancy_tests {
             .unwrap();
 
         let auth = catalog.validate_api_key(&key_hash).await.unwrap().unwrap();
-        assert_eq!(auth.dataset_id.as_deref(), Some("production"));
         assert_eq!(auth.scopes, Some(scopes.clone()));
+        assert_eq!(
+            raw_api_key_dataset_id(&catalog, &key_hash).await.as_deref(),
+            Some("production")
+        );
 
         let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
         assert_eq!(record.dataset_id.as_deref(), Some("production"));
@@ -4423,7 +4950,7 @@ mod multi_tenancy_tests {
             .update_api_key_scopes(
                 &key_id,
                 Some(&["schema:read".to_string(), "schema:write".to_string()]),
-                None,
+                DatasetRestrictionUpdate::Keep,
             )
             .await
             .unwrap();
@@ -4433,25 +4960,32 @@ mod multi_tenancy_tests {
             auth.scopes,
             Some(vec!["schema:read".to_string(), "schema:write".to_string()])
         );
-        assert_eq!(auth.dataset_id, None);
+        assert_eq!(raw_api_key_dataset_id(&catalog, &key_hash).await, None);
 
         // Dataset only: scopes untouched.
         let updated = catalog
-            .update_api_key_scopes(&key_id, None, Some("production"))
+            .update_api_key_scopes(
+                &key_id,
+                None,
+                DatasetRestrictionUpdate::Set(vec!["production".to_string()]),
+            )
             .await
             .unwrap();
         assert!(updated);
         let auth = catalog.validate_api_key(&key_hash).await.unwrap().unwrap();
-        assert_eq!(auth.dataset_id.as_deref(), Some("production"));
         assert_eq!(
             auth.scopes,
             Some(vec!["schema:read".to_string(), "schema:write".to_string()])
+        );
+        assert_eq!(
+            raw_api_key_dataset_id(&catalog, &key_hash).await.as_deref(),
+            Some("production")
         );
 
         // Nothing to change is a no-op success.
         assert!(
             catalog
-                .update_api_key_scopes(&key_id, None, None)
+                .update_api_key_scopes(&key_id, None, DatasetRestrictionUpdate::Keep)
                 .await
                 .unwrap()
         );
@@ -4479,7 +5013,11 @@ mod multi_tenancy_tests {
         catalog.revoke_api_key(&key_id).await.unwrap();
 
         let updated = catalog
-            .update_api_key_scopes(&key_id, Some(&["logs:write".to_string()]), None)
+            .update_api_key_scopes(
+                &key_id,
+                Some(&["logs:write".to_string()]),
+                DatasetRestrictionUpdate::Keep,
+            )
             .await
             .unwrap();
         assert!(!updated, "revoked keys must not be updatable");
@@ -4487,10 +5025,337 @@ mod multi_tenancy_tests {
         assert_eq!(record.scopes, Some(vec!["traces:write".to_string()]));
 
         let updated = catalog
-            .update_api_key_scopes("no-such-key", Some(&["logs:write".to_string()]), None)
+            .update_api_key_scopes(
+                "no-such-key",
+                Some(&["logs:write".to_string()]),
+                DatasetRestrictionUpdate::Keep,
+            )
             .await
             .unwrap();
         assert!(!updated);
+    }
+
+    #[tokio::test]
+    async fn create_with_multi_element_dataset_ids_round_trips() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_hash = hash_api_key("multi-dataset-secret");
+        let ids = vec!["a".to_string(), "b".to_string()];
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &key_hash,
+                Some("multi"),
+                Some(&ids),
+                Some(&["traces:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let auth = catalog.validate_api_key(&key_hash).await.unwrap().unwrap();
+        assert_eq!(auth.dataset_ids, Some(ids.clone()));
+
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, Some(ids));
+        // The legacy single-value column can't represent a multi-element
+        // set, so it stays NULL (D2's projection).
+        assert_eq!(record.dataset_id, None);
+    }
+
+    #[tokio::test]
+    async fn create_with_empty_dataset_ids_is_rejected() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let result = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &hash_api_key("empty-dataset-secret"),
+                None,
+                Some(&[]),
+                None,
+                None,
+            )
+            .await;
+        assert!(result.is_err(), "an empty dataset_ids set must be rejected");
+    }
+
+    #[tokio::test]
+    async fn create_with_duplicate_dataset_ids_is_rejected() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let result = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &hash_api_key("dup-dataset-secret"),
+                None,
+                Some(&["production".to_string(), "production".to_string()]),
+                None,
+                None,
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "a dataset_ids set with a duplicate name must be rejected"
+        );
+    }
+
+    /// A key created before this change (legacy `dataset_id` column
+    /// populated, `dataset_ids` never written) reads back as a one-element
+    /// set (D2's dual-read).
+    #[tokio::test]
+    async fn legacy_dataset_id_reads_back_as_single_element_set() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_id = catalog
+            .upsert_api_key("acme", &hash_api_key("legacy-secret"), None)
+            .await
+            .unwrap();
+        let Catalog::Sqlite(pool) = &catalog else {
+            panic!("expected a SQLite catalog");
+        };
+        // Simulate a pre-existing row written before `dataset_ids` existed:
+        // only the legacy column is populated.
+        query("UPDATE api_keys SET dataset_id = 'legacy-value' WHERE id = ?")
+            .bind(&key_id)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, Some(vec!["legacy-value".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn dataset_restriction_update_keep_leaves_both_columns_untouched() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &hash_api_key("keep-secret"),
+                None,
+                Some(&["a".to_string()]),
+                Some(&["traces:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            catalog
+                .update_api_key_scopes(&key_id, None, DatasetRestrictionUpdate::Keep)
+                .await
+                .unwrap()
+        );
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, Some(vec!["a".to_string()]));
+        assert_eq!(record.dataset_id.as_deref(), Some("a"));
+    }
+
+    #[tokio::test]
+    async fn dataset_restriction_update_clear_nulls_both_columns() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &hash_api_key("clear-secret"),
+                None,
+                Some(&["a".to_string()]),
+                Some(&["traces:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            catalog
+                .update_api_key_scopes(&key_id, None, DatasetRestrictionUpdate::Clear)
+                .await
+                .unwrap()
+        );
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, None);
+        assert_eq!(record.dataset_id, None);
+    }
+
+    #[tokio::test]
+    async fn dataset_restriction_update_set_projects_legacy_column() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &hash_api_key("set-secret"),
+                None,
+                None,
+                Some(&["traces:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // A single-element `Set` projects onto the legacy column too.
+        assert!(
+            catalog
+                .update_api_key_scopes(
+                    &key_id,
+                    None,
+                    DatasetRestrictionUpdate::Set(vec!["a".to_string()]),
+                )
+                .await
+                .unwrap()
+        );
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, Some(vec!["a".to_string()]));
+        assert_eq!(record.dataset_id.as_deref(), Some("a"));
+
+        // A multi-element `Set` clears the legacy column (unrepresentable).
+        assert!(
+            catalog
+                .update_api_key_scopes(
+                    &key_id,
+                    None,
+                    DatasetRestrictionUpdate::Set(vec!["a".to_string(), "b".to_string()]),
+                )
+                .await
+                .unwrap()
+        );
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(
+            record.dataset_ids,
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
+        assert_eq!(record.dataset_id, None);
+    }
+
+    #[tokio::test]
+    async fn dataset_restriction_update_set_rejects_empty_and_duplicate() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &hash_api_key("set-invalid-secret"),
+                None,
+                None,
+                Some(&["traces:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let empty = catalog
+            .update_api_key_scopes(&key_id, None, DatasetRestrictionUpdate::Set(vec![]))
+            .await;
+        assert!(empty.is_err(), "an empty Set must be rejected");
+
+        let duplicate = catalog
+            .update_api_key_scopes(
+                &key_id,
+                None,
+                DatasetRestrictionUpdate::Set(vec!["a".to_string(), "a".to_string()]),
+            )
+            .await;
+        assert!(
+            duplicate.is_err(),
+            "a duplicate-containing Set must be rejected"
+        );
+    }
+
+    /// D2's backfill compare-and-swap guard: a concurrent legacy write to
+    /// `dataset_id` between the backfill's read and its write must make the
+    /// write a no-op rather than persist a `dataset_ids` value derived from
+    /// data that's already stale. The row resolves itself on the next pass.
+    #[tokio::test]
+    async fn backfill_race_with_concurrent_legacy_write_is_a_no_op_then_self_heals() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_id = catalog
+            .upsert_api_key("acme", &hash_api_key("race-secret"), None)
+            .await
+            .unwrap();
+        let Catalog::Sqlite(pool) = &catalog else {
+            panic!("expected a SQLite catalog");
+        };
+        // Simulate a legacy row: only `dataset_id` populated.
+        query("UPDATE api_keys SET dataset_id = 'a' WHERE id = ?")
+            .bind(&key_id)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        // Backfill's SELECT reads `dataset_id = 'a'`.
+        let pending = catalog.pending_api_key_dataset_id_backfill().await.unwrap();
+        let (_, read_value) = pending
+            .iter()
+            .find(|(id, _)| id == &key_id)
+            .expect("row is pending backfill")
+            .clone();
+        assert_eq!(read_value, "a");
+
+        // Before the backfill's UPDATE runs, an old-code node races in a
+        // concurrent legacy write.
+        query("UPDATE api_keys SET dataset_id = 'b' WHERE id = ?")
+            .bind(&key_id)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        // The backfill's UPDATE, using the now-stale value it read, must
+        // affect zero rows and leave the `dataset_ids` *column* untouched
+        // (still NULL) — checked directly against the column, since
+        // `ApiKeyRecord::dataset_ids` derives from the legacy column
+        // whenever the `dataset_ids` column is NULL and would otherwise
+        // mask a stale write with a correct-looking read.
+        let rows_affected = catalog
+            .apply_api_key_dataset_id_backfill(&key_id, &read_value)
+            .await
+            .unwrap();
+        assert_eq!(rows_affected, 0);
+        let raw_dataset_ids: Option<String> =
+            query("SELECT dataset_ids FROM api_keys WHERE id = ?")
+                .bind(&key_id)
+                .fetch_one(pool)
+                .await
+                .unwrap()
+                .get("dataset_ids");
+        assert_eq!(raw_dataset_ids, None);
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_id.as_deref(), Some("b"));
+
+        // The next boot's full backfill pass picks up the current value.
+        catalog.backfill_api_key_dataset_ids().await.unwrap();
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, Some(vec!["b".to_string()]));
     }
 
     /// The tenant row and its default dataset row must land together. A
@@ -4888,6 +5753,120 @@ mod multi_tenancy_tests {
 
         let datasets = catalog.get_datasets("nonexistent").await.unwrap();
         assert!(datasets.is_empty());
+    }
+}
+
+/// `dataset_ids` behaves identically on Postgres (D2's dual-read/dual-write
+/// and the backfill compare-and-swap guard aren't SQLite-specific).
+#[cfg(test)]
+mod postgres_dataset_ids_tests {
+    use super::*;
+    use testcontainers_modules::postgres::Postgres;
+    use testcontainers_modules::testcontainers::runners::AsyncRunner;
+
+    async fn postgres_catalog() -> (
+        Catalog,
+        testcontainers_modules::testcontainers::ContainerAsync<Postgres>,
+    ) {
+        let container = Postgres::default().start().await.unwrap();
+        let host = container.get_host().await.unwrap();
+        let port = container.get_host_port_ipv4(5432).await.unwrap();
+        let dsn = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+        let catalog = Catalog::new(&dsn).await.unwrap();
+        (catalog, container)
+    }
+
+    #[tokio::test]
+    async fn multi_element_dataset_ids_round_trip_on_postgres() {
+        let (catalog, _container) = postgres_catalog().await;
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let ids = vec!["a".to_string(), "b".to_string()];
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                "pg-multi-hash",
+                Some("multi"),
+                Some(&ids),
+                Some(&["traces:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, Some(ids));
+        assert_eq!(record.dataset_id, None);
+
+        assert!(
+            catalog
+                .update_api_key_scopes(&key_id, None, DatasetRestrictionUpdate::Clear)
+                .await
+                .unwrap()
+        );
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, None);
+        assert_eq!(record.dataset_id, None);
+    }
+
+    /// Same compare-and-swap regression as
+    /// `backfill_race_with_concurrent_legacy_write_is_a_no_op_then_self_heals`,
+    /// on Postgres.
+    #[tokio::test]
+    async fn backfill_race_with_concurrent_legacy_write_is_a_no_op_then_self_heals_on_postgres() {
+        let (catalog, _container) = postgres_catalog().await;
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_id = catalog
+            .upsert_api_key("acme", "pg-race-hash", None)
+            .await
+            .unwrap();
+        let Catalog::Postgres(pool) = &catalog else {
+            panic!("expected a Postgres catalog");
+        };
+        query("UPDATE api_keys SET dataset_id = 'a' WHERE id = $1")
+            .bind(&key_id)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let pending = catalog.pending_api_key_dataset_id_backfill().await.unwrap();
+        let (_, read_value) = pending
+            .iter()
+            .find(|(id, _)| id == &key_id)
+            .expect("row is pending backfill")
+            .clone();
+        assert_eq!(read_value, "a");
+
+        query("UPDATE api_keys SET dataset_id = 'b' WHERE id = $1")
+            .bind(&key_id)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let rows_affected = catalog
+            .apply_api_key_dataset_id_backfill(&key_id, &read_value)
+            .await
+            .unwrap();
+        assert_eq!(rows_affected, 0);
+        let raw_dataset_ids: Option<String> =
+            query("SELECT dataset_ids FROM api_keys WHERE id = $1")
+                .bind(&key_id)
+                .fetch_one(pool)
+                .await
+                .unwrap()
+                .get("dataset_ids");
+        assert_eq!(raw_dataset_ids, None);
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_id.as_deref(), Some("b"));
+
+        catalog.backfill_api_key_dataset_ids().await.unwrap();
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, Some(vec!["b".to_string()]));
     }
 }
 
@@ -5389,6 +6368,7 @@ mod oauth_storage_tests {
                 &user,
                 &tenant,
                 &scopes,
+                None,
                 "https://claude.ai/cb",
                 "challenge-abc",
                 Some("https://mcp.example.com/mcp"),
@@ -5430,6 +6410,7 @@ mod oauth_storage_tests {
                 &user,
                 &tenant,
                 &["traces:read".to_string()],
+                None,
                 "https://claude.ai/cb",
                 "challenge",
                 None,
@@ -5457,6 +6438,7 @@ mod oauth_storage_tests {
                 &user,
                 &tenant,
                 &scopes,
+                None,
                 Some("https://mcp.example.com/mcp"),
                 Utc::now() + Duration::hours(1),
             )
@@ -5492,6 +6474,7 @@ mod oauth_storage_tests {
                 &tenant,
                 &["traces:read".to_string()],
                 None,
+                None,
                 Utc::now() - Duration::seconds(1),
             )
             .await
@@ -5515,6 +6498,7 @@ mod oauth_storage_tests {
                 &user,
                 &tenant,
                 &["traces:read".to_string()],
+                None,
                 Some("https://mcp.example.com/mcp"),
                 Utc::now() + Duration::days(30),
             )
@@ -5538,21 +6522,215 @@ mod oauth_storage_tests {
     }
 
     #[tokio::test]
+    async fn oauth_grants_round_trip_dataset_ids() {
+        let (catalog, user, tenant) = catalog_with_principal().await;
+        let scopes = vec!["traces:read".to_string()];
+        let ids = vec!["a".to_string(), "b".to_string()];
+
+        catalog
+            .create_authorization_code(
+                "code-with-datasets",
+                "client-1",
+                &user,
+                &tenant,
+                &scopes,
+                Some(&ids),
+                "https://claude.ai/cb",
+                "challenge",
+                None,
+                Utc::now() + Duration::minutes(1),
+            )
+            .await
+            .unwrap();
+        let code = catalog
+            .consume_authorization_code("code-with-datasets")
+            .await
+            .unwrap()
+            .expect("code exists");
+        assert_eq!(code.dataset_ids, Some(ids.clone()));
+
+        let access = catalog
+            .create_access_token(
+                "at-with-datasets",
+                "client-1",
+                &user,
+                &tenant,
+                &scopes,
+                Some(&ids),
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(access.dataset_ids, Some(ids.clone()));
+        let fetched = catalog
+            .get_valid_access_token("at-with-datasets")
+            .await
+            .unwrap()
+            .expect("access token exists");
+        assert_eq!(fetched.dataset_ids, Some(ids.clone()));
+
+        let refresh = catalog
+            .create_refresh_token(
+                "rt-with-datasets",
+                "client-1",
+                &user,
+                &tenant,
+                &scopes,
+                Some(&ids),
+                None,
+                Utc::now() + Duration::days(30),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refresh.dataset_ids, Some(ids.clone()));
+        let fetched = catalog
+            .get_valid_refresh_token("rt-with-datasets")
+            .await
+            .unwrap()
+            .expect("refresh token exists");
+        assert_eq!(fetched.dataset_ids, Some(ids));
+    }
+
+    #[tokio::test]
+    async fn create_access_token_rejects_empty_and_duplicate_dataset_ids() {
+        let (catalog, user, tenant) = catalog_with_principal().await;
+        let scopes = vec!["traces:read".to_string()];
+
+        let empty = catalog
+            .create_access_token(
+                "at-empty",
+                "client-1",
+                &user,
+                &tenant,
+                &scopes,
+                Some(&[]),
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await;
+        assert!(empty.is_err());
+
+        let duplicate = catalog
+            .create_access_token(
+                "at-dup",
+                "client-1",
+                &user,
+                &tenant,
+                &scopes,
+                Some(&["a".to_string(), "a".to_string()]),
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await;
+        assert!(duplicate.is_err());
+    }
+
+    /// D6: a refresh reads `dataset_ids` from the presented
+    /// `oauth_refresh_tokens` row being redeemed, not from any access
+    /// token. The original access token is revoked (gone) before the
+    /// "refresh" happens, so a wrong implementation that tries to read it
+    /// would fail loudly rather than coincidentally pass.
+    #[tokio::test]
+    async fn refresh_reads_dataset_ids_from_refresh_token_row_not_access_token() {
+        let (catalog, user, tenant) = catalog_with_principal().await;
+        let scopes = vec!["traces:read".to_string()];
+        let ids = vec!["production".to_string()];
+
+        catalog
+            .create_access_token(
+                "at-original",
+                "client-1",
+                &user,
+                &tenant,
+                &scopes,
+                Some(&ids),
+                None,
+                Utc::now() + chrono::Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        catalog
+            .create_refresh_token(
+                "rt-original",
+                "client-1",
+                &user,
+                &tenant,
+                &scopes,
+                Some(&ids),
+                None,
+                Utc::now() + Duration::days(30),
+            )
+            .await
+            .unwrap();
+
+        // The original access token is gone by the time refresh happens.
+        catalog.revoke_access_token("at-original").await.unwrap();
+        assert!(
+            catalog
+                .get_valid_access_token("at-original")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // Refresh: read dataset_ids from the presented refresh token row...
+        let presented = catalog
+            .get_valid_refresh_token("rt-original")
+            .await
+            .unwrap()
+            .expect("refresh token is valid");
+        assert_eq!(presented.dataset_ids, Some(ids.clone()));
+
+        // ...and propagate it onto BOTH the new access token and the new
+        // replacement refresh token the refresh grant mints.
+        let new_access = catalog
+            .create_access_token(
+                "at-refreshed",
+                "client-1",
+                &user,
+                &tenant,
+                &presented.scopes,
+                presented.dataset_ids.as_deref(),
+                None,
+                Utc::now() + chrono::Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        let new_refresh = catalog
+            .create_refresh_token(
+                "rt-refreshed",
+                "client-1",
+                &user,
+                &tenant,
+                &presented.scopes,
+                presented.dataset_ids.as_deref(),
+                None,
+                Utc::now() + Duration::days(30),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(new_access.dataset_ids, Some(ids.clone()));
+        assert_eq!(new_refresh.dataset_ids, Some(ids));
+    }
+
+    #[tokio::test]
     async fn delete_expired_oauth_grants_reaps_only_expired_rows() {
         let (catalog, user, tenant) = catalog_with_principal().await;
         let past = Utc::now() - Duration::hours(1);
         let future = Utc::now() + Duration::hours(1);
         // One expired + one live token in each token table, and one expired code.
         catalog
-            .create_access_token("at-old", "c", &user, &tenant, &[], None, past)
+            .create_access_token("at-old", "c", &user, &tenant, &[], None, None, past)
             .await
             .unwrap();
         catalog
-            .create_access_token("at-live", "c", &user, &tenant, &[], None, future)
+            .create_access_token("at-live", "c", &user, &tenant, &[], None, None, future)
             .await
             .unwrap();
         catalog
-            .create_refresh_token("rt-old", "c", &user, &tenant, &[], None, past)
+            .create_refresh_token("rt-old", "c", &user, &tenant, &[], None, None, past)
             .await
             .unwrap();
         catalog
@@ -5562,6 +6740,7 @@ mod oauth_storage_tests {
                 &user,
                 &tenant,
                 &[],
+                None,
                 "https://c/cb",
                 "chal",
                 None,

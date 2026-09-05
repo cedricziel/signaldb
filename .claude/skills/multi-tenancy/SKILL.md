@@ -94,6 +94,28 @@ is NOT unrestricted (management is opt-in; widening pre-scope keys silently
 would be a security surprise). Human sessions never satisfy it; they go
 through membership roles.
 
+**Dataset restriction** (change `multi-dataset-key-restriction`). An API key
+or OAuth token may additionally be restricted to a *set* of datasets within
+its tenant: `TenantContext.api_key_dataset_ids: Option<Vec<String>>`
+(renamed from the single-dataset `api_key_dataset_id`), checked by the shared
+`dataset_allowed`/resolution helper in `common::auth` from both
+`Authenticator::authenticate_from_database` (API keys) and
+`authenticate_oauth_token` (OAuth). `None` = unrestricted (every dataset in
+the tenant, unchanged from before this feature); a request naming no dataset
+resolves to the restriction's sole element when it has exactly one, or is
+rejected (never silently falls through to the tenant default) when it has
+two or more. `api_keys.dataset_ids`/`oauth_*.dataset_ids` are JSON-array-in-
+TEXT columns (same pattern as `scopes`); `api_keys` additionally dual-writes
+the legacy single-value `dataset_id` column so old code keeps working during
+a rolling upgrade — OAuth has no such legacy column, so any non-empty OAuth
+restriction (not just multi-element) is unsafe until every node runs the new
+code. `[auth].dataset_restriction_rollout_complete` (default `false`) gates
+the mixed-version-unsafe cases at the request boundary. A dataset-restricted
+credential is refused entirely by the management API (`can_manage`/
+`authorize_tenant`), regardless of `tenant:manage` or role, and
+`discover_datasets`/`tenant_list_tables`/`whoami` filter their dataset
+listing to the restriction so an unlisted dataset is never named.
+
 ### Error Codes
 
 - **400**: Malformed auth headers (wrong scheme, invalid tenant/dataset ID)
