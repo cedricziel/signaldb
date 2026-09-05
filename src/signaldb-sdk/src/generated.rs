@@ -155,14 +155,6 @@ pub mod types {
     ///      "description": "ISO 8601 creation timestamp.",
     ///      "type": "string"
     ///    },
-    ///    "dataset_id": {
-    ///      "description": "Deprecated: see [`CreateApiKeyResponse::dataset_id`].",
-    ///      "deprecated": true,
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
     ///    "dataset_ids": {
     ///      "description": "Dataset set the key is restricted to, if any; `null` is unrestricted.",
     ///      "type": [
@@ -209,9 +201,6 @@ pub mod types {
     pub struct ApiKeyResponse {
         ///ISO 8601 creation timestamp.
         pub created_at: ::std::string::String,
-        ///Deprecated: see [`CreateApiKeyResponse::dataset_id`].
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-        pub dataset_id: ::std::option::Option<::std::string::String>,
         ///Dataset set the key is restricted to, if any; `null` is unrestricted.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
@@ -1496,14 +1485,6 @@ pub mod types {
     ///      "description": "ISO 8601 creation timestamp.",
     ///      "type": "string"
     ///    },
-    ///    "dataset_id": {
-    ///      "description": "Deprecated: the single dataset the key is restricted to, derived from\n`dataset_ids` as `Some` only when it names exactly one dataset (and\n`None` for both unrestricted and multi-dataset keys). Response-only —\nno request body accepts this field anymore. Prefer `dataset_ids`.",
-    ///      "deprecated": true,
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
     ///    "dataset_ids": {
     ///      "description": "Dataset set the key is restricted to, if any; `null` is unrestricted.",
     ///      "type": [
@@ -1544,12 +1525,6 @@ pub mod types {
     pub struct CreateApiKeyResponse {
         ///ISO 8601 creation timestamp.
         pub created_at: ::std::string::String,
-        /**Deprecated: the single dataset the key is restricted to, derived from
-        `dataset_ids` as `Some` only when it names exactly one dataset (and
-        `None` for both unrestricted and multi-dataset keys). Response-only —
-        no request body accepts this field anymore. Prefer `dataset_ids`.*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-        pub dataset_id: ::std::option::Option<::std::string::String>,
         ///Dataset set the key is restricted to, if any; `null` is unrestricted.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
@@ -3398,14 +3373,6 @@ pub mod types {
     ///    "created_at": {
     ///      "type": "string"
     ///    },
-    ///    "dataset_id": {
-    ///      "description": "Deprecated: derived from `dataset_ids`, `Some` only for a\nsingle-dataset restriction. Use `dataset_ids`.",
-    ///      "deprecated": true,
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
     ///    "dataset_ids": {
     ///      "type": [
     ///        "array",
@@ -3443,10 +3410,6 @@ pub mod types {
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ManageApiKeyResponse {
         pub created_at: ::std::string::String,
-        /**Deprecated: derived from `dataset_ids`, `Some` only for a
-        single-dataset restriction. Use `dataset_ids`.*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-        pub dataset_id: ::std::option::Option<::std::string::String>,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         pub id: ::std::string::String,
@@ -3590,13 +3553,13 @@ pub mod types {
     /**201 response body for API key creation via the management API.
 
     Fields mirror the previous `json!` body exactly (including `null` for
-    absent `name`/`dataset_id`), preserving the wire format.*/
+    absent `name`), preserving the wire format.*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "201 response body for API key creation via the management API.\n\nFields mirror the previous `json!` body exactly (including `null` for\nabsent `name`/`dataset_id`), preserving the wire format.",
+    ///  "description": "201 response body for API key creation via the management API.\n\nFields mirror the previous `json!` body exactly (including `null` for\nabsent `name`), preserving the wire format.",
     ///  "type": "object",
     ///  "required": [
     ///    "id",
@@ -3604,14 +3567,6 @@ pub mod types {
     ///    "scopes"
     ///  ],
     ///  "properties": {
-    ///    "dataset_id": {
-    ///      "description": "Deprecated: see [`ApiKeyResponse::dataset_id`].",
-    ///      "deprecated": true,
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
     ///    "dataset_ids": {
     ///      "type": [
     ///        "array",
@@ -3645,9 +3600,6 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ManageCreatedApiKey {
-        ///Deprecated: see [`ApiKeyResponse::dataset_id`].
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-        pub dataset_id: ::std::option::Option<::std::string::String>,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         pub id: ::std::string::String,
@@ -7230,10 +7182,6 @@ pub mod types {
         #[derive(Clone, Debug)]
         pub struct ApiKeyResponse {
             created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
-            dataset_id: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
-                ::std::string::String,
-            >,
             dataset_ids: ::std::result::Result<
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
@@ -7256,7 +7204,6 @@ pub mod types {
             fn default() -> Self {
                 Self {
                     created_at: Err("no value supplied for created_at".to_string()),
-                    dataset_id: Ok(Default::default()),
                     dataset_ids: Ok(Default::default()),
                     id: Err("no value supplied for id".to_string()),
                     name: Ok(Default::default()),
@@ -7274,16 +7221,6 @@ pub mod types {
                 self.created_at = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for created_at: {e}"));
-                self
-            }
-            pub fn dataset_id<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.dataset_id = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
                 self
             }
             pub fn dataset_ids<T>(mut self, value: T) -> Self
@@ -7348,7 +7285,6 @@ pub mod types {
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
                     created_at: value.created_at?,
-                    dataset_id: value.dataset_id?,
                     dataset_ids: value.dataset_ids?,
                     id: value.id?,
                     name: value.name?,
@@ -7361,7 +7297,6 @@ pub mod types {
             fn from(value: super::ApiKeyResponse) -> Self {
                 Self {
                     created_at: Ok(value.created_at),
-                    dataset_id: Ok(value.dataset_id),
                     dataset_ids: Ok(value.dataset_ids),
                     id: Ok(value.id),
                     name: Ok(value.name),
@@ -9258,10 +9193,6 @@ pub mod types {
         #[derive(Clone, Debug)]
         pub struct CreateApiKeyResponse {
             created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
-            dataset_id: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
-                ::std::string::String,
-            >,
             dataset_ids: ::std::result::Result<
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
@@ -9281,7 +9212,6 @@ pub mod types {
             fn default() -> Self {
                 Self {
                     created_at: Err("no value supplied for created_at".to_string()),
-                    dataset_id: Ok(Default::default()),
                     dataset_ids: Ok(Default::default()),
                     id: Err("no value supplied for id".to_string()),
                     key: Err("no value supplied for key".to_string()),
@@ -9299,16 +9229,6 @@ pub mod types {
                 self.created_at = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for created_at: {e}"));
-                self
-            }
-            pub fn dataset_id<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.dataset_id = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
                 self
             }
             pub fn dataset_ids<T>(mut self, value: T) -> Self
@@ -9371,7 +9291,6 @@ pub mod types {
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
                     created_at: value.created_at?,
-                    dataset_id: value.dataset_id?,
                     dataset_ids: value.dataset_ids?,
                     id: value.id?,
                     key: value.key?,
@@ -9384,7 +9303,6 @@ pub mod types {
             fn from(value: super::CreateApiKeyResponse) -> Self {
                 Self {
                     created_at: Ok(value.created_at),
-                    dataset_id: Ok(value.dataset_id),
                     dataset_ids: Ok(value.dataset_ids),
                     id: Ok(value.id),
                     key: Ok(value.key),
@@ -11808,10 +11726,6 @@ pub mod types {
         #[derive(Clone, Debug)]
         pub struct ManageApiKeyResponse {
             created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
-            dataset_id: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
-                ::std::string::String,
-            >,
             dataset_ids: ::std::result::Result<
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
@@ -11831,7 +11745,6 @@ pub mod types {
             fn default() -> Self {
                 Self {
                     created_at: Err("no value supplied for created_at".to_string()),
-                    dataset_id: Ok(Default::default()),
                     dataset_ids: Ok(Default::default()),
                     id: Err("no value supplied for id".to_string()),
                     name: Ok(Default::default()),
@@ -11849,16 +11762,6 @@ pub mod types {
                 self.created_at = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for created_at: {e}"));
-                self
-            }
-            pub fn dataset_id<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.dataset_id = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
                 self
             }
             pub fn dataset_ids<T>(mut self, value: T) -> Self
@@ -11923,7 +11826,6 @@ pub mod types {
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
                     created_at: value.created_at?,
-                    dataset_id: value.dataset_id?,
                     dataset_ids: value.dataset_ids?,
                     id: value.id?,
                     name: value.name?,
@@ -11936,7 +11838,6 @@ pub mod types {
             fn from(value: super::ManageApiKeyResponse) -> Self {
                 Self {
                     created_at: Ok(value.created_at),
-                    dataset_id: Ok(value.dataset_id),
                     dataset_ids: Ok(value.dataset_ids),
                     id: Ok(value.id),
                     name: Ok(value.name),
@@ -12135,10 +12036,6 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct ManageCreatedApiKey {
-            dataset_id: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
-                ::std::string::String,
-            >,
             dataset_ids: ::std::result::Result<
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
@@ -12157,7 +12054,6 @@ pub mod types {
         impl ::std::default::Default for ManageCreatedApiKey {
             fn default() -> Self {
                 Self {
-                    dataset_id: Ok(Default::default()),
                     dataset_ids: Ok(Default::default()),
                     id: Err("no value supplied for id".to_string()),
                     key: Err("no value supplied for key".to_string()),
@@ -12167,16 +12063,6 @@ pub mod types {
             }
         }
         impl ManageCreatedApiKey {
-            pub fn dataset_id<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.dataset_id = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
-                self
-            }
             pub fn dataset_ids<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<
@@ -12236,7 +12122,6 @@ pub mod types {
                 value: ManageCreatedApiKey,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
-                    dataset_id: value.dataset_id?,
                     dataset_ids: value.dataset_ids?,
                     id: value.id?,
                     key: value.key?,
@@ -12248,7 +12133,6 @@ pub mod types {
         impl ::std::convert::From<super::ManageCreatedApiKey> for ManageCreatedApiKey {
             fn from(value: super::ManageCreatedApiKey) -> Self {
                 Self {
-                    dataset_id: Ok(value.dataset_id),
                     dataset_ids: Ok(value.dataset_ids),
                     id: Ok(value.id),
                     key: Ok(value.key),

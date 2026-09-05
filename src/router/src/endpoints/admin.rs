@@ -617,13 +617,11 @@ pub async fn create_api_key<S: RouterState>(
                 _ => chrono::Utc::now().to_rfc3339(),
             };
 
-            #[allow(deprecated)]
             let response = CreateApiKeyResponse {
                 id: key_id,
                 key: raw_key,
                 name: request.name,
                 scopes: request.scopes,
-                dataset_id: signaldb_api::derive_legacy_dataset_id(dataset_ids.as_deref()),
                 dataset_ids,
                 created_at,
             };
@@ -760,13 +758,11 @@ fn api_error(
         .into_response()
 }
 
-#[allow(deprecated)]
 fn api_key_record_to_response(record: common::catalog::ApiKeyRecord) -> ApiKeyResponse {
     ApiKeyResponse {
         id: record.id,
         name: record.name,
         scopes: record.scopes,
-        dataset_id: signaldb_api::derive_legacy_dataset_id(record.dataset_ids.as_deref()),
         dataset_ids: record.dataset_ids,
         created_at: record.created_at.to_rfc3339(),
         revoked_at: record.revoked_at.map(|t| t.to_rfc3339()),
@@ -1773,7 +1769,6 @@ mod tests {
         }
     }
 
-    #[allow(deprecated)]
     #[tokio::test]
     async fn test_api_key_lifecycle() {
         let state = create_admin_test_state().await;
@@ -1805,7 +1800,6 @@ mod tests {
         assert!(created.key.starts_with("sk-acme-"));
         assert_eq!(created.name, Some("Production Key".to_string()));
         assert_eq!(created.scopes, vec!["traces:write", "schema:read"]);
-        assert_eq!(created.dataset_id, None);
         assert_eq!(created.dataset_ids, None);
 
         // List API keys
@@ -1941,8 +1935,59 @@ mod tests {
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
-        assert_eq!(body["dataset_id"], "production");
         assert_eq!(body["dataset_ids"], serde_json::json!(["production"]));
+    }
+
+    /// D8: the deprecated singular `dataset_id` field is removed entirely
+    /// from API-key response bodies — not `null`, but absent from the JSON
+    /// object (task 2.1).
+    #[tokio::test]
+    async fn api_key_response_omits_deprecated_dataset_id_key() {
+        let state = create_admin_test_state().await;
+        state
+            .catalog()
+            .upsert_tenant("acme", "Acme Corp", None, "database")
+            .await
+            .unwrap();
+        state
+            .catalog()
+            .create_dataset("acme", "production")
+            .await
+            .unwrap();
+        let app = admin_router(state);
+
+        // A single-element dataset restriction is the case that currently
+        // makes `derive_legacy_dataset_id` return `Some`, so it's the only
+        // shape that actually exercises the field's removal (an absent or
+        // multi-element restriction already skips serialization via
+        // `skip_serializing_if`, which would let this assertion pass
+        // vacuously against the pre-removal code).
+        let (status, created) = create_key(
+            &app,
+            r#"{"name": "k", "scopes": ["schema:read"], "dataset_ids": ["production"]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        assert!(
+            !created.as_object().unwrap().contains_key("dataset_id"),
+            "create response must not carry the removed dataset_id field: {created}"
+        );
+
+        let request = Request::builder()
+            .uri("/tenants/acme/api-keys")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let list: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let first_key = &list["api_keys"][0];
+        assert!(
+            !first_key.as_object().unwrap().contains_key("dataset_id"),
+            "list response must not carry the removed dataset_id field: {first_key}"
+        );
     }
 
     /// The key authenticates against every dataset in its restriction and is
@@ -1983,8 +2028,6 @@ mod tests {
             created["dataset_ids"],
             serde_json::json!(["production", "staging"])
         );
-        // Multi-element restriction: no deprecated single-value projection.
-        assert_eq!(created["dataset_id"], serde_json::Value::Null);
 
         let authenticator = common::auth::Authenticator::new(
             state.config().auth.clone(),
@@ -2157,7 +2200,6 @@ mod tests {
             body["scopes"],
             serde_json::json!(["schema:read", "schema:write"])
         );
-        assert_eq!(body["dataset_id"], serde_json::Value::Null);
 
         // Dataset only, scopes preserved.
         let (status, body) = patch_key(&app, &key_id, r#"{"dataset_ids": ["production"]}"#).await;
@@ -2166,7 +2208,6 @@ mod tests {
             body["scopes"],
             serde_json::json!(["schema:read", "schema:write"])
         );
-        assert_eq!(body["dataset_id"], "production");
         assert_eq!(body["dataset_ids"], serde_json::json!(["production"]));
 
         // Omitting both dataset fields leaves the restriction unchanged.
@@ -2184,7 +2225,6 @@ mod tests {
             patch_key(&app, &key_id, r#"{"clear_dataset_restriction": true}"#).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["dataset_ids"], serde_json::Value::Null);
-        assert_eq!(body["dataset_id"], serde_json::Value::Null);
 
         // Contradictory: clearing and setting in the same request is rejected.
         let (status, body) = patch_key(
