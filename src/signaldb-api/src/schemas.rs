@@ -82,29 +82,48 @@ pub struct ListTenantsResponse {
 /// explicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,
 /// `profiles:write`, `traces:read`, `logs:read`, `metrics:read`,
 /// `profiles:read`, `schema:read`, `schema:write`.
+///
+/// The legacy singular `dataset_id` field is not accepted here (removed in
+/// the multi-dataset-key-restriction change): a request body carrying it is
+/// rejected with a validation error rather than silently ignored, since
+/// dropping it would create an unrestricted key when the caller asked for a
+/// restricted one.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CreateApiKeyRequest {
     /// Optional human-readable name for the key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Scopes the key carries (required, at least one).
     pub scopes: Vec<String>,
-    /// Optional dataset the key is restricted to.
+    /// Dataset set the key is restricted to. Omitted or `null` creates an
+    /// unrestricted key; a non-empty array restricts it to exactly that set.
+    /// An explicit empty array, or a duplicate name within the set, is
+    /// rejected.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dataset_id: Option<String>,
+    pub dataset_ids: Option<Vec<String>>,
 }
 
 /// Request body for updating a live API key's scopes and/or dataset restriction.
 ///
-/// Absent fields are left untouched. Revoked keys cannot be updated.
+/// Absent fields are left untouched. Revoked keys cannot be updated. The
+/// legacy singular `dataset_id` field is not accepted (see
+/// [`CreateApiKeyRequest`]).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateApiKeyRequest {
     /// New scope list (replaces the current one; must be non-empty).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scopes: Option<Vec<String>>,
-    /// New dataset restriction.
+    /// Replacement dataset set (non-empty; an explicit empty array is
+    /// rejected). Omitted/`null` leaves the current restriction unchanged.
+    /// Mutually exclusive with `clear_dataset_restriction: true`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dataset_id: Option<String>,
+    pub dataset_ids: Option<Vec<String>>,
+    /// Clear an existing dataset restriction back to unrestricted. Must not
+    /// be combined with a non-empty `dataset_ids` in the same request.
+    #[serde(default)]
+    pub clear_dataset_restriction: bool,
 }
 
 /// Response returned when a new API key is created (includes the raw key).
@@ -119,7 +138,16 @@ pub struct CreateApiKeyResponse {
     pub name: Option<String>,
     /// Scopes the key carries.
     pub scopes: Vec<String>,
-    /// Dataset the key is restricted to, if any.
+    /// Dataset set the key is restricted to, if any; `null` is unrestricted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_ids: Option<Vec<String>>,
+    /// Deprecated: the single dataset the key is restricted to, derived from
+    /// `dataset_ids` as `Some` only when it names exactly one dataset (and
+    /// `None` for both unrestricted and multi-dataset keys). Response-only —
+    /// no request body accepts this field anymore. Prefer `dataset_ids`.
+    #[deprecated(
+        note = "derived from dataset_ids; None for multi-dataset restrictions. Use dataset_ids."
+    )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dataset_id: Option<String>,
     /// ISO 8601 creation timestamp.
@@ -137,7 +165,13 @@ pub struct ApiKeyResponse {
     /// Scopes the key carries; `null` for a legacy unrestricted key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scopes: Option<Vec<String>>,
-    /// Dataset the key is restricted to, if any.
+    /// Dataset set the key is restricted to, if any; `null` is unrestricted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_ids: Option<Vec<String>>,
+    /// Deprecated: see [`CreateApiKeyResponse::dataset_id`].
+    #[deprecated(
+        note = "derived from dataset_ids; None for multi-dataset restrictions. Use dataset_ids."
+    )]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dataset_id: Option<String>,
     /// ISO 8601 creation timestamp.
@@ -145,6 +179,17 @@ pub struct ApiKeyResponse {
     /// ISO 8601 revocation timestamp (if revoked).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_at: Option<String>,
+}
+
+/// Derive the deprecated single-dataset legacy field from a dataset-id set
+/// (D8): `Some` for the single-dataset case a pre-this-change reader already
+/// understood, `None` for both "unrestricted" and a genuinely new
+/// multi-element restriction it had no way to represent.
+pub fn derive_legacy_dataset_id(dataset_ids: Option<&[String]>) -> Option<String> {
+    match dataset_ids {
+        Some([single]) => Some(single.clone()),
+        _ => None,
+    }
 }
 
 /// Response containing a list of API keys.

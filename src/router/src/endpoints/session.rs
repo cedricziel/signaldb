@@ -871,7 +871,7 @@ mod tests {
             .header("x-tenant-id", "acme")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"name":"metrics-only","dataset_id":"analytics","scopes":["metrics:write"]}"#,
+                r#"{"name":"metrics-only","dataset_ids":["analytics"],"scopes":["metrics:write"]}"#,
             ))
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
@@ -879,6 +879,7 @@ mod tests {
         let body = json_body(response).await;
         assert!(body["key"].as_str().unwrap().starts_with("sdbk_"));
         assert_eq!(body["dataset_id"], "analytics");
+        assert_eq!(body["dataset_ids"], serde_json::json!(["analytics"]));
         assert_eq!(body["scopes"][0], "metrics:write");
     }
 
@@ -1049,9 +1050,10 @@ mod tests {
 
         // Dataset restriction can be updated too; scopes preserved.
         let (status, body) =
-            manage_patch_key(&app, &cookie, &key_id, r#"{"dataset_id":"staging"}"#).await;
+            manage_patch_key(&app, &cookie, &key_id, r#"{"dataset_ids":["staging"]}"#).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["dataset_id"], "staging");
+        assert_eq!(body["dataset_ids"], serde_json::json!(["staging"]));
         assert_eq!(body["scopes"], serde_json::json!(["metrics:read"]));
 
         // Validation errors.
@@ -1059,7 +1061,7 @@ mod tests {
             manage_patch_key(&app, &cookie, &key_id, r#"{"scopes":["schema:admin"]}"#).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
         let (status, _) =
-            manage_patch_key(&app, &cookie, &key_id, r#"{"dataset_id":"nope"}"#).await;
+            manage_patch_key(&app, &cookie, &key_id, r#"{"dataset_ids":["nope"]}"#).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let (status, _) =
             manage_patch_key(&app, &cookie, "missing", r#"{"scopes":["schema:read"]}"#).await;
