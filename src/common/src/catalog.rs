@@ -4493,6 +4493,316 @@ mod multi_tenancy_tests {
         assert!(!updated);
     }
 
+    #[tokio::test]
+    async fn create_with_multi_element_dataset_ids_round_trips() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_hash = hash_api_key("multi-dataset-secret");
+        let ids = vec!["a".to_string(), "b".to_string()];
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &key_hash,
+                Some("multi"),
+                Some(&ids),
+                Some(&["traces:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let auth = catalog.validate_api_key(&key_hash).await.unwrap().unwrap();
+        assert_eq!(auth.dataset_ids, Some(ids.clone()));
+        // The legacy single-value column can't represent a multi-element
+        // set, so it stays NULL (D2's projection).
+        assert_eq!(auth.dataset_id, None);
+
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, Some(ids));
+        assert_eq!(record.dataset_id, None);
+    }
+
+    #[tokio::test]
+    async fn create_with_empty_dataset_ids_is_rejected() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let result = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &hash_api_key("empty-dataset-secret"),
+                None,
+                Some(&[]),
+                None,
+                None,
+            )
+            .await;
+        assert!(result.is_err(), "an empty dataset_ids set must be rejected");
+    }
+
+    #[tokio::test]
+    async fn create_with_duplicate_dataset_ids_is_rejected() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let result = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &hash_api_key("dup-dataset-secret"),
+                None,
+                Some(&["production".to_string(), "production".to_string()]),
+                None,
+                None,
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "a dataset_ids set with a duplicate name must be rejected"
+        );
+    }
+
+    /// A key created before this change (legacy `dataset_id` column
+    /// populated, `dataset_ids` never written) reads back as a one-element
+    /// set (D2's dual-read).
+    #[tokio::test]
+    async fn legacy_dataset_id_reads_back_as_single_element_set() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_id = catalog
+            .upsert_api_key("acme", &hash_api_key("legacy-secret"), None)
+            .await
+            .unwrap();
+        let Catalog::Sqlite(pool) = &catalog else {
+            panic!("expected a SQLite catalog");
+        };
+        // Simulate a pre-existing row written before `dataset_ids` existed:
+        // only the legacy column is populated.
+        query("UPDATE api_keys SET dataset_id = 'legacy-value' WHERE id = ?")
+            .bind(&key_id)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, Some(vec!["legacy-value".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn dataset_restriction_update_keep_leaves_both_columns_untouched() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &hash_api_key("keep-secret"),
+                None,
+                Some(&["a".to_string()]),
+                Some(&["traces:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            catalog
+                .update_api_key_scopes(&key_id, None, DatasetRestrictionUpdate::Keep)
+                .await
+                .unwrap()
+        );
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, Some(vec!["a".to_string()]));
+        assert_eq!(record.dataset_id.as_deref(), Some("a"));
+    }
+
+    #[tokio::test]
+    async fn dataset_restriction_update_clear_nulls_both_columns() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &hash_api_key("clear-secret"),
+                None,
+                Some(&["a".to_string()]),
+                Some(&["traces:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            catalog
+                .update_api_key_scopes(&key_id, None, DatasetRestrictionUpdate::Clear)
+                .await
+                .unwrap()
+        );
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, None);
+        assert_eq!(record.dataset_id, None);
+    }
+
+    #[tokio::test]
+    async fn dataset_restriction_update_set_projects_legacy_column() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &hash_api_key("set-secret"),
+                None,
+                None,
+                Some(&["traces:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        // A single-element `Set` projects onto the legacy column too.
+        assert!(
+            catalog
+                .update_api_key_scopes(
+                    &key_id,
+                    None,
+                    DatasetRestrictionUpdate::Set(vec!["a".to_string()]),
+                )
+                .await
+                .unwrap()
+        );
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, Some(vec!["a".to_string()]));
+        assert_eq!(record.dataset_id.as_deref(), Some("a"));
+
+        // A multi-element `Set` clears the legacy column (unrepresentable).
+        assert!(
+            catalog
+                .update_api_key_scopes(
+                    &key_id,
+                    None,
+                    DatasetRestrictionUpdate::Set(vec!["a".to_string(), "b".to_string()]),
+                )
+                .await
+                .unwrap()
+        );
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(
+            record.dataset_ids,
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
+        assert_eq!(record.dataset_id, None);
+    }
+
+    #[tokio::test]
+    async fn dataset_restriction_update_set_rejects_empty_and_duplicate() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &hash_api_key("set-invalid-secret"),
+                None,
+                None,
+                Some(&["traces:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let empty = catalog
+            .update_api_key_scopes(&key_id, None, DatasetRestrictionUpdate::Set(vec![]))
+            .await;
+        assert!(empty.is_err(), "an empty Set must be rejected");
+
+        let duplicate = catalog
+            .update_api_key_scopes(
+                &key_id,
+                None,
+                DatasetRestrictionUpdate::Set(vec!["a".to_string(), "a".to_string()]),
+            )
+            .await;
+        assert!(duplicate.is_err(), "a duplicate-containing Set must be rejected");
+    }
+
+    /// D2's backfill compare-and-swap guard: a concurrent legacy write to
+    /// `dataset_id` between the backfill's read and its write must make the
+    /// write a no-op rather than persist a `dataset_ids` value derived from
+    /// data that's already stale. The row resolves itself on the next pass.
+    #[tokio::test]
+    async fn backfill_race_with_concurrent_legacy_write_is_a_no_op_then_self_heals() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_id = catalog
+            .upsert_api_key("acme", &hash_api_key("race-secret"), None)
+            .await
+            .unwrap();
+        let Catalog::Sqlite(pool) = &catalog else {
+            panic!("expected a SQLite catalog");
+        };
+        // Simulate a legacy row: only `dataset_id` populated.
+        query("UPDATE api_keys SET dataset_id = 'a' WHERE id = ?")
+            .bind(&key_id)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        // Backfill's SELECT reads `dataset_id = 'a'`.
+        let pending = catalog.pending_api_key_dataset_id_backfill().await.unwrap();
+        let (_, read_value) = pending
+            .iter()
+            .find(|(id, _)| id == &key_id)
+            .expect("row is pending backfill")
+            .clone();
+        assert_eq!(read_value, "a");
+
+        // Before the backfill's UPDATE runs, an old-code node races in a
+        // concurrent legacy write.
+        query("UPDATE api_keys SET dataset_id = 'b' WHERE id = ?")
+            .bind(&key_id)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        // The backfill's UPDATE, using the now-stale value it read, must
+        // affect zero rows and leave `dataset_ids` untouched.
+        let rows_affected = catalog
+            .apply_api_key_dataset_id_backfill(&key_id, &read_value)
+            .await
+            .unwrap();
+        assert_eq!(rows_affected, 0);
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, None);
+        assert_eq!(record.dataset_id.as_deref(), Some("b"));
+
+        // The next boot's full backfill pass picks up the current value.
+        catalog.backfill_api_key_dataset_ids().await.unwrap();
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, Some(vec!["b".to_string()]));
+    }
+
     /// The tenant row and its default dataset row must land together. A
     /// half-written tenant fails authentication closed, and — because
     /// creation rejects an existing id with 409 — a retry cannot repair it,
@@ -4888,6 +5198,113 @@ mod multi_tenancy_tests {
 
         let datasets = catalog.get_datasets("nonexistent").await.unwrap();
         assert!(datasets.is_empty());
+    }
+}
+
+/// `dataset_ids` behaves identically on Postgres (D2's dual-read/dual-write
+/// and the backfill compare-and-swap guard aren't SQLite-specific).
+#[cfg(test)]
+mod postgres_dataset_ids_tests {
+    use super::*;
+    use testcontainers_modules::postgres::Postgres;
+    use testcontainers_modules::testcontainers::runners::AsyncRunner;
+
+    async fn postgres_catalog() -> (
+        Catalog,
+        testcontainers_modules::testcontainers::ContainerAsync<Postgres>,
+    ) {
+        let container = Postgres::default().start().await.unwrap();
+        let host = container.get_host().await.unwrap();
+        let port = container.get_host_port_ipv4(5432).await.unwrap();
+        let dsn = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+        let catalog = Catalog::new(&dsn).await.unwrap();
+        (catalog, container)
+    }
+
+    #[tokio::test]
+    async fn multi_element_dataset_ids_round_trip_on_postgres() {
+        let (catalog, _container) = postgres_catalog().await;
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let ids = vec!["a".to_string(), "b".to_string()];
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                "pg-multi-hash",
+                Some("multi"),
+                Some(&ids),
+                Some(&["traces:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, Some(ids));
+        assert_eq!(record.dataset_id, None);
+
+        assert!(
+            catalog
+                .update_api_key_scopes(&key_id, None, DatasetRestrictionUpdate::Clear)
+                .await
+                .unwrap()
+        );
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, None);
+        assert_eq!(record.dataset_id, None);
+    }
+
+    /// Same compare-and-swap regression as
+    /// `backfill_race_with_concurrent_legacy_write_is_a_no_op_then_self_heals`,
+    /// on Postgres.
+    #[tokio::test]
+    async fn backfill_race_with_concurrent_legacy_write_is_a_no_op_then_self_heals_on_postgres() {
+        let (catalog, _container) = postgres_catalog().await;
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_id = catalog
+            .upsert_api_key("acme", "pg-race-hash", None)
+            .await
+            .unwrap();
+        let Catalog::Postgres(pool) = &catalog else {
+            panic!("expected a Postgres catalog");
+        };
+        query("UPDATE api_keys SET dataset_id = 'a' WHERE id = $1")
+            .bind(&key_id)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let pending = catalog.pending_api_key_dataset_id_backfill().await.unwrap();
+        let (_, read_value) = pending
+            .iter()
+            .find(|(id, _)| id == &key_id)
+            .expect("row is pending backfill")
+            .clone();
+        assert_eq!(read_value, "a");
+
+        query("UPDATE api_keys SET dataset_id = 'b' WHERE id = $1")
+            .bind(&key_id)
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let rows_affected = catalog
+            .apply_api_key_dataset_id_backfill(&key_id, &read_value)
+            .await
+            .unwrap();
+        assert_eq!(rows_affected, 0);
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, None);
+        assert_eq!(record.dataset_id.as_deref(), Some("b"));
+
+        catalog.backfill_api_key_dataset_ids().await.unwrap();
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, Some(vec!["b".to_string()]));
     }
 }
 
