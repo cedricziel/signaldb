@@ -11,6 +11,12 @@
 //! bytes. This dumps the stored schema and plans, then quantifies the levers
 //! that reduce files opened: narrow projection (expected: no help),
 //! time-window partition pruning, and compaction (fewer, larger files).
+//!
+//! It closes with the declared-ordering read path: `EXPLAIN ANALYZE` of
+//! `ORDER BY timestamp ... LIMIT n` over sequential files, recent-first and
+//! oldest-first, in the attested and the legacy (unattested) state, so the
+//! elided sort and the files the scan never opened are visible in the plan
+//! rather than inferred.
 
 use std::sync::Arc;
 
@@ -21,8 +27,9 @@ use compactor::planner::{CompactionPlanner, PlannerConfig};
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::SessionContext;
 use object_store::memory::InMemory;
-use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity};
+use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity, SequentialLayout};
 use tests_integration::generators;
+use tests_integration::ordering::{SequentialTraces, scan_report};
 use writer::IcebergTableWriter;
 
 const TENANT: &str = "bench-tenant";
@@ -186,5 +193,34 @@ fn main() {
         compact(&catalog_manager).await;
         let ctx2 = register(&catalog_manager).await;
         dump(&ctx2, "ANALYZE: baseline SELECT * AFTER compaction", &format!("EXPLAIN ANALYZE {lookup}")).await;
+
+        // Declared ordering over sequential ingest files. Oldest-first
+        // matches the declared order: attested files elide the sort and
+        // the scan stops at the first files. Recent-first is the reverse:
+        // DataFusion keeps a TopK sort but reads files newest-first and
+        // prunes the rest on statistics, attested or not.
+        let attested = SequentialTraces::seed("order-attested", &SequentialLayout::two_hours_of_ingest())
+            .await
+            .expect("seed attested population");
+        let unattested = attested
+            .unattested_copy("order-unattested")
+            .await
+            .expect("seed unattested population");
+        for (state, population) in [("attested", &attested), ("unattested", &unattested)] {
+            let ctx = population.context(true).await.expect("querier session");
+            for direction in ["DESC", "ASC"] {
+                let sql = format!(
+                    "SELECT timestamp, trace_id FROM {TABLE} ORDER BY timestamp {direction} LIMIT 20"
+                );
+                let (report, _) = scan_report(&ctx, &sql).await.expect("run ordered query");
+                println!("\nORDER BY timestamp {direction} over {state} files: {report}");
+                dump(
+                    &ctx,
+                    &format!("ANALYZE: TopK {direction}, {state}"),
+                    &format!("EXPLAIN ANALYZE {sql}"),
+                )
+                .await;
+            }
+        }
     });
 }

@@ -56,12 +56,13 @@ than a performance question.
 
 ## How to tell it is working
 
-Ask for an execution plan on a time-ordered query over a recent range:
+Ask for an execution plan on a query ordered the way the files are, oldest
+first:
 
 ```sql
 EXPLAIN SELECT timestamp, trace_id FROM traces
 WHERE timestamp > now() - INTERVAL '1 hour'
-ORDER BY timestamp DESC LIMIT 20;
+ORDER BY timestamp ASC LIMIT 20;
 ```
 
 - The scan reports `output_ordering=[...]` → the files in range carry the
@@ -73,6 +74,17 @@ ORDER BY timestamp DESC LIMIT 20;
   a fault.
 
 Compacting the partitions in question converges the first case.
+
+A recent-first query (`ORDER BY timestamp DESC`) looks different, and the
+difference is not a fault either. DataFusion cannot yet serve the reverse of
+a declared order without a sort, so the plan keeps a `SortExec: TopK` above
+the scan whether or not the files carry the record. What it does instead is
+read the files newest-first and let the TopK's dynamic filter skip the rest on
+their statistics — the scan shows `reverse_row_groups=true` and, under
+`EXPLAIN ANALYZE`, `files_ranges_pruned_statistics` counting nearly every file
+as pruned. That pruning does not depend on the record; it works on any file
+with statistics. The measured numbers for both shapes are in
+[Benchmarking](../contributing/benchmarking.md#declared-sort-orders-what-the-benchmark-shows).
 
 ## Turning it off
 

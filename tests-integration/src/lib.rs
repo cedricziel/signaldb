@@ -6,6 +6,7 @@ use tempfile::TempDir;
 pub mod compaction_helpers;
 pub mod fixtures;
 pub mod generators;
+pub mod ordering;
 pub mod test_helpers;
 
 /// Create a test configuration with temporary directories

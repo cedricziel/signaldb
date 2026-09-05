@@ -12,6 +12,12 @@
 //! via `iter_custom`; only the append itself is measured. `writer/creation`
 //! benches that setup cost on its own.
 //!
+//! `ingest_sort` isolates the one step the declared-ordering contract added
+//! to every append: the columnar sort of a commit group by the table's sort
+//! key, so the files written from it can attest that key. It is timed on its
+//! own, on the same batches `single_batch_writes` appends, so the two can be
+//! read against each other as "sort cost as a share of the append".
+//!
 //! Numbers are for relative regression tracking, not absolute production
 //! throughput.
 
@@ -21,10 +27,13 @@ use std::time::{Duration, Instant};
 
 use common::CatalogManager;
 use common::config::{Configuration, DefaultSchemas, SchemaConfig, StorageConfig};
+use common::iceberg::sort::{canonical_sort_columns, sort_batch_by};
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use datafusion::arrow::array::{
     Date32Array, Float64Array, Int32Array, RecordBatch, StringArray, TimestampNanosecondArray,
+    UInt32Array,
 };
+use datafusion::arrow::compute::take_record_batch;
 use tokio::runtime::Runtime;
 use writer::IcebergTableWriter;
 use writer::schema_transform::create_metrics_gauge_arrow_schema;
@@ -300,11 +309,50 @@ fn bench_concurrent_writes(c: &mut Criterion) {
     group.finish();
 }
 
+/// `batch` with its rows in a fixed pseudo-random order, so the sort has
+/// real work to do. Ingest's usual input is already close to time order
+/// (`create_benchmark_data` is monotonic in `timestamp`), which is the
+/// cheap case for the sort kernel; this is the expensive one.
+fn shuffle_rows(batch: &RecordBatch) -> RecordBatch {
+    let mut indices: Vec<u32> = (0..batch.num_rows() as u32).collect();
+    // Fisher–Yates with a fixed-seed LCG: deterministic across runs, so
+    // Criterion compares the same permutation against its baseline.
+    let mut state: u64 = 0x9E37_79B9_7F4A_7C15;
+    for i in (1..indices.len()).rev() {
+        state = state
+            .wrapping_mul(6_364_136_223_846_793_005)
+            .wrapping_add(1_442_695_040_888_963_407);
+        let j = (state >> 33) as usize % (i + 1);
+        indices.swap(i, j);
+    }
+    take_record_batch(batch, &UInt32Array::from(indices)).expect("permute rows")
+}
+
+/// The columnar sort ingest runs on a commit group before writing it.
+fn bench_ingest_sort(c: &mut Criterion) {
+    let key = canonical_sort_columns("metrics_gauge");
+    assert!(!key.is_empty(), "metrics_gauge declares a sort key");
+
+    let mut group = c.benchmark_group("ingest_sort");
+    for size in [1_000, 10_000, 100_000] {
+        let in_order = create_benchmark_data(size);
+        let shuffled = shuffle_rows(&in_order);
+        group.throughput(Throughput::Elements(size as u64));
+        for (input, batch) in [("in_order", &in_order), ("shuffled", &shuffled)] {
+            group.bench_with_input(BenchmarkId::new(input, size), batch, |b, batch| {
+                b.iter(|| black_box(sort_batch_by(batch, &key).expect("sort group")));
+            });
+        }
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_single_batch_writes,
     bench_multi_batch_writes,
     bench_writer_creation,
-    bench_concurrent_writes
+    bench_concurrent_writes,
+    bench_ingest_sort
 );
 criterion_main!(benches);

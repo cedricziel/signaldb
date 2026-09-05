@@ -13,14 +13,13 @@ use common::catalog_manager::CatalogManager;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::physical_plan::displayable;
 use datafusion::prelude::SessionContext;
-use futures::stream;
-use iceberg_rust::arrow::write::write_parquet_partitioned;
 use object_store::memory::InMemory;
 use std::sync::Arc;
 use tests_integration::compaction_helpers::{
     aligned_hour_start, attested_sort_order_ids, context_for, load_table, trace_sort_keys,
 };
 use tests_integration::generators;
+use tests_integration::ordering::append_unattested;
 use writer::IcebergTableWriter;
 
 const DATASET: &str = "order-dataset";
@@ -97,14 +96,7 @@ impl Fixture {
             .find(|batch: &RecordBatch| batch.num_rows() > 0)
             .context("the seeded table must have rows to copy")?;
 
-        let mut table = self.table().await?;
-        let files = write_parquet_partitioned(&table, stream::iter(vec![Ok(newest)]), None).await?;
-        table
-            .new_transaction(None)
-            .append_data(files)
-            .commit()
-            .await?;
-        Ok(())
+        append_unattested(&mut self.table().await?, newest).await
     }
 
     /// Every row's key, read without asking for any order — the raw
