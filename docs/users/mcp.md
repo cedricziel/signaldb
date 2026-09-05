@@ -31,7 +31,7 @@ these:
 | Tool                       | Purpose                                                                                                                                                                                                              |
 | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `server_info`              | Confirm connectivity and which tenant your credential resolves to.                                                                                                                                                   |
-| `discover_datasets`        | The tenant and datasets your credential can access, as a nested Markdown list, marking the session's current default dataset. Call before passing an explicit `dataset` or `tenant` argument elsewhere.             |
+| `discover_datasets`        | The tenant and datasets your credential can access, as a nested Markdown list, marking the session's current default dataset. Filtered to your credential's dataset restriction, if any — a dataset outside it never appears, even by name. Call before passing an explicit `dataset` or `tenant` argument elsewhere.             |
 | `search_traces`            | TraceQL search over your tenant's traces.                                                                                                                                                                            |
 | `get_trace`                | Fetch a single trace by ID (renders as a waterfall — see below).                                                                                                                                                     |
 | `get_profile`              | Fetch a single profile's flamegraph by ID (renders as an interactive flamegraph — see below).                                                                                                                        |
@@ -100,9 +100,9 @@ Unprefixed, admin-authenticated (the administrative API key can manage
 | `create_user`                      | Create a human user and grant an initial tenant membership.                                                                                                                          |
 | `list_datasets` / `create_dataset` | List or create a tenant's datasets.                                                                                                                                                  |
 | `delete_dataset`                   | Delete a dataset by ID. **Destructive**: requires `confirm` equal to `dataset_id`.                                                                                                   |
-| `list_api_keys`                    | List a tenant's API keys with their scopes and dataset restriction. Raw secrets are never returned.                                                                                  |
-| `create_api_key`                   | Create an API key carrying explicit `scopes` (required; e.g. `traces:write`, `schema:read`) and an optional `dataset_id`. The raw secret is returned exactly once, in this response. |
-| `update_api_key_scopes`            | Change a live key's scopes and/or dataset restriction without rotating its secret; revoked keys are rejected.                                                                        |
+| `list_api_keys`                    | List a tenant's API keys with their scopes and dataset set (or that they're unrestricted). Raw secrets are never returned.                                                                                  |
+| `create_api_key`                   | Create an API key carrying explicit `scopes` (required; e.g. `traces:write`, `schema:read`) and an optional `dataset_ids` set. The raw secret is returned exactly once, in this response. |
+| `update_api_key_scopes`            | Change a live key's scopes and/or dataset set without rotating its secret; `dataset_ids` replaces the restriction, `clear_dataset_restriction: true` (with no `dataset_ids`) removes it, and omitting both leaves it unchanged — sending both together is rejected before any request is made. Revoked keys are rejected.                                                                        |
 | `revoke_api_key`                   | Revoke an API key by ID. **Destructive**: requires `confirm` equal to `key_id`.                                                                                                      |
 
 ### Tenant self-management
@@ -116,7 +116,7 @@ plain tenant API key, exactly like the query tools above:
 | Tool                           | Purpose                                                                                                                                    |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `tenant_info`                  | The caller's own tenant: id, enabled flag, schema configuration (mirrors `signaldb-cli tenant show`).                                      |
-| `tenant_list_tables`           | List the tenant's provisioned signal tables.                                                                                               |
+| `tenant_list_tables`           | List the tenant's provisioned signal tables. Filtered to your credential's dataset restriction, if any, the same way `discover_datasets` is.                                                                                               |
 | `tenant_create_tables`         | Provision (create) the tenant's enabled signal tables — the manual trigger from [table provisioning](../operations/table-provisioning.md). |
 | `tenant_list_table_schemas`    | List the tenant's configured table schema types (distinct from `tenant_list_tables`, which lists what is actually provisioned).            |
 | `list_available_table_schemas` | List every table schema type SignalDB knows how to provision, regardless of tenant configuration.                                          |
@@ -141,7 +141,7 @@ access-denied error naming the required scope rather than succeeding or
 | `tenant_delete_dataset`                                | Delete a dataset by name. **Destructive**: requires `confirm` equal to `dataset_name`.                   |
 | `tenant_list_api_keys`                                 | List the caller's own tenant's API keys. Raw secrets are never returned.                                 |
 | `tenant_create_api_key`                                | Create an API key for the caller's own tenant. The raw secret is returned exactly once.                  |
-| `tenant_update_api_key`                                | Update the scopes and/or dataset restriction of one of the caller's own tenant's API keys.               |
+| `tenant_update_api_key`                                | Update the scopes and/or dataset set of one of the caller's own tenant's API keys — same `dataset_ids`/`clear_dataset_restriction` semantics as `update_api_key_scopes` above.               |
 | `tenant_revoke_api_key`                                | Revoke one of the caller's own tenant's API keys. **Destructive**: requires `confirm` equal to `key_id`. |
 | `tenant_list_memberships` / `tenant_upsert_membership` | List the caller's own tenant's memberships, or create/update a member's role.                            |
 | `tenant_remove_membership`                             | Remove a member from the caller's own tenant. **Destructive**: requires `confirm` equal to `user_id`.    |
@@ -398,6 +398,22 @@ through a sign-in + consent screen. On the consent screen you pick **one
 tenant** and approve the read scopes it requested; the token it receives is
 bound to that tenant. To let a connector reach a second tenant, add it a second
 time and grant the other tenant.
+
+After choosing a tenant, the consent screen also offers a dataset choice:
+**all datasets** in that tenant (the default — identical to every connector
+granted before this choice existed) or **only these datasets**, which reveals
+a checklist of the tenant's datasets and requires at least one checked box to
+approve. Picking specific datasets binds the token to exactly that set —
+queries against any other dataset in the tenant are refused, and a query
+naming no dataset at all is rejected rather than silently falling back to the
+tenant default when the set has more than one dataset (a single-dataset
+restriction resolves to that dataset the same way an unrestricted token
+resolves to the tenant default). A refresh preserves whichever restriction the
+original grant had. Restricting a grant to specific datasets is refused,
+naming the `dataset_restriction_rollout_complete` config key, until an
+operator has set `[auth] dataset_restriction_rollout_complete = true` on
+every router node — see [Multi-dataset rollout](authentication.md#multi-dataset-rollout);
+choosing "all datasets" is unaffected by this and always available.
 
 The endpoint **must be HTTPS with a valid certificate** — these clients will not
 connect to a raw LAN port, so the TLS reverse proxy is required here.
