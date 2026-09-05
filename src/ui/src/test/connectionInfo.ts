@@ -11,17 +11,35 @@ import type { ConnectionInfoResponse } from "../api/gen";
 export function connectionInfoBody(
   overrides: Partial<ConnectionInfoResponse> & { tls?: boolean } = {},
 ): ConnectionInfoResponse {
-  const { tls = true, ...rest } = overrides;
+  const {
+    tls = true,
+    headers: headersOverride,
+    otel_env: otelEnvOverride,
+    ...rest
+  } = overrides;
   const scheme = tls ? "https" : "http";
+
+  const headers: ConnectionInfoResponse["headers"] = {
+    authorization: "Bearer <api-key>",
+    "x-tenant-id": "acme",
+    "x-dataset-id": "production",
+    ...headersOverride,
+  };
+  // Derived from the effective `headers` above (not hardcoded) so a caller
+  // overriding `headers` without also overriding `otel_env` doesn't drift
+  // from what the router actually derives them from.
+  const otelEnv: ConnectionInfoResponse["otel_env"] = {
+    OTEL_EXPORTER_OTLP_ENDPOINT: `${scheme}://ingest.acme.example.com:4317`,
+    OTEL_EXPORTER_OTLP_PROTOCOL: "grpc",
+    OTEL_EXPORTER_OTLP_HEADERS: `authorization=${headers.authorization},x-tenant-id=${headers["x-tenant-id"]},x-dataset-id=${headers["x-dataset-id"]}`,
+    ...otelEnvOverride,
+  };
+
   const base: ConnectionInfoResponse = {
     tenant_id: "acme",
     dataset_id: "production",
     public_endpoints_configured: true,
-    headers: {
-      authorization: "Bearer <api-key>",
-      "x-tenant-id": "acme",
-      "x-dataset-id": "production",
-    },
+    headers,
     ingest: {
       otlp_grpc: {
         url: `${scheme}://ingest.acme.example.com:4317`,
@@ -63,12 +81,7 @@ export function connectionInfoBody(
       ],
       query: ["traces:read", "logs:read", "metrics:read", "profiles:read"],
     },
-    otel_env: {
-      OTEL_EXPORTER_OTLP_ENDPOINT: `${scheme}://ingest.acme.example.com:4317`,
-      OTEL_EXPORTER_OTLP_PROTOCOL: "grpc",
-      OTEL_EXPORTER_OTLP_HEADERS:
-        "authorization=Bearer <api-key>,x-tenant-id=acme,x-dataset-id=production",
-    },
+    otel_env: otelEnv,
     notes: [],
   };
   return { ...base, ...rest };
