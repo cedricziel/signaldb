@@ -1537,11 +1537,11 @@ fn project_dataset_id_set(ids: &[String]) -> Result<(String, Option<String>), sq
 /// as before this column existed.
 fn decode_dataset_id_set(
     dataset_ids: Option<String>,
-    legacy_dataset_id: Option<String>,
+    legacy_dataset_id: Option<&str>,
 ) -> Result<Option<Vec<String>>, sqlx::Error> {
     match dataset_ids {
         Some(json) => decode_json_vec(json).map(Some),
-        None => Ok(legacy_dataset_id.map(|id| vec![id])),
+        None => Ok(legacy_dataset_id.map(|id| vec![id.to_string()])),
     }
 }
 
@@ -2461,7 +2461,7 @@ impl Catalog {
                 row.map(|r| {
                     let dataset_id: Option<String> = r.get("dataset_id");
                     let dataset_ids =
-                        decode_dataset_id_set(r.get("dataset_ids"), dataset_id.clone())?;
+                        decode_dataset_id_set(r.get("dataset_ids"), dataset_id.as_deref())?;
                     Ok(ApiKeyAuthRecord {
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
@@ -2481,7 +2481,7 @@ impl Catalog {
                 row.map(|r| {
                     let dataset_id: Option<String> = r.get("dataset_id");
                     let dataset_ids =
-                        decode_dataset_id_set(r.get("dataset_ids"), dataset_id.clone())?;
+                        decode_dataset_id_set(r.get("dataset_ids"), dataset_id.as_deref())?;
                     Ok(ApiKeyAuthRecord {
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
@@ -2986,7 +2986,7 @@ impl Catalog {
                         let revoked_at: Option<String> = r.get("revoked_at");
                         let dataset_id: Option<String> = r.get("dataset_id");
                         let dataset_ids =
-                            decode_dataset_id_set(r.get("dataset_ids"), dataset_id.clone())?;
+                            decode_dataset_id_set(r.get("dataset_ids"), dataset_id.as_deref())?;
                         Ok(ApiKeyRecord {
                             id: r.get("id"),
                             tenant_id: r.get("tenant_id"),
@@ -3013,7 +3013,7 @@ impl Catalog {
                     .map(|r| {
                         let dataset_id: Option<String> = r.get("dataset_id");
                         let dataset_ids =
-                            decode_dataset_id_set(r.get("dataset_ids"), dataset_id.clone())?;
+                            decode_dataset_id_set(r.get("dataset_ids"), dataset_id.as_deref())?;
                         Ok(ApiKeyRecord {
                             id: r.get("id"),
                             tenant_id: r.get("tenant_id"),
@@ -3046,7 +3046,7 @@ impl Catalog {
                     let revoked_at: Option<String> = r.get("revoked_at");
                     let dataset_id: Option<String> = r.get("dataset_id");
                     let dataset_ids =
-                        decode_dataset_id_set(r.get("dataset_ids"), dataset_id.clone())?;
+                        decode_dataset_id_set(r.get("dataset_ids"), dataset_id.as_deref())?;
                     Ok(ApiKeyRecord {
                         id: r.get("id"),
                         tenant_id: r.get("tenant_id"),
@@ -3072,7 +3072,7 @@ impl Catalog {
                 row.map(|r| {
                     let dataset_id: Option<String> = r.get("dataset_id");
                     let dataset_ids =
-                        decode_dataset_id_set(r.get("dataset_ids"), dataset_id.clone())?;
+                        decode_dataset_id_set(r.get("dataset_ids"), dataset_id.as_deref())?;
                     Ok(ApiKeyRecord {
                         id: r.get("id"),
                         tenant_id: r.get("tenant_id"),
