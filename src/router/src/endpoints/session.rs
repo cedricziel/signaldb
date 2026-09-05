@@ -1384,6 +1384,139 @@ mod tests {
         assert_eq!(body["dataset_ids"], serde_json::json!(["production"]));
     }
 
+    /// D10: a config-defined tenant can still be reached through a
+    /// database-backed, dataset-restricted API key (created via the
+    /// management API rather than the TOML `api_keys` list) — `whoami`'s
+    /// config-tenant branch must filter `datasets`/`default_dataset` for it
+    /// exactly as the database-tenant branch does, even though the tenant
+    /// itself is config-defined.
+    #[tokio::test]
+    async fn whoami_filters_datasets_and_default_for_a_restricted_key_on_a_config_tenant() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant(
+                    "acme",
+                    "acme-key",
+                    &[("production", true), ("staging", false)],
+                    Some("production"),
+                )],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        // Restricted to "staging" only — excludes the tenant's own default
+        // dataset ("production"), the edge case D4's resolution order
+        // requires callers to handle explicitly.
+        catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &common::auth::Authenticator::hash_api_key("staging-only-key"),
+                Some("staging-only"),
+                Some(&["staging".to_string()]),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let app = create_router(RouterAppState::new(catalog, config));
+
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", "Bearer staging-only-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        let dataset_ids: Vec<&str> = body["datasets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            dataset_ids,
+            vec!["staging"],
+            "restricted credential must not see an unlisted dataset's name: {body}"
+        );
+        // A single-element restriction resolves to that element (D4 case 3),
+        // so the credential's effective default is "staging", never the
+        // tenant's actual default ("production"), which falls outside it.
+        assert_eq!(body["default_dataset"], "staging");
+    }
+
+    /// Same as above, for the database-backed-tenant branch (a tenant not
+    /// declared in TOML config at all).
+    #[tokio::test]
+    async fn whoami_filters_datasets_and_default_for_a_restricted_key_on_a_db_tenant() {
+        let app = test_app().await;
+        let cookie = admin_cookie(&app).await;
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/manage/tenants")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "acme")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"id":"newco","name":"New Co","default_dataset":"production"}"#,
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/manage/tenants/newco/datasets")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "newco")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"staging"}"#))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/manage/tenants/newco/api-keys")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "newco")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"name":"staging-only","dataset_ids":["staging"],"scopes":["metrics:write"]}"#,
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let created = json_body(response).await;
+        let secret = created["key"].as_str().unwrap().to_string();
+
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", format!("Bearer {secret}"))
+            .header("x-tenant-id", "newco")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        let dataset_ids: Vec<&str> = body["datasets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            dataset_ids,
+            vec!["staging"],
+            "restricted credential must not see an unlisted dataset's name: {body}"
+        );
+        assert_eq!(body["default_dataset"], "staging");
+    }
+
     #[tokio::test]
     async fn whoami_requires_authentication() {
         let app = test_app().await;
