@@ -1299,21 +1299,63 @@ pub struct PublicEndpoints {
     pub otlp_http: url::Url,
     pub api_url: String,
     pub mcp_url: Option<String>,
-    /// Whether `[public]` has any explicit value set. `false` means every URL
-    /// above is a localhost fallback, unlikely to be reachable from outside
-    /// this machine.
+    /// Whether every required `[public]` field (`otlp_grpc_url`,
+    /// `otlp_http_url`, `api_url`) has been explicitly set. `mcp_url` is
+    /// optional and does not count. `false` means at least one of the
+    /// required URLs above is a localhost fallback, unlikely to be reachable
+    /// from outside this machine — see `notes` for which.
     pub configured: bool,
+    /// One entry per unset required `[public]` field, naming the field and
+    /// the localhost default it falls back to. Empty when `configured` is
+    /// true.
+    pub notes: Vec<String>,
 }
 
-/// A `[public]` URL failed to parse. Carries the offending field name so the
-/// message is actionable without the caller re-deriving it.
+/// Why a `[public]` URL was rejected.
 #[derive(Debug, thiserror::Error)]
-#[error("invalid public.{field} URL {value:?}: {source}")]
+pub enum PublicEndpointsErrorReason {
+    #[error("{0}")]
+    Parse(#[from] url::ParseError),
+    #[error("scheme must be http or https, got {0:?}")]
+    UnsupportedScheme(String),
+    #[error("URL has no host")]
+    MissingHost,
+}
+
+/// A `[public]` URL failed validation. Carries the offending field name so
+/// the message is actionable without the caller re-deriving it.
+#[derive(Debug, thiserror::Error)]
+#[error("invalid public.{field} URL {value:?}: {reason}")]
 pub struct PublicEndpointsError {
     field: &'static str,
     value: String,
     #[source]
-    source: url::ParseError,
+    reason: PublicEndpointsErrorReason,
+}
+
+/// Parses `value` and requires an `http`/`https` scheme and a host, so every
+/// `[public]` URL fails startup with a clear, field-named message instead of
+/// misbehaving at a random consumer (a host-less `file:///…` or a
+/// non-network scheme like `ftp://`).
+fn validate_public_url(
+    value: String,
+    field: &'static str,
+) -> Result<url::Url, PublicEndpointsError> {
+    let err = |reason: PublicEndpointsErrorReason| PublicEndpointsError {
+        field,
+        value: value.clone(),
+        reason,
+    };
+    let url = url::Url::parse(&value).map_err(|source| err(source.into()))?;
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return Err(err(PublicEndpointsErrorReason::UnsupportedScheme(
+            url.scheme().to_string(),
+        )));
+    }
+    if url.host_str().is_none() {
+        return Err(err(PublicEndpointsErrorReason::MissingHost));
+    }
+    Ok(url)
 }
 
 /// The getters below (`otlp_grpc_url`, `otlp_http_url`, `api_url`, `mcp_url`)
@@ -1322,12 +1364,12 @@ pub struct PublicEndpointsError {
 /// for local development. Prefer [`PublicEndpointsConfig::resolve`], which
 /// parses and validates all of them together.
 impl PublicEndpointsConfig {
-    /// True when any explicit public endpoint has been configured.
+    /// True when every required public endpoint (`otlp_grpc_url`,
+    /// `otlp_http_url`, `api_url`) has been explicitly configured. `mcp_url`
+    /// is optional and does not count: it has no localhost fallback to warn
+    /// about, only a `None` absence.
     pub fn is_configured(&self) -> bool {
-        self.otlp_grpc_url.is_some()
-            || self.otlp_http_url.is_some()
-            || self.api_url.is_some()
-            || self.mcp_url.is_some()
+        self.otlp_grpc_url.is_some() && self.otlp_http_url.is_some() && self.api_url.is_some()
     }
 
     pub fn otlp_grpc_url(&self) -> String {
@@ -1360,23 +1402,46 @@ impl PublicEndpointsConfig {
             .map(|v| v.trim_end_matches('/').to_string())
     }
 
-    /// Parses and validates every `[public]` URL, returning the effective
+    /// Parses and validates every `[public]` URL — requiring an `http`/`https`
+    /// scheme and a host on all four fields — and returns the effective
     /// values consumers need. Called once at config load so a malformed URL
     /// fails startup with a clear message instead of a 500 on first request.
     pub fn resolve(&self, oauth: &OAuthConfig) -> Result<PublicEndpoints, PublicEndpointsError> {
-        let parse = |value: String, field: &'static str| {
-            url::Url::parse(&value).map_err(|source| PublicEndpointsError {
-                field,
-                value,
-                source,
-            })
-        };
+        let otlp_grpc_value = self.otlp_grpc_url();
+        let otlp_http_value = self.otlp_http_url();
+        let api_url_value = self.api_url();
+        let otlp_grpc = validate_public_url(otlp_grpc_value.clone(), "otlp_grpc_url")?;
+        let otlp_http = validate_public_url(otlp_http_value.clone(), "otlp_http_url")?;
+        validate_public_url(api_url_value.clone(), "api_url")?;
+        let mcp_url = self.mcp_url(oauth);
+        if let Some(url) = mcp_url.as_ref() {
+            validate_public_url(url.clone(), "mcp_url")?;
+        }
+
+        let mut notes = Vec::new();
+        if self.otlp_grpc_url.is_none() {
+            notes.push(format!(
+                "public.otlp_grpc_url is not set; falling back to {otlp_grpc_value}"
+            ));
+        }
+        if self.otlp_http_url.is_none() {
+            notes.push(format!(
+                "public.otlp_http_url is not set; falling back to {otlp_http_value}"
+            ));
+        }
+        if self.api_url.is_none() {
+            notes.push(format!(
+                "public.api_url is not set; falling back to {api_url_value}"
+            ));
+        }
+
         Ok(PublicEndpoints {
-            otlp_grpc: parse(self.otlp_grpc_url(), "otlp_grpc_url")?,
-            otlp_http: parse(self.otlp_http_url(), "otlp_http_url")?,
-            api_url: self.api_url(),
-            mcp_url: self.mcp_url(oauth),
+            otlp_grpc,
+            otlp_http,
+            api_url: api_url_value,
+            mcp_url,
             configured: self.is_configured(),
+            notes,
         })
     }
 }
@@ -2206,7 +2271,9 @@ mod tests {
                 .merge(Serialized::defaults(Configuration::default()))
                 .merge(Env::prefixed("SIGNALDB__").split("__"))
                 .extract()?;
-            assert!(config.public.is_configured());
+            // Only one of the three required fields is set via env, so this
+            // is still a partial (not fully "configured") deployment.
+            assert!(!config.public.is_configured());
             assert_eq!(
                 config.public.otlp_grpc_url(),
                 "https://otlp.example.com:4317"
@@ -2245,6 +2312,51 @@ mod tests {
             .resolve(&config.mcp.oauth)
             .expect_err("malformed URL must be rejected");
         assert!(error.to_string().contains("otlp_grpc_url"));
+    }
+
+    #[test]
+    fn public_endpoints_resolve_rejects_a_non_http_scheme() {
+        let mut config = Configuration::default();
+        config.public.api_url = Some("ftp://files.example.com".to_string());
+        let error = config
+            .public
+            .resolve(&config.mcp.oauth)
+            .expect_err("non-http(s) scheme must be rejected");
+        let message = error.to_string();
+        assert!(message.contains("api_url"), "{message}");
+        assert!(message.contains("scheme"), "{message}");
+    }
+
+    // Exercises `validate_public_url` directly rather than through
+    // `resolve`: `resolved()` trims every trailing `/`, and the WHATWG URL
+    // spec makes `http`/`https` "special" schemes that already fail to parse
+    // with an empty host (`http://` alone), so there is no config value that
+    // reaches this check via the public API. Kept as a direct defense
+    // against a future URL crate or scheme-list change.
+    #[test]
+    fn validate_public_url_rejects_a_host_less_url() {
+        let error = validate_public_url("http://".to_string(), "otlp_http_url")
+            .expect_err("host-less URL must be rejected");
+        let message = error.to_string();
+        assert!(message.contains("otlp_http_url"), "{message}");
+        assert!(message.contains("host"), "{message}");
+    }
+
+    #[test]
+    fn public_endpoints_resolve_partial_config_reports_unset_fields_as_notes() {
+        let mut config = Configuration::default();
+        config.public.api_url = Some("https://signaldb.example.com".to_string());
+        let resolved = config.public.resolve(&config.mcp.oauth).unwrap();
+        assert!(!resolved.configured);
+        assert_eq!(resolved.notes.len(), 2);
+        assert!(
+            resolved.notes[0].contains("public.otlp_grpc_url")
+                && resolved.notes[0].contains("http://localhost:4317")
+        );
+        assert!(
+            resolved.notes[1].contains("public.otlp_http_url")
+                && resolved.notes[1].contains("http://localhost:4318")
+        );
     }
 
     #[test]

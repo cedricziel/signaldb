@@ -705,9 +705,10 @@ pub struct ConnectionOtelEnv {
 pub struct ConnectionInfoResponse {
     pub tenant_id: String,
     pub dataset_id: String,
-    /// Whether `[public]` has any explicit value set. `false` means every URL
-    /// below is a localhost fallback, unlikely to be reachable from outside
-    /// this machine.
+    /// Whether every required `[public]` field (OTLP gRPC/HTTP, API URL) has
+    /// been explicitly set. `false` means at least one of those URLs below is
+    /// a localhost fallback, unlikely to be reachable from outside this
+    /// machine — see `notes` for which.
     pub public_endpoints_configured: bool,
     pub headers: ConnectionHeaders,
     pub ingest: ConnectionIngest,
@@ -848,14 +849,7 @@ pub async fn connection_info<S: RouterState>(
         ),
     };
 
-    let notes = if public.configured {
-        Vec::new()
-    } else {
-        vec![
-            "Public endpoints are not configured ([public] in signaldb.toml); URLs fall back to localhost defaults."
-                .to_string(),
-        ]
-    };
+    let notes = public.notes.clone();
 
     Json(ConnectionInfoResponse {
         tenant_id: ctx.tenant_id.clone(),
@@ -2070,8 +2064,75 @@ mod tests {
         );
 
         let notes = body["notes"].as_array().unwrap();
-        assert_eq!(notes.len(), 1);
-        assert!(notes[0].as_str().unwrap().contains("[public]"));
+        assert_eq!(notes.len(), 3);
+        assert!(
+            notes[0]
+                .as_str()
+                .unwrap()
+                .contains("public.otlp_grpc_url is not set")
+        );
+        assert!(
+            notes[1]
+                .as_str()
+                .unwrap()
+                .contains("public.otlp_http_url is not set")
+        );
+        assert!(
+            notes[2]
+                .as_str()
+                .unwrap()
+                .contains("public.api_url is not set")
+        );
+    }
+
+    #[tokio::test]
+    async fn connection_info_partial_config_is_not_configured_and_notes_unset_otlp_fields() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant(
+                    "acme",
+                    "acme-key",
+                    &[("production", true)],
+                    Some("production"),
+                )],
+                ..Default::default()
+            },
+            public: common::config::PublicEndpointsConfig {
+                api_url: Some("https://signaldb.example.com".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let app = crate::create_router(RouterAppState::new(catalog, config));
+
+        let request = Request::builder()
+            .uri("/api/v1/connection")
+            .header("authorization", "Bearer acme-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+
+        assert_eq!(body["public_endpoints_configured"], false);
+        assert_eq!(body["query"]["api_url"], "https://signaldb.example.com");
+        let notes = body["notes"].as_array().unwrap();
+        assert_eq!(notes.len(), 2);
+        assert!(
+            notes[0]
+                .as_str()
+                .unwrap()
+                .contains("public.otlp_grpc_url is not set")
+        );
+        assert!(
+            notes[1]
+                .as_str()
+                .unwrap()
+                .contains("public.otlp_http_url is not set")
+        );
     }
 
     #[tokio::test]

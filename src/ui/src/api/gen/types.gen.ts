@@ -204,9 +204,10 @@ export type ConnectionInfoResponse = {
     notes: Array<string>;
     otel_env: ConnectionOtelEnv;
     /**
-     * Whether `[public]` has any explicit value set. `false` means every URL
-     * below is a localhost fallback, unlikely to be reachable from outside
-     * this machine.
+     * Whether every required `[public]` field (OTLP gRPC/HTTP, API URL) has
+     * been explicitly set. `false` means at least one of those URLs below is
+     * a localhost fallback, unlikely to be reachable from outside this
+     * machine — see `notes` for which.
      */
     public_endpoints_configured: boolean;
     query: ConnectionQuery;

@@ -800,7 +800,7 @@ pub mod types {
     ///      "$ref": "#/components/schemas/ConnectionOtelEnv"
     ///    },
     ///    "public_endpoints_configured": {
-    ///      "description": "Whether `[public]` has any explicit value set. `false` means every URL\nbelow is a localhost fallback, unlikely to be reachable from outside\nthis machine.",
+    ///      "description": "Whether every required `[public]` field (OTLP gRPC/HTTP, API URL) has\nbeen explicitly set. `false` means at least one of those URLs below is\na localhost fallback, unlikely to be reachable from outside this\nmachine — see `notes` for which.",
     ///      "type": "boolean"
     ///    },
     ///    "query": {
@@ -827,9 +827,10 @@ pub mod types {
         localhost fallbacks. Empty when everything is configured.*/
         pub notes: ::std::vec::Vec<::std::string::String>,
         pub otel_env: ConnectionOtelEnv,
-        /**Whether `[public]` has any explicit value set. `false` means every URL
-        below is a localhost fallback, unlikely to be reachable from outside
-        this machine.*/
+        /**Whether every required `[public]` field (OTLP gRPC/HTTP, API URL) has
+        been explicitly set. `false` means at least one of those URLs below is
+        a localhost fallback, unlikely to be reachable from outside this
+        machine — see `notes` for which.*/
         pub public_endpoints_configured: bool,
         pub query: ConnectionQuery,
         pub required_scopes: ConnectionScopes,

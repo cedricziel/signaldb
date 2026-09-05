@@ -4718,7 +4718,7 @@
           },
           "public_endpoints_configured": {
             "type": "boolean",
-            "description": "Whether `[public]` has any explicit value set. `false` means every URL\nbelow is a localhost fallback, unlikely to be reachable from outside\nthis machine."
+            "description": "Whether every required `[public]` field (OTLP gRPC/HTTP, API URL) has\nbeen explicitly set. `false` means at least one of those URLs below is\na localhost fallback, unlikely to be reachable from outside this\nmachine — see `notes` for which."
           },
           "query": {
             "$ref": "#/components/schemas/ConnectionQuery"
