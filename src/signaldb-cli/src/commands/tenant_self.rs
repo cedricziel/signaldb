@@ -616,6 +616,91 @@ mod tests {
         );
     }
 
+    #[test]
+    fn api_key_create_accepts_repeated_dataset_flag() {
+        let parsed = TestCli::try_parse_from([
+            "tenant",
+            "api-key",
+            "create",
+            "--name",
+            "ci",
+            "--scope",
+            "traces:write",
+            "--dataset",
+            "production",
+            "--dataset",
+            "staging",
+        ])
+        .expect("parses");
+        let TenantSelfAction::ApiKey {
+            action: ApiKeyAction::Create { dataset, .. },
+        } = parsed.action
+        else {
+            panic!("expected api-key create");
+        };
+        assert_eq!(
+            dataset,
+            Some(vec!["production".to_string(), "staging".to_string()])
+        );
+    }
+
+    #[test]
+    fn api_key_update_accepts_repeated_dataset_flag_and_clear_flag() {
+        let parsed = TestCli::try_parse_from([
+            "tenant",
+            "api-key",
+            "update",
+            "k1",
+            "--dataset",
+            "production",
+            "--dataset",
+            "staging",
+        ])
+        .expect("parses");
+        let TenantSelfAction::ApiKey {
+            action: ApiKeyAction::Update { dataset, .. },
+        } = parsed.action
+        else {
+            panic!("expected api-key update");
+        };
+        assert_eq!(
+            dataset,
+            Some(vec!["production".to_string(), "staging".to_string()])
+        );
+
+        let parsed =
+            TestCli::try_parse_from(["tenant", "api-key", "update", "k1", "--dataset", "x"])
+                .expect("parses");
+        let TenantSelfAction::ApiKey {
+            action:
+                ApiKeyAction::Update {
+                    clear_dataset_restriction,
+                    ..
+                },
+        } = parsed.action
+        else {
+            panic!("expected api-key update");
+        };
+        assert!(!clear_dataset_restriction);
+    }
+
+    #[test]
+    fn api_key_update_rejects_dataset_and_clear_dataset_restriction_together() {
+        let parsed = TestCli::try_parse_from([
+            "tenant",
+            "api-key",
+            "update",
+            "k1",
+            "--dataset",
+            "production",
+            "--clear-dataset-restriction",
+        ]);
+        assert!(
+            parsed.is_err(),
+            "--dataset and --clear-dataset-restriction must conflict at the CLI level"
+        );
+    }
+
     #[tokio::test]
     async fn destructive_verbs_refuse_without_yes_when_not_a_tty() {
         // Under `cargo test`, stdin is not a terminal.
@@ -789,6 +874,7 @@ mod tests {
             key_id: "k1".into(),
             scopes: vec!["logs:write".into()],
             dataset: None,
+            clear_dataset_restriction: false,
             connect: connect(),
         }
         .run()
@@ -1003,5 +1089,128 @@ mod tests {
         .await
         .expect("available-schemas succeeds");
         available_mock.assert_async().await;
+    }
+
+    fn connect_acme(server: &mockito::ServerGuard) -> ConnectArgs {
+        ConnectArgs {
+            url: server.url(),
+            api_key: Some("sk-test".to_string()),
+            tenant_id: Some("acme".to_string()),
+            dataset_id: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn tenant_api_key_update_sends_multiple_datasets() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("PATCH", "/api/v1/manage/tenants/acme/api-keys/k1")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "dataset_ids": ["production", "staging"]
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"k1","name":"ci","scopes":["traces:write"],"dataset_ids":["production","staging"],"created_at":"2026-01-01T00:00:00Z","revoked":false}"#,
+            )
+            .create_async()
+            .await;
+
+        ApiKeyAction::Update {
+            key_id: "k1".into(),
+            scopes: vec![],
+            dataset: Some(vec!["production".into(), "staging".into()]),
+            clear_dataset_restriction: false,
+            connect: connect_acme(&server),
+        }
+        .run()
+        .await
+        .expect("update succeeds");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn tenant_api_key_update_clears_dataset_restriction() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("PATCH", "/api/v1/manage/tenants/acme/api-keys/k1")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "clear_dataset_restriction": true
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"k1","name":"ci","scopes":["traces:write"],"created_at":"2026-01-01T00:00:00Z","revoked":false}"#,
+            )
+            .create_async()
+            .await;
+
+        ApiKeyAction::Update {
+            key_id: "k1".into(),
+            scopes: vec![],
+            dataset: None,
+            clear_dataset_restriction: true,
+            connect: connect_acme(&server),
+        }
+        .run()
+        .await
+        .expect("update succeeds");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn tenant_api_key_update_without_changes_is_an_error() {
+        let server = mockito::Server::new_async().await;
+        let result = ApiKeyAction::Update {
+            key_id: "k1".into(),
+            scopes: vec![],
+            dataset: None,
+            clear_dataset_restriction: false,
+            connect: connect_acme(&server),
+        }
+        .run()
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn tenant_api_key_list_defaults_to_a_human_readable_table_with_dataset_restriction() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", "/api/v1/manage/tenants/acme/api-keys")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"[
+                    {"id":"k1","name":"ci","scopes":["traces:write"],"dataset_ids":["production","staging"],"created_at":"2026-01-01T00:00:00Z","revoked":false},
+                    {"id":"k2","name":"full","scopes":["schema:read"],"dataset_ids":null,"created_at":"2026-01-01T00:00:00Z","revoked":false}
+                ]"#,
+            )
+            .create_async()
+            .await;
+
+        ApiKeyAction::List(ApiKeyListArgs {
+            connect: connect_acme(&server),
+            json: false,
+        })
+        .run()
+        .await
+        .expect("list succeeds");
+    }
+
+    #[test]
+    fn format_tenant_api_key_list_shows_dataset_restriction_or_unrestricted() {
+        let keys: Vec<ManageApiKeyResponse> = serde_json::from_str(
+            r#"[
+                {"id":"k1","name":"ci","scopes":["traces:write"],"dataset_ids":["production","staging"],"created_at":"2026-01-01T00:00:00Z","revoked":false},
+                {"id":"k2","name":"full","scopes":["schema:read"],"dataset_ids":null,"created_at":"2026-01-01T00:00:00Z","revoked":false}
+            ]"#,
+        )
+        .unwrap();
+
+        let rendered = format_tenant_api_key_list(&keys);
+
+        assert!(rendered.contains("production, staging"));
+        assert!(rendered.contains("unrestricted"));
     }
 }
