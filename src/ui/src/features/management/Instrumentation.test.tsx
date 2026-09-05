@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
+import { connectionInfoBody } from "../../test/connectionInfo";
 import { Instrumentation } from "./Instrumentation";
 
 /** Locate the <code> element inside the "Configuration snippet" panel. */
@@ -25,29 +26,15 @@ function renderInstrumentation(props: {
   );
 }
 
-const WHOAMI = {
-  user: {
-    id: "user-1",
-    email: "alice@example.com",
-    display_name: "Alice",
-    is_instance_admin: false,
-  },
-  memberships: [{ tenant_id: "acme", role: "admin" }],
-  tenant: { id: "acme", slug: "acme", name: "Acme Corp" },
-  datasets: [
-    { id: "production", slug: "production", is_default: true },
-    { id: "staging", slug: "staging", is_default: false },
-  ],
-  default_dataset: "production",
-};
-
 afterEach(() => {
   vi.unstubAllGlobals();
 });
 
 describe("Instrumentation page", () => {
   it("shows source selector with all 6 sources", async () => {
-    stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
     renderInstrumentation({ state: { tenant: "acme", dataset: "production" } });
 
     await waitFor(() => {
@@ -61,7 +48,9 @@ describe("Instrumentation page", () => {
   });
 
   it("OTel SDK selected by default", async () => {
-    stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
     renderInstrumentation({ state: { tenant: "acme", dataset: "production" } });
 
     await waitFor(() => {
@@ -72,11 +61,14 @@ describe("Instrumentation page", () => {
   });
 
   it("shows code snippet for selected source", async () => {
-    stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
     renderInstrumentation({ state: { tenant: "acme", dataset: "production" } });
 
     await waitFor(() => {
-      // Should include tenant and dataset placeholders
+      // Should include tenant and dataset placeholders, from the response's
+      // header contract.
       const codeBlock = getCodeBlock();
       expect(codeBlock).toBeInTheDocument();
       expect(codeBlock.textContent).toContain("acme");
@@ -85,7 +77,9 @@ describe("Instrumentation page", () => {
   });
 
   it("clicking a source switches content", async () => {
-    stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
     renderInstrumentation({ state: { tenant: "acme", dataset: "production" } });
 
     await waitFor(() => {
@@ -105,7 +99,9 @@ describe("Instrumentation page", () => {
   });
 
   it("shows verification status section", async () => {
-    stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
     renderInstrumentation({ state: { tenant: "acme", dataset: "production" } });
 
     await waitFor(() => {
@@ -117,27 +113,127 @@ describe("Instrumentation page", () => {
     });
   });
 
-  it("code snippets include current tenant from whoami", async () => {
-    stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
+  it("code snippets include the tenant/dataset headers from connection info", async () => {
+    stubFetchRoutes([
+      {
+        match: "/api/v1/connection",
+        body: connectionInfoBody({
+          headers: {
+            authorization: "Bearer <api-key>",
+            "x-tenant-id": "acme",
+            "x-dataset-id": "staging",
+          },
+        }),
+      },
+    ]);
     renderInstrumentation({ state: { tenant: "acme", dataset: "production" } });
 
     await waitFor(() => {
       const code = getCodeBlock();
       expect(code.textContent).toMatch(/X-Tenant-ID.*acme/);
-      expect(code.textContent).toMatch(/X-Dataset-ID.*production/);
+      // The active dataset comes from the response, not the outlet state.
+      expect(code.textContent).toMatch(/X-Dataset-ID.*staging/);
+      expect(code.textContent).not.toMatch(/X-Dataset-ID.*production/);
     });
   });
 
-  it("snippets use the active dataset, not whoami's default_dataset", async () => {
-    // WHOAMI's default_dataset is "production", but the active dataset
-    // (from outlet state) is "staging" — snippets must reflect the latter.
-    stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
-    renderInstrumentation({ state: { tenant: "acme", dataset: "staging" } });
+  it("renders the real endpoint from /api/v1/connection, with no insecure flag for an https endpoint", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    renderInstrumentation({ state: { tenant: "acme", dataset: "production" } });
 
     await waitFor(() => {
       const code = getCodeBlock();
-      expect(code.textContent).toMatch(/X-Dataset-ID.*staging/);
-      expect(code.textContent).not.toMatch(/X-Dataset-ID.*production/);
+      expect(code.textContent).toContain(
+        "ingest.acme.example.com:4317",
+      );
+      expect(code.textContent).not.toContain("localhost");
+      expect(code.textContent).not.toMatch(/insecure/i);
+      expect(code.textContent).not.toContain("WithInsecure");
+    });
+  });
+
+  it("shows an insecure/plaintext flag when the endpoint is not TLS", async () => {
+    stubFetchRoutes([
+      {
+        match: "/api/v1/connection",
+        body: connectionInfoBody({ tls: false }),
+      },
+    ]);
+    renderInstrumentation({ state: { tenant: "acme", dataset: "production" } });
+
+    await waitFor(() => {
+      const code = getCodeBlock();
+      expect(code.textContent).toContain("WithInsecure");
+    });
+  });
+
+  it("shows a callout with the server's notes when public endpoints are not configured", async () => {
+    stubFetchRoutes([
+      {
+        match: "/api/v1/connection",
+        body: connectionInfoBody({
+          public_endpoints_configured: false,
+          notes: [
+            "Public endpoints are not configured ([public] in signaldb.toml); URLs fall back to localhost defaults.",
+          ],
+        }),
+      },
+    ]);
+    renderInstrumentation({ state: { tenant: "acme", dataset: "production" } });
+
+    await waitFor(() => {
+      expect(
+        screen.getByText(/Public endpoints are not configured/),
+      ).toBeInTheDocument();
+    });
+  });
+
+  it("shows no callout when public endpoints are configured", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    renderInstrumentation({ state: { tenant: "acme", dataset: "production" } });
+
+    await waitFor(() => {
+      expect(getCodeBlock().textContent).toContain("ingest.acme.example.com");
+    });
+    expect(
+      screen.queryByText(/Public endpoints are not configured/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows an error state with a retry button when connection info fails, and renders no snippet", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: { error: "boom" }, status: 500 },
+    ]);
+    renderInstrumentation({ state: { tenant: "acme", dataset: "production" } });
+
+    await waitFor(() => {
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        /Could not load connection details/,
+      );
+      expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    });
+    expect(screen.queryByText("Configuration snippet")).not.toBeInTheDocument();
+  });
+
+  it("retries the request when the retry button is clicked", async () => {
+    const fn = stubFetchRoutes([
+      { match: "/api/v1/connection", body: { error: "boom" }, status: 500 },
+    ]);
+    renderInstrumentation({ state: { tenant: "acme", dataset: "production" } });
+
+    await waitFor(() => {
+      expect(screen.getByRole("button", { name: "Retry" })).toBeInTheDocument();
+    });
+    const callsBeforeRetry = fn.mock.calls.length;
+
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    await waitFor(() => {
+      expect(fn.mock.calls.length).toBeGreaterThan(callsBeforeRetry);
     });
   });
 });
