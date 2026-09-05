@@ -48,22 +48,35 @@ function stubSuccessfulLogin() {
   ]);
 }
 
-/** Fills in and submits the sign-in form rendered by LoginPanel. */
+/** Fills in and submits the sign-in form rendered by LoginPanel. Waits for
+ * the email field specifically (not just any "Sign in"-labeled dialog) since
+ * the loading state shown while the whoami check is in flight uses the same
+ * dialog label. */
 async function signIn() {
-  await screen.findByRole("dialog", { name: "Sign in" });
+  await screen.findByLabelText("Email");
   await userEvent.type(screen.getByLabelText("Email"), "alice@example.com");
   await userEvent.type(screen.getByLabelText("Password"), "secret");
   await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
 }
 
 describe("LoginRoute", () => {
+  it("shows a loading state, not the form, while the auth check is pending", () => {
+    goto("/login");
+    stubFetchRoutes([{ match: "/api/v1/whoami", body: {}, status: 401 }]);
+    renderWithClient(<LoginRoute />);
+
+    expect(screen.getByText("Checking session…")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Email")).not.toBeInTheDocument();
+  });
+
   it("shows the sign-in form for an unauthenticated visitor", async () => {
     goto("/login");
     stubFetchRoutes([{ match: "/api/v1/whoami", body: {}, status: 401 }]);
     renderWithClient(<LoginRoute />);
 
+    expect(await screen.findByLabelText("Email")).toBeInTheDocument();
     expect(
-      await screen.findByRole("dialog", { name: "Sign in" }),
+      screen.getByRole("dialog", { name: "Sign in" }),
     ).toBeInTheDocument();
     expect(mockNavigate).not.toHaveBeenCalled();
   });
@@ -99,7 +112,7 @@ describe("LoginRoute", () => {
     );
   });
 
-  it.each([["//evil.com"], ["https://evil.com"]])(
+  it.each([["//evil.com"], ["https://evil.com"], ["/\\evil.com"]])(
     "falls back to /logs when the redirect param %s is unsafe",
     async (unsafe) => {
       goto(`/login?redirect=${encodeURIComponent(unsafe)}`);
