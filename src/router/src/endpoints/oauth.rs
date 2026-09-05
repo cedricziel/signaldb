@@ -579,6 +579,10 @@ pub(crate) async fn authorize_decision<S: RouterState>(
             &user.id,
             &d.tenant,
             &scopes,
+            // Consent-driven dataset-set restriction (D5/D6) is wired up in
+            // a later phase of multi-dataset-key-restriction; every grant
+            // issued today is unrestricted.
+            None,
             &d.redirect_uri,
             &d.code_challenge,
             resource.as_deref(),
@@ -906,6 +910,10 @@ async fn issue_tokens<S: RouterState>(
             user_id,
             tenant_id,
             scopes,
+            // See the dataset_ids note on the authorization-code issuance
+            // above: consent-driven restriction propagation is a later
+            // phase of multi-dataset-key-restriction.
+            None,
             resource,
             now + access_ttl,
         )
@@ -923,6 +931,7 @@ async fn issue_tokens<S: RouterState>(
             user_id,
             tenant_id,
             scopes,
+            None,
             resource,
             now + refresh_ttl,
         )
@@ -1010,6 +1019,7 @@ mod tests {
                 &user.id,
                 "acme",
                 &["traces:read".to_string()],
+                None,
                 "https://claude.ai/cb",
                 PKCE_CHALLENGE,
                 Some("https://signaldb.example.com/mcp"),

@@ -520,13 +520,17 @@ pub(crate) async fn create_api_key<S: RouterState>(
     }
     let secret = format!("sdbk_{}", Uuid::new_v4().simple());
     let key_hash = Authenticator::hash_api_key(&secret);
+    // TODO(multi-dataset-key-restriction phase 2): `request.dataset_id`
+    // becomes `dataset_ids: Vec<String>` on the request DTO; this
+    // single-to-slice bridge goes away once that lands.
+    let dataset_ids = request.dataset_id.as_ref().map(std::slice::from_ref);
     match state
         .catalog()
         .upsert_scoped_api_key(
             &tenant_id,
             &key_hash,
             request.name.as_deref(),
-            request.dataset_id.as_deref(),
+            dataset_ids,
             Some(&request.scopes),
             ctx.user_id.as_deref(),
         )
@@ -644,13 +648,18 @@ pub(crate) async fn update_api_key<S: RouterState>(
             );
         }
     }
+    // TODO(multi-dataset-key-restriction phase 2): `request.dataset_id`
+    // becomes `dataset_ids`/`clear_dataset_restriction` on the request DTO,
+    // constructing the full DatasetRestrictionUpdate tri-state; this
+    // two-state bridge (matching today's COALESCE semantics exactly) goes
+    // away once that lands.
+    let dataset_update = match request.dataset_id.clone() {
+        Some(id) => common::catalog::DatasetRestrictionUpdate::Set(vec![id]),
+        None => common::catalog::DatasetRestrictionUpdate::Keep,
+    };
     match state
         .catalog()
-        .update_api_key_scopes(
-            &key_id,
-            request.scopes.as_deref(),
-            request.dataset_id.as_deref(),
-        )
+        .update_api_key_scopes(&key_id, request.scopes.as_deref(), dataset_update)
         .await
     {
         Ok(true) => {}
