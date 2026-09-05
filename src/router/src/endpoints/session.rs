@@ -380,6 +380,40 @@ pub struct WhoamiIdentityResponse {
     pub dataset_ids: Option<Vec<String>>,
 }
 
+/// D10: narrow `datasets`/`default_dataset` to a dataset-restricted
+/// credential's own set, exactly as the MCP `discover_datasets`/
+/// `tenant_list_tables` tools do. `restriction` is `ctx.api_key_dataset_ids`
+/// — `None` (unrestricted) leaves both inputs unchanged.
+///
+/// A restricted `default_dataset` outside the restriction has no safe value
+/// to fall back to in general (D4 case 4: two or more allowed datasets have
+/// no principled default), except the one case D4 case 3 gives an answer
+/// for — a single-element restriction *is* the credential's effective
+/// default when no dataset is requested explicitly — so that element is
+/// substituted; anything else is omitted rather than naming a dataset the
+/// credential cannot always default to.
+fn apply_dataset_restriction(
+    datasets: Vec<WhoamiDataset>,
+    default_dataset: Option<String>,
+    restriction: Option<&[String]>,
+) -> (Vec<WhoamiDataset>, Option<String>) {
+    let Some(allowed) = restriction else {
+        return (datasets, default_dataset);
+    };
+    let datasets = datasets
+        .into_iter()
+        .filter(|d| common::auth::dataset_allowed(Some(allowed), &d.id))
+        .collect();
+    let default_dataset = match default_dataset {
+        Some(d) if common::auth::dataset_allowed(Some(allowed), &d) => Some(d),
+        _ => match allowed {
+            [only] => Some(only.clone()),
+            _ => None,
+        },
+    };
+    (datasets, default_dataset)
+}
+
 /// GET /api/v1/whoami
 ///
 /// Returns the authenticated tenant with its datasets and default dataset,
@@ -494,6 +528,11 @@ pub async fn whoami<S: RouterState>(
                 return error_response(500, "Failed to resolve datasets".to_string());
             }
         }
+        let (datasets, default_dataset) = apply_dataset_restriction(
+            datasets,
+            default_dataset,
+            ctx.api_key_dataset_ids.as_deref(),
+        );
         let response = WhoamiResponse {
             user,
             memberships,
@@ -530,6 +569,19 @@ pub async fn whoami<S: RouterState>(
         }
     };
 
+    let datasets = datasets
+        .into_iter()
+        .map(|d| WhoamiDataset {
+            is_default: Some(d.name.as_str()) == tenant.default_dataset.as_deref(),
+            slug: d.name.clone(),
+            id: d.name,
+        })
+        .collect();
+    let (datasets, default_dataset) = apply_dataset_restriction(
+        datasets,
+        tenant.default_dataset,
+        ctx.api_key_dataset_ids.as_deref(),
+    );
     let response = WhoamiResponse {
         user,
         memberships,
@@ -541,15 +593,8 @@ pub async fn whoami<S: RouterState>(
         },
         user_id: ctx.user_id.clone().unwrap_or_default(),
         dataset: ctx.dataset_id.clone(),
-        datasets: datasets
-            .into_iter()
-            .map(|d| WhoamiDataset {
-                is_default: Some(d.name.as_str()) == tenant.default_dataset.as_deref(),
-                slug: d.name.clone(),
-                id: d.name,
-            })
-            .collect(),
-        default_dataset: tenant.default_dataset,
+        datasets,
+        default_dataset,
         dataset_ids: ctx.api_key_dataset_ids.clone(),
     };
     Json(response).into_response()
