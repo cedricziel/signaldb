@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.3](https://github.com/cedricziel/signaldb/compare/pyroscope-api-v0.1.2...pyroscope-api-v0.1.3) (2026-09-05)
+
+
+### Continuous Integration
+
+* **ql:** publish the parser crates on their own release train ([#1362](https://github.com/cedricziel/signaldb/issues/1362)) ([bfc2162](https://github.com/cedricziel/signaldb/commit/bfc216206d779b5a556b7513a882e06dc77bf116))
+
 ## [0.1.2](https://github.com/cedricziel/signaldb/compare/pyroscope-api-v0.1.1...pyroscope-api-v0.1.2) (2026-08-17)
 
 

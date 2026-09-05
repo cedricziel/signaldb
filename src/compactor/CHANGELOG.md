@@ -5,6 +5,33 @@ All notable changes to the SignalDB Compactor Service will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0](https://github.com/cedricziel/signaldb/compare/compactor-v0.3.0...compactor-v0.4.0) (2026-09-05)
+
+
+### Features
+
+* **compactor:** break the job counters down by table and error type ([#1355](https://github.com/cedricziel/signaldb/issues/1355)) ([7816d63](https://github.com/cedricziel/signaldb/commit/7816d6315348a8c368f0ce5f240ca3f8b4b9aac0))
+* **compactor:** keep a bounded value sketch so discovery can suggest values ([#1329](https://github.com/cedricziel/signaldb/issues/1329)) ([dd64a3d](https://github.com/cedricziel/signaldb/commit/dd64a3dd8a8846499ac75bea818ba938c6ca9a87))
+* **router:** serve query discovery from the registry and statistics ([#1312](https://github.com/cedricziel/signaldb/issues/1312)) ([41d2738](https://github.com/cedricziel/signaldb/commit/41d27384df6e90bd9e9731218e084dd27581e20b))
+* sort every producer's rows by the declared key and attest it per file ([#1313](https://github.com/cedricziel/signaldb/issues/1313)) ([c667eda](https://github.com/cedricziel/signaldb/commit/c667eda0c05752ff51fb1ad6ba37cf4594455c6f))
+
+
+### Bug Fixes
+
+* collision-proof attribute-label naming and promotion-boundary query correctness ([#1447](https://github.com/cedricziel/signaldb/issues/1447)) ([fe4fc5c](https://github.com/cedricziel/signaldb/commit/fe4fc5c049a6a0ec4ed43ba7a3bdbb04ca607781))
+* **compactor:** bound the rewrite's scan batch so wide rows cannot exhaust the pool ([#1353](https://github.com/cedricziel/signaldb/issues/1353)) ([ad04904](https://github.com/cedricziel/signaldb/commit/ad04904fc264fb3642016de0b4905b727be32cb3))
+* **compactor:** preserve retention counts and fix bare telemetry keys on snapshot-expiry failure ([#1436](https://github.com/cedricziel/signaldb/issues/1436)) ([700f722](https://github.com/cedricziel/signaldb/commit/700f7227baf5bc6f782047c49f23c06e7911549a)), closes [#1010](https://github.com/cedricziel/signaldb/issues/1010)
+
+
+### Performance Improvements
+
+* **compactor:** bound orphan detection memory to live files and candidates ([#1300](https://github.com/cedricziel/signaldb/issues/1300)) ([4ab22bd](https://github.com/cedricziel/signaldb/commit/4ab22bda380c9d490431d437418e7128be1de572))
+
+
+### Code Refactoring
+
+* dedupe quality cleanups in compactor, router, and acceptor ([#1326](https://github.com/cedricziel/signaldb/issues/1326)) ([beaeff3](https://github.com/cedricziel/signaldb/commit/beaeff3e405b87405ef722b5158d1af99f51b7b0))
+
 ## [0.3.0](https://github.com/cedricziel/signaldb/compare/compactor-v0.2.1...compactor-v0.3.0) (2026-08-17)
 
 
