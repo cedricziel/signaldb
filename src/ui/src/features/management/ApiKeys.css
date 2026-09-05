@@ -88,6 +88,40 @@
   font-size: 11px;
 }
 
+.dataset-picker {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  margin: 0;
+}
+
+.dataset-picker legend {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0 4px;
+}
+
+.dataset-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.dataset-option label {
+  font: 11px var(--mono);
+}
+
+.dataset-clear {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
 .api-key-main {
   flex: 1;
   min-width: 0;
