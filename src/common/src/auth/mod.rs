@@ -306,6 +306,64 @@ impl std::fmt::Display for TenantSource {
 }
 
 #[cfg(test)]
+mod dataset_restriction_tests {
+    use super::*;
+
+    #[test]
+    fn dataset_allowed_is_unrestricted_when_none() {
+        assert!(dataset_allowed(None, "x"));
+    }
+
+    #[test]
+    fn dataset_allowed_checks_membership() {
+        let restriction = vec!["a".to_string(), "b".to_string()];
+        assert!(dataset_allowed(Some(&restriction), "a"));
+        assert!(!dataset_allowed(Some(&restriction), "c"));
+    }
+
+    #[test]
+    fn resolve_with_explicit_dataset_checks_restriction_regardless_of_size() {
+        let restriction = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(
+            resolve_dataset_restriction(Some(&restriction), Some("a")),
+            Ok(Some("a".to_string()))
+        );
+        assert_eq!(
+            resolve_dataset_restriction(Some(&restriction), Some("c")),
+            Err(DatasetRestrictionError::NotAllowed)
+        );
+        let single = vec!["a".to_string()];
+        assert_eq!(
+            resolve_dataset_restriction(Some(&single), Some("b")),
+            Err(DatasetRestrictionError::NotAllowed)
+        );
+    }
+
+    #[test]
+    fn resolve_with_no_restriction_and_no_explicit_dataset_falls_through() {
+        assert_eq!(resolve_dataset_restriction(None, None), Ok(None));
+    }
+
+    #[test]
+    fn resolve_with_single_element_restriction_and_no_explicit_dataset_resolves_to_it() {
+        let single = vec!["production".to_string()];
+        assert_eq!(
+            resolve_dataset_restriction(Some(&single), None),
+            Ok(Some("production".to_string()))
+        );
+    }
+
+    #[test]
+    fn resolve_with_multi_element_restriction_and_no_explicit_dataset_is_ambiguous() {
+        let restriction = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(
+            resolve_dataset_restriction(Some(&restriction), None),
+            Err(DatasetRestrictionError::Ambiguous)
+        );
+    }
+}
+
+#[cfg(test)]
 mod scoped_authorization_tests {
     use super::*;
 
