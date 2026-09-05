@@ -147,6 +147,10 @@ enum Commands {
     /// Report the authenticated identity (tenant, dataset, user) for the
     /// given credential
     Whoami(discover::ConnectArgs),
+    /// Print this deployment's connection details (ingest/query/mcp
+    /// endpoints, headers, scopes, ready-to-paste OTel env vars) for the
+    /// given credential's tenant — meant to be pasted or consumed by tooling
+    Connection(discover::ConnectArgs),
     /// Generate a shell completion script on stdout
     ///
     /// Install it with your shell's completion mechanism, e.g.:
@@ -273,6 +277,11 @@ impl Cli {
             return query::print_json_response(v.map(|r| r.into_inner()), "whoami");
         }
 
+        if let Commands::Connection(connect) = self.command {
+            let v = connect.build_client()?.connection_info().send().await;
+            return query::print_json_response(v.map(|r| r.into_inner()), "connection");
+        }
+
         // Custom-registry management authenticates with a tenant API key
         // carrying `schema:write` (the schema API is tenant-scoped), not the
         // instance admin key the other `admin` nouns use.
@@ -348,6 +357,7 @@ impl Cli {
             Commands::Tui { .. } => unreachable!(),
             Commands::Tenant { .. } => unreachable!(),
             Commands::Whoami(_) => unreachable!(),
+            Commands::Connection(_) => unreachable!(),
         }
     }
 

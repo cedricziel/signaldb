@@ -329,7 +329,9 @@ and `docs/users/authentication.md#tenant-management-api`.
 Subcommands: `query` (one required language flag —
 `--sql`/`--promql`/`--logql`/`--traceql`/`--ir`, plus `--trace-id` for a
 single trace by ID, and `--start`/`--end`/`--step` on `--promql`/`--logql`
-for a range query), `whoami`, `discover`, `schema`
+for a range query), `whoami`, `connection` (this deployment's public
+ingest/query/mcp endpoints, headers, scopes, and OTel env vars —
+`GET /api/v1/connection` / MCP `connection_info`), `discover`, `schema`
 (`registry`/`attribute`/`entity`/`metric` lookup with a tenant key holding
 `schema:read`), `admin` (`tenant`/`api-key`/`dataset`, plus `schema`
 create/replace/delete/validate with a tenant key holding `schema:write`),
@@ -350,6 +352,7 @@ signaldb-cli admin schema create --file conventions.yaml --api-key <schema:write
 signaldb-cli schema attribute get k8s.pod.uid --api-key <schema:read key> --tenant-id acme
 signaldb-cli tenant table provision --api-key <any tenant key> --tenant-id acme
 signaldb-cli whoami --api-key <tenant key> --tenant-id acme
+signaldb-cli connection --api-key <tenant key> --tenant-id acme
 signaldb-cli query --sql "SELECT ..."   # also --promql/--logql/--traceql/--ir/--trace-id
 signaldb-cli tui                         # Interactive terminal UI
 ```
