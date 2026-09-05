@@ -16,12 +16,19 @@ import { schemaRoutes } from "./features/schema/routes";
 import { useOutletState } from "./lib/outletState";
 import { signalFromParam } from "./lib/urlState";
 
+/** Redirects to `/logs`, preserving the query string — used for both the
+ * bare index route and the unrecognized-path catch-all so a deep link's
+ * `?tenant=&dataset=` (or any other query state) survives the redirect. */
+function RedirectToLogs() {
+  const location = useLocation();
+  return <Navigate to={`/logs${location.search}`} replace />;
+}
+
 function ExploreRoute() {
   const { signal, traceId } = useParams<{
     signal?: string;
     traceId?: string;
   }>();
-  const location = useLocation();
   const { state, update } = useOutletState();
   // An unknown path segment (typo, stale bookmark) settles on /logs instead
   // of silently rendering the logs view under the wrong URL. Only the
@@ -34,7 +41,7 @@ function ExploreRoute() {
     signal !== undefined &&
     signalFromParam(signal) !== signal
   ) {
-    return <Navigate to={`/logs${location.search}`} replace />;
+    return <RedirectToLogs />;
   }
   return <ExploreView state={state} update={update} />;
 }
@@ -44,7 +51,7 @@ export function AppRoutes() {
     <Routes>
       <Route path="/oauth/consent" element={<ConsentView />} />
       <Route path="/" element={<App />}>
-        <Route index element={<Navigate to="/logs" replace />} />
+        <Route index element={<RedirectToLogs />} />
         <Route path="manage" element={<ManagementRoute />} />
         <Route path="select-tenant" element={<SelectTenantRoute />} />
         <Route path="api-keys" element={<ApiKeysRoute />} />
@@ -65,7 +72,7 @@ export function AppRoutes() {
           element={<ExploreRoute />}
         />
         <Route path=":signal" element={<ExploreRoute />} />
-        <Route path="*" element={<Navigate to="/logs" replace />} />
+        <Route path="*" element={<RedirectToLogs />} />
       </Route>
     </Routes>
   );

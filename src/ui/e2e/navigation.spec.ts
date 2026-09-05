@@ -53,6 +53,13 @@ test("an unknown path redirects to /logs, preserving the query string", async ({
   await expect(page).toHaveURL(/\/logs\?range=15m$/);
 });
 
+test("/ redirects to /logs, preserving the query string", async ({
+  page,
+}) => {
+  await page.goto("/?tenant=homelab&dataset=default");
+  await expect(page).toHaveURL(/\/logs\?tenant=homelab&dataset=default$/);
+});
+
 test("/manage redirects unauthenticated visitors to /logs", async ({
   page,
 }) => {
