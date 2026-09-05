@@ -90,6 +90,7 @@ func main() {
 
 // Environment variables (equivalent to the code above):
 export OTEL_EXPORTER_OTLP_ENDPOINT="${info.otel_env.OTEL_EXPORTER_OTLP_ENDPOINT}"
+export OTEL_EXPORTER_OTLP_PROTOCOL="${info.otel_env.OTEL_EXPORTER_OTLP_PROTOCOL}"
 export OTEL_EXPORTER_OTLP_HEADERS="${info.otel_env.OTEL_EXPORTER_OTLP_HEADERS}"`,
   },
   {
@@ -183,6 +184,7 @@ services:
     image: myapp:latest
     environment:
       OTEL_EXPORTER_OTLP_ENDPOINT: ${info.otel_env.OTEL_EXPORTER_OTLP_ENDPOINT}
+      OTEL_EXPORTER_OTLP_PROTOCOL: ${info.otel_env.OTEL_EXPORTER_OTLP_PROTOCOL}
       OTEL_EXPORTER_OTLP_HEADERS: "${info.otel_env.OTEL_EXPORTER_OTLP_HEADERS}"
   otel-collector:
     image: otel/opentelemetry-collector-contrib:latest

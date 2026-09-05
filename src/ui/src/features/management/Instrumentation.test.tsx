@@ -137,6 +137,17 @@ describe("Instrumentation page", () => {
     });
   });
 
+  it("env-var snippets emit OTEL_EXPORTER_OTLP_PROTOCOL so SDKs do not default to http/protobuf", async () => {
+    stubFetchRoutes([{ match: "/api/v1/connection", body: connectionInfoBody() }]);
+    renderInstrumentation({ state: { tenant: "acme", dataset: "production" } });
+
+    await waitFor(() => {
+      expect(getCodeBlock().textContent).toContain(
+        'OTEL_EXPORTER_OTLP_PROTOCOL="grpc"',
+      );
+    });
+  });
+
   it("renders the real endpoint from /api/v1/connection, with no insecure flag for an https endpoint", async () => {
     stubFetchRoutes([
       { match: "/api/v1/connection", body: connectionInfoBody() },
