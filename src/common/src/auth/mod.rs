@@ -136,8 +136,10 @@ pub struct TenantContext {
     /// Explicit API-key scopes. `None` denotes a legacy unrestricted key or
     /// a human session; `Some` is always enforced.
     pub api_key_scopes: Option<Vec<String>>,
-    /// Dataset restriction carried by a database-backed API key.
-    pub api_key_dataset_id: Option<String>,
+    /// Dataset-set restriction carried by a database-backed API key or OAuth
+    /// grant (D1). `None` is unrestricted; `Some` names the exact set the
+    /// credential may access — see [`dataset_allowed`].
+    pub api_key_dataset_ids: Option<Vec<String>>,
     /// Human user ID when the request was authenticated with a user session.
     pub user_id: Option<String>,
     /// Tenant role when the request was authenticated with a user session.
@@ -167,7 +169,7 @@ impl TenantContext {
             dataset_slug,
             api_key_name,
             api_key_scopes: None,
-            api_key_dataset_id: None,
+            api_key_dataset_ids: None,
             user_id: None,
             role: None,
             is_instance_admin: false,
@@ -176,14 +178,15 @@ impl TenantContext {
         }
     }
 
-    /// Attach authorization restrictions from a database-backed API key.
+    /// Attach authorization restrictions from a database-backed API key or
+    /// OAuth grant.
     pub fn with_api_key_restrictions(
         mut self,
         scopes: Option<Vec<String>>,
-        dataset_id: Option<String>,
+        dataset_ids: Option<Vec<String>>,
     ) -> Self {
         self.api_key_scopes = scopes;
-        self.api_key_dataset_id = dataset_id;
+        self.api_key_dataset_ids = dataset_ids;
         self
     }
 
@@ -305,6 +308,80 @@ impl std::fmt::Display for TenantSource {
     }
 }
 
+/// Whether `requested` is permitted under a credential's dataset-set
+/// restriction (D3). `None` is unrestricted — every dataset is allowed;
+/// `Some` only allows the datasets it names.
+pub fn dataset_allowed(restriction: Option<&[String]>, requested: &str) -> bool {
+    match restriction {
+        None => true,
+        Some(ids) => ids.iter().any(|d| d == requested),
+    }
+}
+
+/// Error resolving a dataset against a credential's dataset-set restriction
+/// when the request itself supplied no explicit dataset (D4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DatasetRestrictionError {
+    /// The explicitly requested dataset is outside the restriction.
+    NotAllowed,
+    /// No explicit dataset was requested and the restriction names two or
+    /// more datasets, so there is no principled default to fall back to.
+    Ambiguous,
+}
+
+impl std::fmt::Display for DatasetRestrictionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DatasetRestrictionError::NotAllowed => {
+                write!(
+                    f,
+                    "requested dataset is outside the credential's restriction"
+                )
+            }
+            DatasetRestrictionError::Ambiguous => write!(
+                f,
+                "credential is restricted to multiple datasets; a dataset must be specified explicitly"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DatasetRestrictionError {}
+
+/// Resolve which dataset a request should use given a credential's
+/// dataset-set restriction (D3/D4).
+///
+/// 1. An explicit request dataset is always checked against the
+///    restriction via [`dataset_allowed`]; outside the set is
+///    [`DatasetRestrictionError::NotAllowed`], regardless of how many
+///    elements the restriction has.
+/// 2. No explicit request dataset, no restriction: `Ok(None)`, telling the
+///    caller to fall through to the tenant default exactly as today.
+/// 3. No explicit request dataset, a single-element restriction: resolves
+///    to that element — today's exact behavior for a single-`dataset_id`
+///    bound key, preserved so a legacy key (migrated to a one-element set)
+///    keeps working identically without a header.
+/// 4. No explicit request dataset, a restriction naming two or more
+///    datasets: [`DatasetRestrictionError::Ambiguous`] — there is no
+///    principled default among several allowed datasets.
+pub fn resolve_dataset_restriction(
+    restriction: Option<&[String]>,
+    requested: Option<&str>,
+) -> Result<Option<String>, DatasetRestrictionError> {
+    if let Some(requested) = requested {
+        return if dataset_allowed(restriction, requested) {
+            Ok(Some(requested.to_string()))
+        } else {
+            Err(DatasetRestrictionError::NotAllowed)
+        };
+    }
+    match restriction {
+        None => Ok(None),
+        Some([single]) => Ok(Some(single.clone())),
+        Some(_) => Err(DatasetRestrictionError::Ambiguous),
+    }
+}
+
 #[cfg(test)]
 mod dataset_restriction_tests {
     use super::*;
@@ -376,7 +453,7 @@ mod scoped_authorization_tests {
             Some("collector".into()),
             TenantSource::Database,
         )
-        .with_api_key_restrictions(scopes, Some("production".into()))
+        .with_api_key_restrictions(scopes, Some(vec!["production".into()]))
     }
 
     #[test]

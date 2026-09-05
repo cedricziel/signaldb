@@ -373,21 +373,28 @@ impl Authenticator {
             .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?
             .ok_or_else(|| AuthError::forbidden(format!("Tenant '{tenant_id}' not found")))?;
 
-        // Resolve dataset
-        if let (Some(bound), Some(requested)) = (&api_key.dataset_id, dataset_id)
-            && bound != requested
-        {
-            return Err(AuthError::forbidden(format!(
-                "API key is restricted to dataset '{bound}'"
-            )));
-        }
-        let resolved_dataset = match dataset_id.or(api_key.dataset_id.as_deref()) {
-            Some(id) => id.to_string(),
-            None => tenant_record.default_dataset.clone().ok_or_else(|| {
+        // Resolve dataset against the key's restriction (D3/D4).
+        let resolved_dataset = match super::resolve_dataset_restriction(
+            api_key.dataset_ids.as_deref(),
+            dataset_id,
+        ) {
+            Ok(Some(dataset)) => dataset,
+            Ok(None) => tenant_record.default_dataset.clone().ok_or_else(|| {
                 AuthError::bad_request(
                     "X-Dataset-ID header required (tenant has no default dataset)",
                 )
             })?,
+            Err(super::DatasetRestrictionError::NotAllowed) => {
+                return Err(AuthError::forbidden(format!(
+                    "API key is not permitted to access dataset '{}'",
+                    dataset_id.unwrap_or_default()
+                )));
+            }
+            Err(super::DatasetRestrictionError::Ambiguous) => {
+                return Err(AuthError::bad_request(format!(
+                    "API key is restricted to multiple datasets in tenant '{tenant_id}'; specify X-Dataset-ID"
+                )));
+            }
         };
 
         // Verify dataset exists for tenant
@@ -412,7 +419,7 @@ impl Authenticator {
             api_key.name,
             TenantSource::Database,
         )
-        .with_api_key_restrictions(api_key.scopes, api_key.dataset_id))
+        .with_api_key_restrictions(api_key.scopes, api_key.dataset_ids))
     }
 
     /// Resolve a dataset for a config-defined tenant, falling back to the
@@ -887,7 +894,7 @@ mod tests {
                 "acme",
                 &Authenticator::hash_api_key(raw_key),
                 None,
-                Some("apps"),
+                Some(&["apps".to_string()]),
                 None,
                 Some("user-1"),
             )
@@ -949,7 +956,7 @@ mod tests {
                 "acme",
                 &Authenticator::hash_api_key(raw_key),
                 Some("metrics"),
-                Some("production"),
+                Some(&["production".to_string()]),
                 Some(&scopes),
                 Some("user-1"),
             )
@@ -970,6 +977,6 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.status_code, 403);
-        assert!(error.message.contains("restricted to dataset"));
+        assert!(error.message.contains("not permitted to access dataset"));
     }
 }
