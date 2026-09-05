@@ -79,7 +79,11 @@ impl ApiKeyAction {
                     .body(CreateApiKeyRequest {
                         name,
                         scopes,
-                        dataset_id: dataset,
+                        // TODO(multi-dataset-key-restriction phase 4): `--dataset`
+                        // becomes a repeatable flag; this wraps today's single
+                        // value in a one-element set to keep phase-2 behavior
+                        // unchanged until that lands.
+                        dataset_ids: dataset.map(|d| vec![d]),
                     })
                     .send()
                     .await?
@@ -101,7 +105,13 @@ impl ApiKeyAction {
                     .key_id(&key_id)
                     .body(UpdateApiKeyRequest {
                         scopes: (!scopes.is_empty()).then_some(scopes),
-                        dataset_id: dataset,
+                        // TODO(multi-dataset-key-restriction phase 4): `--dataset`
+                        // becomes a repeatable flag plus a dedicated
+                        // `--clear-dataset-restriction`; this wraps today's single
+                        // value in a one-element set (never clearing) to keep
+                        // phase-2 behavior unchanged until that lands.
+                        dataset_ids: dataset.map(|d| vec![d]),
+                        clear_dataset_restriction: None,
                     })
                     .send()
                     .await?
@@ -177,12 +187,12 @@ mod tests {
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "name": "ci",
                 "scopes": ["traces:write", "schema:read"],
-                "dataset_id": "production"
+                "dataset_ids": ["production"]
             })))
             .with_status(201)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"id":"k1","key":"sk-acme-1","name":"ci","scopes":["traces:write","schema:read"],"dataset_id":"production","created_at":"2026-01-01T00:00:00Z"}"#,
+                r#"{"id":"k1","key":"sk-acme-1","name":"ci","scopes":["traces:write","schema:read"],"dataset_ids":["production"],"dataset_id":"production","created_at":"2026-01-01T00:00:00Z"}"#,
             )
             .create_async()
             .await;

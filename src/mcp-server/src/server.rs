@@ -1971,7 +1971,11 @@ impl McpServer {
             .body(signaldb_sdk::types::CreateApiKeyRequest {
                 name: p.name,
                 scopes: p.scopes,
-                dataset_id: p.dataset_id,
+                // TODO(multi-dataset-key-restriction phase 5): this tool's
+                // `dataset_id` param becomes `dataset_ids: Vec<String>`; this
+                // wraps today's single value in a one-element set to keep
+                // phase-2 behavior unchanged until that lands.
+                dataset_ids: p.dataset_id.map(|d| vec![d]),
             })
             .send()
             .await
@@ -1995,7 +1999,12 @@ impl McpServer {
             .key_id(&p.key_id)
             .body(signaldb_sdk::types::UpdateApiKeyRequest {
                 scopes: p.scopes,
-                dataset_id: p.dataset_id,
+                // TODO(multi-dataset-key-restriction phase 5): this tool
+                // grows `dataset_ids`/`clear_dataset_restriction`; this wraps
+                // today's single value in a one-element set (never clearing)
+                // to keep phase-2 behavior unchanged until that lands.
+                dataset_ids: p.dataset_id.map(|d| vec![d]),
+                clear_dataset_restriction: None,
             })
             .send()
             .await
@@ -2325,7 +2334,11 @@ impl McpServer {
             .body(signaldb_sdk::types::ManageCreateApiKeyRequest {
                 name: p.name,
                 scopes: p.scopes,
-                dataset_id: p.dataset_id,
+                // TODO(multi-dataset-key-restriction phase 5): this tool's
+                // `dataset_id` param becomes `dataset_ids: Vec<String>`; this
+                // wraps today's single value in a one-element set to keep
+                // phase-2 behavior unchanged until that lands.
+                dataset_ids: p.dataset_id.map(|d| vec![d]),
             })
             .send()
             .await
@@ -2370,7 +2383,12 @@ impl McpServer {
             .key_id(&p.key_id)
             .body(signaldb_sdk::types::ManageUpdateApiKeyRequest {
                 scopes: p.scopes,
-                dataset_id: p.dataset_id,
+                // TODO(multi-dataset-key-restriction phase 5): this tool
+                // grows `dataset_ids`/`clear_dataset_restriction`; this wraps
+                // today's single value in a one-element set (never clearing)
+                // to keep phase-2 behavior unchanged until that lands.
+                dataset_ids: p.dataset_id.map(|d| vec![d]),
+                clear_dataset_restriction: None,
             })
             .send()
             .await

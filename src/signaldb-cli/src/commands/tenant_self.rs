@@ -282,7 +282,11 @@ impl ApiKeyAction {
                     .body(ManageCreateApiKeyRequest {
                         name,
                         scopes,
-                        dataset_id: dataset,
+                        // TODO(multi-dataset-key-restriction phase 4): `--dataset`
+                        // becomes a repeatable flag; this wraps today's single
+                        // value in a one-element set to keep phase-2 behavior
+                        // unchanged until that lands.
+                        dataset_ids: dataset.map(|d| vec![d]),
                     })
                     .send()
                     .await;
@@ -305,7 +309,13 @@ impl ApiKeyAction {
                     .key_id(&key_id)
                     .body(ManageUpdateApiKeyRequest {
                         scopes: (!scopes.is_empty()).then_some(scopes),
-                        dataset_id: dataset,
+                        // TODO(multi-dataset-key-restriction phase 4): `--dataset`
+                        // becomes a repeatable flag plus a dedicated
+                        // `--clear-dataset-restriction`; this wraps today's single
+                        // value in a one-element set (never clearing) to keep
+                        // phase-2 behavior unchanged until that lands.
+                        dataset_ids: dataset.map(|d| vec![d]),
+                        clear_dataset_restriction: None,
                     })
                     .send()
                     .await;
