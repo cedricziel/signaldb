@@ -24,14 +24,19 @@ delete or revoke SHALL carry the MCP destructive annotation and SHALL require a
 `confirm` argument equal to the identifier being destroyed; read-only tools
 SHALL carry the read-only annotation. Tools that create an API key SHALL return
 the key material exactly once in that response; tools that list keys SHALL never
-return key material. API-key creation and update tools (`create_api_key`,
-`update_api_key_scopes`, `tenant_create_api_key`, `tenant_update_api_key`) take
-`dataset_ids: Option<Vec<String>>` — an optional set of datasets the key is
-restricted to, in place of a single optional dataset — following the same
-omit/empty-set semantics as the underlying management API (omit for
-unrestricted on creation, or to leave the restriction unchanged on update; an
-explicit empty set is invalid on creation and clears the restriction on
-update).
+return key material. API-key creation tools (`create_api_key`,
+`tenant_create_api_key`) take `dataset_ids: Option<Vec<String>>` — an
+optional set of datasets the key is restricted to, in place of a single
+optional dataset; omitting it creates an unrestricted key, and an explicit
+empty array is rejected. API-key update tools (`update_api_key_scopes`,
+`tenant_update_api_key`) additionally take `clear_dataset_restriction:
+bool` — omitting `dataset_ids` (with `clear_dataset_restriction` absent or
+`false`) leaves the key's restriction unchanged, a non-empty `dataset_ids`
+replaces it, and `clear_dataset_restriction: true` (with `dataset_ids`
+omitted) clears it back to unrestricted; an explicit empty `dataset_ids`
+array, or both `dataset_ids` and `clear_dataset_restriction: true` together,
+are rejected before any router request is made — following the same
+semantics as the underlying management API.
 
 #### Scenario: Query is available as a tool
 
@@ -116,10 +121,31 @@ update).
   schema-lookup tool that does not match the tenant this call's own
   credential resolved to
 - **THEN** the tool rejects the call with an error naming both tenants,
-  before any request reaches the router — `tenant` (and `dataset`) are
-  required arguments on every such tool, since one MCP session may hold
-  credentials for several tenants and datasets across calls and there is no
-  longer an implicit session-wide default to omit them in favor of; the
-  argument only confirms the caller's assumption against what this specific
-  call authenticated as, it never selects which credential/tenant a call
-  authenticates as
+  before any request reaches the router — `tenant` (and `dataset`, for
+  every tool that takes one) are required arguments on every such tool,
+  since one MCP session may hold credentials for several tenants and
+  datasets across calls and there is no longer an implicit session-wide
+  default to omit them in favor of; the argument only confirms the
+  caller's assumption against what this specific call authenticated as, it
+  never selects which credential/tenant a call authenticates as.
+  `discover_datasets` is the one exception to the `dataset`-required rule:
+  it takes no `dataset` argument at all, on either side of this change,
+  since discovering which datasets exist is how a caller learns what to
+  pass as `dataset` to every other tool — requiring it here would be
+  circular
+
+#### Scenario: Dataset discovery and table listing respect a restricted credential
+
+- **WHEN** a session authenticated with an API key or OAuth token restricted
+  to `dataset_ids: ["production"]` calls `discover_datasets` or
+  `tenant_list_tables` for a tenant with datasets `production` and
+  `staging`
+- **THEN** the result lists only `production`; `staging` does not appear,
+  even by name, in either tool's result
+
+#### Scenario: An unrestricted credential sees every dataset, unchanged
+
+- **WHEN** a session authenticated with an unrestricted API key or OAuth
+  token calls `discover_datasets` or `tenant_list_tables`
+- **THEN** the result lists every dataset in the tenant, exactly as before
+  this change

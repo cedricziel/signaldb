@@ -12,13 +12,16 @@ See proposal.md — Why. Current state, verified in code:
 - Enforcement: `Authenticator::authenticate_from_database`
   (`auth/authenticator.rs:359-430`), exact single-dataset comparison at
   391-397, resolution order `dataset_id.or(api_key.dataset_id.as_deref())`
-  then tenant default (398-405). Config-based tenants go through
-  `resolve_dataset` (`authenticator.rs:433-467`) instead — `ApiKeyConfig`
-  (`config/mod.rs:793-798`) has no dataset field at all, so config keys are
-  and remain unrestricted; this change does not touch that path.
-  `TenantContext.api_key_dataset_id: Option<String>`
-  (`auth/mod.rs`), set via `with_api_key_restrictions` and read wherever a
-  dataset-scoped request is authorized.
+  then tenant default (398-405) — verified against
+  `database_key_on_config_tenant_resolves_catalog_dataset`
+  (`authenticator.rs:877-934`), which pins that a key's own bound dataset
+  wins over the tenant default when no header is sent. Config-based tenants
+  go through `resolve_dataset` (`authenticator.rs:433-467`) instead —
+  `ApiKeyConfig` (`config/mod.rs:793-798`) has no dataset field at all, so
+  config keys are and remain unrestricted; this change does not touch that
+  path. `TenantContext.api_key_dataset_id: Option<String>` (`auth/mod.rs`),
+  set via `with_api_key_restrictions` and read wherever a dataset-scoped
+  request is authorized.
 - OAuth: `authenticate_oauth_token` (`authenticator.rs:192-244`) resolves
   tenant only, via `resolve_user_tenant` (276-356); line 243 hardcodes
   `with_api_key_restrictions(Some(record.scopes), None)` — no dataset
@@ -33,6 +36,22 @@ See proposal.md — Why. Current state, verified in code:
   (`oauth.rs:395-417`) has no dataset field. UI `src/ui/src/features/
   consent/ConsentView.tsx` renders/selects `context.tenants` only
   (84, 157, 169, 197-219).
+- Management API: `authorize_tenant`/`can_manage` (`router/src/endpoints/
+  management.rs:61-80`) authorize purely on role/scope (tenant-admin,
+  instance-admin, or an API key with the `tenant:manage` scope) — a human
+  session or OAuth token is treated identically to any other tenant-admin
+  principal, with no notion of a narrower grant. `create_api_key`
+  (`management.rs:501-554`) and `manage_delete_dataset`
+  (`management.rs:374-407`) accept whatever the caller supplies with no
+  reference to any restriction the caller's own credential might carry —
+  there is nothing to reference today because OAuth tokens carry no dataset
+  restriction, but this changes once D9 below exists.
+- Enumeration surfaces that list datasets/tables without regard to any
+  restriction: `whoami`/`GET /api/v1/whoami` (`router/src/endpoints/
+  session.rs:455-496,513`), `manage_list_datasets`
+  (`management.rs:235-243`), and the MCP `discover_datasets` tool
+  (`mcp-server/src/server.rs`, reads `audit::CallerTenant` and lists every
+  dataset via `list_tenant_tables`).
 - No migrations framework exists anywhere in the repo (`sqlx::migrate!`/
   `MIGRATOR`: zero hits). Schema changes are additive inline DDL in
   `Catalog::init()`, guarded to be idempotent on every boot — `CREATE TABLE
@@ -45,55 +64,138 @@ See proposal.md — Why. Current state, verified in code:
 **Goals:** an API key or OAuth grant can be restricted to a named set of
 datasets within its tenant; the existing single-dataset and whole-tenant
 behaviors keep working unchanged as the two boundary cases of the new model
-(one-element set, unset/empty-meaning-unrestricted); every surface that
-creates/updates/displays a key or drives OAuth consent exposes the set.
+(one-element set, unset-meaning-unrestricted); every surface that
+creates/updates/displays a key or drives OAuth consent exposes the set;
+restricting a credential is enforced everywhere that credential can reach
+data or administer the tenant, not only on the data-plane query path.
 
 **Non-Goals:** cross-tenant restriction (a key/token is still bound to
 exactly one tenant, unchanged); config-based (TOML) tenant API keys gaining
 any restriction (they have none today, on either axis, and stay that way);
 changing what scopes exist or how they're validated; changing the OAuth
 consent UI's tenant-picker mechanics themselves (D1 in
-`mcp-oauth-dcr`/`management-api-key-scope`, unaffected).
+`mcp-oauth-dcr`/`management-api-key-scope`, unaffected); letting a
+dataset-restricted credential *also* hold full tenant-management power (D9
+resolves the conflict by refusing the combination rather than reconciling
+it).
 
 ## Decisions
 
 **D1 — Representation: `dataset_ids: Option<Vec<String>>`, `None` =
 unrestricted.** Mirrors how `scopes` already round-trips as a JSON array in
 a TEXT column (`catalog.rs:2202-2207`), so the storage change is additive
-and low-risk: one new/renamed column per table, decoded with the existing
-`decode_json_vec_opt` helper. `Some(vec![])` denying every dataset is a
-foot-gun with no legitimate use case, so it is never given that meaning (see
-D1a for what it means instead, which differs between create and update).
+and low-risk: one new column per table, decoded with the existing
+`decode_json_vec_opt` helper.
 
-**D1a — `dataset_ids: Some(vec![])` means different, both well-defined,
-things on create vs. update.** On **create** there is no prior state to
-target, so an empty explicit set is simply invalid input — rejected with a
-validation error. On **update**, three distinct intents need three distinct
-wire values, and today's single-`dataset_id` update endpoint actually can't
-express "clear the restriction" at all (`Option<String>` collapses "not
-provided" and "explicitly clear" into the same `None`, and
-`update_api_key_scopes`'s `COALESCE(?, dataset_id)` leaves the column
-untouched when the parameter is `None` — verified in
-`catalog.rs:2348+/2363/2374`): omitting `dataset_ids` leaves the key's
-current restriction unchanged (today's behavior, kept); a non-empty set
-replaces it entirely; and — newly, since sets make the missing "clear it"
-case worth fixing — an explicit empty set `[]` clears the restriction back
-to unrestricted. This needs no double-`Option` JSON trick: create and update
-are different operations with different valid vocabularies for the same
-wire shape, exactly as `scopes: []` already means "no scopes" only in
-contexts where scopes are required to be non-empty at creation.
+**D1a — A bare empty array (`[]`) is invalid everywhere it could name a
+dataset set; "clear" is its own explicit signal, never `[]`.** Giving `[]`
+a context-dependent meaning (invalid on create, "clear" on update,
+"unrestricted" from the consent form) is exactly the ambiguity CodeRabbit's
+review and independent design review both flagged (a `null`-vs-empty-array
+mixup is a well-known footgun, and it recurred at every call site in the
+first draft of this proposal). Instead, one invariant holds system-wide,
+on every surface (API-key create, API-key update, OAuth consent):
 
-**D2 — Migration: rename the column, backfill from the old single value.**
-`dataset_id TEXT` → `dataset_ids TEXT` (JSON array) on `api_keys`, following
-the exact `has_api_key_column`/`ALTER TABLE ADD COLUMN` pattern already used
-for `dataset_id` itself (SQLite `catalog.rs:198-232`, Postgres `525-546`): add
-`dataset_ids`, backfill any existing non-null `dataset_id` as
-`["<value>"]`, leave `dataset_id` in place unread by new code (dropping a
-column needs care on SQLite — a follow-up cleanup, not blocking this change).
-`oauth_authorization_codes`/`oauth_access_tokens`/`oauth_refresh_tokens` each
-gain a new nullable `dataset_ids TEXT` column (no prior data to backfill —
-every existing token is `None`/unrestricted, which is exactly today's
-behavior, so this is a pure no-op for tokens issued before the change).
+- `dataset_ids` omitted or explicit JSON `null` → unrestricted on create;
+  **leave the current restriction unchanged** on update (there is nothing
+  to leave unchanged on create, so "omit" only has one meaning there).
+- `dataset_ids: [<one or more names>]` → restrict to exactly that set,
+  replacing whatever the previous restriction was, on both create and
+  update.
+- `dataset_ids: []` → **rejected with a validation error**, unconditionally,
+  on every surface. It is never interpreted as "unrestricted," "clear," or
+  "deny everything." A caller that means "no restriction" omits the field or
+  sends `null`; a caller that means "remove an existing restriction" uses
+  the explicit clear signal below.
+- **Clearing an existing restriction back to unrestricted** (update only)
+  is its own explicit boolean, `clear_dataset_restriction: bool` (default
+  `false`), not a magic value of `dataset_ids`. Setting it `true` clears the
+  restriction; `dataset_ids` MUST be omitted/`null` in the same request when
+  it is `true` (sending both is a validation error — the two are mutually
+  exclusive intents). At the Rust type level this is
+  `enum DatasetRestrictionUpdate { Keep, Clear, Set(Vec<String>) }`,
+  constructed once at the HTTP boundary from `(dataset_ids,
+  clear_dataset_restriction)` and passed down to the catalog layer — see D2b.
+
+This is a genuine, deliberate change from the first draft (which read `[]`
+as "clear" on update and "unrestricted" from consent): a single value can no
+longer mean opposite things depending on which endpoint received it, and no
+client can accidentally clear a restriction by sending `[]` where it meant
+"no change" (the CLI failure mode CodeRabbit's review named directly).
+
+**D2 — Migration: add `dataset_ids`, dual-read and dual-write against the
+legacy `dataset_id` for as long as both may be observed.** `ALTER TABLE
+api_keys ADD COLUMN IF NOT EXISTS dataset_ids TEXT` (SQLite via the existing
+`has_api_key_column` gate, Postgres via `ADD COLUMN IF NOT EXISTS`),
+following the exact pattern already used for `dataset_id` itself (SQLite
+`catalog.rs:198-232`, Postgres `525-546`). The naive version of this
+migration — backfill once, then have new code read only `dataset_ids` and
+never touch `dataset_id` again — has two failure modes an independent
+review caught: a restriction cleared under new code can be *resurrected* by
+a later boot's idempotent backfill (which still sees the untouched legacy
+`dataset_id` and rewrites `dataset_ids` from it), and a rollback to old code
+silently reverts every key updated under new code to whatever its legacy
+`dataset_id` said before the update (or to unrestricted, if it never had
+one). Both are the new representation silently changing a live security
+boundary, not just stale unread data. The fix:
+
+- **Read:** if `dataset_ids` is non-NULL, it is authoritative. If it is
+  NULL, derive from `dataset_id` exactly as today (`Some(vec![id])` or
+  `None`). This is unconditional, not a one-time backfill — old and new
+  representations both stay live inputs for as long as `dataset_id` exists.
+- **Write:** every create or update under new code writes `dataset_ids`
+  *and* keeps `dataset_id` in sync as a derived, best-effort projection:
+  `dataset_id = ids[0]` when the new set has exactly one element,
+  `dataset_id = NULL` otherwise (empty set is unreachable per D1a; zero
+  elements never gets here). Clearing a restriction (D1a's explicit signal)
+  writes `dataset_ids = NULL, dataset_id = NULL` — both columns, so there is
+  nothing left for a later backfill to resurrect from.
+- **Backfill** (one-time, on `Catalog::init()`, already idempotent by
+  construction): `UPDATE api_keys SET dataset_ids = json_array(dataset_id)
+  WHERE dataset_id IS NOT NULL AND dataset_ids IS NULL` — this only ever
+  fires for a key untouched since before this change (new code always
+  leaves both columns consistent, so the `WHERE` clause never matches a key
+  new code has written), which is what makes it safe to leave unconditional
+  rather than gating it behind a one-shot marker this repo has no mechanism
+  for.
+
+**Residual, documented limitation:** the legacy `dataset_id` column
+structurally cannot represent a multi-element restriction. Dual-write keeps
+an *old*-code node's view of any key correct for the two cases old code
+understands (unrestricted, single dataset) — including keys created or
+updated under new code — but a key restricted to two or more datasets is
+seen as **unrestricted** by an old-code node, because `dataset_id` for such
+a key is `NULL` and old code has no other column to consult. This is not a
+bug to fix in this migration; it is the one thing dual-write cannot paper
+over, and it must be stated as an explicit operational constraint: **do not
+create or update a key/token to a restriction of more than one dataset
+until every node that authenticates database-backed API keys and OAuth
+tokens (router, and any monolith/acceptor path that shares the same
+`Authenticator`) is running the new binary.** Single-dataset and
+unrestricted keys are safe throughout a mixed-version rollout and safe to
+roll back at any point; only the genuinely-new multi-element case requires
+the rollout to finish first. `oauth_authorization_codes`/
+`oauth_access_tokens`/`oauth_refresh_tokens` each gain a new nullable
+`dataset_ids TEXT` column with no legacy counterpart to dual-write against
+(every token issued before this change has no restriction, which is exactly
+today's behavior) — the mixed-version constraint above does not apply to
+OAuth tokens, only to database-backed API keys.
+
+**D2b — The tri-state update at the catalog layer.** Today's
+`update_api_key_scopes` takes `dataset_id: Option<&str>` and writes it with
+`COALESCE(?, dataset_id)` (`catalog.rs:2348-2384`) — a two-state
+parameter that can express "leave unchanged" (`None`) or "set" (`Some`),
+but never "clear," because `COALESCE` never lets a caller write `NULL` over
+an existing value. D1a's `DatasetRestrictionUpdate` enum is not just a
+handler-layer convenience: the catalog function's SQL has to change shape
+to accept it, from a single nullable parameter with `COALESCE` to a branch
+per variant (`Keep` → don't touch the columns at all; `Clear` → `SET
+dataset_ids = NULL, dataset_id = NULL`; `Set(ids)` → `SET dataset_ids =
+?, dataset_id = ?` with the D2 projection applied). Test all three
+variants directly against the catalog, not only through the HTTP layer —
+this is exactly the gap that let the first draft's "`Some(vec![])` is
+rejected at the catalog layer" phrasing paper over the fact that a
+`COALESCE`-shaped column can't express "clear" at all, at any layer.
 
 **D3 — Enforcement is one shared helper, called from both auth paths.** Add
 `fn dataset_allowed(restriction: Option<&[String]>, requested: &str) -> bool`
@@ -104,78 +206,225 @@ requested)`) in `common::auth`. Replace the inline comparison at
 never looks at dataset at all, so this is new enforcement, not a
 generalization of existing logic. `TenantContext.api_key_dataset_id:
 Option<String>` becomes `api_key_dataset_ids: Option<Vec<String>>`
-(`with_api_key_restrictions` signature updates to match; every call site is
-in `authenticator.rs`, no fan-out).
+(`with_api_key_restrictions` signature updates to match). Call sites are
+not confined to `authenticator.rs`: `TenantContext` is also constructed
+directly (not through `with_api_key_restrictions`) in the acceptor crate's
+ingest paths (`acceptor/src/lib.rs:1139-1154`,
+`acceptor/src/handler/prometheus_handler.rs:573`, and each
+`acceptor/src/services/otlp_*_service.rs` OTLP handler) and in the router's
+own read-scope/query/discovery endpoints
+(`router/src/read_scope.rs:57`, `router/src/endpoints/query.rs:1301`,
+`router/src/endpoints/discovery.rs:474`) — every one of these needs its
+`api_key_dataset_id: None` literal updated to `api_key_dataset_ids: None`
+and re-verified to compile; they don't need new logic since the acceptor
+paths never had a restriction to enforce differently, but a rename this
+size touching a struct field used across two crates fans out further than
+`authenticator.rs` alone.
 
-**D4 — Resolution order when a request also carries an explicit dataset
-becomes: explicit request dataset, checked against the restriction (reject
-if outside it); no restriction and no explicit dataset falls through to
-tenant default exactly as today.** Unlike the MCP tools' `tenant` argument
-(a confirmation only, never a selector — #1441), the restriction set is a
-real authorization boundary — this doesn't change the *meaning* of the
-existing `X-Dataset-ID`/MCP `dataset` argument, only adds a check against it.
+**D4 — Resolution order when the request carries no explicit dataset and
+the credential carries a multi-element restriction is a rejection, not a
+guess.** The full order, replacing the single sentence in the first draft
+that only covered "no restriction" and "explicit dataset given":
 
-**D5 — Consent UI: datasets appear once a tenant is selected, default
-unchecked = unrestricted.** Matches the existing tenant radio-list UX
-(`ConsentView.tsx:197-225`) with a checkbox list underneath the chosen
-tenant, sourced from a new `datasets: Vec<ConsentDataset>` field added to
-`ConsentContextResponse` per tenant (mirrors `ConsentTenant`). Leaving every
-box unchecked keeps today's "whole tenant" behavior — no user of an existing
-connector sees a behavior change on reauthorization. *Alternative
-considered:* require at least one dataset checked — rejected, it would make
-every existing connector re-consent decision stricter than what it already
-had, a regression disguised as a security default. This deliberately reads
-`dataset_ids: []` differently from D1a's API-key-create rule: a consent
-decision is a one-shot form submission with no "omit the field" affordance
-and no prior state to distinguish "unchanged" from — every checkbox is
-either checked or not, so empty is the only way the form can express "no
-restriction," and that is exactly what it means here. API-key creation, by
-contrast, is a programmatic call where omitting the field is available and
-preferred, leaving `[]` free to be rejected as a caller mistake.
+1. An explicit request dataset (header or MCP `dataset` argument) is always
+   checked against the restriction via `dataset_allowed`; outside the set
+   is refused, regardless of how many elements the restriction has. This is
+   unchanged from the first draft.
+2. No explicit request dataset, **no restriction** → tenant default, exactly
+   as today.
+3. No explicit request dataset, restriction is a **single-element set**
+   → resolve to that element. This is not new behavior — it is today's
+   exact behavior for a single-`dataset_id`-bound key
+   (`authenticator.rs:877-934` pins it), preserved because a legacy key
+   migrates to a one-element set under D2 and must keep working identically
+   without a header.
+4. No explicit request dataset, restriction has **two or more elements** →
+   reject with a client error naming the tenant and asking the caller to
+   specify `X-Dataset-ID` (HTTP) or the `dataset` argument (MCP) explicitly.
+   There is no principled default among several allowed datasets, and
+   silently picking one (the tenant default if it happens to be in the set,
+   or the first element) is exactly the kind of ambiguity that turns into a
+   security assumption nobody wrote down. This case cannot arise for any
+   credential created under the old single-`dataset_id` model; it only
+   exists once an operator deliberately grants a multi-dataset restriction,
+   at which point every one of that credential's callers must already know
+   to send a dataset.
 
-**D6 — Refresh preserves the grant exactly, same as tenant/scopes today.**
-`issue_tokens`/refresh-grant handling copies `dataset_ids` from the
-authorization code (or prior access token, on refresh) onto the new token
-record — no re-consent, matching "Token issuance with PKCE and refresh"
+Unlike the MCP tools' `tenant` argument (a confirmation only, never a
+selector — #1441), the restriction set is a real authorization boundary —
+this doesn't change the *meaning* of the existing `X-Dataset-ID`/MCP
+`dataset` argument, only adds a check against it and, per case 4, sometimes
+requires it where it was previously optional-with-a-default.
+
+**D5 — Consent UI: an explicit all-vs-restricted choice, not a checklist
+that means "everything" when empty.** The first draft's "checkbox list,
+default unchecked = unrestricted" was flagged by both reviews as an
+inverted default: a user who checks two datasets, reconsiders, and
+unchecks both — intending to pause, not to change their mind about scope —
+approves a grant to the *whole tenant*, silently wider than what they were
+just looking at. The corrected UX is a two-state choice per tenant, once a
+tenant is selected (still matching the existing tenant radio-list UX,
+`ConsentView.tsx:197-225`):
+
+- **"All datasets in &lt;tenant&gt;"** — selected by default, matching
+  today's only behavior exactly (no existing connector sees a change on
+  reauthorization). Submits `dataset_ids: null` (omitted).
+- **"Only these datasets:"** — reveals a checklist of that tenant's
+  datasets (sourced from a new `datasets: Vec<ConsentDataset>` field on
+  `ConsentContextResponse` per tenant, mirroring `ConsentTenant`). Selecting
+  this mode with zero boxes checked is a client-side validation error (the
+  submit control is disabled) and, redundantly, a server-side one (D1a: an
+  empty array is rejected everywhere, consent included — the server does
+  not trust the client's disabled-button enforcement alone). Submits
+  `dataset_ids: [<checked names>]`, always non-empty by construction.
+
+This keeps the low-friction default (no user of an existing connector is
+forced to touch the new control) while making "restrict" and "everything"
+two states a user actively picks between, rather than "everything" being
+what happens when a checklist is left empty. `ConsentDecision.dataset_ids`
+is `Option<Vec<String>>` and MUST carry `#[serde(default)]` so that a
+consent request from a client built before this change (which omits the
+field entirely) continues to work exactly as it does today, rather than
+422ing on a newly-required field.
+
+**D6 — Refresh reads the restriction from the stored refresh-token record,
+not the prior access token.** The first draft said refresh "copies
+`dataset_ids` from the authorization code (or prior access token, on
+refresh)" — but a refresh request only guarantees the presence of a valid
+refresh token; the access token it was issued alongside may already be
+expired or otherwise unavailable, so there is nothing reliable to copy
+*from* on that path. D2's new `dataset_ids` column on
+`oauth_refresh_tokens` is the actual source of truth for a refresh: the
+authorization-code path copies the code's `dataset_ids` onto both the new
+access token and the new refresh token at issuance (unchanged from the
+first draft); the refresh-grant path copies `dataset_ids` from the
+presented `oauth_refresh_tokens` row onto the new access token it mints. No
+re-consent either way, matching "Token issuance with PKCE and refresh"
 behavior for tenant and scopes already.
 
 **D7 — API surfaces: `dataset_id` request/response fields become
-`dataset_ids`, a plain array.** Admin API (`endpoints/admin.rs:586-620`
-create, `656-737` update, `752-761` response), management API
+`dataset_ids`, a plain array — this is a breaking change for direct HTTP
+and unregenerated-SDK callers, and is marked as such (see D8 for the
+mitigation on responses).** Admin API (`endpoints/admin.rs:586-620` create,
+`656-737` update, `752-761` response), management API
 (`endpoints/management.rs:403-433`, `509-536`, `573-580`, `603-668`), CLI
 (`signaldb-cli/src/commands/api_key.rs:30-32,44-46` — `--dataset` becomes a
-repeatable flag, `Vec<String>`), MCP (`server.rs` — `CreateApiKeyParams`,
+repeatable flag, `Vec<String>`, plus a new `--clear-dataset-restriction`
+flag on `Update` per D1a), MCP (`server.rs` — `CreateApiKeyParams`,
 `UpdateApiKeyScopesParams`, `TenantCreateApiKeyParams`,
 `TenantUpdateApiKeyParams`, each `dataset_id: Option<String>` →
-`dataset_ids: Option<Vec<String>>`). SDK (`signaldb-sdk/src/generated.rs`) is
-regenerated from the OpenAPI spec, never hand-edited — this is a breaking
-Rust-type change for SDK consumers (CLI, MCP, tests-integration) but not a
-wire-protocol break for existing callers who never set `dataset_id` (it was
-optional and stays optional, just plural).
+`dataset_ids: Option<Vec<String>>`, plus `clear_dataset_restriction: bool`
+on the two update-tool params). SDK (`signaldb-sdk/src/generated.rs`) is
+regenerated from the OpenAPI spec, never hand-edited.
+
+**D8 — Responses keep a deprecated, best-effort `dataset_id` field for one
+release; requests do not.** D7's request-side rename is unavoidably
+breaking (a caller sending `dataset_id` gets a 422 for an unrecognized
+field, or silently no restriction, depending on how strict the deserializer
+is) and this proposal does not soften that — every producer of a
+create/update request must move to `dataset_ids`. Responses are different:
+add `dataset_id: Option<String>` back onto `ApiKeyResponse`/
+`CreateApiKeyResponse`/`ManageApiKeyResponse`/`ManageCreatedApiKey`,
+computed as `dataset_ids.as_ref().filter(|v| v.len() == 1).map(|v|
+v[0].clone())` — `Some` for exactly the single-dataset and unrestricted
+(`None`) cases every pre-existing reader already understands, `None` for a
+genuinely new multi-element restriction (which such a reader had no way to
+represent anyway). This is scaffolding, not a permanent dual-field API:
+`tasks.md` 7.2 files the follow-up to drop it once callers have migrated,
+and the OpenAPI description marks it deprecated from the day it ships.
+
+**D9 — A dataset-restricted credential cannot use the management API at
+all, regardless of role or scope.** The management API
+(`authorize_tenant`/`can_manage`, `management.rs:61-80`) grants full
+tenant administration — creating other API keys with arbitrary scopes and
+restrictions, deleting datasets, managing memberships — to any principal
+with the tenant-admin role, the instance-admin flag, or a key/token
+carrying `tenant:manage`. Once OAuth tokens can carry a dataset
+restriction, an unmodified `can_manage` lets a token consented to
+`["production"]` only call `tenant_create_api_key` with no `dataset_ids`
+and receive a key restricted to nothing — administering the whole tenant
+through a grant that was supposed to be narrower. This is not a gap in
+enforcement *coverage* the way D3's data-plane check is; it's a
+capability the management API was never designed to narrow, and
+retrofitting per-operation dataset scoping onto a dozen endpoints
+(`tenant_create_dataset`, `tenant_delete_dataset`, `tenant_create_api_key`,
+`tenant_upsert_membership`, `tenant_get_schema`, ...) is a materially larger
+change than this proposal's stated scope. The decision: `can_manage`
+returns `false` whenever the principal's own credential carries a
+non-empty dataset restriction, full stop — a restricted grant gets the
+data-plane access it asked for and nothing that administers the tenant.
+*Alternative considered:* allow the subset of management operations that
+are themselves dataset-scoped (create/delete a dataset within the caller's
+own set, create a key whose own restriction is a subset of the caller's)
+— rejected for this change as materially larger scope than the stated
+gap (a restriction was never expected to interact with `tenant:manage` at
+all; today's only credential that can carry both is nonexistent, since
+API keys are the only thing with a restriction today and `tenant:manage`
+plus `dataset_id` is a combination nothing prevents but that has no
+existing user to preserve behavior for), tracked as a possible follow-up
+if a real need for "manage only my slice of the tenant" shows up.
+
+**D10 — Restricted credentials see only their own datasets in every
+listing, not the whole tenant.** `discover_datasets` (MCP), `whoami`
+(`GET /api/v1/whoami`), and `manage_list_datasets` today return every
+dataset in the tenant unconditionally. Once a credential can be restricted,
+an unfiltered listing leaks the *names* of datasets the credential cannot
+query or manage — not their data, but their existence, which is
+information the restriction was meant to withhold. Each of these three
+call sites filters its dataset (and, for `discover_datasets`, per-dataset
+table-count) list through the caller's `api_key_dataset_ids`/token
+restriction when one is present; unrestricted credentials see the
+unfiltered list, unchanged. `discover_datasets` itself takes no `dataset`
+argument in the existing implementation and is not subject to the
+`tenant`/`dataset`-required rule `mcp-tool-surface`'s "MCP tools cover the
+full client capability set" requirement states for query/schema-lookup
+tools (that rule was written before this proposal and, on inspection,
+never applied to `discover_datasets` in the actual tool signature — this
+change tightens the requirement's wording to say so explicitly, since
+CodeRabbit's review read the existing text as implying otherwise).
 
 ## Risks / Trade-offs
 
-- [A key/token silently denied everything by a client sending `[]` where
-  they meant "no restriction"] → D1a gives `[]` a single, non-denying
-  meaning on both operations (rejected on create, "clear to unrestricted" on
-  update) — it never means "deny every dataset" anywhere.
-- [`dataset_id` column left in place after migration is dead weight] →
-  acceptable for this change; a follow-up can drop it once every backend has
-  run the backfill at least once (can't drop-and-recreate safely across a
-  live SQLite deployment in one step).
+- [A key/token silently denied everything, or silently made unrestricted,
+  by a client that meant something else with `[]`] → D1a removes every
+  context-dependent meaning of a bare empty array; it is rejected
+  everywhere, and "clear" and "unrestricted" each have their own explicit,
+  unambiguous signal instead.
+- [`dataset_id` column stays load-bearing indefinitely as a dual-write
+  target] → acceptable and deliberate: D2's dual-write is what makes
+  rollback and mixed-version operation safe, not incidental debt. Dropping
+  it is future work gated on every node running new code (documented as
+  the mixed-version constraint in D2), not on this change landing.
 - [Two independent enforcement call sites (API key, OAuth) could drift] →
-  D3's shared `dataset_allowed` helper is the single source of truth; both
-  paths call it, tested from both.
+  D3's shared `dataset_allowed` helper is the single source of truth for
+  the data-plane check; D9 closes the separate control-plane gap that
+  `dataset_allowed` alone can't reach.
 - [OAuth consent screen grows a second selection step] → D5 keeps it
-  low-friction (all-unchecked = no change from today), and it only appears
-  after a tenant is already chosen, so single-tenant users see one extra,
-  skippable control.
+  low-friction (the default radio choice matches today's only behavior
+  exactly), and it only appears after a tenant is already chosen, so
+  single-tenant users see one extra, skippable control.
+- [A multi-dataset restriction is unsafe to create mid-rollout] → documented
+  explicitly in D2 as an operational constraint, not silently risked: single
+  -dataset and unrestricted credentials are safe throughout a mixed-version
+  deploy and a rollback at any point; only genuinely new multi-element
+  restrictions require the rollout to finish first.
+- [`dataset_id` response field removal breaks an existing reader] → D8's
+  deprecated derived field covers every case such a reader already
+  understood (single dataset, unrestricted); only a caller that starts
+  creating multi-element restrictions needs to move to reading
+  `dataset_ids`, and by then it has necessarily already moved to writing
+  it.
 
 ## Migration Plan
 
-Additive, in the existing `Catalog::init()` idempotent-DDL style (D2): new
-columns land empty/backfilled on next boot, old `dataset_id` values keep
-meaning what they meant via the backfill, no operator action required.
-Rollback = revert; the new columns are simply unread by the old code path
-they're rolled back to (SQLite/Postgres both tolerate an extra unused
-column).
+Additive, in the existing `Catalog::init()` idempotent-DDL style: new
+columns land on next boot; the one-time backfill (D2) only ever touches a
+row untouched since before this change, because new code keeps both
+columns consistent on every write it makes. Rollback = revert to the prior
+binary; because of D2's dual-write, old code's reads of `dataset_id` remain
+correct for every key it created or updated (unrestricted and
+single-dataset), and for every key new code touched *unless* it was set to
+a multi-element restriction, per the documented mixed-version limitation
+above. Operators completing a rollout should avoid creating or updating any
+key/token to a multi-element restriction until it is complete; nothing else
+about this migration requires a maintenance window or manual intervention.
