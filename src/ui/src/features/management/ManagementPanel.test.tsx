@@ -53,6 +53,87 @@ describe("ManagementPanel API key creation form", () => {
       );
     }
   });
+
+  it("offers a dataset multi-select and creates a key restricted to the checked datasets", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/manage/tenants/acme/api-keys", method: "GET", body: [] },
+      {
+        match: "/api/v1/manage/tenants/acme/api-keys",
+        method: "POST",
+        body: { key: "sdbk_x" },
+      },
+      { match: "/api/v1/manage/tenants/acme/memberships", body: [] },
+      { match: TABLES_PATH, body: { tenant_id: "acme", tables: [] } },
+    ]);
+
+    renderPanel();
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("production")).toBeInTheDocument(),
+    );
+    expect(screen.getByLabelText("production")).not.toBeChecked();
+    await userEvent.click(screen.getByLabelText("production"));
+    await userEvent.click(screen.getByText("Create API key"));
+
+    await waitFor(() => {
+      const post = fetchMock.mock.calls
+        .map((call) => call[0])
+        .filter((req): req is Request => req instanceof Request)
+        .find((req) => req.url.includes("/api-keys") && req.method === "POST");
+      expect(post).toBeDefined();
+    });
+    const post = fetchMock.mock.calls
+      .map((call) => call[0])
+      .filter((req): req is Request => req instanceof Request)
+      .find(
+        (req) => req.url.includes("/api-keys") && req.method === "POST",
+      )!;
+    expect(await post.clone().json()).toMatchObject({
+      dataset_ids: ["production"],
+    });
+  });
+
+  it("shows a key's dataset restriction, or 'unrestricted' when there is none", async () => {
+    stubFetchRoutes([
+      {
+        match: "/api/v1/manage/tenants/acme/api-keys",
+        body: [
+          {
+            id: "k1",
+            name: "restricted",
+            dataset_ids: ["production"],
+            scopes: ["metrics:write"],
+            revoked: false,
+          },
+          {
+            id: "k2",
+            name: "open",
+            dataset_ids: null,
+            scopes: ["metrics:write"],
+            revoked: false,
+          },
+        ],
+      },
+      { match: "/api/v1/manage/tenants/acme/memberships", body: [] },
+      { match: TABLES_PATH, body: { tenant_id: "acme", tables: [] } },
+    ]);
+
+    renderPanel();
+
+    await waitFor(() =>
+      expect(screen.getByText("restricted")).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText((content) =>
+        content.startsWith("production · metrics:write"),
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText((content) =>
+        content.startsWith("unrestricted · metrics:write"),
+      ),
+    ).toBeInTheDocument();
+  });
 });
 
 describe("ManagementPanel tables section", () => {
