@@ -1242,6 +1242,143 @@ pub struct Configuration {
     /// MCP (Model Context Protocol) server configuration
     #[serde(default)]
     pub mcp: McpConfig,
+    /// Public-facing endpoints for this deployment, as reached from outside
+    /// (used to answer `GET /api/v1/connection` and the MCP `connection_info`
+    /// tool). All fields are optional; unset ones fall back to localhost
+    /// defaults suitable only for local development.
+    #[serde(default)]
+    pub public: PublicEndpointsConfig,
+}
+
+/// Public-facing endpoint URLs for this deployment, as reached from outside
+/// the cluster (e.g. through a load balancer or reverse proxy). Distinct from
+/// the bind addresses in `[acceptor]`/`[router]`/`[mcp]`, which describe what
+/// a service listens on locally.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PublicEndpointsConfig {
+    /// Public OTLP/gRPC endpoint, e.g. `https://otlp.example.com:4317`.
+    /// Env: SIGNALDB__PUBLIC__OTLP_GRPC_URL
+    pub otlp_grpc_url: Option<String>,
+    /// Public OTLP/HTTP endpoint base URL, e.g. `https://otlp.example.com:4318`.
+    /// Signal paths (`/v1/traces`, etc.) are appended by consumers.
+    /// Env: SIGNALDB__PUBLIC__OTLP_HTTP_URL
+    pub otlp_http_url: Option<String>,
+    /// Public base URL of the router's HTTP API, e.g.
+    /// `https://signaldb.example.com`.
+    /// Env: SIGNALDB__PUBLIC__API_URL
+    pub api_url: Option<String>,
+    /// Public URL of the MCP Streamable HTTP endpoint, e.g.
+    /// `https://signaldb.example.com/mcp`. Falls back to
+    /// `[mcp.oauth].resource_url` when unset.
+    /// Env: SIGNALDB__PUBLIC__MCP_URL
+    pub mcp_url: Option<String>,
+}
+
+/// `configured`, trailing-slash-trimmed, else `default` verbatim.
+fn resolved(configured: &Option<String>, default: &str) -> String {
+    configured
+        .as_deref()
+        .map(|v| v.trim_end_matches('/'))
+        .unwrap_or(default)
+        .to_string()
+}
+
+/// The local-development fallback URL for a `[public]` field bound to `port`.
+fn localhost_default(port: u16) -> String {
+    format!("http://localhost:{port}")
+}
+
+/// This deployment's public endpoints as resolved, effective values: parsed
+/// URLs for the two OTLP endpoints (rejecting a malformed `[public]` entry up
+/// front, rather than at every consumer), and the plain strings/`Option` the
+/// router API URL and MCP URL need. Built by [`PublicEndpointsConfig::resolve`].
+#[derive(Clone, Debug)]
+pub struct PublicEndpoints {
+    pub otlp_grpc: url::Url,
+    pub otlp_http: url::Url,
+    pub api_url: String,
+    pub mcp_url: Option<String>,
+    /// Whether `[public]` has any explicit value set. `false` means every URL
+    /// above is a localhost fallback, unlikely to be reachable from outside
+    /// this machine.
+    pub configured: bool,
+}
+
+/// A `[public]` URL failed to parse. Carries the offending field name so the
+/// message is actionable without the caller re-deriving it.
+#[derive(Debug, thiserror::Error)]
+#[error("invalid public.{field} URL {value:?}: {source}")]
+pub struct PublicEndpointsError {
+    field: &'static str,
+    value: String,
+    #[source]
+    source: url::ParseError,
+}
+
+/// The getters below (`otlp_grpc_url`, `otlp_http_url`, `api_url`, `mcp_url`)
+/// each return the effective value for one `[public]` field: the configured
+/// value (trailing slash trimmed), or a `localhost` fallback suitable only
+/// for local development. Prefer [`PublicEndpointsConfig::resolve`], which
+/// parses and validates all of them together.
+impl PublicEndpointsConfig {
+    /// True when any explicit public endpoint has been configured.
+    pub fn is_configured(&self) -> bool {
+        self.otlp_grpc_url.is_some()
+            || self.otlp_http_url.is_some()
+            || self.api_url.is_some()
+            || self.mcp_url.is_some()
+    }
+
+    pub fn otlp_grpc_url(&self) -> String {
+        resolved(
+            &self.otlp_grpc_url,
+            &localhost_default(crate::endpoints::DEFAULT_OTLP_GRPC_PORT),
+        )
+    }
+
+    pub fn otlp_http_url(&self) -> String {
+        resolved(
+            &self.otlp_http_url,
+            &localhost_default(crate::endpoints::DEFAULT_OTLP_HTTP_PORT),
+        )
+    }
+
+    pub fn api_url(&self) -> String {
+        resolved(
+            &self.api_url,
+            &localhost_default(crate::endpoints::DEFAULT_ROUTER_HTTP_PORT),
+        )
+    }
+
+    /// This section's `mcp_url`, else the OAuth resource URL the MCP surface
+    /// is bound to, else `None` (no MCP endpoint is known).
+    pub fn mcp_url(&self, oauth: &OAuthConfig) -> Option<String> {
+        self.mcp_url
+            .as_deref()
+            .or(oauth.resource_url.as_deref())
+            .map(|v| v.trim_end_matches('/').to_string())
+    }
+
+    /// Parses and validates every `[public]` URL, returning the effective
+    /// values consumers need. Called once at config load so a malformed URL
+    /// fails startup with a clear message instead of a 500 on first request.
+    pub fn resolve(&self, oauth: &OAuthConfig) -> Result<PublicEndpoints, PublicEndpointsError> {
+        let parse = |value: String, field: &'static str| {
+            url::Url::parse(&value).map_err(|source| PublicEndpointsError {
+                field,
+                value,
+                source,
+            })
+        };
+        Ok(PublicEndpoints {
+            otlp_grpc: parse(self.otlp_grpc_url(), "otlp_grpc_url")?,
+            otlp_http: parse(self.otlp_http_url(), "otlp_http_url")?,
+            api_url: self.api_url(),
+            mcp_url: self.mcp_url(oauth),
+            configured: self.is_configured(),
+        })
+    }
 }
 
 /// Configuration for the standalone `signaldb-mcp` server.
@@ -1394,6 +1531,7 @@ impl Default for Configuration {
             writer: WriterConfig::default(),
             acceptor: AcceptorConfig::default(),
             mcp: McpConfig::default(),
+            public: PublicEndpointsConfig::default(),
         }
     }
 }
@@ -1629,6 +1767,12 @@ impl Configuration {
                 .map_err(Box::new)?;
 
         config.ensure_self_monitoring_tenant();
+        // Fail fast on a malformed `[public]` URL rather than 500ing the
+        // first `GET /api/v1/connection` call after startup.
+        config
+            .public
+            .resolve(&config.mcp.oauth)
+            .map_err(|error| Box::new(figment::Error::from(error.to_string())))?;
         Ok(config)
     }
 
@@ -2004,6 +2148,118 @@ mod tests {
                 config.wal.wal_dir_for_service("acceptor", None),
                 std::path::PathBuf::from("/env/wal/acceptor")
             );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn public_endpoints_default_to_localhost_and_are_not_configured() {
+        let config = Configuration::default();
+        assert!(!config.public.is_configured());
+        assert_eq!(config.public.otlp_grpc_url(), "http://localhost:4317");
+        assert_eq!(config.public.otlp_http_url(), "http://localhost:4318");
+        assert_eq!(config.public.api_url(), "http://localhost:3000");
+        assert_eq!(config.public.mcp_url(&config.mcp.oauth), None);
+    }
+
+    #[test]
+    fn public_endpoints_parse_from_toml_and_trim_trailing_slashes() {
+        let toml = r#"
+            [public]
+            otlp_grpc_url = "https://otlp.example.com:4317"
+            otlp_http_url = "https://otlp.example.com:4318/"
+            api_url = "https://signaldb.example.com/"
+            mcp_url = "https://signaldb.example.com/mcp"
+        "#;
+        Jail::expect_with(|jail| {
+            jail.create_file("signaldb.toml", toml)?;
+            let config: Configuration = Figment::new()
+                .merge(Serialized::defaults(Configuration::default()))
+                .merge(figment::providers::Toml::file("signaldb.toml"))
+                .extract()?;
+            assert!(config.public.is_configured());
+            assert_eq!(
+                config.public.otlp_grpc_url(),
+                "https://otlp.example.com:4317"
+            );
+            assert_eq!(
+                config.public.otlp_http_url(),
+                "https://otlp.example.com:4318"
+            );
+            assert_eq!(config.public.api_url(), "https://signaldb.example.com");
+            assert_eq!(
+                config.public.mcp_url(&config.mcp.oauth),
+                Some("https://signaldb.example.com/mcp".to_string())
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn public_endpoints_env_override_flows_through_figment() {
+        Jail::expect_with(|jail| {
+            jail.set_env(
+                "SIGNALDB__PUBLIC__OTLP_GRPC_URL",
+                "https://otlp.example.com:4317",
+            );
+            let config: Configuration = Figment::new()
+                .merge(Serialized::defaults(Configuration::default()))
+                .merge(Env::prefixed("SIGNALDB__").split("__"))
+                .extract()?;
+            assert!(config.public.is_configured());
+            assert_eq!(
+                config.public.otlp_grpc_url(),
+                "https://otlp.example.com:4317"
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn public_endpoints_mcp_url_falls_back_to_oauth_resource_url() {
+        let mut config = Configuration::default();
+        config.mcp.oauth.resource_url = Some("https://signaldb.example.com/mcp/".to_string());
+        assert_eq!(
+            config.public.mcp_url(&config.mcp.oauth),
+            Some("https://signaldb.example.com/mcp".to_string())
+        );
+    }
+
+    #[test]
+    fn public_endpoints_resolve_succeeds_with_the_localhost_defaults() {
+        let config = Configuration::default();
+        let resolved = config.public.resolve(&config.mcp.oauth).unwrap();
+        assert!(!resolved.configured);
+        assert_eq!(resolved.otlp_grpc.as_str(), "http://localhost:4317/");
+        assert_eq!(resolved.otlp_http.as_str(), "http://localhost:4318/");
+        assert_eq!(resolved.api_url, "http://localhost:3000");
+        assert_eq!(resolved.mcp_url, None);
+    }
+
+    #[test]
+    fn public_endpoints_resolve_rejects_a_malformed_url() {
+        let mut config = Configuration::default();
+        config.public.otlp_grpc_url = Some("not a url".to_string());
+        let error = config
+            .public
+            .resolve(&config.mcp.oauth)
+            .expect_err("malformed URL must be rejected");
+        assert!(error.to_string().contains("otlp_grpc_url"));
+    }
+
+    #[test]
+    fn load_from_path_fails_startup_on_a_malformed_public_url() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "signaldb.toml",
+                r#"
+                    [public]
+                    otlp_grpc_url = "not a url"
+                "#,
+            )?;
+            let error = Configuration::load_from_path(std::path::Path::new("signaldb.toml"))
+                .expect_err("malformed public.otlp_grpc_url must fail startup");
+            assert!(error.to_string().contains("otlp_grpc_url"));
             Ok(())
         });
     }
