@@ -31,6 +31,7 @@ these:
 | Tool                       | Purpose                                                                                                                                                                                                              |
 | -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `server_info`              | Confirm connectivity and which tenant your credential resolves to.                                                                                                                                                   |
+| `connection_info`          | This deployment's public OTLP gRPC/HTTP and Prometheus remote-write endpoints, the query API base, headers with your tenant/dataset filled in, the API-key scopes ingest and query need, and ready-to-paste `OTEL_EXPORTER_OTLP_*` env vars. |
 | `discover_datasets`        | The tenant and datasets your credential can access, as a nested Markdown list, marking the session's current default dataset. Filtered to your credential's dataset restriction, if any — a dataset outside it never appears, even by name. Call before passing an explicit `dataset` or `tenant` argument elsewhere.             |
 | `search_traces`            | TraceQL search over your tenant's traces.                                                                                                                                                                            |
 | `get_trace`                | Fetch a single trace by ID (renders as a waterfall — see below).                                                                                                                                                     |
@@ -484,6 +485,11 @@ exported when `[self_monitoring]` is enabled for the sidecar (service name
 `signaldb-mcp`); see `docs/operations/self-monitoring-traces.md`.
 
 ## Example flow
+
+Configuring a new application to send data here? Call `connection_info` first —
+it returns the deployment's public OTLP endpoints, the headers to send, and
+ready-to-paste `OTEL_EXPORTER_OTLP_*` env vars — then mint an ingest key with
+`tenant_create_api_key` and substitute it for the placeholder.
 
 1. `server_info` — confirm you are connected as the expected tenant.
 2. `discover_attributes` — list tag names, then values for `service.name`.
