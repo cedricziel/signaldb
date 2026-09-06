@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1788582451817,
+  "lastUpdate": 1788669056444,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -4943,6 +4943,334 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 1093687,
             "range": "± 19741",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cedric Ziel",
+            "username": "cedricziel",
+            "email": "mail@cedric-ziel.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "ad78cd1981282426b65b7dcac50ddc38eeea7f80",
+          "message": "feat: self-serve connection details for agents ([public] config, /api/v1/connection, MCP connection_info) (#1474)\n\n* refactor: centralize OTLP paths, default ports, and signal read scopes\n\nAdd common::endpoints with the default OTLP/router ports and the OTLP/HTTP\nand remote-write paths, and use it for the acceptor's route registrations,\npath-to-signal map, and CLI defaults. Add SIGNAL_READ_SCOPES and build\nREAD_SCOPES from it so consumers no longer slice the array positionally.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* feat(config): add [public] endpoint section\n\nOperators can now declare how the deployment is reached from outside:\notlp_grpc_url, otlp_http_url, api_url, and mcp_url (falling back to\n[mcp.oauth].resource_url). Unset fields fall back to localhost defaults\nderived from common::endpoints. URLs are validated at config load so a\ntypo fails startup instead of a later request. The first-boot banner\nprints these endpoints instead of hardcoded localhost strings.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* test(mcp): share the Streamable HTTP integration-test harness\n\nExtract the test client, mock router, and JSON-RPC helpers that the\nadmin tenant and API key tool tests each copied into tests/common.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* feat(router): add GET /api/v1/connection for self-serve connection details\n\nAny valid tenant credential, including an ingest-only key, can fetch the\ndeployment's public OTLP gRPC/HTTP and remote-write endpoints, the query\nAPI base and compat prefixes, the headers with tenant and dataset filled\nin, the scopes ingest and query need, and ready-to-paste OTEL_EXPORTER_*\nenv vars. Path-prefixed ingress URLs are preserved. The response notes\nwhen [public] is unset and URLs are localhost fallbacks. Registered in\nOpenAPI and regenerated into the Rust and TypeScript SDKs.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* feat(mcp): add connection_info tool\n\nAgents can call connection_info first to learn where and how to send\ndata, then mint an ingest credential with tenant_create_api_key, so an\napplication can be auto-instrumented against SignalDB without reading\nthe docs.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* feat(ui): send-data page reads endpoints from the connection API\n\nSnippets now come from GET /api/v1/connection via the generated SDK\ninstead of guessing the browser hostname and hardcoded ports, so they\nhonor [public] config, TLS, and path prefixes. A fetch failure shows an\nerror state with retry rather than plausible but wrong snippets. The\nwarn callout styling is shared with the throttle banner.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* feat(cli): add signaldb-cli connection\n\nPrints the deployment's connection details from GET /api/v1/connection\nas JSON, giving the operation the CLI surface the query-parity manifest\nrequires alongside the MCP connection_info tool.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* fix(config): validate every [public] URL and note each unset endpoint\n\nRequire an http or https scheme and a host for api_url and mcp_url too,\nnot only the OTLP URLs. A deployment counts as configured only when the\nthree required endpoints are set; the connection response lists one note\nper unset field with its localhost fallback instead of a single generic\nnote that a partial configuration used to suppress.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* test(mcp): decode harness responses as complete UTF-8\n\nBuffer raw bytes and decode once instead of lossily per chunk, so a\nmulti-byte sequence split across chunks cannot corrupt a tool result.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* test(ui): derive fixture OTel headers from overridden headers\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* fix(ui): show a tenant-access message for 403 on the send-data page\n\nA 401 is handled globally by the login panel; a 403 means the tenant does\nnot grant access, which retrying cannot fix, so it gets its own message\nwithout the retry button.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* fix(ui): emit OTEL_EXPORTER_OTLP_PROTOCOL in the env-var snippets\n\nThe API reports grpc for the gRPC endpoint; without the variable an SDK\nmay default to http/protobuf and pick the wrong transport.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n* docs(ui): describe the send-data page's failure modes\n\n401 hands over to the global sign-in dialog, 403 shows a tenant-access\nmessage without retry, and everything else is retryable; every [public]\nURL is validated at startup so a request-time 500 is not expected.\n\nCo-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Cedric Ziel <cedricziel@WorkerMBPCedric.localdomain>\nCo-authored-by: Claude Fable 5.1 <noreply@anthropic.com>",
+          "timestamp": "2026-09-05T19:42:17Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/ad78cd1981282426b65b7dcac50ddc38eeea7f80"
+        },
+        "date": 1788669054720,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 1933880,
+            "range": "± 66761",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 1153654,
+            "range": "± 44935",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 702562,
+            "range": "± 2945",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 1575237,
+            "range": "± 19944",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 760701,
+            "range": "± 11032",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 1836735,
+            "range": "± 50127",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 1117822,
+            "range": "± 8135",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.0MB",
+            "value": 1430678,
+            "range": "± 12846",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.4MB",
+            "value": 2660140,
+            "range": "± 127022",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_2.9MB",
+            "value": 13080155,
+            "range": "± 370451",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_33.0MB",
+            "value": 121122190,
+            "range": "± 2915808",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 4154788,
+            "range": "± 21314",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 8454270,
+            "range": "± 14951",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 15509920,
+            "range": "± 124673",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 30817851,
+            "range": "± 674143",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 906478,
+            "range": "± 1992",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 2371297,
+            "range": "± 59280",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 3364666,
+            "range": "± 58463",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 6493012,
+            "range": "± 155833",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/1000",
+            "value": 71204,
+            "range": "± 2310",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/1000",
+            "value": 109549,
+            "range": "± 379",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/10000",
+            "value": 647309,
+            "range": "± 1005",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/10000",
+            "value": 1268006,
+            "range": "± 20448",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/100000",
+            "value": 15453284,
+            "range": "± 569448",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/100000",
+            "value": 29963905,
+            "range": "± 142918",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 605767,
+            "range": "± 19274",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 21259437,
+            "range": "± 509312",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 30022392,
+            "range": "± 1440014",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 28431737,
+            "range": "± 503800",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 28428258,
+            "range": "± 143452",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 28298970,
+            "range": "± 167078",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 6726454,
+            "range": "± 30944",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 16519700,
+            "range": "± 71675",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 35417038,
+            "range": "± 206123",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested",
+            "value": 9973158,
+            "range": "± 78592",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested_split_off",
+            "value": 9605787,
+            "range": "± 84197",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/unattested",
+            "value": 9516659,
+            "range": "± 49854",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested",
+            "value": 8432853,
+            "range": "± 85354",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested_split_off",
+            "value": 8338855,
+            "range": "± 85599",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/unattested",
+            "value": 9414185,
+            "range": "± 47426",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested",
+            "value": 14567477,
+            "range": "± 228088",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested_split_off",
+            "value": 16122206,
+            "range": "± 520862",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/unattested",
+            "value": 17289794,
+            "range": "± 808704",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 30201566,
+            "range": "± 2366159",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 6718222,
+            "range": "± 91951",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 74091909,
+            "range": "± 2189141",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 127797869,
+            "range": "± 1625080",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 138949789,
+            "range": "± 2360123",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 1091210,
+            "range": "± 80391",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 1001801,
+            "range": "± 28384",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 1062511,
+            "range": "± 7413",
             "unit": "ns/iter"
           }
         ]
