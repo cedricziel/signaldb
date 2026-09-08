@@ -1,8 +1,10 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as consentApi from "../../api/consent";
-import { renderWithClient } from "../../test/render";
+import { ApiError } from "../../api/http";
+import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { ConsentView } from "./ConsentView";
 
 vi.mock("../../api/consent", () => ({
@@ -37,11 +39,25 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
+// ConsentView renders LoginPanel on demand, which resolves its default SSO
+// redirect from react-router's useLocation() — every render needs a Router
+// ancestor. The entry mirrors the consent URL set in beforeEach so that
+// default matches window.location's own query string.
+function renderConsent() {
+  return renderWithClient(
+    <MemoryRouter initialEntries={[`/oauth/consent?${QUERY}`]}>
+      <ConsentView />
+    </MemoryRouter>,
+  );
+}
+
 describe("ConsentView", () => {
   it("shows the client, the requested read scope, and only the user's tenants", async () => {
-    renderWithClient(<ConsentView />);
+    renderConsent();
 
-    expect(await screen.findByRole("heading", { name: /Claude/ })).toBeInTheDocument();
+    expect(
+      await screen.findByRole("heading", { name: /Claude/ }),
+    ).toBeInTheDocument();
     // scope=traces:read only → logs/metrics are not offered
     expect(screen.getByText("Read traces")).toBeInTheDocument();
     expect(screen.queryByText("Read logs")).not.toBeInTheDocument();
@@ -52,7 +68,7 @@ describe("ConsentView", () => {
   });
 
   it("approves with the selected tenant", async () => {
-    renderWithClient(<ConsentView />);
+    renderConsent();
     await screen.findByRole("heading", { name: /Claude/ });
 
     await userEvent.click(screen.getByRole("radio", { name: /globex/ }));
@@ -71,7 +87,7 @@ describe("ConsentView", () => {
   });
 
   it("denies (approved=false) so the client learns of the refusal", async () => {
-    renderWithClient(<ConsentView />);
+    renderConsent();
     await screen.findByRole("heading", { name: /Claude/ });
 
     await userEvent.click(screen.getByRole("button", { name: "Deny" }));
@@ -84,12 +100,10 @@ describe("ConsentView", () => {
   });
 
   it("defaults to 'all datasets' and sends no dataset_ids", async () => {
-    renderWithClient(<ConsentView />);
+    renderConsent();
     await screen.findByRole("heading", { name: /Claude/ });
 
-    expect(
-      screen.getByRole("radio", { name: /All datasets/ }),
-    ).toBeChecked();
+    expect(screen.getByRole("radio", { name: /All datasets/ })).toBeChecked();
     // The checklist only renders in the "only these" state.
     expect(
       screen.queryByRole("checkbox", { name: "production" }),
@@ -105,7 +119,7 @@ describe("ConsentView", () => {
   });
 
   it("restricts the grant to the checked datasets once 'only these datasets' is chosen", async () => {
-    renderWithClient(<ConsentView />);
+    renderConsent();
     await screen.findByRole("heading", { name: /Claude/ });
 
     await userEvent.click(
@@ -130,7 +144,7 @@ describe("ConsentView", () => {
   });
 
   it("resets the dataset choice to 'all datasets' when the selected tenant changes", async () => {
-    renderWithClient(<ConsentView />);
+    renderConsent();
     await screen.findByRole("heading", { name: /Claude/ });
 
     await userEvent.click(
@@ -140,9 +154,7 @@ describe("ConsentView", () => {
 
     await userEvent.click(screen.getByRole("radio", { name: /globex/ }));
 
-    expect(
-      screen.getByRole("radio", { name: /All datasets/ }),
-    ).toBeChecked();
+    expect(screen.getByRole("radio", { name: /All datasets/ })).toBeChecked();
     expect(
       screen.queryByRole("checkbox", { name: "production" }),
     ).not.toBeInTheDocument();
@@ -162,7 +174,7 @@ describe("ConsentView", () => {
       client_name: "Claude",
       tenants: [{ id: "acme", role: "member", datasets: ACME_DATASETS }],
     });
-    renderWithClient(<ConsentView />);
+    renderConsent();
     await screen.findByRole("heading", { name: /Claude/ });
 
     expect(
@@ -171,5 +183,29 @@ describe("ConsentView", () => {
     expect(
       screen.getByRole("radio", { name: /Only these datasets/ }),
     ).toBeInTheDocument();
+  });
+
+  it("shows the consent hint and an SSO redirect back to this consent URL when a session is required", async () => {
+    vi.mocked(consentApi.consentContext).mockRejectedValueOnce(
+      new ApiError("unauthenticated", 401),
+    );
+    stubFetchRoutes([
+      {
+        match: "/ui/session/config",
+        body: { password_enabled: true, oidc: { name: "Acme SSO" } },
+      },
+    ]);
+    renderConsent();
+
+    expect(
+      await screen.findByText("Sign in to authorize this application."),
+    ).toBeInTheDocument();
+    const link = await screen.findByRole("link", {
+      name: "Continue with Acme SSO",
+    });
+    expect(link).toHaveAttribute(
+      "href",
+      `/ui/session/oidc/start?redirect=${encodeURIComponent(`/oauth/consent?${QUERY}`)}`,
+    );
   });
 });
