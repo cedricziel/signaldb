@@ -95,7 +95,7 @@ would be a security surprise). Human sessions never satisfy it; they go
 through membership roles.
 
 **Dataset restriction** (change `multi-dataset-key-restriction`). An API key
-or OAuth token may additionally be restricted to a *set* of datasets within
+or OAuth token may additionally be restricted to a _set_ of datasets within
 its tenant: `TenantContext.api_key_dataset_ids: Option<Vec<String>>`
 (renamed from the single-dataset `api_key_dataset_id`), checked by the shared
 `dataset_allowed`/resolution helper in `common::auth` from both
@@ -105,9 +105,12 @@ the tenant, unchanged from before this feature); a request naming no dataset
 resolves to the restriction's sole element when it has exactly one, or is
 rejected (never silently falls through to the tenant default) when it has
 two or more. `api_keys.dataset_ids`/`oauth_*.dataset_ids` are JSON-array-in-
-TEXT columns (same pattern as `scopes`); `api_keys` additionally dual-writes
-the legacy single-value `dataset_id` column so old code keeps working during
-a rolling upgrade — OAuth has no such legacy column, so any non-empty OAuth
+TEXT columns (same pattern as `scopes`) — the sole representation; the
+legacy single-value `api_keys.dataset_id` column and its dual-write (change
+`remove-dataset-id-legacy-shims`) are gone, so this schema change must ship
+as a full stop-and-restart, never a rolling upgrade (`DROP COLUMN` breaks a
+still-running older node's queries outright, unlike every prior `ADD COLUMN`
+migration). OAuth never had a legacy column, so any non-empty OAuth
 restriction (not just multi-element) is unsafe until every node runs the new
 code. `[auth].dataset_restriction_rollout_complete` (default `false`) gates
 the mixed-version-unsafe cases at the request boundary. A dataset-restricted
@@ -267,16 +270,16 @@ Mounted at `/api/v1` with tenant auth — a plain API key is enough
 (`src/router/src/endpoints/tenant.rs`, `can_manage_tenant()`-gated for the
 mutating one, which treats API-key possession as sufficient trust):
 
-| Endpoint                             | Methods | Description                                                                                                                                                   | SDK operation            |
-| ------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
-| `/api/v1/whoami`                     | GET     | Authenticated tenant (id, slug, name) + datasets + default dataset (`endpoints/session.rs`)                                                                   | `whoami`                 |
+| Endpoint                             | Methods | Description                                                                                                                                                                           | SDK operation            |
+| ------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| `/api/v1/whoami`                     | GET     | Authenticated tenant (id, slug, name) + datasets + default dataset (`endpoints/session.rs`)                                                                                           | `whoami`                 |
 | `/api/v1/connection`                 | GET     | Public ingest/query endpoints (`[public]` config), headers with the caller's tenant/dataset filled in, required scopes, OTel env vars (`endpoints/session.rs`); MCP `connection_info` | `connection_info`        |
-| `/api/v1/tenants`                    | GET     | List tenants visible to the caller — single-entry view of the caller's own tenant; `tenant show` / `tenant_info`                                              | `list_tenants_self`      |
-| `/api/v1/tenants/{id}`               | GET     | Tenant details — `tenant show` / `tenant_info`                                                                                                                | `get_tenant_self`        |
-| `/api/v1/tenants/{id}/tables`        | GET     | List tenant tables from the Iceberg catalog, grouped by dataset (`dataset` on each `TableInfo`, plus a `datasets` grouping alongside the flat `tables` list)  | `list_tenant_tables`     |
-| `/api/v1/tenants/{id}/tables/create` | POST    | Provision the tenant's enabled signal tables across its datasets, before returning `201`. Manual trigger for what the writer's reconciler does on an interval | `create_tenant_tables`   |
-| `/api/v1/tenants/{id}/schemas`       | GET     | List the tenant's configured table schema types                                                                                                               | `list_tenant_schemas`    |
-| `/api/v1/schemas/available`          | GET     | List every table schema type SignalDB can provision                                                                                                           | `list_available_schemas` |
+| `/api/v1/tenants`                    | GET     | List tenants visible to the caller — single-entry view of the caller's own tenant; `tenant show` / `tenant_info`                                                                      | `list_tenants_self`      |
+| `/api/v1/tenants/{id}`               | GET     | Tenant details — `tenant show` / `tenant_info`                                                                                                                                        | `get_tenant_self`        |
+| `/api/v1/tenants/{id}/tables`        | GET     | List tenant tables from the Iceberg catalog, grouped by dataset (`dataset` on each `TableInfo`, plus a `datasets` grouping alongside the flat `tables` list)                          | `list_tenant_tables`     |
+| `/api/v1/tenants/{id}/tables/create` | POST    | Provision the tenant's enabled signal tables across its datasets, before returning `201`. Manual trigger for what the writer's reconciler does on an interval                         | `create_tenant_tables`   |
+| `/api/v1/tenants/{id}/schemas`       | GET     | List the tenant's configured table schema types                                                                                                                                       | `list_tenant_schemas`    |
+| `/api/v1/schemas/available`          | GET     | List every table schema type SignalDB can provision                                                                                                                                   | `list_available_schemas` |
 
 CLI: `signaldb-cli tenant show`, `signaldb-cli tenant table {list,provision,schemas,available-schemas}`.
 MCP: `tenant_info`, `tenant_list_tables`, `tenant_create_tables`,

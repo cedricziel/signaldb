@@ -4369,14 +4369,6 @@
             "type": "string",
             "description": "ISO 8601 creation timestamp."
           },
-          "dataset_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Deprecated: see [`CreateApiKeyResponse::dataset_id`].",
-            "deprecated": true
-          },
           "dataset_ids": {
             "type": [
               "array",
@@ -5043,14 +5035,6 @@
           "created_at": {
             "type": "string",
             "description": "ISO 8601 creation timestamp."
-          },
-          "dataset_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Deprecated: the single dataset the key is restricted to, derived from\n`dataset_ids` as `Some` only when it names exactly one dataset (and\n`None` for both unrestricted and multi-dataset keys). Response-only —\nno request body accepts this field anymore. Prefer `dataset_ids`.",
-            "deprecated": true
           },
           "dataset_ids": {
             "type": [
@@ -5970,14 +5954,6 @@
           "created_at": {
             "type": "string"
           },
-          "dataset_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Deprecated: derived from `dataset_ids`, `Some` only for a\nsingle-dataset restriction. Use `dataset_ids`.",
-            "deprecated": true
-          },
           "dataset_ids": {
             "type": [
               "array",
@@ -6076,21 +6052,13 @@
       },
       "ManageCreatedApiKey": {
         "type": "object",
-        "description": "201 response body for API key creation via the management API.\n\nFields mirror the previous `json!` body exactly (including `null` for\nabsent `name`/`dataset_id`), preserving the wire format.",
+        "description": "201 response body for API key creation via the management API.\n\nFields mirror the previous `json!` body exactly (including `null` for\nabsent `name`), preserving the wire format.",
         "required": [
           "id",
           "key",
           "scopes"
         ],
         "properties": {
-          "dataset_id": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Deprecated: see [`ApiKeyResponse::dataset_id`].",
-            "deprecated": true
-          },
           "dataset_ids": {
             "type": [
               "array",

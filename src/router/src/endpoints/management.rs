@@ -450,10 +450,6 @@ pub(crate) struct ApiKeyResponse {
     id: String,
     name: Option<String>,
     dataset_ids: Option<Vec<String>>,
-    /// Deprecated: derived from `dataset_ids`, `Some` only for a
-    /// single-dataset restriction. Use `dataset_ids`.
-    #[deprecated(note = "derived from dataset_ids; None for multi-dataset restrictions")]
-    dataset_id: Option<String>,
     scopes: Option<Vec<String>>,
     revoked: bool,
     created_at: String,
@@ -462,16 +458,13 @@ pub(crate) struct ApiKeyResponse {
 /// 201 response body for API key creation via the management API.
 ///
 /// Fields mirror the previous `json!` body exactly (including `null` for
-/// absent `name`/`dataset_id`), preserving the wire format.
+/// absent `name`), preserving the wire format.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub(crate) struct ManageCreatedApiKey {
     id: String,
     key: String,
     name: Option<String>,
     dataset_ids: Option<Vec<String>>,
-    /// Deprecated: see [`ApiKeyResponse::dataset_id`].
-    #[deprecated(note = "derived from dataset_ids; None for multi-dataset restrictions")]
-    dataset_id: Option<String>,
     scopes: Vec<String>,
 }
 
@@ -499,20 +492,13 @@ pub(crate) async fn list_api_keys<S: RouterState>(
     match state.catalog().list_api_keys(&tenant_id).await {
         Ok(keys) => Json(
             keys.into_iter()
-                .map(|key| {
-                    #[allow(deprecated)]
-                    let response = ApiKeyResponse {
-                        id: key.id,
-                        name: key.name,
-                        dataset_id: signaldb_api::derive_legacy_dataset_id(
-                            key.dataset_ids.as_deref(),
-                        ),
-                        dataset_ids: key.dataset_ids,
-                        scopes: key.scopes,
-                        revoked: key.revoked_at.is_some(),
-                        created_at: key.created_at.to_rfc3339(),
-                    };
-                    response
+                .map(|key| ApiKeyResponse {
+                    id: key.id,
+                    name: key.name,
+                    dataset_ids: key.dataset_ids,
+                    scopes: key.scopes,
+                    revoked: key.revoked_at.is_some(),
+                    created_at: key.created_at.to_rfc3339(),
                 })
                 .collect::<Vec<_>>(),
         )
@@ -584,12 +570,10 @@ pub(crate) async fn create_api_key<S: RouterState>(
     {
         Ok(id) => {
             tracing::info!(actor_user_id = ?ctx.user_id, tenant_id, key_id = id, "scoped API key created via UX");
-            #[allow(deprecated)]
             let response = ManageCreatedApiKey {
                 id,
                 key: secret,
                 name: request.name,
-                dataset_id: signaldb_api::derive_legacy_dataset_id(dataset_ids.as_deref()),
                 dataset_ids,
                 scopes: request.scopes,
             };
@@ -760,11 +744,9 @@ pub(crate) async fn update_api_key<S: RouterState>(
     tracing::info!(actor_user_id = ?ctx.user_id, tenant_id, key_id, "API key scopes updated via UX");
     match state.catalog().get_api_key(&key_id).await {
         Ok(Some(key)) => {
-            #[allow(deprecated)]
             let response = ApiKeyResponse {
                 id: key.id,
                 name: key.name,
-                dataset_id: signaldb_api::derive_legacy_dataset_id(key.dataset_ids.as_deref()),
                 dataset_ids: key.dataset_ids,
                 scopes: key.scopes,
                 revoked: key.revoked_at.is_some(),
@@ -1747,7 +1729,6 @@ mod dataset_restriction_tests {
             body["dataset_ids"],
             serde_json::json!(["production", "staging"])
         );
-        assert_eq!(body["dataset_id"], Value::Null);
         let raw_key = body["key"].as_str().unwrap().to_string();
         let key_id = body["id"].as_str().unwrap().to_string();
 
@@ -1776,6 +1757,45 @@ mod dataset_restriction_tests {
         .await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(body["dataset_ids"], Value::Null);
+    }
+
+    /// D8: the deprecated singular `dataset_id` field is removed entirely
+    /// from API-key response bodies — not `null`, but absent from the JSON
+    /// object (task 2.1).
+    #[tokio::test]
+    async fn api_key_response_omits_deprecated_dataset_id_key() {
+        let (app, _catalog) = test_app(true).await;
+
+        let (status, created) = call(
+            &app,
+            MANAGE_KEY,
+            Method::POST,
+            "/api/v1/manage/tenants/acme/api-keys",
+            Some(json!({ "scopes": ["traces:read"] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        assert!(
+            !created.as_object().unwrap().contains_key("dataset_id"),
+            "create response must not carry the removed dataset_id field: {created}"
+        );
+
+        let (status, list) = call(
+            &app,
+            MANAGE_KEY,
+            Method::GET,
+            "/api/v1/manage/tenants/acme/api-keys",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{list}");
+        let keys = list.as_array().unwrap();
+        assert!(!keys.is_empty());
+        assert!(
+            !keys[0].as_object().unwrap().contains_key("dataset_id"),
+            "list response must not carry the removed dataset_id field: {}",
+            keys[0]
+        );
     }
 
     #[tokio::test]

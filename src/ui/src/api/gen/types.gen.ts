@@ -49,12 +49,6 @@ export type ApiKeyResponse = {
      */
     created_at: string;
     /**
-     * Deprecated: see [`CreateApiKeyResponse::dataset_id`].
-     *
-     * @deprecated
-     */
-    dataset_id?: string | null;
-    /**
      * Dataset set the key is restricted to, if any; `null` is unrestricted.
      */
     dataset_ids?: Array<string> | null;
@@ -428,15 +422,6 @@ export type CreateApiKeyResponse = {
      * ISO 8601 creation timestamp.
      */
     created_at: string;
-    /**
-     * Deprecated: the single dataset the key is restricted to, derived from
-     * `dataset_ids` as `Some` only when it names exactly one dataset (and
-     * `None` for both unrestricted and multi-dataset keys). Response-only —
-     * no request body accepts this field anymore. Prefer `dataset_ids`.
-     *
-     * @deprecated
-     */
-    dataset_id?: string | null;
     /**
      * Dataset set the key is restricted to, if any; `null` is unrestricted.
      */
@@ -941,13 +926,6 @@ export type LogicalType = 'string' | 'bool' | 'int64' | 'float64' | 'timestamp_n
 
 export type ManageApiKeyResponse = {
     created_at: string;
-    /**
-     * Deprecated: derived from `dataset_ids`, `Some` only for a
-     * single-dataset restriction. Use `dataset_ids`.
-     *
-     * @deprecated
-     */
-    dataset_id?: string | null;
     dataset_ids?: Array<string> | null;
     id: string;
     name?: string | null;
@@ -984,15 +962,9 @@ export type ManageCreateTenantRequest = {
  * 201 response body for API key creation via the management API.
  *
  * Fields mirror the previous `json!` body exactly (including `null` for
- * absent `name`/`dataset_id`), preserving the wire format.
+ * absent `name`), preserving the wire format.
  */
 export type ManageCreatedApiKey = {
-    /**
-     * Deprecated: see [`ApiKeyResponse::dataset_id`].
-     *
-     * @deprecated
-     */
-    dataset_id?: string | null;
     dataset_ids?: Array<string> | null;
     id: string;
     key: string;

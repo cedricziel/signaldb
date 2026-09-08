@@ -1205,7 +1205,6 @@ mod tests {
         assert_eq!(response.status(), StatusCode::CREATED);
         let body = json_body(response).await;
         assert!(body["key"].as_str().unwrap().starts_with("sdbk_"));
-        assert_eq!(body["dataset_id"], "analytics");
         assert_eq!(body["dataset_ids"], serde_json::json!(["analytics"]));
         assert_eq!(body["scopes"][0], "metrics:write");
     }
@@ -1379,7 +1378,6 @@ mod tests {
         let (status, body) =
             manage_patch_key(&app, &cookie, &key_id, r#"{"dataset_ids":["staging"]}"#).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["dataset_id"], "staging");
         assert_eq!(body["dataset_ids"], serde_json::json!(["staging"]));
         assert_eq!(body["scopes"], serde_json::json!(["metrics:read"]));
 

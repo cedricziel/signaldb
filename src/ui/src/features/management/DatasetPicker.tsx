@@ -6,19 +6,15 @@
 import type { WhoamiDataset } from "../../api/session";
 
 /** The subset of a key/response shape needed to read its dataset
- * restriction, however it arrived on the wire: the current `dataset_ids`
- * set when present, else the legacy single `dataset_id` projected into a
- * one-element (or empty) array — the same dual-read rule the catalog
- * applies server-side (D2). */
+ * restriction: the `dataset_ids` set, or absent/null for unrestricted. */
 interface RestrictedByDataset {
   dataset_ids?: string[] | null;
-  dataset_id?: string | null;
 }
 
 /** Normalize a key's dataset restriction to a plain array: empty means
  * unrestricted. */
 export function restrictionSet(key: RestrictedByDataset): string[] {
-  return key.dataset_ids ?? (key.dataset_id ? [key.dataset_id] : []);
+  return key.dataset_ids ?? [];
 }
 
 /** Display label for a key's dataset restriction: the joined dataset names,

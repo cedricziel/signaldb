@@ -143,15 +143,6 @@ pub struct CreateApiKeyResponse {
     /// Dataset set the key is restricted to, if any; `null` is unrestricted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dataset_ids: Option<Vec<String>>,
-    /// Deprecated: the single dataset the key is restricted to, derived from
-    /// `dataset_ids` as `Some` only when it names exactly one dataset (and
-    /// `None` for both unrestricted and multi-dataset keys). Response-only —
-    /// no request body accepts this field anymore. Prefer `dataset_ids`.
-    #[deprecated(
-        note = "derived from dataset_ids; None for multi-dataset restrictions. Use dataset_ids."
-    )]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dataset_id: Option<String>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
 }
@@ -170,28 +161,11 @@ pub struct ApiKeyResponse {
     /// Dataset set the key is restricted to, if any; `null` is unrestricted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dataset_ids: Option<Vec<String>>,
-    /// Deprecated: see [`CreateApiKeyResponse::dataset_id`].
-    #[deprecated(
-        note = "derived from dataset_ids; None for multi-dataset restrictions. Use dataset_ids."
-    )]
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dataset_id: Option<String>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
     /// ISO 8601 revocation timestamp (if revoked).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub revoked_at: Option<String>,
-}
-
-/// Derive the deprecated single-dataset legacy field from a dataset-id set
-/// (D8): `Some` for the single-dataset case a pre-this-change reader already
-/// understood, `None` for both "unrestricted" and a genuinely new
-/// multi-element restriction it had no way to represent.
-pub fn derive_legacy_dataset_id(dataset_ids: Option<&[String]>) -> Option<String> {
-    match dataset_ids {
-        Some([single]) => Some(single.clone()),
-        _ => None,
-    }
 }
 
 /// Response containing a list of API keys.
