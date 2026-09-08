@@ -2,8 +2,13 @@
 //!
 //! Browser-facing authentication for the embedded explore UI:
 //!
+//! - `GET /ui/session/config` is unauthenticated and reports which
+//!   credentials the login page may offer (password, OIDC, or both).
 //! - `POST /ui/session` validates a human user's email/password and tenant
 //!   membership, then issues an opaque server-side session token.
+//! - `GET /ui/session` introspects the caller's own session cookie —
+//!   tenant-less, unlike `whoami` — reporting the signed-in user, their
+//!   memberships, and the auto-selected tenant/dataset.
 //! - `DELETE /ui/session` revokes that session and clears its cookie.
 //! - `GET /api/v1/whoami` (behind the tenant auth middleware) returns the
 //!   authenticated tenant and its datasets, strictly scoped to that tenant.
@@ -14,25 +19,30 @@ use axum::{
     extract::State,
     http::{StatusCode, header},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::get,
 };
 use chrono::{Duration, Utc};
 use common::auth::{
-    INGEST_SCOPES, SESSION_COOKIE, SIGNAL_READ_SCOPES, TenantContextExtractor,
+    INGEST_SCOPES, SESSION_COOKIE, SIGNAL_READ_SCOPES, TenantContext, TenantContextExtractor,
     generate_session_token, hash_session_token, session_token_from_headers, validate_dataset_id,
     validate_tenant_id, verify_password,
 };
-use common::catalog::MembershipRole;
+use common::catalog::{MembershipRole, UserRecord};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
+use std::collections::HashMap;
 
 /// Routes mounted at the router root (absolute `/ui/session` paths, so the
 /// session endpoint coexists with the `/ui` static-asset service).
 pub fn router<S: RouterState>() -> Router<S> {
-    Router::new().route(
-        "/ui/session",
-        post(create_session::<S>).delete(delete_session::<S>),
-    )
+    Router::new()
+        .route(
+            "/ui/session",
+            get(current_session::<S>)
+                .post(create_session::<S>)
+                .delete(delete_session::<S>),
+        )
+        .route("/ui/session/config", get(login_config::<S>))
 }
 
 #[derive(Debug, Deserialize)]
@@ -49,8 +59,9 @@ pub struct CreateSessionRequest {
 }
 
 /// A tenant the signed-in user may select, returned by `POST /ui/session`
-/// so the UI can present a picker instead of free-text tenant entry.
-#[derive(Debug, Serialize)]
+/// and `GET /ui/session` so the UI can present a picker instead of
+/// free-text tenant entry.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SessionMembership {
     pub tenant_id: String,
     pub name: String,
@@ -129,13 +140,10 @@ pub async fn create_session<S: RouterState>(
             }
             Some(tenant)
         }
-        None => match memberships.as_slice() {
-            [] => {
-                return error_response(403, "User has no tenant memberships".to_string());
-            }
-            [only] => Some(only.tenant_id.clone()),
-            _ => None,
-        },
+        None if memberships.is_empty() => {
+            return error_response(403, "User has no tenant memberships".to_string());
+        }
+        None => auto_select_tenant(&memberships),
     };
 
     let token = generate_session_token();
@@ -177,11 +185,7 @@ pub async fn create_session<S: RouterState>(
             .into_response();
     };
 
-    match state
-        .authenticator()
-        .authenticate_session(&token, &tenant, dataset.as_deref())
-        .await
-    {
+    match resolve_session_tenant(&state, &token, &tenant, dataset.as_deref()).await {
         Ok(ctx) => {
             tracing::info!(
                 user_id = %user.id,
@@ -200,13 +204,45 @@ pub async fn create_session<S: RouterState>(
             )
                 .into_response()
         }
-        Err(err) => {
+        Err(response) => {
             if let Err(error) = state.catalog().revoke_session(&session.id).await {
                 tracing::error!(session_id = %session.id, error = %error, "Failed to revoke rejected session");
             }
-            tracing::warn!(tenant_id = %tenant, "UI session login failed: {}", err.message);
-            error_response(err.status_code, err.message)
+            response
         }
+    }
+}
+
+/// Resolves the tenant/dataset a session token may enter, shared by
+/// `POST /ui/session` (a freshly minted session) and `GET /ui/session` (an
+/// existing one): `state.authenticator().authenticate_session` against the
+/// requested tenant, logged and turned into an error `Response` on failure.
+/// Callers that must undo side effects on failure (`create_session` revokes
+/// the freshly minted session) do so around this call.
+#[allow(clippy::result_large_err)]
+async fn resolve_session_tenant<S: RouterState>(
+    state: &S,
+    token: &str,
+    tenant: &str,
+    dataset: Option<&str>,
+) -> Result<TenantContext, Response> {
+    state
+        .authenticator()
+        .authenticate_session(token, tenant, dataset)
+        .await
+        .map_err(|err| {
+            tracing::warn!(tenant_id = %tenant, "UI session tenant resolution failed: {}", err.message);
+            error_response(err.status_code, err.message)
+        })
+}
+
+/// The tenant a login without an explicit choice lands in, shared by
+/// `POST /ui/session` and `GET /ui/session`: a sole membership is
+/// auto-selected; zero or several defer the choice (`None`).
+fn auto_select_tenant(memberships: &[SessionMembership]) -> Option<String> {
+    match memberships {
+        [only] => Some(only.tenant_id.clone()),
+        _ => None,
     }
 }
 
@@ -246,32 +282,90 @@ async fn list_session_memberships<S: RouterState>(
             tracing::error!(user_id = %user.id, error = %error, "Membership lookup failed");
             error_response(500, "Unable to create session".to_string())
         })?;
-    let mut memberships = Vec::with_capacity(rows.len());
-    for row in rows {
-        let name = tenant_display_name(state, &row.tenant_id).await;
-        memberships.push(SessionMembership {
-            tenant_id: row.tenant_id,
-            name,
-            role: row.role,
-        });
-    }
-    Ok(memberships)
+
+    // Config-defined tenants resolve their name locally (mirrors the
+    // Authenticator's precedence); anything else needs one batched catalog
+    // lookup rather than a `get_tenant` call per row.
+    let config_name = |tenant_id: &str| -> Option<String> {
+        state
+            .config()
+            .auth
+            .tenants
+            .iter()
+            .find(|t| t.id == tenant_id)
+            .map(|t| t.name.clone())
+    };
+    let needs_catalog_names = rows.iter().any(|row| config_name(&row.tenant_id).is_none());
+    let catalog_names: HashMap<String, String> = if needs_catalog_names {
+        state
+            .catalog()
+            .list_tenants()
+            .await
+            .map_err(|error| {
+                tracing::error!(user_id = %user.id, error = %error, "Session tenant listing failed");
+                error_response(500, "Unable to create session".to_string())
+            })?
+            .into_iter()
+            .map(|tenant| (tenant.id, tenant.name))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let name = config_name(&row.tenant_id)
+                .or_else(|| catalog_names.get(&row.tenant_id).cloned())
+                .unwrap_or_else(|| row.tenant_id.clone());
+            SessionMembership {
+                tenant_id: row.tenant_id,
+                name,
+                role: row.role,
+            }
+        })
+        .collect())
 }
 
-async fn tenant_display_name<S: RouterState>(state: &S, tenant_id: &str) -> String {
-    if let Some(tc) = state
-        .config()
-        .auth
-        .tenants
-        .iter()
-        .find(|t| t.id == tenant_id)
+/// Resolves the caller's session cookie to its token and user record: the
+/// lookup `GET /ui/session` needs before it can list memberships. Missing
+/// cookie, unknown/expired session, or unknown/disabled user all answer 401;
+/// a catalog error is a 500. `DELETE /ui/session` only needs the session
+/// half of this (no 401 on a missing/invalid cookie — logout is a no-op
+/// then), so it keeps its own lookup rather than reusing this.
+#[allow(clippy::result_large_err)]
+async fn resolve_session_user<S: RouterState>(
+    state: &S,
+    headers: &axum::http::HeaderMap,
+) -> Result<(String, UserRecord), Response> {
+    let Some(token) = session_token_from_headers(headers) else {
+        return Err(error_response(401, "No valid session cookie".to_string()));
+    };
+    let session = match state
+        .catalog()
+        .get_valid_session(&hash_session_token(&token))
+        .await
     {
-        return tc.name.clone();
-    }
-    match state.catalog().get_tenant(tenant_id).await {
-        Ok(Some(tenant)) => tenant.name,
-        _ => tenant_id.to_string(),
-    }
+        Ok(Some(session)) => session,
+        Ok(None) => return Err(error_response(401, "No valid session cookie".to_string())),
+        Err(error) => {
+            tracing::error!(error = %error, "current_session: session lookup failed");
+            return Err(error_response(500, "Unable to resolve session".to_string()));
+        }
+    };
+    // `get_valid_session` already excludes disabled users' sessions via its
+    // join, so this re-checks `disabled_at` only as defense in depth against
+    // the account being disabled in the gap between that lookup and this
+    // one — not the primary enforcement.
+    let user = match state.catalog().get_user(&session.user_id).await {
+        Ok(Some(user)) if user.disabled_at.is_none() => user,
+        Ok(_) => return Err(error_response(401, "No valid session cookie".to_string())),
+        Err(error) => {
+            tracing::error!(error = %error, "current_session: user lookup failed");
+            return Err(error_response(500, "Unable to resolve session".to_string()));
+        }
+    };
+    Ok((token, user))
 }
 
 /// DELETE /ui/session
@@ -308,6 +402,135 @@ pub async fn delete_session<S: RouterState>(
         )],
     )
         .into_response()
+}
+
+/// A single-sign-on provider offered by the login-configuration probe.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct OidcLoginConfig {
+    /// Display name shown on the "Continue with {name}" control.
+    pub name: String,
+}
+
+/// `GET /ui/session/config`'s response: which credentials the login page
+/// may offer. `oidc` is `null` until an OIDC provider is configured.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct LoginConfigResponse {
+    pub password_enabled: bool,
+    /// Always serialized, `null` until an OIDC provider is configured — not
+    /// an omittable field.
+    #[schema(required = true)]
+    pub oidc: Option<OidcLoginConfig>,
+}
+
+/// GET /ui/session/config
+///
+/// Unauthenticated probe the login page reads before rendering its
+/// credential step. Until OIDC support ships this always answers
+/// password-only; the schema does not change when it does.
+#[utoipa::path(
+    get,
+    path = "/ui/session/config",
+    operation_id = "login_config",
+    tag = "session",
+    security(()),
+    responses(
+        (status = 200, description = "Login credential configuration", body = LoginConfigResponse),
+    )
+)]
+pub async fn login_config<S: RouterState>(State(_state): State<S>) -> Response {
+    Json(LoginConfigResponse {
+        password_enabled: true,
+        oidc: None,
+    })
+    .into_response()
+}
+
+/// The signed-in user, as reported by `GET /ui/session`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SessionUser {
+    pub id: String,
+    pub email: String,
+    pub display_name: Option<String>,
+    pub is_instance_admin: bool,
+}
+
+/// `GET /ui/session`'s response: the signed-in user, the memberships the
+/// session may enter, and the auto-selected tenant/dataset.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct CurrentSessionResponse {
+    pub user: SessionUser,
+    /// Always serialized, `null` when no tenant is auto-selected — not an
+    /// omittable field.
+    #[schema(required = true)]
+    pub tenant: Option<String>,
+    /// Always serialized, `null` when no tenant is auto-selected — not an
+    /// omittable field.
+    #[schema(required = true)]
+    pub dataset: Option<String>,
+    pub memberships: Vec<SessionMembership>,
+}
+
+/// GET /ui/session
+///
+/// Session introspection, tenant-less: authenticated by the
+/// `signaldb_session` cookie alone (no API key, no `X-Tenant-ID` header
+/// substitutes for it). Used by the login page to answer "already signed
+/// in?" without the tenant context `whoami` requires. `tenant`/`dataset`
+/// follow the same auto-select rule as `POST /ui/session` with no
+/// requested tenant: `null` for zero or several memberships (zero is still
+/// a 200 — the UI renders a "no access" state, not an error).
+#[utoipa::path(
+    get,
+    path = "/ui/session",
+    operation_id = "current_session",
+    tag = "session",
+    security(()),
+    description = "Authenticated by the `signaldb_session` HttpOnly cookie only; an API key or `X-Tenant-ID` header does not substitute for it.",
+    responses(
+        (status = 200, description = "Signed-in user, memberships, and auto-selected tenant/dataset", body = CurrentSessionResponse),
+        (status = 401, description = "No valid session cookie"),
+    )
+)]
+pub async fn current_session<S: RouterState>(
+    State(state): State<S>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let (token, user) = match resolve_session_user(&state, &headers).await {
+        Ok(resolved) => resolved,
+        Err(response) => return response,
+    };
+
+    let memberships = match list_session_memberships(&state, &user).await {
+        Ok(memberships) => memberships,
+        Err(response) => return response,
+    };
+
+    let (tenant, dataset) = match auto_select_tenant(&memberships) {
+        Some(tenant) => match resolve_session_tenant(&state, &token, &tenant, None).await {
+            Ok(ctx) => (Some(ctx.tenant_id), Some(ctx.dataset_id)),
+            // `tenant: null` with one membership listed is a shape the
+            // login page's state machine never expects, so a resolution
+            // failure is a hard error rather than a silent downgrade.
+            // Unlike `create_session`, there is no freshly minted session
+            // to revoke here — the cookie already existed before this
+            // request.
+            Err(response) => return response,
+        },
+        None => (None, None),
+    };
+
+    Json(CurrentSessionResponse {
+        user: SessionUser {
+            id: user.id,
+            email: user.email,
+            display_name: user.display_name,
+            is_instance_admin: user.is_instance_admin,
+        },
+        tenant,
+        dataset,
+        memberships,
+    })
+    .into_response()
 }
 
 fn error_response(status: u16, message: String) -> Response {
@@ -2270,5 +2493,314 @@ mod tests {
         let memberships = body["memberships"].as_array().unwrap();
         assert_eq!(memberships.len(), 1);
         assert_eq!(memberships[0]["role"], "viewer");
+    }
+
+    #[tokio::test]
+    async fn login_config_reports_password_only() {
+        let app = test_app().await;
+        let request = Request::builder()
+            .uri("/ui/session/config")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["password_enabled"], true);
+        assert!(body.get("oidc").is_some(), "oidc key must be present");
+        assert_eq!(body["oidc"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn current_session_without_cookie_is_401() {
+        let app = test_app().await;
+        let request = Request::builder()
+            .uri("/ui/session")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+
+        // An API key plus X-Tenant-ID does not substitute for the cookie.
+        let request = Request::builder()
+            .uri("/ui/session")
+            .header("authorization", "Bearer acme-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn current_session_auto_selects_sole_membership() {
+        let app = test_app().await;
+        let login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "viewer@example.com",
+                "password": "viewer password"
+            }),
+        )
+        .await;
+        let cookie = cookie_pair(&login);
+
+        let request = Request::builder()
+            .uri("/ui/session")
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["user"]["email"], "viewer@example.com");
+        assert_eq!(body["user"]["is_instance_admin"], false);
+        assert_eq!(body["tenant"], "acme");
+        assert_eq!(body["dataset"], "production");
+        let memberships = body["memberships"].as_array().unwrap();
+        assert_eq!(memberships.len(), 1);
+        assert_eq!(memberships[0]["role"], "viewer");
+    }
+
+    #[tokio::test]
+    async fn current_session_with_several_memberships_defers_choice() {
+        // A non-admin user with two explicit memberships, distinct from the
+        // instance-admin case below (which lists every tenant regardless of
+        // explicit membership).
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![
+                    tenant(
+                        "acme",
+                        "acme-key",
+                        &[("production", true)],
+                        Some("production"),
+                    ),
+                    tenant("globex", "globex-key", &[("main", true)], Some("main")),
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let hash = common::auth::hash_password("multi password").unwrap();
+        let user = catalog
+            .create_user("multi@example.com", None, &hash, false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "globex", MembershipRole::Member)
+            .await
+            .unwrap();
+        let app = crate::create_router(crate::RouterAppState::new(catalog, config));
+
+        let login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "multi@example.com",
+                "password": "multi password"
+            }),
+        )
+        .await;
+        let cookie = cookie_pair(&login);
+
+        let request = Request::builder()
+            .uri("/ui/session")
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["tenant"], Value::Null);
+        assert_eq!(body["dataset"], Value::Null);
+        let memberships = body["memberships"].as_array().unwrap();
+        assert_eq!(memberships.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn current_session_for_instance_admin_lists_every_tenant() {
+        let app = test_app().await;
+        let login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "alice@example.com",
+                "password": "correct horse battery staple"
+            }),
+        )
+        .await;
+        let cookie = cookie_pair(&login);
+
+        let request = Request::builder()
+            .uri("/ui/session")
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["tenant"], Value::Null);
+        assert_eq!(body["dataset"], Value::Null);
+        let memberships = body["memberships"].as_array().unwrap();
+        let ids: Vec<&str> = memberships
+            .iter()
+            .map(|m| m["tenant_id"].as_str().unwrap())
+            .collect();
+        assert!(ids.contains(&"acme"));
+        assert!(ids.contains(&"globex"));
+        assert_eq!(memberships.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn current_session_with_no_memberships_is_200_and_empty() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = common::config::Configuration::default();
+        let orphan_hash = common::auth::hash_password("orphan password").unwrap();
+        let user = catalog
+            .create_user("orphan@example.com", None, &orphan_hash, false)
+            .await
+            .unwrap();
+        // `POST /ui/session` refuses an orphan user with 403, so seed the
+        // session directly through the catalog (mirrors `oauth.rs`'s
+        // `seed_user_session`).
+        let token = common::auth::generate_session_token();
+        catalog
+            .create_user_session(
+                &user.id,
+                &common::auth::hash_session_token(&token),
+                chrono::Utc::now() + chrono::Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        let app = crate::create_router(crate::RouterAppState::new(catalog, config));
+
+        let request = Request::builder()
+            .uri("/ui/session")
+            .header(header::COOKIE, format!("signaldb_session={token}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["tenant"], Value::Null);
+        assert_eq!(body["dataset"], Value::Null);
+        assert_eq!(body["memberships"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn current_session_fails_like_login_when_tenant_resolution_errors() {
+        // A database-defined tenant with no default dataset: `POST
+        // /ui/session` can still succeed by naming the dataset explicitly,
+        // but `GET /ui/session`'s auto-select has no way to supply one, so
+        // the shared resolution call fails exactly like a dataset-less
+        // `POST` would — and current_session must surface that failure
+        // rather than silently reporting `tenant: null`.
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", None, "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "staging").await.unwrap();
+        let hash = common::auth::hash_password("resolve password").unwrap();
+        let user = catalog
+            .create_user("resolve@example.com", None, &hash, false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Member)
+            .await
+            .unwrap();
+        let app = crate::create_router(crate::RouterAppState::new(
+            catalog,
+            common::config::Configuration::default(),
+        ));
+
+        let login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "resolve@example.com",
+                "password": "resolve password",
+                "tenant": "acme",
+                "dataset": "staging"
+            }),
+        )
+        .await;
+        assert_eq!(login.status(), StatusCode::OK);
+        let cookie = cookie_pair(&login);
+
+        let request = Request::builder()
+            .uri("/ui/session")
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn current_session_for_disabled_user_is_401() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let hash = common::auth::hash_password("locked password").unwrap();
+        let user = catalog
+            .create_user("locked@example.com", None, &hash, false)
+            .await
+            .unwrap();
+        let token = common::auth::generate_session_token();
+        catalog
+            .create_user_session(
+                &user.id,
+                &common::auth::hash_session_token(&token),
+                chrono::Utc::now() + chrono::Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        catalog.set_user_disabled(&user.id, true).await.unwrap();
+        let app = crate::create_router(crate::RouterAppState::new(
+            catalog,
+            common::config::Configuration::default(),
+        ));
+
+        let request = Request::builder()
+            .uri("/ui/session")
+            .header(header::COOKIE, format!("signaldb_session={token}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn current_session_for_expired_session_is_401() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let hash = common::auth::hash_password("expired password").unwrap();
+        let user = catalog
+            .create_user("expired@example.com", None, &hash, false)
+            .await
+            .unwrap();
+        let token = common::auth::generate_session_token();
+        catalog
+            .create_user_session(
+                &user.id,
+                &common::auth::hash_session_token(&token),
+                chrono::Utc::now() - chrono::Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        let app = crate::create_router(crate::RouterAppState::new(
+            catalog,
+            common::config::Configuration::default(),
+        ));
+
+        let request = Request::builder()
+            .uri("/ui/session")
+            .header(header::COOKIE, format!("signaldb_session={token}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 }
