@@ -135,10 +135,21 @@ See proposal.md — Why. What shapes the approach:
    `LoginGate` — the mid-session 401 popup, the third consumer — passes the
    current location, accepting that a full-page SSO navigation discards
    in-flight SPA state, which the expired session already invalidated.
-9. **Testing:** unit-level RP tests against a wiremock IdP (discovery, JWKS,
-   token endpoint; tampered nonce/signature/state cases). One
-   tests-integration case against a Dex or Keycloak testcontainer for the
-   full browser flow (Docker-gated, like other testcontainer suites).
+9. **Testing — three layers, each owning what only it can prove** (the
+   enumerated cases live in tasks.md §2 and §4):
+   - Unit tests: RP behaviour in `router` against a wiremock IdP; component
+     states in vitest. The exhaustive probe-state matrix and the SSO link's
+     `href` live here only.
+   - Browser e2e in `src/ui/e2e` (Playwright, mocked API, runs in CI on
+     every PR like the existing navigation specs): what needs the production
+     bundle and a real router — the consent screen without a session
+     offering SSO that returns to the consent URL, and an SSO-only instance
+     rendering no password form anywhere.
+   - tests-integration against one Dex testcontainer: the only real IdP
+     round trip. Note that this repo's testcontainer suites run in the
+     regular workspace test job wherever Docker exists, so this suite is a
+     cost on every core PR — one container, one full MCP-OAuth-through-SSO
+     round trip, with the other SSO assertions sharing it.
 10. **Startup: fail hard on bad config, degrade on an unreachable issuer.**
     Configuration errors (`disable_password_login` without a provider,
     malformed `issuer_url`, unusable mapping rules) fail startup — they are

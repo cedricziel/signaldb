@@ -33,11 +33,12 @@
 - [ ] 4.2 Implement `GET /ui/session/config`; add all three to `paths(...)`; regenerate `api/signaldb-api.json`, the Rust SDK, and the UI TypeScript client
 - [ ] 4.3 Failing UI unit tests (vitest): `LoginPanel` renders from the probe via the generated client — both doors, SSO-only, password-only (`oidc: null`); SSO button is a plain link to the start endpoint (no XHR) carrying the `redirect` prop; `LoginRoute`, `ConsentView`, and `LoginGate` each pass their own target; membership views show `granted_by`
 - [ ] 4.4 Implement the login-panel changes
-- [ ] 4.5 tests-integration: full flow against a Dex (or Keycloak) testcontainer — SSO login, whoami, JIT user, mapped membership, MCP OAuth consent over an SSO session (Docker-gated)
+- [ ] 4.5 Failing Playwright e2e specs in `src/ui/e2e` (mocked API, runs in CI): `/oauth/consent?...` without a session offers SSO whose `redirect` is the full consent URL including the authorize parameters; an SSO-only instance shows no password form on `/login` or the consent screen
+- [ ] 4.6 tests-integration against one Dex testcontainer: the complete MCP OAuth round trip through SSO — DCR, `/oauth/authorize`, consent 401, SSO start with `redirect`, Dex login, callback landing on the consent URL with a session cookie, consent decision, PKCE token exchange, authenticated MCP call — with whoami, JIT user, email link, and mapped membership asserted on the same container; `disable_password_login = true` is covered by the unit tests in 3.6 and 4.3, not a second round trip
 
 ## 5. Docs and skills
 
 - [ ] 5.1 `docs/users/authentication.md`: SSO login section (flow, JIT, linking, password switch, break-glass)
 - [ ] 5.2 `docs/operations/`: IdP setup guide (redirect URL/reverse proxy first, Authentik + Keycloak examples, allowlist, group mapping, degraded-startup behaviour, rollback including the clear-mapped-rows step before a binary rollback); update `signaldb.dist.toml`
 - [ ] 5.3 Update `multi-tenancy` and `configuration` skills; run the docs-freshness gate after committing
-- [ ] 5.4 Verify Definition of Done: probe/endpoints in OpenAPI with both clients regenerated and consumed; surface parity reviewed (SSO is inherently UI+HTTP; CLI/MCP scoped out — MCP benefits via OAuth consent, CLI has no browser)
+- [ ] 5.4 Verify Definition of Done: probe/endpoints in OpenAPI with both clients regenerated and consumed; surface parity reviewed (SSO is inherently UI+HTTP; CLI scoped out — no browser; MCP covered end to end through OAuth consent in 4.6)
