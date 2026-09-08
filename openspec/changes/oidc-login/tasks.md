@@ -11,10 +11,10 @@
 
 - [ ] 2.1 Add `openidconnect` workspace dependency; failing tests against a wiremock discovery endpoint: invalid `[auth.oidc]` fails startup naming the setting; unreachable/invalid discovery starts the instance with OIDC `unavailable` and logs the issuer; background retry with backoff flips it to available without restart
 - [ ] 2.2 Implement startup discovery + the `unavailable`/`available` provider state and retry task
-- [ ] 2.3 Failing tests: `GET /ui/session/oidc/start` 302s to the IdP with state/nonce/PKCE and sets the signed pending-login cookie with `HttpOnly; Secure; SameSite=Lax; Path=/ui/session/oidc; Max-Age=300` (assert `SameSite=Lax`, never `Strict`); 404 when OIDC unconfigured; 503 naming the issuer while discovery is `unavailable`
-- [ ] 2.4 Implement the start endpoint (callback URL from request origin, `redirect_url` override)
-- [ ] 2.5 Failing tests against wiremock IdP: callback reads state/PKCE verifier from the pending-login cookie and exchanges the code, validates ID token, clears the pending cookie; rejects missing pending cookie, bad state, bad nonce, bad signature, expired token, `email_verified: false` on link path — all without session creation and with a generic error
-- [ ] 2.6 Implement the callback: validation → identity resolution ((issuer,subject) → verified-email link → JIT with allowlist) → session issuance via the existing session path; disabled users refused
+- [ ] 2.3 Failing tests: `GET /ui/session/oidc/start` 302s to the IdP with state/nonce/PKCE and sets the signed pending-login cookie with `HttpOnly; Secure; SameSite=Lax; Path=/ui/session/oidc; Max-Age=300` (assert `SameSite=Lax`, never `Strict`); `?redirect=` is carried in the cookie when it passes the same-origin rule and falls back to `/` otherwise (mirror `safeRedirectTarget` in `LoginRoute.tsx`, backslash case included); 404 when OIDC unconfigured; 503 naming the issuer while discovery is `unavailable`
+- [ ] 2.4 Implement the start endpoint (callback URL from request origin, `redirect_url` override, `redirect` return target)
+- [ ] 2.5 Failing tests against wiremock IdP: callback reads state/PKCE verifier from the pending-login cookie and exchanges the code, validates ID token, clears the pending cookie, and 302s to the carried return target (`/oauth/consent?client_id=...&code_challenge=...` survives intact; `/` when none); rejects missing pending cookie, bad state, bad nonce, bad signature, expired token, `email_verified: false` on link path — all without session creation and with a generic error
+- [ ] 2.6 Implement the callback: validation → identity resolution ((issuer,subject) → verified-email link → JIT with allowlist) → session issuance via the existing session path → redirect to the return target; disabled users refused
 - [ ] 2.7 Failing test: JWKS rotation (unknown `kid` triggers refetch and succeeds)
 
 ## 3. Provisioning, mapping, password switch
@@ -31,7 +31,7 @@
 
 - [ ] 4.1 Failing test: OpenAPI document lists `/ui/session/config`, `/ui/session/oidc/start`, `/ui/session/oidc/callback` with schemas, all three with an empty security requirement; probe schema has `password_enabled: bool` and nullable `oidc: {name}`; probe returns `{"password_enabled": true, "oidc": null}` without `[auth.oidc]` and `oidc: null` while discovery is `unavailable`
 - [ ] 4.2 Implement `GET /ui/session/config`; add all three to `paths(...)`; regenerate `api/signaldb-api.json`, the Rust SDK, and the UI TypeScript client
-- [ ] 4.3 Failing UI tests: login panel renders from the probe via the generated client — both doors, SSO-only, password-only (`oidc: null`); SSO button navigates (no XHR); membership views show `granted_by`
+- [ ] 4.3 Failing UI unit tests (vitest): `LoginPanel` renders from the probe via the generated client — both doors, SSO-only, password-only (`oidc: null`); SSO button is a plain link to the start endpoint (no XHR) carrying the `redirect` prop; `LoginRoute`, `ConsentView`, and `LoginGate` each pass their own target; membership views show `granted_by`
 - [ ] 4.4 Implement the login-panel changes
 - [ ] 4.5 tests-integration: full flow against a Dex (or Keycloak) testcontainer — SSO login, whoami, JIT user, mapped membership, MCP OAuth consent over an SSO session (Docker-gated)
 

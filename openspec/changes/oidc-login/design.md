@@ -49,7 +49,21 @@ See proposal.md — Why. What shapes the approach:
 2. **Endpoints live on the router beside the session endpoints:**
    `GET /ui/session/oidc/start` (302 to IdP; sets a short-lived pending-login
    cookie holding state/nonce/PKCE-verifier, server-side stateless) and
-   `GET /ui/session/oidc/callback`. A `GET /ui/session/config` probe reports
+   `GET /ui/session/oidc/callback`. The start endpoint takes an optional
+   `redirect` query parameter — the same name the `/login` route already
+   uses — carried inside the signed pending-login cookie so the callback
+   knows where to send the user once the session is issued. The router
+   mirrors the same-origin rule of `safeRedirectTarget` in
+   `src/ui/src/features/shell/LoginRoute.tsx`, including the
+   backslash-normalisation case (`/\evil.example` parses as `//evil.example`),
+   rather than inventing a second rule set. Without a return target the MCP
+   OAuth consent screen would lose the authorize request: SSO is a full-page
+   navigation, unlike the inline password form, so the consent URL and its
+   query string must round-trip through the IdP. _Alternative:_ the SPA
+   stashing the return URL in `sessionStorage` and the callback landing on a
+   fixed SPA route — rejected because it adds a landing route and a second
+   hop for the same outcome, and the pending cookie already exists, so the
+   extra field is free. A `GET /ui/session/config` probe reports
    `{password_enabled: bool, oidc: {name: string} | null}` — `oidc` is a
    nullable object, `null` whenever OIDC is not configured or discovery has
    not succeeded yet, so the generated clients get one schema for both
@@ -114,7 +128,13 @@ See proposal.md — Why. What shapes the approach:
    startup error, so an operator cannot lock every human out by typo.
 8. **UI:** login panel consumes `/ui/session/config` through the generated
    client; SSO button does a full-page navigation to the start endpoint (no
-   XHR — the flow is redirect-based).
+   XHR — the flow is redirect-based). The return target is an explicit
+   `redirect` prop on `LoginPanel`, not a `window.location` read inside the
+   shared component: `LoginRoute` passes its already-validated target,
+   `ConsentView` passes its own path and query (the authorize request), and
+   `LoginGate` — the mid-session 401 popup, the third consumer — passes the
+   current location, accepting that a full-page SSO navigation discards
+   in-flight SPA state, which the expired session already invalidated.
 9. **Testing:** unit-level RP tests against a wiremock IdP (discovery, JWKS,
    token endpoint; tampered nonce/signature/state cases). One
    tests-integration case against a Dex or Keycloak testcontainer for the

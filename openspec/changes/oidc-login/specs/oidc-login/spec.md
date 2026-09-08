@@ -84,12 +84,32 @@ revealing which check failed.
 - **THEN** no session is created and the user is returned to the login page
   with a generic failure message
 
+### Requirement: SSO login returns to where it started
+
+The SSO start endpoint SHALL accept an optional `redirect` query parameter —
+the same parameter the `/login` route accepts — carry it through the pending
+login attempt, and the callback SHALL send the user there after issuing the
+session. Only a same-origin path is honoured; anything else falls back to
+`/`, under the same rule the `/login` route applies. Any screen that
+demands a login can therefore hand the user to the IdP and get them back on
+the same URL with its query string intact. The MCP OAuth consent screen
+depends on this: SSO is a full-page navigation, and the authorize request
+lives in that screen's URL.
+
 #### Scenario: MCP OAuth consent rides the SSO session
 
-- **WHEN** an MCP client starts the OAuth authorization flow and the user
-  signs in via SSO when prompted
-- **THEN** the consent and tenant-selection flow proceeds exactly as it does
-  for a password-authenticated session
+- **WHEN** an MCP client sends the user to `/oauth/authorize`, they reach the
+  consent screen without a session, and they choose SSO
+- **THEN** the callback returns them to that exact consent URL, authorize
+  parameters intact, holding a `signaldb_session` cookie, and the consent
+  flow continues as the `mcp-oauth` capability specifies for any
+  authenticated user
+
+#### Scenario: Return target cannot leave the origin
+
+- **WHEN** the start endpoint is called with `redirect=https://evil.example/`
+  or `redirect=//evil.example/`
+- **THEN** the login still proceeds and the callback lands on `/`
 
 ### Requirement: Just-in-time provisioning with an allowlist
 
@@ -226,6 +246,12 @@ endpoints or from hardcoded configuration.
   login disabled
 - **THEN** the login page shows only the SSO entry, sourced from the
   login-configuration probe through the generated client
+
+#### Scenario: Consent screen follows the probe
+
+- **WHEN** the MCP OAuth consent screen needs a login
+- **THEN** it renders the same login options the probe produces for the
+  login page
 
 #### Scenario: Probe without OIDC
 
