@@ -45,9 +45,13 @@ exist; only the credential is missing.
 
 ### Modified Capabilities
 
-<!-- none: password login, sessions, memberships, and the MCP OAuth flow keep
-     their existing requirements; oidc-login layers a new credential onto them.
-     The pending auth-surface-consistency change already owns the
+- `tenant-selection`: the selection page honours a `redirect` target so a
+  login that detoured through it (an SSO user with several memberships) ends
+  on the page it started from.
+
+<!-- Password login, sessions, memberships, and the MCP OAuth flow keep their
+     existing requirements; oidc-login layers a new credential onto them. The
+     pending auth-surface-consistency change already owns the
      admin-management-api-contract security-scheme delta; oidc-login's contract
      requirements live in its own spec to avoid conflicting deltas. -->
 
