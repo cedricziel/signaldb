@@ -105,17 +105,22 @@ fn error(status: StatusCode, message: impl Into<String>) -> Response {
 
 /// Whether `target_user_id` is the tenant's sole remaining administrator —
 /// used to block demoting or removing the last admin membership.
+///
+/// Only counts `local` grants: an `oidc_mapping`-sourced admin membership is
+/// derived from IdP group mapping and can vanish the moment that mapping
+/// changes, so it must not be allowed to "protect" — or be double-counted
+/// alongside — a `local` admin row.
 fn is_last_remaining_admin(
     members: &[common::catalog::TenantMembershipRecord],
     target_user_id: &str,
 ) -> bool {
-    let target_is_admin = members.iter().any(|membership| {
-        membership.user_id == target_user_id && membership.role == MembershipRole::Admin
-    });
-    let admin_count = members
+    fn is_local_admin(membership: &common::catalog::TenantMembershipRecord) -> bool {
+        membership.role == MembershipRole::Admin && membership.granted_by == GrantSource::Local
+    }
+    let target_is_admin = members
         .iter()
-        .filter(|membership| membership.role == MembershipRole::Admin)
-        .count();
+        .any(|membership| membership.user_id == target_user_id && is_local_admin(membership));
+    let admin_count = members.iter().filter(|m| is_local_admin(m)).count();
     target_is_admin && admin_count == 1
 }
 
@@ -1255,6 +1260,70 @@ mod schema_tests {
             logical.iter().map(|f| f.source.as_str()).collect();
         assert!(sources.contains("traces"));
         assert!(sources.contains("logs"));
+    }
+}
+
+#[cfg(test)]
+mod last_remaining_admin_tests {
+    use super::*;
+    use common::catalog::TenantMembershipRecord;
+
+    fn membership(
+        user_id: &str,
+        role: MembershipRole,
+        granted_by: GrantSource,
+    ) -> TenantMembershipRecord {
+        TenantMembershipRecord {
+            user_id: user_id.to_string(),
+            tenant_id: "acme".to_string(),
+            role,
+            granted_by,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn another_local_admin_allows_removal() {
+        let members = vec![
+            membership("alice", MembershipRole::Admin, GrantSource::Local),
+            membership("bob", MembershipRole::Admin, GrantSource::Local),
+        ];
+        assert!(!is_last_remaining_admin(&members, "alice"));
+    }
+
+    #[test]
+    fn sole_local_admin_is_protected() {
+        let members = vec![
+            membership("alice", MembershipRole::Admin, GrantSource::Local),
+            membership("bob", MembershipRole::Member, GrantSource::Local),
+        ];
+        assert!(is_last_remaining_admin(&members, "alice"));
+    }
+
+    #[test]
+    fn mapped_admin_row_alone_does_not_satisfy_the_guard() {
+        // `alice` holds only an oidc_mapping-sourced admin row; she is not a
+        // *local* admin, so she isn't "the last remaining admin" and removing
+        // any other membership must not be blocked by her presence.
+        let members = vec![membership(
+            "alice",
+            MembershipRole::Admin,
+            GrantSource::OidcMapping,
+        )];
+        assert!(!is_last_remaining_admin(&members, "alice"));
+    }
+
+    #[test]
+    fn local_admin_is_not_protected_by_a_coexisting_mapped_admin_row() {
+        // `alice` has both a `local` admin row and an `oidc_mapping` admin
+        // row for the same tenant (change: oidc-login design decision 5).
+        // Only the local row should count toward the "last remaining admin"
+        // guard, so removing it must not be blocked by the mapped row.
+        let members = vec![
+            membership("alice", MembershipRole::Admin, GrantSource::Local),
+            membership("alice", MembershipRole::Admin, GrantSource::OidcMapping),
+        ];
+        assert!(is_last_remaining_admin(&members, "alice"));
     }
 }
 
