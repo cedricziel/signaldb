@@ -737,7 +737,12 @@ mod tests {
 
         let password_hash = common::auth::hash_password("member password").unwrap();
         let member = catalog
-            .create_user("member@example.com", Some("Member"), &password_hash, false)
+            .create_user(
+                "member@example.com",
+                Some("Member"),
+                Some(&password_hash),
+                false,
+            )
             .await
             .unwrap();
         catalog

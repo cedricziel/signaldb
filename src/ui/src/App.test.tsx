@@ -508,4 +508,115 @@ describe("App", () => {
     await screen.findByText(/No log lines match this query/);
     expect(window.location.pathname).toBe("/logs");
   });
+
+  // `/ui/session` (GET, currentSession) and `/ui/session/config`
+  // (loginConfig) share a URL prefix — anchor the base path so a stub for
+  // one doesn't also answer the other (see LoginRoute.test.tsx).
+  const SESSION = /\/ui\/session$/;
+
+  describe("post-SSO tenant resolution", () => {
+    it("resolves a sole membership from the session, staying on the landing path", async () => {
+      stubFetchRoutes([
+        { match: "query_range", body: emptyStreams },
+        { match: "/labels?", body: emptyLabels },
+        {
+          match: SESSION,
+          method: "GET",
+          body: {
+            user: {
+              id: "u1",
+              email: "alice@example.com",
+              display_name: "Alice",
+              is_instance_admin: false,
+            },
+            tenant: "acme",
+            dataset: "prod",
+            memberships: [{ tenant_id: "acme", name: "Acme", role: "admin" }],
+          },
+        },
+      ]);
+      renderApp("/logs");
+      await waitFor(() =>
+        expect(window.location.search).toContain("tenant=acme"),
+      );
+      expect(window.location.search).toContain("dataset=prod");
+      expect(window.location.pathname).toBe("/logs");
+    });
+
+    it("sends several (or zero) memberships to /select-tenant with the current path as the redirect target", async () => {
+      stubFetchRoutes([
+        { match: "query_range", body: emptyStreams },
+        { match: "/labels?", body: emptyLabels },
+        {
+          match: SESSION,
+          method: "GET",
+          body: {
+            user: {
+              id: "u1",
+              email: "alice@example.com",
+              display_name: "Alice",
+              is_instance_admin: false,
+            },
+            tenant: null,
+            dataset: null,
+            memberships: [
+              { tenant_id: "acme", name: "Acme", role: "admin" },
+              { tenant_id: "globex", name: "Globex", role: "member" },
+            ],
+          },
+        },
+      ]);
+      renderApp("/logs");
+      await waitFor(() =>
+        expect(window.location.pathname).toBe("/select-tenant"),
+      );
+      expect(window.location.search).toBe(
+        `?redirect=${encodeURIComponent("/logs")}`,
+      );
+    });
+
+    it("preserves the location fragment in the /select-tenant redirect target", async () => {
+      stubFetchRoutes([
+        { match: "query_range", body: emptyStreams },
+        { match: "/labels?", body: emptyLabels },
+        {
+          match: SESSION,
+          method: "GET",
+          body: {
+            user: {
+              id: "u1",
+              email: "alice@example.com",
+              display_name: "Alice",
+              is_instance_admin: false,
+            },
+            tenant: null,
+            dataset: null,
+            memberships: [
+              { tenant_id: "acme", name: "Acme", role: "admin" },
+              { tenant_id: "globex", name: "Globex", role: "member" },
+            ],
+          },
+        },
+      ]);
+      renderApp("/logs#section-1");
+      await waitFor(() =>
+        expect(window.location.pathname).toBe("/select-tenant"),
+      );
+      expect(window.location.search).toBe(
+        `?redirect=${encodeURIComponent("/logs#section-1")}`,
+      );
+    });
+
+    it("does not resolve from the session when a tenant is already in the URL", async () => {
+      const fetchFn = stubFetchRoutes([
+        { match: "query_range", body: emptyStreams },
+        { match: "/labels?", body: emptyLabels },
+      ]);
+      renderApp("/logs?tenant=acme&dataset=prod");
+      await screen.findByText(/No log lines match this query/);
+      expect(
+        fetchFn.mock.calls.some((call) => SESSION.test(String(call[0]))),
+      ).toBe(false);
+    });
+  });
 });

@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserRouter, Route, Routes, useLocation } from "react-router";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
+import { client as generatedClient } from "../../api/gen/client.gen";
 import { LoginRoute } from "./LoginRoute";
 
 const mockNavigate = vi.fn();
@@ -20,11 +21,84 @@ vi.mock("react-router", async (importOriginal) => {
 // doesn't also catch the other (see test/render.tsx's stubFetchRoutes docs).
 const SESSION = /\/ui\/session$/;
 
+const originalLocation = window.location;
+
 afterEach(() => {
   vi.unstubAllGlobals();
   vi.clearAllMocks();
   window.history.replaceState({}, "", "/login");
+  Object.defineProperty(window, "location", {
+    configurable: true,
+    value: originalLocation,
+  });
 });
+
+/** jsdom doesn't implement navigation — replace `window.location` with a
+ * stand-in whose `href` setter is a spy, so a real
+ * `window.location.href = ...` assignment can be asserted on instead of
+ * navigating away from the test page. Restored in `afterEach` above. */
+function mockLocationHref(): ReturnType<typeof vi.fn> {
+  const hrefSetter = vi.fn();
+  Object.defineProperty(window, "location", {
+    configurable: true,
+    value: {
+      ...originalLocation,
+      set href(value: string) {
+        hrefSetter(value);
+      },
+    },
+  });
+  return hrefSetter;
+}
+
+/** Stubs the "no tenant access" session body (GET /ui/session) plus a
+ * DELETE /ui/session whose response never resolves on its own — the caller
+ * gets a `resolve` to settle it later, and `deleteCalls` counts how many
+ * DELETE requests actually reached the mock — so tests can observe the
+ * in-flight state of the sign-out button before completing the request. */
+function stubSessionWithDeferredSignOut() {
+  let deleteCalls = 0;
+  let resolve = () => {};
+  const deletePromise = new Promise<Response>((res) => {
+    resolve = () => res(new Response(JSON.stringify({}), { status: 200 }));
+  });
+  const fn = vi
+    .fn()
+    .mockImplementation(
+      async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input instanceof Request ? input.url : input);
+        const method = (
+          input instanceof Request ? input.method : (init?.method ?? "GET")
+        ).toUpperCase();
+        if (SESSION.test(url) && method === "DELETE") {
+          deleteCalls += 1;
+          return deletePromise;
+        }
+        if (SESSION.test(url) && method === "GET") {
+          return new Response(
+            JSON.stringify({
+              user: {
+                id: "1",
+                email: "alice@example.com",
+                display_name: "Alice",
+                is_instance_admin: false,
+              },
+              tenant: null,
+              dataset: null,
+              memberships: [],
+            }),
+            { status: 200, headers: { "Content-Type": "application/json" } },
+          );
+        }
+        return new Response(JSON.stringify({ error: `no stub for ${url}` }), {
+          status: 404,
+        });
+      },
+    );
+  vi.stubGlobal("fetch", fn);
+  generatedClient.setConfig({ baseUrl: "http://localhost", fetch: fn });
+  return { resolveDelete: resolve, deleteCalls: () => deleteCalls };
+}
 
 /** `LoginRoute` reads `?redirect=`/`?error=` via `useSearchParams()`, which
  * needs real Router context synced to the browser URL (not `MemoryRouter`'s
@@ -156,6 +230,20 @@ describe("LoginRoute", () => {
     await waitFor(() =>
       expect(mockNavigate).toHaveBeenCalledWith(
         "/traces?range=15m&tenant=acme&dataset=prod",
+        { replace: true },
+      ),
+    );
+  });
+
+  it("preserves a redirect target's fragment when appending tenant/dataset", async () => {
+    stubSuccessfulLogin();
+    renderLoginRoute("/login?redirect=%2Ftraces%3Frange%3D15m%23span-1");
+
+    await signIn();
+
+    await waitFor(() =>
+      expect(mockNavigate).toHaveBeenCalledWith(
+        "/traces?range=15m&tenant=acme&dataset=prod#span-1",
         { replace: true },
       ),
     );
@@ -345,6 +433,86 @@ describe("LoginRoute", () => {
       screen.getByRole("button", { name: "Sign out" }),
     ).toBeInTheDocument();
     expect(mockNavigate).not.toHaveBeenCalled();
+  });
+
+  it("redirects to /login after a successful sign-out", async () => {
+    stubFetchRoutes([
+      {
+        match: SESSION,
+        method: "GET",
+        body: {
+          user: {
+            id: "1",
+            email: "alice@example.com",
+            display_name: "Alice",
+            is_instance_admin: false,
+          },
+          tenant: null,
+          dataset: null,
+          memberships: [],
+        },
+      },
+      { match: SESSION, method: "DELETE", body: {} },
+    ]);
+    const hrefSetter = mockLocationHref();
+
+    renderLoginRoute("/login");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Sign out" }),
+    );
+
+    await waitFor(() => expect(hrefSetter).toHaveBeenCalledWith("/login"));
+  });
+
+  it("disables sign-out and shows pending text while the request is in flight, and ignores a repeat click", async () => {
+    const { resolveDelete, deleteCalls } = stubSessionWithDeferredSignOut();
+    const hrefSetter = mockLocationHref();
+
+    renderLoginRoute("/login");
+    const button = await screen.findByRole("button", { name: "Sign out" });
+    await userEvent.click(button);
+
+    const pendingButton = await screen.findByRole("button", {
+      name: "Signing out…",
+    });
+    expect(pendingButton).toBeDisabled();
+
+    // A second click while the first request is still in flight must not
+    // fire a second DELETE — the button is disabled, so this is a no-op.
+    await userEvent.click(pendingButton);
+    expect(deleteCalls()).toBe(1);
+
+    resolveDelete();
+    await waitFor(() => expect(hrefSetter).toHaveBeenCalledWith("/login"));
+  });
+
+  it("shows an error and does not redirect when sign-out fails", async () => {
+    stubFetchRoutes([
+      {
+        match: SESSION,
+        method: "GET",
+        body: {
+          user: {
+            id: "1",
+            email: "alice@example.com",
+            display_name: "Alice",
+            is_instance_admin: false,
+          },
+          tenant: null,
+          dataset: null,
+          memberships: [],
+        },
+      },
+      { match: SESSION, method: "DELETE", body: {}, status: 500 },
+    ]);
+    const hrefSetter = mockLocationHref();
+    renderLoginRoute("/login");
+    await userEvent.click(
+      await screen.findByRole("button", { name: "Sign out" }),
+    );
+
+    expect(await screen.findByText(/Logout failed/)).toBeInTheDocument();
+    expect(hrefSetter).not.toHaveBeenCalled();
   });
 
   it("shows a generic alert for a failed SSO round trip, then strips ?error from the URL", async () => {

@@ -1,7 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
-import { useNavigate } from "react-router";
-import { useState } from "react";
-import { whoami } from "../../api/session";
+import { useNavigate, useSearchParams } from "react-router";
+import { useState, type ReactNode } from "react";
+import { toErrorMessage } from "../../api/http";
+import { whoami, type CurrentSessionResponse } from "../../api/session";
+import { safeRedirectTarget } from "../../lib/redirectTarget";
 import { useOutletState } from "../../lib/outletState";
 import "./SelectTenant.css";
 
@@ -13,30 +15,11 @@ interface TenantDataset {
   is_default: boolean;
 }
 
-interface TenantData {
-  user?: {
-    id: string;
-    email: string;
-    display_name: string | null;
-    is_instance_admin: boolean;
-  };
-  memberships: Array<{
-    tenant_id: string;
-    role: "admin" | "member" | "viewer";
-  }>;
-  tenant: { id: string; slug: string; name: string };
-  datasets: TenantDataset[];
-  default_dataset: string | null;
-}
-
 interface TenantRowProps {
   tenantId: string;
   role: string;
   isExpanded: boolean;
   isActive: boolean;
-  currentTenantId: string;
-  /** The signed-in user's own tenant data, already fetched by the parent. */
-  currentWho: TenantData;
   onTenantClick: (tenantId: string) => void;
   onDatasetClick: (tenantId: string, datasetId: string) => void;
 }
@@ -46,23 +29,31 @@ function TenantRow({
   role,
   isExpanded,
   isActive,
-  currentTenantId,
-  currentWho,
   onTenantClick,
   onDatasetClick,
 }: TenantRowProps) {
-  const { data: tenantData, isLoading } = useQuery<TenantData>({
+  // Always scoped to `tenantId` explicitly (via the `X-Tenant-ID` header
+  // `whoami(tenant)` sends) rather than relying on the app's current tenant
+  // context — this renders correctly even before any tenant is chosen (a
+  // fresh SSO landing with several memberships), when there is no "current"
+  // tenant to special-case.
+  const {
+    data: tenantData,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery<{
+    datasets: TenantDataset[];
+  }>({
     queryKey: ["whoami", tenantId],
     queryFn: () => whoami(tenantId),
     staleTime: mpMountTime,
     retry: false,
-    enabled: isExpanded && tenantId !== currentTenantId,
+    enabled: isExpanded,
   });
 
-  const datasets =
-    tenantId === currentTenantId
-      ? currentWho?.datasets || []
-      : tenantData?.datasets || [];
+  const datasets = tenantData?.datasets ?? [];
 
   return (
     <div className={`tenant-row ${isActive ? "tenant-row-active" : ""}`}>
@@ -81,6 +72,13 @@ function TenantRow({
         <div className="dataset-list">
           {isLoading ? (
             <div className="dataset-loading">Loading…</div>
+          ) : isError ? (
+            <div className="dataset-error" role="alert">
+              <p>Failed to load datasets: {toErrorMessage(error)}</p>
+              <button type="button" onClick={() => void refetch()}>
+                Retry
+              </button>
+            </div>
           ) : (
             datasets.map((dataset) => (
               <button
@@ -101,24 +99,39 @@ function TenantRow({
   );
 }
 
-export function SelectTenant() {
+/** Shared wrapper for the two no-tenant-access explanations below — same
+ * panel chrome, different heading and copy. */
+function NoAccessPanel({
+  heading,
+  children,
+}: {
+  heading: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="select-tenant">
+      <div className="select-tenant-panel">
+        <h2>{heading}</h2>
+        <p className="select-tenant-subtitle">{children}</p>
+      </div>
+    </div>
+  );
+}
+
+export interface SelectTenantProps {
+  /** The signed-in session, already resolved by `SelectTenantRoute` — no
+   * tenant context is required to reach this page (a fresh SSO landing with
+   * several memberships, or none, lands here with an empty tenant). */
+  session: CurrentSessionResponse;
+}
+
+export function SelectTenant({ session }: SelectTenantProps) {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const { state, update } = useOutletState();
-  const [expandedTenants, setExpandedTenants] = useState<string[]>([
-    state.tenant,
-  ]);
-
-  // Fetch current tenant info
-  const { data: currentWho, isLoading } = useQuery<TenantData>({
-    queryKey: ["whoami", state.tenant, state.dataset],
-    queryFn: () => whoami(),
-    staleTime: mpMountTime,
-    retry: false,
-  });
-
-  if (isLoading || !currentWho) {
-    return null;
-  }
+  const [expandedTenants, setExpandedTenants] = useState<string[]>(
+    state.tenant ? [state.tenant] : [],
+  );
 
   const handleTenantClick = (tenantId: string) => {
     setExpandedTenants((prev) =>
@@ -130,10 +143,29 @@ export function SelectTenant() {
 
   const handleDatasetClick = (tenantId: string, datasetId: string) => {
     update({ tenant: tenantId, dataset: datasetId });
-    navigate("/logs");
+    navigate(safeRedirectTarget(searchParams.get("redirect")));
   };
 
-  const isCurrentTenantActive = (tenantId: string) => state.tenant === tenantId;
+  if (session.memberships.length === 0 && session.user.is_instance_admin) {
+    return (
+      <NoAccessPanel heading="Instance admin, no tenant memberships yet">
+        Your account <strong>{session.user.email}</strong> has instance-admin
+        access but isn't a member of any tenant, so there's nothing to pick
+        here. Ask another instance admin to add you to a tenant from that
+        tenant's Members panel (<code>/manage</code>), or use{" "}
+        <code>signaldb-cli</code> to add yourself directly.
+      </NoAccessPanel>
+    );
+  }
+
+  if (session.memberships.length === 0 && !session.user.is_instance_admin) {
+    return (
+      <NoAccessPanel heading="No tenant access yet">
+        Your account <strong>{session.user.email}</strong> isn't a member of
+        any tenant. Ask a tenant admin to add you.
+      </NoAccessPanel>
+    );
+  }
 
   return (
     <div className="select-tenant">
@@ -142,21 +174,15 @@ export function SelectTenant() {
         <p className="select-tenant-subtitle">Pick which tenant to explore.</p>
 
         <div className="tenant-list">
-          {currentWho.memberships.map((membership) => {
+          {session.memberships.map((membership) => {
             const tenantId = membership.tenant_id;
-            const isExpanded = expandedTenants.includes(tenantId);
-            const isActive = isCurrentTenantActive(tenantId);
-            const role = membership.role;
-
             return (
               <TenantRow
                 key={tenantId}
                 tenantId={tenantId}
-                role={role}
-                isExpanded={isExpanded}
-                isActive={isActive}
-                currentTenantId={state.tenant}
-                currentWho={currentWho}
+                role={membership.role}
+                isExpanded={expandedTenants.includes(tenantId)}
+                isActive={state.tenant === tenantId}
                 onTenantClick={handleTenantClick}
                 onDatasetClick={handleDatasetClick}
               />

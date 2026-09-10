@@ -49,7 +49,7 @@ async fn app_with_session() -> (axum::Router, Catalog, String) {
         .unwrap();
     catalog.create_dataset("acme", "production").await.unwrap();
     let user = catalog
-        .create_user("human@example.com", None, "phc", false)
+        .create_user("human@example.com", None, Some("phc"), false)
         .await
         .unwrap();
     catalog

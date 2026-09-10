@@ -6,6 +6,7 @@ mod flight_decode;
 pub mod logql;
 pub mod management;
 pub mod oauth;
+pub mod oidc;
 pub mod ops;
 pub mod promql;
 pub mod pyroscope;

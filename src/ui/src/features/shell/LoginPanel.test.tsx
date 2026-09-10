@@ -429,6 +429,33 @@ describe("LoginGate", () => {
     );
   });
 
+  it("preserves the current page's fragment in the default SSO redirect target", async () => {
+    stubFetchRoutes([
+      {
+        match: "/ui/session/config",
+        body: { password_enabled: true, oidc: { name: "Acme SSO" } },
+      },
+    ]);
+    const queryFn = vi
+      .fn()
+      .mockRejectedValue(new ApiError("Loki API failed (401)", 401));
+    renderPanel(
+      <>
+        <Probe id="probe" queryFn={queryFn} />
+        <LoginGate />
+      </>,
+      ["/traces?range=15m#span-1"],
+    );
+
+    const link = await screen.findByRole("link", {
+      name: "Continue with Acme SSO",
+    });
+    expect(link).toHaveAttribute(
+      "href",
+      "/ui/session/oidc/start?redirect=%2Ftraces%3Frange%3D15m%23span-1",
+    );
+  });
+
   it("still shows the password form when the login-configuration probe is unavailable", async () => {
     stubFetchRoutes([{ match: "/ui/session/config", body: {}, status: 500 }]);
     const queryFn = vi

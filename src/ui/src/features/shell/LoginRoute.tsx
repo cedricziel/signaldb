@@ -11,6 +11,7 @@ import { BrandMark } from "../../components/BrandMark";
 import { isAuthError, toErrorMessage } from "../../api/http";
 import { deleteSession } from "../../api/session";
 import { useLoginConfig } from "../../lib/useLoginConfig";
+import { safeRedirectTarget } from "../../lib/redirectTarget";
 import { CHOOSE_TENANT_HINT, useTenantStep } from "../../lib/tenantResolution";
 import { useCurrentSession } from "../../lib/useWhoami";
 import { LoginCard } from "./LoginCard";
@@ -18,8 +19,6 @@ import { LoginMethods } from "./LoginMethods";
 import { TenantPicker } from "./TenantPicker";
 import "./LoginPanel.css";
 import "./LoginPage.css";
-
-const DEFAULT_TARGET = "/logs";
 
 /** `?error=<code>` messages for a redirect-based login (the OIDC callback,
  * see `openspec/changes/oidc-login`). One small table so that change can add
@@ -31,25 +30,6 @@ const ERROR_MESSAGES: Record<string, string> = {
     "Your account has no tenant access yet. Ask a tenant admin to add you, then sign in again.",
 };
 
-/** Only accept a same-app relative path as the redirect target, other than
- * `/login` itself (looping the credential step back onto its own landing
- * pad). Parses the candidate against the app's own origin and requires the
- * two to match — `//evil.com`, `https://evil.com`, and even a same-app-
- * looking `/\evil.com` (browsers normalize a leading backslash to a second
- * slash, so this would otherwise resolve to `evil.com` too) all fall back
- * to the default. */
-function safeRedirectTarget(raw: string | null): string {
-  if (!raw || !raw.startsWith("/")) return DEFAULT_TARGET;
-  try {
-    const url = new URL(raw, window.location.origin);
-    if (url.origin !== window.location.origin) return DEFAULT_TARGET;
-    if (url.pathname === "/login") return DEFAULT_TARGET;
-    return `${url.pathname}${url.search}${url.hash}`;
-  } catch {
-    return DEFAULT_TARGET;
-  }
-}
-
 /** `target` with the resolved tenant/dataset appended, as a router path. */
 function withTenantDataset(
   target: string,
@@ -59,7 +39,7 @@ function withTenantDataset(
   const url = new URL(target, window.location.origin);
   url.searchParams.set("tenant", tenant);
   url.searchParams.set("dataset", dataset);
-  return `${url.pathname}${url.search}`;
+  return `${url.pathname}${url.search}${url.hash}`;
 }
 
 function LoginPageShell({ children }: { children: ReactNode }) {
@@ -87,6 +67,8 @@ export function LoginRoute() {
   const [alert] = useState<string | null>(
     () => ERROR_MESSAGES[searchParams.get("error") ?? ""] ?? null,
   );
+  const [signOutError, setSignOutError] = useState<string | null>(null);
+  const [signingOut, setSigningOut] = useState(false);
   // Strip `error` from the URL once read, through the router (not a raw
   // history call) so it doesn't fight React Router's own location state; a
   // reload then doesn't re-report a stale failure. `redirect` (and anything
@@ -153,16 +135,29 @@ export function LoginRoute() {
             <a href="https://signaldb.dev/docs">bootstrap guide</a> for a new
             instance.
           </p>
+          {signOutError && (
+            <p className="login-alert" role="alert">
+              {signOutError}
+            </p>
+          )}
           <p className="login-account">
             <button
               type="button"
+              disabled={signingOut}
               onClick={() => {
-                void deleteSession().finally(() => {
-                  window.location.href = "/login";
-                });
+                setSignOutError(null);
+                setSigningOut(true);
+                void deleteSession()
+                  .then(() => {
+                    window.location.href = "/login";
+                  })
+                  .catch((err: unknown) => {
+                    setSigningOut(false);
+                    setSignOutError(toErrorMessage(err));
+                  });
               }}
             >
-              Sign out
+              {signingOut ? "Signing out…" : "Sign out"}
             </button>
           </p>
         </LoginCard>

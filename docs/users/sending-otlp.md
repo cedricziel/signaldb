@@ -67,6 +67,11 @@ Each request — gRPC metadata or HTTP headers alike — must carry these keys
 | `x-tenant-id`         | yes      | your tenant ID                                      |
 | `x-dataset-id`        | no       | dataset within the tenant; omitted → tenant default |
 
+OTLP ingest always authenticates with a tenant API key as shown above; the
+browser Explore UI's email/password or SSO login (see [Setting up SSO / OIDC
+login](../operations/oidc-sso.md)) is a separate, human-facing credential and
+has no effect on this path.
+
 ### 3. Configure your exporter
 
 OpenTelemetry Collector:

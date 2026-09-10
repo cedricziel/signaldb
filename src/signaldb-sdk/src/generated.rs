@@ -270,7 +270,18 @@ pub mod types {
     ///      "type": "string"
     ///    },
     ///    "deprecated": {
-    ///      "$ref": "#/components/schemas/DeprecatedInfo"
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/DeprecatedInfo"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    },
     ///    "enum_members": {
     ///      "type": "array",
@@ -529,7 +540,18 @@ pub mod types {
     ///      "type": "string"
     ///    },
     ///    "primary": {
-    ///      "$ref": "#/components/schemas/AttributeHit"
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/AttributeHit"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    }
     ///  }
     ///}
@@ -776,7 +798,18 @@ pub mod types {
     ///      "$ref": "#/components/schemas/ConnectionIngest"
     ///    },
     ///    "mcp": {
-    ///      "$ref": "#/components/schemas/ConnectionMcp"
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/ConnectionMcp"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    },
     ///    "notes": {
     ///      "description": "Operator guidance, e.g. that `[public]` is unset and URLs are\nlocalhost fallbacks. Empty when everything is configured.",
@@ -1953,7 +1986,19 @@ pub mod types {
     ///      ]
     ///    },
     ///    "cardinality": {
-    ///      "$ref": "#/components/schemas/CardinalityEstimate"
+    ///      "description": "An approximate distinct-value count, when statistics exist.",
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/CardinalityEstimate"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    },
     ///    "coverage": {
     ///      "description": "The fraction of the tenant's records carrying it, when statistics\nexist. Absent means unknown — never defaulted to a number that could be\nmistaken for a measurement.",
@@ -1972,7 +2017,19 @@ pub mod types {
     ///      "type": "boolean"
     ///    },
     ///    "level": {
-    ///      "$ref": "#/components/schemas/AttributeLevel"
+    ///      "description": "The OTel attribute level, when known. Statistics carry no level, so an\nobserved key reports `null` rather than a guess.",
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/AttributeLevel"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    },
     ///    "name": {
     ///      "description": "The logical, dotted OTel-native name — directly usable in a predicate.",
@@ -1993,6 +2050,7 @@ pub mod types {
         ///The registry's one-line description, when a registry defines it.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub brief: ::std::option::Option<::std::string::String>,
+        ///An approximate distinct-value count, when statistics exist.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub cardinality: ::std::option::Option<CardinalityEstimate>,
         /**The fraction of the tenant's records carrying it, when statistics
@@ -2006,6 +2064,8 @@ pub mod types {
         /**Whether a predicate may address it (retrieval-only fields are listed,
         not hidden).*/
         pub filterable: bool,
+        /**The OTel attribute level, when known. Statistics carry no level, so an
+        observed key reports `null` rather than a guess.*/
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub level: ::std::option::Option<AttributeLevel>,
         ///The logical, dotted OTel-native name — directly usable in a predicate.
@@ -2227,7 +2287,18 @@ pub mod types {
     ///      "type": "string"
     ///    },
     ///    "deprecated": {
-    ///      "$ref": "#/components/schemas/DeprecatedInfo"
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/DeprecatedInfo"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    },
     ///    "descriptive": {
     ///      "type": "array",
@@ -2396,7 +2467,18 @@ pub mod types {
     ///      "type": "string"
     ///    },
     ///    "primary": {
-    ///      "$ref": "#/components/schemas/EntityHit"
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/EntityHit"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    }
     ///  }
     ///}
@@ -3431,7 +3513,19 @@ pub mod types {
     ///  ],
     ///  "properties": {
     ///    "oidc": {
-    ///      "$ref": "#/components/schemas/OidcLoginConfig"
+    ///      "description": "Always serialized, `null` until an OIDC provider is configured — not\nan omittable field.",
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/OidcLoginConfig"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    },
     ///    "password_enabled": {
     ///      "type": "boolean"
@@ -3442,7 +3536,9 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct LoginConfigResponse {
-        pub oidc: OidcLoginConfig,
+        /**Always serialized, `null` until an OIDC provider is configured — not
+        an omittable field.*/
+        pub oidc: ::std::option::Option<OidcLoginConfig>,
         pub password_enabled: bool,
     }
     impl LoginConfigResponse {
@@ -4096,11 +4192,16 @@ pub mod types {
     ///  "type": "object",
     ///  "required": [
     ///    "email",
+    ///    "granted_by",
     ///    "role",
     ///    "user_id"
     ///  ],
     ///  "properties": {
     ///    "email": {
+    ///      "type": "string"
+    ///    },
+    ///    "granted_by": {
+    ///      "description": "`\"local\"` (granted via this API/CLI/MCP) or `\"oidc_mapping\"` (synced\nfrom an OIDC group claim, change: oidc-login). A local and a mapped\nrow can coexist for the same user, yielding two response rows that\ndiffer only by this field — the UI keys on `user_id` + `granted_by`.",
     ///      "type": "string"
     ///    },
     ///    "role": {
@@ -4116,6 +4217,11 @@ pub mod types {
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct MembershipResponse {
         pub email: ::std::string::String,
+        /**`"local"` (granted via this API/CLI/MCP) or `"oidc_mapping"` (synced
+        from an OIDC group claim, change: oidc-login). A local and a mapped
+        row can coexist for the same user, yielding two response rows that
+        differ only by this field — the UI keys on `user_id` + `granted_by`.*/
+        pub granted_by: ::std::string::String,
         pub role: MembershipRole,
         pub user_id: ::std::string::String,
     }
@@ -4422,7 +4528,18 @@ pub mod types {
     ///      "type": "string"
     ///    },
     ///    "deprecated": {
-    ///      "$ref": "#/components/schemas/DeprecatedInfo"
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/DeprecatedInfo"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    },
     ///    "entity_associations": {
     ///      "description": "Entity type names this metric describes.",
@@ -4562,7 +4679,18 @@ pub mod types {
     ///      "type": "string"
     ///    },
     ///    "primary": {
-    ///      "$ref": "#/components/schemas/MetricHit"
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/MetricHit"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    }
     ///  }
     ///}
@@ -5075,13 +5203,37 @@ pub mod types {
     ///      }
     ///    },
     ///    "flamegraph": {
-    ///      "$ref": "#/components/schemas/FlamegraphResult"
+    ///      "description": "Present iff `result == \"flamegraph\"` — `Some` even when zero profiles\nmatched, so an empty match set stays distinguishable from \"this\nresponse has no flamegraph at all\" (i.e. a different envelope).",
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/FlamegraphResult"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    },
     ///    "heatmap": {
     ///      "$ref": "#/components/schemas/HeatmapResult"
     ///    },
     ///    "metadata": {
-    ///      "$ref": "#/components/schemas/MetadataResult"
+    ///      "description": "Present iff `result == \"metadata\"` — what a `describe` document asked\nabout, with the provenance and cost of the answer.",
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/MetadataResult"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    },
     ///    "result": {
     ///      "description": "The result envelope: `rows`, `series`, `table`, `heatmap`, or `flamegraph`.",
@@ -5125,10 +5277,15 @@ pub mod types {
     pub struct QueryIrResponse {
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub columns: ::std::vec::Vec<ResultColumn>,
+        /**Present iff `result == "flamegraph"` — `Some` even when zero profiles
+        matched, so an empty match set stays distinguishable from "this
+        response has no flamegraph at all" (i.e. a different envelope).*/
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub flamegraph: ::std::option::Option<FlamegraphResult>,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub heatmap: ::std::option::Option<HeatmapResult>,
+        /**Present iff `result == "metadata"` — what a `describe` document asked
+        about, with the provenance and cost of the answer.*/
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub metadata: ::std::option::Option<MetadataResult>,
         ///The result envelope: `rows`, `series`, `table`, `heatmap`, or `flamegraph`.
@@ -5536,7 +5693,18 @@ pub mod types {
     ///      "format": "int64"
     ///    },
     ///    "timeline": {
-    ///      "$ref": "#/components/schemas/Timeline"
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/Timeline"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    }
     ///  }
     ///}
@@ -12035,7 +12203,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct LoginConfigResponse {
-            oidc: ::std::result::Result<super::OidcLoginConfig, ::std::string::String>,
+            oidc: ::std::result::Result<
+                ::std::option::Option<super::OidcLoginConfig>,
+                ::std::string::String,
+            >,
             password_enabled: ::std::result::Result<bool, ::std::string::String>,
         }
         impl ::std::default::Default for LoginConfigResponse {
@@ -12049,7 +12220,7 @@ pub mod types {
         impl LoginConfigResponse {
             pub fn oidc<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<super::OidcLoginConfig>,
+                T: ::std::convert::TryInto<::std::option::Option<super::OidcLoginConfig>>,
                 T::Error: ::std::fmt::Display,
             {
                 self.oidc = value
@@ -13136,6 +13307,7 @@ pub mod types {
         #[derive(Clone, Debug)]
         pub struct MembershipResponse {
             email: ::std::result::Result<::std::string::String, ::std::string::String>,
+            granted_by: ::std::result::Result<::std::string::String, ::std::string::String>,
             role: ::std::result::Result<super::MembershipRole, ::std::string::String>,
             user_id: ::std::result::Result<::std::string::String, ::std::string::String>,
         }
@@ -13143,6 +13315,7 @@ pub mod types {
             fn default() -> Self {
                 Self {
                     email: Err("no value supplied for email".to_string()),
+                    granted_by: Err("no value supplied for granted_by".to_string()),
                     role: Err("no value supplied for role".to_string()),
                     user_id: Err("no value supplied for user_id".to_string()),
                 }
@@ -13157,6 +13330,16 @@ pub mod types {
                 self.email = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for email: {e}"));
+                self
+            }
+            pub fn granted_by<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.granted_by = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for granted_by: {e}"));
                 self
             }
             pub fn role<T>(mut self, value: T) -> Self
@@ -13187,6 +13370,7 @@ pub mod types {
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
                     email: value.email?,
+                    granted_by: value.granted_by?,
                     role: value.role?,
                     user_id: value.user_id?,
                 })
@@ -13196,6 +13380,7 @@ pub mod types {
             fn from(value: super::MembershipResponse) -> Self {
                 Self {
                     email: Ok(value.email),
+                    granted_by: Ok(value.granted_by),
                     role: Ok(value.role),
                     user_id: Ok(value.user_id),
                 }
@@ -18972,8 +19157,11 @@ impl Client {
     /**GET /ui/session/config
 
     Unauthenticated probe the login page reads before rendering its
-    credential step. Until OIDC support ships this always answers
-    password-only; the schema does not change when it does.
+    credential step. `oidc` is populated once `[auth.oidc]` is configured
+    *and* its provider discovery has succeeded — otherwise `null`, so an
+    unreachable issuer degrades to password-only rather than offering a
+    broken SSO button (change: oidc-login). `password_enabled` reflects
+    `[auth.oidc].disable_password_login`.
 
     Sends a `GET` request to `/ui/session/config`
 
@@ -18984,6 +19172,58 @@ impl Client {
     ```*/
     pub fn login_config(&self) -> builder::LoginConfig<'_> {
         builder::LoginConfig::new(self)
+    }
+    /**GET /ui/session/oidc/callback
+
+    Reads state/nonce/PKCE-verifier from the pending-login cookie, exchanges
+    the code, validates the ID token, resolves the identity, and issues the
+    standard session on success — redirecting to the `redirect` target the
+    start request carried. Every validation failure — missing/invalid
+    pending cookie, state mismatch, a bad nonce/signature/expiry, an
+    unverified email on the link path, an allowlist refusal, or a disabled
+    user — collapses into the same generic `/login?error=sso_failed`
+    redirect with no session created and no disclosure of which check
+    failed; a resolved, enabled identity left with no tenant membership
+    after mapping sync instead redirects to `/login?error=no_membership`,
+    keeping the just-in-time-provisioned user row.
+
+    Sends a `GET` request to `/ui/session/oidc/callback`
+
+    Arguments:
+    - `code`: Authorization code returned by the IdP
+    - `error`: Present when the IdP failed the request before ever issuing a code
+    - `state`: Opaque state value echoed back by the IdP
+    ```ignore
+    let response = client.session_oidc_callback()
+        .code(code)
+        .error(error)
+        .state(state)
+        .send()
+        .await;
+    ```*/
+    pub fn session_oidc_callback(&self) -> builder::SessionOidcCallback<'_> {
+        builder::SessionOidcCallback::new(self)
+    }
+    /**GET /ui/session/oidc/start
+
+    302s to the IdP's authorization endpoint with a fresh PKCE challenge,
+    `state`, and `nonce`, and sets the signed pending-login cookie carrying
+    what the callback needs to complete the exchange, including the
+    validated `redirect` return target. 404 when OIDC isn't configured; 503
+    naming the issuer while discovery hasn't (yet) succeeded.
+
+    Sends a `GET` request to `/ui/session/oidc/start`
+
+    Arguments:
+    - `redirect`: Same-origin path to return to after a successful login; anything else (or absent) falls back to `/logs`
+    ```ignore
+    let response = client.session_oidc_start()
+        .redirect(redirect)
+        .send()
+        .await;
+    ```*/
+    pub fn session_oidc_start(&self) -> builder::SessionOidcStart<'_> {
+        builder::SessionOidcStart::new(self)
     }
 }
 /// Types for composing operation parameters.
@@ -25123,6 +25363,148 @@ pub mod builder {
             }
         }
     }
+    /**Builder for [`Client::session_oidc_callback`]
+
+    [`Client::session_oidc_callback`]: super::Client::session_oidc_callback*/
+    #[derive(Debug, Clone)]
+    pub struct SessionOidcCallback<'a> {
+        client: &'a super::Client,
+        code: Result<Option<::std::string::String>, String>,
+        error: Result<Option<::std::string::String>, String>,
+        state: Result<Option<::std::string::String>, String>,
+    }
+    impl<'a> SessionOidcCallback<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                code: Ok(None),
+                error: Ok(None),
+                state: Ok(None),
+            }
+        }
+        pub fn code<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.code = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for code failed".to_string()
+            });
+            self
+        }
+        pub fn error<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.error = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for error failed".to_string()
+            });
+            self
+        }
+        pub fn state<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.state = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for state failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/ui/session/oidc/callback`
+        pub async fn send(self) -> Result<ResponseValue<ByteStream>, Error<()>> {
+            let Self {
+                client,
+                code,
+                error,
+                state,
+            } = self;
+            let code = code.map_err(Error::InvalidRequest)?;
+            let error = error.map_err(Error::InvalidRequest)?;
+            let state = state.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/ui/session/oidc/callback", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .query(&progenitor_client::QueryParam::new("code", &code))
+                .query(&progenitor_client::QueryParam::new("error", &error))
+                .query(&progenitor_client::QueryParam::new("state", &state))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "session_oidc_callback",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200..=299 => Ok(ResponseValue::stream(response)),
+                404u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::session_oidc_start`]
+
+    [`Client::session_oidc_start`]: super::Client::session_oidc_start*/
+    #[derive(Debug, Clone)]
+    pub struct SessionOidcStart<'a> {
+        client: &'a super::Client,
+        redirect: Result<Option<::std::string::String>, String>,
+    }
+    impl<'a> SessionOidcStart<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                redirect: Ok(None),
+            }
+        }
+        pub fn redirect<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.redirect = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for redirect failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/ui/session/oidc/start`
+        pub async fn send(self) -> Result<ResponseValue<ByteStream>, Error<()>> {
+            let Self { client, redirect } = self;
+            let redirect = redirect.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/ui/session/oidc/start", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .query(&progenitor_client::QueryParam::new("redirect", &redirect))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "session_oidc_start",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200..=299 => Ok(ResponseValue::stream(response)),
+                404u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                503u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
 }
 /// Items consumers will typically use such as the Client.
 pub mod prelude {
@@ -25203,6 +25585,8 @@ pub const OPERATIONS: &[&str] = &[
     "search_tag_values_v2",
     "search_tags",
     "search_tags_v2",
+    "session_oidc_callback",
+    "session_oidc_start",
     "update_api_key",
     "update_tenant",
     "whoami",

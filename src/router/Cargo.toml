@@ -34,6 +34,14 @@ serde_json.workspace = true
 url.workspace = true
 utoipa.workspace = true
 
+# OIDC relying-party flow (change: oidc-login): discovery, PKCE, JWKS,
+# ID-token validation.
+openidconnect.workspace = true
+# HMAC-signs the pending-login cookie (state/nonce/PKCE-verifier).
+hmac.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+
 [dev-dependencies]
 tokio-test.workspace = true
 tower.workspace = true
@@ -41,6 +49,8 @@ tempfile.workspace = true
 # `common::testing::TempCatalog` — provisioning tests need a catalog that
 # outlives the pool the handler under test creates and drops.
 common = { workspace = true, features = ["testing"] }
+# Fake IdP for the OIDC RP-flow tests (discovery, JWKS, token endpoint).
+wiremock.workspace = true
 
 [package.metadata.cargo-machete]
 ignored = ["tokio-test"]

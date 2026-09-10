@@ -103,7 +103,12 @@ export const INGEST_SCOPES: ReadonlyArray<ApiKeyScope> =
  * wire type (scopes surface as `string[]`). */
 export type ManagedApiKey = ManageApiKeyResponse;
 
-/** Tenant membership as returned by the management API. */
+/** Tenant membership as returned by the management API. `granted_by` is
+ * `"local"` (granted via this API/CLI/MCP) or `"oidc_mapping"` (synced from
+ * an OIDC group claim) — a local and a mapped row can coexist for the same
+ * user, so callers must key lists on `user_id` + `granted_by`, not
+ * `user_id` alone, and only offer removal for `"local"` rows (mapped rows
+ * are managed by the IdP). */
 export type ManagedMembership = MembershipResponse;
 
 /** Logical + physical schema, as returned by the management API. */

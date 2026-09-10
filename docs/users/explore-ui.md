@@ -556,7 +556,8 @@ login is disabled); that link is a plain full-page navigation to the SSO
 start endpoint carrying the validated redirect target. If the probe itself
 cannot be read, the page falls back to the password form with a notice and
 never offers SSO, so break-glass password access stays visible during a
-partial outage.
+partial outage. See [Signing in with SSO](authentication.md#signing-in-with-sso-oidc)
+for the identity-provider side of this flow.
 
 Every credential then hands over to the same tenant step: a sole membership
 is auto-selected (with the tenant's default dataset); several memberships

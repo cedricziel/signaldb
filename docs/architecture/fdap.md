@@ -134,6 +134,13 @@ dependency, so a query can be parsed and validated without the query engine.
 Lowering a parsed query onto columns stays in the querier. See
 [Compatibility crates](../contributing/compat-crates.md).
 
+**Access control is off the data path too.** Authentication brings its own
+non-FDAP dependencies — like the WAL's `crc32fast` — that never touch an Arrow
+batch: the router's OIDC relying party (an `openidconnect` client) and its
+OAuth authorization server authenticate the *humans and agents* who issue
+queries, then hand a resolved tenant context to the FDAP layers, which carry
+only bytes and types. See [Setting up SSO / OIDC login](../operations/oidc-sso.md).
+
 SignalDB's own **query IR** (`src/query-ir`) sits outside the stack for the
 same reason, though it re-implements nobody: an IR document can be built,
 versioned, and validated with `serde` alone, so a client can construct and

@@ -9,13 +9,19 @@
 
 use utoipa::{
     Modify, OpenApi,
-    openapi::security::{Http, HttpAuthScheme, SecurityRequirement, SecurityScheme},
+    openapi::security::{
+        ApiKey, ApiKeyValue, Http, HttpAuthScheme, SecurityRequirement, SecurityScheme,
+    },
 };
 
 /// Registers the `bearerAuth` HTTP bearer security scheme and requires it
 /// globally, so every operation (admin and management) is documented as
 /// authenticated. Admin handlers also restate it per-path; management handlers
-/// inherit this default.
+/// inherit this default. Also registers `sessionCookie` (the
+/// `signaldb_session` HttpOnly cookie), a distinct mechanism from
+/// `bearerAuth` that cookie-only endpoints like `GET /ui/session` restate
+/// per-path via `security(("sessionCookie" = []))` rather than inheriting
+/// this default.
 struct SecurityAddon;
 
 impl Modify for SecurityAddon {
@@ -26,6 +32,10 @@ impl Modify for SecurityAddon {
         components.add_security_scheme(
             "bearerAuth",
             SecurityScheme::Http(Http::new(HttpAuthScheme::Bearer)),
+        );
+        components.add_security_scheme(
+            "sessionCookie",
+            SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new("signaldb_session"))),
         );
         openapi.security = Some(vec![SecurityRequirement::new(
             "bearerAuth",
@@ -94,6 +104,8 @@ impl Modify for SecurityAddon {
         crate::endpoints::management::remove_membership,
         crate::endpoints::management::get_schema,
         crate::endpoints::session::whoami,
+        crate::endpoints::oidc::start,
+        crate::endpoints::oidc::callback,
         crate::endpoints::session::connection_info,
         crate::endpoints::session::login_config,
         crate::endpoints::session::current_session,
@@ -364,20 +376,30 @@ mod tests {
         }
     }
 
-    /// `dedicated-login-page` change, section 1: `GET /ui/session/config`
-    /// (the login-configuration probe) and `GET /ui/session` (tenant-less
-    /// session introspection) must both be published, unauthenticated
-    /// (`security: [{}]`, matching what `security(())` emits for
-    /// `oauth_consent_context`), and `LoginConfigResponse.oidc` must be
-    /// schema-nullable (not merely optional) so the generated clients type
-    /// it as `T | null` rather than an omittable field.
+    /// `dedicated-login-page` change, section 1, and `oidc-login` task 4.1:
+    /// `GET /ui/session/config` (the login-configuration probe) and the two
+    /// OIDC endpoints require no credential at all and must be published
+    /// unauthenticated (`security: [{}]`, matching what `security(())`
+    /// emits for `oauth_consent_context`). `GET /ui/session` (tenant-less
+    /// session introspection) *does* require a credential — the
+    /// `signaldb_session` HttpOnly cookie, checked by `resolve_session_user`
+    /// (401 with no cookie, see `current_session_without_cookie_is_401`) —
+    /// so it must instead require the `sessionCookie` security scheme
+    /// rather than being left as an empty requirement that reads as
+    /// anonymous. `LoginConfigResponse.oidc` must be schema-nullable (not
+    /// merely optional) so the generated clients type it as `T | null`
+    /// rather than an omittable field.
     #[test]
     fn login_page_endpoints_are_published_unauthenticated_and_oidc_is_nullable() {
         let spec: serde_json::Value =
             serde_json::from_str(&openapi_document().to_pretty_json().unwrap()).unwrap();
 
         let empty_security = serde_json::json!([{}]);
-        for (path, method) in [("/ui/session/config", "get"), ("/ui/session", "get")] {
+        for (path, method) in [
+            ("/ui/session/config", "get"),
+            ("/ui/session/oidc/start", "get"),
+            ("/ui/session/oidc/callback", "get"),
+        ] {
             let operation = spec
                 .pointer(&format!("/paths/{}/{method}", path.replace('/', "~1")))
                 .unwrap_or_else(|| panic!("{method} {path}: missing from OpenAPI document"));
@@ -387,6 +409,25 @@ mod tests {
                 "{method} {path}: expected an empty security requirement"
             );
         }
+
+        let cookie_security = serde_json::json!([{ "sessionCookie": [] }]);
+        let current_session_op = spec
+            .pointer("/paths/~1ui~1session/get")
+            .unwrap_or_else(|| panic!("get /ui/session: missing from OpenAPI document"));
+        assert_eq!(
+            current_session_op.get("security"),
+            Some(&cookie_security),
+            "get /ui/session: expected the sessionCookie security requirement"
+        );
+        assert_eq!(
+            spec.pointer("/components/securitySchemes/sessionCookie"),
+            Some(&serde_json::json!({
+                "type": "apiKey",
+                "in": "cookie",
+                "name": "signaldb_session",
+            })),
+            "sessionCookie security scheme must be registered"
+        );
 
         // A nullable-but-always-serialized field must appear in both its
         // schema's `required` array (never omittable) and its own schema

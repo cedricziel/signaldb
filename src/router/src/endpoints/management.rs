@@ -15,7 +15,7 @@ use axum::{
 };
 use common::{
     auth::{Authenticator, TenantContext, TenantContextExtractor, validate_id, validate_scopes},
-    catalog::MembershipRole,
+    catalog::{GrantSource, MembershipRole},
     schema::{
         SCHEMA_DEFINITIONS,
         logical::{AttributeLevel, Filterability, LogicalFieldKind, LogicalSchema, LogicalType},
@@ -105,17 +105,22 @@ fn error(status: StatusCode, message: impl Into<String>) -> Response {
 
 /// Whether `target_user_id` is the tenant's sole remaining administrator —
 /// used to block demoting or removing the last admin membership.
+///
+/// Only counts `local` grants: an `oidc_mapping`-sourced admin membership is
+/// derived from IdP group mapping and can vanish the moment that mapping
+/// changes, so it must not be allowed to "protect" — or be double-counted
+/// alongside — a `local` admin row.
 fn is_last_remaining_admin(
     members: &[common::catalog::TenantMembershipRecord],
     target_user_id: &str,
 ) -> bool {
-    let target_is_admin = members.iter().any(|membership| {
-        membership.user_id == target_user_id && membership.role == MembershipRole::Admin
-    });
-    let admin_count = members
+    fn is_local_admin(membership: &common::catalog::TenantMembershipRecord) -> bool {
+        membership.role == MembershipRole::Admin && membership.granted_by == GrantSource::Local
+    }
+    let target_is_admin = members
         .iter()
-        .filter(|membership| membership.role == MembershipRole::Admin)
-        .count();
+        .any(|membership| membership.user_id == target_user_id && is_local_admin(membership));
+    let admin_count = members.iter().filter(|m| is_local_admin(m)).count();
     target_is_admin && admin_count == 1
 }
 
@@ -821,6 +826,11 @@ pub(crate) struct MembershipResponse {
     user_id: String,
     email: String,
     role: MembershipRole,
+    /// `"local"` (granted via this API/CLI/MCP) or `"oidc_mapping"` (synced
+    /// from an OIDC group claim, change: oidc-login). A local and a mapped
+    /// row can coexist for the same user, yielding two response rows that
+    /// differ only by this field — the UI keys on `user_id` + `granted_by`.
+    granted_by: String,
 }
 
 #[utoipa::path(
@@ -871,6 +881,7 @@ pub(crate) async fn list_memberships<S: RouterState>(
             user_id: user.id,
             email: user.email,
             role: membership.role,
+            granted_by: membership.granted_by.to_string(),
         });
     }
     Json(response).into_response()
@@ -947,6 +958,7 @@ pub(crate) async fn upsert_membership<S: RouterState>(
                 user_id: user.id,
                 email: user.email,
                 role: request.role,
+                granted_by: GrantSource::Local.to_string(),
             })
             .into_response()
         }
@@ -1252,6 +1264,70 @@ mod schema_tests {
 }
 
 #[cfg(test)]
+mod last_remaining_admin_tests {
+    use super::*;
+    use common::catalog::TenantMembershipRecord;
+
+    fn membership(
+        user_id: &str,
+        role: MembershipRole,
+        granted_by: GrantSource,
+    ) -> TenantMembershipRecord {
+        TenantMembershipRecord {
+            user_id: user_id.to_string(),
+            tenant_id: "acme".to_string(),
+            role,
+            granted_by,
+            created_at: chrono::Utc::now(),
+        }
+    }
+
+    #[test]
+    fn another_local_admin_allows_removal() {
+        let members = vec![
+            membership("alice", MembershipRole::Admin, GrantSource::Local),
+            membership("bob", MembershipRole::Admin, GrantSource::Local),
+        ];
+        assert!(!is_last_remaining_admin(&members, "alice"));
+    }
+
+    #[test]
+    fn sole_local_admin_is_protected() {
+        let members = vec![
+            membership("alice", MembershipRole::Admin, GrantSource::Local),
+            membership("bob", MembershipRole::Member, GrantSource::Local),
+        ];
+        assert!(is_last_remaining_admin(&members, "alice"));
+    }
+
+    #[test]
+    fn mapped_admin_row_alone_does_not_satisfy_the_guard() {
+        // `alice` holds only an oidc_mapping-sourced admin row; she is not a
+        // *local* admin, so she isn't "the last remaining admin" and removing
+        // any other membership must not be blocked by her presence.
+        let members = vec![membership(
+            "alice",
+            MembershipRole::Admin,
+            GrantSource::OidcMapping,
+        )];
+        assert!(!is_last_remaining_admin(&members, "alice"));
+    }
+
+    #[test]
+    fn local_admin_is_not_protected_by_a_coexisting_mapped_admin_row() {
+        // `alice` has both a `local` admin row and an `oidc_mapping` admin
+        // row for the same tenant (change: oidc-login design decision 5).
+        // Only the local row should count toward the "last remaining admin"
+        // guard, so removing it must not be blocked by the mapped row.
+        let members = vec![
+            membership("alice", MembershipRole::Admin, GrantSource::Local),
+            membership("alice", MembershipRole::Admin, GrantSource::OidcMapping),
+        ];
+        assert!(is_last_remaining_admin(&members, "alice"));
+    }
+}
+
+#[cfg(test)]
 mod key_scope_authorization_tests {
     //! `tenant:manage` API keys reach the management API for their own
     //! tenant; ingest-only, legacy-unscoped, and cross-tenant keys do not.
@@ -1326,7 +1402,7 @@ mod key_scope_authorization_tests {
         scoped_key(&catalog, "acme", INGEST_KEY, &["traces:write"]).await;
         let hash = common::auth::hash_password("member password").unwrap();
         let user = catalog
-            .create_user("member@example.com", Some("Member"), &hash, false)
+            .create_user("member@example.com", Some("Member"), Some(&hash), false)
             .await
             .unwrap();
         catalog
@@ -1334,7 +1410,7 @@ mod key_scope_authorization_tests {
             .await
             .unwrap();
         let admin = catalog
-            .create_user("admin@example.com", Some("Admin"), &hash, false)
+            .create_user("admin@example.com", Some("Admin"), Some(&hash), false)
             .await
             .unwrap();
         catalog
@@ -1514,6 +1590,91 @@ mod key_scope_authorization_tests {
             call(&app, MANAGE_KEY, Method::GET, "/api/v1/manage/schema", None).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(body["logical"].is_array(), "{body}");
+    }
+
+    #[tokio::test]
+    async fn list_memberships_includes_granted_by() {
+        let app = test_app().await;
+        let (status, body) = call(
+            &app,
+            MANAGE_KEY,
+            Method::GET,
+            "/api/v1/manage/tenants/acme/memberships",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let rows = body.as_array().unwrap();
+        assert!(!rows.is_empty());
+        assert!(
+            rows.iter().all(|row| row["granted_by"] == "local"),
+            "every membership from `upsert_tenant_membership` must be granted_by=local: {body}"
+        );
+    }
+
+    /// Task 4.3/4.4 (change: oidc-login): a `local` and an `oidc_mapping`
+    /// row can coexist for the same `(user_id, tenant_id)`. The handler must
+    /// not collapse them — it emits one `MembershipResponse` per row, so the
+    /// same `user_id` appears twice, distinguished only by `granted_by`.
+    #[tokio::test]
+    async fn list_memberships_shows_coexisting_local_and_mapped_rows_for_same_user() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant("acme", LEGACY_KEY)],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        scoped_key(
+            &catalog,
+            "acme",
+            MANAGE_KEY,
+            &["traces:write", TENANT_MANAGE_SCOPE],
+        )
+        .await;
+        let hash = common::auth::hash_password("member password").unwrap();
+        let user = catalog
+            .create_user("dual@example.com", Some("Dual"), Some(&hash), false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        catalog
+            .sync_oidc_memberships(&user.id, &[("acme".to_string(), MembershipRole::Member)])
+            .await
+            .unwrap();
+        let app = create_router(RouterAppState::new(catalog, config));
+
+        let (status, body) = call(
+            &app,
+            MANAGE_KEY,
+            Method::GET,
+            "/api/v1/manage/tenants/acme/memberships",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let rows: Vec<&Value> = body
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["user_id"] == user.id)
+            .collect();
+        assert_eq!(
+            rows.len(),
+            2,
+            "expected one row per (user, granted_by): {body}"
+        );
+        let sources: std::collections::HashSet<&str> = rows
+            .iter()
+            .map(|row| row["granted_by"].as_str().unwrap())
+            .collect();
+        assert!(sources.contains("local"));
+        assert!(sources.contains("oidc_mapping"));
     }
 
     #[tokio::test]

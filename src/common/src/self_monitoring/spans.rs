@@ -279,6 +279,41 @@ pub fn mcp_tool_span(
     span
 }
 
+/// CLIENT span wrapping a single outbound HTTP request (e.g. one call to an
+/// OIDC provider's discovery/token/JWKS endpoint), per the HTTP client
+/// semantic conventions. Named `{method} {url}`; callers must only pass a
+/// `url` free of query-string secrets (the OIDC discovery/token/JWKS
+/// endpoints this backs never carry any).
+///
+/// Record the outcome via [`record_http_client_result`] when a response
+/// came back, or [`record_span_error`] for a transport failure that never
+/// produced a status code.
+pub fn http_client_span(method: &str, url: &str) -> Span {
+    tracing::info_span!(
+        "http.client",
+        otel.name = %format!("{method} {url}"),
+        otel.kind = "client",
+        otel.status_code = Empty,
+        otel.status_message = Empty,
+        http.request.method = %method,
+        url.full = %url,
+        http.response.status_code = Empty,
+        error.r#type = Empty,
+    )
+}
+
+/// Record an HTTP client outcome: the numeric status always, and — per HTTP
+/// semconv's client rule (every non-2xx/3xx response is the client's
+/// problem) — span status Error plus `error.type` set to the status code
+/// text whenever the response is `>= 400`.
+pub fn record_http_client_result(span: &Span, status: u16) {
+    span.record("http.response.status_code", status as i64);
+    if status >= 400 {
+        span.record("otel.status_code", "ERROR");
+        span.record("error.type", status.to_string().as_str());
+    }
+}
+
 /// Mark a factory span as failed: status Error plus the classified
 /// `error.type`. Callers decide *whether* an outcome is a failure for their
 /// boundary (see the per-factory docs); this only encodes *how* it is
@@ -309,6 +344,12 @@ mod tests {
         assert_eq!("db.operation.name", attribute::DB_OPERATION_NAME);
         assert_eq!("db.namespace", attribute::DB_NAMESPACE);
         assert_eq!("db.query.text", attribute::DB_QUERY_TEXT);
+        assert_eq!("http.request.method", attribute::HTTP_REQUEST_METHOD);
+        assert_eq!(
+            "http.response.status_code",
+            attribute::HTTP_RESPONSE_STATUS_CODE
+        );
+        assert_eq!("url.full", attribute::URL_FULL);
     }
 
     /// The MCP/GenAI constants are marked deprecated in the pinned crate

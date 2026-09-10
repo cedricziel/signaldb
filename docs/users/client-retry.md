@@ -130,3 +130,9 @@ Leaving a page or superseding a query aborts the request's `AbortSignal`,
 which cancels a pending wait. When retries are exhausted the panel's error
 reads `Rate limited — server asked to retry in 5 s` instead of a generic
 failure; `ApiError.retryAfterMs` carries the wait for code that wants it.
+
+Callers that consume the generated SDK's `RequestResult` (which returns an
+`error` rather than throwing) unwrap it through `unwrapSdkResult`, which
+re-throws as the same `ApiError` — preserving the HTTP status and
+`retryAfterMs` — so a `429` surfaced from a management or session call is
+still recognised and backed off exactly like a raw `retryingFetch` rejection.

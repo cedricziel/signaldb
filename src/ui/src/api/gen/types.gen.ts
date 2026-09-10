@@ -1095,6 +1095,13 @@ export type ManageUpdateApiKeyRequest = {
 
 export type MembershipResponse = {
     email: string;
+    /**
+     * `"local"` (granted via this API/CLI/MCP) or `"oidc_mapping"` (synced
+     * from an OIDC group claim, change: oidc-login). A local and a mapped
+     * row can coexist for the same user, yielding two response rows that
+     * differ only by this field — the UI keys on `user_id` + `granted_by`.
+     */
+    granted_by: string;
     role: MembershipRole;
     user_id: string;
 };
@@ -5367,3 +5374,53 @@ export type LoginConfigResponses = {
 };
 
 export type LoginConfigResponse2 = LoginConfigResponses[keyof LoginConfigResponses];
+
+export type SessionOidcCallbackData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Authorization code returned by the IdP
+         */
+        code?: string;
+        /**
+         * Opaque state value echoed back by the IdP
+         */
+        state?: string;
+        /**
+         * Present when the IdP failed the request before ever issuing a code
+         */
+        error?: string;
+    };
+    url: '/ui/session/oidc/callback';
+};
+
+export type SessionOidcCallbackErrors = {
+    /**
+     * OIDC is not configured
+     */
+    404: unknown;
+};
+
+export type SessionOidcStartData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Same-origin path to return to after a successful login; anything else (or absent) falls back to `/logs`
+         */
+        redirect?: string;
+    };
+    url: '/ui/session/oidc/start';
+};
+
+export type SessionOidcStartErrors = {
+    /**
+     * OIDC is not configured
+     */
+    404: unknown;
+    /**
+     * OIDC provider is currently unavailable
+     */
+    503: unknown;
+};

@@ -11,6 +11,16 @@ use super::SESSION_TOKEN_PREFIX;
 /// Name of the session cookie set by `POST /ui/session`.
 pub const SESSION_COOKIE: &str = "signaldb_session";
 
+/// Build the `Set-Cookie` header value for a freshly issued session token.
+/// The single construction site for the cookie every login path (password,
+/// OIDC SSO — change: oidc-login) sets, so they stay byte-for-byte
+/// identical: `HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=43200`
+/// (12 hours, matching [`crate::catalog::Catalog::create_user_session`]'s
+/// TTL).
+pub fn session_cookie_header(token: &str) -> String {
+    format!("{SESSION_COOKIE}={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=43200")
+}
+
 /// Extract an opaque server-side session token from the session cookie.
 ///
 /// Requiring the session-token prefix deliberately rejects the legacy
@@ -48,6 +58,17 @@ mod tests {
             HeaderValue::from_str(&value).unwrap(),
         );
         assert_eq!(session_token_from_headers(&headers), Some(token));
+    }
+
+    #[test]
+    fn session_cookie_header_carries_the_token_and_required_attributes() {
+        let header = session_cookie_header("sdbs_abc123");
+        assert!(header.starts_with("signaldb_session=sdbs_abc123;"));
+        assert!(header.contains("HttpOnly"));
+        assert!(header.contains("Secure"));
+        assert!(header.contains("SameSite=Strict"));
+        assert!(header.contains("Path=/"));
+        assert!(header.contains("Max-Age=43200"));
     }
 
     #[test]

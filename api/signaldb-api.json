@@ -4318,7 +4318,9 @@
           }
         },
         "security": [
-          {}
+          {
+            "sessionCookie": []
+          }
         ]
       }
     },
@@ -4328,7 +4330,7 @@
           "session"
         ],
         "summary": "GET /ui/session/config",
-        "description": "Unauthenticated probe the login page reads before rendering its\ncredential step. Until OIDC support ships this always answers\npassword-only; the schema does not change when it does.",
+        "description": "Unauthenticated probe the login page reads before rendering its\ncredential step. `oidc` is populated once `[auth.oidc]` is configured\n*and* its provider discovery has succeeded — otherwise `null`, so an\nunreachable issuer degrades to password-only rather than offering a\nbroken SSO button (change: oidc-login). `password_enabled` reflects\n`[auth.oidc].disable_password_login`.",
         "operationId": "login_config",
         "responses": {
           "200": {
@@ -4340,6 +4342,91 @@
                 }
               }
             }
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/ui/session/oidc/callback": {
+      "get": {
+        "tags": [
+          "tenants"
+        ],
+        "summary": "GET /ui/session/oidc/callback",
+        "description": "Reads state/nonce/PKCE-verifier from the pending-login cookie, exchanges\nthe code, validates the ID token, resolves the identity, and issues the\nstandard session on success — redirecting to the `redirect` target the\nstart request carried. Every validation failure — missing/invalid\npending cookie, state mismatch, a bad nonce/signature/expiry, an\nunverified email on the link path, an allowlist refusal, or a disabled\nuser — collapses into the same generic `/login?error=sso_failed`\nredirect with no session created and no disclosure of which check\nfailed; a resolved, enabled identity left with no tenant membership\nafter mapping sync instead redirects to `/login?error=no_membership`,\nkeeping the just-in-time-provisioned user row.",
+        "operationId": "session_oidc_callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "description": "Authorization code returned by the IdP",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "Opaque state value echoed back by the IdP",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "error",
+            "in": "query",
+            "description": "Present when the IdP failed the request before ever issuing a code",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to the carried `redirect` target on success (session cookie set), `/login?error=sso_failed[&redirect=...]` on a generic validation failure, or `/login?error=no_membership&redirect=...` when the user ends up with no tenant membership"
+          },
+          "404": {
+            "description": "OIDC is not configured"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/ui/session/oidc/start": {
+      "get": {
+        "tags": [
+          "tenants"
+        ],
+        "summary": "GET /ui/session/oidc/start",
+        "description": "302s to the IdP's authorization endpoint with a fresh PKCE challenge,\n`state`, and `nonce`, and sets the signed pending-login cookie carrying\nwhat the callback needs to complete the exchange, including the\nvalidated `redirect` return target. 404 when OIDC isn't configured; 503\nnaming the issuer while discovery hasn't (yet) succeeded.",
+        "operationId": "session_oidc_start",
+        "parameters": [
+          {
+            "name": "redirect",
+            "in": "query",
+            "description": "Same-origin path to return to after a successful login; anything else (or absent) falls back to `/logs`",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirect to the IdP's authorization endpoint; sets the signed pending-login cookie"
+          },
+          "404": {
+            "description": "OIDC is not configured"
+          },
+          "503": {
+            "description": "OIDC provider is currently unavailable"
           }
         },
         "security": [
@@ -6396,11 +6483,16 @@
         "required": [
           "user_id",
           "email",
-          "role"
+          "role",
+          "granted_by"
         ],
         "properties": {
           "email": {
             "type": "string"
+          },
+          "granted_by": {
+            "type": "string",
+            "description": "`\"local\"` (granted via this API/CLI/MCP) or `\"oidc_mapping\"` (synced\nfrom an OIDC group claim, change: oidc-login). A local and a mapped\nrow can coexist for the same user, yielding two response rows that\ndiffer only by this field — the UI keys on `user_id` + `granted_by`."
           },
           "role": {
             "$ref": "#/components/schemas/MembershipRole"
@@ -7985,6 +8077,11 @@
       "bearerAuth": {
         "type": "http",
         "scheme": "bearer"
+      },
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "signaldb_session"
       }
     }
   },

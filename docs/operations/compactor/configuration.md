@@ -24,7 +24,7 @@ Complete reference for configuring SignalDB Compactor retention and lifecycle ma
 
 ## Configuration Overview
 
-Compactor lifecycle configuration is located in the `[compactor]` section of `signaldb.toml` or via environment variables with the `SIGNALDB__COMPACTOR__` prefix (double underscores separate nesting levels). This reference covers the `[compactor*]` sections only; unrelated top-level sections that share the same `signaldb.toml` and config struct file — such as `[wal]`, including its instance cap — are documented separately (see [WAL Persistence](../wal-persistence.md#instance-cap)).
+Compactor lifecycle configuration is located in the `[compactor]` section of `signaldb.toml` or via environment variables with the `SIGNALDB__COMPACTOR__` prefix (double underscores separate nesting levels). This reference covers the `[compactor*]` sections only; unrelated top-level sections that share the same `signaldb.toml` and config struct file — authentication (including `[auth.oidc]` SSO, see [Setting up SSO / OIDC login](../oidc-sso.md)), storage, discovery, and `[wal]` (including its instance cap, see [WAL Persistence](../wal-persistence.md#instance-cap)) — are documented separately.
 
 **Configuration Precedence:**
 

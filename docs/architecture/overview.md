@@ -204,9 +204,12 @@ flowchart LR
 | **Capability** | `Routing`                                                                                                                                                 |
 | **APIs**       | Tempo-compatible, Pyroscope-compatible, Loki-compatible, native Query IR (`POST /api/v1/query`), schema registry (`/api/v1/schema/*`), Admin API, OpenAPI |
 
-The router also serves the explore UI (a static SPA built from `src/ui`)
-under `/ui`, from the directory named by `SIGNALDB_UI_DIR`. See
-[the explore UI guide](../users/explore-ui.md).
+The router also serves the explore UI (a static SPA built from `src/ui`) as
+the root SPA fallback (unprefixed routes such as `/runtime-config.js`, behind
+the API routes), from the directory named by `SIGNALDB_UI_DIR`. See
+[the explore UI guide](../users/explore-ui.md). (`/ui/session` and the other
+`/ui/session/*` endpoints below are separate session API paths, not part of
+the UI's own mount.)
 
 For browsers, the router exposes `POST`/`DELETE /ui/session`
 (`src/router/src/endpoints/session.rs`): a public login endpoint that
@@ -224,6 +227,19 @@ middleware, any tenant key) returns the deployment's public ingest and query
 endpoints from `[public]` config with the caller's tenant/dataset filled in,
 so agents and the UI's "Send data" page never guess hosts or ports.
 API-key authentication remains available for machine clients and ingestion.
+
+When `[auth.oidc]` is configured, the router also acts as an OIDC
+**relying party** (`src/router/src/oidc.rs` runtime,
+`src/router/src/endpoints/oidc.rs` handlers): an unauthenticated
+login-configuration probe (`GET /ui/session/config`) tells the UI whether
+to offer SSO, and `GET /ui/session/oidc/{start,callback}` run the
+authorization-code-with-PKCE flow, issuing the same `signaldb_session`
+cookie a password login would. Provider discovery runs in the background,
+so an unreachable issuer never blocks router startup: the endpoints 404
+when OIDC is unconfigured, but 503 when `[auth.oidc]` is configured and
+discovery hasn't (yet) succeeded — the config probe reports no SSO in that
+window too. Operator-facing detail lives in
+[Setting up SSO / OIDC login](../operations/oidc-sso.md).
 
 **Tempo API Endpoints**:
 

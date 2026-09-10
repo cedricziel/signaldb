@@ -51,7 +51,9 @@ what that telemetry contains.
 
 ## Prerequisites
 
-- An API key (or a signed-in session). Reading the registry needs the
+- An API key (or a signed-in session — established with a password or, where
+  the operator configured it, via [SSO](authentication.md#signing-in-with-sso-oidc);
+  either resolves to the same session). Reading the registry needs the
   `schema:read` scope; creating, replacing, validating, or deleting custom
   registries needs `schema:write` (sessions: any tenant role reads, tenant
   admins write). See [Authentication](authentication.md#api-key-scopes) for

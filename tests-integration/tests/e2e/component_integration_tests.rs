@@ -104,6 +104,7 @@ fn test_configuration(temp_dir: &TempDir) -> Configuration {
         }],
         admin_api_key: None,
         internal_service_key: None,
+        oidc: None,
         default_limits: Default::default(),
         storage_usage_refresh_interval: Duration::from_secs(60),
         dataset_restriction_rollout_complete: false,

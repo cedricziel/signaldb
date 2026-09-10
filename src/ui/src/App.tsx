@@ -1,5 +1,5 @@
 import { useEffect, useRef } from "react";
-import { Outlet } from "react-router";
+import { Outlet, useLocation, useNavigate } from "react-router";
 import {
   loadPersistedTenantContext,
   persistTenantContext,
@@ -8,7 +8,9 @@ import {
 import { LoginGate } from "./features/shell/LoginPanel";
 import { ThrottleBanner } from "./features/shell/ThrottleBanner";
 import { TopBar } from "./features/shell/TopBar";
+import { safeRedirectTarget } from "./lib/redirectTarget";
 import { useExploreState } from "./lib/urlState";
+import { useCurrentSession } from "./lib/useWhoami";
 
 /**
  * The persistent shell (top bar + login gate) around whichever route is
@@ -18,6 +20,8 @@ import { useExploreState } from "./lib/urlState";
  */
 export function App() {
   const [state, update] = useExploreState();
+  const navigate = useNavigate();
+  const location = useLocation();
 
   // The tenant/dataset context lives in the URL (`?tenant=&dataset=`), but
   // plain links (user menu → Schema, /manage, deep links inside the schema
@@ -46,6 +50,41 @@ export function App() {
       update(remembered.current);
     }
   }, [state.tenant, update]);
+
+  // Nothing in the URL or remembered locally (a fresh browser, or a bookmark
+  // predating any visit) — the only way left to place the visitor is a
+  // session cookie, e.g. one an SSO callback just set landing on the return
+  // target (not `/login`, so `LoginRoute`'s own resolution never runs). A
+  // sole membership (or an SSO/session response that already names one)
+  // goes straight into the URL; anything else — several memberships, or
+  // none — defers to `/select-tenant`, which owns rendering a picker or the
+  // no-access explanation.
+  const needsTenantResolution = !state.tenant && !remembered.current.tenant;
+  const sessionQuery = useCurrentSession(needsTenantResolution);
+  useEffect(() => {
+    if (!needsTenantResolution || !sessionQuery.isSuccess) return;
+    const session = sessionQuery.data;
+    if (session.tenant) {
+      update({ tenant: session.tenant, dataset: session.dataset ?? "" });
+      return;
+    }
+    if (location.pathname === "/select-tenant") return;
+    const target = safeRedirectTarget(
+      `${location.pathname}${location.search}${location.hash}`,
+    );
+    navigate(`/select-tenant?redirect=${encodeURIComponent(target)}`, {
+      replace: true,
+    });
+  }, [
+    needsTenantResolution,
+    sessionQuery.isSuccess,
+    sessionQuery.data,
+    location.pathname,
+    location.search,
+    location.hash,
+    navigate,
+    update,
+  ]);
 
   return (
     <div className="app-frame">

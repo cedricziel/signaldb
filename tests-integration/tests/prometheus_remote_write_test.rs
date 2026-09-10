@@ -159,6 +159,7 @@ async fn setup_prometheus_test_with_wal() -> (axum::Router, Arc<WalManager>, Tem
     config.auth = common::config::AuthConfig {
         admin_api_key: None,
         internal_service_key: None,
+        oidc: None,
         default_limits: Default::default(),
         storage_usage_refresh_interval: std::time::Duration::from_secs(60),
         tenants: vec![common::config::TenantConfig {

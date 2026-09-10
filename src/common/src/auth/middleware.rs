@@ -596,7 +596,7 @@ mod tests {
         };
         catalog.sync_config_tenants(&auth_config).await.unwrap();
         let user = catalog
-            .create_user("user@example.com", None, "unused", false)
+            .create_user("user@example.com", None, Some("unused"), false)
             .await
             .unwrap();
         catalog
@@ -759,7 +759,7 @@ mod tests {
             .unwrap();
         catalog.create_dataset("acme", "production").await.unwrap();
         let user = catalog
-            .create_user("agent@example.com", None, "phc", false)
+            .create_user("agent@example.com", None, Some("phc"), false)
             .await
             .unwrap();
         catalog

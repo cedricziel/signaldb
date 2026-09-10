@@ -16,7 +16,7 @@ pub use password::{
     PasswordError, SESSION_TOKEN_PREFIX, generate_session_token, hash_password, hash_session_token,
     verify_password,
 };
-pub use session::{SESSION_COOKIE, session_token_from_headers};
+pub use session::{SESSION_COOKIE, session_cookie_header, session_token_from_headers};
 pub use validation::{
     ValidationError, parse_bearer_token, validate_dataset_id, validate_id, validate_scopes,
     validate_tenant_id,

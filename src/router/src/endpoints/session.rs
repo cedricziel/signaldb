@@ -24,8 +24,8 @@ use axum::{
 use chrono::{Duration, Utc};
 use common::auth::{
     INGEST_SCOPES, SESSION_COOKIE, SIGNAL_READ_SCOPES, TenantContext, TenantContextExtractor,
-    generate_session_token, hash_session_token, session_token_from_headers, validate_dataset_id,
-    validate_tenant_id, verify_password,
+    generate_session_token, hash_session_token, session_cookie_header, session_token_from_headers,
+    validate_dataset_id, validate_tenant_id, verify_password,
 };
 use common::catalog::{MembershipRole, UserRecord};
 use serde::{Deserialize, Serialize};
@@ -80,6 +80,24 @@ pub async fn create_session<S: RouterState>(
     State(state): State<S>,
     Json(body): Json<CreateSessionRequest>,
 ) -> Response {
+    // The password door can be switched off entirely when `[auth.oidc]`
+    // configures it (design decision 7, task 3.7): refuse every user with a
+    // reason distinct from "wrong credentials" before touching the catalog.
+    // API-key auth, `admin_api_key`, and the CLI/config bootstrap path don't
+    // go through this endpoint at all, so they're unaffected by construction.
+    if state
+        .config()
+        .auth
+        .oidc
+        .as_ref()
+        .is_some_and(|oidc| oidc.disable_password_login)
+    {
+        return error_response(
+            403,
+            "Password login is disabled for this instance".to_string(),
+        );
+    }
+
     let requested_tenant = match body.tenant.as_deref().map(str::trim) {
         Some("") | None => None,
         Some(t) => match validate_tenant_id(t) {
@@ -104,7 +122,12 @@ pub async fn create_session<S: RouterState>(
         }
     };
     let password = body.password;
-    let password_hash = user.password_hash.clone();
+    // SSO-only users (change: oidc-login) have no password hash to check
+    // against; refuse with the same generic failure as a wrong password,
+    // without invoking the verifier.
+    let Some(password_hash) = user.password_hash.clone() else {
+        return error_response(401, "Invalid email or password".to_string());
+    };
     let password_matches = match tokio::task::spawn_blocking(move || {
         verify_password(&password, &password_hash)
     })
@@ -161,9 +184,7 @@ pub async fn create_session<S: RouterState>(
         }
     };
 
-    let cookie = format!(
-        "{SESSION_COOKIE}={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=43200"
-    );
+    let cookie = session_cookie_header(&token);
 
     let Some(tenant) = tenant else {
         // Multiple memberships and no explicit choice: hand the list to
@@ -274,9 +295,14 @@ async fn list_session_memberships<S: RouterState>(
             .collect());
     }
 
+    // Collapsed to one effective membership per tenant (change: oidc-login,
+    // "session views count a tenant once"): a user with both a `local` and
+    // an `oidc_mapping` row in the same tenant is a sole membership here,
+    // not two. `Catalog::list_members_for_tenant` (the admin management
+    // list) deliberately keeps showing both rows.
     let rows = state
         .catalog()
-        .list_memberships_for_user(&user.id)
+        .list_effective_memberships_for_user(&user.id)
         .await
         .map_err(|error| {
             tracing::error!(user_id = %user.id, error = %error, "Membership lookup failed");
@@ -425,8 +451,11 @@ pub struct LoginConfigResponse {
 /// GET /ui/session/config
 ///
 /// Unauthenticated probe the login page reads before rendering its
-/// credential step. Until OIDC support ships this always answers
-/// password-only; the schema does not change when it does.
+/// credential step. `oidc` is populated once `[auth.oidc]` is configured
+/// *and* its provider discovery has succeeded — otherwise `null`, so an
+/// unreachable issuer degrades to password-only rather than offering a
+/// broken SSO button (change: oidc-login). `password_enabled` reflects
+/// `[auth.oidc].disable_password_login`.
 #[utoipa::path(
     get,
     path = "/ui/session/config",
@@ -437,10 +466,22 @@ pub struct LoginConfigResponse {
         (status = 200, description = "Login credential configuration", body = LoginConfigResponse),
     )
 )]
-pub async fn login_config<S: RouterState>(State(_state): State<S>) -> Response {
+pub async fn login_config<S: RouterState>(State(state): State<S>) -> Response {
+    let oidc = match state.oidc() {
+        Some(runtime) if runtime.provider().await.is_some() => Some(OidcLoginConfig {
+            name: runtime.display_name.clone(),
+        }),
+        _ => None,
+    };
+    let password_enabled = !state
+        .config()
+        .auth
+        .oidc
+        .as_ref()
+        .is_some_and(|oidc| oidc.disable_password_login);
     Json(LoginConfigResponse {
-        password_enabled: true,
-        oidc: None,
+        password_enabled,
+        oidc,
     })
     .into_response()
 }
@@ -484,7 +525,7 @@ pub struct CurrentSessionResponse {
     path = "/ui/session",
     operation_id = "current_session",
     tag = "session",
-    security(()),
+    security(("sessionCookie" = [])),
     description = "Authenticated by the `signaldb_session` HttpOnly cookie only; an API key or `X-Tenant-ID` header does not substitute for it.",
     responses(
         (status = 200, description = "Signed-in user, memberships, and auto-selected tenant/dataset", body = CurrentSessionResponse),
@@ -685,7 +726,14 @@ pub async fn whoami<S: RouterState>(
                     }
                 }
             } else {
-                match state.catalog().list_memberships_for_user(user_id).await {
+                // Collapsed to one effective membership per tenant (change:
+                // oidc-login, "session views count a tenant once") — see
+                // `list_session_memberships`.
+                match state
+                    .catalog()
+                    .list_effective_memberships_for_user(user_id)
+                    .await
+                {
                     Ok(memberships) => memberships
                         .into_iter()
                         .map(|membership| WhoamiMembership {
@@ -1098,7 +1146,9 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
     use common::catalog::{Catalog, MembershipRole};
-    use common::config::{ApiKeyConfig, AuthConfig, Configuration, DatasetConfig, TenantConfig};
+    use common::config::{
+        ApiKeyConfig, AuthConfig, Configuration, DatasetConfig, OidcConfig, TenantConfig,
+    };
     use serde_json::Value;
     use tower::ServiceExt;
 
@@ -1151,7 +1201,12 @@ mod tests {
         catalog.sync_config_tenants(&config.auth).await.unwrap();
         let password_hash = common::auth::hash_password("correct horse battery staple").unwrap();
         let user = catalog
-            .create_user("alice@example.com", Some("Alice"), &password_hash, true)
+            .create_user(
+                "alice@example.com",
+                Some("Alice"),
+                Some(&password_hash),
+                true,
+            )
             .await
             .unwrap();
         catalog
@@ -1160,7 +1215,12 @@ mod tests {
             .unwrap();
         let viewer_hash = common::auth::hash_password("viewer password").unwrap();
         let viewer = catalog
-            .create_user("viewer@example.com", Some("Viewer"), &viewer_hash, false)
+            .create_user(
+                "viewer@example.com",
+                Some("Viewer"),
+                Some(&viewer_hash),
+                false,
+            )
             .await
             .unwrap();
         catalog
@@ -1169,7 +1229,12 @@ mod tests {
             .unwrap();
         let member_hash = common::auth::hash_password("member password").unwrap();
         let member = catalog
-            .create_user("member@example.com", Some("Member"), &member_hash, false)
+            .create_user(
+                "member@example.com",
+                Some("Member"),
+                Some(&member_hash),
+                false,
+            )
             .await
             .unwrap();
         catalog
@@ -1178,7 +1243,18 @@ mod tests {
             .unwrap();
         let orphan_hash = common::auth::hash_password("orphan password").unwrap();
         catalog
-            .create_user("orphan@example.com", Some("Orphan"), &orphan_hash, false)
+            .create_user(
+                "orphan@example.com",
+                Some("Orphan"),
+                Some(&orphan_hash),
+                false,
+            )
+            .await
+            .unwrap();
+        // SSO-only user (change: oidc-login): no password hash to verify
+        // against, exercising the null-password short-circuit.
+        catalog
+            .create_user("sso@example.com", Some("SSO User"), None, false)
             .await
             .unwrap();
         create_router(RouterAppState::new(catalog, config))
@@ -1346,6 +1422,138 @@ mod tests {
         assert_eq!(body["user"]["is_instance_admin"], true);
         assert_eq!(body["memberships"][0]["tenant_id"], "acme");
         assert_eq!(body["memberships"][0]["role"], "admin");
+    }
+
+    /// Change: oidc-login, "session views count a tenant once": a user
+    /// holding a local Viewer row and a mapped Admin row in the *same*
+    /// tenant must be treated as a sole membership (at the higher role) by
+    /// both `POST /ui/session` and `GET /api/v1/whoami` — not as two.
+    #[tokio::test]
+    async fn session_views_collapse_local_and_mapped_membership_in_one_tenant() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant(
+                    "acme",
+                    "acme-key",
+                    &[("default", true)],
+                    Some("default"),
+                )],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let password_hash = common::auth::hash_password("dual password").unwrap();
+        let user = catalog
+            .create_user(
+                "dual@example.com",
+                Some("Dual"),
+                Some(&password_hash),
+                false,
+            )
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        catalog
+            .sync_oidc_memberships(&user.id, &[("acme".to_string(), MembershipRole::Admin)])
+            .await
+            .unwrap();
+
+        let app = create_router(RouterAppState::new(catalog, config));
+        let login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "dual@example.com",
+                "password": "dual password",
+                "tenant": "acme"
+            }),
+        )
+        .await;
+        assert_eq!(login.status(), StatusCode::OK);
+        let cookie = cookie_pair(&login);
+        let login_body = json_body(login).await;
+        let session_memberships = login_body["memberships"].as_array().unwrap();
+        assert_eq!(
+            session_memberships.len(),
+            1,
+            "POST /ui/session must count the tenant once: {session_memberships:?}"
+        );
+        assert_eq!(session_memberships[0]["role"], "admin");
+
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        let whoami_memberships = body["memberships"].as_array().unwrap();
+        assert_eq!(
+            whoami_memberships.len(),
+            1,
+            "whoami must count the tenant once: {whoami_memberships:?}"
+        );
+        assert_eq!(whoami_memberships[0]["role"], "admin");
+    }
+
+    /// A user with memberships in two distinct tenants must still see two —
+    /// the collapse only folds rows *within* one tenant.
+    #[tokio::test]
+    async fn session_views_keep_two_distinct_tenant_memberships_separate() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![
+                    tenant("acme", "acme-key", &[("default", true)], Some("default")),
+                    tenant(
+                        "globex",
+                        "globex-key",
+                        &[("default", true)],
+                        Some("default"),
+                    ),
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let password_hash = common::auth::hash_password("multi password").unwrap();
+        let user = catalog
+            .create_user(
+                "multi@example.com",
+                Some("Multi"),
+                Some(&password_hash),
+                false,
+            )
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "globex", MembershipRole::Member)
+            .await
+            .unwrap();
+
+        let app = create_router(RouterAppState::new(catalog, config));
+        let login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "multi@example.com",
+                "password": "multi password"
+            }),
+        )
+        .await;
+        assert_eq!(login.status(), StatusCode::OK);
+        let login_body = json_body(login).await;
+        assert_eq!(login_body["memberships"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]
@@ -2495,6 +2703,165 @@ mod tests {
         assert_eq!(memberships[0]["role"], "viewer");
     }
 
+    /// An SSO-only user (`password_hash = NULL`, change: oidc-login) must
+    /// never reach `verify_password`: the generic 401 fires on the
+    /// null-password short-circuit alone, with no session cookie set and no
+    /// session row persisted (task 3.4). The handler returns from the
+    /// `let Some(password_hash) = ... else { ... }` guard before
+    /// `verify_password` or `create_user_session` are ever called, so the
+    /// zero-sessions assertion below is the closest structural proxy
+    /// available for "the verifier was never invoked" without a mock seam
+    /// on `common::auth::verify_password`.
+    #[tokio::test]
+    async fn null_password_user_gets_generic_401_and_no_cookie() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant("acme", "acme-key", &[("production", true)], None)],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let sso_user = catalog
+            .create_user("sso@example.com", Some("SSO User"), None, false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&sso_user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        let app = create_router(RouterAppState::new(catalog.clone(), config));
+
+        let res = create_session(
+            &app,
+            serde_json::json!({
+                "email": "sso@example.com",
+                "password": "any password at all",
+                "tenant": "acme"
+            }),
+        )
+        .await;
+
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        assert!(res.headers().get(header::SET_COOKIE).is_none());
+        let body = json_body(res).await;
+        assert_eq!(body["error"], "Invalid email or password");
+        assert_eq!(
+            catalog.count_sessions_for_user(&sso_user.id).await.unwrap(),
+            0,
+            "a refused null-password login must not persist a session row"
+        );
+    }
+
+    fn oidc_with_password_disabled() -> OidcConfig {
+        OidcConfig {
+            issuer_url: "https://idp.example.com".to_string(),
+            client_id: "test-client".to_string(),
+            client_secret: "test-secret".to_string(),
+            disable_password_login: true,
+            ..OidcConfig::default()
+        }
+    }
+
+    /// Task 3.6: with `[auth.oidc].disable_password_login`, every password
+    /// login is refused with a reason distinct from "invalid email or
+    /// password" (a config switch, not a credentials failure), and no
+    /// session row is created even for otherwise-correct credentials.
+    #[tokio::test]
+    async fn password_login_refused_for_every_user_when_disabled_via_oidc_config() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant("acme", "acme-key", &[("production", true)], None)],
+                oidc: Some(oidc_with_password_disabled()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let password_hash = common::auth::hash_password("correct horse battery staple").unwrap();
+        let user = catalog
+            .create_user(
+                "alice@example.com",
+                Some("Alice"),
+                Some(&password_hash),
+                true,
+            )
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Admin)
+            .await
+            .unwrap();
+        let app = create_router(RouterAppState::new(catalog.clone(), config));
+
+        let res = create_session(
+            &app,
+            serde_json::json!({
+                "email": "alice@example.com",
+                "password": "correct horse battery staple",
+                "tenant": "acme"
+            }),
+        )
+        .await;
+
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert!(res.headers().get(header::SET_COOKIE).is_none());
+        let body = json_body(res).await;
+        let message = body["error"].as_str().unwrap();
+        assert!(
+            message
+                .to_lowercase()
+                .contains("password login is disabled"),
+            "expected a named reason distinct from the generic credentials failure, got {message:?}"
+        );
+        assert_ne!(message, "Invalid email or password");
+        assert_eq!(
+            catalog.count_sessions_for_user(&user.id).await.unwrap(),
+            0,
+            "no session should be created while password login is disabled"
+        );
+    }
+
+    /// Companion to the above (task 3.6): disabling password login must not
+    /// touch API-key auth or the `admin_api_key` break-glass path — an IdP
+    /// outage combined with the switch must never lock out operators.
+    #[tokio::test]
+    async fn disabling_password_login_does_not_affect_api_keys_or_admin_api_key() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant("acme", "acme-key", &[("production", true)], None)],
+                oidc: Some(oidc_with_password_disabled()),
+                admin_api_key: Some("admin-secret".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let app = create_router(RouterAppState::new(catalog, config));
+
+        // Tenant-scoped API key still authenticates ordinary query routes.
+        let request = Request::builder()
+            .uri("/tempo/api/echo")
+            .header("authorization", "Bearer acme-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The admin_api_key break-glass path still authenticates too.
+        let request = Request::builder()
+            .uri("/api/v1/admin/tenants")
+            .header("authorization", "Bearer admin-secret")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
     #[tokio::test]
     async fn login_config_reports_password_only() {
         let app = test_app().await;
@@ -2585,7 +2952,7 @@ mod tests {
         catalog.sync_config_tenants(&config.auth).await.unwrap();
         let hash = common::auth::hash_password("multi password").unwrap();
         let user = catalog
-            .create_user("multi@example.com", None, &hash, false)
+            .create_user("multi@example.com", None, Some(&hash), false)
             .await
             .unwrap();
         catalog
@@ -2661,7 +3028,7 @@ mod tests {
         let config = common::config::Configuration::default();
         let orphan_hash = common::auth::hash_password("orphan password").unwrap();
         let user = catalog
-            .create_user("orphan@example.com", None, &orphan_hash, false)
+            .create_user("orphan@example.com", None, Some(&orphan_hash), false)
             .await
             .unwrap();
         // `POST /ui/session` refuses an orphan user with 403, so seed the
@@ -2707,7 +3074,7 @@ mod tests {
         catalog.create_dataset("acme", "staging").await.unwrap();
         let hash = common::auth::hash_password("resolve password").unwrap();
         let user = catalog
-            .create_user("resolve@example.com", None, &hash, false)
+            .create_user("resolve@example.com", None, Some(&hash), false)
             .await
             .unwrap();
         catalog
@@ -2746,7 +3113,7 @@ mod tests {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let hash = common::auth::hash_password("locked password").unwrap();
         let user = catalog
-            .create_user("locked@example.com", None, &hash, false)
+            .create_user("locked@example.com", None, Some(&hash), false)
             .await
             .unwrap();
         let token = common::auth::generate_session_token();
@@ -2778,7 +3145,7 @@ mod tests {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let hash = common::auth::hash_password("expired password").unwrap();
         let user = catalog
-            .create_user("expired@example.com", None, &hash, false)
+            .create_user("expired@example.com", None, Some(&hash), false)
             .await
             .unwrap();
         let token = common::auth::generate_session_token();

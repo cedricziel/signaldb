@@ -564,7 +564,7 @@ mod tests {
         catalog.create_dataset("acme", "production").await.unwrap();
         catalog.create_dataset("acme", "staging").await.unwrap();
         let user = catalog
-            .create_user("agent@example.com", None, "phc", false)
+            .create_user("agent@example.com", None, Some("phc"), false)
             .await
             .unwrap();
         catalog
@@ -586,6 +586,52 @@ mod tests {
             .await
             .unwrap();
         (Authenticator::new(AuthConfig::default(), catalog), raw)
+    }
+
+    /// Task 3.3: when a user holds both a `local` and an `oidc_mapping`
+    /// membership row for the same tenant, `authenticate_session` (via
+    /// `resolve_role` -> `Catalog::get_tenant_membership`) resolves the
+    /// higher-ranked role end to end into the session's `TenantContext`
+    /// (design decision 5's "Local and mapped memberships coexist" scenario).
+    #[tokio::test]
+    async fn session_tenant_context_resolves_the_higher_of_local_and_mapped_roles() {
+        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "production").await.unwrap();
+        let user = catalog
+            .create_user("dual@example.com", None, Some("phc"), false)
+            .await
+            .unwrap();
+        // A local admin has granted `viewer`, and a group mapping separately
+        // grants `admin` for the same tenant: the higher role must win.
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        catalog
+            .sync_oidc_memberships(&user.id, &[("acme".to_string(), MembershipRole::Admin)])
+            .await
+            .unwrap();
+
+        let token = crate::auth::generate_session_token();
+        catalog
+            .create_user_session(
+                &user.id,
+                &hash_session_token(&token),
+                Utc::now() + Duration::hours(1),
+            )
+            .await
+            .unwrap();
+
+        let auth = Authenticator::new(AuthConfig::default(), catalog);
+        let ctx = auth
+            .authenticate_session(&token, "acme", None)
+            .await
+            .expect("session with a resolvable membership authenticates");
+        assert_eq!(ctx.role, Some(MembershipRole::Admin));
     }
 
     #[tokio::test]

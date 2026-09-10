@@ -4,7 +4,7 @@ use crate::flight::transport::ServiceCapability;
 use crate::service_bootstrap::ServiceType;
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use sqlx::{PgPool, Row, SqlitePool, query};
+use sqlx::{PgPool, Row, SqlitePool, query, query_scalar};
 use std::str::FromStr;
 use tracing::Instrument;
 use uuid::Uuid;
@@ -56,6 +56,304 @@ async fn ensure_sqlite_text_column(
 /// canonical form identically on SQLite and PostgreSQL.
 fn canonicalize_email(email: &str) -> String {
     email.trim().to_lowercase()
+}
+
+/// Idempotent `users` migration for OIDC support (change: oidc-login):
+/// adds the nullable `oidc_issuer`/`oidc_subject` columns and a unique index
+/// over the pair, and rebuilds the table if `password_hash` is still
+/// `NOT NULL` (SQLite has no `ALTER COLUMN ... DROP NOT NULL`). Safe to run
+/// on every startup, including a fresh install where the columns already
+/// exist from `CREATE TABLE IF NOT EXISTS`.
+async fn migrate_users_columns_sqlite(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let columns = query("PRAGMA table_info(users)").fetch_all(pool).await?;
+    let column = |name: &str| columns.iter().find(|r| r.get::<String, _>("name") == name);
+
+    if column("oidc_issuer").is_none() {
+        query("ALTER TABLE users ADD COLUMN oidc_issuer TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if column("oidc_subject").is_none() {
+        query("ALTER TABLE users ADD COLUMN oidc_subject TEXT")
+            .execute(pool)
+            .await?;
+    }
+    // Only load-bearing when `rebuild_users_table_sqlite` below does *not*
+    // run: a rebuild drops and recreates `users` entirely, so it recreates
+    // this index itself, inside its own transaction, after the rename.
+    query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc_identity ON users(oidc_issuer, oidc_subject)",
+    )
+    .execute(pool)
+    .await?;
+
+    let password_hash_not_null = column("password_hash")
+        .map(|r| r.get::<i64, _>("notnull") != 0)
+        .unwrap_or(false);
+    if password_hash_not_null {
+        rebuild_users_table_sqlite(pool).await?;
+    }
+    Ok(())
+}
+
+/// Rebuild `users` with a nullable `password_hash`, preserving all rows and
+/// the `oidc_issuer`/`oidc_subject` columns already added by
+/// [`migrate_users_columns_sqlite`].
+///
+/// `users` is a foreign-key parent of sessions, memberships, and OAuth
+/// grants (all `ON DELETE CASCADE`); SQLite performs an implicit cascading
+/// delete on `DROP TABLE` of a referenced parent while foreign keys are
+/// enforced, so enforcement is suspended on this connection only, for the
+/// duration of the rebuild, then restored on every path (success or
+/// failure) so a failed rebuild can never hand back a pooled connection
+/// with foreign-key enforcement silently off.
+async fn rebuild_users_table_sqlite(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let mut conn = pool.acquire().await?;
+    query("PRAGMA foreign_keys = OFF")
+        .execute(&mut *conn)
+        .await?;
+
+    let rebuild: Result<(), sqlx::Error> = async {
+        let mut tx = sqlx::Connection::begin(&mut *conn).await?;
+        query("DROP TABLE IF EXISTS users_new")
+            .execute(&mut *tx)
+            .await?;
+        query(
+            r#"
+            CREATE TABLE users_new (
+                id TEXT PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE,
+                display_name TEXT,
+                password_hash TEXT,
+                oidc_issuer TEXT,
+                oidc_subject TEXT,
+                is_instance_admin INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                disabled_at TEXT
+            )"#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        query(
+            r#"
+            INSERT INTO users_new
+                (id, email, display_name, password_hash, oidc_issuer, oidc_subject,
+                 is_instance_admin, created_at, updated_at, disabled_at)
+            SELECT id, email, display_name, password_hash, oidc_issuer, oidc_subject,
+                   is_instance_admin, created_at, updated_at, disabled_at
+            FROM users
+            "#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        query("DROP TABLE users").execute(&mut *tx).await?;
+        query("ALTER TABLE users_new RENAME TO users")
+            .execute(&mut *tx)
+            .await?;
+        // `DROP TABLE users` above drops any index defined on it, including
+        // `idx_users_oidc_identity` — recreate it here, inside the same
+        // transaction and before commit, so the rebuilt table is never left
+        // without the `(oidc_issuer, oidc_subject)` uniqueness guarantee
+        // `migrate_users_columns_sqlite`'s own `CREATE UNIQUE INDEX` (run
+        // before this rebuild, against the pre-rebuild table) can no longer
+        // provide once the table it indexed is gone.
+        query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc_identity ON users(oidc_issuer, oidc_subject)",
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await
+    }
+    .await;
+
+    match rebuild {
+        Ok(()) => {
+            query("PRAGMA foreign_keys = ON")
+                .execute(&mut *conn)
+                .await?;
+            Ok(())
+        }
+        Err(err) => {
+            // Best-effort restore; if the connection is too broken even for
+            // that, close it outright rather than let a poisoned connection
+            // (foreign keys still off) return to the pool for reuse.
+            if query("PRAGMA foreign_keys = ON")
+                .execute(&mut *conn)
+                .await
+                .is_err()
+            {
+                let _ = conn.close().await;
+            }
+            Err(err)
+        }
+    }
+}
+
+/// Idempotent `users` migration for OIDC support on PostgreSQL: unlike
+/// SQLite, `ADD COLUMN IF NOT EXISTS` and `DROP NOT NULL` are natively
+/// idempotent, so no rebuild or existence check is needed.
+async fn migrate_users_columns_postgres(pool: &PgPool) -> Result<(), sqlx::Error> {
+    query("ALTER TABLE users ADD COLUMN IF NOT EXISTS oidc_issuer TEXT")
+        .execute(pool)
+        .await?;
+    query("ALTER TABLE users ADD COLUMN IF NOT EXISTS oidc_subject TEXT")
+        .execute(pool)
+        .await?;
+    query("ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL")
+        .execute(pool)
+        .await?;
+    query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc_identity ON users (oidc_issuer, oidc_subject)",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Idempotent `tenant_memberships` migration re-keying the table by
+/// `granted_by` (change: oidc-login, design decision 5). SQLite cannot
+/// alter a primary key, so the table is rebuilt inside one transaction;
+/// every pre-existing row becomes `granted_by = 'local'`. Safe to run on
+/// every startup, including after a half-applied rebuild (the whole rebuild
+/// is one transaction, so SQLite's atomicity guarantees there is nothing to
+/// resume — a crash mid-rebuild simply rolls back to the pre-migration
+/// table, and the next startup retries cleanly).
+async fn migrate_tenant_memberships_granted_by_sqlite(
+    pool: &SqlitePool,
+) -> Result<(), sqlx::Error> {
+    let columns = query("PRAGMA table_info(tenant_memberships)")
+        .fetch_all(pool)
+        .await?;
+    let already_migrated = columns
+        .iter()
+        .any(|r| r.get::<String, _>("name") == "granted_by");
+    if already_migrated {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await?;
+    query("DROP TABLE IF EXISTS tenant_memberships_new")
+        .execute(&mut *tx)
+        .await?;
+    query(
+        r#"
+        CREATE TABLE tenant_memberships_new (
+            user_id TEXT NOT NULL,
+            tenant_id TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('admin', 'member', 'viewer')),
+            granted_by TEXT NOT NULL DEFAULT 'local' CHECK(granted_by IN ('local', 'oidc_mapping')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (user_id, tenant_id, granted_by),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+        )"#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    query(
+        r#"
+        INSERT INTO tenant_memberships_new (user_id, tenant_id, role, granted_by, created_at)
+        SELECT user_id, tenant_id, role, 'local', created_at FROM tenant_memberships
+        "#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    query("DROP TABLE tenant_memberships")
+        .execute(&mut *tx)
+        .await?;
+    query("ALTER TABLE tenant_memberships_new RENAME TO tenant_memberships")
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Idempotent `tenant_memberships` re-key migration on PostgreSQL: adds
+/// `granted_by`, swaps the primary key for one that includes it, and adds
+/// the `CHECK(granted_by IN ('local', 'oidc_mapping'))` constraint the
+/// SQLite rebuild and the fresh-install DDL both carry. Guarded by
+/// inspecting the live primary key's columns so re-running it after the
+/// swap (every startup) is a no-op. The whole rebuild is one transaction so
+/// a crash mid-migration can't leave the table with no primary key.
+async fn migrate_tenant_memberships_granted_by_postgres(pool: &PgPool) -> Result<(), sqlx::Error> {
+    let pk_columns = query(
+        r#"
+        SELECT kcu.column_name
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name
+         AND tc.table_schema = kcu.table_schema
+        WHERE tc.table_name = 'tenant_memberships'
+          AND tc.table_schema = current_schema()
+          AND tc.constraint_type = 'PRIMARY KEY'
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    let already_migrated = pk_columns
+        .iter()
+        .any(|r| r.get::<String, _>("column_name") == "granted_by");
+    if already_migrated {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await?;
+
+    query("ALTER TABLE tenant_memberships ADD COLUMN IF NOT EXISTS granted_by TEXT NOT NULL DEFAULT 'local'")
+        .execute(&mut *tx)
+        .await?;
+
+    // The old primary key's constraint name is discovered rather than
+    // assumed (default `<table>_pkey`, but not guaranteed) before dropping
+    // and replacing it with one that includes `granted_by`.
+    let old_pk_name: Option<String> = query(
+        r#"
+        SELECT constraint_name FROM information_schema.table_constraints
+        WHERE table_name = 'tenant_memberships'
+          AND table_schema = current_schema()
+          AND constraint_type = 'PRIMARY KEY'
+        "#,
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .map(|r| r.get::<String, _>("constraint_name"));
+    if let Some(name) = old_pk_name {
+        query(&format!(
+            r#"ALTER TABLE tenant_memberships DROP CONSTRAINT "{name}""#
+        ))
+        .execute(&mut *tx)
+        .await?;
+    }
+    query(
+        "ALTER TABLE tenant_memberships ADD CONSTRAINT tenant_memberships_pkey PRIMARY KEY (user_id, tenant_id, granted_by)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    let check_exists = query(
+        r#"
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE table_name = 'tenant_memberships'
+          AND table_schema = current_schema()
+          AND constraint_type = 'CHECK'
+          AND constraint_name = 'tenant_memberships_granted_by_check'
+        "#,
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .is_some();
+    if !check_exists {
+        query(
+            "ALTER TABLE tenant_memberships ADD CONSTRAINT tenant_memberships_granted_by_check \
+             CHECK (granted_by IN ('local', 'oidc_mapping'))",
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(())
 }
 
 /// Catalog provides an interface to the catalog database (PostgreSQL or SQLite).
@@ -323,31 +621,45 @@ impl Catalog {
                     .execute(pool)
                     .await?;
 
-                // User accounts, tenant memberships, and login sessions
+                // User accounts, tenant memberships, and login sessions.
+                // `password_hash` is nullable (SSO-only users via OIDC have
+                // none) and `oidc_issuer`/`oidc_subject` (nullable, unique
+                // together) carry the linked OIDC identity (change:
+                // oidc-login).
                 let create_users = r#"
                 CREATE TABLE IF NOT EXISTS users (
                     id TEXT PRIMARY KEY,
                     email TEXT NOT NULL UNIQUE,
                     display_name TEXT,
-                    password_hash TEXT NOT NULL,
+                    password_hash TEXT,
+                    oidc_issuer TEXT,
+                    oidc_subject TEXT,
                     is_instance_admin INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                     disabled_at TEXT
                 )"#;
                 query(create_users).execute(pool).await?;
+                migrate_users_columns_sqlite(pool).await?;
 
+                // `granted_by` distinguishes locally-granted memberships from
+                // ones synced from an OIDC group mapping, so the two never
+                // fight each other (change: oidc-login, design decision 5).
+                // The primary key includes it so a local and a mapped row
+                // for the same (user, tenant) coexist as independent rows.
                 let create_tenant_memberships = r#"
                 CREATE TABLE IF NOT EXISTS tenant_memberships (
                     user_id TEXT NOT NULL,
                     tenant_id TEXT NOT NULL,
                     role TEXT NOT NULL CHECK(role IN ('admin', 'member', 'viewer')),
+                    granted_by TEXT NOT NULL DEFAULT 'local' CHECK(granted_by IN ('local', 'oidc_mapping')),
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    PRIMARY KEY (user_id, tenant_id),
+                    PRIMARY KEY (user_id, tenant_id, granted_by),
                     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                     FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
                 )"#;
                 query(create_tenant_memberships).execute(pool).await?;
+                migrate_tenant_memberships_granted_by_sqlite(pool).await?;
 
                 let create_user_sessions = r#"
                 CREATE TABLE IF NOT EXISTS user_sessions (
@@ -694,29 +1006,43 @@ impl Catalog {
                     .execute(pool)
                     .await?;
 
-                // User accounts, tenant memberships, and login sessions
+                // User accounts, tenant memberships, and login sessions.
+                // `password_hash` is nullable (SSO-only users via OIDC have
+                // none) and `oidc_issuer`/`oidc_subject` (nullable, unique
+                // together) carry the linked OIDC identity (change:
+                // oidc-login).
                 let create_users = r#"
                 CREATE TABLE IF NOT EXISTS users (
                     id TEXT PRIMARY KEY,
                     email TEXT NOT NULL UNIQUE,
                     display_name TEXT,
-                    password_hash TEXT NOT NULL,
+                    password_hash TEXT,
+                    oidc_issuer TEXT,
+                    oidc_subject TEXT,
                     is_instance_admin BOOLEAN NOT NULL DEFAULT FALSE,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     disabled_at TIMESTAMPTZ
                 )"#;
                 query(create_users).execute(pool).await?;
+                migrate_users_columns_postgres(pool).await?;
 
+                // `granted_by` distinguishes locally-granted memberships from
+                // ones synced from an OIDC group mapping, so the two never
+                // fight each other (change: oidc-login, design decision 5).
+                // The primary key includes it so a local and a mapped row
+                // for the same (user, tenant) coexist as independent rows.
                 let create_tenant_memberships = r#"
                 CREATE TABLE IF NOT EXISTS tenant_memberships (
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
                     role TEXT NOT NULL CHECK(role IN ('admin', 'member', 'viewer')),
+                    granted_by TEXT NOT NULL DEFAULT 'local' CHECK(granted_by IN ('local', 'oidc_mapping')),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    PRIMARY KEY (user_id, tenant_id)
+                    PRIMARY KEY (user_id, tenant_id, granted_by)
                 )"#;
                 query(create_tenant_memberships).execute(pool).await?;
+                migrate_tenant_memberships_granted_by_postgres(pool).await?;
 
                 let create_user_sessions = r#"
                 CREATE TABLE IF NOT EXISTS user_sessions (
@@ -1722,6 +2048,18 @@ impl MembershipRole {
             MembershipRole::Viewer => "viewer",
         }
     }
+
+    /// Rank used to resolve the effective role when a user holds more than
+    /// one membership row for the same tenant (a `local` row and an
+    /// `oidc_mapping` row, change: oidc-login design decision 5): the
+    /// higher rank wins.
+    fn rank(self) -> u8 {
+        match self {
+            MembershipRole::Viewer => 0,
+            MembershipRole::Member => 1,
+            MembershipRole::Admin => 2,
+        }
+    }
 }
 
 impl std::fmt::Display for MembershipRole {
@@ -1745,13 +2083,67 @@ impl std::str::FromStr for MembershipRole {
     }
 }
 
-/// User account record from database
+/// Source that granted a tenant membership.
+///
+/// Stored as lowercase TEXT in the `tenant_memberships` table, matching the
+/// `CHECK(granted_by IN ('local', 'oidc_mapping'))` constraint. Part of the
+/// primary key (change: oidc-login, design decision 5): a `local` row (an
+/// admin action via the admin API, CLI, or MCP) and an `oidc_mapping` row (a
+/// config-declared OIDC group mapping, synced at login) coexist as
+/// independent rows for the same `(user_id, tenant_id)`, so neither can
+/// clobber the other.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum GrantSource {
+    Local,
+    OidcMapping,
+}
+
+impl GrantSource {
+    /// The lowercase string form stored in the database.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GrantSource::Local => "local",
+            GrantSource::OidcMapping => "oidc_mapping",
+        }
+    }
+}
+
+impl std::fmt::Display for GrantSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for GrantSource {
+    type Err = sqlx::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "local" => Ok(GrantSource::Local),
+            "oidc_mapping" => Ok(GrantSource::OidcMapping),
+            other => Err(sqlx::Error::Decode(
+                format!("invalid membership grant source: {other}").into(),
+            )),
+        }
+    }
+}
+
+/// User account record from database.
+///
+/// `password_hash` is `None` for SSO-only users provisioned or linked via
+/// OIDC; `oidc_issuer`/`oidc_subject` are `Some` once an OIDC identity is
+/// linked (change: oidc-login).
 #[derive(Debug, Clone)]
 pub struct UserRecord {
     pub id: String,
     pub email: String,
     pub display_name: Option<String>,
-    pub password_hash: String,
+    pub password_hash: Option<String>,
+    pub oidc_issuer: Option<String>,
+    pub oidc_subject: Option<String>,
     pub is_instance_admin: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -1764,6 +2156,7 @@ pub struct TenantMembershipRecord {
     pub user_id: String,
     pub tenant_id: String,
     pub role: MembershipRole,
+    pub granted_by: GrantSource,
     pub created_at: DateTime<Utc>,
 }
 
@@ -1829,6 +2222,28 @@ pub struct OAuthTokenRecord {
     pub expires_at: DateTime<Utc>,
 }
 
+/// Column list shared by every `users` SELECT (change: oidc-login added the
+/// `oidc_issuer`/`oidc_subject` columns).
+const USER_COLUMNS: &str = "id, email, display_name, password_hash, oidc_issuer, oidc_subject, is_instance_admin, created_at, updated_at, disabled_at";
+
+/// Column list shared by every `tenant_memberships` SELECT (change:
+/// oidc-login added `granted_by`).
+const MEMBERSHIP_COLUMNS: &str = "user_id, tenant_id, role, granted_by, created_at";
+
+/// Resolve the effective membership from every row a user holds for one
+/// tenant (at most one `local` row and one `oidc_mapping` row): the row
+/// with the higher-ranked role wins, and its `granted_by` is reported as
+/// the effective source (change: oidc-login design decision 5).
+///
+/// On a role tie, `Local` wins deterministically: the key includes it as a
+/// secondary component rather than relying on `max_by_key`'s "last element
+/// wins" tie-break, which would make the reported source depend on
+/// unordered row-fetch order.
+fn effective_membership(rows: Vec<TenantMembershipRecord>) -> Option<TenantMembershipRecord> {
+    rows.into_iter()
+        .max_by_key(|m| (m.role.rank(), m.granted_by == GrantSource::Local))
+}
+
 /// Map a SQLite row (RFC3339 text timestamps) to a `UserRecord`.
 fn user_from_sqlite_row(r: &sqlx::sqlite::SqliteRow) -> Result<UserRecord, sqlx::Error> {
     let disabled_at: Option<String> = r.get("disabled_at");
@@ -1837,6 +2252,8 @@ fn user_from_sqlite_row(r: &sqlx::sqlite::SqliteRow) -> Result<UserRecord, sqlx:
         email: r.get("email"),
         display_name: r.get("display_name"),
         password_hash: r.get("password_hash"),
+        oidc_issuer: r.get("oidc_issuer"),
+        oidc_subject: r.get("oidc_subject"),
         is_instance_admin: r.get("is_instance_admin"),
         created_at: parse_rfc3339(r.get("created_at"))?,
         updated_at: parse_rfc3339(r.get("updated_at"))?,
@@ -1851,6 +2268,8 @@ fn user_from_pg_row(r: &sqlx::postgres::PgRow) -> UserRecord {
         email: r.get("email"),
         display_name: r.get("display_name"),
         password_hash: r.get("password_hash"),
+        oidc_issuer: r.get("oidc_issuer"),
+        oidc_subject: r.get("oidc_subject"),
         is_instance_admin: r.get("is_instance_admin"),
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
@@ -1863,10 +2282,12 @@ fn membership_from_sqlite_row(
     r: &sqlx::sqlite::SqliteRow,
 ) -> Result<TenantMembershipRecord, sqlx::Error> {
     let role: String = r.get("role");
+    let granted_by: String = r.get("granted_by");
     Ok(TenantMembershipRecord {
         user_id: r.get("user_id"),
         tenant_id: r.get("tenant_id"),
         role: role.parse()?,
+        granted_by: granted_by.parse()?,
         created_at: parse_rfc3339(r.get("created_at"))?,
     })
 }
@@ -1876,10 +2297,12 @@ fn membership_from_pg_row(
     r: &sqlx::postgres::PgRow,
 ) -> Result<TenantMembershipRecord, sqlx::Error> {
     let role: String = r.get("role");
+    let granted_by: String = r.get("granted_by");
     Ok(TenantMembershipRecord {
         user_id: r.get("user_id"),
         tenant_id: r.get("tenant_id"),
         role: role.parse()?,
+        granted_by: granted_by.parse()?,
         created_at: r.get("created_at"),
     })
 }
@@ -3262,15 +3685,16 @@ impl Catalog {
 impl Catalog {
     /// Create a new user account with a random UUID id.
     ///
-    /// `password_hash` is the already-hashed PHC string; hashing is the
-    /// caller's responsibility. The email is canonicalized (trimmed and
+    /// `password_hash` is the already-hashed PHC string, or `None` for an
+    /// SSO-only user provisioned via OIDC (change: oidc-login); hashing is
+    /// the caller's responsibility. The email is canonicalized (trimmed and
     /// lowercased) before storage so the UNIQUE constraint applies to the
     /// canonical form on both backends. Fails if the email is already taken.
     pub async fn create_user(
         &self,
         email: &str,
         display_name: Option<&str>,
-        password_hash: &str,
+        password_hash: Option<&str>,
         is_instance_admin: bool,
     ) -> Result<UserRecord, sqlx::Error> {
         let user_id = Uuid::new_v4().to_string();
@@ -3317,7 +3741,9 @@ impl Catalog {
             id: user_id,
             email,
             display_name: display_name.map(str::to_string),
-            password_hash: password_hash.to_string(),
+            password_hash: password_hash.map(str::to_string),
+            oidc_issuer: None,
+            oidc_subject: None,
             is_instance_admin,
             created_at: now,
             updated_at: now,
@@ -3325,19 +3751,156 @@ impl Catalog {
         })
     }
 
-    /// Get a user by ID
-    pub async fn get_user(&self, user_id: &str) -> Result<Option<UserRecord>, sqlx::Error> {
-        let columns = "id, email, display_name, password_hash, is_instance_admin, created_at, updated_at, disabled_at";
+    /// Just-in-time provision a user carrying an OIDC identity (change:
+    /// oidc-login), for the "no existing match" branch of the
+    /// identity-resolution order (design decision 3). Always created with no
+    /// password (`password_hash = NULL`) and never as an instance admin —
+    /// mapping the instance-admin flag from a token claim is out of scope.
+    /// Fails (unique-index violation) if `(oidc_issuer, oidc_subject)` is
+    /// already linked to another user, or if the email is already taken.
+    ///
+    /// Runs the user INSERT and the identity-link UPDATE in one transaction
+    /// so a `(oidc_issuer, oidc_subject)` unique-index violation on the
+    /// second statement rolls back the first: without this, a duplicate
+    /// identity would leave an orphaned, passwordless user row that
+    /// permanently claims `email`.
+    pub async fn create_oidc_user(
+        &self,
+        email: &str,
+        display_name: Option<&str>,
+        oidc_issuer: &str,
+        oidc_subject: &str,
+    ) -> Result<UserRecord, sqlx::Error> {
+        let user_id = Uuid::new_v4().to_string();
+        let email = canonicalize_email(email);
+        let now = Utc::now();
+
         match self {
             Catalog::Sqlite(pool) => {
-                let row = query(&format!("SELECT {columns} FROM users WHERE id = ?"))
+                let now_str = now.to_rfc3339();
+                let mut tx = pool.begin().await?;
+                query(
+                    r#"
+                    INSERT INTO users (id, email, display_name, password_hash, is_instance_admin, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    "#,
+                )
+                .bind(&user_id)
+                .bind(&email)
+                .bind(display_name)
+                .bind(None::<&str>)
+                .bind(false)
+                .bind(&now_str)
+                .bind(&now_str)
+                .execute(&mut *tx)
+                .await?;
+                query(
+                    "UPDATE users SET oidc_issuer = ?, oidc_subject = ?, updated_at = ? WHERE id = ?",
+                )
+                .bind(oidc_issuer)
+                .bind(oidc_subject)
+                .bind(&now_str)
+                .bind(&user_id)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+            }
+            Catalog::Postgres(pool) => {
+                let mut tx = pool.begin().await?;
+                query(
+                    r#"
+                    INSERT INTO users (id, email, display_name, password_hash, is_instance_admin, created_at, updated_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    "#,
+                )
+                .bind(&user_id)
+                .bind(&email)
+                .bind(display_name)
+                .bind(None::<&str>)
+                .bind(false)
+                .bind(now)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
+                query(
+                    "UPDATE users SET oidc_issuer = $1, oidc_subject = $2, updated_at = $3 WHERE id = $4",
+                )
+                .bind(oidc_issuer)
+                .bind(oidc_subject)
+                .bind(now)
+                .bind(&user_id)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+            }
+        }
+
+        Ok(UserRecord {
+            id: user_id,
+            email,
+            display_name: display_name.map(str::to_string),
+            password_hash: None,
+            oidc_issuer: Some(oidc_issuer.to_string()),
+            oidc_subject: Some(oidc_subject.to_string()),
+            is_instance_admin: false,
+            created_at: now,
+            updated_at: now,
+            disabled_at: None,
+        })
+    }
+
+    /// Attach an OIDC identity to an existing user (change: oidc-login), for
+    /// the "verified email link" branch of the identity-resolution order
+    /// (design decision 3): the caller has already checked
+    /// `email_verified: true` and matched an existing user by email. Fails
+    /// (unique-index violation) if `(oidc_issuer, oidc_subject)` is already
+    /// linked to a different user.
+    pub async fn link_oidc_identity(
+        &self,
+        user_id: &str,
+        oidc_issuer: &str,
+        oidc_subject: &str,
+    ) -> Result<(), sqlx::Error> {
+        let now = Utc::now();
+        match self {
+            Catalog::Sqlite(pool) => {
+                query(
+                    "UPDATE users SET oidc_issuer = ?, oidc_subject = ?, updated_at = ? WHERE id = ?",
+                )
+                .bind(oidc_issuer)
+                .bind(oidc_subject)
+                .bind(now.to_rfc3339())
+                .bind(user_id)
+                .execute(pool)
+                .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query(
+                    "UPDATE users SET oidc_issuer = $1, oidc_subject = $2, updated_at = $3 WHERE id = $4",
+                )
+                .bind(oidc_issuer)
+                .bind(oidc_subject)
+                .bind(now)
+                .bind(user_id)
+                .execute(pool)
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Get a user by ID
+    pub async fn get_user(&self, user_id: &str) -> Result<Option<UserRecord>, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let row = query(&format!("SELECT {USER_COLUMNS} FROM users WHERE id = ?"))
                     .bind(user_id)
                     .fetch_optional(pool)
                     .await?;
                 row.map(|r| user_from_sqlite_row(&r)).transpose()
             }
             Catalog::Postgres(pool) => {
-                let row = query(&format!("SELECT {columns} FROM users WHERE id = $1"))
+                let row = query(&format!("SELECT {USER_COLUMNS} FROM users WHERE id = $1"))
                     .bind(user_id)
                     .fetch_optional(pool)
                     .await?;
@@ -3352,20 +3915,55 @@ impl Catalog {
     /// the form stored by [`Catalog::create_user`].
     pub async fn get_user_by_email(&self, email: &str) -> Result<Option<UserRecord>, sqlx::Error> {
         let email = canonicalize_email(email);
-        let columns = "id, email, display_name, password_hash, is_instance_admin, created_at, updated_at, disabled_at";
         match self {
             Catalog::Sqlite(pool) => {
-                let row = query(&format!("SELECT {columns} FROM users WHERE email = ?"))
+                let row = query(&format!("SELECT {USER_COLUMNS} FROM users WHERE email = ?"))
                     .bind(&email)
                     .fetch_optional(pool)
                     .await?;
                 row.map(|r| user_from_sqlite_row(&r)).transpose()
             }
             Catalog::Postgres(pool) => {
-                let row = query(&format!("SELECT {columns} FROM users WHERE email = $1"))
-                    .bind(&email)
-                    .fetch_optional(pool)
-                    .await?;
+                let row = query(&format!(
+                    "SELECT {USER_COLUMNS} FROM users WHERE email = $1"
+                ))
+                .bind(&email)
+                .fetch_optional(pool)
+                .await?;
+                Ok(row.map(|r| user_from_pg_row(&r)))
+            }
+        }
+    }
+
+    /// Get a user by their linked OIDC identity (change: oidc-login).
+    ///
+    /// `(issuer, subject)` is the first step of the identity-resolution
+    /// order (design decision 3): a hit here always wins over an
+    /// email-based link.
+    pub async fn find_user_by_oidc_identity(
+        &self,
+        issuer: &str,
+        subject: &str,
+    ) -> Result<Option<UserRecord>, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let row = query(&format!(
+                    "SELECT {USER_COLUMNS} FROM users WHERE oidc_issuer = ? AND oidc_subject = ?"
+                ))
+                .bind(issuer)
+                .bind(subject)
+                .fetch_optional(pool)
+                .await?;
+                row.map(|r| user_from_sqlite_row(&r)).transpose()
+            }
+            Catalog::Postgres(pool) => {
+                let row = query(&format!(
+                    "SELECT {USER_COLUMNS} FROM users WHERE oidc_issuer = $1 AND oidc_subject = $2"
+                ))
+                .bind(issuer)
+                .bind(subject)
+                .fetch_optional(pool)
+                .await?;
                 Ok(row.map(|r| user_from_pg_row(&r)))
             }
         }
@@ -3373,16 +3971,15 @@ impl Catalog {
 
     /// List all users, ordered by email
     pub async fn list_users(&self) -> Result<Vec<UserRecord>, sqlx::Error> {
-        let columns = "id, email, display_name, password_hash, is_instance_admin, created_at, updated_at, disabled_at";
         match self {
             Catalog::Sqlite(pool) => {
-                let rows = query(&format!("SELECT {columns} FROM users ORDER BY email"))
+                let rows = query(&format!("SELECT {USER_COLUMNS} FROM users ORDER BY email"))
                     .fetch_all(pool)
                     .await?;
                 rows.iter().map(user_from_sqlite_row).collect()
             }
             Catalog::Postgres(pool) => {
-                let rows = query(&format!("SELECT {columns} FROM users ORDER BY email"))
+                let rows = query(&format!("SELECT {USER_COLUMNS} FROM users ORDER BY email"))
                     .fetch_all(pool)
                     .await?;
                 Ok(rows.iter().map(user_from_pg_row).collect())
@@ -3429,7 +4026,12 @@ impl Catalog {
         Ok(())
     }
 
-    /// Add a user to a tenant, or update their role if already a member
+    /// Add a user to a tenant, or update their role if already a member.
+    ///
+    /// Pinned to `granted_by = 'local'` (change: oidc-login design
+    /// decision 5): this is the admin API/CLI/MCP path, and it must never
+    /// create or overwrite a mapping-managed row. A mapped row for the same
+    /// `(user_id, tenant_id)` is untouched and coexists independently.
     pub async fn upsert_tenant_membership(
         &self,
         user_id: &str,
@@ -3440,28 +4042,30 @@ impl Catalog {
             Catalog::Sqlite(pool) => {
                 let now = Utc::now().to_rfc3339();
                 let stmt = r#"
-                INSERT INTO tenant_memberships (user_id, tenant_id, role, created_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT (user_id, tenant_id) DO UPDATE SET role = excluded.role
+                INSERT INTO tenant_memberships (user_id, tenant_id, role, granted_by, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (user_id, tenant_id, granted_by) DO UPDATE SET role = excluded.role
                 "#;
                 query(stmt)
                     .bind(user_id)
                     .bind(tenant_id)
                     .bind(role.as_str())
+                    .bind(GrantSource::Local.as_str())
                     .bind(&now)
                     .execute(pool)
                     .await?;
             }
             Catalog::Postgres(pool) => {
                 let stmt = r#"
-                INSERT INTO tenant_memberships (user_id, tenant_id, role)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (user_id, tenant_id) DO UPDATE SET role = EXCLUDED.role
+                INSERT INTO tenant_memberships (user_id, tenant_id, role, granted_by)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (user_id, tenant_id, granted_by) DO UPDATE SET role = EXCLUDED.role
                 "#;
                 query(stmt)
                     .bind(user_id)
                     .bind(tenant_id)
                     .bind(role.as_str())
+                    .bind(GrantSource::Local.as_str())
                     .execute(pool)
                     .await?;
             }
@@ -3469,7 +4073,12 @@ impl Catalog {
         Ok(())
     }
 
-    /// Remove a user from a tenant (idempotent)
+    /// Remove a user's locally-granted membership from a tenant (idempotent).
+    ///
+    /// Pinned to `granted_by = 'local'` (change: oidc-login design
+    /// decision 5): a mapping-managed row for the same `(user_id,
+    /// tenant_id)` is never deleted by this path — only
+    /// [`Catalog::sync_oidc_memberships`] touches `oidc_mapping` rows.
     pub async fn remove_tenant_membership(
         &self,
         user_id: &str,
@@ -3477,72 +4086,178 @@ impl Catalog {
     ) -> Result<(), sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
-                query("DELETE FROM tenant_memberships WHERE user_id = ? AND tenant_id = ?")
-                    .bind(user_id)
-                    .bind(tenant_id)
-                    .execute(pool)
-                    .await?;
+                query(
+                    "DELETE FROM tenant_memberships WHERE user_id = ? AND tenant_id = ? AND granted_by = ?",
+                )
+                .bind(user_id)
+                .bind(tenant_id)
+                .bind(GrantSource::Local.as_str())
+                .execute(pool)
+                .await?;
             }
             Catalog::Postgres(pool) => {
-                query("DELETE FROM tenant_memberships WHERE user_id = $1 AND tenant_id = $2")
-                    .bind(user_id)
-                    .bind(tenant_id)
-                    .execute(pool)
-                    .await?;
+                query(
+                    "DELETE FROM tenant_memberships WHERE user_id = $1 AND tenant_id = $2 AND granted_by = $3",
+                )
+                .bind(user_id)
+                .bind(tenant_id)
+                .bind(GrantSource::Local.as_str())
+                .execute(pool)
+                .await?;
             }
         }
         Ok(())
     }
 
-    /// Get a single membership for a (user, tenant) pair
+    /// Sync OIDC-group-mapped memberships for a user at login (change:
+    /// oidc-login design decisions 5 & 6).
+    ///
+    /// In one transaction, replaces every `granted_by = 'oidc_mapping'` row
+    /// for this user with exactly `desired`: mappings the token's groups no
+    /// longer produce are removed, and the rest are (re)written at their
+    /// mapped role. `granted_by = 'local'` rows are never read or written,
+    /// so admin-granted memberships coexist untouched.
+    ///
+    /// `desired` may name the same `tenant_id` more than once — e.g. two
+    /// `group_mappings` rules both target `acme` and the user's token
+    /// carries both groups. That's collapsed to a single row per tenant at
+    /// the highest-ranked role before writing, so callers don't need to
+    /// de-duplicate and a duplicate never trips the `(user_id, tenant_id,
+    /// granted_by)` primary key.
+    pub async fn sync_oidc_memberships(
+        &self,
+        user_id: &str,
+        desired: &[(String, MembershipRole)],
+    ) -> Result<(), sqlx::Error> {
+        let mut by_tenant: std::collections::HashMap<&str, MembershipRole> =
+            std::collections::HashMap::new();
+        for (tenant_id, role) in desired {
+            by_tenant
+                .entry(tenant_id.as_str())
+                .and_modify(|existing| {
+                    if role.rank() > existing.rank() {
+                        *existing = *role;
+                    }
+                })
+                .or_insert(*role);
+        }
+        let desired: Vec<(String, MembershipRole)> = by_tenant
+            .into_iter()
+            .map(|(tenant_id, role)| (tenant_id.to_string(), role))
+            .collect();
+        let desired = desired.as_slice();
+        match self {
+            Catalog::Sqlite(pool) => {
+                let mut tx = pool.begin().await?;
+                query("DELETE FROM tenant_memberships WHERE user_id = ? AND granted_by = ?")
+                    .bind(user_id)
+                    .bind(GrantSource::OidcMapping.as_str())
+                    .execute(&mut *tx)
+                    .await?;
+                // One timestamp for the whole sync (loop-invariant), matching
+                // the Postgres branch where every row shares the transaction's
+                // `NOW()` default.
+                let now = Utc::now().to_rfc3339();
+                for (tenant_id, role) in desired {
+                    query(
+                        "INSERT INTO tenant_memberships (user_id, tenant_id, role, granted_by, created_at) \
+                         VALUES (?, ?, ?, ?, ?)",
+                    )
+                    .bind(user_id)
+                    .bind(tenant_id)
+                    .bind(role.as_str())
+                    .bind(GrantSource::OidcMapping.as_str())
+                    .bind(&now)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                tx.commit().await?;
+            }
+            Catalog::Postgres(pool) => {
+                let mut tx = pool.begin().await?;
+                query("DELETE FROM tenant_memberships WHERE user_id = $1 AND granted_by = $2")
+                    .bind(user_id)
+                    .bind(GrantSource::OidcMapping.as_str())
+                    .execute(&mut *tx)
+                    .await?;
+                for (tenant_id, role) in desired {
+                    query(
+                        "INSERT INTO tenant_memberships (user_id, tenant_id, role, granted_by) \
+                         VALUES ($1, $2, $3, $4)",
+                    )
+                    .bind(user_id)
+                    .bind(tenant_id)
+                    .bind(role.as_str())
+                    .bind(GrantSource::OidcMapping.as_str())
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                tx.commit().await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Get a user's effective membership for a tenant.
+    ///
+    /// A user may hold both a `local` and an `oidc_mapping` row for the
+    /// same tenant (change: oidc-login design decision 5); this returns the
+    /// one with the higher-ranked role (`admin` > `member` > `viewer`),
+    /// with `granted_by` naming the source that supplied it.
     pub async fn get_tenant_membership(
         &self,
         user_id: &str,
         tenant_id: &str,
     ) -> Result<Option<TenantMembershipRecord>, sqlx::Error> {
-        match self {
+        let rows = match self {
             Catalog::Sqlite(pool) => {
-                let row = query(
-                    "SELECT user_id, tenant_id, role, created_at FROM tenant_memberships WHERE user_id = ? AND tenant_id = ?",
-                )
+                query(&format!(
+                    "SELECT {MEMBERSHIP_COLUMNS} FROM tenant_memberships WHERE user_id = ? AND tenant_id = ?"
+                ))
                 .bind(user_id)
                 .bind(tenant_id)
-                .fetch_optional(pool)
-                .await?;
-                row.map(|r| membership_from_sqlite_row(&r)).transpose()
+                .fetch_all(pool)
+                .await?
+                .iter()
+                .map(membership_from_sqlite_row)
+                .collect::<Result<Vec<_>, _>>()?
             }
             Catalog::Postgres(pool) => {
-                let row = query(
-                    "SELECT user_id, tenant_id, role, created_at FROM tenant_memberships WHERE user_id = $1 AND tenant_id = $2",
-                )
+                query(&format!(
+                    "SELECT {MEMBERSHIP_COLUMNS} FROM tenant_memberships WHERE user_id = $1 AND tenant_id = $2"
+                ))
                 .bind(user_id)
                 .bind(tenant_id)
-                .fetch_optional(pool)
-                .await?;
-                row.map(|r| membership_from_pg_row(&r)).transpose()
+                .fetch_all(pool)
+                .await?
+                .iter()
+                .map(membership_from_pg_row)
+                .collect::<Result<Vec<_>, _>>()?
             }
-        }
+        };
+        Ok(effective_membership(rows))
     }
 
-    /// List all tenant memberships for a user
+    /// List every tenant-membership row for a user, including both `local`
+    /// and `oidc_mapping` rows for the same tenant when both exist.
     pub async fn list_memberships_for_user(
         &self,
         user_id: &str,
     ) -> Result<Vec<TenantMembershipRecord>, sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
-                let rows = query(
-                    "SELECT user_id, tenant_id, role, created_at FROM tenant_memberships WHERE user_id = ? ORDER BY tenant_id",
-                )
+                let rows = query(&format!(
+                    "SELECT {MEMBERSHIP_COLUMNS} FROM tenant_memberships WHERE user_id = ? ORDER BY tenant_id"
+                ))
                 .bind(user_id)
                 .fetch_all(pool)
                 .await?;
                 rows.iter().map(membership_from_sqlite_row).collect()
             }
             Catalog::Postgres(pool) => {
-                let rows = query(
-                    "SELECT user_id, tenant_id, role, created_at FROM tenant_memberships WHERE user_id = $1 ORDER BY tenant_id",
-                )
+                let rows = query(&format!(
+                    "SELECT {MEMBERSHIP_COLUMNS} FROM tenant_memberships WHERE user_id = $1 ORDER BY tenant_id"
+                ))
                 .bind(user_id)
                 .fetch_all(pool)
                 .await?;
@@ -3551,25 +4266,57 @@ impl Catalog {
         }
     }
 
-    /// List all user memberships for a tenant
+    /// List a user's memberships folded to one effective row per tenant
+    /// (change: oidc-login, "session views count a tenant once"): a user
+    /// holding both a `local` and an `oidc_mapping` row in the same tenant
+    /// is reported once here, at the higher-ranked role via
+    /// [`effective_membership`] — the same resolution
+    /// [`Catalog::get_tenant_membership`] applies to a single tenant,
+    /// applied across every tenant the user belongs to.
+    ///
+    /// For session-facing surfaces only (`GET /ui/session`,
+    /// `POST /ui/session`, `GET /api/v1/whoami`): the admin management list
+    /// (`list_members_for_tenant`) deliberately keeps showing both rows, so
+    /// an admin can tell a local grant from a mapped one.
+    pub async fn list_effective_memberships_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<TenantMembershipRecord>, sqlx::Error> {
+        let rows = self.list_memberships_for_user(user_id).await?;
+        let mut by_tenant: std::collections::BTreeMap<String, Vec<TenantMembershipRecord>> =
+            std::collections::BTreeMap::new();
+        for row in rows {
+            by_tenant
+                .entry(row.tenant_id.clone())
+                .or_default()
+                .push(row);
+        }
+        Ok(by_tenant
+            .into_values()
+            .filter_map(effective_membership)
+            .collect())
+    }
+
+    /// List every tenant-membership row for a tenant, including both
+    /// `local` and `oidc_mapping` rows for the same user when both exist.
     pub async fn list_members_for_tenant(
         &self,
         tenant_id: &str,
     ) -> Result<Vec<TenantMembershipRecord>, sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
-                let rows = query(
-                    "SELECT user_id, tenant_id, role, created_at FROM tenant_memberships WHERE tenant_id = ? ORDER BY user_id",
-                )
+                let rows = query(&format!(
+                    "SELECT {MEMBERSHIP_COLUMNS} FROM tenant_memberships WHERE tenant_id = ? ORDER BY user_id"
+                ))
                 .bind(tenant_id)
                 .fetch_all(pool)
                 .await?;
                 rows.iter().map(membership_from_sqlite_row).collect()
             }
             Catalog::Postgres(pool) => {
-                let rows = query(
-                    "SELECT user_id, tenant_id, role, created_at FROM tenant_memberships WHERE tenant_id = $1 ORDER BY user_id",
-                )
+                let rows = query(&format!(
+                    "SELECT {MEMBERSHIP_COLUMNS} FROM tenant_memberships WHERE tenant_id = $1 ORDER BY user_id"
+                ))
                 .bind(tenant_id)
                 .fetch_all(pool)
                 .await?;
@@ -3630,6 +4377,27 @@ impl Catalog {
             expires_at,
             revoked_at: None,
         })
+    }
+
+    /// Count every session row (revoked or not, expired or not) belonging to
+    /// a user. Used to assert that a refused login created nothing (change:
+    /// oidc-login task 3.4) rather than just that no cookie was returned.
+    pub async fn count_sessions_for_user(&self, user_id: &str) -> Result<i64, sqlx::Error> {
+        let count: i64 = match self {
+            Catalog::Sqlite(pool) => {
+                query_scalar("SELECT COUNT(*) FROM user_sessions WHERE user_id = ?")
+                    .bind(user_id)
+                    .fetch_one(pool)
+                    .await?
+            }
+            Catalog::Postgres(pool) => {
+                query_scalar("SELECT COUNT(*) FROM user_sessions WHERE user_id = $1")
+                    .bind(user_id)
+                    .fetch_one(pool)
+                    .await?
+            }
+        };
+        Ok(count)
     }
 
     /// Look up a session by token hash, returning it only if it is neither
@@ -6083,12 +6851,12 @@ mod user_membership_tests {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
 
         let created = catalog
-            .create_user("alice@example.com", Some("Alice"), "phc-hash-1", true)
+            .create_user("alice@example.com", Some("Alice"), Some("phc-hash-1"), true)
             .await
             .unwrap();
         assert_eq!(created.email, "alice@example.com");
         assert_eq!(created.display_name, Some("Alice".to_string()));
-        assert_eq!(created.password_hash, "phc-hash-1");
+        assert_eq!(created.password_hash.as_deref(), Some("phc-hash-1"));
         assert!(created.is_instance_admin);
         assert!(created.disabled_at.is_none());
 
@@ -6124,11 +6892,11 @@ mod user_membership_tests {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
 
         catalog
-            .create_user("dup@example.com", None, "hash-a", false)
+            .create_user("dup@example.com", None, Some("hash-a"), false)
             .await
             .unwrap();
         let result = catalog
-            .create_user("dup@example.com", None, "hash-b", false)
+            .create_user("dup@example.com", None, Some("hash-b"), false)
             .await;
         assert!(result.is_err());
     }
@@ -6138,7 +6906,7 @@ mod user_membership_tests {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
 
         let created = catalog
-            .create_user("Alice@Example.com", None, "hash-a", false)
+            .create_user("Alice@Example.com", None, Some("hash-a"), false)
             .await
             .unwrap();
         // Stored in canonical (lowercase) form
@@ -6146,7 +6914,7 @@ mod user_membership_tests {
 
         // Same address in different case hits the UNIQUE constraint
         let duplicate = catalog
-            .create_user("alice@example.com", None, "hash-b", false)
+            .create_user("alice@example.com", None, Some("hash-b"), false)
             .await;
         assert!(duplicate.is_err());
 
@@ -6164,11 +6932,11 @@ mod user_membership_tests {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
 
         catalog
-            .create_user("b@example.com", None, "hash-b", false)
+            .create_user("b@example.com", None, Some("hash-b"), false)
             .await
             .unwrap();
         catalog
-            .create_user("a@example.com", None, "hash-a", false)
+            .create_user("a@example.com", None, Some("hash-a"), false)
             .await
             .unwrap();
 
@@ -6184,7 +6952,7 @@ mod user_membership_tests {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
 
         let user = catalog
-            .create_user("flip@example.com", None, "hash", false)
+            .create_user("flip@example.com", None, Some("hash"), false)
             .await
             .unwrap();
 
@@ -6216,7 +6984,7 @@ mod user_membership_tests {
             .await
             .unwrap();
         let user = catalog
-            .create_user("member@example.com", None, "hash", false)
+            .create_user("member@example.com", None, Some("hash"), false)
             .await
             .unwrap();
         user.id
@@ -6284,7 +7052,7 @@ mod user_membership_tests {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let user_id = setup_user_and_tenants(&catalog).await;
         let other = catalog
-            .create_user("other@example.com", None, "hash2", false)
+            .create_user("other@example.com", None, Some("hash2"), false)
             .await
             .unwrap();
 
@@ -6324,7 +7092,7 @@ mod user_membership_tests {
     async fn membership_insert_fails_for_nonexistent_tenant() {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let user = catalog
-            .create_user("orphan@example.com", None, "hash", false)
+            .create_user("orphan@example.com", None, Some("hash"), false)
             .await
             .unwrap();
 
@@ -6337,10 +7105,804 @@ mod user_membership_tests {
     }
 
     #[tokio::test]
+    async fn create_user_without_password_hash_has_none() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        let created = catalog
+            .create_user("sso@example.com", Some("SSO User"), None, false)
+            .await
+            .unwrap();
+        assert!(created.password_hash.is_none());
+        assert!(created.oidc_issuer.is_none());
+        assert!(created.oidc_subject.is_none());
+
+        let fetched = catalog.get_user(&created.id).await.unwrap().unwrap();
+        assert!(fetched.password_hash.is_none());
+    }
+
+    #[tokio::test]
+    async fn find_user_by_oidc_identity_returns_none_when_unlinked() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .create_user("plain@example.com", None, Some("hash"), false)
+            .await
+            .unwrap();
+
+        assert!(
+            catalog
+                .find_user_by_oidc_identity("https://idp.example.com", "subject-1")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn find_user_by_oidc_identity_returns_linked_user() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let user = catalog
+            .create_user("sso@example.com", None, None, false)
+            .await
+            .unwrap();
+
+        // Group 1 doesn't add a public API to link an identity (that's the
+        // JIT-provisioning path, group 3); link directly via SQL the way a
+        // future `link_oidc_identity` will, to prove the lookup works.
+        if let Catalog::Sqlite(pool) = &catalog {
+            sqlx::query("UPDATE users SET oidc_issuer = ?, oidc_subject = ? WHERE id = ?")
+                .bind("https://idp.example.com")
+                .bind("subject-1")
+                .bind(&user.id)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+
+        let found = catalog
+            .find_user_by_oidc_identity("https://idp.example.com", "subject-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.id, user.id);
+    }
+
+    #[tokio::test]
+    async fn create_oidc_user_carries_identity_email_and_name_with_no_password() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        let created = catalog
+            .create_oidc_user(
+                "sso@example.com",
+                Some("SSO User"),
+                "https://idp.example.com",
+                "subject-1",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(created.email, "sso@example.com");
+        assert_eq!(created.display_name.as_deref(), Some("SSO User"));
+        assert_eq!(
+            created.oidc_issuer.as_deref(),
+            Some("https://idp.example.com")
+        );
+        assert_eq!(created.oidc_subject.as_deref(), Some("subject-1"));
+        assert!(created.password_hash.is_none());
+        assert!(!created.is_instance_admin);
+
+        let found = catalog
+            .find_user_by_oidc_identity("https://idp.example.com", "subject-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.id, created.id);
+    }
+
+    #[tokio::test]
+    async fn create_oidc_user_rejects_duplicate_identity() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .create_oidc_user("a@example.com", None, "https://idp.example.com", "dup")
+            .await
+            .unwrap();
+
+        let conflict = catalog
+            .create_oidc_user("b@example.com", None, "https://idp.example.com", "dup")
+            .await;
+        assert!(conflict.is_err());
+
+        // The failed second insert must not leave an orphaned, passwordless
+        // user row permanently claiming "b@example.com" (the create_user +
+        // link_oidc_identity pair runs in one transaction).
+        let orphan = catalog.get_user_by_email("b@example.com").await.unwrap();
+        assert!(
+            orphan.is_none(),
+            "conflicting create_oidc_user must not leave a user row behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn link_oidc_identity_attaches_to_existing_user() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let user = catalog
+            .create_user("alice@example.com", Some("Alice"), Some("hash"), false)
+            .await
+            .unwrap();
+        assert!(
+            catalog
+                .find_user_by_oidc_identity("https://idp.example.com", "subject-1")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        catalog
+            .link_oidc_identity(&user.id, "https://idp.example.com", "subject-1")
+            .await
+            .unwrap();
+
+        let linked = catalog
+            .find_user_by_oidc_identity("https://idp.example.com", "subject-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(linked.id, user.id);
+        // The password credential survives linking: both doors still work.
+        assert_eq!(linked.password_hash.as_deref(), Some("hash"));
+    }
+
+    #[tokio::test]
+    async fn link_oidc_identity_rejects_duplicate_identity() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .create_oidc_user("first@example.com", None, "https://idp.example.com", "dup")
+            .await
+            .unwrap();
+        let second = catalog
+            .create_user("second@example.com", None, Some("hash"), false)
+            .await
+            .unwrap();
+
+        let conflict = catalog
+            .link_oidc_identity(&second.id, "https://idp.example.com", "dup")
+            .await;
+        assert!(conflict.is_err());
+    }
+
+    #[tokio::test]
+    async fn users_oidc_identity_pair_is_unique() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let a = catalog
+            .create_user("a@example.com", None, None, false)
+            .await
+            .unwrap();
+        let b = catalog
+            .create_user("b@example.com", None, None, false)
+            .await
+            .unwrap();
+
+        let Catalog::Sqlite(pool) = &catalog else {
+            unreachable!()
+        };
+        sqlx::query("UPDATE users SET oidc_issuer = ?, oidc_subject = ? WHERE id = ?")
+            .bind("https://idp.example.com")
+            .bind("dup-subject")
+            .bind(&a.id)
+            .execute(pool)
+            .await
+            .unwrap();
+        let conflict =
+            sqlx::query("UPDATE users SET oidc_issuer = ?, oidc_subject = ? WHERE id = ?")
+                .bind("https://idp.example.com")
+                .bind("dup-subject")
+                .bind(&b.id)
+                .execute(pool)
+                .await;
+        assert!(conflict.is_err());
+    }
+
+    #[tokio::test]
+    async fn multiple_users_with_null_oidc_identity_do_not_conflict() {
+        // Local-password users all have NULL oidc_issuer/oidc_subject; SQL's
+        // NULL-is-distinct-from-NULL semantics must let them coexist under
+        // the unique index.
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .create_user("one@example.com", None, Some("hash"), false)
+            .await
+            .unwrap();
+        catalog
+            .create_user("two@example.com", None, Some("hash"), false)
+            .await
+            .unwrap();
+        assert_eq!(catalog.list_users().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn upsert_and_remove_tenant_membership_only_touch_local_rows() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let user_id = setup_user_and_tenants(&catalog).await;
+
+        // Seed a mapped row for the same (user, tenant) the local API will
+        // also touch.
+        catalog
+            .sync_oidc_memberships(&user_id, &[("acme".to_string(), MembershipRole::Viewer)])
+            .await
+            .unwrap();
+
+        catalog
+            .upsert_tenant_membership(&user_id, "acme", MembershipRole::Member)
+            .await
+            .unwrap();
+        let rows = catalog.list_memberships_for_user(&user_id).await.unwrap();
+        assert_eq!(
+            rows.len(),
+            2,
+            "acme should hold one local and one mapped row"
+        );
+        let local = rows
+            .iter()
+            .find(|m| m.granted_by == GrantSource::Local)
+            .expect("local row exists");
+        assert_eq!(local.role, MembershipRole::Member);
+        let mapped = rows
+            .iter()
+            .find(|m| m.granted_by == GrantSource::OidcMapping)
+            .expect("mapped row untouched by upsert_tenant_membership");
+        assert_eq!(mapped.role, MembershipRole::Viewer);
+
+        catalog
+            .remove_tenant_membership(&user_id, "acme")
+            .await
+            .unwrap();
+        let rows = catalog.list_memberships_for_user(&user_id).await.unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "remove_tenant_membership must not delete the mapped row"
+        );
+        assert_eq!(rows[0].granted_by, GrantSource::OidcMapping);
+    }
+
+    #[tokio::test]
+    async fn sync_oidc_memberships_creates_updates_and_removes_only_mapped_rows() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme Corp", None, "config")
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant("globex", "Globex", None, "config")
+            .await
+            .unwrap();
+        let user = catalog
+            .create_user("mapped@example.com", None, None, false)
+            .await
+            .unwrap();
+
+        // A locally-granted membership the sync must never touch.
+        catalog
+            .upsert_tenant_membership(&user.id, "globex", MembershipRole::Admin)
+            .await
+            .unwrap();
+
+        catalog
+            .sync_oidc_memberships(
+                &user.id,
+                &[
+                    ("acme".to_string(), MembershipRole::Viewer),
+                    ("globex".to_string(), MembershipRole::Member),
+                ],
+            )
+            .await
+            .unwrap();
+        let rows = catalog.list_memberships_for_user(&user.id).await.unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            catalog
+                .get_tenant_membership(&user.id, "acme")
+                .await
+                .unwrap()
+                .unwrap()
+                .role,
+            MembershipRole::Viewer
+        );
+        // globex now holds a local `admin` row and a mapped `member` row;
+        // the effective role is the higher one.
+        let globex_effective = catalog
+            .get_tenant_membership(&user.id, "globex")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(globex_effective.role, MembershipRole::Admin);
+        assert_eq!(globex_effective.granted_by, GrantSource::Local);
+
+        // The group granting `acme` disappears from the token: only that
+        // mapped row is removed, the local `globex` grant is untouched.
+        catalog
+            .sync_oidc_memberships(&user.id, &[("globex".to_string(), MembershipRole::Member)])
+            .await
+            .unwrap();
+        let rows = catalog.list_memberships_for_user(&user.id).await.unwrap();
+        assert_eq!(
+            rows.len(),
+            2,
+            "acme's mapped row is gone, globex keeps both rows"
+        );
+        assert!(rows.iter().all(|m| m.tenant_id == "globex"));
+        assert!(
+            catalog
+                .get_tenant_membership(&user.id, "acme")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // An empty desired set clears every mapped row and nothing else.
+        catalog.sync_oidc_memberships(&user.id, &[]).await.unwrap();
+        let rows = catalog.list_memberships_for_user(&user.id).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].granted_by, GrantSource::Local);
+        assert_eq!(rows[0].tenant_id, "globex");
+    }
+
+    /// Two `group_mappings` rules can both target the same tenant (e.g.
+    /// `org-viewers -> acme:viewer` and `org-admins -> acme:admin`), so a
+    /// user whose token carries both groups produces a `desired` slice with
+    /// two entries for the same tenant. The `(user_id, tenant_id,
+    /// granted_by)` primary key means a naive insert-per-entry would violate
+    /// the PK on the second row; `sync_oidc_memberships` must instead
+    /// collapse duplicate tenants to the single highest-ranked role before
+    /// writing, so the sync always succeeds.
+    #[tokio::test]
+    async fn sync_oidc_memberships_collapses_duplicate_tenant_entries_to_highest_role() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme Corp", None, "config")
+            .await
+            .unwrap();
+        let user = catalog
+            .create_user("duplicate@example.com", None, None, false)
+            .await
+            .unwrap();
+
+        catalog
+            .sync_oidc_memberships(
+                &user.id,
+                &[
+                    ("acme".to_string(), MembershipRole::Viewer),
+                    ("acme".to_string(), MembershipRole::Admin),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let rows = catalog.list_memberships_for_user(&user.id).await.unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "duplicate tenant entries must collapse to one row"
+        );
+        assert_eq!(rows[0].tenant_id, "acme");
+        assert_eq!(
+            rows[0].role,
+            MembershipRole::Admin,
+            "the higher-ranked role must win"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_membership_operations_expose_granted_by() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let user_id = setup_user_and_tenants(&catalog).await;
+
+        catalog
+            .upsert_tenant_membership(&user_id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        catalog
+            .sync_oidc_memberships(&user_id, &[("acme".to_string(), MembershipRole::Admin)])
+            .await
+            .unwrap();
+
+        let for_user = catalog.list_memberships_for_user(&user_id).await.unwrap();
+        assert_eq!(for_user.len(), 2);
+        assert!(for_user.iter().any(|m| m.granted_by == GrantSource::Local));
+        assert!(
+            for_user
+                .iter()
+                .any(|m| m.granted_by == GrantSource::OidcMapping)
+        );
+
+        let for_tenant = catalog.list_members_for_tenant("acme").await.unwrap();
+        assert_eq!(for_tenant.len(), 2);
+        assert!(
+            for_tenant
+                .iter()
+                .any(|m| m.granted_by == GrantSource::Local)
+        );
+    }
+
+    /// A pre-existing (pre-oidc-login) SQLite catalog on disk gets migrated
+    /// in place: `password_hash` becomes nullable, the OIDC columns appear,
+    /// and every pre-existing membership row becomes `granted_by = 'local'`
+    /// — all without losing data (change: oidc-login migration plan).
+    #[tokio::test]
+    async fn sqlite_migration_from_pre_oidc_schema_preserves_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("legacy.db");
+        let dsn = format!("sqlite://{}", db_path.display());
+
+        // Build the pre-oidc-login schema directly and seed it, exactly as
+        // an already-deployed instance would have it on disk.
+        {
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+            sqlx::query(
+                r#"CREATE TABLE tenants (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL, default_dataset TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    source TEXT NOT NULL CHECK(source IN ('config', 'database'))
+                )"#,
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                r#"CREATE TABLE users (
+                    id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, display_name TEXT,
+                    password_hash TEXT NOT NULL, is_instance_admin INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')), disabled_at TEXT
+                )"#,
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                r#"CREATE TABLE tenant_memberships (
+                    user_id TEXT NOT NULL, tenant_id TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('admin', 'member', 'viewer')),
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (user_id, tenant_id),
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+                )"#,
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            // Timestamps are explicit RFC3339 (matching what production code
+            // writes) rather than the table's own `datetime('now')` default,
+            // which SQLite renders without a `T` separator or offset.
+            sqlx::query(
+                "INSERT INTO tenants (id, name, source, created_at, updated_at) \
+                 VALUES ('acme', 'Acme', 'config', '2024-01-01T00:00:00+00:00', '2024-01-01T00:00:00+00:00')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO users (id, email, password_hash, created_at, updated_at) \
+                 VALUES ('u1', 'legacy@example.com', 'phc-legacy', '2024-01-01T00:00:00+00:00', '2024-01-01T00:00:00+00:00')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO tenant_memberships (user_id, tenant_id, role, created_at) \
+                 VALUES ('u1', 'acme', 'admin', '2024-01-01T00:00:00+00:00')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+        }
+
+        // Opening it through the real Catalog runs the migration.
+        let catalog = Catalog::new(&dsn).await.unwrap();
+
+        let user = catalog.get_user("u1").await.unwrap().unwrap();
+        assert_eq!(user.password_hash.as_deref(), Some("phc-legacy"));
+        assert!(user.oidc_issuer.is_none());
+
+        let membership = catalog
+            .get_tenant_membership("u1", "acme")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(membership.role, MembershipRole::Admin);
+        assert_eq!(membership.granted_by, GrantSource::Local);
+
+        // The migrated schema now accepts a nullable password_hash and a
+        // second membership row for the same (user, tenant).
+        let sso_user = catalog
+            .create_user("sso@example.com", None, None, false)
+            .await
+            .unwrap();
+        assert!(sso_user.password_hash.is_none());
+        catalog
+            .sync_oidc_memberships(
+                &sso_user.id,
+                &[("acme".to_string(), MembershipRole::Viewer)],
+            )
+            .await
+            .unwrap();
+
+        // Re-running the migration (as every startup does) is a no-op.
+        drop(catalog);
+        let catalog_again = Catalog::new(&dsn).await.unwrap();
+        let membership = catalog_again
+            .get_tenant_membership("u1", "acme")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(membership.role, MembershipRole::Admin);
+    }
+
+    /// Regression test (code review, Group 1 blocker 1): the SQLite rebuild
+    /// that a legacy (pre-oidc-login) schema triggers must leave
+    /// `idx_users_oidc_identity` in place, not silently drop it. A dropped
+    /// index would let two users link the same `(issuer, subject)` pair
+    /// until the next restart re-creates it — or brick the next startup if
+    /// a duplicate is written before then.
+    #[tokio::test]
+    async fn sqlite_migration_from_pre_oidc_schema_preserves_unique_oidc_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("legacy.db");
+        let dsn = format!("sqlite://{}", db_path.display());
+
+        // Seed a pre-oidc-login `users` table (password_hash NOT NULL, no
+        // OIDC columns) exactly as an already-deployed instance would have
+        // it on disk, so opening it triggers `rebuild_users_table_sqlite`.
+        {
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+            sqlx::query(
+                r#"CREATE TABLE users (
+                    id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, display_name TEXT,
+                    password_hash TEXT NOT NULL, is_instance_admin INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')), disabled_at TEXT
+                )"#,
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO users (id, email, password_hash, created_at, updated_at) \
+                 VALUES ('u1', 'legacy@example.com', 'phc-legacy', \
+                 '2024-01-01T00:00:00+00:00', '2024-01-01T00:00:00+00:00')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+        }
+
+        // Opening it through the real Catalog runs the migration, including
+        // the rebuild (password_hash is still NOT NULL).
+        let catalog = Catalog::new(&dsn).await.unwrap();
+        let Catalog::Sqlite(pool) = &catalog else {
+            unreachable!()
+        };
+
+        sqlx::query("UPDATE users SET oidc_issuer = ?, oidc_subject = ? WHERE id = ?")
+            .bind("https://idp.example.com")
+            .bind("subject-1")
+            .bind("u1")
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let second = catalog
+            .create_user("second@example.com", None, None, false)
+            .await
+            .unwrap();
+        let conflict =
+            sqlx::query("UPDATE users SET oidc_issuer = ?, oidc_subject = ? WHERE id = ?")
+                .bind("https://idp.example.com")
+                .bind("subject-1")
+                .bind(&second.id)
+                .execute(pool)
+                .await;
+        assert!(
+            conflict.is_err(),
+            "idx_users_oidc_identity must survive the legacy-schema rebuild"
+        );
+    }
+
+    /// Regression test (code review, Group 1 blocker 2): a failed rebuild
+    /// must not leave the pooled connection with `PRAGMA foreign_keys`
+    /// suspended. Dropping `users` before the rebuild runs makes the
+    /// `INSERT INTO users_new ... SELECT ... FROM users` step fail after
+    /// foreign-key enforcement has already been turned off for the
+    /// connection.
+    #[tokio::test]
+    async fn rebuild_users_table_sqlite_restores_foreign_keys_after_error() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        query("CREATE TABLE tenants (id TEXT PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        query(
+            r#"CREATE TABLE users (
+                id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, display_name TEXT,
+                password_hash TEXT NOT NULL, is_instance_admin INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')), disabled_at TEXT
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE probe (
+                tenant_id TEXT NOT NULL,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Drop `users` so the rebuild's INSERT...SELECT fails partway
+        // through the transaction, after PRAGMA foreign_keys = OFF has
+        // already run on this connection.
+        query("DROP TABLE users").execute(&pool).await.unwrap();
+
+        let result = rebuild_users_table_sqlite(&pool).await;
+        assert!(result.is_err());
+
+        // A pooled connection with foreign keys still off would let this
+        // FK-violating insert through silently instead of erroring.
+        let fk_violation = query("INSERT INTO probe (tenant_id) VALUES ('missing-tenant')")
+            .execute(&pool)
+            .await;
+        assert!(
+            fk_violation.is_err(),
+            "foreign key enforcement must be restored after a failed rebuild"
+        );
+    }
+
+    /// Regression test (code review, Group 1 blocker 6): on a role tie
+    /// between a `local` and an `oidc_mapping` row, the effective source
+    /// must be reported deterministically (`Local`), not depend on
+    /// unordered row-fetch order.
+    #[tokio::test]
+    async fn effective_membership_prefers_local_source_on_role_tie() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme Corp", None, "config")
+            .await
+            .unwrap();
+        let user = catalog
+            .create_user("tied@example.com", None, None, false)
+            .await
+            .unwrap();
+
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Admin)
+            .await
+            .unwrap();
+        catalog
+            .sync_oidc_memberships(&user.id, &[("acme".to_string(), MembershipRole::Admin)])
+            .await
+            .unwrap();
+
+        let effective = catalog
+            .get_tenant_membership(&user.id, "acme")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(effective.role, MembershipRole::Admin);
+        assert_eq!(
+            effective.granted_by,
+            GrantSource::Local,
+            "on a role tie, Local must win deterministically"
+        );
+    }
+
+    /// Change: oidc-login, "session views count a tenant once": a user
+    /// holding a `local` and an `oidc_mapping` row in the same tenant must
+    /// be reported once, at the higher-ranked role.
+    #[tokio::test]
+    async fn list_effective_memberships_collapses_local_and_mapped_row_in_one_tenant() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme Corp", None, "config")
+            .await
+            .unwrap();
+        let user = catalog
+            .create_user("collapsed@example.com", None, None, false)
+            .await
+            .unwrap();
+
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        catalog
+            .sync_oidc_memberships(&user.id, &[("acme".to_string(), MembershipRole::Admin)])
+            .await
+            .unwrap();
+
+        let effective = catalog
+            .list_effective_memberships_for_user(&user.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            effective.len(),
+            1,
+            "a local + mapped row in one tenant must collapse to one entry"
+        );
+        assert_eq!(effective[0].tenant_id, "acme");
+        assert_eq!(effective[0].role, MembershipRole::Admin);
+    }
+
+    /// Distinct tenants must not collapse into each other: a user with
+    /// memberships in two different tenants still sees two.
+    #[tokio::test]
+    async fn list_effective_memberships_keeps_distinct_tenants_separate() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme Corp", None, "config")
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant("globex", "Globex Corp", None, "config")
+            .await
+            .unwrap();
+        let user = catalog
+            .create_user("two-tenants@example.com", None, None, false)
+            .await
+            .unwrap();
+
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "globex", MembershipRole::Member)
+            .await
+            .unwrap();
+
+        let effective = catalog
+            .list_effective_memberships_for_user(&user.id)
+            .await
+            .unwrap();
+        assert_eq!(effective.len(), 2);
+        let tenant_ids: std::collections::BTreeSet<&str> =
+            effective.iter().map(|m| m.tenant_id.as_str()).collect();
+        assert_eq!(
+            tenant_ids,
+            std::collections::BTreeSet::from(["acme", "globex"])
+        );
+    }
+
+    #[tokio::test]
     async fn create_user_session_and_get_valid_session_roundtrip() {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let user = catalog
-            .create_user("session@example.com", None, "hash", false)
+            .create_user("session@example.com", None, Some("hash"), false)
             .await
             .unwrap();
 
@@ -6374,7 +7936,7 @@ mod user_membership_tests {
     async fn revoked_session_is_not_returned_by_get_valid_session() {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let user = catalog
-            .create_user("revoke@example.com", None, "hash", false)
+            .create_user("revoke@example.com", None, Some("hash"), false)
             .await
             .unwrap();
 
@@ -6401,7 +7963,7 @@ mod user_membership_tests {
     async fn disabled_user_sessions_are_not_returned_until_reenabled() {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let user = catalog
-            .create_user("locked@example.com", None, "hash", false)
+            .create_user("locked@example.com", None, Some("hash"), false)
             .await
             .unwrap();
 
@@ -6446,7 +8008,7 @@ mod user_membership_tests {
     async fn expired_session_is_not_returned_by_get_valid_session() {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let user = catalog
-            .create_user("expired@example.com", None, "hash", false)
+            .create_user("expired@example.com", None, Some("hash"), false)
             .await
             .unwrap();
 
@@ -6472,7 +8034,7 @@ mod user_membership_tests {
     async fn delete_expired_sessions_removes_only_expired_rows() {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let user = catalog
-            .create_user("cleanup@example.com", None, "hash", false)
+            .create_user("cleanup@example.com", None, Some("hash"), false)
             .await
             .unwrap();
 
@@ -6512,7 +8074,7 @@ mod oauth_storage_tests {
     async fn catalog_with_principal() -> (Catalog, String, String) {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let user = catalog
-            .create_user("agent@example.com", None, "phc", false)
+            .create_user("agent@example.com", None, Some("phc"), false)
             .await
             .unwrap();
         catalog

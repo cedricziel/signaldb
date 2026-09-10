@@ -176,11 +176,13 @@ fn generate(check_only: bool) -> Result<()> {
 /// Generate a full HTTP client from the OpenAPI spec using progenitor.
 ///
 /// The spec is emitted by utoipa as OpenAPI 3.1, but progenitor parses via the
-/// `openapiv3` crate, which targets 3.0. The only incompatibility our schemas
-/// hit is 3.1's nullable encoding (`"type": ["string", "null"]`), so we
-/// downconvert those to 3.0's `"type": "string", "nullable": true` before
-/// handing the spec to progenitor. The served spec and the checked-in
-/// `signaldb-api.json` stay 3.1; this rewrite is progenitor-input only.
+/// `openapiv3` crate, which targets 3.0. The incompatibilities our schemas
+/// hit are both 3.1's nullable encodings: `"type": ["string", "null"]`, and
+/// `"oneOf": [{"type": "null"}, {...}]` (utoipa's shape for `Option<$ref>`
+/// fields), so `downconvert_nullable_types` rewrites both to 3.0's
+/// `"nullable": true` form before handing the spec to progenitor. The served
+/// spec and the checked-in `signaldb-api.json` stay 3.1; this rewrite is
+/// progenitor-input only.
 fn generate_sdk_client(spec: &serde_json::Value) -> Result<String> {
     // `OPERATIONS`: every operation id in the OpenAPI document, alphabetized.
     // This is the manifest `client-surface-parity`'s whole-SDK check iterates
@@ -463,10 +465,19 @@ fn extract_operation_ids(spec: &serde_json::Value) -> Vec<String> {
 ///   "string"` with no `nullable`).
 /// - `"oneOf": [{"type": "null"}, {"$ref": "...", ...}]` (utoipa's encoding
 ///   for `Option<SomeStruct>`, where the non-null branch is a `$ref` rather
-///   than an inline `type`) becomes the non-null branch's fields merged
-///   directly onto this object plus `"nullable": true`. Progenitor's schema
-///   converter has no 3.1 `oneOf`-with-null-branch handling and panics
-///   (`not yet implemented: invalid type: null`) on the raw form.
+///   than an inline `type`) becomes `"nullable": true` plus either the
+///   non-null branch's fields merged directly onto this object (when it has
+///   no `$ref` of its own), or — when it does — the `$ref` wrapped in
+///   `"allOf": [{"$ref": ...}]` with any other sibling fields (e.g.
+///   `description`) merged onto the outer object instead. `$ref` cannot
+///   carry sibling keywords in OpenAPI 3.0: `openapiv3::ReferenceOr`'s
+///   untagged deserialization matches any object containing a `$ref` key as
+///   a bare reference first, silently discarding siblings, so a flattened
+///   `{"$ref": ..., "nullable": true}` would parse back with `nullable`
+///   dropped and progenitor/typify would emit a non-`Option` field instead
+///   of `Option<T>`. Progenitor's schema converter also has no 3.1
+///   `oneOf`-with-null-branch handling and panics (`not yet implemented:
+///   invalid type: null`) on the raw form.
 fn downconvert_nullable_types(value: &mut serde_json::Value) {
     if let serde_json::Value::Object(map) = value
         && let Some(serde_json::Value::Array(variants)) = map.get("oneOf")
@@ -481,8 +492,14 @@ fn downconvert_nullable_types(value: &mut serde_json::Value) {
         if let Some(null_index) = null_index {
             let other = variants[1 - null_index].clone();
             if let Some(other_obj) = other.as_object() {
-                let other_obj = other_obj.clone();
+                let mut other_obj = other_obj.clone();
                 map.remove("oneOf");
+                if let Some(reference) = other_obj.remove("$ref") {
+                    map.insert(
+                        "allOf".to_string(),
+                        serde_json::Value::Array(vec![serde_json::json!({ "$ref": reference })]),
+                    );
+                }
                 for (k, v) in other_obj {
                     map.insert(k, v);
                 }
@@ -786,5 +803,165 @@ mod tests {
             message.contains("pnpm install --frozen-lockfile"),
             "error should name the fix: {err}"
         );
+    }
+
+    /// `oneOf: [{type: null}, {$ref: ..., description: ...}]` (utoipa's
+    /// encoding of `#[schema(required = true)] Option<SomeRefType>`) must
+    /// downconvert to a schema that `openapiv3` actually parses as nullable.
+    /// A naive merge (`{$ref, nullable: true}`) looks right as JSON but
+    /// `openapiv3::ReferenceOr`'s untagged deserialization matches any
+    /// object containing `$ref` as a bare `Reference` first, silently
+    /// dropping the sibling `nullable` — so progenitor/typify would still
+    /// generate a non-`Option` field. The `$ref` must end up wrapped in
+    /// `allOf` instead, which is not itself a `$ref` object and so
+    /// deserializes as a full `Schema` with `nullable` intact.
+    #[test]
+    fn downconvert_nullable_ref_survives_openapiv3_parse() {
+        let mut schema = serde_json::json!({
+            "oneOf": [
+                { "type": "null" },
+                {
+                    "$ref": "#/components/schemas/OidcLoginConfig",
+                    "description": "only present once configured",
+                },
+            ],
+        });
+        downconvert_nullable_types(&mut schema);
+
+        assert!(
+            schema.get("oneOf").is_none(),
+            "oneOf should have been rewritten away: {schema}"
+        );
+        assert_eq!(
+            schema.get("nullable"),
+            Some(&serde_json::Value::Bool(true)),
+            "schema should be marked nullable: {schema}"
+        );
+
+        assert_parses_as_nullable_schema(&schema);
+    }
+
+    /// Asserts `schema` round-trips through `openapiv3` as a nullable schema
+    /// item (not a bare `$ref`, which can't carry `nullable` at all) — shared
+    /// by the `downconvert_nullable_*` tests.
+    fn assert_parses_as_nullable_schema(schema: &serde_json::Value) {
+        let parsed: openapiv3::ReferenceOr<openapiv3::Schema> =
+            serde_json::from_value(schema.clone())
+                .unwrap_or_else(|e| panic!("openapiv3 failed to parse {schema}: {e}"));
+        let openapiv3::ReferenceOr::Item(parsed) = parsed else {
+            panic!("expected a nullable schema item, got a bare $ref: {schema}");
+        };
+        assert!(
+            parsed.schema_data.nullable,
+            "openapiv3 dropped `nullable` when parsing {schema}"
+        );
+    }
+
+    /// `oneOf: [{type: null}, {type: "string", ...}]` (utoipa's encoding of
+    /// `Option<String>`-shaped fields with an inline, non-`$ref` schema) must
+    /// downconvert by merging the non-null branch's fields directly onto the
+    /// outer object plus `nullable: true`, with no `allOf` wrapper (that's
+    /// only needed to keep a `$ref`'s siblings from being dropped).
+    #[test]
+    fn downconvert_nullable_inline_type_merges_onto_object() {
+        let mut schema = serde_json::json!({
+            "oneOf": [
+                { "type": "null" },
+                { "type": "string", "description": "a name" },
+            ],
+        });
+        downconvert_nullable_types(&mut schema);
+
+        assert!(
+            schema.get("oneOf").is_none(),
+            "oneOf should have been rewritten away: {schema}"
+        );
+        assert!(
+            schema.get("allOf").is_none(),
+            "inline (non-$ref) branch should not be wrapped in allOf: {schema}"
+        );
+        assert_eq!(
+            schema.get("nullable"),
+            Some(&serde_json::Value::Bool(true)),
+            "schema should be marked nullable: {schema}"
+        );
+        assert_eq!(
+            schema.get("type"),
+            Some(&serde_json::Value::String("string".to_string())),
+            "non-null branch's type should be merged onto the object: {schema}"
+        );
+        assert_eq!(
+            schema.get("description"),
+            Some(&serde_json::Value::String("a name".to_string())),
+            "non-null branch's other fields should be merged onto the object: {schema}"
+        );
+
+        assert_parses_as_nullable_schema(&schema);
+    }
+
+    /// `oneOf: [{type: null}, {$ref: ...}]` with no sibling keywords on the
+    /// `$ref` branch must downconvert to exactly `{allOf: [{$ref: ...}],
+    /// nullable: true}` — asserted as a precise shape, not just "parses".
+    #[test]
+    fn downconvert_nullable_bare_ref_produces_exact_shape() {
+        let mut schema = serde_json::json!({
+            "oneOf": [
+                { "type": "null" },
+                { "$ref": "#/components/schemas/Foo" },
+            ],
+        });
+        downconvert_nullable_types(&mut schema);
+
+        assert_eq!(
+            schema,
+            serde_json::json!({
+                "allOf": [{ "$ref": "#/components/schemas/Foo" }],
+                "nullable": true,
+            }),
+            "bare $ref should downconvert to exactly allOf+nullable: {schema}"
+        );
+    }
+
+    /// When the non-null branch is already `allOf`-shaped (e.g. a `$ref` with
+    /// sibling keywords already expressed as `allOf: [{$ref}], description:
+    /// ...`), the merge path has no `$ref` key to pull out, so it copies the
+    /// branch's fields (including its own `allOf`) directly onto the outer
+    /// object as siblings of `nullable`, rather than nesting another `allOf`.
+    #[test]
+    fn downconvert_nullable_allof_branch_preserves_siblings() {
+        let mut schema = serde_json::json!({
+            "oneOf": [
+                { "type": "null" },
+                {
+                    "allOf": [{ "$ref": "#/components/schemas/Foo" }],
+                    "description": "already allOf-wrapped",
+                },
+            ],
+        });
+        downconvert_nullable_types(&mut schema);
+
+        assert!(
+            schema.get("oneOf").is_none(),
+            "oneOf should have been rewritten away: {schema}"
+        );
+        assert_eq!(
+            schema.get("nullable"),
+            Some(&serde_json::Value::Bool(true)),
+            "schema should be marked nullable: {schema}"
+        );
+        assert_eq!(
+            schema.get("allOf"),
+            Some(&serde_json::json!([{ "$ref": "#/components/schemas/Foo" }])),
+            "the branch's own allOf should survive as a sibling of nullable: {schema}"
+        );
+        assert_eq!(
+            schema.get("description"),
+            Some(&serde_json::Value::String(
+                "already allOf-wrapped".to_string()
+            )),
+            "other sibling fields should survive alongside allOf and nullable: {schema}"
+        );
+
+        assert_parses_as_nullable_schema(&schema);
     }
 }
