@@ -19,6 +19,11 @@ window — exact when the query `step` equals the range, an approximation
 otherwise. Anything listed as unsupported returns a clear error rather than a
 wrong result.
 
+Aggregation operators (`sum`, `avg`, `min`, `max`, `count`, … with or without
+`by`/`without`) first reduce each series to its latest sample in the step,
+then aggregate across series, as Prometheus does. Only the `_over_time` and
+range functions fold across time within a series.
+
 ## Selectors
 
 | Feature | Status |
