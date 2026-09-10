@@ -695,6 +695,58 @@ mod tests {
         );
     }
 
+    /// #1433 review: a plan-string assertion alone can't catch an
+    /// encode/decode mismatch between `encode_log_body` (used at ingest) and
+    /// `ir_body_decode` (used here) — both sides of a real mismatch would
+    /// still render as `regexp_like(ir_body_decode(body), ...)`. Execute the
+    /// lowered filter over a fixture whose `body` column is JSON-encoded the
+    /// way ingest actually encodes it (`serde_json::to_string`, issue
+    /// #1410), not `differential.rs`'s bare (non-JSON) bodies, and use an
+    /// anchored pattern (`^boom`) so a decode failure changes the row
+    /// count rather than passing by luck the way an unanchored `contains`
+    /// can (the raw column's leading `"` would defeat the anchor but not a
+    /// substring search).
+    #[tokio::test]
+    async fn line_filter_matches_the_decoded_body_over_an_ingest_encoded_fixture() {
+        use datafusion::arrow::array::{RecordBatch, StringArray};
+        use datafusion::arrow::datatypes::{Field, Schema};
+        use datafusion::catalog::MemTable;
+        use datafusion::prelude::SessionContext;
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, true),
+            Field::new("body", DataType::Utf8, true),
+        ]));
+        let encode = |s: &str| serde_json::to_string(s).unwrap();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["s", "s"])),
+                Arc::new(StringArray::from(vec![
+                    Some(encode("boom today")),
+                    Some(encode("all fine, no boom")),
+                ])),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        ctx.register_table("logs", Arc::new(table)).unwrap();
+        let df = ctx.table("logs").await.unwrap();
+
+        let q = parse_query(r#"{service_name="s"} |~ "^boom""#).expect("parse");
+        let expr = log_query_filter_with_columns(&q, &AttrContext::default())
+            .expect("lower")
+            .expect("some filter");
+        let batches = df.filter(expr).unwrap().collect().await.unwrap();
+        let count: usize = batches.iter().map(|b| b.num_rows()).sum();
+        // Exactly the row whose *decoded* text starts with "boom" — the
+        // other row contains "boom" too, so an unanchored search alone
+        // wouldn't distinguish a working decode from a broken one.
+        assert_eq!(count, 1);
+    }
+
     #[test]
     fn label_filter_after_parser_stage_uses_known_column() {
         assert_eq!(
