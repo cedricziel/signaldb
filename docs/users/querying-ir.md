@@ -126,7 +126,10 @@ today. A retrieval-only field used in a predicate raises an
 
 The log `body` is filterable for string operators (`contains`, `regex`, `eq`,
 `ne`, `exists`) — it resolves to a string value like any other string field,
-so ordered and numeric operators get no special allowance for it.
+so ordered and numeric operators get no special allowance for it. A
+predicate, `order`/`rank` key, `aggregate.by`, or aggregate operand on `body`
+compares against the same decoded string value a `rows` result's `body`
+field shows, never the raw JSON-encoded storage form.
 
 `span_events` on `traces` is the span's whole events list as a JSON string:
 `[{"name", "timestamp_unix_nano", "attributes": {...}}, ...]`, `null` for a
