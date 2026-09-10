@@ -157,7 +157,15 @@ fn line_filter_expr(f: &LineFilter) -> Result<Expr, QuerierError> {
             "ip() line filter is not supported yet".to_string(),
         ));
     }
-    let body = col("body");
+    // `body` is JSON-encoded at rest (issue #1410): decode it the same way
+    // `super::ir_planner::lower_leaf` now does for `contains`/`regex` on
+    // `body` (issue #1433), so a plain-string line filter compares against
+    // the actual log text instead of the raw, quote-wrapped column — and so
+    // this fallback path keeps agreeing with the IR-first path a line
+    // filter actually takes in production (`ql_ir::logql_lower::line_filter`
+    // lowers to the identical `Leaf{field:"body", op:Contains}` the IR
+    // planner already decodes).
+    let body = super::ir_planner::body_decode_expr("body");
     Ok(match f.op {
         LineFilterOp::Contains => contains(body, lit(f.value.clone())),
         LineFilterOp::NotContains => not(contains(body, lit(f.value.clone()))),
@@ -663,23 +671,27 @@ mod tests {
         );
     }
 
+    // #1433: a line filter matches the *decoded* `body` text (`body` is
+    // JSON-encoded at rest, issue #1410) — `ir_body_decode(body)`, not the
+    // raw column, mirroring `ir_planner::lower_leaf`'s `contains`/`regex`
+    // handling of `body` so this fallback path agrees with the IR-first one.
     #[test]
     fn line_filters() {
         assert_eq!(
             sql(r#"{service_name="s"} |= "boom""#),
-            r#"service_name = Utf8("s") AND contains(body, Utf8("boom"))"#
+            r#"service_name = Utf8("s") AND contains(ir_body_decode(body), Utf8("boom"))"#
         );
         assert_eq!(
             sql(r#"{service_name="s"} != "x""#),
-            r#"service_name = Utf8("s") AND NOT contains(body, Utf8("x"))"#
+            r#"service_name = Utf8("s") AND NOT contains(ir_body_decode(body), Utf8("x"))"#
         );
         assert_eq!(
             sql(r#"{service_name="s"} |~ "e.*r""#),
-            r#"service_name = Utf8("s") AND regexp_like(body, Utf8("e.*r"))"#
+            r#"service_name = Utf8("s") AND regexp_like(ir_body_decode(body), Utf8("e.*r"))"#
         );
         assert_eq!(
             sql(r#"{service_name="s"} !~ "e.*r""#),
-            r#"service_name = Utf8("s") AND NOT regexp_like(body, Utf8("e.*r"))"#
+            r#"service_name = Utf8("s") AND NOT regexp_like(ir_body_decode(body), Utf8("e.*r"))"#
         );
     }
 
@@ -703,7 +715,7 @@ mod tests {
     fn full_query_folds_left_associatively() {
         assert_eq!(
             sql(r#"{service_name="api", env="prod"} |= "error""#),
-            r#"service_name = Utf8("api") AND (contains(log_attributes, Utf8(""env":"prod"")) OR contains(resource_attributes, Utf8(""env":"prod""))) AND contains(body, Utf8("error"))"#
+            r#"service_name = Utf8("api") AND (contains(log_attributes, Utf8(""env":"prod"")) OR contains(resource_attributes, Utf8(""env":"prod""))) AND contains(ir_body_decode(body), Utf8("error"))"#
         );
     }
 
