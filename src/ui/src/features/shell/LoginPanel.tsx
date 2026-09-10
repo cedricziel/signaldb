@@ -90,8 +90,9 @@ export function LoginPanel({ onSuccess }: PanelProps) {
   const configQuery = useQuery({
     queryKey: ["session-config"],
     queryFn: fetchSessionConfig,
-    retry: false,
-    staleTime: Infinity,
+    retry: 2,
+    staleTime: 30_000,
+    refetchInterval: 30_000,
   });
   const passwordEnabled = configQuery.data?.password_enabled ?? true;
   const oidc = configQuery.data?.oidc ?? null;
