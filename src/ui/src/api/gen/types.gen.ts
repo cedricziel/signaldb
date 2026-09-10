@@ -5403,7 +5403,12 @@ export type SessionOidcCallbackErrors = {
 export type SessionOidcStartData = {
     body?: never;
     path?: never;
-    query?: never;
+    query?: {
+        /**
+         * Same-origin path to return to after a successful login; anything else (or absent) falls back to `/logs`
+         */
+        redirect?: string;
+    };
     url: '/ui/session/oidc/start';
 };
 

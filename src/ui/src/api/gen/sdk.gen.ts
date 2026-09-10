@@ -690,8 +690,11 @@ export const currentSession = <ThrowOnError extends boolean = false>(options?: O
  * GET /ui/session/config
  *
  * Unauthenticated probe the login page reads before rendering its
- * credential step. Until OIDC support ships this always answers
- * password-only; the schema does not change when it does.
+ * credential step. `oidc` is populated once `[auth.oidc]` is configured
+ * *and* its provider discovery has succeeded — otherwise `null`, so an
+ * unreachable issuer degrades to password-only rather than offering a
+ * broken SSO button (change: oidc-login). `password_enabled` reflects
+ * `[auth.oidc].disable_password_login`.
  */
 export const loginConfig = <ThrowOnError extends boolean = false>(options?: Options<LoginConfigData, ThrowOnError>): RequestResult<LoginConfigResponses, unknown, ThrowOnError> => (options?.client ?? client).get<LoginConfigResponses, unknown, ThrowOnError>({ url: '/ui/session/config', ...options });
 
@@ -700,11 +703,15 @@ export const loginConfig = <ThrowOnError extends boolean = false>(options?: Opti
  *
  * Reads state/nonce/PKCE-verifier from the pending-login cookie, exchanges
  * the code, validates the ID token, resolves the identity, and issues the
- * standard session on success. Every failure — missing/invalid pending
- * cookie, state mismatch, a bad nonce/signature/expiry, an unverified email
- * on the link path, an allowlist refusal, or a disabled user — collapses
- * into the same generic redirect with no session created and no disclosure
- * of which check failed.
+ * standard session on success — redirecting to the `redirect` target the
+ * start request carried. Every validation failure — missing/invalid
+ * pending cookie, state mismatch, a bad nonce/signature/expiry, an
+ * unverified email on the link path, an allowlist refusal, or a disabled
+ * user — collapses into the same generic `/login?error=sso_failed`
+ * redirect with no session created and no disclosure of which check
+ * failed; a resolved, enabled identity left with no tenant membership
+ * after mapping sync instead redirects to `/login?error=no_membership`,
+ * keeping the just-in-time-provisioned user row.
  */
 export const sessionOidcCallback = <ThrowOnError extends boolean = false>(options?: Options<SessionOidcCallbackData, ThrowOnError>): RequestResult<unknown, SessionOidcCallbackErrors, ThrowOnError> => (options?.client ?? client).get<unknown, SessionOidcCallbackErrors, ThrowOnError>({ url: '/ui/session/oidc/callback', ...options });
 
@@ -713,7 +720,8 @@ export const sessionOidcCallback = <ThrowOnError extends boolean = false>(option
  *
  * 302s to the IdP's authorization endpoint with a fresh PKCE challenge,
  * `state`, and `nonce`, and sets the signed pending-login cookie carrying
- * what the callback needs to complete the exchange. 404 when OIDC isn't
- * configured; 503 naming the issuer while discovery hasn't (yet) succeeded.
+ * what the callback needs to complete the exchange, including the
+ * validated `redirect` return target. 404 when OIDC isn't configured; 503
+ * naming the issuer while discovery hasn't (yet) succeeded.
  */
 export const sessionOidcStart = <ThrowOnError extends boolean = false>(options?: Options<SessionOidcStartData, ThrowOnError>): RequestResult<unknown, SessionOidcStartErrors, ThrowOnError> => (options?.client ?? client).get<unknown, SessionOidcStartErrors, ThrowOnError>({ url: '/ui/session/oidc/start', ...options });

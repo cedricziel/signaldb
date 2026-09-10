@@ -18967,8 +18967,11 @@ impl Client {
     /**GET /ui/session/config
 
     Unauthenticated probe the login page reads before rendering its
-    credential step. Until OIDC support ships this always answers
-    password-only; the schema does not change when it does.
+    credential step. `oidc` is populated once `[auth.oidc]` is configured
+    *and* its provider discovery has succeeded — otherwise `null`, so an
+    unreachable issuer degrades to password-only rather than offering a
+    broken SSO button (change: oidc-login). `password_enabled` reflects
+    `[auth.oidc].disable_password_login`.
 
     Sends a `GET` request to `/ui/session/config`
 
@@ -18984,11 +18987,15 @@ impl Client {
 
     Reads state/nonce/PKCE-verifier from the pending-login cookie, exchanges
     the code, validates the ID token, resolves the identity, and issues the
-    standard session on success. Every failure — missing/invalid pending
-    cookie, state mismatch, a bad nonce/signature/expiry, an unverified email
-    on the link path, an allowlist refusal, or a disabled user — collapses
-    into the same generic redirect with no session created and no disclosure
-    of which check failed.
+    standard session on success — redirecting to the `redirect` target the
+    start request carried. Every validation failure — missing/invalid
+    pending cookie, state mismatch, a bad nonce/signature/expiry, an
+    unverified email on the link path, an allowlist refusal, or a disabled
+    user — collapses into the same generic `/login?error=sso_failed`
+    redirect with no session created and no disclosure of which check
+    failed; a resolved, enabled identity left with no tenant membership
+    after mapping sync instead redirects to `/login?error=no_membership`,
+    keeping the just-in-time-provisioned user row.
 
     Sends a `GET` request to `/ui/session/oidc/callback`
 
@@ -19011,13 +19018,17 @@ impl Client {
 
     302s to the IdP's authorization endpoint with a fresh PKCE challenge,
     `state`, and `nonce`, and sets the signed pending-login cookie carrying
-    what the callback needs to complete the exchange. 404 when OIDC isn't
-    configured; 503 naming the issuer while discovery hasn't (yet) succeeded.
+    what the callback needs to complete the exchange, including the
+    validated `redirect` return target. 404 when OIDC isn't configured; 503
+    naming the issuer while discovery hasn't (yet) succeeded.
 
     Sends a `GET` request to `/ui/session/oidc/start`
 
+    Arguments:
+    - `redirect`: Same-origin path to return to after a successful login; anything else (or absent) falls back to `/logs`
     ```ignore
     let response = client.session_oidc_start()
+        .redirect(redirect)
         .send()
         .await;
     ```*/
@@ -25268,14 +25279,28 @@ pub mod builder {
     #[derive(Debug, Clone)]
     pub struct SessionOidcStart<'a> {
         client: &'a super::Client,
+        redirect: Result<Option<::std::string::String>, String>,
     }
     impl<'a> SessionOidcStart<'a> {
         pub fn new(client: &'a super::Client) -> Self {
-            Self { client: client }
+            Self {
+                client: client,
+                redirect: Ok(None),
+            }
+        }
+        pub fn redirect<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.redirect = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for redirect failed".to_string()
+            });
+            self
         }
         ///Sends a `GET` request to `/ui/session/oidc/start`
         pub async fn send(self) -> Result<ResponseValue<ByteStream>, Error<()>> {
-            let Self { client } = self;
+            let Self { client, redirect } = self;
+            let redirect = redirect.map_err(Error::InvalidRequest)?;
             let url = format!("{}/ui/session/oidc/start", client.baseurl,);
             let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
             header_map.append(
@@ -25283,7 +25308,12 @@ pub mod builder {
                 ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
             );
             #[allow(unused_mut)]
-            let mut request = client.client.get(url).headers(header_map).build()?;
+            let mut request = client
+                .client
+                .get(url)
+                .query(&progenitor_client::QueryParam::new("redirect", &redirect))
+                .headers(header_map)
+                .build()?;
             let info = OperationInfo {
                 operation_id: "session_oidc_start",
             };

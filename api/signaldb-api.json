@@ -4340,7 +4340,7 @@
           "session"
         ],
         "summary": "GET /ui/session/config",
-        "description": "Unauthenticated probe the login page reads before rendering its\ncredential step. Until OIDC support ships this always answers\npassword-only; the schema does not change when it does.",
+        "description": "Unauthenticated probe the login page reads before rendering its\ncredential step. `oidc` is populated once `[auth.oidc]` is configured\n*and* its provider discovery has succeeded — otherwise `null`, so an\nunreachable issuer degrades to password-only rather than offering a\nbroken SSO button (change: oidc-login). `password_enabled` reflects\n`[auth.oidc].disable_password_login`.",
         "operationId": "login_config",
         "responses": {
           "200": {
@@ -4365,7 +4365,7 @@
           "tenants"
         ],
         "summary": "GET /ui/session/oidc/callback",
-        "description": "Reads state/nonce/PKCE-verifier from the pending-login cookie, exchanges\nthe code, validates the ID token, resolves the identity, and issues the\nstandard session on success. Every failure — missing/invalid pending\ncookie, state mismatch, a bad nonce/signature/expiry, an unverified email\non the link path, an allowlist refusal, or a disabled user — collapses\ninto the same generic redirect with no session created and no disclosure\nof which check failed.",
+        "description": "Reads state/nonce/PKCE-verifier from the pending-login cookie, exchanges\nthe code, validates the ID token, resolves the identity, and issues the\nstandard session on success — redirecting to the `redirect` target the\nstart request carried. Every validation failure — missing/invalid\npending cookie, state mismatch, a bad nonce/signature/expiry, an\nunverified email on the link path, an allowlist refusal, or a disabled\nuser — collapses into the same generic `/login?error=sso_failed`\nredirect with no session created and no disclosure of which check\nfailed; a resolved, enabled identity left with no tenant membership\nafter mapping sync instead redirects to `/login?error=no_membership`,\nkeeping the just-in-time-provisioned user row.",
         "operationId": "session_oidc_callback",
         "parameters": [
           {
@@ -4398,7 +4398,7 @@
         ],
         "responses": {
           "302": {
-            "description": "Redirect to `/` on success (session cookie set) or `/?sso_error=1` on any failure"
+            "description": "Redirect to the carried `redirect` target on success (session cookie set), `/login?error=sso_failed[&redirect=...]` on a generic validation failure, or `/login?error=no_membership&redirect=...` when the user ends up with no tenant membership"
           },
           "404": {
             "description": "OIDC is not configured"
@@ -4415,8 +4415,19 @@
           "tenants"
         ],
         "summary": "GET /ui/session/oidc/start",
-        "description": "302s to the IdP's authorization endpoint with a fresh PKCE challenge,\n`state`, and `nonce`, and sets the signed pending-login cookie carrying\nwhat the callback needs to complete the exchange. 404 when OIDC isn't\nconfigured; 503 naming the issuer while discovery hasn't (yet) succeeded.",
+        "description": "302s to the IdP's authorization endpoint with a fresh PKCE challenge,\n`state`, and `nonce`, and sets the signed pending-login cookie carrying\nwhat the callback needs to complete the exchange, including the\nvalidated `redirect` return target. 404 when OIDC isn't configured; 503\nnaming the issuer while discovery hasn't (yet) succeeded.",
         "operationId": "session_oidc_start",
+        "parameters": [
+          {
+            "name": "redirect",
+            "in": "query",
+            "description": "Same-origin path to return to after a successful login; anything else (or absent) falls back to `/logs`",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "302": {
             "description": "Redirect to the IdP's authorization endpoint; sets the signed pending-login cookie"
