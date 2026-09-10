@@ -162,7 +162,6 @@ tokio-stream = { workspace = true, features = ["net"] }
 # `dep:tempfile`/`dep:testcontainers-modules`) are not enabled.
 tempfile.workspace = true
 testcontainers-modules.workspace = true
-testcontainers.workspace = true
 figment = { workspace = true, features = ["test"] }
 opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "logs", "testing"] }
 sha2 = "0.11"
@@ -170,7 +169,7 @@ sha2 = "0.11"
 [package.metadata.cargo-machete]
 # async-trait is used by discovery backends
 # opentelemetry-semantic-conventions is used in self_monitoring module
-ignored = ["async-trait", "humantime-serde", "testcontainers", "opentelemetry-semantic-conventions"]
+ignored = ["async-trait", "humantime-serde", "opentelemetry-semantic-conventions"]
 
 [build-dependencies]
 schema-model = { path = "../schema-model" }
