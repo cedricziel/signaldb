@@ -256,6 +256,17 @@ fn clamp_limit(limit: Option<usize>) -> usize {
         .clamp(1, MAX_SEARCH_LIMIT)
 }
 
+/// Split a `keys=` query value into trimmed, non-empty names, capped at
+/// [`MAX_SEARCH_LIMIT`]. `None` when the value is absent or blank.
+fn split_keys(raw: &Option<String>) -> Option<impl Iterator<Item = &str>> {
+    raw.as_deref().filter(|k| !k.trim().is_empty()).map(|keys| {
+        keys.split(',')
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .take(MAX_SEARCH_LIMIT)
+    })
+}
+
 // ---- registries -----------------------------------------------------------
 
 #[utoipa::path(
@@ -501,14 +512,9 @@ pub async fn search_attributes<S: RouterState>(
         return *r;
     }
     let resolver = state.schema_resolver();
-    if let Some(keys) = params.keys.as_deref().filter(|k| !k.trim().is_empty()) {
+    if let Some(keys) = split_keys(&params.keys) {
         let mut resolutions = Vec::new();
-        for key in keys
-            .split(',')
-            .map(str::trim)
-            .filter(|k| !k.is_empty())
-            .take(MAX_SEARCH_LIMIT)
-        {
+        for key in keys {
             match resolver.resolve_attribute(&ctx.tenant_id, key).await {
                 Ok(r) => resolutions.push(r.into()),
                 Err(e) => return store_error(e),
@@ -648,14 +654,9 @@ pub async fn search_metrics<S: RouterState>(
         return *r;
     }
     let resolver = state.schema_resolver();
-    if let Some(keys) = params.keys.as_deref().filter(|k| !k.trim().is_empty()) {
+    if let Some(keys) = split_keys(&params.keys) {
         let mut resolutions = Vec::new();
-        for name in keys
-            .split(',')
-            .map(str::trim)
-            .filter(|k| !k.is_empty())
-            .take(MAX_SEARCH_LIMIT)
-        {
+        for name in keys {
             match resolver.resolve_metric(&ctx.tenant_id, name).await {
                 Ok(r) => resolutions.push(r.into()),
                 Err(e) => return store_error(e),
