@@ -19,6 +19,8 @@ use tokio::sync::oneshot;
 use tonic::transport::Server;
 use writer::IcebergWriterFlightService;
 
+mod wal_cli;
+
 /// The `signaldb` command line: the monolith by default, or one service via
 /// its subcommand. The shared options (`--config`, `-v`, `-q`) are global, so
 /// `signaldb --config x router` and `signaldb router --config x` are the same.
@@ -59,6 +61,10 @@ pub enum SignalDbCommands {
     /// Run only the MCP server sidecar
     #[command(version)]
     Mcp(mcp_server::cli::Args),
+    /// Inspect, replay, or purge a WAL's dead-letter directory (operator
+    /// tool, not a service — run on the node that owns the WAL directory)
+    #[command(version)]
+    Wal(wal_cli::Args),
 }
 
 impl Default for SignalDbCommands {
@@ -91,6 +97,7 @@ async fn main() -> Result<()> {
             return compactor::cli::run(&cli.common, args).await;
         }
         SignalDbCommands::Mcp(args) => return mcp_server::cli::run(&cli.common, args).await,
+        SignalDbCommands::Wal(args) => return wal_cli::run(args).await,
         SignalDbCommands::Common(common_cmd) => common_cmd,
     };
 
@@ -761,6 +768,32 @@ mod tests {
         assert!(matches!(
             parse(&["signaldb", "mcp", "--stdio"]).command,
             Some(SignalDbCommands::Mcp(_))
+        ));
+    }
+
+    #[test]
+    fn wal_dead_letter_subcommand_parses() {
+        // Unlike the other service subcommands, `wal` has no default: it
+        // always needs `dead-letter <list|replay|purge>` plus the WAL
+        // location, so the full invocation is exercised here rather than in
+        // `service_subcommand_selects_that_service`.
+        assert!(matches!(
+            parse(&[
+                "signaldb",
+                "wal",
+                "dead-letter",
+                "list",
+                "--wal-dir",
+                "/data/wal/acceptor",
+                "--tenant",
+                "acme",
+                "--dataset",
+                "production",
+                "--signal",
+                "metrics",
+            ])
+            .command,
+            Some(SignalDbCommands::Wal(_))
         ));
     }
 
