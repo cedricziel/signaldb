@@ -24,7 +24,8 @@ use datafusion::functions::string::expr_fn::contains;
 use datafusion::functions_aggregate::expr_fn::{
     avg, count, first_value, last_value, max, min, nth_value, regr_slope, stddev_pop, sum, var_pop,
 };
-use datafusion::logical_expr::{Expr, SortExpr, cast, col, lit, not};
+use datafusion::functions_window::expr_fn::lag;
+use datafusion::logical_expr::{Expr, ExprFunctionExt, SortExpr, cast, col, lit, not, when};
 use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
 
@@ -1044,18 +1045,62 @@ impl MetricsService {
                         ],
                     )
                     .map_err(QuerierError::QueryFailed)?;
-                let d = col("v_last") - col("v_prev");
                 let per_series = match range.function {
-                    RangeFn::Idelta => d,
-                    RangeFn::Irate => d / (col("t_last") - col("t_prev")),
+                    RangeFn::Idelta => col("v_last") - col("v_prev"),
+                    // Counter reset between the last two samples: treat the
+                    // drop as growth from zero rather than a negative rate.
+                    RangeFn::Irate => {
+                        reset_corrected_delta(col("v_last"), col("v_prev"))?
+                            / (col("t_last") - col("t_prev"))
+                    }
                     _ => unreachable!("only irate/idelta here"),
                 };
                 reduced
                     .select(series_select(per_series))
                     .map_err(QuerierError::QueryFailed)?
             }
-            // rate/increase/delta: (last - first)[/seconds].
-            _ => {
+            // `rate`/`increase`: walk the ordered samples in the window and
+            // accumulate the delta between each consecutive pair, applying
+            // the Prometheus counter-reset rule — a drop (`cur < prev`)
+            // means the counter reset, so the pair contributes `cur`
+            // (counted from zero) instead of `cur - prev`. This keeps a
+            // reset anywhere inside the window from ever making the total
+            // negative.
+            RangeFn::Rate | RangeFn::Increase => {
+                let order = vec![SortExpr::new(col("timestamp"), true, true)];
+                // `lag`'s shift-offset default of 1 only applies when the
+                // argument is omitted entirely; passing `None` here encodes
+                // a NULL literal, which the window function reads back as
+                // an explicit offset of 0 (no shift) rather than 1.
+                let prev_value = lag(col("value"), Some(1), None)
+                    .partition_by(series_group(bucket.clone()))
+                    .order_by(order)
+                    .build()
+                    .map_err(QuerierError::QueryFailed)?
+                    .alias("prev_value");
+                let windowed = df
+                    .window(vec![prev_value])
+                    .map_err(QuerierError::QueryFailed)?;
+                // The window's first sample per series has no `prev_value`
+                // (NULL); it contributes nothing, same as the reset rule
+                // giving a NULL delta that `sum` already ignores.
+                let contribution = when(col("prev_value").is_null(), lit(0.0))
+                    .otherwise(reset_corrected_delta(col("value"), col("prev_value"))?)
+                    .map_err(QuerierError::QueryFailed)?;
+                let reduced = windowed
+                    .aggregate(series_group(bucket), vec![sum(contribution).alias("total")])
+                    .map_err(QuerierError::QueryFailed)?;
+                let per_series = match range.function {
+                    RangeFn::Increase => col("total"),
+                    RangeFn::Rate => col("total") / lit(range.seconds),
+                    _ => unreachable!("only rate/increase here"),
+                };
+                reduced
+                    .select(series_select(per_series))
+                    .map_err(QuerierError::QueryFailed)?
+            }
+            // `delta`: a gauge difference, last - first; no reset handling.
+            RangeFn::Delta => {
                 let order = vec![SortExpr::new(col("timestamp"), true, true)];
                 let reduced = df
                     .aggregate(
@@ -1067,15 +1112,8 @@ impl MetricsService {
                     )
                     .map_err(QuerierError::QueryFailed)?;
                 let delta = col("last") - col("first");
-                let per_series = match range.function {
-                    RangeFn::Increase | RangeFn::Delta => delta,
-                    RangeFn::Rate => delta / lit(range.seconds),
-                    RangeFn::Deriv | RangeFn::Irate | RangeFn::Idelta => {
-                        unreachable!("handled above")
-                    }
-                };
                 reduced
-                    .select(series_select(per_series))
+                    .select(series_select(delta))
                     .map_err(QuerierError::QueryFailed)?
             }
         };
@@ -2541,6 +2579,18 @@ fn apply_topk(batches: Vec<RecordBatch>, spec: TopKSpec) -> Result<Vec<RecordBat
     Ok(vec![out])
 }
 
+/// Prometheus's counter-reset rule for a delta between two ordered samples,
+/// `prev` followed by `cur`: a drop (`cur < prev`) means the counter reset
+/// (e.g. a process restart), so the pair contributes `cur` (counted from
+/// zero) instead of `cur - prev`. Shared by `rate`/`increase` (summed over
+/// every consecutive pair in the window) and `irate` (applied to just the
+/// last two samples).
+fn reset_corrected_delta(cur: Expr, prev: Expr) -> Result<Expr, QuerierError> {
+    when(cur.clone().lt(prev.clone()), cur.clone())
+        .otherwise(cur - prev)
+        .map_err(QuerierError::QueryFailed)
+}
+
 fn cast_ns(expr: Expr) -> Expr {
     datafusion::logical_expr::cast(expr, DataType::Timestamp(TimeUnit::Nanosecond, None))
 }
@@ -2651,6 +2701,54 @@ mod tests {
         catalog.register_schema("d", schema_provider).unwrap();
         ctx.register_catalog("t", catalog);
         MetricsService::new(ctx)
+    }
+
+    /// A single `api` counter series with the given (timestamp, value)
+    /// samples, for exercising the Prometheus counter-reset rule.
+    fn service_with_counter_series(samples: &[(i64, f64)]) -> MetricsService {
+        let schema = metrics_schema();
+        let n = samples.len();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(
+                    samples.iter().map(|(ts, _)| *ts).collect::<Vec<_>>(),
+                )),
+                Arc::new(TimestampNanosecondArray::from(vec![None::<i64>; n])),
+                Arc::new(StringArray::from(vec!["api"; n])),
+                Arc::new(StringArray::from(vec!["reqs"; n])),
+                Arc::new(Float64Array::from(
+                    samples.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(vec!["{}"; n])),
+                Arc::new(StringArray::from(vec!["{}"; n])),
+            ],
+        )
+        .unwrap();
+
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let schema_provider = Arc::new(MemorySchemaProvider::new());
+        schema_provider
+            .register_table("metrics_gauge".to_string(), Arc::new(table))
+            .unwrap();
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        catalog.register_schema("d", schema_provider).unwrap();
+        ctx.register_catalog("t", catalog);
+        MetricsService::new(ctx)
+    }
+
+    /// A counter series that resets mid-window: `[10, 20, 5, 15]`. The drop
+    /// from 20 to 5 is a counter reset (process restart), not a real
+    /// decrease; Prometheus semantics count the post-reset value from zero.
+    fn service_with_reset_data() -> MetricsService {
+        service_with_counter_series(&[(100, 10.0), (200, 20.0), (300, 5.0), (400, 15.0)])
+    }
+
+    /// A two-sample counter series whose only two samples straddle a reset
+    /// (20 -> 5), so `irate`'s last-two-samples window sees the reset.
+    fn service_with_irate_reset_data() -> MetricsService {
+        service_with_counter_series(&[(100, 20.0), (200, 5.0)])
     }
 
     /// Collect (metric_name, service?, value) tuples from a matrix.
@@ -3033,6 +3131,85 @@ mod tests {
             .find(|(_, s, _)| s.as_deref() == Some("api"))
             .unwrap();
         assert!((api.2 - 2.0e7).abs() < 1.0, "got {}", api.2);
+    }
+
+    #[tokio::test]
+    async fn increase_accounts_for_counter_reset() {
+        let service = service_with_reset_data();
+        // [10, 20, 5, 15]: 20->5 is a reset, counted from zero.
+        // increase = (20-10) + 5 + (15-5) = 10 + 5 + 10 = 25.
+        let out = matrix(&service, "increase(reqs[1m])", 1000).await;
+        let api = out
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("api"))
+            .unwrap();
+        assert_eq!(api.2, 25.0);
+    }
+
+    #[tokio::test]
+    async fn rate_is_never_negative_across_a_counter_reset() {
+        let service = service_with_reset_data();
+        // Reset-corrected increase 25 over a 60s range = rate 25/60.
+        let out = matrix(&service, "rate(reqs[1m])", 1000).await;
+        let api = out
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("api"))
+            .unwrap();
+        assert!(api.2 >= 0.0, "rate must never be negative, got {}", api.2);
+        assert!((api.2 - 25.0 / 60.0).abs() < 1e-9, "got {}", api.2);
+    }
+
+    #[tokio::test]
+    async fn irate_treats_a_reset_as_growth_from_zero() {
+        let service = service_with_reset_data();
+        // Last two samples (300ns, 5) and (400ns, 15) don't cross the reset,
+        // so irate is the plain last-two-sample rate: (15-5)/(100ns) = 1e8.
+        let out = matrix(&service, "irate(reqs[1m])", 1000).await;
+        let api = out
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("api"))
+            .unwrap();
+        assert!((api.2 - 1.0e8).abs() < 1.0, "got {}", api.2);
+    }
+
+    #[tokio::test]
+    async fn irate_is_never_negative_across_a_counter_reset() {
+        let service = service_with_irate_reset_data();
+        // Only samples (100ns, 20), (200ns, 5): the drop is a reset, so
+        // irate treats it as growth from zero: 5 / (100ns = 1e-7s) = 5e7,
+        // never the naive (5-20)/1e-7 = -1.5e8.
+        let out = matrix(&service, "irate(reqs[1m])", 1000).await;
+        let api = out
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("api"))
+            .unwrap();
+        assert!(api.2 >= 0.0, "irate must never be negative, got {}", api.2);
+        assert!((api.2 - 5.0e7).abs() < 1.0, "got {}", api.2);
+    }
+
+    #[tokio::test]
+    async fn delta_is_unaffected_by_counter_reset_handling() {
+        let service = service_with_reset_data();
+        // `delta` is a gauge function: last - first, reset rule does not
+        // apply. [10, 20, 5, 15] => 15 - 10 = 5.
+        let out = matrix(&service, "delta(reqs[1m])", 1000).await;
+        let api = out
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("api"))
+            .unwrap();
+        assert_eq!(api.2, 5.0);
+    }
+
+    #[tokio::test]
+    async fn resets_agrees_with_the_reset_corrected_increase_path() {
+        let service = service_with_reset_data();
+        // [10, 20, 5, 15] has exactly one reset event (20 -> 5).
+        let out = matrix(&service, "resets(reqs[1m])", 1000).await;
+        let api = out
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("api"))
+            .unwrap();
+        assert_eq!(api.2, 1.0);
     }
 
     #[tokio::test]

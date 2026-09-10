@@ -24,8 +24,8 @@ use opentelemetry_proto::tonic::{
     collector::metrics::v1::ExportMetricsServiceRequest,
     common::v1::{AnyValue, KeyValue, any_value::Value},
     metrics::v1::{
-        Gauge, Histogram, HistogramDataPoint, Metric, NumberDataPoint, ResourceMetrics,
-        ScopeMetrics, metric::Data, number_data_point,
+        AggregationTemporality, Gauge, Histogram, HistogramDataPoint, Metric, NumberDataPoint,
+        ResourceMetrics, ScopeMetrics, Sum, metric::Data, number_data_point,
     },
     resource::v1::Resource,
 };
@@ -322,6 +322,58 @@ fn histogram_metrics(service: &str) -> ExportMetricsServiceRequest {
                             min: Some(0.5),
                             max: Some(6.0),
                         }],
+                    })),
+                    metadata: vec![],
+                }],
+                schema_url: String::new(),
+            }],
+            schema_url: String::new(),
+        }],
+    }
+}
+
+/// A monotonic counter `requests_total` sampled every 10s as
+/// `[10, 20, 5, 15]` — the 20 -> 5 drop is a counter reset (e.g. a process
+/// restart), not a real decrease. Reset-aware Prometheus semantics count
+/// the increase from zero after a reset: (20-10) + 5 + (15-5) = 25.
+fn counter_with_reset_metrics(service: &str) -> ExportMetricsServiceRequest {
+    let points: [(u64, f64); 4] = [
+        (BASE_NS, 10.0),
+        (BASE_NS + 10_000_000_000, 20.0),
+        (BASE_NS + 20_000_000_000, 5.0),
+        (BASE_NS + 30_000_000_000, 15.0),
+    ];
+    ExportMetricsServiceRequest {
+        resource_metrics: vec![ResourceMetrics {
+            resource: Some(Resource {
+                attributes: vec![KeyValue {
+                    key: "service.name".to_string(),
+                    value: Some(string_value(service)),
+                    ..Default::default()
+                }],
+                dropped_attributes_count: 0,
+                ..Default::default()
+            }),
+            scope_metrics: vec![ScopeMetrics {
+                scope: None,
+                metrics: vec![Metric {
+                    name: "requests_total".to_string(),
+                    description: String::new(),
+                    unit: "1".to_string(),
+                    data: Some(Data::Sum(Sum {
+                        data_points: points
+                            .iter()
+                            .map(|(ts, value)| NumberDataPoint {
+                                attributes: vec![],
+                                start_time_unix_nano: BASE_NS,
+                                time_unix_nano: *ts,
+                                value: Some(number_data_point::Value::AsDouble(*value)),
+                                exemplars: vec![],
+                                flags: 0,
+                            })
+                            .collect(),
+                        aggregation_temporality: AggregationTemporality::Cumulative as i32,
+                        is_monotonic: true,
                     })),
                     metadata: vec![],
                 }],
@@ -668,6 +720,51 @@ async fn promql_range_query_sum_aggregates_across_series() {
     assert!(
         (matrix_value_sum(&body) - 30.0).abs() < 1e-9,
         "sum(requests) should total 30: {body}"
+    );
+}
+
+#[tokio::test]
+async fn promql_rate_and_increase_are_reset_aware_across_a_counter_restart() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    services
+        .metrics_handler
+        .handle_grpc_otlp_metrics(&ctx, counter_with_reset_metrics("restart-svc"))
+        .await
+        .expect("ingest counter with reset");
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
+        .await
+        .expect("flush writer");
+
+    let app = build_router(&services).await;
+    let w = window();
+
+    // increase() must apply the Prometheus counter-reset rule: the drop
+    // from 20 to 5 is counted from zero, giving 10 + 5 + 10 = 25 — never
+    // the naive last-minus-first (15 - 10 = 5).
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/query_range?query=increase(requests_total[5m])&{w}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "increase query_range: {body}");
+    assert!(
+        matrix_all_values_near(&body, 25.0, 1e-6),
+        "increase must be reset-corrected to 25, not last-first: {body}"
+    );
+
+    // rate() is the reset-corrected increase divided by the window and must
+    // never go negative across the restart.
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/query_range?query=rate(requests_total[5m])&{w}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "rate query_range: {body}");
+    assert!(
+        matrix_all_values_near(&body, 25.0 / 300.0, 1e-6),
+        "rate must equal the reset-corrected increase over the 300s window: {body}"
     );
 }
 
