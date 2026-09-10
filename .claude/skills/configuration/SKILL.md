@@ -179,10 +179,10 @@ Env: `SIGNALDB__AUTH__OIDC__*` (double-underscore), e.g.
 
 Field/behaviour notes:
 
-- `redirect_url` overrides the callback URL SignalDB otherwise derives from the
-  request origin (`X-Forwarded-Host`/`-Proto`, else `Host`). That derivation
-  trusts a client-controlled header — set `redirect_url` explicitly for anything
-  internet-facing.
+- `redirect_url` overrides the callback URL SignalDB otherwise derives from
+  `[public].api_url` (`{api_url}/ui/session/oidc/callback`). Request headers
+  are never trusted for the callback origin — set `[public].api_url` (or
+  `redirect_url` to pin it exactly) for anything internet-facing.
 - `allowed_email_domains` gates **JIT creation only**; a pre-existing user
   outside the list can still link via verified email.
 - `group_mappings` need `group_claim`. Mapped memberships (`granted_by =

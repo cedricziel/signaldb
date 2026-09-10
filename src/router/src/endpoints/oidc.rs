@@ -28,7 +28,7 @@ use axum::{
 use chrono::{Duration as ChronoDuration, Utc};
 use common::auth::{generate_session_token, hash_session_token, session_cookie_header};
 use common::catalog::{MembershipRole, UserRecord};
-use common::config::OidcConfig;
+use common::config::{OidcConfig, PublicEndpointsConfig};
 use serde::Deserialize;
 use serde_json::json;
 
@@ -92,7 +92,6 @@ pub struct StartParams {
 pub async fn start<S: RouterState>(
     State(state): State<S>,
     Query(params): Query<StartParams>,
-    headers: HeaderMap,
 ) -> Response {
     let Some(runtime) = state.oidc() else {
         return error_response(StatusCode::NOT_FOUND, "OIDC is not configured");
@@ -110,15 +109,7 @@ pub async fn start<S: RouterState>(
 
     let redirect_uri = match runtime.config.redirect_url.clone() {
         Some(url) => url,
-        None => match derive_callback_url(&headers) {
-            Some(url) => url,
-            None => {
-                return error_response(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "Unable to determine the OIDC callback URL from the request",
-                );
-            }
-        },
+        None => callback_url_from_public_api_url(&state.config().public),
     };
 
     let authorization = match provider.begin_authorization(&redirect_uri) {
@@ -536,19 +527,14 @@ async fn resolve_identity<S: RouterState>(
     Ok(Some(user))
 }
 
-/// Derive the callback URL from the request's origin (Risks section): reads
-/// `X-Forwarded-{Host,Proto}` first (the reverse-proxy case the setup docs
-/// lead with), falling back to the `Host` header and an `https` scheme.
-fn derive_callback_url(headers: &HeaderMap) -> Option<String> {
-    let host = headers
-        .get("x-forwarded-host")
-        .or_else(|| headers.get(header::HOST))
-        .and_then(|v| v.to_str().ok())?;
-    let scheme = headers
-        .get("x-forwarded-proto")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or("https");
-    Some(format!("{scheme}://{host}/ui/session/oidc/callback"))
+/// The fallback callback URL used when `[auth.oidc].redirect_url` is unset:
+/// `[public].api_url` (already validated, trimmed of a trailing slash, and
+/// defaulted to `http://localhost:3000`) with the callback path appended.
+/// Request headers (`Host`, `X-Forwarded-Host`/`-Proto`) are never trusted
+/// for this — an attacker who controls those headers must not be able to
+/// steer the authorization code to a foreign origin.
+fn callback_url_from_public_api_url(public: &PublicEndpointsConfig) -> String {
+    format!("{}/ui/session/oidc/callback", public.api_url())
 }
 
 /// Extract the raw (still-signed) pending-login cookie value, mirroring
@@ -826,6 +812,13 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
     }
 
     async fn test_state(oidc: Option<OidcConfig>) -> RouterAppState {
+        test_state_with_public(oidc, PublicEndpointsConfig::default()).await
+    }
+
+    async fn test_state_with_public(
+        oidc: Option<OidcConfig>,
+        public: PublicEndpointsConfig,
+    ) -> RouterAppState {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let config = Configuration {
             auth: AuthConfig {
@@ -833,6 +826,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
                 oidc,
                 ..Default::default()
             },
+            public,
             ..Default::default()
         };
         catalog.sync_config_tenants(&config.auth).await.unwrap();
@@ -940,6 +934,119 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
         assert!(!set_cookie.contains("SameSite=Strict"));
         assert!(set_cookie.contains("Path=/ui/session/oidc"));
         assert!(set_cookie.contains("Max-Age=300"));
+    }
+
+    #[tokio::test]
+    async fn start_derives_redirect_uri_from_public_api_url_when_unset() {
+        let server = MockServer::start().await;
+        mount_discovery_and_jwks(&server, vec![jwk_json(KEY_1_PEM, "kid1")]).await;
+        let state = test_state_with_public(
+            Some(oidc_config(server.uri(), None)),
+            PublicEndpointsConfig {
+                api_url: Some("https://signaldb.example.com".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+        wait_for_ready(&state).await;
+        let app = create_router(state);
+
+        let request = Request::builder()
+            .uri("/ui/session/oidc/start")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let url = Url::parse(&location).unwrap();
+        assert_eq!(
+            query_param(&url, "redirect_uri"),
+            "https://signaldb.example.com/ui/session/oidc/callback"
+        );
+    }
+
+    /// Regression for the header-spoofing vulnerability: a request carrying
+    /// forwarded/host headers claiming an attacker origin must still produce
+    /// the `[public].api_url`-derived `redirect_uri` — request headers are
+    /// never trusted for the OIDC callback.
+    #[tokio::test]
+    async fn start_ignores_forwarded_and_host_headers_for_redirect_uri() {
+        let server = MockServer::start().await;
+        mount_discovery_and_jwks(&server, vec![jwk_json(KEY_1_PEM, "kid1")]).await;
+        let state = test_state_with_public(
+            Some(oidc_config(server.uri(), None)),
+            PublicEndpointsConfig {
+                api_url: Some("https://signaldb.example.com".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+        wait_for_ready(&state).await;
+        let app = create_router(state);
+
+        let request = Request::builder()
+            .uri("/ui/session/oidc/start")
+            .header("X-Forwarded-Host", "evil.example")
+            .header("Host", "evil.example")
+            .header("X-Forwarded-Proto", "http")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let url = Url::parse(&location).unwrap();
+        assert_eq!(
+            query_param(&url, "redirect_uri"),
+            "https://signaldb.example.com/ui/session/oidc/callback"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_prefers_configured_redirect_url_over_public_api_url() {
+        let server = MockServer::start().await;
+        mount_discovery_and_jwks(&server, vec![jwk_json(KEY_1_PEM, "kid1")]).await;
+        let redirect_url = "https://configured.example.com/ui/session/oidc/callback".to_string();
+        let state = test_state_with_public(
+            Some(oidc_config(server.uri(), Some(redirect_url.clone()))),
+            PublicEndpointsConfig {
+                api_url: Some("https://signaldb.example.com".to_string()),
+                ..Default::default()
+            },
+        )
+        .await;
+        wait_for_ready(&state).await;
+        let app = create_router(state);
+
+        let request = Request::builder()
+            .uri("/ui/session/oidc/start")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let url = Url::parse(&location).unwrap();
+        assert_eq!(query_param(&url, "redirect_uri"), redirect_url);
     }
 
     /// Drives a real `/start` request to capture the actual, randomly

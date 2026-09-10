@@ -995,9 +995,12 @@ pub struct OidcConfig {
     pub client_id: String,
     /// OAuth client secret registered with the IdP.
     pub client_secret: String,
-    /// Overrides the callback URL the start endpoint derives from the
-    /// request's origin. Needed when SignalDB sits behind a reverse proxy
-    /// that changes the externally-visible scheme/host.
+    /// Overrides the callback URL the start endpoint otherwise derives from
+    /// `[public].api_url` (`{api_url}/ui/session/oidc/callback`). Needed
+    /// when SignalDB sits behind a reverse proxy that changes the
+    /// externally-visible scheme/host from what `[public].api_url` states.
+    /// Request headers (`Host`, `X-Forwarded-*`) are never used to build the
+    /// callback, whether or not this is set.
     pub redirect_url: Option<String>,
     /// Label shown on the login page's SSO button. Defaults to the issuer
     /// host when unset (cosmetic, resolved at the RP layer).

@@ -44,20 +44,19 @@ The callback the IdP must redirect back to is:
 https://<your-signaldb-host>/ui/session/oidc/callback
 ```
 
-SignalDB derives that URL from the incoming request's origin — it reads
-`X-Forwarded-Host` / `X-Forwarded-Proto` (the reverse-proxy case) and falls
-back to the `Host` header with an `https` scheme. That derivation is convenient
-for a plain single-host deployment, but it **trusts the `Host` /
-`X-Forwarded-Host` header**, which a client controls.
+When `[auth.oidc].redirect_url` is unset, SignalDB derives that URL from
+`[public].api_url` (`{api_url}/ui/session/oidc/callback`) — never from the
+incoming request's headers. Request headers such as `Host` or
+`X-Forwarded-Host`/`-Proto` are never trusted for this, because a client
+controls them.
 
-> **For anything internet-facing, set `redirect_url` explicitly.** Pin the
-> exact external callback URL in `[auth.oidc].redirect_url` rather than relying
-> on header derivation. This is both a correctness fix (a proxy that rewrites
-> the host/scheme otherwise produces a callback URL the IdP rejects) and a
-> hardening step (a spoofed `Host` header cannot steer the redirect). When
-> `redirect_url` is set it is used verbatim for both the authorization request
-> and the token exchange, and it must be registered as an allowed redirect URI
-> in the IdP.
+> **Set `[public].api_url` (and `redirect_url` if it differs) for anything
+> internet-facing.** When `redirect_url` is set it wins outright and is used
+> verbatim for both the authorization request and the token exchange; when
+> unset, `[public].api_url` must already reflect the externally-visible
+> scheme/host (e.g. behind a reverse proxy) or the derived callback URL will
+> be wrong. Either way, the resulting callback must be registered as an
+> allowed redirect URI in the IdP.
 
 Register the same value as an allowed redirect/callback URI in the IdP's client
 configuration.

@@ -207,8 +207,8 @@ See proposal.md — Why. What shapes the approach:
 ## Risks / Trade-offs
 
 - [IdP redirects depend on correct external URL config] → the start endpoint
-  derives the callback from the request's origin unless
-  `[auth.oidc].redirect_url` overrides it; the setup doc leads with the
+  derives the callback from `[public].api_url` (never from request headers)
+  unless `[auth.oidc].redirect_url` overrides it; the setup doc leads with the
   reverse-proxy case.
 - [Clock skew breaks exp/iat validation] → accept the crate's default leeway
   (5 min) and document it.

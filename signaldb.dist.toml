@@ -42,10 +42,10 @@ dsn = "sqlite://.data/signaldb.db"
 # client_id = "signaldb"                                          # required; OAuth client ID
 # client_secret = "sk-oidc-client-secret"                         # required; confidential client secret
 #
-# The callback is https://<host>/ui/session/oidc/callback. SignalDB derives it
-# from the request origin (X-Forwarded-Host/-Proto, else Host), which trusts a
-# client-controlled header — set redirect_url explicitly for anything
-# internet-facing so the callback is pinned and not steerable by a spoofed Host.
+# The callback is https://<host>/ui/session/oidc/callback. When unset, SignalDB
+# derives it from [public].api_url (never from request headers) — set
+# [public].api_url for internet-facing deployments, or set redirect_url below
+# to pin the callback explicitly (it wins over [public].api_url when set).
 # redirect_url = "https://signaldb.example.com/ui/session/oidc/callback"
 #
 # display_name = "Example SSO"        # label on the login button; defaults to the issuer host
