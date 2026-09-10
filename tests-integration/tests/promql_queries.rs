@@ -246,6 +246,29 @@ fn gauge_metrics_at(
     code: &str,
     ts_ns: u64,
 ) -> ExportMetricsServiceRequest {
+    gauge_metrics_named_at("requests", service, value, code, ts_ns)
+}
+
+/// Like [`gauge_metrics`], with an explicit metric name — used to ingest a
+/// second, differently-named series (#1502).
+fn gauge_metrics_named(
+    metric_name: &str,
+    service: &str,
+    value: f64,
+    code: &str,
+) -> ExportMetricsServiceRequest {
+    gauge_metrics_named_at(metric_name, service, value, code, BASE_NS)
+}
+
+/// One gauge metric with an explicit name and sample timestamp for a
+/// service, with a `code` attribute.
+fn gauge_metrics_named_at(
+    metric_name: &str,
+    service: &str,
+    value: f64,
+    code: &str,
+    ts_ns: u64,
+) -> ExportMetricsServiceRequest {
     ExportMetricsServiceRequest {
         resource_metrics: vec![ResourceMetrics {
             resource: Some(Resource {
@@ -260,7 +283,7 @@ fn gauge_metrics_at(
             scope_metrics: vec![ScopeMetrics {
                 scope: None,
                 metrics: vec![Metric {
-                    name: "requests".to_string(),
+                    name: metric_name.to_string(),
                     description: String::new(),
                     unit: "1".to_string(),
                     data: Some(Data::Gauge(Gauge {
@@ -997,6 +1020,68 @@ async fn promql_series_endpoint_returns_matching_series() {
         "series should all be requests: {body}"
     );
     assert_eq!(series.len(), 2, "one series per job: {body}");
+}
+
+/// Percent-encode a raw selector for use as a query-string value.
+fn urlenc(s: &str) -> String {
+    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
+}
+
+#[tokio::test]
+async fn promql_series_endpoint_name_regex_matches_prefix() {
+    let (_services, app) = setup_with_ingested_metrics().await;
+    let w = window();
+
+    let selector = urlenc(r#"{__name__=~"req.*"}"#);
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/series?match%5B%5D={selector}&{w}"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "series: {body}");
+    let series = body["data"].as_array().cloned().unwrap_or_default();
+    assert!(
+        series.iter().all(|s| s["__name__"] == "requests"),
+        "series should all be requests: {body}"
+    );
+    assert_eq!(series.len(), 2, "one series per job: {body}");
+}
+
+#[tokio::test]
+async fn promql_series_endpoint_negated_name_regex_excludes_matches() {
+    let (services, app) = setup_with_ingested_metrics().await;
+    let ctx = test_tenant_context();
+
+    // A second, differently-named gauge metric so a wrongly-collapsed exact
+    // match (which would filter out everything) is distinguishable from a
+    // real negated regex (which keeps the non-matching metric).
+    services
+        .metrics_handler
+        .handle_grpc_otlp_metrics(&ctx, gauge_metrics_named("errors", "api", 1.0, "200"))
+        .await
+        .expect("ingest errors gauge");
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
+        .await
+        .expect("flush writer");
+
+    let w = window();
+    // A lone `!~` matcher also matches the empty name, so PromQL requires
+    // another matcher to keep the selector non-trivial.
+    let selector = urlenc(r#"{__name__!~"req.*", job="api"}"#);
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/series?match%5B%5D={selector}&{w}"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "series: {body}");
+    let series = body["data"].as_array().cloned().unwrap_or_default();
+    let names: Vec<&str> = series
+        .iter()
+        .map(|s| s["__name__"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(names, vec!["errors"], "{body}");
 }
 
 #[tokio::test]

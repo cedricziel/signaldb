@@ -30,7 +30,7 @@ range functions fold across time within a series.
 |---------|--------|
 | Instant vector selector `metric{…}` | ✅ |
 | Label matchers `=`, `!=`, `=~`, `!~` | ✅ (all four operators on `service_name` and on **materialized** labels; on map-typed tables any attribute supports all four; legacy JSON tables: `=`/`!=` substring only) |
-| `__name__` matcher | ✅ |
+| `__name__` matcher | ✅ (`=`, `!=`, `=~`, `!~`; regex patterns are fully anchored, as in Prometheus) |
 | Range vector selector `metric[5m]` (as a function argument) | ✅ |
 | `offset` modifier (`metric offset 5m`) | ✅ |
 | `@` modifier (`metric @ 1600000000`, `@ start()`/`@ end()`) | ✅ (pins to the instant, 5-min lookback, replicated across steps) |
