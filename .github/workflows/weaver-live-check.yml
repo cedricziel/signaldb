@@ -23,8 +23,14 @@ name: Weaver Live Check
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, edited]
+    # Advisory only (not a required check), so path filtering is safe:
+    # nothing in openspec/ reaches the binary this job boots.
+    paths-ignore:
+      - "openspec/**"
   push:
     branches: [main]
+    paths-ignore:
+      - "openspec/**"
 
 env:
   WEAVER_VERSION: v0.25.1

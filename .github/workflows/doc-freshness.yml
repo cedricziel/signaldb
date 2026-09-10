@@ -3,6 +3,10 @@ name: Doc Freshness
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, edited, labeled, unlabeled]
+    # Not a required check, so path filtering is safe; no living doc
+    # declares an openspec/ source.
+    paths-ignore:
+      - "openspec/**"
 
 jobs:
   check:
