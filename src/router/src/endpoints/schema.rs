@@ -93,6 +93,9 @@ pub struct EntitySearchResponse {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct MetricSearchResponse {
     pub hits: Vec<MetricHit>,
+    /// Present when `keys=` was given: one resolution per requested name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolutions: Vec<MetricResolution>,
 }
 
 /// Every definition of one attribute key across the visible registries, in
@@ -149,7 +152,9 @@ impl From<Resolution<MetricHit>> for MetricResolution {
     }
 }
 
-/// Query parameters for prefix search / batch resolution.
+/// Query parameters for prefix search / batch resolution (attributes and
+/// metrics — see [`EntitySearchParams`] for entities, which do not resolve
+/// an exact key set).
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct SearchParams {
     /// Name prefix (empty lists from the top).
@@ -157,8 +162,21 @@ pub struct SearchParams {
     pub prefix: String,
     /// Maximum hits (default 50, max 200).
     pub limit: Option<usize>,
-    /// Comma-separated exact keys to resolve in one call (attributes only).
+    /// Comma-separated exact keys to resolve in one call (attributes and
+    /// metrics only).
     pub keys: Option<String>,
+}
+
+/// Query parameters for entity prefix search. Entities have no `keys=`
+/// batch-resolution parameter: unlike attributes and metrics, there is no
+/// endpoint support for resolving an exact entity-type name set in one call.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct EntitySearchParams {
+    /// Name prefix (empty lists from the top).
+    #[serde(default)]
+    pub prefix: String,
+    /// Maximum hits (default 50, max 200).
+    pub limit: Option<usize>,
 }
 
 // ---- helpers --------------------------------------------------------------
@@ -250,6 +268,17 @@ fn clamp_limit(limit: Option<usize>) -> usize {
     limit
         .unwrap_or(DEFAULT_SEARCH_LIMIT)
         .clamp(1, MAX_SEARCH_LIMIT)
+}
+
+/// Split a `keys=` query value into trimmed, non-empty names, capped at
+/// [`MAX_SEARCH_LIMIT`]. `None` when the value is absent or blank.
+fn split_keys(raw: &Option<String>) -> Option<impl Iterator<Item = &str>> {
+    raw.as_deref().filter(|k| !k.trim().is_empty()).map(|keys| {
+        keys.split(',')
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .take(MAX_SEARCH_LIMIT)
+    })
 }
 
 // ---- registries -----------------------------------------------------------
@@ -497,14 +526,9 @@ pub async fn search_attributes<S: RouterState>(
         return *r;
     }
     let resolver = state.schema_resolver();
-    if let Some(keys) = params.keys.as_deref().filter(|k| !k.trim().is_empty()) {
+    if let Some(keys) = split_keys(&params.keys) {
         let mut resolutions = Vec::new();
-        for key in keys
-            .split(',')
-            .map(str::trim)
-            .filter(|k| !k.is_empty())
-            .take(MAX_SEARCH_LIMIT)
-        {
+        for key in keys {
             match resolver.resolve_attribute(&ctx.tenant_id, key).await {
                 Ok(r) => resolutions.push(r.into()),
                 Err(e) => return store_error(e),
@@ -565,7 +589,7 @@ pub async fn resolve_attribute<S: RouterState>(
     path = "/api/v1/schema/entities",
     tag = "schema",
     operation_id = "schema_search_entities",
-    params(SearchParams),
+    params(EntitySearchParams),
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "Entity types whose name starts with the prefix", body = EntitySearchResponse),
@@ -576,7 +600,7 @@ pub async fn resolve_attribute<S: RouterState>(
 pub async fn search_entities<S: RouterState>(
     State(state): State<S>,
     Extension(ctx): Extension<TenantContext>,
-    Query(params): Query<SearchParams>,
+    Query(params): Query<EntitySearchParams>,
 ) -> Response {
     if let Err(r) = require_read(&ctx) {
         return *r;
@@ -630,7 +654,7 @@ pub async fn resolve_entity<S: RouterState>(
     params(SearchParams),
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
-        (status = 200, description = "Metrics whose name starts with the prefix", body = MetricSearchResponse),
+        (status = 200, description = "Prefix hits (and per-name resolutions when keys= is given)", body = MetricSearchResponse),
         (status = 403, description = "Missing schema:read scope", body = SchemaError),
     ),
     security(("bearer" = []))
@@ -643,12 +667,30 @@ pub async fn search_metrics<S: RouterState>(
     if let Err(r) = require_read(&ctx) {
         return *r;
     }
-    match state
-        .schema_resolver()
+    let resolver = state.schema_resolver();
+    if let Some(keys) = split_keys(&params.keys) {
+        let mut resolutions = Vec::new();
+        for name in keys {
+            match resolver.resolve_metric(&ctx.tenant_id, name).await {
+                Ok(r) => resolutions.push(r.into()),
+                Err(e) => return store_error(e),
+            }
+        }
+        return Json(MetricSearchResponse {
+            hits: Vec::new(),
+            resolutions,
+        })
+        .into_response();
+    }
+    match resolver
         .search_metrics(&ctx.tenant_id, &params.prefix, clamp_limit(params.limit))
         .await
     {
-        Ok(hits) => Json(MetricSearchResponse { hits }).into_response(),
+        Ok(hits) => Json(MetricSearchResponse {
+            hits,
+            resolutions: Vec::new(),
+        })
+        .into_response(),
         Err(e) => store_error(e),
     }
 }
@@ -1320,6 +1362,23 @@ mod tests {
         .await;
         assert_eq!(status, 200);
         assert_eq!(body["hits"][0]["name"], "acme.checkout.latency");
+
+        // batch keys= on metrics
+        let (status, body) = call(
+            &app,
+            Auth::Key("sk-read", "acme"),
+            "GET",
+            "/api/v1/schema/metrics?keys=k8s.pod.cpu.time,acme.checkout.latency,no.such",
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let res = body["resolutions"].as_array().unwrap();
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0]["key"], "k8s.pod.cpu.time");
+        assert_eq!(res[0]["primary"]["namespace"], "otel");
+        assert_eq!(res[1]["primary"]["namespace"], "acme");
+        assert!(res[2]["hits"].as_array().unwrap().is_empty());
 
         // ingest-only key is refused on reads
         let (status, _) = call(

@@ -1186,6 +1186,10 @@ export type MetricResolution = {
 
 export type MetricSearchResponse = {
     hits: Array<MetricHit>;
+    /**
+     * Present when `keys=` was given: one resolution per requested name.
+     */
+    resolutions?: Array<MetricResolution>;
 };
 
 /**
@@ -3340,7 +3344,8 @@ export type SchemaSearchAttributesData = {
          */
         limit?: number | null;
         /**
-         * Comma-separated exact keys to resolve in one call (attributes only).
+         * Comma-separated exact keys to resolve in one call (attributes and
+         * metrics only).
          */
         keys?: string | null;
     };
@@ -3449,10 +3454,6 @@ export type SchemaSearchEntitiesData = {
          * Maximum hits (default 50, max 200).
          */
         limit?: number | null;
-        /**
-         * Comma-separated exact keys to resolve in one call (attributes only).
-         */
-        keys?: string | null;
     };
     url: '/api/v1/schema/entities';
 };
@@ -3560,7 +3561,8 @@ export type SchemaSearchMetricsData = {
          */
         limit?: number | null;
         /**
-         * Comma-separated exact keys to resolve in one call (attributes only).
+         * Comma-separated exact keys to resolve in one call (attributes and
+         * metrics only).
          */
         keys?: string | null;
     };
@@ -3599,7 +3601,7 @@ export type SchemaSearchMetricsError = SchemaSearchMetricsErrors[keyof SchemaSea
 
 export type SchemaSearchMetricsResponses = {
     /**
-     * Metrics whose name starts with the prefix
+     * Prefix hits (and per-name resolutions when keys= is given)
      */
     200: MetricSearchResponse;
 };

@@ -776,6 +776,11 @@ struct SearchSchemaParams {
     /// Maximum hits (server default 50, max 200).
     #[serde(default)]
     limit: Option<u64>,
+    /// Comma-separated exact names to resolve in one call instead of a
+    /// prefix search (`kind: attribute` or `kind: metric` only; capped at
+    /// 200). When set, `prefix`/`limit` are ignored.
+    #[serde(default)]
+    keys: Option<String>,
 }
 
 /// Parameters for `create_schema_registry`.
@@ -1673,7 +1678,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Discover metric names for your tenant. Returns the distinct metric names visible via PromQL (backed by Prometheus label discovery on `__name__`). Use this to construct valid `query_metrics` queries."
+        description = "Discover metric names for your tenant. Returns the distinct metric names visible via PromQL (backed by Prometheus label discovery on `__name__`). Names are often OTel dotted form (e.g. `signaldb.wal.entries_pending`); `query_metrics` accepts these bare, or written as `{\"a.b.c\"}` / `{__name__=\"a.b.c\"}`. Use this to construct valid `query_metrics` queries."
     )]
     async fn discover_metrics(
         &self,
@@ -1692,7 +1697,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Query metrics with PromQL. Provide `query` as a PromQL expression (e.g. `rate(http_requests_total[5m])`) and optionally `time` (unix seconds or RFC3339) for an instant query. Provide `start`/`end` (and optionally `step`) instead of `time` for a range query. Returns the native Prometheus result scoped to your tenant.",
+        description = "Query metrics with PromQL. Provide `query` as a PromQL expression (e.g. `rate(http_requests_total[5m])`) and optionally `time` (unix seconds or RFC3339) for an instant query. Provide `start`/`end` (and optionally `step`) instead of `time` for a range query. A metric name in OTel dotted form (e.g. `signaldb.wal.entries_pending`) may be used bare, or written as `{\"signaldb.wal.entries_pending\"}` or `{__name__=\"signaldb.wal.entries_pending\"}`. Returns the native Prometheus result scoped to your tenant.",
         annotations(read_only_hint = true)
     )]
     async fn query_metrics(
@@ -2729,7 +2734,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Search the schema registries by name prefix to find the right vocabulary before building a query: `kind` is `attribute`, `entity`, or `metric`; `prefix` narrows by name (e.g. `k8s.pod.`), `limit` caps the hits (max 200). Each hit is namespace-tagged with its brief, so you can pick the correct attribute key, entity type, or metric name and then call the matching `resolve_*` tool for the full definition."
+        description = "Search the schema registries by name prefix to find the right vocabulary before building a query: `kind` is `attribute`, `entity`, or `metric`; `prefix` narrows by name (e.g. `k8s.pod.`), `limit` caps the hits (max 200). Each hit is namespace-tagged with its brief, so you can pick the correct attribute key, entity type, or metric name and then call the matching `resolve_*` tool for the full definition. When you already know the exact name set (`kind: attribute` or `kind: metric`), pass `keys` (comma-separated, capped at 200) instead of `prefix` to batch-resolve definitions in one call."
     )]
     async fn search_schema(
         &self,
@@ -2737,6 +2742,12 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
+        if p.kind == SchemaKind::Entity && p.keys.as_deref().is_some_and(|k| !k.trim().is_empty()) {
+            return Err(ErrorData::invalid_params(
+                "search_schema: `keys` is only valid with kind: \"attribute\" or kind: \"metric\"; entity search does not support it".to_string(),
+                None,
+            ));
+        }
         let client = self.router_client(&parts, None)?;
         let prefix = p.prefix.unwrap_or_default();
         // Each kind has its own generated response type, so each arm sends and
@@ -2746,6 +2757,9 @@ impl McpServer {
                 let mut req = client.schema_search_attributes().prefix(prefix);
                 if let Some(limit) = p.limit {
                     req = req.limit(limit);
+                }
+                if let Some(keys) = p.keys {
+                    req = req.keys(keys);
                 }
                 let resp = req
                     .send()
@@ -2768,6 +2782,9 @@ impl McpServer {
                 let mut req = client.schema_search_metrics().prefix(prefix);
                 if let Some(limit) = p.limit {
                     req = req.limit(limit);
+                }
+                if let Some(keys) = p.keys {
+                    req = req.keys(keys);
                 }
                 let resp = req
                     .send()
@@ -4453,6 +4470,33 @@ mod tests {
         for kind in ["\"attribute\"", "\"entity\"", "\"metric\""] {
             assert!(text.contains(kind), "schema names {kind}: {text}");
         }
+    }
+
+    #[tokio::test]
+    async fn search_schema_rejects_keys_for_entity_kind() {
+        // No mock router needed: the tool must reject before any request is
+        // sent, since `search_entities` ignores `keys` and would otherwise
+        // silently run an unrelated prefix search.
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+
+        let err = server
+            .search_schema(
+                Parameters(SearchSchemaParams {
+                    tenant: "acme".to_string(),
+                    kind: SchemaKind::Entity,
+                    prefix: None,
+                    limit: None,
+                    keys: Some("k8s.pod,service".to_string()),
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect_err("keys with kind: entity must be rejected");
+        assert!(err.message.contains("keys"), "got {}", err.message);
+        assert!(err.message.contains("entity"), "got {}", err.message);
     }
 
     #[test]

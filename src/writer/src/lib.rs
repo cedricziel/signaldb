@@ -58,6 +58,11 @@ pub(crate) mod test_support {
                 Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
                 Arc::new(Date32Array::from(vec![19000; num_rows])),
                 Arc::new(Int32Array::from(vec![10; num_rows])),
+                // No resource_attributes above (`None`), so no identity to
+                // digest either -- consistent with the writer's own
+                // `extract_resource_context`, which leaves resource_identity
+                // `None` when resource_json is absent.
+                Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
             ],
         )
         .unwrap();

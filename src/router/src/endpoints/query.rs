@@ -451,7 +451,7 @@ fn closest_fields(
     let target = normalize(field);
     let mut scored: Vec<(usize, String)> = schema
         .fields()
-        .filter(|f| f.id.source == source)
+        .filter(|f| f.id.source == source && f.id.name != field)
         .map(|f| f.id.name.clone())
         .map(|name| (edit_distance(&target, &normalize(&name)), name))
         // A distance beyond a third of the name is a different word, not a
@@ -1096,7 +1096,7 @@ mod row_encoding {
 /// reject the legitimate case of a real attribute absent from a short window.
 #[cfg(test)]
 mod group_by_warnings {
-    use super::{UNKNOWN_GROUP_BY_FIELD, unknown_group_by_warnings};
+    use super::{UNKNOWN_GROUP_BY_FIELD, closest_fields, unknown_group_by_warnings};
     use datafusion::arrow::array::{ArrayRef, Int64Array, RecordBatch, StringArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
@@ -1159,6 +1159,39 @@ mod group_by_warnings {
         let warnings = unknown_group_by_warnings("traces", &document("service.name"), &batches);
 
         assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// #1340: `resource.identity` is declared on every source but used to be
+    /// unresolvable (a `LogicalSchema::resolve` bug, fixed independently in
+    /// `schema/logical.rs`), so grouping by it always warned — even
+    /// self-contradictorily suggesting the very field the caller used. Now
+    /// that it resolves, an all-null result (e.g. every row predates the
+    /// column) is unremarkable: no warning, same as any other logical field.
+    #[test]
+    fn resource_identity_group_key_never_warns_even_when_every_row_is_null() {
+        let batches = [grouped("resource_identity", vec![None, None])];
+        let warnings =
+            unknown_group_by_warnings("traces", &document("resource.identity"), &batches);
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// The bug the issue reported by name: a field that discovery
+    /// advertises but that fails to resolve must never suggest itself as
+    /// its own fix.
+    /// `resource.identity` was the motivating case before the `resolve` fix
+    /// above made it resolvable — `closest_fields` itself still must not
+    /// self-suggest for any field, resolvable or not.
+    #[test]
+    fn closest_fields_never_suggests_the_queried_field_itself() {
+        let schema = common::schema::logical::LogicalSchema::core();
+        for source in ["logs", "traces", "metrics", "profiles"] {
+            let suggestions = closest_fields(&schema, source, "resource.identity");
+            assert!(
+                !suggestions.contains(&"resource.identity".to_string()),
+                "{source}: {suggestions:?}"
+            );
+        }
     }
 
     /// A real attribute that is simply absent from *this* window still

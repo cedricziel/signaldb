@@ -19,6 +19,11 @@ window — exact when the query `step` equals the range, an approximation
 otherwise. Anything listed as unsupported returns a clear error rather than a
 wrong result.
 
+Aggregation operators (`sum`, `avg`, `min`, `max`, `count`, … with or without
+`by`/`without`) first reduce each series to its latest sample in the step,
+then aggregate across series, as Prometheus does. Only the `_over_time` and
+range functions fold across time within a series.
+
 ## Selectors
 
 | Feature | Status |
@@ -30,6 +35,8 @@ wrong result.
 | `offset` modifier (`metric offset 5m`) | ✅ |
 | `@` modifier (`metric @ 1600000000`, `@ start()`/`@ end()`) | ✅ (pins to the instant, 5-min lookback, replicated across steps) |
 | Subqueries `expr[5m:1m]` | ✅ (under an `_over_time` reducer; inner evaluated at the resolution) |
+
+SignalDB stores metric names in their OTel dotted form (`signaldb.wal.entries_pending`, `process.memory.usage`), which is what `discover_metrics` and `/prometheus/api/v1/label/__name__/values` return. A dotted name can be used bare — `signaldb.wal.entries_pending`, `process.memory.usage{service_name="signaldb"}`, `rate(signaldb.ingest.spans_received[5m])` — and SignalDB rewrites it to the quoted forms standard PromQL already supports: `{"signaldb.wal.entries_pending"}` or `{__name__="signaldb.wal.entries_pending"}`.
 
 ## Aggregation operators
 

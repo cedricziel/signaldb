@@ -583,12 +583,16 @@ fn create_metric_batch(
     file_idx: usize,
 ) -> Result<RecordBatch> {
     use chrono::{DateTime, Datelike, Timelike};
+    use common::schema::resource_identity::resource_identity_from_json;
     use datafusion::arrow::array::{
         Date32Array, Float64Array, Int32Array, TimestampNanosecondArray,
     };
 
     // Use the writer's schema
     let schema = writer::schema_transform::create_metrics_gauge_arrow_schema();
+    // Every row shares the same generated resource_attributes ("{}" below),
+    // so its digest is constant too -- computed once rather than per row.
+    let resource_identity_value = resource_identity_from_json("{}");
 
     let time_step = if num_rows == 0 {
         0
@@ -597,7 +601,8 @@ fn create_metric_batch(
     };
     let metric_names = ["cpu_usage", "memory_usage", "request_count", "error_rate"];
 
-    // Build arrays for all 19 fields
+    // Build arrays for all 19 non-computed fields (resource_identity is
+    // appended directly below, constant across rows)
     let mut timestamps: Vec<Option<i64>> = Vec::with_capacity(num_rows);
     let mut start_timestamps: Vec<Option<i64>> = Vec::with_capacity(num_rows);
     let mut service_names: Vec<Option<String>> = Vec::with_capacity(num_rows);
@@ -673,6 +678,7 @@ fn create_metric_batch(
             Arc::new(StringArray::from(exemplars)),
             Arc::new(Date32Array::from(date_days)),
             Arc::new(Int32Array::from(hours)),
+            Arc::new(StringArray::from(vec![resource_identity_value; num_rows])),
         ],
     )?;
 
@@ -688,11 +694,15 @@ fn create_profile_batch(
     file_idx: usize,
 ) -> Result<RecordBatch> {
     use chrono::{DateTime, Datelike, Timelike};
+    use common::schema::resource_identity::resource_identity_from_json;
     use datafusion::arrow::array::{Date32Array, Int32Array, Int64Array, TimestampNanosecondArray};
 
     // Use the writer's storage schema directly; batches in this shape pass
     // through the writer without a v1->iceberg transform.
     let schema = writer::schema_transform::create_profiles_arrow_schema();
+    // Every row shares the same generated resource_attributes below, so its
+    // digest is constant too -- computed once rather than per row.
+    let resource_identity_value = resource_identity_from_json(r#"{"service.name":"test-service"}"#);
 
     let time_step = if num_rows == 0 {
         0
@@ -771,6 +781,7 @@ fn create_profile_batch(
             Arc::new(StringArray::from(span_ids)),
             Arc::new(Date32Array::from(date_days)),
             Arc::new(Int32Array::from(hours)),
+            Arc::new(StringArray::from(vec![resource_identity_value; num_rows])),
         ],
     )?;
 
@@ -817,7 +828,8 @@ mod tests {
     fn test_create_metric_batch() -> Result<()> {
         let batch = create_metric_batch(1700000000000, 1700003600000, 75, 0, 0)?;
         assert_eq!(batch.num_rows(), 75);
-        assert_eq!(batch.num_columns(), 19); // Updated for metrics gauge schema with 19 fields
+        // metrics_gauge physical-v2 (#1340's resource_identity): 20 fields.
+        assert_eq!(batch.num_columns(), 20);
         Ok(())
     }
 
@@ -825,7 +837,8 @@ mod tests {
     fn test_create_profile_batch() -> Result<()> {
         let batch = create_profile_batch(1700000000000, 1700003600000, 25, 0, 0)?;
         assert_eq!(batch.num_rows(), 25);
-        assert_eq!(batch.num_columns(), 18); // Profiles Iceberg storage schema with 18 fields
+        // profiles physical-v2 (#1340's resource_identity): 19 fields.
+        assert_eq!(batch.num_columns(), 19);
         Ok(())
     }
 

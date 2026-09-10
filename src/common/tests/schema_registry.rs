@@ -294,6 +294,41 @@ async fn resolution_precedence_and_alternatives() {
 }
 
 #[tokio::test]
+async fn resolve_metrics_batches_exact_names_precedence_first_wins_deduped() {
+    let r = resolver().await;
+    r.create("t1", &acme("1.0.0")).await.expect("create");
+
+    // dedupe input: "acme.checkout.latency" repeated collapses to one entry
+    let out = r
+        .resolve_metrics(
+            "t1",
+            [
+                "acme.checkout.latency".to_string(),
+                "k8s.pod.cpu.time".to_string(),
+                "acme.checkout.latency".to_string(),
+                "no.such.metric".to_string(),
+            ],
+        )
+        .await
+        .expect("resolve");
+
+    // unknown names are absent, not an error
+    assert_eq!(out.len(), 2, "{out:?}");
+    assert!(!out.contains_key("no.such.metric"));
+
+    let latency = out.get("acme.checkout.latency").expect("acme metric hit");
+    assert_eq!(latency.namespace, "acme");
+    assert_eq!(
+        latency.def.entity_associations,
+        vec!["acme.order".to_string()]
+    );
+
+    // first visible registry that defines it wins: otel bundled here.
+    let cpu = out.get("k8s.pod.cpu.time").expect("k8s metric hit");
+    assert_eq!(cpu.namespace, "otel");
+}
+
+#[tokio::test]
 async fn prefix_search_is_bounded_and_deduplicated() {
     let r = resolver().await;
     r.create("t1", &acme("1.0.0")).await.expect("create");

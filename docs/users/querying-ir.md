@@ -162,6 +162,13 @@ prefix addresses exactly one container:
 { "field": "resource.deployment.environment", "op": "eq", "value": "prod" }
 ```
 
+`resource.identity` is a SignalDB-defined field, not an OTel attribute: a
+stable digest of the record's resource attribute set (32 lowercase hex
+characters), the same value for every record that shares the same resource.
+It is available on `logs`, `traces`, `metrics`, and `profiles`, filterable
+and usable in `aggregate.by` like any other field, and `null` on rows
+written before the column existed.
+
 A physical column wins over a prefix, so `scope.name` is the instrumentation
 scope's name (a first-class column), not a key called `name` inside the scope
 attributes. To reach a key that literally begins with one of these prefixes,

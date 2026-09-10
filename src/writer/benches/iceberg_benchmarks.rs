@@ -28,6 +28,7 @@ use std::time::{Duration, Instant};
 use common::CatalogManager;
 use common::config::{Configuration, DefaultSchemas, SchemaConfig, StorageConfig};
 use common::iceberg::sort::{canonical_sort_columns, sort_batch_by};
+use common::schema::resource_identity::resource_identity_from_json;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
 use datafusion::arrow::array::{
     Date32Array, Float64Array, Int32Array, RecordBatch, StringArray, TimestampNanosecondArray,
@@ -97,6 +98,10 @@ fn create_benchmark_data(num_rows: usize) -> RecordBatch {
         .collect();
     let values: Vec<f64> = (0..num_rows).map(|i| (i as f64) * 1.5 + 10.0).collect();
     let hours: Vec<i32> = (0..num_rows).map(|i| (i % 24) as i32).collect();
+    // Matches the resource_attributes literal below, so its digest is
+    // constant too -- computed once rather than per row.
+    let resource_identity_value =
+        resource_identity_from_json("{\"service.version\":\"1.0\",\"host\":\"benchmark-host\"}");
 
     RecordBatch::try_new(
         create_metrics_gauge_arrow_schema(),
@@ -137,6 +142,7 @@ fn create_benchmark_data(num_rows: usize) -> RecordBatch {
             Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
             Arc::new(Date32Array::from(vec![19700; num_rows])),
             Arc::new(Int32Array::from(hours)),
+            Arc::new(StringArray::from(vec![resource_identity_value; num_rows])),
         ],
     )
     .expect("Failed to create benchmark data")

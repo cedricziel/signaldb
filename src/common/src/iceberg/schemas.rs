@@ -134,7 +134,10 @@ fn materialized_labels_for(signal: &str) -> Vec<String> {
 /// Based on ClickHouse metrics_gauge_table.sql schema but adapted for Iceberg
 pub fn create_metrics_gauge_schema_with(labels: &[String]) -> Result<Schema> {
     SCHEMA_DEFINITIONS
-        .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_gauge, "physical-v1")?
+        .resolve_table_schema(
+            &SCHEMA_DEFINITIONS.metrics_gauge,
+            &SCHEMA_DEFINITIONS.metadata.current_metric_version,
+        )?
         .to_iceberg_schema_with_labels(labels)
 }
 
@@ -142,7 +145,10 @@ pub fn create_metrics_gauge_schema_with(labels: &[String]) -> Result<Schema> {
 /// Based on ClickHouse metrics_sum_table.sql schema but adapted for Iceberg
 pub fn create_metrics_sum_schema_with(labels: &[String]) -> Result<Schema> {
     SCHEMA_DEFINITIONS
-        .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_sum, "physical-v1")?
+        .resolve_table_schema(
+            &SCHEMA_DEFINITIONS.metrics_sum,
+            &SCHEMA_DEFINITIONS.metadata.current_metric_version,
+        )?
         .to_iceberg_schema_with_labels(labels)
 }
 
@@ -150,7 +156,10 @@ pub fn create_metrics_sum_schema_with(labels: &[String]) -> Result<Schema> {
 /// Based on ClickHouse metrics_histogram_table.sql schema but adapted for Iceberg
 pub fn create_metrics_histogram_schema_with(labels: &[String]) -> Result<Schema> {
     SCHEMA_DEFINITIONS
-        .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_histogram, "physical-v1")?
+        .resolve_table_schema(
+            &SCHEMA_DEFINITIONS.metrics_histogram,
+            &SCHEMA_DEFINITIONS.metadata.current_metric_version,
+        )?
         .to_iceberg_schema_with_labels(labels)
 }
 
@@ -160,7 +169,7 @@ pub fn create_metrics_exponential_histogram_schema_with(labels: &[String]) -> Re
     SCHEMA_DEFINITIONS
         .resolve_table_schema(
             &SCHEMA_DEFINITIONS.metrics_exponential_histogram,
-            "physical-v1",
+            &SCHEMA_DEFINITIONS.metadata.current_metric_version,
         )?
         .to_iceberg_schema_with_labels(labels)
 }
@@ -169,7 +178,10 @@ pub fn create_metrics_exponential_histogram_schema_with(labels: &[String]) -> Re
 /// Stores quantile values for summary metrics
 pub fn create_metrics_summary_schema_with(labels: &[String]) -> Result<Schema> {
     SCHEMA_DEFINITIONS
-        .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_summary, "physical-v1")?
+        .resolve_table_schema(
+            &SCHEMA_DEFINITIONS.metrics_summary,
+            &SCHEMA_DEFINITIONS.metadata.current_metric_version,
+        )?
         .to_iceberg_schema_with_labels(labels)
 }
 
@@ -180,7 +192,10 @@ pub fn create_metrics_summary_schema_with(labels: &[String]) -> Result<Schema> {
 /// stored as hex strings to stay joinable with the traces and logs tables.
 pub fn create_profiles_schema_with(labels: &[String]) -> Result<Schema> {
     SCHEMA_DEFINITIONS
-        .resolve_table_schema(&SCHEMA_DEFINITIONS.profiles, "physical-v1")?
+        .resolve_table_schema(
+            &SCHEMA_DEFINITIONS.profiles,
+            &SCHEMA_DEFINITIONS.metadata.current_profile_version,
+        )?
         .to_iceberg_schema_with_labels(labels)
 }
 

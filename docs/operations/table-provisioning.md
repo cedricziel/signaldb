@@ -99,7 +99,7 @@ Loading an existing table also reconciles its metadata, which is how tables
 created by older builds catch up. Each step is idempotent, metadata-only, and
 commits at most once per table: metadata-pruning properties are backfilled, the
 canonical [sort order](../architecture/storage-layout.md#declared-sort-order) is
-declared if the table predates it, and traces/logs schemas are evolved to the
+declared if the table predates it, and the table's schema is evolved to the
 current `schemas.toml` version. A step that loses a commit race is logged at
 `warn` and retried on the next load; it never fails the pass.
 
@@ -227,19 +227,24 @@ A converged pass logs at `debug`.
   accounting, and the compactor all treat them as no-ops.
 - **Materialized labels are fixed at creation time.** `[schema]
 materialized_labels` is applied when a table is created; `ensure_table`'s
-  own catch-up path (below) only brings a **traces or logs** table's
-  `schemas.toml`-declared columns forward, it does not retrofit a changed
-  label configuration onto an existing table. Provisioning means the initial
-  labels-at-creation behavior now happens for every dataset, not only for
-  ones that ingest, so prefer setting `materialized_labels` before a dataset
-  is provisioned. Existing tables are not stuck: the compactor's
-  attribute-promotion pass can add `label_<key>` columns to them — see
+  own catch-up path (below) only brings a table's `schemas.toml`-declared
+  columns forward, it does not retrofit a changed label configuration onto
+  an existing table. Provisioning means the initial labels-at-creation
+  behavior now happens for every dataset, not only for ones that ingest, so
+  prefer setting `materialized_labels` before a dataset is provisioned.
+  Existing tables are not stuck: the compactor's attribute-promotion pass
+  can add `label_<key>` columns to them — see
   [label columns can be added to existing tables](../architecture/storage-layout.md#label-columns-can-be-added-to-existing-tables).
-- **`ensure_table` does evolve an existing traces or logs table's schema**
-  (not metrics/profiles yet — those are hand-written, not `schemas.toml`-sourced).
-  Every load, not just creation, brings the table's schema forward to the
-  current `schemas.toml` version if it's behind, additively — new nullable
-  columns only, never a rewrite of existing data. See
+- **`ensure_table` does evolve an existing table's schema** — every
+  `schemas.toml`-sourced signal (traces, logs, all five metrics
+  representations, and profiles). Every load, not just creation, brings the
+  table's schema forward to the current `schemas.toml` version if it's
+  behind. New columns are always nullable and historical rows are never
+  rewritten to backfill them; beyond that, a table whose recorded starting
+  version is trusted (found on the version chain) also gets renames and
+  removals applied hop by hop, not just additions — an untrusted starting
+  version (no recorded version, or one not found on the chain) skips
+  straight to current with additions only. See
   [schema evolution](../architecture/storage-layout.md#an-existing-tables-schema-tracks-and-catches-up-to-schematomls-version).
 - **Not every table property is set at creation.** Provisioning applies the
   bloom-filter, column-statistics, compression and metadata-pruning

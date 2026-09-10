@@ -343,6 +343,39 @@ mod tests {
         }
     }
 
+    /// `GET /api/v1/schema/entities` ignores `keys=` (only attribute and
+    /// metric search resolve an exact name set), so its documented
+    /// parameters must not advertise one — a caller reading the spec should
+    /// not be led to send a parameter the endpoint silently drops.
+    #[test]
+    fn entity_search_params_do_not_advertise_keys() {
+        let spec: serde_json::Value =
+            serde_json::from_str(&openapi_document().to_pretty_json().unwrap()).unwrap();
+
+        let names = |path: &str| -> Vec<String> {
+            spec.pointer(&format!(
+                "/paths/{}/get/parameters",
+                path.replace('/', "~1")
+            ))
+            .and_then(|v| v.as_array())
+            .unwrap_or_else(|| panic!("{path}: missing GET parameters"))
+            .iter()
+            .filter_map(|p| p.get("name").and_then(|n| n.as_str()).map(str::to_string))
+            .collect()
+        };
+
+        assert!(
+            !names("/api/v1/schema/entities").contains(&"keys".to_string()),
+            "entity search must not document a keys parameter it ignores"
+        );
+        for path in ["/api/v1/schema/attributes", "/api/v1/schema/metrics"] {
+            assert!(
+                names(path).contains(&"keys".to_string()),
+                "{path} must document the keys parameter it resolves"
+            );
+        }
+    }
+
     /// `dedicated-login-page` change, section 1, and `oidc-login` task 4.1:
     /// `GET /ui/session/config` (the login-configuration probe) and the two
     /// OIDC endpoints require no credential at all and must be published

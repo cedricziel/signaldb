@@ -232,8 +232,20 @@ fn string_value(s: &str) -> AnyValue {
     }
 }
 
-/// One gauge metric `requests` for a service, with a `code` attribute.
+/// One gauge metric `requests` for a service, with a `code` attribute, at
+/// `BASE_NS`.
 fn gauge_metrics(service: &str, value: f64, code: &str) -> ExportMetricsServiceRequest {
+    gauge_metrics_at(service, value, code, BASE_NS)
+}
+
+/// Like [`gauge_metrics`], with an explicit sample timestamp — used to
+/// ingest several samples of the same series across a window (#1499).
+fn gauge_metrics_at(
+    service: &str,
+    value: f64,
+    code: &str,
+    ts_ns: u64,
+) -> ExportMetricsServiceRequest {
     ExportMetricsServiceRequest {
         resource_metrics: vec![ResourceMetrics {
             resource: Some(Resource {
@@ -258,8 +270,8 @@ fn gauge_metrics(service: &str, value: f64, code: &str) -> ExportMetricsServiceR
                                 value: Some(string_value(code)),
                                 ..Default::default()
                             }],
-                            start_time_unix_nano: BASE_NS,
-                            time_unix_nano: BASE_NS,
+                            start_time_unix_nano: ts_ns,
+                            time_unix_nano: ts_ns,
                             value: Some(number_data_point::Value::AsDouble(value)),
                             exemplars: vec![],
                             flags: 0,
@@ -397,6 +409,31 @@ async fn get(app: &Router, uri: &str) -> (StatusCode, serde_json::Value) {
     )
 }
 
+/// Percent-encode a PromQL expression for use as a URL query-string value —
+/// braces, quotes, and spaces in a label matcher aren't valid raw URI bytes.
+fn encode_query(promql: &str) -> String {
+    url::form_urlencoded::byte_serialize(promql.as_bytes()).collect()
+}
+
+/// Run an instant PromQL query and return its status plus the parsed
+/// `value` of every vector entry in the result.
+async fn instant_query_values(app: &Router, promql: &str, at: u64) -> (StatusCode, Vec<f64>) {
+    let query = encode_query(promql);
+    let (status, body) = get(
+        app,
+        &format!("/prometheus/api/v1/query?query={query}&time={at}"),
+    )
+    .await;
+    let values = body["data"]["result"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|s| s["value"][1].as_str().and_then(|v| v.parse::<f64>().ok()))
+        .collect();
+    (status, values)
+}
+
 /// The window bracketing the ingested metrics.
 fn window() -> String {
     // Prometheus params are unix seconds; step 1h covers the point.
@@ -462,6 +499,133 @@ async fn setup_with_ingested_metrics() -> (TestServices, Router) {
 
     let app = build_router(&services).await;
     (services, app)
+}
+
+/// Ingest three samples of `requests{service="churner"}` sixty seconds apart
+/// (a gauge scraped every minute — the exact shape of #1499) plus a single
+/// sample of `requests{service="steady"}`, then force-flush. Every
+/// aggregation exercised against this fixture must take each series'
+/// *latest* sample in the lookback before folding across series, never every
+/// raw row in the bucket.
+async fn setup_with_repeated_gauge_samples() -> (TestServices, Router) {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    for (offset_s, value) in [(0u64, 100.0), (60, 200.0), (120, 300.0)] {
+        services
+            .metrics_handler
+            .handle_grpc_otlp_metrics(
+                &ctx,
+                gauge_metrics_at("churner", value, "200", BASE_NS + offset_s * 1_000_000_000),
+            )
+            .await
+            .expect("ingest churner gauge sample");
+    }
+    services
+        .metrics_handler
+        .handle_grpc_otlp_metrics(
+            &ctx,
+            gauge_metrics_at("steady", 50.0, "200", BASE_NS + 60 * 1_000_000_000),
+        )
+        .await
+        .expect("ingest steady gauge sample");
+
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
+        .await
+        .expect("flush writer");
+
+    let app = build_router(&services).await;
+    (services, app)
+}
+
+/// The window bracketing every sample in [`setup_with_repeated_gauge_samples`].
+fn repeated_samples_window(step_seconds: i64) -> String {
+    let start = (BASE_NS / 1_000_000_000) as i64 - 60;
+    let end = (BASE_NS / 1_000_000_000) as i64 + 180;
+    format!("start={start}&end={end}&step={step_seconds}")
+}
+
+/// A timestamp after every sample in [`setup_with_repeated_gauge_samples`]
+/// (unix seconds, within the instant query's lookback).
+fn repeated_samples_at() -> u64 {
+    BASE_NS / 1_000_000_000 + 120
+}
+
+#[tokio::test]
+async fn promql_count_of_a_multi_sample_series_is_one_not_the_sample_count() {
+    let (_services, app) = setup_with_repeated_gauge_samples().await;
+    let at = repeated_samples_at();
+
+    let (status, values) =
+        instant_query_values(&app, r#"count(requests{service="churner"})"#, at).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        values,
+        vec![1.0],
+        "count() of a single series must be 1, not its sample count"
+    );
+}
+
+#[tokio::test]
+async fn promql_sum_avg_max_min_of_repeated_samples_use_the_latest_value() {
+    let (_services, app) = setup_with_repeated_gauge_samples().await;
+    let at = repeated_samples_at();
+
+    // `churner`'s three samples are 100, 200, 300; every one of these
+    // aggregates over a single series must equal its latest sample (300),
+    // not a fold of the raw rows (e.g. sum = 600).
+    for op in ["sum", "avg", "max", "min"] {
+        let (status, values) =
+            instant_query_values(&app, &format!(r#"{op}(requests{{service="churner"}})"#), at)
+                .await;
+        assert_eq!(status, StatusCode::OK, "{op}(...) instant");
+        assert_eq!(values.len(), 1, "{op}: {values:?}");
+        assert!(
+            (values[0] - 300.0).abs() < 1e-9,
+            "{op}(...) must equal the series' latest sample (300), got {values:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn promql_range_count_is_one_per_step_despite_several_raw_samples_in_the_bucket() {
+    let (_services, app) = setup_with_repeated_gauge_samples().await;
+    // A 5-minute step buckets all three `churner` samples (0/60/120s) into
+    // one window; count() must report one series per step, not the three
+    // raw samples that landed in it.
+    let w = repeated_samples_window(300);
+    let query = encode_query(r#"count(requests{service="churner"})"#);
+
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/query_range?query={query}&{w}"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "count(...) range: {body}");
+    assert!(
+        matrix_all_values_near(&body, 1.0, 1e-9),
+        "every step must report exactly one series: {body}"
+    );
+}
+
+#[tokio::test]
+async fn promql_sum_by_service_sums_the_latest_sample_of_each_member_series() {
+    let (_services, app) = setup_with_repeated_gauge_samples().await;
+    let at = repeated_samples_at();
+
+    // `churner`'s latest sample is 300, `steady`'s only sample is 50 — the
+    // total must be their latest values (350), not a fold of every raw row
+    // ingested for `churner` (100+200+300+50 = 650).
+    let (status, values) = instant_query_values(&app, "sum by (service_name) (requests)", at).await;
+
+    assert_eq!(status, StatusCode::OK);
+    let total: f64 = values.iter().sum();
+    assert!(
+        (total - 350.0).abs() < 1e-9,
+        "sum by (service_name) must total the latest per-series values (350), got {total}"
+    );
 }
 
 #[tokio::test]
