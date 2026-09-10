@@ -74,6 +74,129 @@ pub struct CommitOutcome {
     pub rejected: Vec<(uuid::Uuid, anyhow::Error)>,
 }
 
+/// A `label_<key>` column rename/drop plan resolved once against the
+/// table's committed schema, then applied to every entry in one
+/// [`IcebergTableWriter::append_batches_with_marker`] call.
+///
+/// A batch's label columns were named at Flight ingest time (or, for a raw
+/// v1 batch reaching WAL directly, by
+/// [`IcebergTableWriter::apply_schema_transformation_if_needed`]) using
+/// `resolve_label_columns_fresh` -- order-independent, but blind to the
+/// table's real `doc`-tagged column assignment, because that ingest path
+/// has no live table schema to consult (see `resolve_label_columns_fresh`'s
+/// doc). When the configured key *set* has changed since the table was
+/// created, the fresh assignment and the table's authoritative one can
+/// diverge (#1448):
+///
+/// - A key with a real, already-promoted column (found via
+///   [`common::iceberg::evolution::column_for_key`]) gets its batch column
+///   renamed to that column.
+/// - A key with no promoted column yet whose fresh candidate name happens
+///   to already be a real column in the table -- which, since this key has
+///   none, must belong to a *different* key -- has its batch column
+///   dropped instead of silently landing in that other key's column. The
+///   row's raw JSON attributes still carry the value, so the querier's
+///   JSON-substring fallback still finds it: the same degrade as a table
+///   that simply predates the label, not new data loss.
+///
+/// Resolved once per call, not once per entry: `self.materialized` and the
+/// table's committed schema cannot change within one
+/// `append_batches_with_marker` call (no `.await` between building this and
+/// consuming it in the entry loop).
+struct LabelColumnReconciliation {
+    /// Every column name the current config's fresh resolution produces.
+    /// One entry's transform emits exactly this set unconditionally (even
+    /// all-null), so a batch missing one of them was named by a *different*
+    /// config generation -- see [`Self::apply`].
+    fresh_columns: HashSet<String>,
+    renames: HashMap<String, String>,
+    drops: HashSet<String>,
+}
+
+impl LabelColumnReconciliation {
+    fn compute(labels: &[String], current_schema: &iceberg_rust::spec::schema::Schema) -> Self {
+        let fresh = common::iceberg::evolution::resolve_label_columns_fresh(labels);
+        let fresh_columns = fresh.iter().map(|(_, column)| column.clone()).collect();
+
+        let mut renames = HashMap::new();
+        let mut drops = HashSet::new();
+        for (key, fresh_column) in fresh {
+            match common::iceberg::evolution::column_for_key(current_schema, &key) {
+                Some(authoritative) if authoritative != fresh_column => {
+                    renames.insert(fresh_column, authoritative.to_string());
+                }
+                Some(_) => {}
+                None => {
+                    if current_schema
+                        .fields()
+                        .iter()
+                        .any(|f| f.name == fresh_column)
+                    {
+                        drops.insert(fresh_column);
+                    }
+                }
+            }
+        }
+
+        Self {
+            fresh_columns,
+            renames,
+            drops,
+        }
+    }
+
+    /// Applies this plan to one batch. All renames are computed from the
+    /// batch's original, untouched schema and applied in one pass, so two
+    /// keys that need to swap names resolve correctly instead of one
+    /// clobbering the other mid-rename.
+    ///
+    /// Renaming is by column *name*, so it first checks that `batch` was
+    /// actually named by the config generation this plan was resolved
+    /// against: every column [`Self::compute`]'s fresh resolution produces
+    /// must be present. A WAL backlog carried across a restart that also
+    /// changed `[schema.materialized_labels]` can contain entries a
+    /// *previous* fresh resolution named -- missing one or more of the
+    /// current generation's columns -- whose columns this plan's names
+    /// would misroute rather than fix. A name-based check cannot
+    /// distinguish "named by an old generation" from "needs no
+    /// reconciling", so it errs toward leaving such a batch untouched; this
+    /// is a mitigation, not a full fix (tracked as a follow-up to #1448:
+    /// stamping the origin key into Arrow field metadata at materialization
+    /// time, so reconciliation matches on provenance instead of name).
+    fn apply(&self, batch: RecordBatch) -> Result<RecordBatch> {
+        if self.renames.is_empty() && self.drops.is_empty() {
+            return Ok(batch);
+        }
+        let batch_schema = batch.schema();
+        if !self
+            .fresh_columns
+            .iter()
+            .all(|column| batch_schema.index_of(column).is_ok())
+        {
+            return Ok(batch);
+        }
+
+        let mut fields = Vec::with_capacity(batch.num_columns());
+        let mut columns = Vec::with_capacity(batch.num_columns());
+        for (field, column) in batch.schema().fields().iter().zip(batch.columns()) {
+            let name = field.name();
+            if self.drops.contains(name) {
+                continue;
+            }
+            match self.renames.get(name) {
+                Some(new_name) => {
+                    fields.push(Arc::new(field.as_ref().clone().with_name(new_name.clone())))
+                }
+                None => fields.push(field.clone()),
+            }
+            columns.push(column.clone());
+        }
+        let schema = Arc::new(datafusion::arrow::datatypes::Schema::new(fields));
+        RecordBatch::try_new(schema, columns)
+            .map_err(|e| anyhow::anyhow!("Failed to reconcile label columns: {e}"))
+    }
+}
+
 /// Writes signal batches to an Iceberg table.
 ///
 /// The only write entry point is [`Self::append_batches_with_marker`],
@@ -226,86 +349,6 @@ impl IcebergTableWriter {
             | "metrics_summary" => &self.materialized.metrics,
             _ => &[],
         }
-    }
-
-    /// Reconciles a transformed batch's `label_<key>` column names against
-    /// the table's actual committed schema before it is coerced and written.
-    ///
-    /// The batch was named at Flight ingest time (or, for a raw v1 batch
-    /// reaching WAL directly, by [`Self::apply_schema_transformation_if_needed`])
-    /// using `resolve_label_columns_fresh` -- order-independent, but blind to
-    /// the table's real `doc`-tagged column assignment, because that ingest
-    /// path has no live table schema to consult (see
-    /// `resolve_label_columns_fresh`'s doc). When the configured key *set*
-    /// has changed since the table was created, the fresh assignment and the
-    /// table's authoritative one can diverge (#1448):
-    ///
-    /// - A key with a real, already-promoted column (found via
-    ///   [`common::iceberg::evolution::column_for_key`]) gets its batch
-    ///   column renamed to that column.
-    /// - A key with no promoted column yet whose fresh candidate name
-    ///   happens to already be a real column in the table -- which, since
-    ///   this key has none, must belong to a *different* key -- has its
-    ///   batch column dropped instead of silently landing in that other
-    ///   key's column. The row's raw JSON attributes still carry the value,
-    ///   so the querier's JSON-substring fallback still finds it: the same
-    ///   degrade as a table that simply predates the label, not new data
-    ///   loss.
-    ///
-    /// All renames are computed from the batch's original, untouched schema
-    /// and applied in one pass, so two keys that need to swap names resolve
-    /// correctly instead of one clobbering the other mid-rename.
-    fn reconcile_label_columns(&self, batch: RecordBatch) -> Result<RecordBatch> {
-        let labels = self.materialized_labels_for_this_table();
-        if labels.is_empty() {
-            return Ok(batch);
-        }
-        let current_schema = self
-            .table
-            .current_schema()
-            .map_err(|e| anyhow::anyhow!("Failed to get current Iceberg schema: {e}"))?;
-
-        let mut renames: HashMap<String, String> = HashMap::new();
-        let mut drops: HashSet<String> = HashSet::new();
-        for (key, fresh_column) in common::iceberg::evolution::resolve_label_columns_fresh(labels) {
-            match common::iceberg::evolution::column_for_key(current_schema, &key) {
-                Some(authoritative) if authoritative != fresh_column => {
-                    renames.insert(fresh_column, authoritative.to_string());
-                }
-                Some(_) => {}
-                None => {
-                    if current_schema
-                        .fields()
-                        .iter()
-                        .any(|f| f.name == fresh_column)
-                    {
-                        drops.insert(fresh_column);
-                    }
-                }
-            }
-        }
-        if renames.is_empty() && drops.is_empty() {
-            return Ok(batch);
-        }
-
-        let mut fields = Vec::with_capacity(batch.num_columns());
-        let mut columns = Vec::with_capacity(batch.num_columns());
-        for (field, column) in batch.schema().fields().iter().zip(batch.columns()) {
-            let name = field.name();
-            if drops.contains(name) {
-                continue;
-            }
-            match renames.get(name) {
-                Some(new_name) => {
-                    fields.push(Arc::new(field.as_ref().clone().with_name(new_name.clone())))
-                }
-                None => fields.push(field.clone()),
-            }
-            columns.push(column.clone());
-        }
-        let schema = Arc::new(datafusion::arrow::datatypes::Schema::new(fields));
-        RecordBatch::try_new(schema, columns)
-            .map_err(|e| anyhow::anyhow!("Failed to reconcile label columns: {e}"))
     }
 
     /// Get table identifier
@@ -542,15 +585,23 @@ impl IcebergTableWriter {
         // The Parquet writer requires batches in the table's exact Arrow
         // schema (derived from the Iceberg schema, e.g. microsecond
         // timestamps), so coerce after the wire→storage transformation.
-        let target_schema: ArrowSchemaRef = Arc::new(
-            self.table
-                .current_schema()
-                .map_err(|e| anyhow::anyhow!("Failed to get current Iceberg schema: {e}"))?
-                .fields()
-                .try_into()
-                .map_err(|e: iceberg_rust::spec::error::Error| {
-                    anyhow::anyhow!("Failed to convert Iceberg schema to Arrow: {e}")
-                })?,
+        let current_schema = self
+            .table
+            .current_schema()
+            .map_err(|e| anyhow::anyhow!("Failed to get current Iceberg schema: {e}"))?;
+        let target_schema: ArrowSchemaRef = Arc::new(current_schema.fields().try_into().map_err(
+            |e: iceberg_rust::spec::error::Error| {
+                anyhow::anyhow!("Failed to convert Iceberg schema to Arrow: {e}")
+            },
+        )?);
+
+        // Resolved once per call: `self.materialized` and the table's
+        // committed schema cannot change within this call (no `.await`
+        // between here and the entry loop below), so recomputing this per
+        // entry would be pure waste.
+        let label_reconciliation = LabelColumnReconciliation::compute(
+            self.materialized_labels_for_this_table(),
+            current_schema,
         );
 
         // Step 1: prepare every entry independently. A transform/coercion
@@ -571,7 +622,7 @@ impl IcebergTableWriter {
             }
             let prepared = self
                 .apply_schema_transformation_if_needed(batch)
-                .and_then(|batch| self.reconcile_label_columns(batch))
+                .and_then(|batch| label_reconciliation.apply(batch))
                 .and_then(|batch| coerce_batch_to_schema(batch, &target_schema));
             match prepared {
                 Ok(batch) => {
@@ -908,6 +959,19 @@ mod tests {
     use object_store::memory::InMemory;
     use std::sync::Arc;
 
+    /// Resolves and applies a [`LabelColumnReconciliation`] against
+    /// `writer`'s current table schema and configured labels, for tests
+    /// exercising [`LabelColumnReconciliation::apply`] without duplicating
+    /// its two-step construction at every call site.
+    fn reconcile(writer: &IcebergTableWriter, batch: RecordBatch) -> Result<RecordBatch> {
+        let current_schema = writer.table.current_schema().unwrap();
+        LabelColumnReconciliation::compute(
+            writer.materialized_labels_for_this_table(),
+            current_schema,
+        )
+        .apply(batch)
+    }
+
     #[test]
     fn coerce_converts_json_strings_to_map_column() {
         use datafusion::arrow::array::MapArray;
@@ -1195,7 +1259,7 @@ mod tests {
         )
         .unwrap();
 
-        let reconciled = writer.reconcile_label_columns(batch).unwrap();
+        let reconciled = reconcile(&writer, batch).unwrap();
 
         // Exactly one `label_http_method` column survives, carrying
         // `http_method`'s own value -- `http.method`'s un-promoted column is
@@ -1266,7 +1330,7 @@ mod tests {
         )
         .unwrap();
 
-        let reconciled = writer.reconcile_label_columns(batch).unwrap();
+        let reconciled = reconcile(&writer, batch).unwrap();
 
         // Both columns survive (both keys are already promoted) but swapped
         // back to their authoritative names in a single pass -- neither
@@ -1287,6 +1351,81 @@ mod tests {
             .to_string();
         assert_eq!(base, "http_method-value");
         assert_eq!(suffixed, "http.method-value");
+    }
+
+    #[tokio::test]
+    async fn reconcile_label_columns_leaves_a_batch_named_by_an_older_config_generation_untouched()
+    {
+        // Same setup as the "grown" test: table created with only
+        // `http_method` configured -> a real, doc-tagged `label_http_method`
+        // column for that key, and the writer's resolved config has since
+        // grown to include the colliding `http.method` too.
+        let config = Configuration {
+            schema: SchemaConfig {
+                catalog_type: "memory".to_string(),
+                catalog_uri: "memory://".to_string(),
+                default_schemas: Default::default(),
+                materialized_labels: common::config::MaterializedLabels {
+                    logs: vec!["http_method".to_string()],
+                    ..Default::default()
+                },
+            },
+            storage: StorageConfig {
+                dsn: "memory://".to_string(),
+            },
+            ..Default::default()
+        };
+        let catalog_manager = CatalogManager::new(config).await.unwrap();
+        let mut writer = IcebergTableWriter::new(
+            &catalog_manager,
+            Arc::new(InMemory::new()),
+            "test-tenant".to_string(),
+            "local".to_string(),
+            "logs".to_string(),
+        )
+        .await
+        .unwrap();
+        writer.materialized.logs = vec!["http.method".to_string(), "http_method".to_string()];
+
+        // Unlike the "grown" test's batch, this one was named under the
+        // *old* single-key config -- a WAL entry queued before the restart
+        // that grew the config -- so it carries only `label_http_method`
+        // (correctly holding `http_method`'s value as written) and is
+        // missing `label_http_method_2`, which the current (grown) config's
+        // fresh resolution would also produce.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("timestamp", DataType::Utf8, true),
+            Field::new("label_http_method", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("t")])),
+                Arc::new(StringArray::from(vec![Some("real-http_method-value")])),
+            ],
+        )
+        .unwrap();
+
+        let reconciled = reconcile(&writer, batch).unwrap();
+
+        // Left untouched: renaming by name here would misroute
+        // `http_method`'s value into what the grown config's fresh
+        // resolution thinks is `http.method`'s column, exactly the
+        // WAL-generation-mismatch failure this guard exists to avoid.
+        let reconciled_schema = reconciled.schema();
+        let names: Vec<&str> = reconciled_schema
+            .fields()
+            .iter()
+            .map(|f| f.name().as_str())
+            .collect();
+        assert_eq!(names, vec!["timestamp", "label_http_method"]);
+        let value = reconciled
+            .column(reconciled.schema().index_of("label_http_method").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0);
+        assert_eq!(value, "real-http_method-value");
     }
 
     #[tokio::test]
