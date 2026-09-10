@@ -1,6 +1,7 @@
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Datelike, Timelike};
 use common::flight::conversion::UNKNOWN_SERVICE_NAME;
+use common::schema::resource_identity::resource_identity_from_json;
 use common::schema::schema_parser::ResolvedSchema;
 use common::schema::{ATTR_TOKENS_COLUMN, SCHEMA_DEFINITIONS, materialized_column_name};
 use datafusion::arrow::{
@@ -282,6 +283,10 @@ fn build_trace_v1_to_v2_plan_for(v2_schema: &ResolvedSchema) -> Result<TraceV1To
             "date_day" => date_day_from_start_time_extractor(),
             "hour" => hour_from_start_time_extractor(),
 
+            // #1340: digest of the resource's attribute set, derived from
+            // the same `resource_json` column `resource_attributes` reads.
+            "resource_identity" => Box::new(resource_identity_from_resource_json_column),
+
             // Scope and resource metadata fields - present in v1 schema
             "trace_state"
             | "resource_schema_url"
@@ -370,6 +375,29 @@ fn get_column_by_name_or_null(
             batch.num_rows(),
         )),
     }
+}
+
+/// Builds the `resource_identity` column from a batch's `resource_json`
+/// string column: `resource_identity_from_json` of each row, null when the
+/// source row is null or its JSON is not an object. Shared by every
+/// transform (traces, logs, and metrics/profiles) that derives
+/// `resource_identity` from a `resource_json` column.
+fn resource_identity_from_resource_json_column(batch: &RecordBatch) -> Result<ArrayRef> {
+    let col = get_column_by_name(batch, "resource_json")?;
+    let str_array = col
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| anyhow!("resource_json is not StringArray"))?;
+    let values: Vec<Option<String>> = (0..str_array.len())
+        .map(|i| {
+            if str_array.is_null(i) {
+                None
+            } else {
+                resource_identity_from_json(str_array.value(i))
+            }
+        })
+        .collect();
+    Ok(Arc::new(StringArray::from(values)))
 }
 
 /// Serialize a ListArray (containing StructArrays) to JSON string arrays
@@ -675,7 +703,7 @@ fn extend_schema_with_labels(
 }
 
 pub fn transform_logs_v1_to_iceberg(batch: RecordBatch, labels: &[String]) -> Result<RecordBatch> {
-    let v1_schema = SCHEMA_DEFINITIONS.resolve_log_schema("physical-v1")?;
+    let v1_schema = SCHEMA_DEFINITIONS.resolve_log_schema("physical-v2")?;
     let arrow_schema = create_arrow_schema_from_resolved(&v1_schema)?;
 
     let num_rows = batch.num_rows();
@@ -931,6 +959,7 @@ pub fn transform_logs_v1_to_iceberg(batch: RecordBatch, labels: &[String]) -> Re
                 Arc::new(StringArray::from(values))
             }
             "log_attributes" => get_column_by_name(&batch, "attributes_json")?,
+            "resource_identity" => resource_identity_from_resource_json_column(&batch)?,
             "date_day" => {
                 let dates: Vec<Option<i32>> = effective_nanos
                     .iter()
@@ -2429,7 +2458,7 @@ mod tests {
     }
 
     #[test]
-    fn transform_trace_v1_to_v2_produces_the_complete_expected_physical_v3_batch() {
+    fn transform_trace_v1_to_v2_produces_the_complete_expected_physical_v4_batch() {
         // Full-batch golden check (CodeRabbit review, PR #1230): schema
         // field names/order/types/nullability, not just a hand-picked
         // values/types/nullability subset for a few fields -- a plan bug
@@ -2532,6 +2561,7 @@ mod tests {
             ("dropped_attributes_count", DataType::Int64, true),
             ("dropped_events_count", DataType::Int64, true),
             ("dropped_links_count", DataType::Int64, true),
+            ("resource_identity", DataType::Utf8, true),
         ];
 
         let batch_schema = v2_batch.schema();
@@ -2546,7 +2576,7 @@ mod tests {
                 .iter()
                 .map(|(n, t, nu)| (n.to_string(), t.clone(), *nu))
                 .collect::<Vec<_>>(),
-            "full physical-v3 schema (names, order, types, nullability) must match exactly"
+            "full physical-v4 schema (names, order, types, nullability) must match exactly"
         );
 
         assert_eq!(v2_batch.num_rows(), 1);
@@ -2566,6 +2596,141 @@ mod tests {
             get_str("span_attributes").contains("http.method"),
             "renamed from v1's `attributes_json`"
         );
+        assert_eq!(
+            get_str("resource_identity"),
+            resource_identity_from_json(r#"{"service.name":"checkout-svc"}"#).unwrap(),
+            "digest of the span's resource attribute set"
+        );
+    }
+
+    #[test]
+    fn transform_trace_v1_to_v2_resource_identity_groups_spans_by_resource() {
+        use common::flight::conversion::otlp_traces_to_arrow;
+        use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+        use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span as OtelSpan};
+
+        fn resource(service_name: &str) -> Resource {
+            Resource {
+                attributes: vec![KeyValue {
+                    key: "service.name".to_string(),
+                    value: Some(AnyValue {
+                        value: Some(Value::StringValue(service_name.to_string())),
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }
+        }
+
+        fn span(name: &str) -> OtelSpan {
+            OtelSpan {
+                trace_id: vec![0xab; 16],
+                span_id: vec![0xcd; 8],
+                name: name.to_string(),
+                kind: 2,
+                start_time_unix_nano: 1,
+                end_time_unix_nano: 2,
+                ..Default::default()
+            }
+        }
+
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![
+                ResourceSpans {
+                    resource: Some(resource("checkout")),
+                    scope_spans: vec![ScopeSpans {
+                        scope: None,
+                        spans: vec![span("first"), span("second")],
+                        schema_url: String::new(),
+                    }],
+                    schema_url: String::new(),
+                },
+                ResourceSpans {
+                    resource: Some(resource("billing")),
+                    scope_spans: vec![ScopeSpans {
+                        scope: None,
+                        spans: vec![span("third")],
+                        schema_url: String::new(),
+                    }],
+                    schema_url: String::new(),
+                },
+            ],
+        };
+
+        let wire_batch = otlp_traces_to_arrow(&request).expect("conversion should succeed");
+        let v2_batch = transform_trace_v1_to_v2(wire_batch, &[]).expect("transform should succeed");
+
+        let identities = v2_batch
+            .column(v2_batch.schema().index_of("resource_identity").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(identities.len(), 3);
+        assert_eq!(
+            identities.value(0),
+            identities.value(1),
+            "first two spans share the checkout resource"
+        );
+        assert_ne!(
+            identities.value(0),
+            identities.value(2),
+            "third span has a different resource"
+        );
+        assert_eq!(
+            identities.value(0),
+            resource_identity_from_json(r#"{"service.name":"checkout"}"#).unwrap()
+        );
+    }
+
+    #[test]
+    fn transform_trace_v1_to_v2_null_resource_json_yields_null_resource_identity() {
+        use common::flight::conversion::otlp_traces_to_arrow;
+        use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+        use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span as OtelSpan};
+
+        let span = OtelSpan {
+            trace_id: vec![0xab; 16],
+            span_id: vec![0xcd; 8],
+            name: "checkout".to_string(),
+            kind: 2,
+            start_time_unix_nano: 1,
+            end_time_unix_nano: 2,
+            ..Default::default()
+        };
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: None,
+                scope_spans: vec![ScopeSpans {
+                    scope: None,
+                    spans: vec![span],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        let wire_batch = otlp_traces_to_arrow(&request).expect("conversion should succeed");
+
+        // `otlp_traces_to_arrow` always produces a resource_json string (an
+        // empty-resource span still gets "{}"); force an actual null to
+        // exercise the extractor's null-source path, which a hand-built v1
+        // batch (or an older wire producer) can still send.
+        let resource_json_idx = wire_batch
+            .schema()
+            .index_of("resource_json")
+            .expect("resource_json column must exist");
+        let mut columns: Vec<ArrayRef> = wire_batch.columns().to_vec();
+        columns[resource_json_idx] = Arc::new(StringArray::from(vec![None::<&str>]));
+        let wire_batch = RecordBatch::try_new(wire_batch.schema(), columns).unwrap();
+
+        let v2_batch = transform_trace_v1_to_v2(wire_batch, &[]).expect("transform should succeed");
+        let identities = v2_batch
+            .column(v2_batch.schema().index_of("resource_identity").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert!(identities.is_null(0));
     }
 
     #[test]
@@ -3039,6 +3204,58 @@ mod tests {
     }
 
     #[test]
+    fn log_transform_resource_identity_groups_records_by_resource() {
+        let ts: u64 = 1_700_000_000_000_000_000;
+        let batch = make_log_flight_batch_with_attrs(
+            &[ts, ts, ts],
+            &[ts, ts, ts],
+            vec![
+                Some(r#"{"service.name":"checkout"}"#),
+                Some(r#"{"service.name":"checkout"}"#),
+                Some(r#"{"service.name":"billing"}"#),
+            ],
+            vec![None, None, None],
+            vec![None, None, None],
+        );
+
+        let result = transform_logs_v1_to_iceberg(batch, &[]).unwrap();
+        let identities = result
+            .column(result.schema().index_of("resource_identity").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(
+            identities.value(0),
+            identities.value(1),
+            "first two records share the checkout resource"
+        );
+        assert_ne!(
+            identities.value(0),
+            identities.value(2),
+            "third record has a different resource"
+        );
+        assert_eq!(
+            identities.value(0),
+            resource_identity_from_json(r#"{"service.name":"checkout"}"#).unwrap()
+        );
+    }
+
+    #[test]
+    fn log_transform_null_resource_json_yields_null_resource_identity() {
+        let ts: u64 = 1_700_000_000_000_000_000;
+        let batch =
+            make_log_flight_batch_with_attrs(&[ts], &[ts], vec![None], vec![None], vec![None]);
+
+        let result = transform_logs_v1_to_iceberg(batch, &[]).unwrap();
+        let identities = result
+            .column(result.schema().index_of("resource_identity").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert!(identities.is_null(0));
+    }
+
+    #[test]
     fn log_transform_uses_time_unix_nano_when_nonzero() {
         let real_ts: u64 = 1_700_000_000_000_000_000;
         let observed_ts: u64 = 1_700_000_001_000_000_000;
@@ -3183,7 +3400,7 @@ mod schema_consistency {
     }
 
     #[test]
-    fn traces_transform_covers_every_non_computed_physical_v3_field() {
+    fn traces_transform_covers_every_non_computed_physical_v4_field() {
         let resolved = SCHEMA_DEFINITIONS
             .resolve_trace_schema(SCHEMA_DEFINITIONS.current_trace_version())
             .unwrap();
@@ -3212,6 +3429,7 @@ mod schema_consistency {
                 "duration_nanos",
                 "span_attributes",
                 "resource_attributes",
+                "resource_identity",
                 "trace_state",
                 "resource_schema_url",
                 "scope_name",
@@ -3223,7 +3441,7 @@ mod schema_consistency {
     }
 
     #[test]
-    fn logs_transform_covers_every_non_computed_physical_v1_field() {
+    fn logs_transform_covers_every_non_computed_physical_v2_field() {
         let resolved = SCHEMA_DEFINITIONS
             .resolve_log_schema(&SCHEMA_DEFINITIONS.metadata.current_log_version)
             .unwrap();
@@ -3242,6 +3460,7 @@ mod schema_consistency {
                 "body",
                 "resource_schema_url",
                 "resource_attributes",
+                "resource_identity",
                 "scope_schema_url",
                 "scope_name",
                 "scope_version",
