@@ -48,6 +48,7 @@ impl OtelExportProbe {
     /// [`OtelExportFilter`] guarding the export layers.
     #[must_use]
     pub fn install(&self) -> tracing::subscriber::DefaultGuard {
+        super::install_global_tracing_fallback();
         let layer = CountingLayer {
             events: self.events.clone(),
             spans: self.spans.clone(),

@@ -154,6 +154,12 @@ required-features = ["testing"]
 name = "catalog_integration"
 required-features = ["testing-containers"]
 
+# Reaches `common::testing::install_global_tracing_fallback`, gated on the
+# `testing` feature.
+[[test]]
+name = "tracing_interest_fallback"
+required-features = ["testing"]
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tokio-stream = { workspace = true, features = ["net"] }

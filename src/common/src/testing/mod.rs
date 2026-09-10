@@ -30,6 +30,7 @@ mod flush;
 mod otel_capture;
 mod otlp_fixtures;
 mod temp_catalog;
+mod tracing_fallback;
 
 pub use config_builder::TestConfigBuilder;
 #[cfg(any(test, feature = "testing-containers"))]
@@ -40,3 +41,4 @@ pub use otlp_fixtures::{
     sample_logs_request, sample_metrics_request, sample_trace_request, string_attr,
 };
 pub use temp_catalog::TempCatalog;
+pub use tracing_fallback::install_global_tracing_fallback;
