@@ -164,6 +164,18 @@ fn sqlite_catalog_options() -> SqlCatalogOptions {
     SqlCatalogOptions::new().with_session_statements(sqlite_session_statements())
 }
 
+/// Connection options for a PostgreSQL-backed Iceberg catalog.
+///
+/// PostgreSQL needs none of `sqlite_catalog_options`'s pragmas: `journal_mode`
+/// and `busy_timeout` are SQLite-only concepts, and the fork's
+/// `pool_options_with_setup` already skips them for non-SQLite URLs. The
+/// defaults (sqlx's own pool sizing, no extra per-session statements) match
+/// what `src/common/src/catalog.rs`'s service-discovery catalog uses for its
+/// PostgreSQL connections.
+fn postgres_catalog_options() -> SqlCatalogOptions {
+    SqlCatalogOptions::new()
+}
+
 /// Internal helper to create catalog with ObjectStoreBuilder
 pub(crate) async fn create_sql_catalog_with_builder(
     catalog_uri: &str,
@@ -246,9 +258,23 @@ pub(crate) async fn create_sql_catalog_with_builder(
         .await
         .map_err(|e| anyhow::anyhow!("Failed to create in-memory SQLite catalog: {}", e))?;
         Arc::new(catalog) as Arc<dyn IcebergCatalog>
+    } else if catalog_uri.starts_with("postgres://") || catalog_uri.starts_with("postgresql://") {
+        // sqlx's `Any` driver connects lazily (`connect_lazy`, inside
+        // `SqlCatalog::new_with_options`), so this does not touch the network:
+        // the pool is only opened, and the catalog's tables only created, on
+        // first use.
+        let catalog = SqlCatalog::new_with_options(
+            catalog_uri,
+            catalog_name,
+            object_store_builder,
+            postgres_catalog_options(),
+        )
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to create PostgreSQL catalog: {}", e))?;
+        Arc::new(catalog) as Arc<dyn IcebergCatalog>
     } else {
         return Err(anyhow::anyhow!(
-            "Unsupported catalog URI: {}. Only SQLite is supported.",
+            "Unsupported catalog URI: {}. Supported: sqlite://, sqlite:file:, postgres://, postgresql://.",
             catalog_uri
         ));
     };
@@ -357,6 +383,42 @@ mod tests {
                 .iter()
                 .any(|s| s.contains("journal_mode") || s.contains("busy_timeout")),
             "the catalog sets these itself; repeating them muddies ownership: {statements:?}"
+        );
+    }
+
+    /// A `postgres://` catalog URI must be accepted, not rejected as
+    /// "Unsupported catalog URI". The pool connects lazily (`connect_lazy`),
+    /// so this does not require a running PostgreSQL server -- it only
+    /// proves the URI reaches `SqlCatalog::new_with_options` instead of the
+    /// SQLite-only error branch. `postgres_catalog_tests` below covers the
+    /// real connection, table creation, and CAS commit path against a
+    /// testcontainers-backed PostgreSQL instance.
+    #[tokio::test]
+    async fn postgres_catalog_uri_is_accepted() {
+        let uri = "postgres://user:pass@localhost:5432/signaldb_catalog";
+
+        let result =
+            create_sql_catalog_with_builder(uri, "test", ObjectStoreBuilder::memory()).await;
+
+        assert!(
+            result.is_ok(),
+            "expected a postgres:// catalog URI to be accepted, got {:?}",
+            result.err()
+        );
+    }
+
+    /// The `postgresql://` scheme alias must work identically to `postgres://`.
+    #[tokio::test]
+    async fn postgresql_scheme_alias_catalog_uri_is_accepted() {
+        let uri = "postgresql://user:pass@localhost:5432/signaldb_catalog";
+
+        let result =
+            create_sql_catalog_with_builder(uri, "test", ObjectStoreBuilder::memory()).await;
+
+        assert!(
+            result.is_ok(),
+            "expected a postgresql:// catalog URI to be accepted, got {:?}",
+            result.err()
         );
     }
 
@@ -483,5 +545,155 @@ mod tests {
         };
         let builder = create_object_store_builder_from_config(&config).unwrap();
         assert!(matches!(builder, ObjectStoreBuilder::Memory(_)));
+    }
+}
+
+/// Exercises a PostgreSQL-backed Iceberg catalog against a real server: table
+/// creation, then the compare-and-swap commit path that
+/// `[schema].catalog_uri` is meant to guarantee across writer, querier, and
+/// compactor processes racing the same catalog row.
+#[cfg(test)]
+mod postgres_catalog_tests {
+    use super::*;
+    use crate::testing::start_container_with_retry;
+    use iceberg_rust::catalog::identifier::Identifier;
+    use iceberg_rust::catalog::namespace::Namespace;
+    use iceberg_rust::catalog::tabular::Tabular;
+    use iceberg_rust::error::Error as IcebergError;
+    use iceberg_rust::spec::schema::Schema;
+    use iceberg_rust::spec::types::{PrimitiveType, StructField, Type};
+    use iceberg_rust::table::Table;
+    use testcontainers_modules::postgres::Postgres;
+    use testcontainers_modules::testcontainers::ContainerAsync;
+
+    /// Start a Postgres testcontainer and return its connection DSN alongside
+    /// the container handle, which must be kept alive for the DSN to remain
+    /// reachable.
+    async fn start_postgres_container() -> (String, ContainerAsync<Postgres>) {
+        let container = start_container_with_retry(Postgres::default).await;
+        let host = container.get_host().await.unwrap();
+        let port = container.get_host_port_ipv4(5432).await.unwrap();
+        let dsn = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+        (dsn, container)
+    }
+
+    fn test_schema() -> Schema {
+        Schema::builder()
+            .with_struct_field(StructField {
+                id: 1,
+                name: "id".to_string(),
+                required: true,
+                field_type: Type::Primitive(PrimitiveType::Long),
+                doc: None,
+                initial_default: None,
+                write_default: None,
+            })
+            .build()
+            .unwrap()
+    }
+
+    /// A `postgres://` catalog URI must produce a working catalog: creating a
+    /// namespace and a table succeeds against a real server, not just a
+    /// lazily-connected pool.
+    #[tokio::test]
+    async fn postgres_catalog_creates_namespace_and_table() {
+        let (dsn, _container) = start_postgres_container().await;
+
+        let catalog =
+            create_sql_catalog_with_builder(&dsn, "warehouse", ObjectStoreBuilder::memory())
+                .await
+                .expect("postgres catalog creation should succeed");
+
+        catalog
+            .create_namespace(&Namespace::try_new(&["ns".to_string()]).unwrap(), None)
+            .await
+            .expect("namespace creation should succeed");
+
+        Table::builder()
+            .with_name("t")
+            .with_location("/warehouse/ns/t")
+            .with_schema(test_schema())
+            .build(&["ns".to_string()], catalog.clone())
+            .await
+            .expect("table creation should succeed");
+
+        let identifier = Identifier::new(&["ns".to_string()], "t");
+        let tabular = catalog
+            .load_tabular(&identifier)
+            .await
+            .expect("table should be loadable back from postgres");
+        assert!(matches!(tabular, Tabular::Table(_)));
+    }
+
+    /// Two catalog handles over the same PostgreSQL database -- the shape of
+    /// a distributed deployment where writer, querier, and compactor all CAS
+    /// against the same catalog -- must not both report success for commits
+    /// built on the same base metadata. This is the guarantee SQLite-on-a-
+    /// single-node can provide but SQLite-on-shared-storage cannot; wiring
+    /// Postgres through gives the CAS guarantee an actual multi-process
+    /// backend.
+    #[tokio::test]
+    async fn concurrent_commit_from_a_second_catalog_reports_conflict_on_postgres() {
+        let (dsn, _container) = start_postgres_container().await;
+        let object_store = ObjectStoreBuilder::memory();
+
+        let catalog_a = create_sql_catalog_with_builder(&dsn, "warehouse", object_store.clone())
+            .await
+            .expect("postgres catalog creation should succeed");
+        let catalog_b = create_sql_catalog_with_builder(&dsn, "warehouse", object_store)
+            .await
+            .expect("postgres catalog creation should succeed");
+
+        catalog_a
+            .create_namespace(&Namespace::try_new(&["ns".to_string()]).unwrap(), None)
+            .await
+            .expect("namespace creation should succeed");
+
+        let mut table_a = Table::builder()
+            .with_name("t")
+            .with_location("/warehouse/ns/t")
+            .with_schema(test_schema())
+            .build(&["ns".to_string()], catalog_a.clone())
+            .await
+            .expect("table creation should succeed");
+
+        // Catalog B loads the table, caching the same base metadata location
+        // that catalog A is about to supersede.
+        let identifier = Identifier::new(&["ns".to_string()], "t");
+        let Tabular::Table(mut table_b) =
+            catalog_b.clone().load_tabular(&identifier).await.unwrap()
+        else {
+            panic!("expected a table");
+        };
+
+        table_a
+            .new_transaction(None)
+            .update_properties(vec![("owner".to_string(), "a".to_string())])
+            .commit()
+            .await
+            .expect("first commit should succeed");
+
+        // B's commit is built on metadata A already superseded: it must fail
+        // rather than report a success the catalog never recorded.
+        let result = table_b
+            .new_transaction(None)
+            .update_properties(vec![("owner".to_string(), "b".to_string())])
+            .commit()
+            .await;
+
+        assert!(
+            matches!(result, Err(IcebergError::CommitConflict(_))),
+            "expected a commit conflict, got {result:?}"
+        );
+
+        // And the losing commit must not have overwritten the winner.
+        let Tabular::Table(reloaded) = catalog_a.clone().load_tabular(&identifier).await.unwrap()
+        else {
+            panic!("expected a table");
+        };
+        assert_eq!(
+            reloaded.metadata().properties.get("owner"),
+            Some(&"a".to_string())
+        );
     }
 }

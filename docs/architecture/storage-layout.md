@@ -149,18 +149,19 @@ The Querier registers per-dataset object stores with DataFusion's runtime enviro
 
 ### Catalog Configuration
 
-The Iceberg metadata catalog is a SQLite-backed `SqlCatalog` (from `iceberg-sql-catalog`) named `"signaldb"`. It is configured via:
+The Iceberg metadata catalog is a `SqlCatalog` (from `iceberg-sql-catalog`, built on sqlx's `Any` driver) named `"signaldb"`. It accepts either a SQLite or a PostgreSQL URI, configured via:
 
 ```toml
 [schema]
 catalog_type = "sql"
 catalog_uri = "sqlite::memory:"          # In-memory (default, for dev/testing)
-# catalog_uri = "sqlite:///.data/catalog.db"  # Persistent (recommended for production)
+# catalog_uri = "sqlite:///.data/catalog.db"        # Persistent, single-node
+# catalog_uri = "postgres://user:pass@host/dbname"  # Distributed: shared, CAS-capable catalog
 ```
 
-> **Limitation**: Only SQLite is supported for the Iceberg catalog. PostgreSQL URIs are rejected. This is distinct from the service discovery catalog which supports both SQLite and PostgreSQL.
+PostgreSQL is the right choice once writer, querier, and compactor are separate processes committing against the same catalog: the compare-and-swap that the catalog's commit path relies on (`swap_metadata_location`) needs a database that actually serializes concurrent writers, which a SQLite file on shared/network storage does not guarantee. SQLite remains the default for single-node and dev/test deployments. No extensions or manual schema setup are required on PostgreSQL -- the catalog creates its own `iceberg_tables` and `iceberg_namespace_properties` tables (`create table if not exists`) the first time it connects, the same as it does for SQLite.
 
-Every connection the Iceberg catalog's pool opens gets three pragmas, set in two places:
+Every connection the Iceberg catalog's pool opens for a SQLite URI gets three pragmas, set in two places (none of these apply to PostgreSQL -- `journal_mode`/`busy_timeout`/`synchronous` are SQLite-only concepts, and PostgreSQL connections get no extra session statements):
 
 | Pragma                 | Set by                                                                        | Why                                                                                                                                                                                                                                                                                      |
 | ---------------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -170,7 +171,7 @@ Every connection the Iceberg catalog's pool opens gets three pragmas, set in two
 
 Together these match what the service discovery catalog (`src/common/src/catalog.rs`) sets. Pragmas cannot be carried on the DSN — sqlx's SQLite URL parser rejects them as query parameters — so they have to be set on the connection; SignalDB reaches them through the catalog's session-statement support ([#386](https://github.com/JanKaul/iceberg-rust/pull/386)). Session statements run _after_ the catalog's own, so SignalDB could override a default if it ever needed to; today it only adds.
 
-The pool connects lazily, so the pragmas are applied on first use rather than at construction. Nothing touches the database in between.
+The pool connects lazily, so the pragmas (and, for PostgreSQL, the first real connection and table creation) are applied on first use rather than at construction. Nothing touches the database in between.
 
 ### Metadata retention
 
