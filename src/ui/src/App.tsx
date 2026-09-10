@@ -70,7 +70,7 @@ export function App() {
     }
     if (location.pathname === "/select-tenant") return;
     const target = safeRedirectTarget(
-      `${location.pathname}${location.search}`,
+      `${location.pathname}${location.search}${location.hash}`,
     );
     navigate(`/select-tenant?redirect=${encodeURIComponent(target)}`, {
       replace: true,
@@ -81,6 +81,7 @@ export function App() {
     sessionQuery.data,
     location.pathname,
     location.search,
+    location.hash,
     navigate,
     update,
   ]);

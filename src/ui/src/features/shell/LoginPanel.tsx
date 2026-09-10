@@ -94,7 +94,7 @@ export function LoginPanel({ hint, redirect, onSuccess }: PanelProps) {
   // app shell) — defence in depth, since `location` is already same-app in
   // practice.
   const ssoRedirect = safeRedirectTarget(
-    redirect ?? `${location.pathname}${location.search}`,
+    redirect ?? `${location.pathname}${location.search}${location.hash}`,
   );
   const { pending, onAuthenticated, pick, busy } = useTenantStep(
     (tenant, dataset) => onSuccess({ tenant, dataset }),

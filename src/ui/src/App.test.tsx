@@ -575,6 +575,38 @@ describe("App", () => {
       );
     });
 
+    it("preserves the location fragment in the /select-tenant redirect target", async () => {
+      stubFetchRoutes([
+        { match: "query_range", body: emptyStreams },
+        { match: "/labels?", body: emptyLabels },
+        {
+          match: SESSION,
+          method: "GET",
+          body: {
+            user: {
+              id: "u1",
+              email: "alice@example.com",
+              display_name: "Alice",
+              is_instance_admin: false,
+            },
+            tenant: null,
+            dataset: null,
+            memberships: [
+              { tenant_id: "acme", name: "Acme", role: "admin" },
+              { tenant_id: "globex", name: "Globex", role: "member" },
+            ],
+          },
+        },
+      ]);
+      renderApp("/logs#section-1");
+      await waitFor(() =>
+        expect(window.location.pathname).toBe("/select-tenant"),
+      );
+      expect(window.location.search).toBe(
+        `?redirect=${encodeURIComponent("/logs#section-1")}`,
+      );
+    });
+
     it("does not resolve from the session when a tenant is already in the URL", async () => {
       const fetchFn = stubFetchRoutes([
         { match: "query_range", body: emptyStreams },
