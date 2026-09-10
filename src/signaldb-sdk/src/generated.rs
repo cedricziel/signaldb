@@ -270,7 +270,18 @@ pub mod types {
     ///      "type": "string"
     ///    },
     ///    "deprecated": {
-    ///      "$ref": "#/components/schemas/DeprecatedInfo"
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/DeprecatedInfo"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    },
     ///    "enum_members": {
     ///      "type": "array",
@@ -529,7 +540,18 @@ pub mod types {
     ///      "type": "string"
     ///    },
     ///    "primary": {
-    ///      "$ref": "#/components/schemas/AttributeHit"
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/AttributeHit"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    }
     ///  }
     ///}
@@ -776,7 +798,18 @@ pub mod types {
     ///      "$ref": "#/components/schemas/ConnectionIngest"
     ///    },
     ///    "mcp": {
-    ///      "$ref": "#/components/schemas/ConnectionMcp"
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/ConnectionMcp"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    },
     ///    "notes": {
     ///      "description": "Operator guidance, e.g. that `[public]` is unset and URLs are\nlocalhost fallbacks. Empty when everything is configured.",
@@ -1953,7 +1986,19 @@ pub mod types {
     ///      ]
     ///    },
     ///    "cardinality": {
-    ///      "$ref": "#/components/schemas/CardinalityEstimate"
+    ///      "description": "An approximate distinct-value count, when statistics exist.",
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/CardinalityEstimate"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    },
     ///    "coverage": {
     ///      "description": "The fraction of the tenant's records carrying it, when statistics\nexist. Absent means unknown — never defaulted to a number that could be\nmistaken for a measurement.",
@@ -1972,7 +2017,19 @@ pub mod types {
     ///      "type": "boolean"
     ///    },
     ///    "level": {
-    ///      "$ref": "#/components/schemas/AttributeLevel"
+    ///      "description": "The OTel attribute level, when known. Statistics carry no level, so an\nobserved key reports `null` rather than a guess.",
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/AttributeLevel"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    },
     ///    "name": {
     ///      "description": "The logical, dotted OTel-native name — directly usable in a predicate.",
@@ -1993,6 +2050,7 @@ pub mod types {
         ///The registry's one-line description, when a registry defines it.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub brief: ::std::option::Option<::std::string::String>,
+        ///An approximate distinct-value count, when statistics exist.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub cardinality: ::std::option::Option<CardinalityEstimate>,
         /**The fraction of the tenant's records carrying it, when statistics
@@ -2006,6 +2064,8 @@ pub mod types {
         /**Whether a predicate may address it (retrieval-only fields are listed,
         not hidden).*/
         pub filterable: bool,
+        /**The OTel attribute level, when known. Statistics carry no level, so an
+        observed key reports `null` rather than a guess.*/
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub level: ::std::option::Option<AttributeLevel>,
         ///The logical, dotted OTel-native name — directly usable in a predicate.
@@ -2227,7 +2287,18 @@ pub mod types {
     ///      "type": "string"
     ///    },
     ///    "deprecated": {
-    ///      "$ref": "#/components/schemas/DeprecatedInfo"
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/DeprecatedInfo"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    },
     ///    "descriptive": {
     ///      "type": "array",
@@ -2396,7 +2467,18 @@ pub mod types {
     ///      "type": "string"
     ///    },
     ///    "primary": {
-    ///      "$ref": "#/components/schemas/EntityHit"
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/EntityHit"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    }
     ///  }
     ///}
@@ -3431,7 +3513,19 @@ pub mod types {
     ///  ],
     ///  "properties": {
     ///    "oidc": {
-    ///      "$ref": "#/components/schemas/OidcLoginConfig"
+    ///      "description": "Always serialized, `null` until an OIDC provider is configured — not\nan omittable field.",
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/OidcLoginConfig"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    },
     ///    "password_enabled": {
     ///      "type": "boolean"
@@ -3442,7 +3536,9 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct LoginConfigResponse {
-        pub oidc: OidcLoginConfig,
+        /**Always serialized, `null` until an OIDC provider is configured — not
+        an omittable field.*/
+        pub oidc: ::std::option::Option<OidcLoginConfig>,
         pub password_enabled: bool,
     }
     impl LoginConfigResponse {
@@ -4432,7 +4528,18 @@ pub mod types {
     ///      "type": "string"
     ///    },
     ///    "deprecated": {
-    ///      "$ref": "#/components/schemas/DeprecatedInfo"
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/DeprecatedInfo"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    },
     ///    "entity_associations": {
     ///      "description": "Entity type names this metric describes.",
@@ -4572,7 +4679,18 @@ pub mod types {
     ///      "type": "string"
     ///    },
     ///    "primary": {
-    ///      "$ref": "#/components/schemas/MetricHit"
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/MetricHit"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    }
     ///  }
     ///}
@@ -5075,13 +5193,37 @@ pub mod types {
     ///      }
     ///    },
     ///    "flamegraph": {
-    ///      "$ref": "#/components/schemas/FlamegraphResult"
+    ///      "description": "Present iff `result == \"flamegraph\"` — `Some` even when zero profiles\nmatched, so an empty match set stays distinguishable from \"this\nresponse has no flamegraph at all\" (i.e. a different envelope).",
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/FlamegraphResult"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    },
     ///    "heatmap": {
     ///      "$ref": "#/components/schemas/HeatmapResult"
     ///    },
     ///    "metadata": {
-    ///      "$ref": "#/components/schemas/MetadataResult"
+    ///      "description": "Present iff `result == \"metadata\"` — what a `describe` document asked\nabout, with the provenance and cost of the answer.",
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/MetadataResult"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    },
     ///    "result": {
     ///      "description": "The result envelope: `rows`, `series`, `table`, `heatmap`, or `flamegraph`.",
@@ -5125,10 +5267,15 @@ pub mod types {
     pub struct QueryIrResponse {
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub columns: ::std::vec::Vec<ResultColumn>,
+        /**Present iff `result == "flamegraph"` — `Some` even when zero profiles
+        matched, so an empty match set stays distinguishable from "this
+        response has no flamegraph at all" (i.e. a different envelope).*/
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub flamegraph: ::std::option::Option<FlamegraphResult>,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub heatmap: ::std::option::Option<HeatmapResult>,
+        /**Present iff `result == "metadata"` — what a `describe` document asked
+        about, with the provenance and cost of the answer.*/
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub metadata: ::std::option::Option<MetadataResult>,
         ///The result envelope: `rows`, `series`, `table`, `heatmap`, or `flamegraph`.
@@ -5536,7 +5683,18 @@ pub mod types {
     ///      "format": "int64"
     ///    },
     ///    "timeline": {
-    ///      "$ref": "#/components/schemas/Timeline"
+    ///      "oneOf": [
+    ///        {
+    ///          "type": "null"
+    ///        },
+    ///        {
+    ///          "allOf": [
+    ///            {
+    ///              "$ref": "#/components/schemas/Timeline"
+    ///            }
+    ///          ]
+    ///        }
+    ///      ]
     ///    }
     ///  }
     ///}
@@ -12035,7 +12193,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct LoginConfigResponse {
-            oidc: ::std::result::Result<super::OidcLoginConfig, ::std::string::String>,
+            oidc: ::std::result::Result<
+                ::std::option::Option<super::OidcLoginConfig>,
+                ::std::string::String,
+            >,
             password_enabled: ::std::result::Result<bool, ::std::string::String>,
         }
         impl ::std::default::Default for LoginConfigResponse {
@@ -12049,7 +12210,7 @@ pub mod types {
         impl LoginConfigResponse {
             pub fn oidc<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<super::OidcLoginConfig>,
+                T: ::std::convert::TryInto<::std::option::Option<super::OidcLoginConfig>>,
                 T::Error: ::std::fmt::Display,
             {
                 self.oidc = value

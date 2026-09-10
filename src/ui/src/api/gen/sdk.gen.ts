@@ -684,7 +684,15 @@ export const searchTagsV2 = <ThrowOnError extends boolean = false>(options?: Opt
  *
  * Authenticated by the `signaldb_session` HttpOnly cookie only; an API key or `X-Tenant-ID` header does not substitute for it.
  */
-export const currentSession = <ThrowOnError extends boolean = false>(options?: Options<CurrentSessionData, ThrowOnError>): RequestResult<CurrentSessionResponses, CurrentSessionErrors, ThrowOnError> => (options?.client ?? client).get<CurrentSessionResponses, CurrentSessionErrors, ThrowOnError>({ url: '/ui/session', ...options });
+export const currentSession = <ThrowOnError extends boolean = false>(options?: Options<CurrentSessionData, ThrowOnError>): RequestResult<CurrentSessionResponses, CurrentSessionErrors, ThrowOnError> => (options?.client ?? client).get<CurrentSessionResponses, CurrentSessionErrors, ThrowOnError>({
+    security: [{
+            in: 'cookie',
+            name: 'signaldb_session',
+            type: 'apiKey'
+        }],
+    url: '/ui/session',
+    ...options
+});
 
 /**
  * GET /ui/session/config

@@ -4330,7 +4330,9 @@
           }
         },
         "security": [
-          {}
+          {
+            "sessionCookie": []
+          }
         ]
       }
     },
@@ -8080,6 +8082,11 @@
       "bearerAuth": {
         "type": "http",
         "scheme": "bearer"
+      },
+      "sessionCookie": {
+        "type": "apiKey",
+        "in": "cookie",
+        "name": "signaldb_session"
       }
     }
   },
