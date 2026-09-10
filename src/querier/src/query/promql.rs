@@ -37,9 +37,229 @@
 //! (`date_bin`), not Prometheus's sliding window — exact when the step
 //! equals the range.
 
+use std::borrow::Cow;
+
 use promql_parser::parser::{self, Expr, LabelModifier};
 
 use super::error::QuerierError;
+
+/// SignalDB stores metric names in OTel dotted form
+/// (`signaldb.wal.entries_pending`) but a bare dotted identifier is not
+/// valid PromQL — `promql-parser` correctly rejects it. This rewrites such
+/// an identifier, wherever it sits in metric-name position, into the
+/// quoted UTF-8 selector form the parser accepts: `a.b.c` becomes
+/// `{"a.b.c"}`, `a.b.c{x="y"}` becomes `{"a.b.c", x="y"}`, and `a.b.c[5m]`
+/// becomes `{"a.b.c"}[5m]`. Only identifiers containing a `.` are
+/// touched; a dotted identifier inside a `by`/`without`/`on`/`ignoring`/
+/// `group_left`/`group_right` label list is left alone too, since that
+/// position takes a label name rather than a selector, and — like string
+/// literals, numeric literals, and the contents of an existing `{...}`
+/// block — passes through byte for byte.
+///
+/// This scans the raw text rather than going through `promql_parser`'s own
+/// lexer because that lexer treats a bare `.` outside a number literal as a
+/// hard error and stops there — it can't tokenize the very construct this
+/// function exists to accept.
+fn quote_dotted_metric_names(query: &str) -> Cow<'_, str> {
+    if !query.contains('.') {
+        return Cow::Borrowed(query);
+    }
+
+    let chars: Vec<(usize, char)> = query.char_indices().collect();
+    let len = chars.len();
+
+    let mut out = String::with_capacity(query.len() + 8);
+    let mut pos = 0;
+    let mut changed = false;
+    // Whether the innermost open paren is a grouping/matching label list
+    // (`by (…)`, `on (…)`, …), pushed/popped on `(`/`)`.
+    let mut label_lists: Vec<bool> = Vec::new();
+    // Set right after scanning a grouping keyword, so the `(` it's
+    // immediately (whitespace aside) followed by is recognized as opening
+    // a label list rather than a selector's argument list.
+    let mut pending_label_list = false;
+
+    while pos < len {
+        let (byte_pos, c) = chars[pos];
+        match c {
+            '"' | '\'' | '`' => {
+                let end = skip_string(&chars, pos);
+                out.push_str(&query[byte_pos..byte_at(&chars, query, end)]);
+                pos = end;
+                pending_label_list = false;
+            }
+            // Content already inside a selector is left alone: a dotted
+            // name there is either the quoted form the caller wants, or a
+            // label matcher this extension does not touch.
+            '{' => {
+                // An unclosed block runs to the end of the input; copying
+                // it through as-is still leaves the parser to reject it.
+                let end = skip_brace_block(&chars, pos).unwrap_or(len);
+                out.push_str(&query[byte_pos..byte_at(&chars, query, end)]);
+                pos = end;
+                pending_label_list = false;
+            }
+            '(' => {
+                label_lists.push(pending_label_list);
+                pending_label_list = false;
+                out.push('(');
+                pos += 1;
+            }
+            ')' => {
+                label_lists.pop();
+                pending_label_list = false;
+                out.push(')');
+                pos += 1;
+            }
+            _ if c.is_whitespace() => {
+                out.push(c);
+                pos += 1;
+            }
+            _ if is_ident_start(c) => {
+                let end = skip_ident(&chars, pos);
+                let ident = &query[byte_pos..byte_at(&chars, query, end)];
+                let in_label_list = label_lists.last().copied().unwrap_or(false);
+                if ident.contains('.') && !in_label_list {
+                    changed = true;
+                    pos = emit_dotted(&mut out, query, &chars, ident, end);
+                } else {
+                    out.push_str(ident);
+                    pos = end;
+                }
+                pending_label_list = !ident.contains('.') && is_grouping_keyword(ident);
+            }
+            _ => {
+                out.push(c);
+                pos += 1;
+                pending_label_list = false;
+            }
+        }
+    }
+
+    if changed {
+        Cow::Owned(out)
+    } else {
+        Cow::Borrowed(query)
+    }
+}
+
+/// The byte offset just past `chars[idx]`, or `query.len()` past the end —
+/// shared by [`quote_dotted_metric_names`] and [`emit_dotted`] to turn a
+/// `chars` index back into a slice bound on `query`.
+fn byte_at(chars: &[(usize, char)], query: &str, idx: usize) -> usize {
+    chars.get(idx).map_or(query.len(), |&(b, _)| b)
+}
+
+/// The clauses that take a label list rather than a selector, so a dotted
+/// name inside them is a label name this extension must not touch.
+fn is_grouping_keyword(ident: &str) -> bool {
+    matches!(
+        ident,
+        "by" | "without" | "on" | "ignoring" | "group_left" | "group_right"
+    )
+}
+
+fn is_ident_start(c: char) -> bool {
+    c.is_ascii_alphabetic() || c == '_' || c == ':'
+}
+
+fn is_ident_continue(c: char) -> bool {
+    is_ident_start(c) || c.is_ascii_digit() || c == '.'
+}
+
+/// Advances past the identifier run starting at `pos` (`chars[pos]` must
+/// satisfy [`is_ident_start`]). Returns the index just past the run.
+fn skip_ident(chars: &[(usize, char)], pos: usize) -> usize {
+    let mut i = pos + 1;
+    while i < chars.len() && is_ident_continue(chars[i].1) {
+        i += 1;
+    }
+    i
+}
+
+/// Advances past a quoted string literal starting at `pos` (`chars[pos]`
+/// is the opening quote). Backtick strings are raw, matching the
+/// Prometheus lexer; `"`/`'` strings honor a backslash escaping the next
+/// character.
+fn skip_string(chars: &[(usize, char)], pos: usize) -> usize {
+    let quote = chars[pos].1;
+    let raw = quote == '`';
+    let mut i = pos + 1;
+    while i < chars.len() {
+        let c = chars[i].1;
+        if !raw && c == '\\' && i + 1 < chars.len() {
+            i += 2;
+            continue;
+        }
+        i += 1;
+        if c == quote {
+            break;
+        }
+    }
+    i
+}
+
+/// Advances past a `{...}` block starting at `pos` (`chars[pos] == '{'`),
+/// honoring string literals inside it so a label value's own `}` doesn't
+/// end the block early. Returns `None` for an unclosed block, so a caller
+/// merging into it doesn't compute a nonsensical inner range.
+fn skip_brace_block(chars: &[(usize, char)], pos: usize) -> Option<usize> {
+    let mut i = pos + 1;
+    while i < chars.len() {
+        match chars[i].1 {
+            '"' | '\'' | '`' => i = skip_string(chars, i),
+            '}' => return Some(i + 1),
+            _ => i += 1,
+        }
+    }
+    None
+}
+
+/// Emits the quoted-selector rewrite for a dotted identifier found in
+/// metric-name position and returns the index to resume scanning from.
+/// PromQL's grammar allows whitespace between a selector and its `{`, so
+/// this looks past it to decide whether to merge into an existing matcher
+/// list or wrap the identifier on its own.
+fn emit_dotted(
+    out: &mut String,
+    query: &str,
+    chars: &[(usize, char)],
+    ident: &str,
+    end: usize,
+) -> usize {
+    let len = chars.len();
+
+    let mut lookahead = end;
+    while lookahead < len && chars[lookahead].1.is_whitespace() {
+        lookahead += 1;
+    }
+
+    // An unclosed `{` falls through to the plain wrap below: the parser
+    // will reject the query regardless, and the main loop's own `{`
+    // handling (which tolerates an unclosed block) takes over from `end`.
+    if lookahead < len
+        && chars[lookahead].1 == '{'
+        && let Some(brace_end) = skip_brace_block(chars, lookahead)
+    {
+        let inner = query
+            [byte_at(chars, query, lookahead) + 1..byte_at(chars, query, brace_end) - 1]
+            .trim();
+        out.push_str("{\"");
+        out.push_str(ident);
+        out.push('"');
+        if !inner.is_empty() {
+            out.push_str(", ");
+            out.push_str(inner);
+        }
+        out.push('}');
+        return brace_end;
+    }
+
+    out.push_str("{\"");
+    out.push_str(ident);
+    out.push_str("\"}");
+    end
+}
 
 /// The per-bucket, per-series aggregate to compute over `value`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -333,8 +553,7 @@ impl Eq for MetricPlan {}
 
 /// Parse and lower a PromQL query.
 pub fn plan_promql(query: &str) -> Result<MetricPlan, QuerierError> {
-    let expr = parser::parse(query)
-        .map_err(|e| QuerierError::InvalidInput(format!("invalid PromQL: {e}")))?;
+    let expr = parse_promql(query)?;
     lower(&expr)
 }
 
@@ -386,9 +605,25 @@ pub enum LogicalOp {
 
 /// Parse and lower a PromQL query to a [`QueryPlan`].
 pub fn plan_query(query: &str) -> Result<QueryPlan, QuerierError> {
-    let expr = parser::parse(query)
-        .map_err(|e| QuerierError::InvalidInput(format!("invalid PromQL: {e}")))?;
+    let expr = parse_promql(query)?;
     plan_query_expr(&expr)
+}
+
+/// Rewrites bare dotted metric names (see [`quote_dotted_metric_names`])
+/// and parses the result. On a parse failure for a query that still
+/// contains a dotted identifier, appends a hint pointing at the quoted
+/// forms `promql-parser` accepts.
+fn parse_promql(query: &str) -> Result<Expr, QuerierError> {
+    let rewritten = quote_dotted_metric_names(query);
+    parser::parse(&rewritten).map_err(|e| {
+        let mut msg = format!("invalid PromQL: {e}");
+        if matches!(rewritten, Cow::Owned(_)) {
+            msg.push_str(
+                r#"; metric names containing '.' must be written as {"a.b.c"} or {__name__="a.b.c"}"#,
+            );
+        }
+        QuerierError::InvalidInput(msg)
+    })
 }
 
 /// Lower an already-parsed expression to a [`QueryPlan`].
@@ -2005,5 +2240,100 @@ mod tests {
     #[test]
     fn invalid_promql_is_rejected() {
         assert!(matches!(err(r#"sum(("#), QuerierError::InvalidInput(_)));
+    }
+
+    #[test]
+    fn dotted_bare_name_matches_quoted_form() {
+        assert_eq!(
+            plan("signaldb.wal.entries_pending"),
+            plan(r#"{"signaldb.wal.entries_pending"}"#)
+        );
+    }
+
+    #[test]
+    fn dotted_name_with_matchers_matches_quoted_form() {
+        assert_eq!(
+            plan(r#"process.memory.usage{service_name="signaldb"}"#),
+            plan(r#"{"process.memory.usage", service_name="signaldb"}"#)
+        );
+    }
+
+    #[test]
+    fn dotted_name_via_name_matcher_is_unaffected() {
+        assert_eq!(
+            plan(r#"process.memory.usage{service_name="signaldb"}"#),
+            plan(r#"{__name__="process.memory.usage", service_name="signaldb"}"#)
+        );
+    }
+
+    #[test]
+    fn dotted_name_under_sum_by_matches_quoted_form() {
+        assert_eq!(
+            plan_query("sum by (service_name) (process.memory.usage)").expect("plan"),
+            plan_query(r#"sum by (service_name) ({"process.memory.usage"})"#).expect("plan")
+        );
+    }
+
+    #[test]
+    fn dotted_name_under_rate_matches_quoted_form() {
+        assert_eq!(
+            plan_query("rate(signaldb.ingest.spans_received[5m])").expect("plan"),
+            plan_query(r#"rate({"signaldb.ingest.spans_received"}[5m])"#).expect("plan")
+        );
+    }
+
+    #[test]
+    fn string_literal_with_dot_is_unchanged() {
+        assert_eq!(
+            quote_dotted_metric_names(r#"label_replace(x, "a", "$1", "b", "(.*)")"#),
+            r#"label_replace(x, "a", "$1", "b", "(.*)")"#
+        );
+    }
+
+    #[test]
+    fn float_literal_is_unchanged() {
+        assert_eq!(quote_dotted_metric_names(r#"x > 0.95"#), r#"x > 0.95"#);
+    }
+
+    #[test]
+    fn query_without_dots_is_untouched_borrow() {
+        // No dot anywhere: the rewrite must not allocate.
+        assert!(matches!(
+            quote_dotted_metric_names("sum(rate(http_requests_total[5m]))"),
+            std::borrow::Cow::Borrowed(_)
+        ));
+    }
+
+    #[test]
+    fn dotted_name_in_grouping_label_list_is_left_alone() {
+        // `http.method` here is a label name, not a selector: rewriting it
+        // to a quoted selector would produce a different kind of invalid
+        // PromQL instead of leaving the original (already invalid) label
+        // name for the parser to reject on its own terms. The metric
+        // selector in the call position is still rewritten.
+        assert_eq!(
+            quote_dotted_metric_names("sum by (http.method) (some.metric)"),
+            r#"sum by (http.method) ({"some.metric"})"#
+        );
+    }
+
+    #[test]
+    fn dotted_name_after_on_and_group_left_is_left_alone() {
+        assert_eq!(
+            quote_dotted_metric_names("a.b / on (svc.name) group_left (extra.dim) c.d"),
+            r#"{"a.b"} / on (svc.name) group_left (extra.dim) {"c.d"}"#
+        );
+    }
+
+    #[test]
+    fn still_failing_dotted_query_gets_hint() {
+        let e = err("a.b.c{");
+        let msg = e.to_string();
+        assert!(
+            msg.contains(
+                r#"metric names containing '.' must be written as {"a.b.c"} or {__name__="a.b.c"}"#
+            ),
+            "unexpected message: {msg}"
+        );
     }
 }
