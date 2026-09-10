@@ -242,7 +242,9 @@ async fn main() -> Result<()> {
     // One WAL per tenant/dataset/signal (#932); WALs left by a previous run
     // are opened now so their pending entries drain.
     let writer_wal_manager = Arc::new(
-        WalManager::uniform(writer_wal_config).with_max_instances(config.wal.max_instances),
+        WalManager::uniform(writer_wal_config)
+            .with_max_instances(config.wal.max_instances)
+            .with_role("writer"),
     );
     writer::cli::open_existing_writer_wals(&writer_wal_manager).await;
     writer_wal_manager.warn_if_fd_headroom_thin("writer").await;
