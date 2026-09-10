@@ -525,7 +525,7 @@ pub struct CurrentSessionResponse {
     path = "/ui/session",
     operation_id = "current_session",
     tag = "session",
-    security(()),
+    security(("sessionCookie" = [])),
     description = "Authenticated by the `signaldb_session` HttpOnly cookie only; an API key or `X-Tenant-ID` header does not substitute for it.",
     responses(
         (status = 200, description = "Signed-in user, memberships, and auto-selected tenant/dataset", body = CurrentSessionResponse),
