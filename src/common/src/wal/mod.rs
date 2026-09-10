@@ -1,5 +1,6 @@
 pub mod framing;
 pub mod manager;
+pub mod rlimit;
 
 use anyhow::{Context, Result};
 use datafusion::arrow::record_batch::RecordBatch;
@@ -1466,14 +1467,41 @@ impl Wal {
         result
     }
 
+    /// Unix seconds of this WAL's last append. The LRU key
+    /// [`crate::wal::manager::WalManager`]'s instance cap sorts eviction
+    /// candidates by; [`Self::idle_for`] is defined in terms of it.
+    pub fn last_append_secs(&self) -> u64 {
+        self.last_append.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     /// How long since this WAL last accepted an append.
     ///
     /// Drives idle eviction. A WAL created and never written to counts as idle
     /// from its creation, which is what makes a discovered-but-quiet WAL from a
     /// previous run evictable once its backlog is drained.
     pub fn idle_for(&self) -> std::time::Duration {
-        let last = self.last_append.load(std::sync::atomic::Ordering::Relaxed);
-        std::time::Duration::from_secs(unix_now_secs().saturating_sub(last))
+        std::time::Duration::from_secs(unix_now_secs().saturating_sub(self.last_append_secs()))
+    }
+
+    /// Number of entries buffered in memory but not yet flushed into a
+    /// segment.
+    ///
+    /// [`Self::get_unprocessed_entries`] only scans segments, so an entry
+    /// still sitting in the buffer is invisible to it — a WAL judged
+    /// "drained" by that check alone could still lose buffered entries if
+    /// closed, since [`Self::close`] flushes them into a segment belonging to
+    /// an instance no eviction-driven drain loop iterates again.
+    pub async fn buffered_entry_count(&self) -> usize {
+        self.buffer.read().await.len()
+    }
+
+    /// Force this WAL's last-append timestamp, for deterministic
+    /// LRU-ordering tests. Production code only ever advances it from
+    /// [`Self::append`].
+    #[cfg(any(test, feature = "testing"))]
+    pub fn set_last_append_secs(&self, secs: u64) {
+        self.last_append
+            .store(secs, std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Number of segments this WAL currently holds, including the open one.

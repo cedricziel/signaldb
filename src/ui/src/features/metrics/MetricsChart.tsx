@@ -106,10 +106,11 @@ export function MetricsChart({
         rows,
       });
     };
+    const initialWidth = host.clientWidth || 800;
     const make = () =>
       new uPlot(
         {
-          width: host.clientWidth || 800,
+          width: initialWidth,
           height,
           // Timestamps are already in ms.
           ms: 1,
@@ -135,14 +136,28 @@ export function MetricsChart({
         host,
       );
 
-    let plot = make();
-    const onResize = () => {
-      plot.destroy();
-      plot = make();
-    };
-    window.addEventListener("resize", onResize);
+    const plot = make();
+    let lastWidth = initialWidth;
+    // Resize in place (`setSize`, not destroy+recreate) and react to the
+    // chart's own container rather than only `window` — a sidebar drag or
+    // any container-only reflow never fires a window resize event.
+    // Debounced so a continuous drag doesn't thrash the canvas.
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (resizeTimer !== null) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        resizeTimer = null;
+        if (!width || width === lastWidth) return;
+        lastWidth = width;
+        plot.setSize({ width, height });
+      }, 120);
+    });
+    observer.observe(host);
+
     return () => {
-      window.removeEventListener("resize", onResize);
+      if (resizeTimer !== null) clearTimeout(resizeTimer);
+      observer.disconnect();
       plot.destroy();
       setTip(null);
     };

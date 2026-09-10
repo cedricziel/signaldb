@@ -65,9 +65,10 @@ max_segment_size = 67108864          # 64 MB
 max_buffer_entries = 1000
 flush_interval = "30s"
 max_buffer_size_bytes = 134217728    # 128 MB
+max_instances = 256                  # soft cap on cached WAL instances; 0 = unbounded
 ```
 
-`wal_dir` is the base directory: the acceptor uses `{wal_dir}/acceptor` and the writer `{wal_dir}/writer` (default `.data/wal/acceptor` / `.data/wal/writer`). The service-specific env overrides `ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR` (read directly by the binaries, not via figment; also available as `--wal-dir`) point at the full service directory and win over `[wal].wal_dir`. Sizing knobs use the double-underscore form: `SIGNALDB__WAL__MAX_SEGMENT_SIZE`, `SIGNALDB__WAL__MAX_BUFFER_ENTRIES`, `SIGNALDB__WAL__FLUSH_INTERVAL` (as does `SIGNALDB__WAL__WAL_DIR`).
+`wal_dir` is the base directory: the acceptor uses `{wal_dir}/acceptor` and the writer `{wal_dir}/writer` (default `.data/wal/acceptor` / `.data/wal/writer`). The service-specific env overrides `ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR` (read directly by the binaries, not via figment; also available as `--wal-dir`) point at the full service directory and win over `[wal].wal_dir`. Sizing knobs use the double-underscore form: `SIGNALDB__WAL__MAX_SEGMENT_SIZE`, `SIGNALDB__WAL__MAX_BUFFER_ENTRIES`, `SIGNALDB__WAL__FLUSH_INTERVAL`, `SIGNALDB__WAL__MAX_INSTANCES` (as does `SIGNALDB__WAL__WAL_DIR`).
 
 ### Iceberg Schema Catalog
 
@@ -386,6 +387,25 @@ authorization_code_ttl = "60s"                     # default 60s
 ```
 
 Env: `SIGNALDB__MCP__OAUTH__ENABLED`, `SIGNALDB__MCP__OAUTH__ISSUER_URL`, `SIGNALDB__MCP__OAUTH__RESOURCE_URL`. The sidecar advertises the resource via its own `--oauth-resource-url` / `--oauth-issuer-url` flags (env `SIGNALDB__MCP__OAUTH__RESOURCE_URL` / `_ISSUER_URL`).
+
+### Public endpoints (connection self-service)
+
+How the deployment is reached from *outside* (load balancer, reverse proxy,
+TLS terminator) — distinct from the bind addresses above. Answers
+`GET /api/v1/connection` (any tenant key) and the MCP `connection_info` tool,
+feeds the Explore UI's "Send data" snippets and the first-boot banner. All
+fields optional; unset fields fall back to localhost defaults and the
+response carries a note saying so.
+
+```toml
+[public]
+otlp_grpc_url = "https://otlp.example.com:4317"  # default http://localhost:4317
+otlp_http_url = "https://otlp.example.com:4318"  # base; /v1/traces etc. appended. default http://localhost:4318
+api_url = "https://signaldb.example.com"         # router HTTP API base. default http://localhost:3000
+mcp_url = "https://signaldb.example.com/mcp"     # falls back to [mcp.oauth].resource_url, else omitted
+```
+
+Env: `SIGNALDB__PUBLIC__OTLP_GRPC_URL`, `SIGNALDB__PUBLIC__OTLP_HTTP_URL`, `SIGNALDB__PUBLIC__API_URL`, `SIGNALDB__PUBLIC__MCP_URL`. Trailing slashes are trimmed; `https` scheme marks the endpoint as TLS in the response.
 
 ### Self-Monitoring (Dogfooding)
 

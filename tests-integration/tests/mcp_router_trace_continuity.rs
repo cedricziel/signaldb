@@ -191,7 +191,10 @@ async fn call_get_trace(app: axum::Router, trace_id: &str) -> serde_json::Value 
         Some(&session_id),
         serde_json::json!({
             "jsonrpc": "2.0", "id": 2, "method": "tools/call",
-            "params": {"name": "get_trace", "arguments": {"trace_id": trace_id}}
+            "params": {
+                "name": "get_trace",
+                "arguments": {"trace_id": trace_id, "tenant": TENANT, "dataset": "default"}
+            }
         }),
     );
     let response = app.oneshot(call).await.expect("tools/call responds");

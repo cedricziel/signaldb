@@ -1,10 +1,9 @@
-# Declared Data Ordering Delta Spec
+# declared-data-ordering Specification
 
 ## Purpose
-
 Defines the ordering contract between file producers (ingest, compaction) and the query engine: when a sort order is declared, it is physically true; queries stay correct over any mix of sorted and unsorted files; and time-ordered/limited queries get the acceleration the declared order enables.
 
-## ADDED Requirements
+## Requirements
 
 ### Requirement: Signal tables declare a canonical sort order
 
@@ -62,7 +61,14 @@ For queries of the shape "time-range filter, order by time, limit n" on tables w
 #### Scenario: Recent-first query reads recent files first
 
 - **WHEN** a `ORDER BY timestamp DESC LIMIT 20` query spans a range containing many attributed files
-- **THEN** scan metrics show files/row-groups skipped relative to a full-range scan, and the benchmark suite shows the improvement over the undeclared baseline
+- **THEN** scan metrics show files/row-groups skipped relative to a full-range scan
+
+The skipping comes from per-file statistics: the engine reads files newest-first and its TopK's dynamic filter prunes the rest, which is available to attributed and unattributed files alike. The engine does not yet elide a sort for the _reverse_ of a declared order, so this shape keeps its `SortExec` and the benchmark suite shows no difference against the undeclared baseline for it. The measured numbers live in `docs/contributing/benchmarking.md`.
+
+#### Scenario: Oldest-first query stops at the first files
+
+- **WHEN** a `ORDER BY timestamp ASC LIMIT 20` query spans a range containing many attributed, non-overlapping files
+- **THEN** the plan carries no `SortExec`, and scan metrics show that only the leading file of each file group was opened — the remaining files in range were never read
 
 ### Requirement: Compaction converges tables toward attributed files
 

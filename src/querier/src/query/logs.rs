@@ -26,7 +26,7 @@ use datafusion::{
         approx_percentile_cont, avg, count, first_value, last_value, max, min, stddev_pop, sum,
         var_pop,
     },
-    logical_expr::{Expr, cast, col, lit},
+    logical_expr::{Expr, cast, col, ident, lit},
     prelude::{DataFrame, SessionContext},
     scalar::ScalarValue,
 };
@@ -535,7 +535,7 @@ impl LogsService {
         let bucket = date_bin(stride, timestamp_ns, origin).alias("bucket");
 
         let mut group_exprs = vec![bucket];
-        group_exprs.extend(range_group_cols.iter().map(|c| col(c.as_str())));
+        group_exprs.extend(range_group_cols.iter().map(|c| ident(c.as_str())));
 
         let value = aggregate_expr(&plan.aggregate).alias("value");
         df = df
@@ -545,7 +545,7 @@ impl LogsService {
         // Normalize `value` to Float64 (count/bytes aggregate to Int64)
         // and apply the `rate` divisor in the same projection.
         let mut proj = vec![col("bucket")];
-        proj.extend(range_group_cols.iter().map(|c| col(c.as_str())));
+        proj.extend(range_group_cols.iter().map(|c| ident(c.as_str())));
         let value = cast(col("value"), DataType::Float64);
         let value = match plan.rate_divisor_seconds {
             Some(seconds) => value / lit(seconds),
@@ -558,7 +558,7 @@ impl LogsService {
         // within each output group (`avg`/`min`/`max`/`count`).
         if let Some(outer) = plan.outer_agg {
             let mut group_exprs = vec![col("bucket")];
-            group_exprs.extend(out_group_cols.iter().map(|c| col(c.as_str())));
+            group_exprs.extend(out_group_cols.iter().map(|c| ident(c.as_str())));
             let reduced = outer_agg_expr(outer, col("value")).alias("value");
             df = df
                 .aggregate(group_exprs, vec![reduced])
@@ -566,7 +566,7 @@ impl LogsService {
 
             // `count` reduces to Int64; keep the matrix value Float64.
             let mut proj = vec![col("bucket")];
-            proj.extend(out_group_cols.iter().map(|c| col(c.as_str())));
+            proj.extend(out_group_cols.iter().map(|c| ident(c.as_str())));
             proj.push(cast(col("value"), DataType::Float64).alias("value"));
             df = df.select(proj).map_err(QuerierError::QueryFailed)?;
         }
@@ -581,7 +581,7 @@ impl LogsService {
                 &range_group_cols
             };
             let mut proj = vec![col("bucket")];
-            proj.extend(current_group_cols.iter().map(|c| col(c.as_str())));
+            proj.extend(current_group_cols.iter().map(|c| ident(c.as_str())));
             proj.push(scalar_op_expr(col("value"), scalar_op).alias("value"));
             df = df.select(proj).map_err(QuerierError::QueryFailed)?;
         }
@@ -878,6 +878,31 @@ impl LogsService {
     }
 }
 
+/// The projection expression list for a set of log-query columns: `body`
+/// (if present in `columns`) is decoded via
+/// [`super::ir_planner::body_decode_expr`] the same way the IR path's own
+/// `body` projection is (issue #1410 — ingest JSON-encodes `body`, so a
+/// plain string value must come back decoded on every path that projects
+/// it), everything else is projected as-is.
+///
+/// `pub(crate)` and shared with the `differential` test harness
+/// (`old_logql_log_plan`), which pins its hand-built "old path" plan against
+/// this file's IR-routed plan at the optimized-plan-text level — sharing
+/// this function is what keeps that pin from drifting the moment either
+/// side changes how `body` is projected.
+pub(crate) fn log_query_projection(columns: &[&str]) -> Vec<Expr> {
+    columns
+        .iter()
+        .map(|c| {
+            if *c == "body" {
+                super::ir_planner::body_decode_expr("body").alias("body")
+            } else {
+                col(*c)
+            }
+        })
+        .collect()
+}
+
 /// Apply the projection, filter, ordering, and limit of a log-line query
 /// to a base DataFrame. Split out so it can be tested against an
 /// in-memory table.
@@ -893,7 +918,7 @@ pub fn shape_log_query(
     if let Some(filter) = filter {
         df = df.filter(filter).map_err(QuerierError::QueryFailed)?;
     }
-    df.select_columns(LOG_COLUMNS)
+    df.select(log_query_projection(LOG_COLUMNS))
         .map_err(QuerierError::QueryFailed)?
         .sort(vec![col("timestamp").sort(direction.ascending(), true)])
         .map_err(QuerierError::QueryFailed)?
@@ -1740,6 +1765,72 @@ mod tests {
         catalog.register_schema("d", schema_provider).unwrap();
         ctx.register_catalog("t", catalog);
         LogsService::new(ctx)
+    }
+
+    /// A `t.d.logs` table with a mixed-case materialized label column
+    /// (`label_StatusCode`), for issue #1392: grouping by a mixed-case
+    /// attribute label through the old `execute_plan` path.
+    fn service_with_mixed_case_label() -> LogsService {
+        let mut fields: Vec<Field> = logs_schema()
+            .fields()
+            .iter()
+            .map(|f| (**f).clone())
+            .collect();
+        fields.push(Field::new("label_StatusCode", DataType::Utf8, true));
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![100, 200])),
+                str_col(&["a", "b"]),
+                str_col(&["api", "api"]),
+                str_col(&["info", "info"]),
+                str_col(&["t1", "t2"]),
+                str_col(&["s1", "s2"]),
+                str_col(&["{}", "{}"]),
+                str_col(&["{}", "{}"]),
+                str_col(&["200", "500"]),
+            ],
+        )
+        .unwrap();
+
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let schema_provider = Arc::new(MemorySchemaProvider::new());
+        schema_provider
+            .register_table("logs".to_string(), Arc::new(table))
+            .unwrap();
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        catalog.register_schema("d", schema_provider).unwrap();
+        ctx.register_catalog("t", catalog);
+        LogsService::new(ctx)
+    }
+
+    /// #1392: `execute_plan`'s grouping-column resolution used `col()` on a
+    /// materialized label column's name, which DataFusion parses as an SQL
+    /// identifier and lowercases when unquoted — so a mixed-case column
+    /// like `label_StatusCode` failed to resolve
+    /// (`No field named label_statuscode`). `ir_planner.rs`'s
+    /// `lower_aggregate` fixed the identical bug for the IR path (#1070) by
+    /// using `ident()` instead; this pins the same fix on the old path,
+    /// reachable both as a D5 fallback and as each operand of a
+    /// vector-to-vector binary metric query (`LogsService::query_metric`
+    /// routes both straight to `execute_plan`).
+    #[tokio::test]
+    async fn execute_plan_groups_by_mixed_case_materialized_label() {
+        let service = service_with_mixed_case_label();
+        let out = execute_plan_matrix(
+            &service,
+            r#"sum by (StatusCode) (count_over_time({service_name="api"}[1000ns]))"#,
+            1000,
+        )
+        .await;
+        assert_eq!(
+            out.len(),
+            2,
+            "should group the two StatusCode values: {out:?}"
+        );
+        assert!(out.iter().all(|(v, _, _)| *v == 1.0));
     }
 
     #[tokio::test]

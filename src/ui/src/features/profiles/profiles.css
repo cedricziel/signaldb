@@ -1,3 +1,4 @@
+/* breakpoints: tablet <=900px, mobile <=600px */
 .profilesview {
   display: flex;
   flex-direction: column;
@@ -30,21 +31,28 @@
   color: var(--text);
 }
 
-.profiles-note {
-  color: var(--faint);
-  padding: 14px 16px;
-  font-size: 12px;
-}
-
-.profiles-note code {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--dim);
-}
-
 .profiles-compare-toggle {
   margin-left: auto;
   cursor: pointer;
+}
+
+@media (max-width: 600px) {
+  .profiles-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .profiles-field {
+    width: 100%;
+  }
+
+  .profiles-field select {
+    flex: 1;
+  }
+
+  .profiles-compare-toggle {
+    margin-left: 0;
+  }
 }
 
 .profiles-compare-ranges {
@@ -67,6 +75,24 @@
 
 .profiles-compare-pane:last-child {
   border-right: none;
+}
+
+/* Side by side panes each squeeze their own toolbar (view toggle, collapse
+   selector, search box) into unreadable, overlapping slivers well before the
+   page itself runs out of width — stack baseline above comparison instead. */
+@media (max-width: 900px) {
+  .profiles-compare {
+    grid-template-columns: 1fr;
+  }
+
+  .profiles-compare-pane {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .profiles-compare-pane:last-child {
+    border-bottom: none;
+  }
 }
 
 .profiles-compare-pane .flame-title {
@@ -93,6 +119,7 @@
 .flame-toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   min-height: 24px;
 }
@@ -112,6 +139,12 @@
   font-size: 11px;
   color: var(--accent);
   font-variant-numeric: tabular-nums;
+}
+
+@media (max-width: 600px) {
+  .flame-search {
+    flex: 1 1 100%;
+  }
 }
 
 .flame-view-toggle {
@@ -219,11 +252,9 @@
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--text);
-  opacity: 0.92;
 }
 
 .flame-frame:hover {
-  opacity: 1;
   filter: brightness(1.08);
 }
 
@@ -300,7 +331,6 @@
 }
 
 .flame-top-table th {
-  text-align: left;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
@@ -308,36 +338,6 @@
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
   font-weight: 650;
-}
-
-.flame-top-table th.num,
-.flame-top-table td.num {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-.flame-top-table .th-sort {
-  font: inherit;
-  color: inherit;
-  text-transform: inherit;
-  letter-spacing: inherit;
-  cursor: pointer;
-}
-
-.flame-top-table .th-sort:hover {
-  color: var(--text);
-}
-
-.flame-top-table th[aria-sort] .th-sort {
-  color: var(--text);
-}
-
-.flame-top-table th[aria-sort="ascending"] .th-sort::after {
-  content: " ↑";
-}
-
-.flame-top-table th[aria-sort="descending"] .th-sort::after {
-  content: " ↓";
 }
 
 .flame-top-table td {

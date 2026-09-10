@@ -52,8 +52,8 @@ building fails CI.
 | `common`            | `ingest_and_wal`              | Acceptor CPU per OTLP trace request: protobuf decode + OTLP→Arrow; WAL `record_batch_to_bytes`/`bytes_to_record_batch` round-trip                 |
 | `common`            | `signal_decode`               | Same decode + convert for logs and metrics requests                                                                                               |
 | `writer`            | `schema_transform_benchmarks` | `transform_trace_v1_to_v2` — the wire→storage materialization plan                                                                                |
-| `writer`            | `iceberg_benchmarks`          | `IcebergTableWriter::append_batches_with_marker` across batch sizes, multi-batch commits, and concurrent tenants; writer creation cost separately |
-| `tests-integration` | `querier_read_paths`          | Trace lookup by id (unbounded, time-windowed, via a point index, and with/without the Parquet footer cache) and the trace-groups listing over a seeded Iceberg table |
+| `writer`            | `iceberg_benchmarks`          | `IcebergTableWriter::append_batches_with_marker` across batch sizes, multi-batch commits, and concurrent tenants; writer creation cost separately; `ingest_sort` isolates the per-commit-group sort by the declared key on in-order and shuffled input |
+| `tests-integration` | `querier_read_paths`          | Trace lookup by id (unbounded, time-windowed, via a point index, and with/without the Parquet footer cache) and the trace-groups listing over a seeded Iceberg table; `recent_first_topk` times `ORDER BY timestamp DESC LIMIT n` over sequential files in every attestation state and prints what each scan opened and pruned (see [Declared sort orders](#declared-sort-orders-what-the-benchmark-shows)) |
 | `tests-integration` | `querier_service_read_paths` | The real querier (`QuerierFlightService::do_get` with router ticket formats): bloom-pruned `find_trace` with and without a time hint, `search_traces`, a PromQL range query and a LogQL line filter through the actual engines |
 | `tests-integration` | `compaction`                  | `CompactionExecutor::execute_candidate` rewriting a set of small files                                                                            |
 | `tests-integration` | `trace_index_scaling`         | Point lookup against a prefix-sharded, bloom-filtered Parquet index at 10k → 1M traces                                                            |
@@ -131,6 +131,78 @@ An `alert-threshold` of 150% flags a benchmark whose mean is 1.5× the
 previous run in the job summary. It does not fail the workflow yet: shared
 runners are noisy, and the threshold needs a few weeks of observed variance
 before it becomes a gate.
+
+## Declared sort orders: what the benchmark shows
+
+`querier_read_paths`'s `declared_ordering` group is the measurement gate of
+the declared-sort-orders work (#936, #1317). It seeds one traces table of 60
+sequential ingest files (1,000 spans each, two minutes apart, one row group
+per file, 2.5 MB) twice — once through ingest, so every file attests the
+declared `(timestamp, trace_id)` order, and once through the plain write path,
+so none does — and runs three ordered shapes against the querier's real
+session. Before timing, it prints what each scan did, from DataFusion's own
+metrics, because wall-clock alone cannot tell an elided sort from a quiet
+machine. These are the numbers from the run that closed #1317 (in-memory
+object store, warm footer cache, 4 vCPUs):
+
+| Shape                                      | Files               | Reached | Pruned | Read | Bytes   | Sort   | Time    |
+| ------------------------------------------ | ------------------- | ------: | -----: | ---: | ------: | ------ | ------: |
+| `ORDER BY timestamp DESC LIMIT 20`         | attested            |      60 |     56 |    4 |  23,641 | kept   | 13.3 ms |
+|                                            | attested, split off |      60 |     58 |    2 |  11,820 | kept   | 13.2 ms |
+|                                            | unattested          |      60 |     59 |    2 |  11,820 | kept   | 12.0 ms |
+| `ORDER BY timestamp ASC LIMIT 20`          | attested            |       4 |      0 |    4 |  23,641 | elided | 10.6 ms |
+|                                            | attested, split off |       2 |      0 |    2 |  11,824 | elided | 10.2 ms |
+|                                            | unattested          |      60 |     58 |    2 |  11,817 | kept   | 12.1 ms |
+| `ORDER BY timestamp ASC` (all 60,000 rows) | attested            |      60 |      0 |   60 | 354,626 | elided | 20.9 ms |
+|                                            | attested, split off |      60 |      0 |   60 | 354,626 | elided | 26.7 ms |
+|                                            | unattested          |      60 |      0 |   60 | 354,626 | kept   | 25.4 ms |
+
+"Reached" counts files the scan got as far as preparing to open; "pruned"
+counts the reached files it then skipped whole on their statistics without
+reading them; "read" is the rest, one row group each in this layout; "split
+off" is `[querier.datafusion].split_file_groups_by_statistics = false`. The
+pruned/read split of a TopK arm moves by one file between runs: the dynamic
+filter tightens as partitions race to fill the heap.
+
+What the mechanism columns say:
+
+- **Recent-first (`DESC`) gains nothing from attestation.** DataFusion 54
+  cannot serve the reverse of a declared order without a sort, so every arm
+  keeps a `SortExec: TopK`. What makes the shape cheap is the TopK's dynamic
+  filter: the scan reads files newest-first, fills the heap from the first
+  file per group, and prunes the other 56–59 files on statistics. That works
+  on any file with statistics, attested or not — which is why the unattested
+  arm is not slower.
+- **Oldest-first (`ASC`) is where attestation pays.** The request matches the
+  declared order, so the attested scan declares it, the sort is elided, and
+  the limit stops the scan after the first file of each group: 4 files reached
+  instead of 60. On an object store each of those 56 unreached footers is a
+  round-trip the query never makes; in memory it is the ~1.5 ms between the
+  arms.
+- **A full ordered scan elides the sort outright.** Attested: rows stream out
+  in file order. Unattested: 60,000 rows are sorted first. The difference is
+  the sort itself (~4.5 ms here, and the sort's memory).
+- **Every timing includes ~10 ms of planning** — the Iceberg provider reads
+  manifests and builds the scan on every query — which is why the ratios
+  look small next to the I/O ratios. The rows are the same across arms; the
+  bench asserts it.
+
+The write-path cost of the sort that makes attestation possible is
+`iceberg_benchmarks`'s `ingest_sort` group: the columnar sort of one commit
+group by the table's key, on the same `metrics_gauge` batches
+`single_batch_writes` appends. Ingest's usual input arrives close to time
+order, which is the cheap case; a shuffled group is the expensive one.
+
+| Rows    | Append (`single_batch_writes`) | Sort, in order | Sort, shuffled |
+| ------: | -----------------------------: | -------------: | -------------: |
+|   1,000 |                         4.6 ms |          75 µs |         111 µs |
+|  10,000 |                        15.3 ms |         748 µs |        1.45 ms |
+| 100,000 |                       125.6 ms |        20.0 ms |        35.6 ms |
+
+The sort is 2–5% of the append for the commit groups ingest actually forms
+(thousands of rows) and reaches 16% (in order) to 28% (shuffled) only at
+100,000-row groups, where the append is already 125 ms. It is bounded by the
+group, not the table.
 
 ## Adding a bench
 

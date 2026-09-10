@@ -92,6 +92,13 @@ export const ALL_SCOPES: ReadonlyArray<ApiKeyScope> = SCOPE_GROUPS.flatMap(
   (group) => group.scopes.map((entry) => entry.scope),
 );
 
+/** The Ingestion group's scopes: a key without at least one of these can't
+ * ingest any OTLP signal, so the create form pre-checks all of them. */
+export const INGEST_SCOPES: ReadonlyArray<ApiKeyScope> =
+  SCOPE_GROUPS.find((group) => group.name === "Ingestion")?.scopes.map(
+    (entry) => entry.scope,
+  ) ?? [];
+
 /** API key as returned by the management API. Structurally the generated
  * wire type (scopes surface as `string[]`). */
 export type ManagedApiKey = ManageApiKeyResponse;
@@ -117,18 +124,25 @@ export const listApiKeys = async (tenant: string): Promise<ManagedApiKey[]> =>
 
 export const createApiKey = async (
   tenant: string,
-  input: { name?: string; dataset_id?: string; scopes: ApiKeyScope[] },
+  input: { name?: string; dataset_ids?: string[]; scopes: ApiKeyScope[] },
 ): Promise<ManageCreatedApiKey> =>
   unwrap(
     await manageCreateApiKey({ path: { tenant_id: tenant }, body: input }),
   );
 
 /** Change a live key's scopes and/or dataset restriction without rotating
- * its secret; absent fields are left untouched. Revoked keys are rejected. */
+ * its secret; absent fields are left untouched. Revoked keys are rejected.
+ * `dataset_ids` replaces the restriction with exactly that set;
+ * `clear_dataset_restriction` clears it back to unrestricted — the two are
+ * mutually exclusive (D1a), enforced server-side. */
 export const updateApiKey = async (
   tenant: string,
   keyId: string,
-  input: { scopes?: ApiKeyScope[]; dataset_id?: string },
+  input: {
+    scopes?: ApiKeyScope[];
+    dataset_ids?: string[];
+    clear_dataset_restriction?: boolean;
+  },
 ): Promise<ManagedApiKey> =>
   unwrap(
     await manageUpdateApiKey({

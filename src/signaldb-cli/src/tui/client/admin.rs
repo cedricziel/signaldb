@@ -197,7 +197,10 @@ impl AdminClient {
         let request = signaldb_sdk::types::CreateApiKeyRequest {
             name: Some(name.to_string()),
             scopes,
-            dataset_id,
+            // TODO(multi-dataset-key-restriction phase 4): this TUI action
+            // takes a single dataset; wrap it in a one-element set to keep
+            // phase-2 behavior unchanged until the TUI grows multi-select.
+            dataset_ids: dataset_id.map(|d| vec![d]),
         };
 
         let response = self

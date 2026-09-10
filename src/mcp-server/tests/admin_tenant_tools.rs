@@ -5,46 +5,15 @@
 //! clean access-denied on an unauthorized management call, and key material
 //! appearing exactly once.
 
-use axum::body::Body;
-use axum::http::{HeaderMap, Request, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use futures::StreamExt;
-use rmcp::{ClientHandler, ServiceExt, model::ClientInfo, service::RunningService};
 use std::time::Duration;
 
+mod common;
+
+use common::{connect, mcp_request_with_key, read_jsonrpc_response, spawn_router};
 use mcp_server::server::McpServer;
 use mcp_server::{McpAppState, mcp_http_router};
-
-// ---------------------------------------------------------------------------
-// Lightweight in-process client (no HTTP layer) — for registration/schema
-// checks that never dispatch a tool call.
-// ---------------------------------------------------------------------------
-
-#[derive(Clone)]
-struct TestClient;
-
-impl ClientHandler for TestClient {
-    fn get_info(&self) -> ClientInfo {
-        ClientInfo::default()
-    }
-}
-
-async fn connect() -> RunningService<rmcp::RoleClient, TestClient> {
-    let (server_transport, client_transport) = tokio::io::duplex(64 * 1024);
-    tokio::spawn(async move {
-        let server = McpServer::new(
-            "http://router.invalid".to_string(),
-            std::time::Duration::from_secs(5),
-        );
-        if let Ok(running) = server.serve(server_transport).await {
-            let _ = running.waiting().await;
-        }
-    });
-    TestClient
-        .serve(client_transport)
-        .await
-        .expect("client connects to the in-memory server")
-}
 
 const PLATFORM_ADMIN_TOOLS: &[&str] = &[
     "list_tenants",
@@ -349,61 +318,7 @@ async fn spawn_mock_router() -> String {
     let app = axum::Router::new()
         .route("/api/v1/whoami", axum::routing::get(whoami))
         .fallback(behaviour);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind mock router");
-    let addr = listener.local_addr().expect("mock router address");
-    tokio::spawn(async move {
-        axum::serve(listener, app)
-            .await
-            .expect("mock router serves");
-    });
-    format!("http://{addr}")
-}
-
-fn mcp_request_with_key(
-    api_key: &str,
-    session_id: Option<&str>,
-    body: serde_json::Value,
-) -> Request<Body> {
-    let mut builder = Request::builder()
-        .method("POST")
-        .uri("/mcp")
-        .header("host", "localhost")
-        .header("authorization", format!("Bearer {api_key}"))
-        .header("x-tenant-id", "acme")
-        .header("content-type", "application/json")
-        .header("accept", "application/json, text/event-stream");
-    if let Some(session_id) = session_id {
-        builder = builder.header("mcp-session-id", session_id);
-    }
-    builder
-        .body(Body::from(body.to_string()))
-        .expect("build MCP request")
-}
-
-async fn read_jsonrpc_response(response: Response, id: u64) -> serde_json::Value {
-    let mut stream = response.into_body().into_data_stream();
-    let mut buffered = String::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    loop {
-        let chunk = tokio::time::timeout_at(deadline, stream.next())
-            .await
-            .expect("response arrives before the deadline");
-        let Some(chunk) = chunk else {
-            panic!("response stream ended without a reply for id {id}: {buffered}");
-        };
-        let chunk = chunk.expect("read response chunk");
-        buffered.push_str(&String::from_utf8_lossy(&chunk));
-        for line in buffered.lines() {
-            let candidate = line.strip_prefix("data:").map(str::trim).unwrap_or(line);
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(candidate)
-                && value.get("id").and_then(|v| v.as_u64()) == Some(id)
-            {
-                return value;
-            }
-        }
-    }
+    spawn_router(app).await
 }
 
 struct McpSession {

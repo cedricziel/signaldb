@@ -266,6 +266,13 @@ max_segment_size = 67108864           # 64MB
 max_buffer_entries = 1000
 flush_interval = "30s"
 max_buffer_size_bytes = 134217728     # 128MB
+# Soft cap on cached WAL instances per service (one per active
+# tenant/dataset/signal). A write is never failed to honour it: on a cache
+# miss over the cap, the least-recently-appended drained, unreferenced WAL is
+# evicted to make room, or the write proceeds over the cap if nothing
+# qualifies. 0 = unbounded. Sizing: 3 fds/WAL, so 256*3+128 fits a 1024
+# RLIMIT_NOFILE soft limit; on a raised limit use (soft_limit - 128) / 3.
+max_instances = 256
 
 [querier]
 # Querier resource limits — bound what a single query (or tenant) can do
@@ -682,6 +689,19 @@ default_tenant = "default"
 # access_token_ttl = "1h"                            # issued access-token lifetime
 # refresh_token_ttl = "30d"                          # issued refresh-token lifetime
 # authorization_code_ttl = "60s"                     # authorization-code lifetime (kept short)
+
+# Public-facing endpoints for this deployment, as reached from outside (e.g.
+# through a load balancer or reverse proxy). Distinct from the bind addresses
+# above, which describe what a service listens on locally. All fields are
+# optional; unset ones fall back to localhost defaults suitable only for local
+# development. Answers `GET /api/v1/connection` and the MCP `connection_info`
+# tool so agents and humans can self-serve connection details.
+# [public]
+# otlp_grpc_url = "https://otlp.example.com:4317"    # public OTLP/gRPC endpoint
+# otlp_http_url = "https://otlp.example.com:4318"    # public OTLP/HTTP base (signal paths appended)
+# api_url = "https://signaldb.example.com"           # public router HTTP API base
+# mcp_url = "https://signaldb.example.com/mcp"       # public MCP endpoint; falls back to
+#                                                     # [mcp.oauth].resource_url when unset
 
 # Environment variable examples:
 # SIGNALDB__MCP__ENABLED=true

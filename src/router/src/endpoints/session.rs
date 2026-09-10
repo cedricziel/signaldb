@@ -18,9 +18,9 @@ use axum::{
 };
 use chrono::{Duration, Utc};
 use common::auth::{
-    SESSION_COOKIE, TenantContextExtractor, generate_session_token, hash_session_token,
-    session_cookie_header, session_token_from_headers, validate_dataset_id, validate_tenant_id,
-    verify_password,
+    INGEST_SCOPES, SESSION_COOKIE, SIGNAL_READ_SCOPES, TenantContextExtractor,
+    generate_session_token, hash_session_token, session_cookie_header, session_token_from_headers,
+    validate_dataset_id, validate_tenant_id, verify_password,
 };
 use common::catalog::MembershipRole;
 use serde::{Deserialize, Serialize};
@@ -430,6 +430,13 @@ pub struct WhoamiResponse {
     pub dataset: String,
     pub datasets: Vec<WhoamiDataset>,
     pub default_dataset: Option<String>,
+    /// The credential's own dataset-set restriction (`TenantContext::
+    /// api_key_dataset_ids`), if any; `null`/absent means unrestricted.
+    /// Callers that need to know which of `datasets` they may actually
+    /// query (e.g. the MCP `discover_datasets`/`tenant_list_tables` tools)
+    /// read this rather than assuming every listed dataset is reachable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dataset_ids: Option<Vec<String>>,
 }
 
 #[derive(Debug, Serialize)]
@@ -453,6 +460,44 @@ pub struct WhoamiIdentityResponse {
     pub dataset: String,
     /// Stable authenticated user ID. Empty for API key credentials.
     pub user_id: String,
+    /// The credential's own dataset-set restriction, if any; `null`/absent
+    /// means unrestricted. See [`WhoamiResponse::dataset_ids`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dataset_ids: Option<Vec<String>>,
+}
+
+/// D10: narrow `datasets`/`default_dataset` to a dataset-restricted
+/// credential's own set, exactly as the MCP `discover_datasets`/
+/// `tenant_list_tables` tools do. `restriction` is `ctx.api_key_dataset_ids`
+/// — `None` (unrestricted) leaves both inputs unchanged.
+///
+/// A restricted `default_dataset` outside the restriction has no safe value
+/// to fall back to in general (D4 case 4: two or more allowed datasets have
+/// no principled default), except the one case D4 case 3 gives an answer
+/// for — a single-element restriction *is* the credential's effective
+/// default when no dataset is requested explicitly — so that element is
+/// substituted; anything else is omitted rather than naming a dataset the
+/// credential cannot always default to.
+fn apply_dataset_restriction(
+    datasets: Vec<WhoamiDataset>,
+    default_dataset: Option<String>,
+    restriction: Option<&[String]>,
+) -> (Vec<WhoamiDataset>, Option<String>) {
+    let Some(allowed) = restriction else {
+        return (datasets, default_dataset);
+    };
+    let datasets = datasets
+        .into_iter()
+        .filter(|d| common::auth::dataset_allowed(Some(allowed), &d.id))
+        .collect();
+    let default_dataset = match default_dataset {
+        Some(d) if common::auth::dataset_allowed(Some(allowed), &d) => Some(d),
+        _ => match allowed {
+            [only] => Some(only.clone()),
+            _ => None,
+        },
+    };
+    (datasets, default_dataset)
 }
 
 /// GET /api/v1/whoami
@@ -569,6 +614,11 @@ pub async fn whoami<S: RouterState>(
                 return error_response(500, "Failed to resolve datasets".to_string());
             }
         }
+        let (datasets, default_dataset) = apply_dataset_restriction(
+            datasets,
+            default_dataset,
+            ctx.api_key_dataset_ids.as_deref(),
+        );
         let response = WhoamiResponse {
             user,
             memberships,
@@ -581,6 +631,7 @@ pub async fn whoami<S: RouterState>(
             dataset: ctx.dataset_id.clone(),
             datasets,
             default_dataset,
+            dataset_ids: ctx.api_key_dataset_ids.clone(),
         };
         return Json(response).into_response();
     }
@@ -604,6 +655,19 @@ pub async fn whoami<S: RouterState>(
         }
     };
 
+    let datasets = datasets
+        .into_iter()
+        .map(|d| WhoamiDataset {
+            is_default: Some(d.name.as_str()) == tenant.default_dataset.as_deref(),
+            slug: d.name.clone(),
+            id: d.name,
+        })
+        .collect();
+    let (datasets, default_dataset) = apply_dataset_restriction(
+        datasets,
+        tenant.default_dataset,
+        ctx.api_key_dataset_ids.as_deref(),
+    );
     let response = WhoamiResponse {
         user,
         memberships,
@@ -615,17 +679,279 @@ pub async fn whoami<S: RouterState>(
         },
         user_id: ctx.user_id.clone().unwrap_or_default(),
         dataset: ctx.dataset_id.clone(),
-        datasets: datasets
-            .into_iter()
-            .map(|d| WhoamiDataset {
-                is_default: Some(d.name.as_str()) == tenant.default_dataset.as_deref(),
-                slug: d.name.clone(),
-                id: d.name,
-            })
-            .collect(),
-        default_dataset: tenant.default_dataset,
+        datasets,
+        default_dataset,
+        dataset_ids: ctx.api_key_dataset_ids.clone(),
     };
     Json(response).into_response()
+}
+
+/// `Authorization`/`X-Tenant-ID`/`X-Dataset-ID` headers to send with the
+/// filled-in credential placeholder, ready to paste into a client config.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ConnectionHeaders {
+    pub authorization: String,
+    #[serde(rename = "x-tenant-id")]
+    pub x_tenant_id: String,
+    #[serde(rename = "x-dataset-id")]
+    pub x_dataset_id: String,
+}
+
+/// The public OTLP/gRPC ingest endpoint.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct OtlpGrpcEndpoint {
+    pub url: String,
+    /// `host[:port]`, with the port included only when the configured URL
+    /// states one explicitly.
+    pub authority: String,
+    pub tls: bool,
+    pub protocol: String,
+    pub signals: Vec<String>,
+}
+
+/// Per-signal paths appended to [`OtlpHttpEndpoint::url`].
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct OtlpHttpPaths {
+    pub traces: String,
+    pub logs: String,
+    pub metrics: String,
+    pub profiles: String,
+}
+
+/// The public OTLP/HTTP ingest endpoint.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct OtlpHttpEndpoint {
+    pub url: String,
+    pub tls: bool,
+    pub protocol: String,
+    pub paths: OtlpHttpPaths,
+}
+
+/// Every ingest endpoint this deployment exposes.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ConnectionIngest {
+    pub otlp_grpc: OtlpGrpcEndpoint,
+    pub otlp_http: OtlpHttpEndpoint,
+    /// The Prometheus remote-write ingest URL.
+    pub prometheus_remote_write: String,
+}
+
+/// Path prefixes for the Tempo/Loki/Prometheus/Pyroscope compatibility
+/// dialects, relative to [`ConnectionQuery::api_url`]. External clients only
+/// — first-party callers use [`ConnectionQuery::query_ir`].
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ConnectionCompat {
+    pub tempo: String,
+    pub loki: String,
+    pub prometheus: String,
+    pub pyroscope: String,
+}
+
+/// The router's query surface: the native Query IR plus the compatibility
+/// dialects, relative to `api_url`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ConnectionQuery {
+    pub api_url: String,
+    pub query_ir: String,
+    pub openapi: String,
+    pub compat: ConnectionCompat,
+}
+
+/// The MCP Streamable HTTP endpoint, present only when this deployment has
+/// one configured (directly or via `[mcp.oauth].resource_url`).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ConnectionMcp {
+    pub url: String,
+    pub transport: String,
+}
+
+/// The API-key scopes ingest and query each require.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ConnectionScopes {
+    pub ingest: Vec<String>,
+    pub query: Vec<String>,
+}
+
+/// Ready-to-paste `OTEL_EXPORTER_OTLP_*` environment variables for an
+/// OTel-instrumented application.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ConnectionOtelEnv {
+    #[serde(rename = "OTEL_EXPORTER_OTLP_ENDPOINT")]
+    pub otel_exporter_otlp_endpoint: String,
+    #[serde(rename = "OTEL_EXPORTER_OTLP_PROTOCOL")]
+    pub otel_exporter_otlp_protocol: String,
+    #[serde(rename = "OTEL_EXPORTER_OTLP_HEADERS")]
+    pub otel_exporter_otlp_headers: String,
+}
+
+/// `GET /api/v1/connection` response: everything needed to send data to and
+/// query this deployment from outside, for the caller's own tenant/dataset.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ConnectionInfoResponse {
+    pub tenant_id: String,
+    pub dataset_id: String,
+    /// Whether every required `[public]` field (OTLP gRPC/HTTP, API URL) has
+    /// been explicitly set. `false` means at least one of those URLs below is
+    /// a localhost fallback, unlikely to be reachable from outside this
+    /// machine — see `notes` for which.
+    pub public_endpoints_configured: bool,
+    pub headers: ConnectionHeaders,
+    pub ingest: ConnectionIngest,
+    pub query: ConnectionQuery,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<ConnectionMcp>,
+    pub required_scopes: ConnectionScopes,
+    pub otel_env: ConnectionOtelEnv,
+    /// Operator guidance, e.g. that `[public]` is unset and URLs are
+    /// localhost fallbacks. Empty when everything is configured.
+    pub notes: Vec<String>,
+}
+
+/// `host[:port]` from `url`. The port is included only when `url::Url`
+/// reports one: an unstated port is never guessed, and a stated port equal
+/// to the scheme's default (`https://host:443`) is dropped too, since the
+/// crate normalizes it away.
+fn authority_of(url: &url::Url) -> String {
+    match (url.host_str(), url.port()) {
+        (Some(host), Some(port)) => format!("{host}:{port}"),
+        (Some(host), None) => host.to_string(),
+        (None, _) => String::new(),
+    }
+}
+
+/// `scheme://host[:port][/path-prefix]` from `url`, without a trailing
+/// slash — every `[public]` URL is a base a signal path gets appended to,
+/// and `url::Url` normalizes an empty path to `/`, which would otherwise
+/// show up as a spurious trailing slash. A path prefix (an ingress that
+/// mounts the acceptor under `/otlp`) is kept.
+fn base_url_str(url: &url::Url) -> String {
+    format!(
+        "{}://{}{}",
+        url.scheme(),
+        authority_of(url),
+        url.path().trim_end_matches('/')
+    )
+}
+
+/// Filled in for the credential in every client-facing example this
+/// endpoint renders (the `Authorization` header and the OTel env vars) —
+/// never a real secret.
+const API_KEY_PLACEHOLDER: &str = "<api-key>";
+
+/// GET /api/v1/connection
+///
+/// Everything needed to send data to and query this deployment from outside:
+/// public OTLP gRPC/HTTP and Prometheus remote-write endpoints, the query API
+/// base and compatibility-dialect paths, the headers to send (with this
+/// request's tenant/dataset filled in), the API-key scopes ingest and query
+/// each require, and ready-to-paste `OTEL_EXPORTER_OTLP_*` env vars. Behind
+/// the tenant auth middleware, so any valid tenant credential — including an
+/// ingest-only key — may call it.
+#[utoipa::path(
+    get,
+    path = "/api/v1/connection",
+    operation_id = "connection_info",
+    tag = "tenants",
+    security(("bearerAuth" = [])),
+    responses(
+        (status = 200, description = "Connection details for this deployment, scoped to the caller's tenant", body = ConnectionInfoResponse),
+        (status = 401, description = "Invalid or expired credential"),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
+    )
+)]
+pub async fn connection_info<S: RouterState>(
+    State(state): State<S>,
+    TenantContextExtractor(ctx): TenantContextExtractor,
+) -> Response {
+    let public = match state.config().public.resolve(&state.config().mcp.oauth) {
+        Ok(public) => public,
+        Err(error) => {
+            tracing::error!(error = %error, "connection_info: configured public URL is invalid");
+            return error_response(500, error.to_string());
+        }
+    };
+
+    let headers = ConnectionHeaders {
+        authorization: format!("Bearer {API_KEY_PLACEHOLDER}"),
+        x_tenant_id: ctx.tenant_id.clone(),
+        x_dataset_id: ctx.dataset_id.clone(),
+    };
+
+    let grpc_url_str = base_url_str(&public.otlp_grpc);
+    let http_url_str = base_url_str(&public.otlp_http);
+
+    let ingest = ConnectionIngest {
+        otlp_grpc: OtlpGrpcEndpoint {
+            tls: public.otlp_grpc.scheme() == "https",
+            authority: authority_of(&public.otlp_grpc),
+            url: grpc_url_str.clone(),
+            protocol: "grpc".to_string(),
+            signals: SIGNAL_READ_SCOPES
+                .iter()
+                .map(|scope| scope.strip_suffix(":read").unwrap_or(scope).to_string())
+                .collect(),
+        },
+        otlp_http: OtlpHttpEndpoint {
+            tls: public.otlp_http.scheme() == "https",
+            url: http_url_str.clone(),
+            protocol: "http/protobuf".to_string(),
+            paths: OtlpHttpPaths {
+                traces: common::endpoints::OTLP_HTTP_TRACES_PATH.to_string(),
+                logs: common::endpoints::OTLP_HTTP_LOGS_PATH.to_string(),
+                metrics: common::endpoints::OTLP_HTTP_METRICS_PATH.to_string(),
+                profiles: common::endpoints::OTLP_HTTP_PROFILES_PATH.to_string(),
+            },
+        },
+        prometheus_remote_write: format!(
+            "{http_url_str}{}",
+            common::endpoints::PROMETHEUS_REMOTE_WRITE_PATH
+        ),
+    };
+
+    let query = ConnectionQuery {
+        api_url: public.api_url,
+        query_ir: crate::QUERY_IR_PATH.to_string(),
+        openapi: crate::OPENAPI_JSON_PATH.to_string(),
+        compat: ConnectionCompat {
+            tempo: format!("{}/api", crate::TEMPO_PREFIX),
+            loki: format!("{}/api/v1", crate::LOKI_PREFIX),
+            prometheus: format!("{}/api/v1", crate::PROMETHEUS_PREFIX),
+            pyroscope: crate::PYROSCOPE_PREFIX.to_string(),
+        },
+    };
+
+    let mcp = public.mcp_url.map(|url| ConnectionMcp {
+        url,
+        transport: "streamable-http".to_string(),
+    });
+
+    let otel_env = ConnectionOtelEnv {
+        otel_exporter_otlp_endpoint: grpc_url_str,
+        otel_exporter_otlp_protocol: "grpc".to_string(),
+        otel_exporter_otlp_headers: format!(
+            "authorization={},x-tenant-id={},x-dataset-id={}",
+            headers.authorization, headers.x_tenant_id, headers.x_dataset_id
+        ),
+    };
+
+    let notes = public.notes.clone();
+
+    Json(ConnectionInfoResponse {
+        tenant_id: ctx.tenant_id.clone(),
+        dataset_id: ctx.dataset_id.clone(),
+        public_endpoints_configured: public.configured,
+        headers,
+        ingest,
+        query,
+        mcp,
+        required_scopes: ConnectionScopes {
+            ingest: INGEST_SCOPES.iter().map(|s| s.to_string()).collect(),
+            query: SIGNAL_READ_SCOPES.iter().map(|s| s.to_string()).collect(),
+        },
+        otel_env,
+        notes,
+    })
+    .into_response()
 }
 
 #[cfg(test)]
@@ -985,14 +1311,14 @@ mod tests {
             .header("x-tenant-id", "acme")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"name":"metrics-only","dataset_id":"analytics","scopes":["metrics:write"]}"#,
+                r#"{"name":"metrics-only","dataset_ids":["analytics"],"scopes":["metrics:write"]}"#,
             ))
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::CREATED);
         let body = json_body(response).await;
         assert!(body["key"].as_str().unwrap().starts_with("sdbk_"));
-        assert_eq!(body["dataset_id"], "analytics");
+        assert_eq!(body["dataset_ids"], serde_json::json!(["analytics"]));
         assert_eq!(body["scopes"][0], "metrics:write");
     }
 
@@ -1163,9 +1489,9 @@ mod tests {
 
         // Dataset restriction can be updated too; scopes preserved.
         let (status, body) =
-            manage_patch_key(&app, &cookie, &key_id, r#"{"dataset_id":"staging"}"#).await;
+            manage_patch_key(&app, &cookie, &key_id, r#"{"dataset_ids":["staging"]}"#).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["dataset_id"], "staging");
+        assert_eq!(body["dataset_ids"], serde_json::json!(["staging"]));
         assert_eq!(body["scopes"], serde_json::json!(["metrics:read"]));
 
         // Validation errors.
@@ -1173,7 +1499,7 @@ mod tests {
             manage_patch_key(&app, &cookie, &key_id, r#"{"scopes":["schema:admin"]}"#).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
         let (status, _) =
-            manage_patch_key(&app, &cookie, &key_id, r#"{"dataset_id":"nope"}"#).await;
+            manage_patch_key(&app, &cookie, &key_id, r#"{"dataset_ids":["nope"]}"#).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let (status, _) =
             manage_patch_key(&app, &cookie, "missing", r#"{"scopes":["schema:read"]}"#).await;
@@ -1426,6 +1752,197 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn whoami_omits_dataset_ids_for_an_unrestricted_credential() {
+        let app = test_app().await;
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", "Bearer acme-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        let body = json_body(res).await;
+        assert!(
+            body.get("dataset_ids").is_none() || body["dataset_ids"].is_null(),
+            "unrestricted credential must not report a dataset_ids restriction: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn whoami_reports_the_credentials_dataset_restriction() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant(
+                    "acme",
+                    "acme-key",
+                    &[("production", true), ("staging", false)],
+                    Some("production"),
+                )],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &common::auth::Authenticator::hash_api_key("restricted-key"),
+                Some("restricted"),
+                Some(&["production".to_string()]),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let app = create_router(RouterAppState::new(catalog, config));
+
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", "Bearer restricted-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["dataset_ids"], serde_json::json!(["production"]));
+    }
+
+    /// D10: a config-defined tenant can still be reached through a
+    /// database-backed, dataset-restricted API key (created via the
+    /// management API rather than the TOML `api_keys` list) — `whoami`'s
+    /// config-tenant branch must filter `datasets`/`default_dataset` for it
+    /// exactly as the database-tenant branch does, even though the tenant
+    /// itself is config-defined.
+    #[tokio::test]
+    async fn whoami_filters_datasets_and_default_for_a_restricted_key_on_a_config_tenant() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant(
+                    "acme",
+                    "acme-key",
+                    &[("production", true), ("staging", false)],
+                    Some("production"),
+                )],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        // Restricted to "staging" only — excludes the tenant's own default
+        // dataset ("production"), the edge case D4's resolution order
+        // requires callers to handle explicitly.
+        catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &common::auth::Authenticator::hash_api_key("staging-only-key"),
+                Some("staging-only"),
+                Some(&["staging".to_string()]),
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let app = create_router(RouterAppState::new(catalog, config));
+
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", "Bearer staging-only-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        let dataset_ids: Vec<&str> = body["datasets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            dataset_ids,
+            vec!["staging"],
+            "restricted credential must not see an unlisted dataset's name: {body}"
+        );
+        // A single-element restriction resolves to that element (D4 case 3),
+        // so the credential's effective default is "staging", never the
+        // tenant's actual default ("production"), which falls outside it.
+        assert_eq!(body["default_dataset"], "staging");
+    }
+
+    /// Same as above, for the database-backed-tenant branch (a tenant not
+    /// declared in TOML config at all).
+    #[tokio::test]
+    async fn whoami_filters_datasets_and_default_for_a_restricted_key_on_a_db_tenant() {
+        let app = test_app().await;
+        let cookie = admin_cookie(&app).await;
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/manage/tenants")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "acme")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"id":"newco","name":"New Co","default_dataset":"production"}"#,
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/manage/tenants/newco/datasets")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "newco")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"staging"}"#))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/manage/tenants/newco/api-keys")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "newco")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"name":"staging-only","dataset_ids":["staging"],"scopes":["metrics:write"]}"#,
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let created = json_body(response).await;
+        let secret = created["key"].as_str().unwrap().to_string();
+
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", format!("Bearer {secret}"))
+            .header("x-tenant-id", "newco")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        let dataset_ids: Vec<&str> = body["datasets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            dataset_ids,
+            vec!["staging"],
+            "restricted credential must not see an unlisted dataset's name: {body}"
+        );
+        assert_eq!(body["default_dataset"], "staging");
+    }
+
+    #[tokio::test]
     async fn whoami_requires_authentication() {
         let app = test_app().await;
         let request = Request::builder()
@@ -1575,6 +2092,275 @@ mod tests {
 
         assert_eq!(res.status(), StatusCode::FORBIDDEN);
         assert!(res.headers().get(header::SET_COOKIE).is_none());
+    }
+
+    #[tokio::test]
+    async fn connection_info_defaults_to_localhost_with_a_note() {
+        let app = test_app().await;
+        let request = Request::builder()
+            .uri("/api/v1/connection")
+            .header("authorization", "Bearer acme-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+
+        assert_eq!(body["tenant_id"], "acme");
+        assert_eq!(body["dataset_id"], "production");
+        assert_eq!(body["public_endpoints_configured"], false);
+        assert_eq!(body["headers"]["authorization"], "Bearer <api-key>");
+        assert_eq!(body["headers"]["x-tenant-id"], "acme");
+        assert_eq!(body["headers"]["x-dataset-id"], "production");
+
+        assert_eq!(body["ingest"]["otlp_grpc"]["url"], "http://localhost:4317");
+        assert_eq!(body["ingest"]["otlp_grpc"]["authority"], "localhost:4317");
+        assert_eq!(body["ingest"]["otlp_grpc"]["tls"], false);
+        assert_eq!(body["ingest"]["otlp_grpc"]["protocol"], "grpc");
+        assert_eq!(
+            body["ingest"]["otlp_grpc"]["signals"],
+            serde_json::json!(["traces", "logs", "metrics", "profiles"])
+        );
+        assert_eq!(body["ingest"]["otlp_http"]["url"], "http://localhost:4318");
+        assert_eq!(body["ingest"]["otlp_http"]["tls"], false);
+        assert_eq!(body["ingest"]["otlp_http"]["protocol"], "http/protobuf");
+        assert_eq!(body["ingest"]["otlp_http"]["paths"]["traces"], "/v1/traces");
+        assert_eq!(body["ingest"]["otlp_http"]["paths"]["logs"], "/v1/logs");
+        assert_eq!(
+            body["ingest"]["otlp_http"]["paths"]["metrics"],
+            "/v1/metrics"
+        );
+        assert_eq!(
+            body["ingest"]["otlp_http"]["paths"]["profiles"],
+            "/v1development/profiles"
+        );
+        assert_eq!(
+            body["ingest"]["prometheus_remote_write"],
+            "http://localhost:4318/api/v1/write"
+        );
+
+        assert_eq!(body["query"]["api_url"], "http://localhost:3000");
+        assert_eq!(body["query"]["query_ir"], "/api/v1/query");
+        assert_eq!(body["query"]["openapi"], "/api/v1/openapi.json");
+        assert_eq!(body["query"]["compat"]["tempo"], "/tempo/api");
+        assert_eq!(body["query"]["compat"]["loki"], "/loki/api/v1");
+        assert_eq!(body["query"]["compat"]["prometheus"], "/prometheus/api/v1");
+        assert_eq!(body["query"]["compat"]["pyroscope"], "/pyroscope");
+
+        assert!(body.get("mcp").is_none());
+
+        assert_eq!(
+            body["required_scopes"]["ingest"],
+            serde_json::json!([
+                "metrics:write",
+                "logs:write",
+                "traces:write",
+                "profiles:write"
+            ])
+        );
+        assert_eq!(
+            body["required_scopes"]["query"],
+            serde_json::json!(["traces:read", "logs:read", "metrics:read", "profiles:read"])
+        );
+
+        assert_eq!(
+            body["otel_env"]["OTEL_EXPORTER_OTLP_ENDPOINT"],
+            "http://localhost:4317"
+        );
+        assert_eq!(body["otel_env"]["OTEL_EXPORTER_OTLP_PROTOCOL"], "grpc");
+        assert_eq!(
+            body["otel_env"]["OTEL_EXPORTER_OTLP_HEADERS"],
+            "authorization=Bearer <api-key>,x-tenant-id=acme,x-dataset-id=production"
+        );
+
+        let notes = body["notes"].as_array().unwrap();
+        assert_eq!(notes.len(), 3);
+        assert!(
+            notes[0]
+                .as_str()
+                .unwrap()
+                .contains("public.otlp_grpc_url is not set")
+        );
+        assert!(
+            notes[1]
+                .as_str()
+                .unwrap()
+                .contains("public.otlp_http_url is not set")
+        );
+        assert!(
+            notes[2]
+                .as_str()
+                .unwrap()
+                .contains("public.api_url is not set")
+        );
+    }
+
+    #[tokio::test]
+    async fn connection_info_partial_config_is_not_configured_and_notes_unset_otlp_fields() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant(
+                    "acme",
+                    "acme-key",
+                    &[("production", true)],
+                    Some("production"),
+                )],
+                ..Default::default()
+            },
+            public: common::config::PublicEndpointsConfig {
+                api_url: Some("https://signaldb.example.com".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let app = crate::create_router(RouterAppState::new(catalog, config));
+
+        let request = Request::builder()
+            .uri("/api/v1/connection")
+            .header("authorization", "Bearer acme-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+
+        assert_eq!(body["public_endpoints_configured"], false);
+        assert_eq!(body["query"]["api_url"], "https://signaldb.example.com");
+        let notes = body["notes"].as_array().unwrap();
+        assert_eq!(notes.len(), 2);
+        assert!(
+            notes[0]
+                .as_str()
+                .unwrap()
+                .contains("public.otlp_grpc_url is not set")
+        );
+        assert!(
+            notes[1]
+                .as_str()
+                .unwrap()
+                .contains("public.otlp_http_url is not set")
+        );
+    }
+
+    #[tokio::test]
+    async fn connection_info_uses_configured_public_endpoints() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant(
+                    "acme",
+                    "acme-key",
+                    &[("production", true)],
+                    Some("production"),
+                )],
+                ..Default::default()
+            },
+            public: common::config::PublicEndpointsConfig {
+                otlp_grpc_url: Some("https://otlp.example.com:4317".to_string()),
+                otlp_http_url: Some("https://ingress.example.com/otlp/".to_string()),
+                api_url: Some("https://signaldb.example.com".to_string()),
+                mcp_url: Some("https://signaldb.example.com/mcp".to_string()),
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let app = crate::create_router(RouterAppState::new(catalog, config));
+
+        let request = Request::builder()
+            .uri("/api/v1/connection")
+            .header("authorization", "Bearer acme-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+
+        assert_eq!(body["public_endpoints_configured"], true);
+        assert_eq!(
+            body["ingest"]["otlp_grpc"]["url"],
+            "https://otlp.example.com:4317"
+        );
+        assert_eq!(
+            body["ingest"]["otlp_grpc"]["authority"],
+            "otlp.example.com:4317"
+        );
+        assert_eq!(body["ingest"]["otlp_grpc"]["tls"], true);
+        assert_eq!(body["ingest"]["otlp_http"]["tls"], true);
+        // A path-prefixed ingress keeps its prefix, minus the trailing slash.
+        assert_eq!(
+            body["ingest"]["otlp_http"]["url"],
+            "https://ingress.example.com/otlp"
+        );
+        assert_eq!(
+            body["ingest"]["prometheus_remote_write"],
+            "https://ingress.example.com/otlp/api/v1/write"
+        );
+        assert_eq!(body["query"]["api_url"], "https://signaldb.example.com");
+        assert_eq!(body["mcp"]["url"], "https://signaldb.example.com/mcp");
+        assert_eq!(body["mcp"]["transport"], "streamable-http");
+        assert_eq!(body["notes"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn connection_info_rejects_malformed_public_url_with_500() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant("acme", "acme-key", &[("default", true)], None)],
+                ..Default::default()
+            },
+            public: common::config::PublicEndpointsConfig {
+                otlp_grpc_url: Some("not a url".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let app = crate::create_router(RouterAppState::new(catalog, config));
+
+        let request = Request::builder()
+            .uri("/api/v1/connection")
+            .header("authorization", "Bearer acme-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = json_body(response).await;
+        assert!(
+            body["error"].as_str().unwrap().contains("otlp_grpc_url"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connection_info_allows_ingest_only_scoped_key() {
+        let app = test_app().await;
+        let cookie = admin_cookie(&app).await;
+        let (status, created) = manage_create_key(
+            &app,
+            &cookie,
+            r#"{"name":"ingest-only","scopes":["traces:write","logs:write","metrics:write","profiles:write"]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let secret = created["key"].as_str().unwrap().to_string();
+
+        let request = Request::builder()
+            .uri("/api/v1/connection")
+            .header("authorization", format!("Bearer {secret}"))
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        assert_eq!(body["tenant_id"], "acme");
     }
 
     #[tokio::test]

@@ -10,14 +10,19 @@ sources:
 
 # Explore UI
 
-SignalDB ships a built-in explore UI for logs, traces, and metrics, served
-by the router at its **root** (`http://<router>:3000/`, as a SPA fallback
-behind the API routes). It consumes the same Loki-, Tempo-, and
-Prometheus-compatible APIs that Grafana uses, so anything visible in the UI is
-equally queryable from Grafana. It also hosts the OAuth connector **consent
-screen** at `/oauth/consent` (see [MCP](mcp.md)).
+SignalDB ships a built-in explore UI for the service catalog, logs, traces,
+metrics, profiles, and errors, plus a native [Query IR](querying-ir.md) tab,
+served by the router at its **root** (`http://<router>:3000/`, as a SPA
+fallback behind the API routes). The logs tab consumes the Loki-compatible
+API that Grafana uses, and the metrics tab the Prometheus-compatible one, so
+what they show is equally queryable from Grafana — with one exception: a
+single builder row with no range function and no formula runs on the Query IR
+(see [Building metric queries](#building-metric-queries)). The other tabs read
+their data through the Query IR; only their attribute and label pickers still
+use the Tempo and Pyroscope discovery endpoints. It also hosts the OAuth
+connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
 
-![Explore UI logs view: virtualized log list with level colors, volume histogram, and fields sidebar](../assets/screenshots/explore-logs.png)
+![Explore UI logs view: virtualized log list with level colors, a volume histogram with bucket-width and log-scale controls, and the fields sidebar](../assets/screenshots/explore-logs.png)
 
 ## What it does
 
@@ -367,6 +372,15 @@ Both the facet sidebar and the traces' span-detail panel are resizable: drag
 the handle on the sidebar's trailing edge. The facet/field sidebar's width is
 shared between the logs and traces tabs and persists across sessions.
 
+Below a 900px-wide viewport the facet/field sidebar (Logs, Traces, and
+Errors alike) is hidden by default rather than shown at a squeezed width; a
+**Filters** button reveals it as a dismissible drawer (close button,
+backdrop click, or Escape). The traces' span-detail panel does the same
+below that width: selecting a span shows a **Details** button in the trace
+header that opens the panel as a drawer from the right. The signal tabs at
+the top also switch to a horizontally scrollable strip at that width instead
+of compressing.
+
 ### The group table
 
 Traces are presented grouped, one row per distinct value of the grouping
@@ -454,7 +468,7 @@ thin band rather than rounding away.
 
 ![Explore UI trace waterfall with span details and a link to correlated logs](../assets/screenshots/explore-traces.png)
 
-![Explore UI metrics view charting a PromQL range query across two services](../assets/screenshots/explore-metrics.png)
+![Explore UI metrics view charting a PromQL query, one series per service, with the Builder and PromQL tabs](../assets/screenshots/explore-metrics.png)
 
 ![Explore UI profiles flame graph with the highlight box narrowing a CPU profile to SignalDB's own frames](../assets/screenshots/explore-profiles.png)
 
@@ -532,6 +546,21 @@ identity provider and lands you in the same tenant/dataset selection as a
 password login; if the operator turned password login off, SSO is the only
 door. See [Signing in with SSO](authentication.md#signing-in-with-sso-oidc).
 
+The same form is also reachable directly at `/login` — a standalone,
+linkable sign-in screen (no top bar, no signal tabs) for bookmarking or
+sharing, rather than only appearing reactively after a failed query. It
+accepts an optional `?redirect=<path>` to return to a specific page after
+signing in (only a same-app path is honored; anything else falls back to
+`/logs`), and redirects an already-authenticated visitor straight to that
+target without showing the form. Signing out (see [User menu](#user-menu))
+lands here.
+
+Any URL — including the site root (`/`) with `?tenant=&dataset=`
+attached — that doesn't match a known route redirects to `/logs`,
+preserving its query string, so a tenant/dataset carried on a deep link or
+external redirect survives the trip instead of landing on an empty,
+tenant-less page.
+
 ![The post-login tenant selector listing each membership with its name and role](../assets/screenshots/login-tenant-selector.png)
 
 Signing in calls `POST /ui/session`, which validates the credentials and
@@ -563,7 +592,7 @@ Once signed in, a user menu appears in the top bar showing an avatar
 - **Docs** — opens the SignalDB documentation in a new tab.
 - **Switch tenant** — opens the Tenant Selection page (see below).
 - **Sign out** — deletes the session, clears the query cache, and
-  reloads the page.
+  reloads on the [`/login`](#signing-in) screen.
 
 The menu closes on Escape or backdrop click.
 
@@ -578,7 +607,9 @@ once), **Members** (add or update a role by email, remove), **Tables**
 per dataset, refetched immediately after provisioning; a **Provision tables**
 action calls the manual-trigger endpoint — see
 [table provisioning](../operations/table-provisioning.md)), and, for
-instance administrators only, **New tenant**. All of it consumes the
+instance administrators only, **New tenant**. Destructive actions (delete a
+dataset, revoke a key, remove a member) swap the button for an inline
+confirmation first; Escape or Cancel backs out. All of it consumes the
 generated client (`src/ui/src/api/management.ts`), never raw `fetch`.
 
 ### Tenant selection (`/select-tenant`)
@@ -598,12 +629,13 @@ the current tenant rather than requiring instance-admin privileges.
 
 Every key carries explicit scopes chosen in a picker grouped into
 **Ingestion** (`metrics:write`, `logs:write`, `traces:write`,
-`profiles:write`), **Schema** (`schema:read`, `schema:write`), and
-**Management** (`tenant:manage` — lets the key manage this tenant's
-datasets, keys, and members through the same management API this page
-uses; see [Authentication](authentication.md#api-key-scopes)), each with a
-one-line description; at least one scope is required, and an optional
-dataset restriction can be set. The list shows each key's scopes,
+`profiles:write` — all four checked by default, since a key missing any of
+them 403s on that signal's OTLP ingest), **Schema** (`schema:read`,
+`schema:write`), and **Management** (`tenant:manage` — lets the key manage
+this tenant's datasets, keys, and members through the same management API
+this page uses; see [Authentication](authentication.md#api-key-scopes)),
+each with a one-line description; at least one scope is required, and an
+optional dataset restriction can be set. The list shows each key's scopes,
 and **Edit scopes** on a live key changes them in place (via
 `PATCH /api/v1/manage/tenants/{id}/api-keys/{key_id}`) without rotating
 the secret; the change applies to the key's next request.
@@ -625,10 +657,18 @@ SignalDB. A sidebar lets the user pick one of six sources:
 | journald       | Promtail config                 |
 | Prometheus     | `remote_write` config           |
 
-Every snippet is interpolated with the user's actual tenant ID and
-dataset ID from `whoami`, so they can be copied directly. A
-verification section at the bottom shows ingestion status per signal
-(metrics, logs, traces, profiles) — currently static ("Waiting for
+Every snippet is interpolated directly from `GET /api/v1/connection` —
+tenant ID, dataset ID, headers, and endpoints all come from that one
+response, so a snippet reflects the deployment's real public-facing host,
+port, and TLS setting — honoring `[public]` in `signaldb.toml` — rather than
+guessing from the browser's own hostname; a callout above the snippets flags
+when `[public]` is unset and the reported URLs are localhost fallbacks. If
+the request itself fails, the page never falls back to a guessed snippet:
+a `401` hands over to the global sign-in dialog, a `403` shows that the
+current tenant does not grant access to connection details (no retry, since
+retrying cannot change that), and any other failure — a `429`, a network
+error — shows an error message with a retry button. A verification section at the bottom shows ingestion status per
+signal (metrics, logs, traces, profiles) — currently static ("Waiting for
 data"), with real checks planned.
 
 ### Schema hub (`/schema`)

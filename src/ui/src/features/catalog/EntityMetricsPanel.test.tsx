@@ -129,12 +129,13 @@ describe("EntityMetricsPanel", () => {
       metrics: [],
       isPending: false,
       isError: true,
+      error: new Error("lookup broke"),
     });
 
     render();
 
     expect(screen.getByRole("alert")).toHaveTextContent(
-      "Could not look up which metrics describe this host",
+      "Could not load this host's metrics: lookup broke",
     );
   });
 
@@ -148,6 +149,20 @@ describe("EntityMetricsPanel", () => {
     render();
 
     // Not an empty panel: no heading, nothing to explain away.
+    expect(screen.queryByText("Metrics")).not.toBeInTheDocument();
+    expect(fetchEntityMetricSeries).not.toHaveBeenCalled();
+  });
+
+  it("shows a skeleton while the metric lookup is still pending", () => {
+    useEntityMetrics.mockReturnValue({
+      metrics: [],
+      isPending: true,
+      isError: false,
+    });
+
+    render();
+
+    expect(document.querySelector(".skeleton-lines")).toBeInTheDocument();
     expect(screen.queryByText("Metrics")).not.toBeInTheDocument();
     expect(fetchEntityMetricSeries).not.toHaveBeenCalled();
   });

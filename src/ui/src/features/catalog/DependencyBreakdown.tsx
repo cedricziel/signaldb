@@ -6,10 +6,12 @@
 import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchDependencyBreakdown } from "../../api/dependencyBreakdown";
+import { QueryError } from "../../components/QueryError";
 import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
 import type { ResolvedRange } from "../../lib/time";
 import { formatShare, formatValue } from "../../lib/vizFormat";
 import { formatDurationMs } from "../../lib/waterfall";
+import { SkeletonLines } from "../explore/Skeleton";
 
 function plural(n: number, noun: string): string {
   return `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
@@ -42,21 +44,17 @@ export function DependencyBreakdown({
   const [active, setActive] = useState<string | null>(null);
 
   if (query.isPending) {
-    return <div className="traces-note">Loading…</div>;
+    return <SkeletonLines lines={5} />;
   }
   if (query.isError) {
-    return (
-      <div className="query-error" role="alert">
-        Failed to load: {(query.error as Error).message}
-      </div>
-    );
+    return <QueryError what="dependencies" error={query.error} />;
   }
 
   const categories = query.data;
   const total = categories.reduce((sum, c) => sum + c.durationNs, 0);
   if (total === 0) {
     return (
-      <div className="traces-note">
+      <div className="view-note">
         No database, HTTP, RPC, or messaging calls observed for this service in
         this window.
       </div>

@@ -178,14 +178,32 @@ impl RetentionEnforcer {
                 .await
             {
                 Ok(result) => {
-                    info!(
-                        signaldb.tenant.id = %tenant_id,
-                        signaldb.dataset.id = %dataset_id,
-                        signaldb.table = %table_name,
-                        signaldb.job.partitions_dropped = result.partitions_dropped as i64,
-                        signaldb.job.snapshots_expired = result.snapshots_expired as i64,
-                        "Table retention enforcement completed"
-                    );
+                    if result.errors.is_empty() {
+                        info!(
+                            signaldb.tenant.id = %tenant_id,
+                            signaldb.dataset.id = %dataset_id,
+                            signaldb.table = %table_name,
+                            signaldb.job.partitions_dropped = result.partitions_dropped as i64,
+                            signaldb.job.snapshots_expired = result.snapshots_expired as i64,
+                            "Table retention enforcement completed"
+                        );
+                    } else {
+                        // Step 1 (partition drop) committed real work, but
+                        // step 2 (snapshot expiry) failed — surface the
+                        // failure without discarding step 1's counts (#1010).
+                        for table_error in &result.errors {
+                            warn!(
+                                signaldb.tenant.id = %tenant_id,
+                                signaldb.dataset.id = %dataset_id,
+                                signaldb.table = %table_name,
+                                signaldb.job.partitions_dropped = result.partitions_dropped as i64,
+                                signaldb.job.bytes_reclaimed = result.bytes_reclaimed as i64,
+                                error = %table_error,
+                                "Table retention enforcement completed with errors"
+                            );
+                            errors.push(format!("Table {table_name}: {table_error}"));
+                        }
+                    }
                     table_results.push(result);
                 }
                 Err(e) => {
@@ -301,7 +319,10 @@ impl RetentionEnforcer {
             }
         };
 
-        // Step 1: Drop expired partitions
+        // Step 1: Drop expired partitions. A failure here has not mutated
+        // anything worth preserving (either it never committed, or
+        // `try_drop_partitions_once` already retried past transient
+        // conflicts), so it still aborts the whole table via `?`.
         let (partitions_evaluated, partitions_dropped, bytes_reclaimed) = self
             .drop_expired_partitions(tenant_id, dataset_id, table_name, &table, &cutoff)
             .await
@@ -309,10 +330,14 @@ impl RetentionEnforcer {
 
         // Step 2: Expire old snapshots (keep N most recent). Loads the
         // table fresh internally — step 1 may have advanced the snapshot.
-        let snapshots_expired = self
+        //
+        // Deliberately NOT `?`: step 1 may already have committed a real
+        // partition-drop replace snapshot by this point, so a step-2 failure
+        // must not discard those counts (#1010) — captured into
+        // `build_table_retention_result` instead of propagated.
+        let snapshot_expiry = self
             .expire_old_snapshots(tenant_id, dataset_id, table_name)
-            .await
-            .context("Failed to expire old snapshots")?;
+            .await;
 
         let duration_ms = table_clock.elapsed().as_millis() as u64;
 
@@ -322,18 +347,17 @@ impl RetentionEnforcer {
             self.metrics.record_bytes_reclaimed(bytes_reclaimed);
         }
 
-        Ok(TableRetentionResult {
-            tenant_id: tenant_id.to_string(),
-            dataset_id: dataset_id.to_string(),
-            table_name: table_name.to_string(),
+        Ok(build_table_retention_result(
+            tenant_id,
+            dataset_id,
+            table_name,
             signal_type,
             partitions_evaluated,
             partitions_dropped,
-            snapshots_expired,
             bytes_reclaimed,
             duration_ms,
-            errors: vec![],
-        })
+            snapshot_expiry,
+        ))
     }
 
     /// Drop expired partitions based on retention cutoff
@@ -457,7 +481,7 @@ impl RetentionEnforcer {
                         signaldb.tenant.id = %tenant_id,
                         signaldb.dataset.id = %dataset_id,
                         signaldb.table = %table_name,
-                        attempt,
+                        signaldb.job.attempt = attempt as i64,
                         error = %e,
                         "Partition drop hit a snapshot conflict; retrying against fresh metadata"
                     );
@@ -764,6 +788,46 @@ enum FileDisposition {
     KeepUnclassifiable,
 }
 
+/// Assemble a table's retention result from step 1's (partition-drop) counts
+/// and step 2's (snapshot-expiration) outcome.
+///
+/// A step-2 failure does not discard step-1's already-committed work: the
+/// counts it accumulated stay on the result, with the failure surfaced via
+/// `errors` instead of propagated. Before this existed, `enforce_table_retention`
+/// used `?` on step 2 directly, so a partition-drop commit that landed
+/// followed by a snapshot-expiry failure zeroed out the run's reported counts
+/// for real, already-mutated work (#1010).
+#[allow(clippy::too_many_arguments)]
+fn build_table_retention_result(
+    tenant_id: &str,
+    dataset_id: &str,
+    table_name: &str,
+    signal_type: SignalType,
+    partitions_evaluated: usize,
+    partitions_dropped: usize,
+    bytes_reclaimed: u64,
+    duration_ms: u64,
+    snapshot_expiry: Result<usize>,
+) -> TableRetentionResult {
+    let (snapshots_expired, errors) = match snapshot_expiry {
+        Ok(count) => (count, Vec::new()),
+        Err(e) => (0, vec![format!("Failed to expire old snapshots: {e}")]),
+    };
+
+    TableRetentionResult {
+        tenant_id: tenant_id.to_string(),
+        dataset_id: dataset_id.to_string(),
+        table_name: table_name.to_string(),
+        signal_type,
+        partitions_evaluated,
+        partitions_dropped,
+        snapshots_expired,
+        bytes_reclaimed,
+        duration_ms,
+        errors,
+    }
+}
+
 /// Classify a data file against the set of expired partition hours using
 /// the manifest entry's partition value (see [`data_file_partition_hours`]).
 fn classify_data_file(data_file: &DataFile, expired_hours: &HashSet<i64>) -> FileDisposition {
@@ -777,8 +841,26 @@ fn classify_data_file(data_file: &DataFile, expired_hours: &HashSet<i64>) -> Fil
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::retention::config::RetentionConfig;
+    use crate::retention::config::{RetentionConfig, TenantRetentionConfig};
     use std::collections::HashMap;
+
+    /// Load a table fresh from the catalog, panicking if it doesn't exist or
+    /// resolves to a view. Shared by tests that seed data via a direct
+    /// `Table::new_transaction` (rather than `enforce_retention`) and so need
+    /// the loaded `Table` handle themselves.
+    async fn load_table(
+        catalog_manager: &CatalogManager,
+        tenant_id: &str,
+        dataset_id: &str,
+        table_name: &str,
+    ) -> iceberg_rust::table::Table {
+        let identifier = catalog_manager.build_table_identifier(tenant_id, dataset_id, table_name);
+        match catalog_manager.catalog().load_tabular(&identifier).await {
+            Ok(iceberg_rust::catalog::tabular::Tabular::Table(t)) => t,
+            Ok(_) => panic!("expected a table, got a view for {table_name}"),
+            Err(e) => panic!("failed to load table {table_name}: {e}"),
+        }
+    }
 
     fn create_test_config() -> RetentionConfig {
         RetentionConfig {
@@ -1072,6 +1154,135 @@ mod tests {
         );
     }
 
+    /// #1010: a step-2 (snapshot expiry) failure must not zero out step-1's
+    /// (partition drop) already-committed counts. Pure/deterministic —
+    /// exercises the exact combining logic `enforce_table_retention` uses,
+    /// without touching a catalog.
+    #[test]
+    fn build_table_retention_result_preserves_partition_counts_when_snapshot_expiry_fails() {
+        let result = build_table_retention_result(
+            "acme",
+            "prod",
+            "traces",
+            SignalType::Traces,
+            10,
+            3,
+            2048,
+            42,
+            Err(anyhow::anyhow!("simulated snapshot expiry failure")),
+        );
+
+        assert_eq!(result.partitions_evaluated, 10);
+        assert_eq!(result.partitions_dropped, 3, "step 1's drop count is lost");
+        assert_eq!(result.bytes_reclaimed, 2048, "step 1's bytes are lost");
+        assert_eq!(result.snapshots_expired, 0);
+        assert_eq!(result.errors.len(), 1);
+        assert!(
+            result.errors[0].contains("simulated snapshot expiry failure"),
+            "errors = {:?}",
+            result.errors
+        );
+    }
+
+    #[test]
+    fn build_table_retention_result_reports_no_errors_on_full_success() {
+        let result = build_table_retention_result(
+            "acme",
+            "prod",
+            "traces",
+            SignalType::Traces,
+            5,
+            2,
+            1024,
+            7,
+            Ok(4),
+        );
+
+        assert_eq!(result.partitions_dropped, 2);
+        assert_eq!(result.snapshots_expired, 4);
+        assert!(result.errors.is_empty());
+    }
+
+    /// #1010: proves the scenario `build_table_retention_result`'s test above
+    /// assumes is actually reachable — step 1 (partition drop) can commit
+    /// real work against a real catalog, and step 2 (snapshot expiry) can
+    /// independently fail against that same real catalog. Driven as two
+    /// direct calls to the production step methods (rather than one call to
+    /// `enforce_table_retention`) so the step-2 failure is deterministic: an
+    /// in-process commit race that fails only step 2 needs genuine
+    /// concurrency, which is exactly the kind of wall-clock-dependent
+    /// flakiness `compaction_and_retention_do_not_interleave_on_the_same_table`'s
+    /// own comment above rejects elsewhere in this file.
+    #[tokio::test]
+    async fn table_retention_steps_are_independently_realizable_success_then_failure() {
+        use crate::iceberg::partition::test_support::{hour_partition, test_data_file};
+
+        let mut config = create_test_config();
+        config.dry_run = false;
+
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let mut table = catalog_manager
+            .ensure_table("acme", "prod", "traces")
+            .await
+            .unwrap();
+
+        // Seed a data file in a partition well past the 7-day trace cutoff.
+        // `IcebergCommitter::commit_compaction` is a *replace* and requires an
+        // existing snapshot, so a virgin table's first snapshot is seeded via
+        // a plain `append_data` transaction instead.
+        let old_hours = Utc::now().timestamp() / 3600 - 24 * 30;
+        table
+            .new_transaction(None)
+            .append_data(vec![test_data_file(
+                hour_partition(old_hours as i32),
+                "s3://bucket/x/data/00000-expired.parquet",
+            )])
+            .commit()
+            .await
+            .unwrap();
+
+        let enforcer = RetentionEnforcer::new(
+            catalog_manager.clone(),
+            config,
+            RetentionMetrics::new_mock(),
+        )
+        .unwrap();
+        let cutoff = enforcer
+            .policy_resolver()
+            .compute_cutoff("acme", "prod", SignalType::Traces)
+            .unwrap();
+
+        let table_identifier = catalog_manager.build_table_identifier("acme", "prod", "traces");
+        let table = load_table(&catalog_manager, "acme", "prod", "traces").await;
+
+        // Step 1: a real, committed partition-drop replace snapshot.
+        let (_, partitions_dropped, bytes_reclaimed) = enforcer
+            .drop_expired_partitions("acme", "prod", "traces", &table, &cutoff)
+            .await
+            .unwrap();
+        assert!(
+            partitions_dropped > 0,
+            "expected the seeded expired partition to be dropped"
+        );
+        assert!(bytes_reclaimed > 0);
+
+        // Remove the table so step 2 cannot load it — a deterministic stand-in
+        // for "step 2 fails after step 1 already mutated the table".
+        catalog_manager
+            .catalog()
+            .drop_table(&table_identifier)
+            .await
+            .unwrap();
+
+        let step2_result = enforcer
+            .expire_old_snapshots("acme", "prod", "traces")
+            .await;
+        assert!(
+            step2_result.is_err(),
+            "expected snapshot expiry to fail against a dropped table"
+        );
+    }
+
     #[test]
     fn classify_data_file_drops_expired_partitions_from_manifest_values() {
         use crate::iceberg::partition::test_support::{hour_partition, test_data_file};
@@ -1174,8 +1385,46 @@ mod tests {
     /// or one of the keys whitelisted in .weaver.toml: `level`/`target`
     /// (stamped unconditionally by tracing-opentelemetry's event bridge) and
     /// `error` (the workspace-wide failure-event idiom).
+    ///
+    /// Runs a real (non-dry-run) enforcement pass against non-empty catalog
+    /// state so every real-path INFO+ event site actually fires, rather than
+    /// asserting only against the two run-level start/completion events an
+    /// empty catalog produces (#1010). `dry_run = true` branches are covered
+    /// by the sibling [`retention_run_span_events_cover_dry_run_branches`],
+    /// with its own catalog so the two enforcement passes don't share a
+    /// SQLite connection pool.
+    ///
+    /// `acme`/`prod`, `snapshots_to_keep = 1`: the `traces` table has a real
+    /// expired partition (dropped) plus a live partition (kept), giving the
+    /// post-drop snapshot count enough history to exceed `snapshots_to_keep`
+    /// so a real `RemoveSnapshots` commit happens. The `logs` table has a
+    /// tenant override (`Duration::MAX`) that overflows `compute_cutoff`,
+    /// driving the table-failure branch.
+    ///
+    /// Not exercised:
+    /// - The snapshot-conflict retry warn (`signaldb.job.attempt`) needs a
+    ///   genuine concurrent commit racing the drop, which would make this
+    ///   test flaky under CI load for the same reason
+    ///   `compaction_and_retention_do_not_interleave_on_the_same_table`'s
+    ///   comment gives for avoiding wall-clock-dependent synchronization.
+    /// - The unclassifiable-file warns (`PartitionManager::list_partitions`'s
+    ///   and `try_drop_partitions_once`'s "no recoverable timestamp_hour",
+    ///   plus `data_file_partition_hours`' "unexpected type") need a manifest
+    ///   entry with a null or wrong-typed `timestamp_hour` partition value.
+    ///   iceberg-rust rejects both at commit time — a null value fails its
+    ///   Rust-level bounding-box check (`partition_struct_to_vec`) and a
+    ///   wrong-typed one fails Avro serialization against the field's `Long`
+    ///   schema — so real production data can only reach this branch via a
+    ///   manifest predating a schema change, not a fresh commit. Their keys
+    ///   (`file.path`, `signaldb.job.partition_value`) are fixed and covered
+    ///   by the pure `classify_data_file_keeps_unclassifiable_files` unit
+    ///   test above, but left unexercised here.
+    ///
+    /// Both keys' fixes are verified by code inspection rather than a fixture
+    /// in this test.
     #[tokio::test]
     async fn retention_run_span_events_use_registry_attribute_keys() {
+        use crate::iceberg::partition::test_support::{hour_partition, test_data_file};
         use tracing::instrument::WithSubscriber;
         use tracing_subscriber::prelude::*;
 
@@ -1196,10 +1445,64 @@ mod tests {
 
         async {
             let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-            let metrics = RetentionMetrics::new_mock();
-            let enforcer =
-                RetentionEnforcer::new(catalog_manager, create_test_config(), metrics).unwrap();
-            let _ = enforcer.enforce_retention("acme", "prod").await.unwrap();
+            let old_hours = Utc::now().timestamp() / 3600 - 24 * 30;
+            let recent_hours = Utc::now().timestamp() / 3600;
+
+            // `acme`/`prod`/`logs`: a tenant override that overflows
+            // `compute_cutoff`, so this table's retention pass fails outright.
+            let mut tenant_overrides = HashMap::new();
+            tenant_overrides.insert(
+                "acme".to_string(),
+                TenantRetentionConfig {
+                    traces: None,
+                    logs: Some(std::time::Duration::MAX),
+                    metrics: None,
+                    profiles: None,
+                    dataset_overrides: HashMap::new(),
+                },
+            );
+
+            // `acme`/`prod`/`traces`: real drop + real snapshot expiry.
+            catalog_manager
+                .ensure_table("acme", "prod", "traces")
+                .await
+                .unwrap();
+            catalog_manager
+                .ensure_table("acme", "prod", "logs")
+                .await
+                .unwrap();
+            // One commit for both files: the resulting single pre-existing
+            // snapshot is already enough for `snapshots_to_keep = 1` to have
+            // a real snapshot to expire once step 1 adds its own (fewer
+            // separate catalog round-trips is also kinder to the in-memory
+            // SQLite pool under parallel test load).
+            let mut traces_table = load_table(&catalog_manager, "acme", "prod", "traces").await;
+            traces_table
+                .new_transaction(None)
+                .append_data(vec![
+                    test_data_file(
+                        hour_partition(old_hours as i32),
+                        "s3://bucket/x/data/00000-expired.parquet",
+                    ),
+                    test_data_file(
+                        hour_partition(recent_hours as i32),
+                        "s3://bucket/x/data/00000-live.parquet",
+                    ),
+                ])
+                .commit()
+                .await
+                .unwrap();
+
+            let real_config = RetentionConfig {
+                dry_run: false,
+                snapshots_to_keep: Some(1),
+                tenant_overrides,
+                ..create_test_config()
+            };
+            let real_enforcer =
+                RetentionEnforcer::new(catalog_manager, real_config, RetentionMetrics::new_mock())
+                    .unwrap();
+            let _ = real_enforcer.enforce_retention("acme", "prod").await;
         }
         .with_subscriber(subscriber)
         .await;
@@ -1212,19 +1515,185 @@ mod tests {
             .expect("no retention job span");
 
         assert!(!span.events.is_empty(), "expected in-span log events");
-        let offending: Vec<String> = span
+        let observed_event_names: std::collections::BTreeSet<String> =
+            span.events.iter().map(|e| e.name.to_string()).collect();
+        let expected_event_names: std::collections::BTreeSet<String> = [
+            "Starting retention enforcement run",
+            "Retention enforcement run completed",
+            "Table retention enforcement completed",
+            "Table retention enforcement failed",
+            "Dropped expired partitions",
+            "Expired old snapshots",
+            "Committing compaction (replace data files)",
+            "Compaction commit verified",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        assert_eq!(
+            observed_event_names, expected_event_names,
+            "retention span events drifted from what these fixtures are meant to exercise \
+             (missing = branch stopped firing, extra = a new event needs a fixture)"
+        );
+
+        let observed_keys: std::collections::BTreeSet<String> = span
             .events
             .iter()
             .flat_map(|e| e.attributes.iter())
             .map(|kv| kv.key.as_str().to_string())
-            .filter(|k| {
-                !k.starts_with("signaldb.")
-                    && !matches!(k.as_str(), "level" | "target" | "error" | "file.path")
-            })
             .collect();
-        assert!(
-            offending.is_empty(),
-            "span-event attribute keys missing from the signaldb registry namespace: {offending:?}"
+        let expected_keys: std::collections::BTreeSet<String> = [
+            "level",
+            "target",
+            "error",
+            "signaldb.tenant.id",
+            "signaldb.dataset.id",
+            "signaldb.table",
+            "signaldb.job.run_id",
+            "signaldb.job.dry_run",
+            "signaldb.job.tables_processed",
+            "signaldb.job.partitions_dropped",
+            "signaldb.job.snapshots_expired",
+            "signaldb.job.bytes_reclaimed",
+            "signaldb.job.duration_ms",
+            "signaldb.job.files_deleted",
+            "signaldb.job.files_committed",
+            "signaldb.job.snapshot_id",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        assert_eq!(
+            observed_keys, expected_keys,
+            "span-event attribute keys drifted from the signaldb registry namespace \
+             (see otel/registry/signaldb.yaml)"
+        );
+    }
+
+    /// Sibling to [`retention_run_span_events_use_registry_attribute_keys`]:
+    /// covers the two `dry_run = true` event sites, which that test's real
+    /// (non-dry-run) pass never reaches. A separate catalog rather than a
+    /// second dataset in the same one, so the two enforcement passes never
+    /// share a SQLite connection pool.
+    ///
+    /// `acme`/`staging`/`traces`, `snapshots_to_keep = 1`: an expired
+    /// partition plus a second pre-existing snapshot (two real commits, since
+    /// a dry run never commits its own) drive both dry-run branches without
+    /// anything actually committing.
+    #[tokio::test]
+    async fn retention_run_span_events_cover_dry_run_branches() {
+        use crate::iceberg::partition::test_support::{hour_partition, test_data_file};
+        use tracing::instrument::WithSubscriber;
+        use tracing_subscriber::prelude::*;
+
+        let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        use opentelemetry::trace::TracerProvider as _;
+        let tracer = provider.tracer("test");
+        let subscriber = tracing_subscriber::registry().with(
+            common::self_monitoring::otel_span_layer(tracer)
+                .with_filter(tracing_subscriber::filter::LevelFilter::INFO),
+        );
+
+        async {
+            let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+            let old_hours = Utc::now().timestamp() / 3600 - 24 * 30;
+            let recent_hours = Utc::now().timestamp() / 3600;
+
+            catalog_manager
+                .ensure_table("acme", "staging", "traces")
+                .await
+                .unwrap();
+            let mut staging_table = load_table(&catalog_manager, "acme", "staging", "traces").await;
+            staging_table
+                .new_transaction(None)
+                .append_data(vec![test_data_file(
+                    hour_partition(old_hours as i32),
+                    "s3://bucket/y/data/00000-expired.parquet",
+                )])
+                .commit()
+                .await
+                .unwrap();
+            staging_table
+                .new_transaction(None)
+                .append_data(vec![test_data_file(
+                    hour_partition(recent_hours as i32),
+                    "s3://bucket/y/data/00000-live.parquet",
+                )])
+                .commit()
+                .await
+                .unwrap();
+
+            let dry_run_config = RetentionConfig {
+                dry_run: true,
+                snapshots_to_keep: Some(1),
+                ..create_test_config()
+            };
+            let dry_run_enforcer = RetentionEnforcer::new(
+                catalog_manager,
+                dry_run_config,
+                RetentionMetrics::new_mock(),
+            )
+            .unwrap();
+            let _ = dry_run_enforcer.enforce_retention("acme", "staging").await;
+        }
+        .with_subscriber(subscriber)
+        .await;
+
+        provider.force_flush().unwrap();
+        let spans = exporter.get_finished_spans().unwrap();
+        let span = spans
+            .iter()
+            .find(|s| s.name == "retention_enforcement")
+            .expect("no retention job span");
+
+        let observed_event_names: std::collections::BTreeSet<String> =
+            span.events.iter().map(|e| e.name.to_string()).collect();
+        let expected_event_names: std::collections::BTreeSet<String> = [
+            "Starting retention enforcement run",
+            "Retention enforcement run completed",
+            "Table retention enforcement completed",
+            "[DRY RUN] Would drop expired partitions",
+            "[DRY RUN] Would expire old snapshots",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        assert_eq!(
+            observed_event_names, expected_event_names,
+            "retention span events drifted from what these fixtures are meant to exercise \
+             (missing = branch stopped firing, extra = a new event needs a fixture)"
+        );
+
+        let observed_keys: std::collections::BTreeSet<String> = span
+            .events
+            .iter()
+            .flat_map(|e| e.attributes.iter())
+            .map(|kv| kv.key.as_str().to_string())
+            .collect();
+        let expected_keys: std::collections::BTreeSet<String> = [
+            "level",
+            "target",
+            "signaldb.tenant.id",
+            "signaldb.dataset.id",
+            "signaldb.table",
+            "signaldb.job.run_id",
+            "signaldb.job.dry_run",
+            "signaldb.job.tables_processed",
+            "signaldb.job.partitions_dropped",
+            "signaldb.job.snapshots_expired",
+            "signaldb.job.bytes_reclaimed",
+            "signaldb.job.duration_ms",
+        ]
+        .into_iter()
+        .map(str::to_string)
+        .collect();
+        assert_eq!(
+            observed_keys, expected_keys,
+            "span-event attribute keys drifted from the signaldb registry namespace \
+             (see otel/registry/signaldb.yaml)"
         );
     }
 }

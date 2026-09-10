@@ -1,5 +1,5 @@
 import { act, render, screen, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MetricsChart, rowsForCursorIndex } from "./MetricsChart";
 import type { PromSeries } from "../../api/prom";
 import { formatTimestamp } from "../../lib/vizFormat";
@@ -10,19 +10,50 @@ import { formatTimestamp } from "../../lib/vizFormat";
 // uPlot(...)` requires a real constructor function (an arrow function can't
 // be `new`-ed), and returning an object from it overrides `this` per normal
 // JS `new` semantics — so the mock instance is exactly `{ destroy }`.
-const { destroy, uPlotCtor } = vi.hoisted(() => {
+const { destroy, setSize, uPlotCtor } = vi.hoisted(() => {
   const destroy = vi.fn();
+  const setSize = vi.fn();
   const uPlotCtor = vi.fn(function uPlotMock(
     _opts: unknown,
     _data: unknown,
     _host: unknown,
   ) {
-    return { destroy };
+    return { destroy, setSize };
   });
-  return { destroy, uPlotCtor };
+  return { destroy, setSize, uPlotCtor };
 });
 vi.mock("uplot", () => ({ default: uPlotCtor }));
 vi.mock("uplot/dist/uPlot.min.css", () => ({}));
+
+/**
+ * A controllable `ResizeObserver` stand-in — unlike the global stub in
+ * `src/test/setup.ts` (which fires once, synchronously, from `observe()`),
+ * this only reports a size when the test calls `trigger()`, so debouncing
+ * and "only redraw on an actual change" behavior can be asserted directly.
+ */
+class ManualResizeObserver implements ResizeObserver {
+  static instances: ManualResizeObserver[] = [];
+  private readonly cb: ResizeObserverCallback;
+  disconnected = false;
+
+  constructor(cb: ResizeObserverCallback) {
+    this.cb = cb;
+    ManualResizeObserver.instances.push(this);
+  }
+
+  observe() {}
+  unobserve() {}
+  disconnect() {
+    this.disconnected = true;
+  }
+
+  trigger(width: number) {
+    this.cb(
+      [{ contentRect: { width } } as ResizeObserverEntry],
+      this as unknown as ResizeObserver,
+    );
+  }
+}
 
 const SERIES: PromSeries[] = [
   {
@@ -37,6 +68,8 @@ const SERIES: PromSeries[] = [
 afterEach(() => {
   uPlotCtor.mockClear();
   destroy.mockClear();
+  setSize.mockClear();
+  ManualResizeObserver.instances = [];
 });
 
 describe("MetricsChart", () => {
@@ -86,6 +119,61 @@ function fakePlot(idx: number | null) {
     over: document.createElement("div"),
   };
 }
+
+describe("MetricsChart container resize", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("ResizeObserver", ManualResizeObserver);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("resizes the plot in place when its own container changes size, without a window resize", () => {
+    render(<MetricsChart series={SERIES} />);
+    const observer = ManualResizeObserver.instances[0]!;
+
+    observer.trigger(640);
+    vi.runAllTimers();
+
+    expect(setSize).toHaveBeenCalledWith({ width: 640, height: 260 });
+    // Resized in place, not torn down and rebuilt.
+    expect(uPlotCtor).toHaveBeenCalledTimes(1);
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("debounces rapid container size changes into a single resize", () => {
+    render(<MetricsChart series={SERIES} />);
+    const observer = ManualResizeObserver.instances[0]!;
+
+    observer.trigger(500);
+    observer.trigger(550);
+    observer.trigger(600);
+    vi.runAllTimers();
+
+    expect(setSize).toHaveBeenCalledTimes(1);
+    expect(setSize).toHaveBeenCalledWith({ width: 600, height: 260 });
+  });
+
+  it("skips a no-op resize report at the same width", () => {
+    render(<MetricsChart series={SERIES} />);
+    const observer = ManualResizeObserver.instances[0]!;
+
+    observer.trigger(1200); // matches host.clientWidth used at construction
+    vi.runAllTimers();
+
+    expect(setSize).not.toHaveBeenCalled();
+  });
+
+  it("disconnects the observer on unmount", () => {
+    const { unmount } = render(<MetricsChart series={SERIES} />);
+    const observer = ManualResizeObserver.instances[0]!;
+    unmount();
+    expect(observer.disconnected).toBe(true);
+  });
+});
 
 describe("rowsForCursorIndex", () => {
   it("names the timestamp and lists every series with swatch and value", () => {

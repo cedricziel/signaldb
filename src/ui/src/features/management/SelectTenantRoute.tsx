@@ -1,6 +1,5 @@
-import { useQuery } from "@tanstack/react-query";
 import { Navigate } from "react-router";
-import { whoami } from "../../api/session";
+import { useWhoamiGate } from "../../lib/useWhoami";
 import { SelectTenant } from "./SelectTenant";
 
 /**
@@ -9,12 +8,7 @@ import { SelectTenant } from "./SelectTenant";
  * Redirects unauthenticated users to /logs.
  */
 export function SelectTenantRoute() {
-  const { data: who, isLoading } = useQuery({
-    queryKey: ["whoami"],
-    queryFn: () => whoami(),
-    staleTime: 60_000,
-    retry: false,
-  });
+  const { who, isLoading } = useWhoamiGate();
 
   if (isLoading) return null;
 

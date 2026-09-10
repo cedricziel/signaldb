@@ -6,6 +6,11 @@
 //!
 //! Tools (every authenticated tenant session, no role gating):
 //! - `server_info` — connectivity + resolved tenant
+//! - `connection_info` — this deployment's public ingest/query endpoints,
+//!   headers, required API-key scopes, and ready-to-paste OTel env vars
+//! - `discover_datasets` — the tenant and datasets your credential can
+//!   access, as a nested Markdown list, marking the session's current
+//!   default dataset
 //! - `search_traces` — TraceQL search
 //! - `get_trace` — single trace by ID
 //! - `get_profile` — single profile's flamegraph by ID (wraps the native
@@ -29,6 +34,14 @@
 //! - `create_schema_registry` / `replace_schema_registry` /
 //!   `delete_schema_registry` / `validate_schema_registry` — custom-registry
 //!   management (`schema:write`)
+//!
+//! Read/discovery tools also take an optional `tenant` argument (alongside
+//! the existing optional `dataset` where applicable): a confirmation check
+//! against the tenant the auth middleware already resolved for the request,
+//! not a way to target a different tenant — one MCP session, and the
+//! credential behind it, is permanently bound to exactly one tenant (see
+//! `mcp_auth_middleware` in `lib.rs`). A mismatch fails the call before any
+//! request reaches the router; call `discover_datasets` first if unsure.
 //!
 //! Management tools come in two families that differ only in which
 //! credential the router expects (design D1); neither is hidden from
@@ -135,7 +148,7 @@ pub struct McpServer {
 }
 
 /// Parameters for `search_traces`.
-#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct SearchTracesParams {
     /// TraceQL query, e.g. `{ .service.name = "api" && status = error }`. When
@@ -163,10 +176,17 @@ struct SearchTracesParams {
     /// Spans-per-spanset cap on returned spans.
     #[serde(default)]
     spss: Option<i32>,
-    /// Dataset to query. Omit to use the session's default dataset. The router
-    /// validates access; an inaccessible dataset returns an access-denied error.
-    #[serde(default)]
-    dataset: Option<String>,
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset to query. Required: one MCP session may span several
+    /// datasets, so there is no implicit session default; see
+    /// `discover_datasets`. The router validates access; an inaccessible
+    /// dataset returns an access-denied error.
+    dataset: String,
 }
 
 /// Parameters for `get_trace`.
@@ -181,9 +201,16 @@ struct GetTraceParams {
     /// Optional end-of-range hint, unix seconds, to prune the scan.
     #[serde(default)]
     end: Option<i64>,
-    /// Dataset to query. Omit to use the session's default dataset.
-    #[serde(default)]
-    dataset: Option<String>,
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset to query. Required: one MCP session may span several
+    /// datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
 }
 
 /// Parameters for `list_api_keys`.
@@ -210,9 +237,10 @@ struct CreateApiKeyParams {
     /// tenant — datasets, API keys, memberships, schema — through the
     /// management API; explicit only, never implied by an unscoped key).
     scopes: Vec<String>,
-    /// Optional dataset the key is restricted to.
+    /// Dataset set the key is restricted to (non-empty; a bare empty array
+    /// is rejected). Omitted or `null` creates an unrestricted key.
     #[serde(default)]
-    dataset_id: Option<String>,
+    dataset_ids: Option<Vec<String>>,
 }
 
 /// Parameters for `update_api_key_scopes`.
@@ -226,9 +254,15 @@ struct UpdateApiKeyScopesParams {
     /// Replacement scope list (non-empty). Omit to keep the current scopes.
     #[serde(default)]
     scopes: Option<Vec<String>>,
-    /// Replacement dataset restriction. Omit to keep the current one.
+    /// Replacement dataset set (non-empty; a bare empty array is rejected).
+    /// Omit to keep the current restriction. Mutually exclusive with
+    /// `clear_dataset_restriction: true`.
     #[serde(default)]
-    dataset_id: Option<String>,
+    dataset_ids: Option<Vec<String>>,
+    /// Clear an existing dataset restriction back to unrestricted. Must not
+    /// be combined with a non-empty `dataset_ids`.
+    #[serde(default)]
+    clear_dataset_restriction: bool,
 }
 
 /// Parameters for `get_profile`.
@@ -245,9 +279,16 @@ struct GetProfileParams {
     /// Defaults to now.
     #[serde(default)]
     end: Option<i64>,
-    /// Dataset to query. Omit to use the session's default dataset.
-    #[serde(default)]
-    dataset: Option<String>,
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset to query. Required: one MCP session may span several
+    /// datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
 }
 
 /// Which signal `discover_attributes` targets.
@@ -267,7 +308,7 @@ enum Signal {
 }
 
 /// Parameters for `discover_profile_types`.
-#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct DiscoverProfileTypesParams {
     /// Range start: unix seconds, unix milliseconds, or `now[-<N><s|m|h|d>]`.
@@ -277,9 +318,16 @@ struct DiscoverProfileTypesParams {
     /// Range end, same forms as `from`.
     #[serde(default)]
     until: Option<String>,
-    /// Dataset to query. Omit to use the session's default dataset.
-    #[serde(default)]
-    dataset: Option<String>,
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset to query. Required: one MCP session may span several
+    /// datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
 }
 
 /// Parameters for `search_profiles`.
@@ -295,9 +343,16 @@ struct SearchProfilesParams {
     /// Range end, same forms as `from`.
     #[serde(default)]
     until: Option<String>,
-    /// Dataset to query. Omit to use the session's default dataset.
-    #[serde(default)]
-    dataset: Option<String>,
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset to query. Required: one MCP session may span several
+    /// datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
 }
 
 /// Parameters for `compare_profiles`.
@@ -318,9 +373,16 @@ struct CompareProfilesParams {
     /// Comparison range end.
     #[serde(default)]
     right_until: Option<String>,
-    /// Dataset to query. Omit to use the session's default dataset.
-    #[serde(default)]
-    dataset: Option<String>,
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset to query. Required: one MCP session may span several
+    /// datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
 }
 
 /// Parameters for `profiles_for_trace`.
@@ -329,13 +391,20 @@ struct CompareProfilesParams {
 struct ProfilesForTraceParams {
     /// Trace ID to fetch correlated profiles for.
     trace_id: String,
-    /// Dataset to query. Omit to use the session's default dataset.
-    #[serde(default)]
-    dataset: Option<String>,
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset to query. Required: one MCP session may span several
+    /// datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
 }
 
 /// Parameters for `discover_attributes`.
-#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct DiscoverAttributesParams {
     /// Which signal to discover attributes for: `traces` (default), `logs`,
@@ -351,9 +420,16 @@ struct DiscoverAttributesParams {
     /// instead of v1. Only valid with `signal: "traces"`.
     #[serde(default)]
     scope: Option<TraceTagScope>,
-    /// Dataset to query. Omit to use the session's default dataset.
-    #[serde(default)]
-    dataset: Option<String>,
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset to query. Required: one MCP session may span several
+    /// datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
 }
 
 /// Trace tag scope for `discover_attributes` v2 routing (`signal: "traces"`
@@ -389,12 +465,19 @@ impl TraceTagScope {
 }
 
 /// Parameters for `discover_metrics`.
-#[derive(Debug, Default, Deserialize, JsonSchema)]
+#[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct DiscoverMetricsParams {
-    /// Dataset to query. Omit to use the session's default dataset.
-    #[serde(default)]
-    dataset: Option<String>,
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset to query. Required: one MCP session may span several
+    /// datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
 }
 
 /// Parameters for `query_metrics`.
@@ -418,9 +501,16 @@ struct QueryMetricsParams {
     /// `start`/`end`.
     #[serde(default)]
     step: Option<String>,
-    /// Dataset to query. Omit to use the session's default dataset.
-    #[serde(default)]
-    dataset: Option<String>,
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset to query. Required: one MCP session may span several
+    /// datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
 }
 
 /// Parameters for `search_logs`.
@@ -446,9 +536,16 @@ struct SearchLogsParams {
     /// `start`/`end`.
     #[serde(default)]
     step: Option<String>,
-    /// Dataset to query. Omit to use the session's default dataset.
-    #[serde(default)]
-    dataset: Option<String>,
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset to query. Required: one MCP session may span several
+    /// datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
 }
 
 /// Parameters for `query_ir`.
@@ -459,9 +556,16 @@ struct QueryIrParams {
     #[schemars(schema_with = "query_ir_document_schema")]
     #[serde(deserialize_with = "deserialize_query_ir_document")]
     query: serde_json::Value,
-    /// Dataset to query. Omit to use the session's default dataset.
-    #[serde(default)]
-    dataset: Option<String>,
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset to query. Required: one MCP session may span several
+    /// datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
 }
 
 /// Advertises `query` as a JSON object in the tool's schema. A bare
@@ -506,9 +610,16 @@ struct DiscoverFieldsParams {
     /// Maximum fields to return.
     #[serde(default)]
     limit: Option<u64>,
-    /// Dataset to query. Omit to use the session's default dataset.
-    #[serde(default)]
-    dataset: Option<String>,
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset to query. Required: one MCP session may span several
+    /// datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
 }
 
 /// Parameters for `discover_field_values`.
@@ -535,18 +646,32 @@ struct DiscoverFieldValuesParams {
     /// it instead of paying for a scan.
     #[serde(default)]
     sample: bool,
-    /// Dataset to query. Omit to use the session's default dataset.
-    #[serde(default)]
-    dataset: Option<String>,
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset to query. Required: one MCP session may span several
+    /// datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
 }
 
 /// Parameters for `discover_sources`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct DiscoverSourcesParams {
-    /// Dataset to query. Omit to use the session's default dataset.
-    #[serde(default)]
-    dataset: Option<String>,
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset to query. Required: one MCP session may span several
+    /// datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
 }
 
 fn default_discovery_source() -> String {
@@ -582,6 +707,12 @@ fn describe_document(
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct ResolveAttributeParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
     /// Attribute wire key, e.g. `k8s.pod.uid` or `service.name`.
     key: String,
 }
@@ -590,6 +721,12 @@ struct ResolveAttributeParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct ResolveEntityParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
     /// Entity type name, e.g. `k8s.pod` or `service`.
     name: String,
 }
@@ -598,6 +735,12 @@ struct ResolveEntityParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct ResolveMetricParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
     /// Metric name, e.g. `k8s.pod.cpu.time`.
     name: String,
 }
@@ -619,6 +762,12 @@ enum SchemaKind {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct SearchSchemaParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
     /// What to search: `attribute`, `entity`, or `metric`.
     kind: SchemaKind,
     /// Name prefix, e.g. `k8s.pod.`. Omit or leave empty to list from the top.
@@ -633,6 +782,12 @@ struct SearchSchemaParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct CreateSchemaRegistryParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
     /// The registry document in the OpenTelemetry Weaver semantic-convention
     /// model, as a JSON object: `name`, `version`, optional `schema_url` /
     /// `description` / `dependencies`, and `groups` (attribute_group, entity,
@@ -646,6 +801,12 @@ struct CreateSchemaRegistryParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct ReplaceSchemaRegistryParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
     /// Registry namespace (the document's `name`).
     namespace: String,
     /// Registry version (the document's `version`).
@@ -661,6 +822,12 @@ struct ReplaceSchemaRegistryParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct DeleteSchemaRegistryParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
     /// Registry namespace.
     namespace: String,
     /// Registry version.
@@ -710,6 +877,41 @@ fn require_confirm(confirm: &str, expected: &str, what: &str) -> Result<(), Erro
     Ok(())
 }
 
+/// Confirms the required `tenant` tool argument matches the tenant the auth
+/// middleware resolved for *this specific request* (`audit::CallerTenant`).
+/// No tool can actually target a different tenant than the one its
+/// credential authenticated as for this call (see `mcp_auth_middleware` in
+/// `lib.rs`) — so this exists purely to fail an agent's wrong assumption
+/// loudly (e.g. after `discover_datasets`) instead of silently running the
+/// call against the real authenticated tenant.
+fn check_tenant_scope(parts: &Parts, expected: &str) -> Result<(), ErrorData> {
+    match parts.extensions.get::<audit::CallerTenant>() {
+        Some(actual) if actual.0 == expected => Ok(()),
+        Some(actual) => Err(ErrorData::invalid_params(
+            format!(
+                "`tenant` (\"{expected}\") does not match the authenticated tenant (\"{}\")",
+                actual.0
+            ),
+            None,
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Whether `dataset` is visible to a credential carrying `restriction`
+/// (`None` = unrestricted, every dataset visible) — design D10. Local to
+/// this crate rather than reusing `common::auth::dataset_allowed`: this
+/// server holds no auth dependency (see the `common` dependency comment in
+/// `Cargo.toml`), it only forwards the caller's credential to the router.
+/// This filters an already-authorized listing for display; it enforces
+/// nothing the router itself does not already enforce on the data path.
+fn dataset_visible(restriction: Option<&[String]>, dataset: &str) -> bool {
+    match restriction {
+        None => true,
+        Some(allowed) => allowed.iter().any(|d| d == dataset),
+    }
+}
+
 /// Reject an empty `scopes` list on API-key creation (platform-admin and
 /// tenant-management variants share this validation).
 fn require_nonempty_scopes(scopes: &[String]) -> Result<(), ErrorData> {
@@ -722,15 +924,35 @@ fn require_nonempty_scopes(scopes: &[String]) -> Result<(), ErrorData> {
     Ok(())
 }
 
-/// Reject an API-key update with neither `scopes` nor `dataset_id` set
-/// (platform-admin and tenant-management variants share this validation).
+/// Reject an API-key update with none of `scopes`, `dataset_ids`, or
+/// `clear_dataset_restriction` set (platform-admin and tenant-management
+/// variants share this validation).
 fn require_any_update(
     scopes: &Option<Vec<String>>,
-    dataset_id: &Option<String>,
+    dataset_ids: &Option<Vec<String>>,
+    clear_dataset_restriction: bool,
 ) -> Result<(), ErrorData> {
-    if scopes.is_none() && dataset_id.is_none() {
+    if scopes.is_none() && dataset_ids.is_none() && !clear_dataset_restriction {
         return Err(ErrorData::invalid_params(
-            "nothing to update: pass `scopes` and/or `dataset_id`",
+            "nothing to update: pass `scopes`, `dataset_ids`, and/or `clear_dataset_restriction`",
+            None,
+        ));
+    }
+    Ok(())
+}
+
+/// Reject `clear_dataset_restriction: true` combined with a non-empty
+/// `dataset_ids` in the same update request (D1a) — checked before any
+/// router request is made, since the server-side validation this mirrors
+/// would otherwise be the only thing catching a contradictory request the
+/// client should never have sent in the first place.
+fn require_no_contradictory_dataset_update(
+    dataset_ids: &Option<Vec<String>>,
+    clear_dataset_restriction: bool,
+) -> Result<(), ErrorData> {
+    if clear_dataset_restriction && dataset_ids.as_ref().is_some_and(|ids| !ids.is_empty()) {
+        return Err(ErrorData::invalid_params(
+            "`clear_dataset_restriction: true` cannot be combined with a non-empty `dataset_ids`",
             None,
         ));
     }
@@ -891,9 +1113,10 @@ struct TenantCreateApiKeyParams {
     /// `schema:read`, `schema:write`, `tenant:manage` (manage this tenant's
     /// datasets, API keys, memberships, and schema view; explicit only).
     scopes: Vec<String>,
-    /// Optional dataset the key is restricted to.
+    /// Dataset set the key is restricted to (non-empty; a bare empty array
+    /// is rejected). Omitted or `null` creates an unrestricted key.
     #[serde(default)]
-    dataset_id: Option<String>,
+    dataset_ids: Option<Vec<String>>,
 }
 
 /// Parameters for `tenant_revoke_api_key`.
@@ -919,9 +1142,15 @@ struct TenantUpdateApiKeyParams {
     /// Replacement scope list (non-empty). Omit to keep the current scopes.
     #[serde(default)]
     scopes: Option<Vec<String>>,
-    /// Replacement dataset restriction. Omit to keep the current one.
+    /// Replacement dataset set (non-empty; a bare empty array is rejected).
+    /// Omit to keep the current restriction. Mutually exclusive with
+    /// `clear_dataset_restriction: true`.
     #[serde(default)]
-    dataset_id: Option<String>,
+    dataset_ids: Option<Vec<String>>,
+    /// Clear an existing dataset restriction back to unrestricted. Must not
+    /// be combined with a non-empty `dataset_ids`.
+    #[serde(default)]
+    clear_dataset_restriction: bool,
 }
 
 /// Tenant membership role, shared by `tenant_upsert_membership`.
@@ -964,6 +1193,12 @@ struct TenantRemoveMembershipParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct GetSchemaRegistryParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
     /// Registry namespace (e.g. `otel`, `signaldb`, or a custom name).
     namespace: String,
     /// Registry version (e.g. `1.43.0`).
@@ -974,11 +1209,29 @@ struct GetSchemaRegistryParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct ValidateSchemaRegistryParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
     /// The registry document to validate (Weaver model) as a JSON object;
     /// nothing is stored.
     #[schemars(schema_with = "json_object_schema")]
     #[serde(deserialize_with = "deserialize_json_object_or_string")]
     document: serde_json::Value,
+}
+
+/// Parameters for `list_schema_registries`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ListSchemaRegistriesParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
 }
 
 #[tool_router]
@@ -1099,6 +1352,23 @@ impl McpServer {
     }
 
     #[tool(
+        description = "Return everything needed to send data to and query this SignalDB deployment: public OTLP gRPC/HTTP endpoints, Prometheus remote-write, the query API base, required headers with your tenant and dataset filled in, the API-key scopes ingest needs, and ready-to-paste OTEL_EXPORTER_* env vars. Call this first when configuring or auto-instrumenting an application; then mint an ingest credential with `tenant_create_api_key` (scopes traces:write, logs:write, metrics:write, profiles:write) and substitute it for `<api-key>`.",
+        annotations(read_only_hint = true)
+    )]
+    async fn connection_info(
+        &self,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let resp = self
+            .router_client(&parts, None)?
+            .connection_info()
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "connection_info"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
         description = "Search traces with TraceQL. Provide `query` as a TraceQL expression (e.g. `{ .service.name = \"api\" && status = error }`) and optionally `start`/`end` (unix seconds) and `limit`. Returns matching traces scoped to your tenant."
     )]
     async fn search_traces(
@@ -1106,7 +1376,8 @@ impl McpServer {
         Parameters(p): Parameters<SearchTracesParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.router_client(&parts, Some(&p.dataset))?;
         let mut req = client.search();
         if let Some(v) = p.query {
             req = req.q(v);
@@ -1148,7 +1419,8 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.router_client(&parts, Some(&p.dataset))?;
         let mut req = client.query_single_trace().trace_id(p.trace_id);
         if let Some(v) = p.start {
             req = req.start(v);
@@ -1173,7 +1445,8 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.router_client(&parts, Some(&p.dataset))?;
         // The native Query IR's `flamegraph` envelope (profiles source only)
         // does the actual retrieval — this tool is a thin, single-ID wrapper
         // over the same `query_ir` path the generic tool exposes.
@@ -1201,7 +1474,8 @@ impl McpServer {
         Parameters(p): Parameters<DiscoverProfileTypesParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.router_client(&parts, Some(&p.dataset))?;
         let mut req = client.pyroscope_profile_types();
         if let Some(v) = p.from {
             req = req.from(v);
@@ -1225,7 +1499,8 @@ impl McpServer {
         Parameters(p): Parameters<SearchProfilesParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.router_client(&parts, Some(&p.dataset))?;
         let mut req = client.pyroscope_render().query(p.query);
         if let Some(v) = p.from {
             req = req.from(v);
@@ -1249,7 +1524,8 @@ impl McpServer {
         Parameters(p): Parameters<CompareProfilesParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.router_client(&parts, Some(&p.dataset))?;
         let mut req = client.pyroscope_render_diff().query(p.query);
         if let Some(v) = p.left_from {
             req = req.left_from(v);
@@ -1279,7 +1555,8 @@ impl McpServer {
         Parameters(p): Parameters<ProfilesForTraceParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.router_client(&parts, Some(&p.dataset))?;
         let resp = client
             .profiles_by_trace()
             .trace_id(p.trace_id)
@@ -1297,13 +1574,14 @@ impl McpServer {
         Parameters(p): Parameters<DiscoverAttributesParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
         if p.scope.is_some() && !matches!(p.signal, Signal::Traces) {
             return Err(ErrorData::invalid_params(
                 "discover_attributes: `scope` is only valid with signal: \"traces\"".to_string(),
                 None,
             ));
         }
-        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        let client = self.router_client(&parts, Some(&p.dataset))?;
         match (p.signal, p.tag, p.scope) {
             (Signal::Traces, Some(tag), Some(scope)) => {
                 let resp = client
@@ -1402,7 +1680,8 @@ impl McpServer {
         Parameters(p): Parameters<DiscoverMetricsParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.router_client(&parts, Some(&p.dataset))?;
         let resp = client
             .promql_label_values()
             .name("__name__")
@@ -1421,7 +1700,8 @@ impl McpServer {
         Parameters(p): Parameters<QueryMetricsParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.router_client(&parts, Some(&p.dataset))?;
         if p.start.is_some() || p.end.is_some() {
             let mut req = client.promql_query_range().query(p.query);
             if let Some(v) = p.start {
@@ -1460,7 +1740,8 @@ impl McpServer {
         Parameters(p): Parameters<SearchLogsParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.router_client(&parts, Some(&p.dataset))?;
         if p.start.is_some() || p.end.is_some() {
             let mut req = client.logql_query_range().query(p.query);
             if let Some(v) = p.limit {
@@ -1508,6 +1789,7 @@ impl McpServer {
         Parameters(p): Parameters<DiscoverFieldsParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
         let mut stage = serde_json::json!({ "target": "fields" });
         if let Some(limit) = p.limit {
             stage["limit"] = serde_json::json!(limit);
@@ -1515,7 +1797,7 @@ impl McpServer {
         let document = describe_document(&p.source, &p.from, &p.to, stage);
         let request: signaldb_sdk::types::QueryIrRequest = serde_json::from_value(document)
             .map_err(|e| ErrorData::internal_error(format!("failed to build query: {e}"), None))?;
-        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        let client = self.router_client(&parts, Some(&p.dataset))?;
         let resp = client
             .query_ir()
             .body(request)
@@ -1534,6 +1816,7 @@ impl McpServer {
         Parameters(p): Parameters<DiscoverFieldValuesParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
         if p.field.trim().is_empty() {
             return Err(ErrorData::invalid_params(
                 "discover_field_values: `field` must name a logical field".to_string(),
@@ -1550,7 +1833,7 @@ impl McpServer {
         let document = describe_document(&p.source, &p.from, &p.to, stage);
         let request: signaldb_sdk::types::QueryIrRequest = serde_json::from_value(document)
             .map_err(|e| ErrorData::internal_error(format!("failed to build query: {e}"), None))?;
-        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        let client = self.router_client(&parts, Some(&p.dataset))?;
         let resp = client
             .query_ir()
             .body(request)
@@ -1569,13 +1852,96 @@ impl McpServer {
         Parameters(p): Parameters<DiscoverSourcesParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.router_client(&parts, Some(&p.dataset))?;
         let resp = client
             .query_sources()
             .send()
             .await
             .map_err(|e| map_sdk_err(e, "discover_sources"))?;
         json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Discover the tenant and datasets your credential can access, as a nested Markdown list: the authenticated tenant, then its datasets (marking the session's current default) with each dataset's provisioned signal-table count. Call this before passing an explicit `dataset` argument to another tool, or a `tenant` argument to confirm your assumption.",
+        annotations(read_only_hint = true)
+    )]
+    async fn discover_datasets(
+        &self,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        let client = self.router_client(&parts, None)?;
+        // The tenant id is already known from the auth middleware's own
+        // `whoami()` call (stashed as `audit::CallerTenant`), so this
+        // handler's `whoami()` — needed only for display fields
+        // (`tenant.name`, the current default dataset) — can run alongside
+        // `list_tenant_tables()` instead of gating it.
+        let (identity, tables) = match parts.extensions.get::<audit::CallerTenant>() {
+            Some(caller_tenant) => {
+                let tenant_id = caller_tenant.0.clone();
+                let (whoami, tables) = tokio::join!(
+                    client.whoami().send(),
+                    client.list_tenant_tables().tenant_id(&tenant_id).send()
+                );
+                (
+                    whoami
+                        .map_err(|e| map_sdk_err(e, "discover_datasets"))?
+                        .into_inner(),
+                    tables
+                        .map_err(|e| map_sdk_err(e, "discover_datasets"))?
+                        .into_inner(),
+                )
+            }
+            None => {
+                let identity = client
+                    .whoami()
+                    .send()
+                    .await
+                    .map_err(|e| map_sdk_err(e, "discover_datasets"))?
+                    .into_inner();
+                let tables = client
+                    .list_tenant_tables()
+                    .tenant_id(&identity.tenant.id)
+                    .send()
+                    .await
+                    .map_err(|e| map_sdk_err(e, "discover_datasets"))?
+                    .into_inner();
+                (identity, tables)
+            }
+        };
+
+        // D10: a dataset-restricted credential must not see the name (or
+        // table count) of a dataset outside its restriction, not even one
+        // that is otherwise provisioned and empty.
+        let restriction = identity.dataset_ids.as_deref();
+        let visible_datasets: Vec<_> = tables
+            .datasets
+            .iter()
+            .filter(|dataset| dataset_visible(restriction, &dataset.dataset))
+            .collect();
+
+        let mut markdown = format!(
+            "- Tenant: **{}** (`{}`)\n",
+            identity.tenant.name, identity.tenant.id
+        );
+        if visible_datasets.is_empty() {
+            markdown.push_str("  - (no datasets provisioned yet)\n");
+        } else {
+            for dataset in visible_datasets {
+                let current = if dataset.dataset == identity.dataset {
+                    " (current)"
+                } else {
+                    ""
+                };
+                let count = dataset.tables.len();
+                markdown.push_str(&format!(
+                    "  - Dataset: `{}`{current} — {count} table{}\n",
+                    dataset.dataset,
+                    if count == 1 { "" } else { "s" },
+                ));
+            }
+        }
+        Ok(capped_text_result(markdown))
     }
 
     #[tool(
@@ -1586,9 +1952,10 @@ impl McpServer {
         Parameters(p): Parameters<QueryIrParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
         let request: signaldb_sdk::types::QueryIrRequest = serde_json::from_value(p.query)
             .map_err(|e| ErrorData::invalid_params(format!("invalid IR document: {e}"), None))?;
-        let client = self.router_client(&parts, p.dataset.as_deref())?;
+        let client = self.router_client(&parts, Some(&p.dataset))?;
         let resp = client
             .query_ir()
             .body(request)
@@ -1666,7 +2033,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Create an API key for a tenant carrying exactly the given `scopes` (required, at least one; e.g. traces:write, schema:read) and optionally restricted to `dataset_id` (admin API; requires administrative credentials). The raw secret is returned once."
+        description = "Create an API key for a tenant carrying exactly the given `scopes` (required, at least one; e.g. traces:write, schema:read) and optionally restricted to a set of datasets via `dataset_ids` (admin API; requires administrative credentials). The raw secret is returned once."
     )]
     async fn create_api_key(
         &self,
@@ -1681,7 +2048,7 @@ impl McpServer {
             .body(signaldb_sdk::types::CreateApiKeyRequest {
                 name: p.name,
                 scopes: p.scopes,
-                dataset_id: p.dataset_id,
+                dataset_ids: p.dataset_ids,
             })
             .send()
             .await
@@ -1690,14 +2057,15 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Update the scopes and/or dataset restriction of a live API key without rotating its secret (admin API; requires administrative credentials). Revoked keys cannot be updated; the change applies to the key's next request."
+        description = "Update the scopes and/or dataset restriction of a live API key without rotating its secret (admin API; requires administrative credentials). `dataset_ids` replaces the restriction (non-empty, or omit to leave it unchanged); `clear_dataset_restriction: true` removes it back to unrestricted and must not be combined with a non-empty `dataset_ids`. Revoked keys cannot be updated; the change applies to the key's next request."
     )]
     async fn update_api_key_scopes(
         &self,
         Extension(parts): Extension<Parts>,
         Parameters(p): Parameters<UpdateApiKeyScopesParams>,
     ) -> Result<CallToolResult, ErrorData> {
-        require_any_update(&p.scopes, &p.dataset_id)?;
+        require_no_contradictory_dataset_update(&p.dataset_ids, p.clear_dataset_restriction)?;
+        require_any_update(&p.scopes, &p.dataset_ids, p.clear_dataset_restriction)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .update_api_key()
@@ -1705,7 +2073,8 @@ impl McpServer {
             .key_id(&p.key_id)
             .body(signaldb_sdk::types::UpdateApiKeyRequest {
                 scopes: p.scopes,
-                dataset_id: p.dataset_id,
+                dataset_ids: p.dataset_ids,
+                clear_dataset_restriction: Some(p.clear_dataset_restriction),
             })
             .send()
             .await
@@ -2020,7 +2389,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Create an API key for the caller's own tenant, carrying exactly the given `scopes` (required, at least one) and optionally restricted to `dataset_id` (management API; tenant-admin session or an API key carrying `tenant:manage`). The raw secret is returned once."
+        description = "Create an API key for the caller's own tenant, carrying exactly the given `scopes` (required, at least one) and optionally restricted to a set of datasets via `dataset_ids` (management API; tenant-admin session or an API key carrying `tenant:manage`). The raw secret is returned once."
     )]
     async fn tenant_create_api_key(
         &self,
@@ -2035,7 +2404,7 @@ impl McpServer {
             .body(signaldb_sdk::types::ManageCreateApiKeyRequest {
                 name: p.name,
                 scopes: p.scopes,
-                dataset_id: p.dataset_id,
+                dataset_ids: p.dataset_ids,
             })
             .send()
             .await
@@ -2065,14 +2434,15 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Update the scopes and/or dataset restriction of one of the caller's own tenant's API keys, without rotating its secret (management API; tenant-admin session or an API key carrying `tenant:manage`)."
+        description = "Update the scopes and/or dataset restriction of one of the caller's own tenant's API keys, without rotating its secret (management API; tenant-admin session or an API key carrying `tenant:manage`). `dataset_ids` replaces the restriction (non-empty, or omit to leave it unchanged); `clear_dataset_restriction: true` removes it back to unrestricted and must not be combined with a non-empty `dataset_ids`."
     )]
     async fn tenant_update_api_key(
         &self,
         Parameters(p): Parameters<TenantUpdateApiKeyParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        require_any_update(&p.scopes, &p.dataset_id)?;
+        require_no_contradictory_dataset_update(&p.dataset_ids, p.clear_dataset_restriction)?;
+        require_any_update(&p.scopes, &p.dataset_ids, p.clear_dataset_restriction)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .manage_update_api_key()
@@ -2080,7 +2450,8 @@ impl McpServer {
             .key_id(&p.key_id)
             .body(signaldb_sdk::types::ManageUpdateApiKeyRequest {
                 scopes: p.scopes,
-                dataset_id: p.dataset_id,
+                dataset_ids: p.dataset_ids,
+                clear_dataset_restriction: Some(p.clear_dataset_restriction),
             })
             .send()
             .await
@@ -2192,7 +2563,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List the caller's own tenant's provisioned signal tables (tenant self-service API; the caller's tenant credential).",
+        description = "List the caller's own tenant's provisioned signal tables (tenant self-service API; the caller's tenant credential). Filtered to the caller's own dataset restriction, if any (D10): a dataset outside it never appears here.",
         annotations(read_only_hint = true)
     )]
     async fn tenant_list_tables(
@@ -2201,13 +2572,31 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         let client = self.router_client(&parts, None)?;
-        let resp = client
+        let mut tables = client
             .list_tenant_tables()
             .tenant_id(&p.tenant_id)
             .send()
             .await
-            .map_err(|e| map_sdk_err(e, "tenant_list_tables"))?;
-        json_result(&resp.into_inner())
+            .map_err(|e| map_sdk_err(e, "tenant_list_tables"))?
+            .into_inner();
+        // D10: hide any dataset outside the caller's own restriction — set
+        // once per request by the auth middleware alongside
+        // `audit::CallerTenant`. `dataset_visible` no-ops both `retain`
+        // calls below when the caller is unrestricted.
+        let restriction = parts
+            .extensions
+            .get::<audit::CallerDatasetIds>()
+            .and_then(|r| r.0.as_deref());
+        tables
+            .datasets
+            .retain(|dataset| dataset_visible(restriction, &dataset.dataset));
+        tables.tables.retain(|table| {
+            table
+                .dataset
+                .as_deref()
+                .is_none_or(|dataset| dataset_visible(restriction, dataset))
+        });
+        json_result(&tables)
     }
 
     #[tool(
@@ -2269,8 +2658,10 @@ impl McpServer {
     )]
     async fn list_schema_registries(
         &self,
+        Parameters(p): Parameters<ListSchemaRegistriesParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .schema_list_registries()
@@ -2288,6 +2679,7 @@ impl McpServer {
         Parameters(p): Parameters<ResolveAttributeParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .schema_resolve_attribute()
@@ -2306,6 +2698,7 @@ impl McpServer {
         Parameters(p): Parameters<ResolveEntityParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .schema_resolve_entity()
@@ -2324,6 +2717,7 @@ impl McpServer {
         Parameters(p): Parameters<ResolveMetricParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .schema_resolve_metric()
@@ -2342,6 +2736,7 @@ impl McpServer {
         Parameters(p): Parameters<SearchSchemaParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
         let client = self.router_client(&parts, None)?;
         let prefix = p.prefix.unwrap_or_default();
         // Each kind has its own generated response type, so each arm sends and
@@ -2391,6 +2786,7 @@ impl McpServer {
         Parameters(p): Parameters<CreateSchemaRegistryParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
         let document = registry_document(p.document)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
@@ -2410,6 +2806,7 @@ impl McpServer {
         Parameters(p): Parameters<ReplaceSchemaRegistryParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
         let document = registry_document(p.document)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
@@ -2431,6 +2828,7 @@ impl McpServer {
         Parameters(p): Parameters<DeleteSchemaRegistryParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
         let client = self.router_client(&parts, None)?;
         client
             .schema_delete_registry()
@@ -2455,6 +2853,7 @@ impl McpServer {
         Parameters(p): Parameters<GetSchemaRegistryParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .schema_get_registry()
@@ -2475,6 +2874,7 @@ impl McpServer {
         Parameters(p): Parameters<ValidateSchemaRegistryParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
         let document = registry_document(p.document)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
@@ -2795,6 +3195,26 @@ impl ServerHandler for McpServer {
 /// context window, so an oversized downstream result is not streamed verbatim.
 const MAX_TOOL_PAYLOAD_BYTES: usize = 256 * 1024;
 
+/// Bound a text tool result at [`MAX_TOOL_PAYLOAD_BYTES`]. When `text`
+/// exceeds the budget, the tool returns valid JSON marked `truncated` with a
+/// narrowing hint instead of the oversized payload, so clients detect the cap
+/// from the flag. Shared by every tool that returns a text block, whether
+/// JSON ([`json_result_for_app`]) or plain Markdown (`discover_datasets`).
+fn capped_text_result(text: String) -> CallToolResult {
+    if text.len() > MAX_TOOL_PAYLOAD_BYTES {
+        let notice = serde_json::json!({
+            "truncated": true,
+            "bytes": text.len(),
+            "limit_bytes": MAX_TOOL_PAYLOAD_BYTES,
+            "hint": "Result exceeded the size cap; narrow the time range or lower `limit`, then retry.",
+        });
+        return audit::mark_truncated(CallToolResult::success(vec![ContentBlock::text(
+            notice.to_string(),
+        )]));
+    }
+    CallToolResult::success(vec![ContentBlock::text(text)])
+}
+
 /// Serialize a value into a single-text-block tool result, bounded at
 /// [`MAX_TOOL_PAYLOAD_BYTES`]. When the serialized result exceeds the budget,
 /// the tool returns valid JSON marked `truncated` with a narrowing hint instead
@@ -2817,19 +3237,9 @@ fn json_result_for_app<T: serde::Serialize>(
     let json = serde_json::to_value(value)
         .map_err(|e| ErrorData::internal_error(format!("failed to serialize result: {e}"), None))?;
     let text = json.to_string();
-    if text.len() > MAX_TOOL_PAYLOAD_BYTES {
-        let notice = serde_json::json!({
-            "truncated": true,
-            "bytes": text.len(),
-            "limit_bytes": MAX_TOOL_PAYLOAD_BYTES,
-            "hint": "Result exceeded the size cap; narrow the time range or lower `limit`, then retry.",
-        });
-        return Ok(audit::mark_truncated(CallToolResult::success(vec![
-            ContentBlock::text(notice.to_string()),
-        ])));
-    }
-    let mut result = CallToolResult::success(vec![ContentBlock::text(text)]);
-    if with_structured {
+    let truncated = text.len() > MAX_TOOL_PAYLOAD_BYTES;
+    let mut result = capped_text_result(text);
+    if with_structured && !truncated {
         result.structured_content = Some(json);
     }
     Ok(result)
@@ -3141,6 +3551,62 @@ mod tests {
         serde_json::from_str(&text.text).expect("tool result is JSON")
     }
 
+    /// Like [`mock_json_router`], but returns the full raw HTTP request text
+    /// (headers + body) it received instead of only asserting a prefix, so a
+    /// test can inspect the JSON body the client actually sent — e.g. proving
+    /// a parameter was forwarded rather than dropped.
+    async fn mock_capturing_router(
+        expected_prefix: &'static str,
+        status: u16,
+        response_body: &'static str,
+    ) -> (String, tokio::task::JoinHandle<String>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let handle = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept request");
+            let mut request = [0_u8; 8192];
+            let request_len = socket.read(&mut request).await.expect("read request");
+            let request = std::str::from_utf8(&request[..request_len])
+                .expect("request is UTF-8")
+                .to_string();
+            assert!(
+                request.starts_with(expected_prefix),
+                "unexpected request, wanted prefix {expected_prefix:?}: {request}"
+            );
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 {status} OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        response_body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write response headers");
+            socket
+                .write_all(response_body.as_bytes())
+                .await
+                .expect("write body");
+            request
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    /// Extract and parse the JSON body from a request captured by
+    /// [`mock_capturing_router`].
+    fn captured_json_body(request: &str) -> serde_json::Value {
+        let body = request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .expect("request has a body");
+        serde_json::from_str(body).expect("request body is JSON")
+    }
+
     #[tokio::test]
     async fn discover_profile_types_lists_types_via_router() {
         let (base_url, router) = mock_json_router(
@@ -3152,7 +3618,12 @@ mod tests {
 
         let result = server
             .discover_profile_types(
-                Parameters(DiscoverProfileTypesParams::default()),
+                Parameters(DiscoverProfileTypesParams {
+                    from: None,
+                    until: None,
+                    tenant: "acme".to_string(),
+                    dataset: "production".to_string(),
+                }),
                 Extension(valid_parts()),
             )
             .await
@@ -3178,7 +3649,8 @@ mod tests {
                     query: "cpu".to_string(),
                     from: Some("now-1h".to_string()),
                     until: None,
-                    dataset: None,
+                    tenant: "acme".to_string(),
+                    dataset: "production".to_string(),
                 }),
                 Extension(valid_parts()),
             )
@@ -3207,7 +3679,8 @@ mod tests {
                     left_until: Some("now-1h".to_string()),
                     right_from: Some("now-1h".to_string()),
                     right_until: Some("now".to_string()),
-                    dataset: None,
+                    tenant: "acme".to_string(),
+                    dataset: "production".to_string(),
                 }),
                 Extension(valid_parts()),
             )
@@ -3233,7 +3706,8 @@ mod tests {
             .profiles_for_trace(
                 Parameters(ProfilesForTraceParams {
                     trace_id: "abc123".to_string(),
-                    dataset: None,
+                    tenant: "acme".to_string(),
+                    dataset: "production".to_string(),
                 }),
                 Extension(valid_parts()),
             )
@@ -3260,7 +3734,8 @@ mod tests {
                     signal: Signal::Profiles,
                     tag: None,
                     scope: None,
-                    dataset: None,
+                    tenant: "acme".to_string(),
+                    dataset: "production".to_string(),
                 }),
                 Extension(valid_parts()),
             )
@@ -3284,7 +3759,8 @@ mod tests {
                     signal: Signal::Profiles,
                     tag: Some("service_name".to_string()),
                     scope: None,
-                    dataset: None,
+                    tenant: "acme".to_string(),
+                    dataset: "production".to_string(),
                 }),
                 Extension(valid_parts()),
             )
@@ -3311,7 +3787,8 @@ mod tests {
                     signal: Signal::Traces,
                     tag: None,
                     scope: Some(TraceTagScope::Resource),
-                    dataset: None,
+                    tenant: "acme".to_string(),
+                    dataset: "production".to_string(),
                 }),
                 Extension(valid_parts()),
             )
@@ -3339,7 +3816,8 @@ mod tests {
                     signal: Signal::Traces,
                     tag: Some("service.name".to_string()),
                     scope: Some(TraceTagScope::Resource),
-                    dataset: None,
+                    tenant: "acme".to_string(),
+                    dataset: "production".to_string(),
                 }),
                 Extension(valid_parts()),
             )
@@ -3366,7 +3844,8 @@ mod tests {
                     signal: Signal::Logs,
                     tag: None,
                     scope: Some(TraceTagScope::Resource),
-                    dataset: None,
+                    tenant: "acme".to_string(),
+                    dataset: "production".to_string(),
                 }),
                 Extension(valid_parts()),
             )
@@ -3470,6 +3949,358 @@ mod tests {
         assert_eq!(identity["tenant"], "acme");
         assert_eq!(identity["dataset"], "production");
         router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
+    async fn discover_datasets_lists_the_tenant_and_its_datasets_as_markdown() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let router = tokio::spawn(async move {
+            // First request: whoami.
+            let (mut socket, _) = listener.accept().await.expect("accept whoami request");
+            let mut request = [0_u8; 4096];
+            let request_len = socket.read(&mut request).await.expect("read request");
+            assert!(
+                std::str::from_utf8(&request[..request_len])
+                    .expect("request is UTF-8")
+                    .starts_with("GET /api/v1/whoami "),
+                "discover_datasets must call whoami first"
+            );
+            let body = br#"{"user_id":"user-a","tenant":{"id":"acme","slug":"acme","name":"Acme Corp"},"dataset":"production"}"#;
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write whoami response headers");
+            socket.write_all(body).await.expect("write whoami body");
+            drop(socket);
+
+            // Second request: list_tenant_tables, on its own connection.
+            let (mut socket, _) = listener.accept().await.expect("accept tables request");
+            let mut request = [0_u8; 4096];
+            let request_len = socket.read(&mut request).await.expect("read request");
+            assert!(
+                std::str::from_utf8(&request[..request_len])
+                    .expect("request is UTF-8")
+                    .starts_with("GET /api/v1/tenants/acme/tables"),
+                "discover_datasets must call list_tenant_tables for the resolved tenant"
+            );
+            let body = br#"{"tenant_id":"acme","tables":[],"datasets":[{"dataset":"production","tables":[{"name":"traces","schema_type":"traces","description":"d"}]},{"dataset":"staging","tables":[]}]}"#;
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write tables response headers");
+            socket.write_all(body).await.expect("write tables body");
+        });
+        let server = McpServer::new(format!("http://{addr}"), std::time::Duration::from_secs(1));
+
+        let result = server
+            .discover_datasets(Extension(valid_parts()))
+            .await
+            .expect("discover_datasets succeeds");
+
+        let ContentBlock::Text(text) = &result.content[0] else {
+            panic!("discover_datasets returns a text result");
+        };
+        assert!(
+            text.text.contains("Acme Corp") && text.text.contains("acme"),
+            "missing tenant line: {}",
+            text.text
+        );
+        assert!(
+            text.text.contains("`production` (current)"),
+            "missing current-dataset marker: {}",
+            text.text
+        );
+        assert!(
+            text.text.contains("`staging`") && !text.text.contains("`staging` (current)"),
+            "staging must not be marked current: {}",
+            text.text
+        );
+        assert!(
+            text.text.contains("`production` (current) — 1 table"),
+            "wrong production table count: {}",
+            text.text
+        );
+        assert!(
+            text.text.contains("`staging` — 0 tables"),
+            "wrong staging table count: {}",
+            text.text
+        );
+        router.await.expect("mock router task panicked");
+    }
+
+    /// D10: a dataset-restricted credential's `discover_datasets` listing
+    /// never names a dataset outside its restriction, even one that is
+    /// provisioned in the tenant.
+    #[tokio::test]
+    async fn discover_datasets_hides_datasets_outside_the_callers_restriction() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let router = tokio::spawn(async move {
+            let (mut socket, _) = listener.accept().await.expect("accept whoami request");
+            let mut request = [0_u8; 4096];
+            let _request_len = socket.read(&mut request).await.expect("read request");
+            let body = br#"{"user_id":"","tenant":{"id":"acme","slug":"acme","name":"Acme Corp"},"dataset":"production","dataset_ids":["production"]}"#;
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write whoami response headers");
+            socket.write_all(body).await.expect("write whoami body");
+            drop(socket);
+
+            let (mut socket, _) = listener.accept().await.expect("accept tables request");
+            let mut request = [0_u8; 4096];
+            let _request_len = socket.read(&mut request).await.expect("read request");
+            let body = br#"{"tenant_id":"acme","tables":[],"datasets":[{"dataset":"production","tables":[{"name":"traces","schema_type":"traces","description":"d"}]},{"dataset":"staging","tables":[{"name":"logs","schema_type":"logs","description":"d"}]}]}"#;
+            socket
+                .write_all(
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                        body.len()
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .expect("write tables response headers");
+            socket.write_all(body).await.expect("write tables body");
+        });
+        let server = McpServer::new(format!("http://{addr}"), std::time::Duration::from_secs(1));
+
+        let result = server
+            .discover_datasets(Extension(valid_parts()))
+            .await
+            .expect("discover_datasets succeeds");
+
+        let ContentBlock::Text(text) = &result.content[0] else {
+            panic!("discover_datasets returns a text result");
+        };
+        assert!(
+            text.text.contains("`production`"),
+            "the restricted dataset must still be listed: {}",
+            text.text
+        );
+        assert!(
+            !text.text.contains("staging"),
+            "a dataset outside the restriction must not appear, even by name: {}",
+            text.text
+        );
+        router.await.expect("mock router task panicked");
+    }
+
+    /// D10: `tenant_list_tables` filters both the flat `tables` list and the
+    /// per-dataset `datasets` grouping to the caller's restriction — an
+    /// unlisted dataset must not appear in either shape.
+    #[tokio::test]
+    async fn tenant_list_tables_hides_datasets_outside_the_callers_restriction() {
+        let (base_url, router) = mock_json_router(
+            "GET /api/v1/tenants/acme/tables",
+            r#"{"tenant_id":"acme","tables":[
+                {"name":"traces","schema_type":"traces","description":"d","dataset":"production"},
+                {"name":"logs","schema_type":"logs","description":"d","dataset":"staging"}
+            ],"datasets":[
+                {"dataset":"production","tables":[{"name":"traces","schema_type":"traces","description":"d","dataset":"production"}]},
+                {"dataset":"staging","tables":[{"name":"logs","schema_type":"logs","description":"d","dataset":"staging"}]}
+            ]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+        let mut parts = valid_parts();
+        parts.extensions.insert(audit::CallerDatasetIds(Some(vec![
+            "production".to_string(),
+        ])));
+
+        let result = server
+            .tenant_list_tables(
+                Parameters(TenantOnlyParams {
+                    tenant_id: "acme".to_string(),
+                }),
+                Extension(parts),
+            )
+            .await
+            .expect("tenant_list_tables succeeds");
+
+        let body = text_json(&result);
+        let datasets: Vec<&str> = body["datasets"]
+            .as_array()
+            .expect("datasets array")
+            .iter()
+            .map(|d| d["dataset"].as_str().expect("dataset name"))
+            .collect();
+        assert_eq!(datasets, vec!["production"], "got {body}");
+        let tables: Vec<&str> = body["tables"]
+            .as_array()
+            .expect("tables array")
+            .iter()
+            .map(|t| t["dataset"].as_str().expect("table dataset"))
+            .collect();
+        assert_eq!(tables, vec!["production"], "got {body}");
+        router.await.expect("mock router task panicked");
+    }
+
+    /// An unrestricted credential's `tenant_list_tables` result is unchanged
+    /// — every dataset the router reports is still listed.
+    #[tokio::test]
+    async fn tenant_list_tables_is_unfiltered_for_an_unrestricted_credential() {
+        let (base_url, router) = mock_json_router(
+            "GET /api/v1/tenants/acme/tables",
+            r#"{"tenant_id":"acme","tables":[
+                {"name":"traces","schema_type":"traces","description":"d","dataset":"production"},
+                {"name":"logs","schema_type":"logs","description":"d","dataset":"staging"}
+            ],"datasets":[
+                {"dataset":"production","tables":[{"name":"traces","schema_type":"traces","description":"d","dataset":"production"}]},
+                {"dataset":"staging","tables":[{"name":"logs","schema_type":"logs","description":"d","dataset":"staging"}]}
+            ]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        let result = server
+            .tenant_list_tables(
+                Parameters(TenantOnlyParams {
+                    tenant_id: "acme".to_string(),
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("tenant_list_tables succeeds");
+
+        let body = text_json(&result);
+        assert_eq!(
+            body["datasets"].as_array().expect("datasets array").len(),
+            2
+        );
+        assert_eq!(body["tables"].as_array().expect("tables array").len(), 2);
+        router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
+    async fn check_tenant_scope_rejects_a_tenant_argument_that_does_not_match_the_credential() {
+        // No mock router needed: the mismatch must be caught before any
+        // request is sent.
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+        let mut parts = valid_parts();
+        parts
+            .extensions
+            .insert(audit::CallerTenant("acme".to_string()));
+
+        let err = server
+            .discover_sources(
+                Parameters(DiscoverSourcesParams {
+                    tenant: "other".to_string(),
+                    dataset: "production".to_string(),
+                }),
+                Extension(parts),
+            )
+            .await
+            .expect_err("a `tenant` argument mismatching the credential must be rejected");
+
+        assert!(err.message.contains("acme"), "got {}", err.message);
+        assert!(err.message.contains("other"), "got {}", err.message);
+    }
+
+    #[tokio::test]
+    async fn check_tenant_scope_allows_a_tenant_argument_that_matches_the_credential() {
+        let (base_url, router) = mock_json_router(
+            "GET /api/v1/query/sources",
+            r#"{"result":"rows","window":{"start_ns":0,"end_ns":1},"rows":[["logs"]]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+        let mut parts = valid_parts();
+        parts
+            .extensions
+            .insert(audit::CallerTenant("acme".to_string()));
+
+        let result = server
+            .discover_sources(
+                Parameters(DiscoverSourcesParams {
+                    tenant: "acme".to_string(),
+                    dataset: "production".to_string(),
+                }),
+                Extension(parts),
+            )
+            .await
+            .expect("a `tenant` argument matching the credential passes through");
+
+        let sources = text_json(&result);
+        assert_eq!(sources["rows"][0][0], "logs");
+        router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
+    async fn get_schema_registry_rejects_a_tenant_argument_that_does_not_match_the_credential() {
+        // The schema-registry admin/lookup tools (create/replace/delete/get/
+        // validate) take the same `tenant` confirmation as every other tool
+        // in this family; `get_schema_registry` must not be the one
+        // exception that silently ignores it.
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+        let mut parts = valid_parts();
+        parts
+            .extensions
+            .insert(audit::CallerTenant("acme".to_string()));
+
+        let err = server
+            .get_schema_registry(
+                Parameters(GetSchemaRegistryParams {
+                    tenant: "other".to_string(),
+                    namespace: "otel".to_string(),
+                    version: "1.43.0".to_string(),
+                }),
+                Extension(parts),
+            )
+            .await
+            .expect_err("a `tenant` argument mismatching the credential must be rejected");
+
+        assert!(err.message.contains("acme"), "got {}", err.message);
+        assert!(err.message.contains("other"), "got {}", err.message);
+    }
+
+    #[test]
+    fn tenant_and_dataset_are_required_by_the_json_schema_not_just_by_rust_defaults() {
+        // Every other field on `SearchTracesParams` is optional, so an empty
+        // object only fails on the two now-mandatory arguments — proving the
+        // MCP client sees a hard requirement, not a Rust-level default.
+        let err = serde_json::from_value::<SearchTracesParams>(serde_json::json!({}))
+            .expect_err("omitting `tenant`/`dataset` must fail deserialization");
+        let message = err.to_string();
+        assert!(
+            message.contains("tenant") || message.contains("dataset"),
+            "expected the error to name the missing field, got: {message}"
+        );
     }
 
     /// Text is what the model (and every non-UI client) reads, so it is present
@@ -3602,15 +4433,18 @@ mod tests {
 
     #[test]
     fn search_schema_kind_is_a_closed_lowercase_enum() {
-        let attr: SearchSchemaParams =
-            serde_json::from_value(serde_json::json!({ "kind": "attribute", "prefix": "k8s." }))
-                .unwrap();
+        let attr: SearchSchemaParams = serde_json::from_value(serde_json::json!({
+            "kind": "attribute", "prefix": "k8s.", "tenant": "acme", "dataset": "production"
+        }))
+        .unwrap();
         assert_eq!(attr.kind, SchemaKind::Attribute);
         assert_eq!(attr.prefix.as_deref(), Some("k8s."));
         assert!(attr.limit.is_none());
         assert!(
-            serde_json::from_value::<SearchSchemaParams>(serde_json::json!({ "kind": "span" }))
-                .is_err()
+            serde_json::from_value::<SearchSchemaParams>(serde_json::json!({
+                "kind": "span", "tenant": "acme", "dataset": "production"
+            }))
+            .is_err()
         );
         // The advertised schema names every kind (as `enum` or `oneOf`
         // consts), so a client can offer them without guessing.
@@ -3625,10 +4459,14 @@ mod tests {
     fn schema_registry_document_accepts_object_or_json_string() {
         let doc = serde_json::json!({ "name": "acme", "version": "1.0.0", "groups": [] });
         let native: CreateSchemaRegistryParams =
-            serde_json::from_value(serde_json::json!({ "document": doc })).unwrap();
+            serde_json::from_value(serde_json::json!({ "tenant": "acme", "document": doc }))
+                .unwrap();
         assert_eq!(native.document, doc);
-        let stringified: CreateSchemaRegistryParams =
-            serde_json::from_value(serde_json::json!({ "document": doc.to_string() })).unwrap();
+        let stringified: CreateSchemaRegistryParams = serde_json::from_value(serde_json::json!({
+            "tenant": "acme",
+            "document": doc.to_string()
+        }))
+        .unwrap();
         assert_eq!(stringified.document, doc);
         assert!(registry_document(doc).is_ok());
         assert!(registry_document(serde_json::json!([1, 2])).is_err());
@@ -3718,7 +4556,8 @@ mod tests {
                     "y": { "of": "duration", "bounds": ["1ms"], "overflow": true },
                     "value": { "fn": "count", "as": "count" }
                 }}]
-            }
+            },
+            "tenant": "acme", "dataset": "production"
         }))
         .unwrap();
         let request: signaldb_sdk::types::QueryIrRequest =
@@ -3739,7 +4578,8 @@ mod tests {
                 "irVersion": 1, "from": "profiles",
                 "range": { "from": "now-1h", "to": "now" },
                 "result": "rows", "pipeline": []
-            }
+            },
+            "tenant": "acme", "dataset": "production"
         }))
         .unwrap();
         let request: signaldb_sdk::types::QueryIrRequest =
@@ -3758,7 +4598,8 @@ mod tests {
             "result": "rows", "pipeline": []
         });
         let params: QueryIrParams = serde_json::from_value(serde_json::json!({
-            "query": ir_document.to_string()
+            "query": ir_document.to_string(),
+            "tenant": "acme", "dataset": "production"
         }))
         .unwrap();
         assert_eq!(params.query, ir_document);
@@ -3945,6 +4786,246 @@ mod tests {
         assert!(
             result.completion.values.is_empty(),
             "a downstream failure must degrade to no suggestions, not an error"
+        );
+    }
+
+    // ---- API-key tool dataset_ids / clear_dataset_restriction (phase 5.1
+    // of multi-dataset-key-restriction) ----
+
+    #[tokio::test]
+    async fn create_api_key_forwards_dataset_ids() {
+        let (base_url, router) = mock_capturing_router(
+            "POST /api/v1/admin/tenants/acme/api-keys",
+            201,
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1","key":"secret","scopes":["traces:read"],"dataset_ids":["production","staging"]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .create_api_key(
+                Extension(valid_parts()),
+                Parameters(CreateApiKeyParams {
+                    tenant_id: "acme".to_string(),
+                    name: None,
+                    scopes: vec!["traces:read".to_string()],
+                    dataset_ids: Some(vec!["production".to_string(), "staging".to_string()]),
+                }),
+            )
+            .await
+            .expect("create_api_key succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(
+            body["dataset_ids"],
+            serde_json::json!(["production", "staging"])
+        );
+    }
+
+    #[tokio::test]
+    async fn tenant_create_api_key_forwards_dataset_ids() {
+        let (base_url, router) = mock_capturing_router(
+            "POST /api/v1/manage/tenants/acme/api-keys",
+            201,
+            r#"{"id":"key-1","key":"secret","scopes":["traces:read"],"dataset_ids":["production"]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .tenant_create_api_key(
+                Parameters(TenantCreateApiKeyParams {
+                    tenant_id: "acme".to_string(),
+                    name: None,
+                    scopes: vec!["traces:read".to_string()],
+                    dataset_ids: Some(vec!["production".to_string()]),
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("tenant_create_api_key succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(body["dataset_ids"], serde_json::json!(["production"]));
+    }
+
+    #[tokio::test]
+    async fn update_api_key_scopes_forwards_dataset_ids_and_clear_flag() {
+        let (base_url, router) = mock_capturing_router(
+            "PATCH /api/v1/admin/tenants/acme/api-keys/key-1",
+            200,
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1"}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .update_api_key_scopes(
+                Extension(valid_parts()),
+                Parameters(UpdateApiKeyScopesParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: Some(vec!["production".to_string()]),
+                    clear_dataset_restriction: false,
+                }),
+            )
+            .await
+            .expect("update_api_key_scopes succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(body["dataset_ids"], serde_json::json!(["production"]));
+    }
+
+    #[tokio::test]
+    async fn update_api_key_scopes_forwards_clear_dataset_restriction() {
+        let (base_url, router) = mock_capturing_router(
+            "PATCH /api/v1/admin/tenants/acme/api-keys/key-1",
+            200,
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1"}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .update_api_key_scopes(
+                Extension(valid_parts()),
+                Parameters(UpdateApiKeyScopesParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: None,
+                    clear_dataset_restriction: true,
+                }),
+            )
+            .await
+            .expect("update_api_key_scopes succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(body["clear_dataset_restriction"], serde_json::json!(true));
+    }
+
+    #[tokio::test]
+    async fn tenant_update_api_key_forwards_dataset_ids_and_clear_flag() {
+        let (base_url, router) = mock_capturing_router(
+            "PATCH /api/v1/manage/tenants/acme/api-keys/key-1",
+            200,
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1","revoked":false}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .tenant_update_api_key(
+                Parameters(TenantUpdateApiKeyParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: Some(vec!["staging".to_string()]),
+                    clear_dataset_restriction: false,
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("tenant_update_api_key succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(body["dataset_ids"], serde_json::json!(["staging"]));
+    }
+
+    #[tokio::test]
+    async fn tenant_update_api_key_forwards_clear_dataset_restriction() {
+        let (base_url, router) = mock_capturing_router(
+            "PATCH /api/v1/manage/tenants/acme/api-keys/key-1",
+            200,
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1","revoked":false}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .tenant_update_api_key(
+                Parameters(TenantUpdateApiKeyParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: None,
+                    clear_dataset_restriction: true,
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("tenant_update_api_key succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(body["clear_dataset_restriction"], serde_json::json!(true));
+    }
+
+    /// D1a: `clear_dataset_restriction: true` together with a non-empty
+    /// `dataset_ids` is contradictory and must be rejected before any router
+    /// request is made — the router base URL is deliberately invalid so the
+    /// test fails loudly if the handler tries to reach it anyway.
+    #[tokio::test]
+    async fn update_api_key_scopes_rejects_contradictory_dataset_update_without_calling_router() {
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+
+        let err = server
+            .update_api_key_scopes(
+                Extension(valid_parts()),
+                Parameters(UpdateApiKeyScopesParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: Some(vec!["production".to_string()]),
+                    clear_dataset_restriction: true,
+                }),
+            )
+            .await
+            .expect_err("a contradictory dataset_ids + clear_dataset_restriction must be rejected");
+
+        assert!(
+            err.message.contains("dataset_ids")
+                && err.message.contains("clear_dataset_restriction"),
+            "got {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn tenant_update_api_key_rejects_contradictory_dataset_update_without_calling_router() {
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+
+        let err = server
+            .tenant_update_api_key(
+                Parameters(TenantUpdateApiKeyParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: Some(vec!["production".to_string(), "staging".to_string()]),
+                    clear_dataset_restriction: true,
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect_err("a contradictory dataset_ids + clear_dataset_restriction must be rejected");
+
+        assert!(
+            err.message.contains("dataset_ids")
+                && err.message.contains("clear_dataset_restriction"),
+            "got {}",
+            err.message
         );
     }
 }

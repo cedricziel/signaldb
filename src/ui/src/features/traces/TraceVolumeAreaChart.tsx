@@ -71,7 +71,7 @@ export function TraceVolumeAreaChart({
     buckets = padBuckets(buckets, rangeMs.fromMs, rangeMs.toMs, stepMs);
   }
   if (buckets.length === 0 || buckets.every((bucket) => bucket.total === 0)) {
-    return <div className="trace-area-empty">No volume in range</div>;
+    return <div className="trace-area-empty">No volume in this window</div>;
   }
 
   const max = Math.max(...buckets.map((bucket) => bucket.total));

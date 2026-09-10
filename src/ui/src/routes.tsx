@@ -1,8 +1,8 @@
-// The SPA's route tree. `/oauth/consent` is a distinct top-level view that
-// bypasses the explore shell entirely; everything else nests under `App`
-// (the shell), which shares its URL-backed ExploreState with children via
-// outlet context so `/logs`, `/traces`, ... and `/manage` all read/write the
-// same tenant, dataset, and range without re-deriving them.
+// The SPA's route tree. `/oauth/consent` and `/login` are distinct top-level
+// views that bypass the explore shell entirely; everything else nests under
+// `App` (the shell), which shares its URL-backed ExploreState with children
+// via outlet context so `/logs`, `/traces`, ... and `/manage` all read/write
+// the same tenant, dataset, and range without re-deriving them.
 
 import { Navigate, Route, Routes, useLocation, useParams } from "react-router";
 import { App } from "./App";
@@ -12,16 +12,24 @@ import { ApiKeysRoute } from "./features/management/ApiKeysRoute";
 import { InstrumentationRoute } from "./features/management/InstrumentationRoute";
 import { ManagementRoute } from "./features/management/ManagementRoute";
 import { SelectTenantRoute } from "./features/management/SelectTenantRoute";
+import { LoginRoute } from "./features/shell/LoginRoute";
 import { schemaRoutes } from "./features/schema/routes";
 import { useOutletState } from "./lib/outletState";
 import { signalFromParam } from "./lib/urlState";
+
+/** Redirects to `/logs`, preserving the query string — used for both the
+ * bare index route and the unrecognized-path catch-all so a deep link's
+ * `?tenant=&dataset=` (or any other query state) survives the redirect. */
+function RedirectToLogs() {
+  const location = useLocation();
+  return <Navigate to={`/logs${location.search}`} replace />;
+}
 
 function ExploreRoute() {
   const { signal, traceId } = useParams<{
     signal?: string;
     traceId?: string;
   }>();
-  const location = useLocation();
   const { state, update } = useOutletState();
   // An unknown path segment (typo, stale bookmark) settles on /logs instead
   // of silently rendering the logs view under the wrong URL. Only the
@@ -34,7 +42,7 @@ function ExploreRoute() {
     signal !== undefined &&
     signalFromParam(signal) !== signal
   ) {
-    return <Navigate to={`/logs${location.search}`} replace />;
+    return <RedirectToLogs />;
   }
   return <ExploreView state={state} update={update} />;
 }
@@ -43,8 +51,9 @@ export function AppRoutes() {
   return (
     <Routes>
       <Route path="/oauth/consent" element={<ConsentView />} />
+      <Route path="/login" element={<LoginRoute />} />
       <Route path="/" element={<App />}>
-        <Route index element={<Navigate to="/logs" replace />} />
+        <Route index element={<RedirectToLogs />} />
         <Route path="manage" element={<ManagementRoute />} />
         <Route path="select-tenant" element={<SelectTenantRoute />} />
         <Route path="api-keys" element={<ApiKeysRoute />} />
@@ -65,7 +74,7 @@ export function AppRoutes() {
           element={<ExploreRoute />}
         />
         <Route path=":signal" element={<ExploreRoute />} />
-        <Route path="*" element={<Navigate to="/logs" replace />} />
+        <Route path="*" element={<RedirectToLogs />} />
       </Route>
     </Routes>
   );

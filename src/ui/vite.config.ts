@@ -3,6 +3,7 @@ import { createRequire } from "node:module";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv, type ProxyOptions } from "vite";
 import { configDefaults } from "vitest/config";
+import { proxyKey } from "./src/lib/proxyKey";
 
 const require = createRequire(import.meta.url);
 const pkg = require("./package.json") as { version: string };
@@ -15,7 +16,11 @@ const pkg = require("./package.json") as { version: string };
 //
 // The OAuth endpoints proxy too, EXCEPT `/oauth/consent`, which is the SPA
 // consent route (served by the dev server); its `/oauth/consent/context` API
-// sibling is proxied because it is a distinct, longer prefix.
+// sibling is listed on its own.
+//
+// Every entry matches whole path segments (see proxyKey): a bare prefix
+// would also swallow SPA routes that merely start with it, as `/api` once
+// did to `/api-keys`.
 const PROXIED_PATHS = [
   "/loki",
   "/tempo",
@@ -38,7 +43,7 @@ export default defineConfig(({ mode }) => {
 
   const proxy = Object.fromEntries(
     PROXIED_PATHS.map((path): [string, ProxyOptions] => [
-      path,
+      proxyKey(path),
       {
         target,
         changeOrigin: true,

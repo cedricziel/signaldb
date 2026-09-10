@@ -218,6 +218,38 @@ fn log_received_data(metadata: &FlightMetadata) {
     );
 }
 
+/// Whether `metadata` names the self-monitoring tenant, once trimmed.
+///
+/// Computed before `routing::route` runs (the suppression flag gates the
+/// tracing scope that wraps the rest of `do_put`, so moving this check after
+/// routing is a structural reorder — task 2.1 of the `lsm-writer-memtable`
+/// change, out of scope here). The trim mirrors `routing::present` inline
+/// rather than depending on it, so a padded id like `" _system "` is still
+/// recognised instead of silently missing suppression (#1334). Once `do_put`
+/// is reordered, this can consume `routing::route`'s normalised id instead.
+fn is_suppressed_tenant(metadata: Option<&FlightMetadata>) -> bool {
+    metadata
+        .and_then(|m| m.tenant_id.as_deref())
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .is_some_and(common::self_monitoring::is_self_monitoring_tenant)
+}
+
+/// The per-tenant materialized-labels override for `tenant_id`, or the
+/// default when `config` is unset or names no override.
+///
+/// Takes the already-routed tenant id (`wal_tenant`), not the raw metadata
+/// id, so a padded id resolves to the same tenant's schema config the batch
+/// is committed under (#1334).
+fn materialized_labels_for_tenant(
+    config: Option<&common::config::Configuration>,
+    tenant_id: &str,
+) -> common::config::MaterializedLabels {
+    config
+        .map(|c| c.get_tenant_schema_config(tenant_id).materialized_labels)
+        .unwrap_or_default()
+}
+
 /// Parse a `do_put` FlightData message's `app_metadata` (called only when
 /// non-empty), or reject the batch.
 ///
@@ -323,10 +355,7 @@ impl FlightService for IcebergWriterFlightService {
         // Anti-loop guard (#760): persisting the _system tenant's own
         // telemetry must not emit logs/spans that get exported and
         // re-ingested as _system telemetry.
-        let suppress = flight_metadata
-            .as_ref()
-            .and_then(|m| m.tenant_id.as_deref())
-            .is_some_and(common::self_monitoring::is_self_monitoring_tenant);
+        let suppress = is_suppressed_tenant(flight_metadata.as_ref());
 
         // Process within a semconv RPC SERVER span that joins the sender's
         // distributed trace (parent must be set before the span is first
@@ -422,16 +451,14 @@ impl FlightService for IcebergWriterFlightService {
                 let mut transformed = Vec::new();
                 for batch in batches {
                     // Per-tenant materialized labels (tenant schema
-                    // override replaces the global set).
-                    let materialized = metadata
-                        .tenant_id
-                        .as_deref()
-                        .and_then(|t| {
-                            common::config::CONFIG
-                                .get()
-                                .map(|c| c.get_tenant_schema_config(t).materialized_labels)
-                        })
-                        .unwrap_or_default();
+                    // override replaces the global set). Uses the
+                    // already-routed `wal_tenant`, not the raw metadata id,
+                    // so a padded id resolves to the same tenant's schema
+                    // config the batch is committed under (#1334).
+                    let materialized = materialized_labels_for_tenant(
+                        common::config::CONFIG.get(),
+                        &wal_tenant,
+                    );
                     match transform_for_signal(
                         metadata.signal_type.as_deref(),
                         metadata.target_table.as_deref(),
@@ -753,6 +780,90 @@ mod tests {
             .unwrap_or_else(|_| panic!("subscriber must be dropped before this returns"))
             .into_inner()
             .unwrap()
+    }
+
+    fn flight_metadata_with_tenant(tenant_id: &str) -> FlightMetadata {
+        FlightMetadata {
+            schema_version: "v1".to_string(),
+            signal_type: Some("logs".to_string()),
+            target_table: None,
+            tenant_id: Some(tenant_id.to_string()),
+            dataset_id: None,
+            traceparent: None,
+            tracestate: None,
+        }
+    }
+
+    /// #1334: a padded `_system` tenant id (as `routing::route` would trim,
+    /// but the suppression check ran on the raw value before routing) must
+    /// still trip the anti-loop guard, or self-monitoring's own telemetry
+    /// gets re-ingested as `_system` telemetry — the loop the check exists
+    /// to prevent.
+    #[test]
+    fn is_suppressed_tenant_recognises_padded_system_tenant() {
+        let metadata = flight_metadata_with_tenant(" _system ");
+        assert!(
+            is_suppressed_tenant(Some(&metadata)),
+            "a padded _system tenant id must still be suppressed"
+        );
+    }
+
+    #[test]
+    fn is_suppressed_tenant_ignores_unrelated_tenant() {
+        let metadata = flight_metadata_with_tenant("acme");
+        assert!(!is_suppressed_tenant(Some(&metadata)));
+    }
+
+    /// #1334: the materialized-labels lookup must use the tenant id as
+    /// `routing::route` normalises it (trimmed), not the raw metadata value,
+    /// or a padded tenant misses its own schema override and silently gets
+    /// the default one.
+    #[test]
+    fn materialized_labels_use_routed_tenant_not_raw_padded_metadata() {
+        let mut config = common::config::Configuration::default();
+        config.tenants.tenants.insert(
+            "_system".to_string(),
+            common::config::TenantSchemaConfig {
+                schema: Some(common::config::SchemaConfig {
+                    materialized_labels: common::config::MaterializedLabels {
+                        logs: vec!["custom".to_string()],
+                        ..Default::default()
+                    },
+                    ..common::config::SchemaConfig::default()
+                }),
+                ..Default::default()
+            },
+        );
+
+        // What the pre-fix call site did: look the tenant's schema config up
+        // by the raw, padded metadata value. It misses and silently falls
+        // back to the default (empty) materialized labels.
+        let raw_tenant = " _system ";
+        let via_raw = materialized_labels_for_tenant(Some(&config), raw_tenant);
+        assert!(
+            via_raw.logs.is_empty(),
+            "a raw padded tenant id must not match the tenant's schema config: {via_raw:?}"
+        );
+
+        // What `routing::route` normalises the same metadata to, and what
+        // the fixed call site passes instead.
+        let routed = routing::route(
+            &WalOperation::WriteLogs,
+            RouteMetadata {
+                tenant_id: Some(raw_tenant),
+                dataset_id: None,
+                target_table: None,
+            },
+            common::bootstrap::DEFAULT_TENANT_ID,
+            common::bootstrap::DEFAULT_DATASET_ID,
+        )
+        .unwrap();
+        let via_routed = materialized_labels_for_tenant(Some(&config), &routed.tenant_id);
+        assert_eq!(
+            via_routed.logs,
+            vec!["custom".to_string()],
+            "the routed (trimmed) tenant id must resolve to the tenant's own schema config"
+        );
     }
 
     /// Issue #1072: `target_table`/`signal_type` were logged with a `?`

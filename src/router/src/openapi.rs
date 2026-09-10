@@ -96,6 +96,7 @@ impl Modify for SecurityAddon {
         crate::endpoints::session::session_config,
         crate::endpoints::oidc::start,
         crate::endpoints::oidc::callback,
+        crate::endpoints::session::connection_info,
         // Tempo-compatible trace query endpoints
         crate::endpoints::tempo::search,
         crate::endpoints::tempo::query_single_trace,
@@ -194,6 +195,18 @@ impl Modify for SecurityAddon {
         // login-configuration probe (change: oidc-login)
         crate::endpoints::session::SessionConfigResponse,
         crate::endpoints::session::SessionOidcConfig,
+        // connection details
+        crate::endpoints::session::ConnectionInfoResponse,
+        crate::endpoints::session::ConnectionHeaders,
+        crate::endpoints::session::OtlpGrpcEndpoint,
+        crate::endpoints::session::OtlpHttpEndpoint,
+        crate::endpoints::session::OtlpHttpPaths,
+        crate::endpoints::session::ConnectionIngest,
+        crate::endpoints::session::ConnectionCompat,
+        crate::endpoints::session::ConnectionQuery,
+        crate::endpoints::session::ConnectionMcp,
+        crate::endpoints::session::ConnectionScopes,
+        crate::endpoints::session::ConnectionOtelEnv,
         // shared enums
         common::catalog::MembershipRole,
         // Tempo-compatible trace query DTOs
@@ -306,6 +319,7 @@ mod tests {
             "/api/v1/tenants/{tenant_id}/tables/create",
             "/api/v1/tenants/{tenant_id}/schemas",
             "/api/v1/schemas/available",
+            "/api/v1/connection",
         ] {
             assert!(
                 paths.contains_key(path),
@@ -678,7 +692,7 @@ mod tests {
 
         // (path, method) pairs mounted under `query_rate_layer` in
         // `create_router` (tempo/pyroscope/loki/prometheus/api-profiles and
-        // the `/api/v1` tenant-scoped nest: query IR, whoami, management,
+        // the `/api/v1` tenant-scoped nest: query IR, whoami, connection, management,
         // schema) plus the admin per-tenant count quotas, which answer 429
         // via the same header contract (see `endpoints::admin`).
         let rate_limited: &[(&str, &str)] = &[
@@ -703,6 +717,7 @@ mod tests {
             ("/api/v1/query", "post"),
             ("/api/v1/query/sources", "get"),
             ("/api/v1/whoami", "get"),
+            ("/api/v1/connection", "get"),
             ("/api/v1/admin/tenants/{tenant_id}/api-keys", "post"),
             ("/api/v1/admin/tenants/{tenant_id}/datasets", "post"),
         ];

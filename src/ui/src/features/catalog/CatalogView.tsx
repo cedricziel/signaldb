@@ -7,6 +7,7 @@ import {
 } from "../../api/catalog";
 import { GROUP_BUDGET, type GroupSort } from "../../api/traceGroups";
 import { fetchFieldValueSketch } from "../../api/sourceFields";
+import { QueryError } from "../../components/QueryError";
 import { SkeletonRows } from "../explore/Skeleton";
 import { SortTh, useSort } from "../../lib/sortTable";
 import {
@@ -36,7 +37,12 @@ import {
   EntitySparkline,
   type SparklinePoint,
 } from "./EntitySparkline";
+import {
+  MobileFiltersToggle,
+  MobileSidebarDrawer,
+} from "../../components/MobileSidebarDrawer";
 import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
+import { useMobileSidebar } from "../../hooks/useMobileSidebar";
 import { formatTimeBucket, formatValue } from "../../lib/vizFormat";
 import "./catalog.css";
 
@@ -79,6 +85,7 @@ export function CatalogView({ state, update }: Props) {
     range,
     rangeKey,
   );
+  const mobileSidebar = useMobileSidebar();
   const resolved = resolveEntityType(state.catalogEntity, types);
 
   if (state.catalogPrimary !== "") {
@@ -87,7 +94,7 @@ export function CatalogView({ state, update }: Props) {
     // under this entity's name, so it waits instead.
     if (!resolved) {
       return (
-        <div className="traces-note">
+        <div className="view-note">
           {isPending
             ? "Loading entity types…"
             : `Unknown entity type "${state.catalogEntity}".`}
@@ -109,28 +116,42 @@ export function CatalogView({ state, update }: Props) {
   const selected = resolved ?? types[0] ?? entityType(DEFAULT_ENTITY_TYPE)!;
 
   return (
-    <div className="catalog">
-      <CatalogNav
-        types={types}
-        selectedId={selected.id}
-        range={range}
-        rangeKey={rangeKey}
-        analyzed={analyzed}
-        asOf={asOf}
-        onSelect={(id) => update({ catalogEntity: id })}
+    <>
+      <MobileFiltersToggle
+        open={mobileSidebar.open}
+        onToggle={mobileSidebar.toggle}
       />
-      <EntityTable
-        key={selected.id}
-        entity={selected}
-        range={range}
-        rangeKey={rangeKey}
-        rangeSeconds={catalogRangeSeconds(range)}
-        sparkline
-        onRowClick={(values) =>
-          update({ catalogPrimary: compositeKey(values) }, { push: true })
-        }
-      />
-    </div>
+      <div className="catalog">
+        <MobileSidebarDrawer
+          open={mobileSidebar.open}
+          onClose={mobileSidebar.close}
+        >
+          <CatalogNav
+            types={types}
+            selectedId={selected.id}
+            range={range}
+            rangeKey={rangeKey}
+            analyzed={analyzed}
+            asOf={asOf}
+            onSelect={(id) => {
+              update({ catalogEntity: id });
+              mobileSidebar.close();
+            }}
+          />
+        </MobileSidebarDrawer>
+        <EntityTable
+          key={selected.id}
+          entity={selected}
+          range={range}
+          rangeKey={rangeKey}
+          rangeSeconds={catalogRangeSeconds(range)}
+          sparkline
+          onRowClick={(values) =>
+            update({ catalogPrimary: compositeKey(values) }, { push: true })
+          }
+        />
+      </div>
+    </>
   );
 }
 
@@ -291,7 +312,7 @@ function EmptyEntityState({
   });
 
   return (
-    <div className="traces-note">
+    <div className="view-note">
       No {entity.label.toLowerCase()} observed in this window — no matching{" "}
       <code>{primary}</code> value seen in {sources.join(" or ")}.
       {sketch.data && (
@@ -392,11 +413,7 @@ export function EntityTable({
             : ""}
         </span>
       </div>
-      {result.isError && (
-        <div className="query-error" role="alert">
-          Entities failed: {(result.error as Error).message}
-        </div>
-      )}
+      {result.isError && <QueryError what="entities" error={result.error} />}
       <table className="trace-table" aria-busy={pending}>
         <thead>
           <tr>
@@ -506,7 +523,7 @@ export function EntityTable({
         <EmptyEntityState entity={entity} range={range} />
       )}
       {result.data?.truncated && (
-        <div className="traces-note">
+        <div className="view-note">
           Showing the top {GROUP_BUDGET} {entity.label.toLowerCase()} by the
           current sort — narrow the time range to see the rest.
         </div>

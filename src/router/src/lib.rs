@@ -20,6 +20,17 @@ pub mod openapi;
 pub mod read_scope;
 pub mod ui;
 
+/// Mount prefixes for the Tempo/Loki/Prometheus/Pyroscope compatibility
+/// dialects and the native query surface, shared between the `.nest()` calls
+/// in [`create_router`] and `endpoints::session::connection_info`'s
+/// `ConnectionQuery`/`ConnectionCompat` response, so the two can never drift.
+pub(crate) const TEMPO_PREFIX: &str = "/tempo";
+pub(crate) const LOKI_PREFIX: &str = "/loki";
+pub(crate) const PROMETHEUS_PREFIX: &str = "/prometheus";
+pub(crate) const PYROSCOPE_PREFIX: &str = "/pyroscope";
+pub(crate) const QUERY_IR_PATH: &str = "/api/v1/query";
+pub(crate) const OPENAPI_JSON_PATH: &str = "/api/v1/openapi.json";
+
 /// The shared state that route handlers depend on.
 ///
 /// This is the narrow interface every handler needs from the router's state —
@@ -272,7 +283,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .route("/health", get(health_check))
         // OpenAPI spec endpoint (public)
         .route(
-            "/api/v1/openapi.json",
+            OPENAPI_JSON_PATH,
             get(move || {
                 let spec = openapi_spec.clone();
                 async move {
@@ -285,7 +296,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         )
         // Protected routes with authentication
         .nest(
-            "/tempo",
+            TEMPO_PREFIX,
             endpoints::tempo::router()
                 .layer(middleware::from_fn(|req, next| {
                     read_scope::require_read_scope("traces", req, next)
@@ -295,7 +306,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         )
         // Pyroscope-compatible profile query API
         .nest(
-            "/pyroscope",
+            PYROSCOPE_PREFIX,
             endpoints::pyroscope::router()
                 .layer(middleware::from_fn(|req, next| {
                     read_scope::require_read_scope("profiles", req, next)
@@ -305,7 +316,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         )
         // Loki-compatible log query API (LogQL)
         .nest(
-            "/loki",
+            LOKI_PREFIX,
             endpoints::logql::router()
                 .layer(middleware::from_fn(|req, next| {
                     read_scope::require_read_scope("logs", req, next)
@@ -315,7 +326,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         )
         // Prometheus-compatible metrics query API (PromQL)
         .nest(
-            "/prometheus",
+            PROMETHEUS_PREFIX,
             endpoints::promql::router()
                 .layer(middleware::from_fn(|req, next| {
                     read_scope::require_read_scope("metrics", req, next)
@@ -356,6 +367,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
                 .nest("/manage", endpoints::management::router())
                 .nest("/schema", endpoints::schema::router())
                 .route("/whoami", get(endpoints::session::whoami::<S>))
+                .route("/connection", get(endpoints::session::connection_info::<S>))
                 .merge(endpoints::query::router())
                 .layer(query_rate_layer)
                 .layer(auth_layer),

@@ -709,6 +709,12 @@ fn batches_to_streams(batches: &[RecordBatch]) -> Vec<Stream> {
                 } else {
                     timestamps.value(i)
                 },
+                // `body` arrives from the querier already decoded (issue
+                // #1410: both its IR-path and LogQL-compat-fallback
+                // projections decode ingest's JSON-encoded `body` exactly
+                // once, via `body_decode_expr`). Do NOT decode again here —
+                // a body whose own text begins and ends with a quote would
+                // lose that quoting on a second decode pass.
                 value_at(&body, i).unwrap_or_default(),
                 metadata,
             );

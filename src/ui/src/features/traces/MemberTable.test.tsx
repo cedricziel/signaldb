@@ -28,7 +28,8 @@ describe("MemberTable", () => {
     render(
       <MemberTable
         members={undefined}
-        isError={false}
+        error={null}
+        what="spans"
         identityLabel="Span"
         emptyMessage="No spans."
         onOpenTrace={vi.fn()}
@@ -41,14 +42,16 @@ describe("MemberTable", () => {
     render(
       <MemberTable
         members={undefined}
-        isError
-        errorMessage="Search failed: boom"
+        error={new Error("boom")}
+        what="traces"
         identityLabel="Span"
         emptyMessage="No spans."
         onOpenTrace={vi.fn()}
       />,
     );
-    expect(screen.getByRole("alert")).toHaveTextContent("Search failed: boom");
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "Could not load traces: boom",
+    );
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });
 
@@ -56,7 +59,8 @@ describe("MemberTable", () => {
     render(
       <MemberTable
         members={[]}
-        isError={false}
+        error={null}
+        what="spans"
         identityLabel="Span"
         emptyMessage="No spans for this window."
         onOpenTrace={vi.fn()}
@@ -69,7 +73,8 @@ describe("MemberTable", () => {
     render(
       <MemberTable
         members={[member("t1", "s1", "GET /pay", "gateway", "1000", 12)]}
-        isError={false}
+        error={null}
+        what="spans"
         identityLabel="Span"
         emptyMessage="No spans."
         onOpenTrace={vi.fn()}
@@ -97,7 +102,8 @@ describe("MemberTable", () => {
             statusCode: "Unset",
           },
         ]}
-        isError={false}
+        error={null}
+        what="spans"
         identityLabel="Span"
         emptyMessage="No spans."
         onOpenTrace={vi.fn()}
@@ -130,7 +136,8 @@ describe("MemberTable", () => {
             statusCode: "Error",
           },
         ]}
-        isError={false}
+        error={null}
+        what="spans"
         identityLabel="Span"
         emptyMessage="No spans."
         onOpenTrace={vi.fn()}
@@ -148,7 +155,8 @@ describe("MemberTable", () => {
     const { rerender } = render(
       <MemberTable
         members={[member("t1", "s1", "GET /pay", "gateway", "1000", 12)]}
-        isError={false}
+        error={null}
+        what="spans"
         identityLabel="Span"
         emptyMessage="No spans."
         onOpenTrace={vi.fn()}
@@ -159,7 +167,8 @@ describe("MemberTable", () => {
     rerender(
       <MemberTable
         members={[member("t1", "s1", "GET /pay", "gateway", "1000", 12)]}
-        isError={false}
+        error={null}
+        what="spans"
         identityLabel="Span"
         emptyMessage="No spans."
         footnote="Showing up to 500 spans, newest first."
@@ -174,7 +183,8 @@ describe("MemberTable", () => {
     render(
       <MemberTable
         members={[member("t1", "s1", "GET /pay", "gateway", "1000", 12)]}
-        isError={false}
+        error={null}
+        what="spans"
         identityLabel="Span"
         emptyMessage="No spans."
         onOpenTrace={onOpenTrace}

@@ -1,14 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import {
-  Fragment,
-  useCallback,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-  type CSSProperties,
-} from "react";
+import { Fragment, useId, useMemo, useRef, useState } from "react";
 import {
   tempoSearchTags,
   type ProfileSummaryView,
@@ -17,6 +8,7 @@ import {
 } from "../../api/tempo";
 import { ApiError } from "../../api/http";
 import { fetchTraceDetail } from "../../api/traceDetail";
+import { QueryError } from "../../components/QueryError";
 import {
   STATUS_COLORS,
   STATUS_ORDER,
@@ -24,15 +16,22 @@ import {
   fetchTraceVolume,
 } from "../../api/traceVolume";
 import { SignalHistogram } from "../explore/SignalHistogram";
+import { AttributeKeyInput } from "../../components/AttributeKeyInput";
 import { AttributeValue } from "../../components/AttributeValue";
+import {
+  MobileFiltersToggle,
+  MobileSidebarDrawer,
+} from "../../components/MobileSidebarDrawer";
 import { SemanticKey } from "../../components/SemanticKey";
+import { SidebarResizer } from "../../components/SidebarResizer";
 import {
   useVizPointer,
   VizTooltip,
   type VizTooltipRow,
 } from "../../components/VizTooltip";
-import { useAttributeSearch, useSemantics } from "../../hooks/useSemantics";
-import { mergeLabelSuggestions } from "../../lib/labelSuggestions";
+import { useSemantics } from "../../hooks/useSemantics";
+import { useMobileSidebar } from "../../hooks/useMobileSidebar";
+import { spanDetailWidth } from "../../lib/sidebarWidth";
 import { groupBySemanticTitle } from "../../lib/semantics";
 import { TraceFacets } from "./TraceFacets";
 import { TraceVolumeAreaChart } from "./TraceVolumeAreaChart";
@@ -155,6 +154,7 @@ function TraceSearch({ state, update }: Props) {
   const [volumeView, setVolumeView] = useState<
     "histogram" | "area" | "heatmap"
   >("histogram");
+  const mobileSidebar = useMobileSidebar();
   const rangeKey = rangeScopeKey(state);
   // The state may carry no kind filter (a fresh URL, a link from another
   // view): the default kinds apply on read, and every update writes the
@@ -232,11 +232,9 @@ function TraceSearch({ state, update }: Props) {
               label="Span latency"
             />
           ) : latencyHeatmap.isPending ? (
-            <div className="trace-heatmap-empty">Loading latency...</div>
+            <div className="trace-heatmap-empty">Loading…</div>
           ) : latencyHeatmap.isError ? (
-            <div className="trace-heatmap-empty" role="alert">
-              Latency query failed: {(latencyHeatmap.error as Error).message}
-            </div>
+            <QueryError what="latency" error={latencyHeatmap.error} />
           ) : null
         ) : volume.data && volumeView === "histogram" ? (
           <SignalHistogram
@@ -266,29 +264,39 @@ function TraceSearch({ state, update }: Props) {
         ) : null}
       </div>
       {chips.length > 0 && (
-        <div className="trace-chips" aria-label="Active filters">
+        <div className="filter-chips" aria-label="Active filters">
           {chips.map((f) => (
             <button
-              className="chip"
+              className="filter-chip"
               key={`${f.field}|${f.value}`}
               aria-label={`Remove filter ${f.field} = ${f.value}`}
               onClick={() => removeFilter(f)}
             >
-              <span className="chip-k">{f.field}</span>
-              <span className="chip-v">{f.value}</span>
-              <span className="chip-x">×</span>
+              <span className="filter-chip-k">{f.field}</span>
+              <span className="filter-chip-v">{f.value}</span>
+              <span className="filter-chip-x">×</span>
             </button>
           ))}
         </div>
       )}
+      <MobileFiltersToggle
+        open={mobileSidebar.open}
+        onToggle={mobileSidebar.toggle}
+      />
+
       <div className="traces-body">
-        <TraceFacets
-          range={resolvedForStep}
-          rangeKey={rangeKey}
-          filters={filters}
-          onAddFilter={addFilter}
-          onRemoveFilter={removeFilter}
-        />
+        <MobileSidebarDrawer
+          open={mobileSidebar.open}
+          onClose={mobileSidebar.close}
+        >
+          <TraceFacets
+            range={resolvedForStep}
+            rangeKey={rangeKey}
+            filters={filters}
+            onAddFilter={addFilter}
+            onRemoveFilter={removeFilter}
+          />
+        </MobileSidebarDrawer>
         <div className="traces-main">
           <div className="traces-toolbar">
             <form
@@ -412,10 +420,13 @@ function DimensionPickers({
  * aggregate with no trace sample to derive attribute names from, so this is
  * how a user reaches a field the built-in dimensions don't cover. Suggests
  * the attribute keys actually observed in the window (`/api/search/tags`,
- * #1073) merged with schema-registry hits, the same
- * `mergeLabelSuggestions`-backed combobox as the logs tab's filter-key
- * input (`FilterChips`).
+ * #1073) merged with schema-registry hits, the same combobox as the logs
+ * tab's filter-key input (`FilterChips`) — see `AttributeKeyInput`.
  */
+// Stable empty list so a pending tag query does not hand the combobox a
+// fresh array (and a fresh suggestion memo) on every render.
+const NO_TAGS: string[] = [];
+
 function CustomDimensionInput({
   range,
   rangeKey,
@@ -425,28 +436,18 @@ function CustomDimensionInput({
   rangeKey: string;
   onSubmit: (dim: string) => void;
 }) {
-  const listId = useId();
   const [value, setValue] = useState("");
-  const [picked, setPicked] = useState<string | null>(null);
   const tags = useQuery({
     queryKey: ["trace-tag-names", rangeKey],
     queryFn: () => tempoSearchTags(range),
     staleTime: 60_000,
   });
-  const hits = useAttributeSearch(value);
-  const suggestions = useMemo(
-    () => mergeLabelSuggestions(value, hits, tags.data ?? []),
-    [value, hits, tags.data],
-  );
-  const open =
-    value.trim() !== "" && picked !== value && suggestions.length > 0;
 
   const submit = (dim: string) => {
     const trimmed = dim.trim();
     if (trimmed === "") return;
     onSubmit(trimmed);
     setValue("");
-    setPicked(null);
   };
 
   return (
@@ -457,56 +458,14 @@ function CustomDimensionInput({
         submit(value);
       }}
     >
-      <span className="chip-label">
-        <input
-          role="combobox"
-          aria-label="Custom dimension"
-          aria-autocomplete="list"
-          aria-expanded={open}
-          aria-controls={open ? listId : undefined}
-          placeholder="Group by attribute…"
-          value={value}
-          onChange={(e) => {
-            setPicked(null);
-            setValue(e.target.value);
-          }}
-        />
-        {open && (
-          <ul
-            id={listId}
-            role="listbox"
-            aria-label="Attribute suggestions"
-            className="chip-suggest"
-          >
-            {suggestions.map((s) => (
-              <li
-                key={s.key}
-                role="option"
-                aria-selected={false}
-                data-key={s.key}
-                className="chip-suggest-item"
-                // Mouse down would blur the input before click lands.
-                onMouseDown={(e) => e.preventDefault()}
-                onClick={() => {
-                  setPicked(s.key);
-                  submit(s.key);
-                }}
-              >
-                <span className="chip-suggest-head">
-                  <span className="chip-suggest-key">{s.key}</span>
-                  {s.namespace && (
-                    <span className="chip-suggest-ns">{s.namespace}</span>
-                  )}
-                  {s.seen && <span className="chip-suggest-seen">● seen</span>}
-                </span>
-                {s.brief && (
-                  <span className="chip-suggest-brief">{s.brief}</span>
-                )}
-              </li>
-            ))}
-          </ul>
-        )}
-      </span>
+      <AttributeKeyInput
+        value={value}
+        onChange={setValue}
+        onPick={submit}
+        observed={tags.data ?? NO_TAGS}
+        ariaLabel="Custom dimension"
+        placeholder="Group by attribute…"
+      />
     </form>
   );
 }
@@ -619,9 +578,7 @@ function GroupList({
   return (
     <>
       {result.isError && (
-        <div className="query-error" role="alert">
-          Groups failed: {(result.error as Error).message}
-        </div>
+        <QueryError what="trace groups" error={result.error} />
       )}
       <table className="trace-table" aria-busy={pending}>
         <thead>
@@ -721,27 +678,27 @@ function GroupList({
         </tbody>
       </table>
       {unresolved && (
-        <div className="traces-note">
+        <div className="view-note">
           &ldquo;{dims.join(", ")}&rdquo; isn&rsquo;t queryable for this tenant
           or window right now — pick a different dimension.
         </div>
       )}
       {done && !unresolved && groups.length === 0 && rootGrainOnly && (
-        <div className="traces-note">
+        <div className="view-note">
           No groups: trace grain only inspects each trace's root span, and one
           of the active filters is on a field that only appears on a child span.
           Switch to span grain to see it.
         </div>
       )}
       {done && !unresolved && groups.length === 0 && !rootGrainOnly && (
-        <div className="traces-note">
-          No groups in this time range.
+        <div className="view-note">
+          No groups in this window.
           {kindsNarrowed &&
             " Only the selected span kinds are included — Internal spans are off by default; adjust span.kind in the sidebar."}
         </div>
       )}
       {result.data?.truncated && (
-        <div className="traces-note">
+        <div className="view-note">
           Showing the top {GROUP_BUDGET} groups by the current sort — narrow the
           time range or filters to see the rest.
         </div>
@@ -806,14 +763,10 @@ function GroupDetail({
       </div>
       <MemberTable
         members={membersQuery.data}
-        isError={membersQuery.isError}
-        errorMessage={
-          membersQuery.isError
-            ? `Search failed: ${(membersQuery.error as Error).message}`
-            : undefined
-        }
+        error={membersQuery.error}
+        what={`${memberNoun}s`}
         identityLabel={isSpanGrain ? "Span" : "Root"}
-        emptyMessage={`No ${memberNoun}s for this group in this time range.`}
+        emptyMessage={`No ${memberNoun}s for this group in this window.`}
         // Always true (the query always applies a limit) — states the bound
         // rather than claiming truncation we can't detect here.
         footnote={`Showing up to ${plural(state.limit, memberNoun)}, newest first.`}
@@ -823,56 +776,9 @@ function GroupDetail({
   );
 }
 
-const SIDEBAR_MIN_PX = 260;
-const SIDEBAR_MAX_PX = 640;
-const SIDEBAR_DEFAULT_PX = 320;
-const SIDEBAR_WIDTH_KEY = "signaldb.trace.sidebarWidth";
-
-function clampSidebarWidth(px: number): number {
-  return Math.min(SIDEBAR_MAX_PX, Math.max(SIDEBAR_MIN_PX, px));
-}
-
-/** Drag-to-resize the span-detail sidebar; width persists across sessions. */
-function useSidebarWidth() {
-  const [width, setWidth] = useState(() => {
-    const stored = Number(localStorage.getItem(SIDEBAR_WIDTH_KEY));
-    return stored > 0 ? clampSidebarWidth(stored) : SIDEBAR_DEFAULT_PX;
-  });
-  const dragRef = useRef<{ startX: number; startWidth: number } | null>(null);
-
-  useEffect(() => {
-    localStorage.setItem(SIDEBAR_WIDTH_KEY, String(width));
-  }, [width]);
-
-  const onPointerMove = useCallback((e: MouseEvent) => {
-    const drag = dragRef.current;
-    if (!drag) return;
-    // The sidebar sits right of the resizer, so dragging left widens it.
-    setWidth(clampSidebarWidth(drag.startWidth - (e.clientX - drag.startX)));
-  }, []);
-
-  const onPointerUp = useCallback(() => {
-    dragRef.current = null;
-    window.removeEventListener("mousemove", onPointerMove);
-    window.removeEventListener("mouseup", onPointerUp);
-  }, [onPointerMove]);
-
-  const startDrag = useCallback(
-    (e: { preventDefault: () => void; clientX: number }) => {
-      e.preventDefault();
-      dragRef.current = { startX: e.clientX, startWidth: width };
-      window.addEventListener("mousemove", onPointerMove);
-      window.addEventListener("mouseup", onPointerUp);
-    },
-    [width, onPointerMove, onPointerUp],
-  );
-
-  return { width, startDrag };
-}
-
 function TraceDetail({ state, update }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
-  const { width: sidebarWidth, startDrag } = useSidebarWidth();
+  const mobileDetail = useMobileSidebar();
   // Waterfall hover tooltip: the shared VizTooltip, hosted on the (non-
   // scrolling) trace body so it can overlap the detail pane and isn't
   // affected by the waterfall's own scroll offset.
@@ -924,11 +830,7 @@ function TraceDetail({ state, update }: Props) {
         </div>
       );
     }
-    return (
-      <div className="query-error" role="alert">
-        Trace lookup failed: {(trace.error as Error).message}
-      </div>
-    );
+    return <QueryError what="the trace" error={trace.error} />;
   }
   if (trace.isPending) {
     return (
@@ -981,6 +883,13 @@ function TraceDetail({ state, update }: Props) {
           )}
         </span>
         <span className="trace-id">{traceData.traceId}</span>
+        {selectedRow && (
+          <MobileFiltersToggle
+            open={mobileDetail.open}
+            onToggle={mobileDetail.toggle}
+            label="Details"
+          />
+        )}
       </div>
       {Object.keys(spanKinds).length > 0 && (
         <div className="span-kind-legend" aria-label="Span kind legend">
@@ -993,11 +902,7 @@ function TraceDetail({ state, update }: Props) {
             ))}
         </div>
       )}
-      <div
-        className="trace-body viz-host"
-        ref={bodyRef}
-        style={{ "--span-detail-w": `${sidebarWidth}px` } as CSSProperties}
-      >
+      <div className="trace-body viz-host" ref={bodyRef}>
         <div
           className="waterfall"
           role="list"
@@ -1055,20 +960,20 @@ function TraceDetail({ state, update }: Props) {
         </div>
         {selectedRow && (
           <>
-            <div
-              className="trace-resizer"
-              role="separator"
-              aria-orientation="vertical"
-              aria-label="Resize span details"
-              onMouseDown={startDrag}
-            />
-            <SpanDetail
-              span={selectedRow.span}
-              traceId={traceData.traceId}
-              profiles={traceData.profiles}
-              kind={spanKinds[selectedRow.span.spanId]}
-              update={update}
-            />
+            <SidebarResizer panel={spanDetailWidth} />
+            <MobileSidebarDrawer
+              open={mobileDetail.open}
+              onClose={mobileDetail.close}
+              side="right"
+            >
+              <SpanDetail
+                span={selectedRow.span}
+                traceId={traceData.traceId}
+                profiles={traceData.profiles}
+                kind={spanKinds[selectedRow.span.spanId]}
+                update={update}
+              />
+            </MobileSidebarDrawer>
           </>
         )}
         {hoveredRow && pointer.anchor && (
@@ -1161,7 +1066,7 @@ function SpanDetail({
       {groups.length === 0 && (
         <>
           <div className="span-detail-sec">Attributes</div>
-          <div className="traces-note">No attributes recorded.</div>
+          <div className="view-note">No attributes recorded.</div>
         </>
       )}
       {groups.map((group) => (

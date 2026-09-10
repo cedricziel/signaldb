@@ -201,6 +201,7 @@ async fn revoked_token_stops_working() {
             &user.id,
             "acme",
             &["traces:read".to_string()],
+            None,
             Some(RESOURCE),
             chrono::Utc::now() + chrono::Duration::hours(1),
         )
@@ -250,6 +251,7 @@ async fn token_for_another_resource_is_rejected() {
             &user.id,
             "acme",
             &["traces:read".to_string()],
+            None,
             Some("https://other.example.com/mcp"),
             chrono::Utc::now() + chrono::Duration::hours(1),
         )

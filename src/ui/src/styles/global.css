@@ -29,6 +29,9 @@
      a `color-mix(--warn-bar, --surface)` background, where --warn itself
      falls under WCAG AA (~3.9:1) in the light theme. */
   --warn-banner-text: #7a5f0a;
+  /* Theme-neutral like --mono/--ui below: a grey wash that reads as an
+     inset on both grounds. */
+  --bg-inset: rgba(127, 127, 127, 0.08);
   --mono:
     ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas,
     monospace;
@@ -120,6 +123,17 @@
   --svc-d: #b08a10;
   --svc-e: #c04f8a;
   --warn-banner-text: #7a5f0a;
+}
+
+/* Shared warn-tint callout (ThrottleBanner, Instrumentation's "public
+   endpoints not configured" note): colour + background only, so each caller
+   adds its own padding/border.
+   Not --warn: on this tinted background --warn falls under WCAG AA (~3.9:1)
+   in the light theme. --warn-banner-text is darker there and matches --warn
+   in the dark theme, where it already clears 4.5:1. */
+.warn-callout {
+  color: var(--warn-banner-text);
+  background: color-mix(in srgb, var(--warn-bar) 14%, var(--surface));
 }
 
 * {
@@ -229,7 +243,7 @@ select:focus-visible {
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: var(--bg-inset, rgba(127, 127, 127, 0.08));
+  background: var(--bg-inset);
   font-family: var(--mono);
   font-size: 10px;
   line-height: 1.45;
@@ -247,7 +261,7 @@ select:focus-visible {
   padding: 6px 8px;
   border: 1px solid var(--border);
   border-radius: 4px;
-  background: var(--bg-inset, rgba(127, 127, 127, 0.08));
+  background: var(--bg-inset);
   font-family: var(--mono);
   font-size: 10px;
   line-height: 1.45;
@@ -562,4 +576,184 @@ select:focus-visible {
   padding-top: 4px;
   border-top: 1px solid var(--border);
   color: var(--dim);
+}
+
+/* ---------- sortable table headers (lib/sortTable.tsx) ---------- */
+
+/* The browser default centres headers; every table here wants them left. */
+th {
+  text-align: left;
+}
+
+th.num,
+td.num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.th-sort {
+  font: inherit;
+  color: inherit;
+  text-transform: inherit;
+  letter-spacing: inherit;
+  cursor: pointer;
+}
+
+.th-sort:hover,
+th[aria-sort] .th-sort {
+  color: var(--text);
+}
+
+th[aria-sort="ascending"] .th-sort::after {
+  content: " ↑";
+}
+
+th[aria-sort="descending"] .th-sort::after {
+  content: " ↓";
+}
+
+/* A table wider than the viewport scrolls on its own axis instead of
+   blowing out the page — these tables don't reasonably reflow. */
+.table-scroll {
+  overflow-x: auto;
+}
+
+/* ---------- view note (features/*: every explore view) ---------- */
+
+/* Explanatory or empty-state note under a view's header. */
+.view-note {
+  color: var(--faint);
+  padding: 14px 16px;
+  font-size: 12px;
+}
+
+.view-note code {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--dim);
+}
+
+/* ---------- attribute key combobox (components/AttributeKeyInput.tsx) ---------- */
+
+/* The input with the registry/observed suggestion list anchored below it. */
+.chip-label {
+  position: relative;
+  display: inline-flex;
+}
+
+.chip-suggest {
+  position: absolute;
+  z-index: 30;
+  top: calc(100% + 3px);
+  left: 0;
+  margin: 0;
+  padding: 3px 0;
+  list-style: none;
+  min-width: 260px;
+  max-width: 380px;
+  max-height: 320px;
+  overflow-y: auto;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+}
+
+.chip-suggest-item {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 4px 9px;
+  cursor: pointer;
+}
+
+.chip-suggest-item:hover,
+.chip-suggest-item[aria-selected="true"] {
+  background: var(--surface2);
+}
+
+.chip-suggest-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+
+.chip-suggest-key {
+  overflow-wrap: anywhere;
+}
+
+.chip-suggest-ns {
+  font-family: var(--ui);
+  font-size: 9.5px;
+  padding: 0 5px;
+  border-radius: 8px;
+  color: var(--faint);
+  border: 1px solid var(--border);
+}
+
+.chip-suggest-seen {
+  margin-left: auto;
+  font-family: var(--ui);
+  font-size: 9.5px;
+  color: var(--ok);
+  white-space: nowrap;
+}
+
+.chip-suggest-brief {
+  font-size: 11px;
+  color: var(--faint);
+}
+
+/* ---------- dialog (components/Dialog.tsx) ---------- */
+
+.dialog-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 40;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: color-mix(in srgb, var(--surface) 72%, transparent);
+  backdrop-filter: blur(5px);
+}
+
+.dialog-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: 0 24px 80px rgb(0 0 0 / 35%);
+  max-height: calc(100vh - 48px);
+  overflow: auto;
+}
+
+/* The sign-in gate must cover whatever dialog the user had open when the
+   session expired, so it stacks above content-layer dialogs by rule, not by
+   mount order. */
+.dialog-backdrop--system {
+  z-index: 100;
+}
+
+@media (max-width: 600px) {
+  .dialog-backdrop {
+    padding: 8px;
+  }
+}
+
+/* The panel itself is only a focus target as a fallback (no focusable
+   child); keep the ring for keyboard users, drop it for a mouse/touch
+   click on the panel background. */
+.dialog-panel:focus:not(:focus-visible) {
+  outline: none;
+}
+
+/* ---------- confirm button (components/ConfirmButton.tsx) ---------- */
+
+.confirm-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--dim);
+  font-size: 12px;
 }

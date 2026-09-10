@@ -61,6 +61,16 @@ const THROTTLED_MESSAGE_PREFIX: &str = "throttled:";
 #[derive(Clone, Debug)]
 pub struct CallerTenant(pub String);
 
+/// The credential's own dataset-set restriction, inserted into the request
+/// extensions by the auth middleware alongside [`CallerTenant`] (from the
+/// same `whoami()` call, `WhoamiIdentityResponse::dataset_ids`). `None`
+/// means the credential is unrestricted. Tools that list datasets/tables
+/// (`discover_datasets`, `tenant_list_tables`) read this to filter out any
+/// dataset the caller's credential cannot reach, per design D10 —
+/// unlisted datasets must not be visible even by name.
+#[derive(Clone, Debug, Default)]
+pub struct CallerDatasetIds(pub Option<Vec<String>>);
+
 /// The distinct error a call receives when its session is at the concurrency
 /// bound and no permit frees up within [`PERMIT_WAIT`].
 pub fn concurrency_limit_error(limit: usize) -> ErrorData {

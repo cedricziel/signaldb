@@ -49,6 +49,8 @@ export interface EntityMetrics {
    * broken lookup look like an entity with nothing to show.
    */
   isError: boolean;
+  /** The failing query's own error, when `isError` is set. */
+  error?: unknown;
 }
 
 export function useEntityMetrics(
@@ -104,6 +106,7 @@ export function useEntityMetrics(
     metrics: definitions.data ?? [],
     isPending: enabled && (observed.isPending || definitions.isPending),
     isError: observed.isError || definitions.isError,
+    error: observed.error ?? definitions.error,
   };
 }
 

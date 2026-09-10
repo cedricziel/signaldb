@@ -78,7 +78,7 @@ describe("FieldSidebar", () => {
     );
     await userEvent.click(screen.getByRole("button", { name: "level" }));
     expect(
-      await screen.findByText("Failed to load values"),
+      await screen.findByText("Could not load values"),
     ).toBeInTheDocument();
   });
 

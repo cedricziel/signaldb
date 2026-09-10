@@ -775,6 +775,7 @@ mod tests {
                 "acme",
                 &["traces:read".to_string()],
                 None,
+                None,
                 Utc::now() + Duration::hours(1),
             )
             .await

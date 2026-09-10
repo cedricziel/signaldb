@@ -948,6 +948,8 @@ With [`[compactor.attr_promotion]`](configuration.md#attribute-promotion-configu
 
 A schema-evolution failure is logged as a warning and the compaction continues under the old schema — promotion never fails a rewrite.
 
+**Queries stay correct during the transition window**: between the schema flip and a given file's rewrite, the querier does not trust a promoted column exclusively — it falls back to the attribute map for any row where the column reads NULL, so a query returns the same result whether or not the file it's reading has been backfilled yet. This costs the exclusive-column fast path for the life of the column (there is no signal yet for "every file is backfilled, stop falling back"), so promotion is pure query-performance upside once backfill catches up, never a correctness risk in the meantime.
+
 **What operators see in the logs:**
 
 - `Attribute promotion decision` (info) — per table: `dry_run`, `promote`, `demote`, and `building` (keys still accumulating their hysteresis streak).

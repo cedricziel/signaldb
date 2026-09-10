@@ -583,8 +583,13 @@ pub async fn create_api_key<S: RouterState>(
     if let Err(response) = validate_scopes_response(&request.scopes) {
         return *response;
     }
-    if let Some(dataset_id) = &request.dataset_id
-        && let Err(response) = validate_dataset_exists(&*state, &tenant_id, dataset_id).await
+    let dataset_ids = match common::catalog::validate_create_dataset_ids(request.dataset_ids) {
+        Ok(ids) => ids,
+        Err(e) => return api_error(StatusCode::BAD_REQUEST, "validation_error", e.to_string()),
+    };
+    if let Some(ids) = &dataset_ids
+        && let Err(response) =
+            validate_dataset_restriction_gate_and_membership(&*state, &tenant_id, ids).await
     {
         return *response;
     }
@@ -599,7 +604,7 @@ pub async fn create_api_key<S: RouterState>(
             &tenant_id,
             &key_hash,
             request.name.as_deref(),
-            request.dataset_id.as_deref(),
+            dataset_ids.as_deref(),
             Some(&request.scopes),
             None,
         )
@@ -617,7 +622,7 @@ pub async fn create_api_key<S: RouterState>(
                 key: raw_key,
                 name: request.name,
                 scopes: request.scopes,
-                dataset_id: request.dataset_id,
+                dataset_ids,
                 created_at,
             };
             (
@@ -663,8 +668,16 @@ pub async fn update_api_key<S: RouterState>(
     {
         return *response;
     }
-    if let Some(dataset_id) = &request.dataset_id
-        && let Err(response) = validate_dataset_exists(&*state, &tenant_id, dataset_id).await
+    let dataset_update = match common::catalog::DatasetRestrictionUpdate::from_request(
+        request.dataset_ids,
+        request.clear_dataset_restriction,
+    ) {
+        Ok(update) => update,
+        Err(e) => return api_error(StatusCode::BAD_REQUEST, "validation_error", e.to_string()),
+    };
+    if let common::catalog::DatasetRestrictionUpdate::Set(ids) = &dataset_update
+        && let Err(response) =
+            validate_dataset_restriction_gate_and_membership(&*state, &tenant_id, ids).await
     {
         return *response;
     }
@@ -695,11 +708,7 @@ pub async fn update_api_key<S: RouterState>(
     }
     match state
         .catalog()
-        .update_api_key_scopes(
-            &key_id,
-            request.scopes.as_deref(),
-            request.dataset_id.as_deref(),
-        )
+        .update_api_key_scopes(&key_id, request.scopes.as_deref(), dataset_update)
         .await
     {
         Ok(true) => {}
@@ -754,7 +763,7 @@ fn api_key_record_to_response(record: common::catalog::ApiKeyRecord) -> ApiKeyRe
         id: record.id,
         name: record.name,
         scopes: record.scopes,
-        dataset_id: record.dataset_id,
+        dataset_ids: record.dataset_ids,
         created_at: record.created_at.to_rfc3339(),
         revoked_at: record.revoked_at.map(|t| t.to_rfc3339()),
     }
@@ -771,25 +780,58 @@ fn validate_scopes_response(scopes: &[String]) -> Result<(), Box<axum::response:
     })
 }
 
-/// `400 invalid_dataset` unless `dataset_id` exists in the tenant.
-async fn validate_dataset_exists<S: RouterState>(
+/// `400 invalid_dataset` unless every dataset in `dataset_ids` exists in the
+/// tenant — the whole request is rejected on the first missing element.
+async fn validate_datasets_exist<S: RouterState>(
     state: &S,
     tenant_id: &str,
-    dataset_id: &str,
+    dataset_ids: &[String],
 ) -> Result<(), Box<axum::response::Response>> {
     match state.catalog().get_datasets(tenant_id).await {
-        Ok(datasets) if datasets.iter().any(|d| d.name == dataset_id) => Ok(()),
-        Ok(_) => Err(Box::new(api_error(
-            StatusCode::BAD_REQUEST,
-            "invalid_dataset",
-            format!("Dataset '{dataset_id}' does not exist in tenant '{tenant_id}'"),
-        ))),
+        Ok(datasets) => {
+            let existing: std::collections::HashSet<&str> =
+                datasets.iter().map(|d| d.name.as_str()).collect();
+            match dataset_ids
+                .iter()
+                .find(|id| !existing.contains(id.as_str()))
+            {
+                None => Ok(()),
+                Some(missing) => Err(Box::new(api_error(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_dataset",
+                    format!("Dataset '{missing}' does not exist in tenant '{tenant_id}'"),
+                ))),
+            }
+        }
         Err(e) => Err(Box::new(api_error(
             StatusCode::INTERNAL_SERVER_ERROR,
             "internal_error",
             e.to_string(),
         ))),
     }
+}
+
+/// `400` when `dataset_ids` names two or more datasets while the
+/// mixed-version rollout gate (`[auth].dataset_restriction_rollout_complete`)
+/// is not yet `true` (D2), or when any element does not belong to
+/// `tenant_id` (checked via [`validate_datasets_exist`]).
+async fn validate_dataset_restriction_gate_and_membership<S: RouterState>(
+    state: &S,
+    tenant_id: &str,
+    dataset_ids: &[String],
+) -> Result<(), Box<axum::response::Response>> {
+    common::catalog::check_dataset_restriction_rollout_gate(
+        dataset_ids,
+        state.config().auth.dataset_restriction_rollout_complete,
+    )
+    .map_err(|message| {
+        Box::new(api_error(
+            StatusCode::BAD_REQUEST,
+            "validation_error",
+            message,
+        ))
+    })?;
+    validate_datasets_exist(state, tenant_id, dataset_ids).await
 }
 
 /// Revoke an API key
@@ -1027,6 +1069,13 @@ pub async fn create_dataset<S: RouterState>(
         .await
     {
         Ok(dataset_id) => {
+            crate::endpoints::provision_dataset_tables(
+                state.config(),
+                state.catalog(),
+                &tenant_id,
+                &request.name,
+            )
+            .await;
             let response = DatasetResponse {
                 id: dataset_id,
                 name: request.name,
@@ -1751,7 +1800,7 @@ mod tests {
         assert!(created.key.starts_with("sk-acme-"));
         assert_eq!(created.name, Some("Production Key".to_string()));
         assert_eq!(created.scopes, vec!["traces:write", "schema:read"]);
-        assert_eq!(created.dataset_id, None);
+        assert_eq!(created.dataset_ids, None);
 
         // List API keys
         let request = Request::builder()
@@ -1793,7 +1842,11 @@ mod tests {
         let bytes = axum::body::to_bytes(response.into_body(), 1024 * 1024)
             .await
             .unwrap();
-        (status, serde_json::from_slice(&bytes).unwrap())
+        // A body-deserialization rejection (e.g. `deny_unknown_fields`) is
+        // axum's own plain-text response, not JSON — fall back to `Null`
+        // rather than panicking so callers can still assert on the status.
+        let value = serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null);
+        (status, value)
     }
 
     async fn patch_key(app: &Router, key_id: &str, body: &str) -> (StatusCode, serde_json::Value) {
@@ -1811,7 +1864,7 @@ mod tests {
         let value = if bytes.is_empty() {
             serde_json::Value::Null
         } else {
-            serde_json::from_slice(&bytes).unwrap()
+            serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
         };
         (status, value)
     }
@@ -1871,18 +1924,248 @@ mod tests {
 
         let (status, body) = create_key(
             &app,
-            r#"{"name": "ghost", "scopes": ["schema:read"], "dataset_id": "nope"}"#,
+            r#"{"name": "ghost", "scopes": ["schema:read"], "dataset_ids": ["nope"]}"#,
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 
         let (status, body) = create_key(
             &app,
-            r#"{"name": "prod", "scopes": ["schema:read"], "dataset_id": "production"}"#,
+            r#"{"name": "prod", "scopes": ["schema:read"], "dataset_ids": ["production"]}"#,
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
-        assert_eq!(body["dataset_id"], "production");
+        assert_eq!(body["dataset_ids"], serde_json::json!(["production"]));
+    }
+
+    /// D8: the deprecated singular `dataset_id` field is removed entirely
+    /// from API-key response bodies — not `null`, but absent from the JSON
+    /// object (task 2.1).
+    #[tokio::test]
+    async fn api_key_response_omits_deprecated_dataset_id_key() {
+        let state = create_admin_test_state().await;
+        state
+            .catalog()
+            .upsert_tenant("acme", "Acme Corp", None, "database")
+            .await
+            .unwrap();
+        state
+            .catalog()
+            .create_dataset("acme", "production")
+            .await
+            .unwrap();
+        let app = admin_router(state);
+
+        // A single-element dataset restriction is the case that currently
+        // makes `derive_legacy_dataset_id` return `Some`, so it's the only
+        // shape that actually exercises the field's removal (an absent or
+        // multi-element restriction already skips serialization via
+        // `skip_serializing_if`, which would let this assertion pass
+        // vacuously against the pre-removal code).
+        let (status, created) = create_key(
+            &app,
+            r#"{"name": "k", "scopes": ["schema:read"], "dataset_ids": ["production"]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        assert!(
+            !created.as_object().unwrap().contains_key("dataset_id"),
+            "create response must not carry the removed dataset_id field: {created}"
+        );
+
+        let request = Request::builder()
+            .uri("/tenants/acme/api-keys")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(response.into_body(), 1024 * 1024)
+            .await
+            .unwrap();
+        let list: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        let first_key = &list["api_keys"][0];
+        assert!(
+            !first_key.as_object().unwrap().contains_key("dataset_id"),
+            "list response must not carry the removed dataset_id field: {first_key}"
+        );
+    }
+
+    /// The key authenticates against every dataset in its restriction and is
+    /// refused for one outside it (task 2.1).
+    #[tokio::test]
+    async fn multi_dataset_key_authenticates_within_its_set_and_is_refused_outside_it() {
+        let state = create_admin_test_state().await;
+        state
+            .catalog()
+            .upsert_tenant("acme", "Acme Corp", Some("production"), "database")
+            .await
+            .unwrap();
+        state
+            .catalog()
+            .create_dataset("acme", "production")
+            .await
+            .unwrap();
+        state
+            .catalog()
+            .create_dataset("acme", "staging")
+            .await
+            .unwrap();
+        // Enable the mixed-version rollout gate so the two-dataset request
+        // below is accepted.
+        let mut config = state.config().clone();
+        config.auth.dataset_restriction_rollout_complete = true;
+        let state = RouterAppState::new(state.catalog().clone(), config);
+        let app = admin_router(state.clone());
+
+        let (status, created) = create_key(
+            &app,
+            r#"{"name": "multi", "scopes": ["traces:read"], "dataset_ids": ["production", "staging"]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let raw_key = created["key"].as_str().unwrap().to_string();
+        assert_eq!(
+            created["dataset_ids"],
+            serde_json::json!(["production", "staging"])
+        );
+
+        let authenticator = common::auth::Authenticator::new(
+            state.config().auth.clone(),
+            std::sync::Arc::new(state.catalog().clone()),
+        );
+        assert!(
+            authenticator
+                .authenticate(&raw_key, "acme", Some("production"))
+                .await
+                .is_ok()
+        );
+        assert!(
+            authenticator
+                .authenticate(&raw_key, "acme", Some("staging"))
+                .await
+                .is_ok()
+        );
+        assert!(
+            authenticator
+                .authenticate(&raw_key, "acme", Some("other"))
+                .await
+                .is_err()
+        );
+    }
+
+    /// D1a: an explicit empty array is rejected on create, unconditionally.
+    #[tokio::test]
+    async fn api_key_creation_rejects_empty_dataset_ids() {
+        let state = create_admin_test_state().await;
+        state
+            .catalog()
+            .upsert_tenant("acme", "Acme Corp", None, "database")
+            .await
+            .unwrap();
+        let app = admin_router(state.clone());
+
+        let (status, body) =
+            create_key(&app, r#"{"scopes": ["schema:read"], "dataset_ids": []}"#).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            state
+                .catalog()
+                .list_api_keys("acme")
+                .await
+                .unwrap()
+                .is_empty(),
+            "no key must be created for a rejected request"
+        );
+    }
+
+    /// A request body still carrying the legacy singular `dataset_id` field
+    /// is rejected loudly rather than silently dropped (D8's breaking-change
+    /// contract, point 6 of task 2.1).
+    #[tokio::test]
+    async fn api_key_creation_rejects_legacy_dataset_id_field() {
+        let state = create_admin_test_state().await;
+        state
+            .catalog()
+            .upsert_tenant("acme", "Acme Corp", None, "database")
+            .await
+            .unwrap();
+        let app = admin_router(state.clone());
+
+        let (status, _) = create_key(
+            &app,
+            r#"{"scopes": ["schema:read"], "dataset_id": "production"}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(
+            state
+                .catalog()
+                .list_api_keys("acme")
+                .await
+                .unwrap()
+                .is_empty(),
+            "a rejected legacy field must never silently create an unrestricted key"
+        );
+    }
+
+    /// With the rollout gate at its default `false`, a create naming two or
+    /// more datasets is rejected naming the config key; single-element and
+    /// unrestricted keys are unaffected.
+    #[tokio::test]
+    async fn api_key_creation_gates_multi_dataset_restriction_on_rollout_flag() {
+        let state = create_admin_test_state().await;
+        state
+            .catalog()
+            .upsert_tenant("acme", "Acme Corp", None, "database")
+            .await
+            .unwrap();
+        state
+            .catalog()
+            .create_dataset("acme", "production")
+            .await
+            .unwrap();
+        state
+            .catalog()
+            .create_dataset("acme", "staging")
+            .await
+            .unwrap();
+        let app = admin_router(state.clone());
+
+        let (status, body) = create_key(
+            &app,
+            r#"{"scopes": ["schema:read"], "dataset_ids": ["production", "staging"]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            body["message"]
+                .as_str()
+                .unwrap()
+                .contains("dataset_restriction_rollout_complete"),
+            "{body}"
+        );
+
+        // Single-element and unrestricted keys are unaffected by the flag.
+        let (status, _) = create_key(
+            &app,
+            r#"{"scopes": ["schema:read"], "dataset_ids": ["production"]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let (status, _) = create_key(&app, r#"{"scopes": ["schema:read"]}"#).await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        // Flip the gate: the same two-dataset request now succeeds.
+        let mut config = state.config().clone();
+        config.auth.dataset_restriction_rollout_complete = true;
+        let gated_state = RouterAppState::new(state.catalog().clone(), config);
+        let gated_app = admin_router(gated_state);
+        let (status, body) = create_key(
+            &gated_app,
+            r#"{"scopes": ["schema:read"], "dataset_ids": ["production", "staging"]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
     }
 
     #[tokio::test]
@@ -1917,16 +2200,44 @@ mod tests {
             body["scopes"],
             serde_json::json!(["schema:read", "schema:write"])
         );
-        assert_eq!(body["dataset_id"], serde_json::Value::Null);
 
         // Dataset only, scopes preserved.
-        let (status, body) = patch_key(&app, &key_id, r#"{"dataset_id": "production"}"#).await;
+        let (status, body) = patch_key(&app, &key_id, r#"{"dataset_ids": ["production"]}"#).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert_eq!(
             body["scopes"],
             serde_json::json!(["schema:read", "schema:write"])
         );
-        assert_eq!(body["dataset_id"], "production");
+        assert_eq!(body["dataset_ids"], serde_json::json!(["production"]));
+
+        // Omitting both dataset fields leaves the restriction unchanged.
+        let (status, body) = patch_key(
+            &app,
+            &key_id,
+            r#"{"scopes": ["schema:read", "schema:write"]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["dataset_ids"], serde_json::json!(["production"]));
+
+        // clear_dataset_restriction: true clears it back to unrestricted.
+        let (status, body) =
+            patch_key(&app, &key_id, r#"{"clear_dataset_restriction": true}"#).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["dataset_ids"], serde_json::Value::Null);
+
+        // Contradictory: clearing and setting in the same request is rejected.
+        let (status, body) = patch_key(
+            &app,
+            &key_id,
+            r#"{"dataset_ids": ["production"], "clear_dataset_restriction": true}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+        // D1a: an explicit empty array is rejected on update too.
+        let (status, body) = patch_key(&app, &key_id, r#"{"dataset_ids": []}"#).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
 
         // Validation.
         let (status, body) = patch_key(&app, &key_id, r#"{"scopes": []}"#).await;
@@ -1934,8 +2245,12 @@ mod tests {
         let (status, body) = patch_key(&app, &key_id, r#"{"scopes": ["schema:admin"]}"#).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
         assert!(body["message"].as_str().unwrap().contains("schema:admin"));
-        let (status, _) = patch_key(&app, &key_id, r#"{"dataset_id": "nope"}"#).await;
+        let (status, _) = patch_key(&app, &key_id, r#"{"dataset_ids": ["nope"]}"#).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
+
+        // The legacy singular field is rejected loudly, not silently dropped.
+        let (status, _) = patch_key(&app, &key_id, r#"{"dataset_id": "production"}"#).await;
+        assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY);
 
         // Unknown key.
         let (status, _) = patch_key(&app, "no-such-key", r#"{"scopes": ["schema:read"]}"#).await;
@@ -1953,6 +2268,40 @@ mod tests {
         );
         let (status, body) = patch_key(&app, &key_id, r#"{"scopes": ["schema:read"]}"#).await;
         assert_eq!(status, StatusCode::CONFLICT, "{body}");
+    }
+
+    /// A `dataset_ids` entry naming a dataset outside the target tenant is
+    /// rejected and no key is created/updated (task 2.1).
+    #[tokio::test]
+    async fn dataset_ids_must_all_belong_to_the_target_tenant() {
+        let state = create_admin_test_state().await;
+        state
+            .catalog()
+            .upsert_tenant("acme", "Acme Corp", None, "database")
+            .await
+            .unwrap();
+        state
+            .catalog()
+            .create_dataset("acme", "production")
+            .await
+            .unwrap();
+        let app = admin_router(state.clone());
+
+        let (status, body) = create_key(
+            &app,
+            r#"{"scopes": ["schema:read"], "dataset_ids": ["production", "ghost"]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            state
+                .catalog()
+                .list_api_keys("acme")
+                .await
+                .unwrap()
+                .is_empty(),
+            "no key must be created when any dataset_ids element is invalid"
+        );
     }
 
     #[tokio::test]
@@ -2000,6 +2349,47 @@ mod tests {
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    /// Creating a dataset through the admin API must provision its enabled
+    /// signal tables synchronously, so it is usable before the writer's
+    /// periodic reconciler ever ticks and without the manual
+    /// `tables/create` trigger.
+    #[tokio::test]
+    async fn creating_a_dataset_provisions_its_tables_immediately() {
+        // A file-backed Iceberg catalog: the handler and this test's
+        // assertion each build their own `CatalogManager`/connection pool,
+        // and a named in-memory database only lives while a connection to it
+        // is open (see `common::testing::TempCatalog`).
+        let temp_catalog = common::testing::TempCatalog::new();
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let mut config = Configuration::default();
+        config.schema.catalog_uri = temp_catalog.uri().to_string();
+        let state = RouterAppState::new(catalog, config.clone());
+        state
+            .catalog()
+            .upsert_tenant("acme", "Acme Corp", None, "database")
+            .await
+            .unwrap();
+        let app = admin_router(state);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/tenants/acme/datasets")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name": "staging"}"#))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        // Without ever running the reconciler or the manual `tables/create`
+        // trigger, the new dataset's tables must already exist.
+        let manager = common::CatalogManager::new(config).await.unwrap();
+        let tables = crate::endpoints::tabular_names_in(&manager, "acme", "staging").await;
+        assert!(
+            !tables.is_empty(),
+            "expected the new dataset's signal tables to be provisioned immediately, found none"
+        );
     }
 
     #[tokio::test]

@@ -85,6 +85,7 @@ pub async fn init_acceptor_resources(
     // Extract catalog and auth config BEFORE moving service_bootstrap into InMemoryFlightTransport
     let catalog = Arc::new(service_bootstrap.catalog().clone());
     let auth_config = service_bootstrap.config().auth.clone();
+    let wal_settings = service_bootstrap.config().wal.clone();
 
     // Initialize Flight transport with catalog-aware discovery
     let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
@@ -107,16 +108,19 @@ pub async fn init_acceptor_resources(
         config
     }
 
-    let wal_manager = Arc::new(WalManager::new(
-        // traces - baseline configuration
-        wal_config(&wal_dir, 64, 1000, 30),
-        // logs - higher volume, more frequent flushes
-        wal_config(&wal_dir, 64, 2000, 15),
-        // metrics - highest volume, most aggressive flushing
-        wal_config(&wal_dir, 128, 5000, 10),
-        // profiles - large payloads, lower entry count
-        wal_config(&wal_dir, 256, 500, 60),
-    ));
+    let wal_manager = Arc::new(
+        WalManager::new(
+            // traces - baseline configuration
+            wal_config(&wal_dir, 64, 1000, 30),
+            // logs - higher volume, more frequent flushes
+            wal_config(&wal_dir, 64, 2000, 15),
+            // metrics - highest volume, most aggressive flushing
+            wal_config(&wal_dir, 128, 5000, 10),
+            // profiles - large payloads, lower entry count
+            wal_config(&wal_dir, 256, 500, 60),
+        )
+        .with_max_instances(wal_settings.max_instances),
+    );
 
     tracing::info!(
         wal_dir = %wal_dir.display(),
@@ -134,6 +138,7 @@ pub async fn init_acceptor_resources(
             tracing::warn!(error = %e, "Failed to discover existing WALs");
         }
     }
+    wal_manager.warn_if_fd_headroom_thin("acceptor").await;
 
     // Background retry consumer: re-forwards unprocessed WAL entries whose
     // inline forward to the writer failed, and marks them processed so
@@ -336,7 +341,10 @@ pub fn prometheus_router(
 
     // Use Extension instead of State for simpler type handling
     Router::new()
-        .route("/api/v1/write", post(handle_prometheus_write_with_ext))
+        .route(
+            common::endpoints::PROMETHEUS_REMOTE_WRITE_PATH,
+            post(handle_prometheus_write_with_ext),
+        )
         .layer(Extension(state))
         .layer(middleware::from_fn(move |req, next| {
             let auth = authenticator.clone();
@@ -460,7 +468,7 @@ pub fn traces_http_router(
     storage_quota: Arc<common::storage_usage::StorageUsageTracker>,
 ) -> Router {
     otlp_signal_router(
-        "/v1/traces",
+        common::endpoints::OTLP_HTTP_TRACES_PATH,
         post(handle_http_traces),
         authenticator,
         OtlpHttpState {
@@ -484,7 +492,7 @@ pub fn logs_http_router(
     storage_quota: Arc<common::storage_usage::StorageUsageTracker>,
 ) -> Router {
     otlp_signal_router(
-        "/v1/logs",
+        common::endpoints::OTLP_HTTP_LOGS_PATH,
         post(handle_http_logs),
         authenticator,
         OtlpHttpState {
@@ -508,7 +516,7 @@ pub fn metrics_http_router(
     storage_quota: Arc<common::storage_usage::StorageUsageTracker>,
 ) -> Router {
     otlp_signal_router(
-        "/v1/metrics",
+        common::endpoints::OTLP_HTTP_METRICS_PATH,
         post(handle_http_metrics),
         authenticator,
         OtlpHttpState {
@@ -535,7 +543,7 @@ pub fn profiles_http_router(
     storage_quota: Arc<common::storage_usage::StorageUsageTracker>,
 ) -> Router {
     otlp_signal_router(
-        "/v1development/profiles",
+        common::endpoints::OTLP_HTTP_PROFILES_PATH,
         post(handle_http_profiles),
         authenticator,
         OtlpHttpState {
@@ -1139,7 +1147,7 @@ mod otlp_http_export_classification_tests {
             dataset_slug: "test-dataset".to_string(),
             api_key_name: Some("test-key".to_string()),
             api_key_scopes: None,
-            api_key_dataset_id: None,
+            api_key_dataset_ids: None,
             user_id: None,
             role: None,
             is_instance_admin: false,

@@ -94,7 +94,7 @@ describe("FilterChips", () => {
 
     // Observed labels show at once; registry hits merge in when they land.
     await screen.findByText("HTTP request method.");
-    const list = screen.getByRole("listbox", { name: "Label suggestions" });
+    const list = screen.getByRole("listbox", { name: "Attribute key suggestions" });
     const options = within(list).getAllByRole("option");
     expect(options.map((o) => o.getAttribute("data-key"))).toEqual([
       "http.request.method",
@@ -116,7 +116,7 @@ describe("FilterChips", () => {
       "http.response.status_code",
     );
     expect(
-      screen.queryByRole("listbox", { name: "Label suggestions" }),
+      screen.queryByRole("listbox", { name: "Attribute key suggestions" }),
     ).not.toBeInTheDocument();
   });
 
@@ -133,7 +133,7 @@ describe("FilterChips", () => {
     );
     await userEvent.click(screen.getByRole("button", { name: "+ filter" }));
     await userEvent.type(screen.getByLabelText("Filter label"), "le");
-    const list = await screen.findByRole("listbox", { name: "Label suggestions" });
+    const list = await screen.findByRole("listbox", { name: "Attribute key suggestions" });
     expect(
       within(list)
         .getAllByRole("option")

@@ -40,7 +40,8 @@ Tenant (e.g., "acme", slug: "acme")
 3. Validates tenant_id matches key's tenant (403 on mismatch)
 4. Resolves dataset: explicit header -> tenant default_dataset -> first `is_default` -> 400 error
 5. For a database tenant, the resolved dataset must have a `datasets` row — `resolve_database_tenant` fails closed with `403 Dataset '<name>' not found for tenant '<id>'`. Tenant creation and update therefore **materialize the `default_dataset` as a real row**, via `Catalog::upsert_tenant_with_default_dataset` — one transaction, because a tenant row that commits without its dataset row cannot be repaired by a retry (creation 409s on an existing id). Config sync uses the idempotent `Catalog::ensure_dataset`, and `Catalog::backfill_default_datasets` converges tenants created before this at router/monolith boot (#1066). Never use `create_dataset` on a path that may run twice — it is a bare INSERT and errors on a duplicate
-6. Returns `TenantContext { tenant_id, dataset_id, tenant_slug, dataset_slug }`
+6. For a **config**-defined tenant, an explicit `X-Dataset-ID` is first checked against `tenant_config.datasets` (the TOML list). A dataset created at runtime (Admin API/CLI/UI) has no entry there, so on a miss `resolve_config_dataset` falls back to the catalog's `datasets` rows before returning the 403 — a config API key and a database-minted key both resolve a UI-provisioned dataset on a config tenant (`src/common/src/auth/authenticator.rs`)
+7. Returns `TenantContext { tenant_id, dataset_id, tenant_slug, dataset_slug }`
 
 ### Session-Cookie Fallback (Embedded UI)
 
@@ -132,6 +133,31 @@ is NOT unrestricted (management is opt-in; widening pre-scope keys silently
 would be a security surprise). Human sessions never satisfy it; they go
 through membership roles.
 
+**Dataset restriction** (change `multi-dataset-key-restriction`). An API key
+or OAuth token may additionally be restricted to a _set_ of datasets within
+its tenant: `TenantContext.api_key_dataset_ids: Option<Vec<String>>`
+(renamed from the single-dataset `api_key_dataset_id`), checked by the shared
+`dataset_allowed`/resolution helper in `common::auth` from both
+`Authenticator::authenticate_from_database` (API keys) and
+`authenticate_oauth_token` (OAuth). `None` = unrestricted (every dataset in
+the tenant, unchanged from before this feature); a request naming no dataset
+resolves to the restriction's sole element when it has exactly one, or is
+rejected (never silently falls through to the tenant default) when it has
+two or more. `api_keys.dataset_ids`/`oauth_*.dataset_ids` are JSON-array-in-
+TEXT columns (same pattern as `scopes`) — the sole representation; the
+legacy single-value `api_keys.dataset_id` column and its dual-write (change
+`remove-dataset-id-legacy-shims`) are gone, so this schema change must ship
+as a full stop-and-restart, never a rolling upgrade (`DROP COLUMN` breaks a
+still-running older node's queries outright, unlike every prior `ADD COLUMN`
+migration). OAuth never had a legacy column, so any non-empty OAuth
+restriction (not just multi-element) is unsafe until every node runs the new
+code. `[auth].dataset_restriction_rollout_complete` (default `false`) gates
+the mixed-version-unsafe cases at the request boundary. A dataset-restricted
+credential is refused entirely by the management API (`can_manage`/
+`authorize_tenant`), regardless of `tenant:manage` or role, and
+`discover_datasets`/`tenant_list_tables`/`whoami` filter their dataset
+listing to the restriction so an unlisted dataset is never named.
+
 ### Error Codes
 
 - **400**: Malformed auth headers (wrong scheme, invalid tenant/dataset ID)
@@ -147,6 +173,8 @@ through membership roles.
 | **Object Store**      | `{base}/{tenant_slug}/{dataset_slug}/{table}/`      |
 | **DataFusion**        | Per-tenant catalog in SessionContext                |
 | **Storage Backend**   | Per-dataset storage override                        |
+
+Per-tenant WAL instances are cached and reopened on demand, but the cache is soft-capped (`[wal].max_instances`, default 256); see `docs/operations/wal-persistence.md#instance-cap`.
 
 ## Slug-Based Naming
 
@@ -281,15 +309,16 @@ Mounted at `/api/v1` with tenant auth — a plain API key is enough
 (`src/router/src/endpoints/tenant.rs`, `can_manage_tenant()`-gated for the
 mutating one, which treats API-key possession as sufficient trust):
 
-| Endpoint                             | Methods | Description                                                                                                                                                   | SDK operation            |
-| ------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
-| `/api/v1/whoami`                     | GET     | Authenticated tenant (id, slug, name) + datasets + default dataset (`endpoints/session.rs`)                                                                   | `whoami`                 |
-| `/api/v1/tenants`                    | GET     | List tenants visible to the caller — single-entry view of the caller's own tenant; `tenant show` / `tenant_info`                                              | `list_tenants_self`      |
-| `/api/v1/tenants/{id}`               | GET     | Tenant details — `tenant show` / `tenant_info`                                                                                                                | `get_tenant_self`        |
-| `/api/v1/tenants/{id}/tables`        | GET     | List tenant tables from the Iceberg catalog, grouped by dataset (`dataset` on each `TableInfo`, plus a `datasets` grouping alongside the flat `tables` list)  | `list_tenant_tables`     |
-| `/api/v1/tenants/{id}/tables/create` | POST    | Provision the tenant's enabled signal tables across its datasets, before returning `201`. Manual trigger for what the writer's reconciler does on an interval | `create_tenant_tables`   |
-| `/api/v1/tenants/{id}/schemas`       | GET     | List the tenant's configured table schema types                                                                                                               | `list_tenant_schemas`    |
-| `/api/v1/schemas/available`          | GET     | List every table schema type SignalDB can provision                                                                                                           | `list_available_schemas` |
+| Endpoint                             | Methods | Description                                                                                                                                                                           | SDK operation            |
+| ------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| `/api/v1/whoami`                     | GET     | Authenticated tenant (id, slug, name) + datasets + default dataset (`endpoints/session.rs`)                                                                                           | `whoami`                 |
+| `/api/v1/connection`                 | GET     | Public ingest/query endpoints (`[public]` config), headers with the caller's tenant/dataset filled in, required scopes, OTel env vars (`endpoints/session.rs`); MCP `connection_info` | `connection_info`        |
+| `/api/v1/tenants`                    | GET     | List tenants visible to the caller — single-entry view of the caller's own tenant; `tenant show` / `tenant_info`                                                                      | `list_tenants_self`      |
+| `/api/v1/tenants/{id}`               | GET     | Tenant details — `tenant show` / `tenant_info`                                                                                                                                        | `get_tenant_self`        |
+| `/api/v1/tenants/{id}/tables`        | GET     | List tenant tables from the Iceberg catalog, grouped by dataset (`dataset` on each `TableInfo`, plus a `datasets` grouping alongside the flat `tables` list)                          | `list_tenant_tables`     |
+| `/api/v1/tenants/{id}/tables/create` | POST    | Provision the tenant's enabled signal tables across its datasets, before returning `201`. Manual trigger for what the writer's reconciler does on an interval                         | `create_tenant_tables`   |
+| `/api/v1/tenants/{id}/schemas`       | GET     | List the tenant's configured table schema types                                                                                                                                       | `list_tenant_schemas`    |
+| `/api/v1/schemas/available`          | GET     | List every table schema type SignalDB can provision                                                                                                                                   | `list_available_schemas` |
 
 CLI: `signaldb-cli tenant show`, `signaldb-cli tenant table {list,provision,schemas,available-schemas}`.
 MCP: `tenant_info`, `tenant_list_tables`, `tenant_create_tables`,
@@ -312,16 +341,16 @@ OAuth-consent cases). `get_schema` uses the same rule (it used to require
 `is_instance_admin`). `create_tenant` stays `is_instance_admin`-only; keys
 create tenants through the admin API.
 
-| Endpoint                                        | Methods       | Description                                     | SDK operation                                         |
-| ----------------------------------------------- | ------------- | ----------------------------------------------- | ----------------------------------------------------- |
-| `/api/v1/manage/tenants`                        | POST          | Create a tenant (instance-admin session only)   | `manage_create_tenant`                                |
-| `/api/v1/manage/tenants/{id}/datasets`          | GET, POST     | List/create datasets                            | `manage_list_datasets`, `manage_create_dataset`       |
-| `/api/v1/manage/tenants/{id}/datasets/{name}`   | DELETE        | Delete a dataset by name                        | `manage_delete_dataset`                               |
-| `/api/v1/manage/tenants/{id}/api-keys`          | GET, POST     | List/create API keys                            | `manage_list_api_keys`, `manage_create_api_key`       |
-| `/api/v1/manage/tenants/{id}/api-keys/{key_id}` | DELETE, PATCH | Revoke / update an API key                      | `manage_revoke_api_key`, `manage_update_api_key`      |
-| `/api/v1/manage/tenants/{id}/memberships`       | GET, PUT      | List / upsert a member's role                   | `manage_list_memberships`, `manage_upsert_membership` |
-| `/api/v1/manage/tenants/{id}/memberships/{uid}` | DELETE        | Remove a member                                 | `manage_remove_membership`                            |
-| `/api/v1/manage/schema`                         | GET           | Logical + physical schema                       | `manage_get_schema`                                   |
+| Endpoint                                        | Methods       | Description                                   | SDK operation                                         |
+| ----------------------------------------------- | ------------- | --------------------------------------------- | ----------------------------------------------------- |
+| `/api/v1/manage/tenants`                        | POST          | Create a tenant (instance-admin session only) | `manage_create_tenant`                                |
+| `/api/v1/manage/tenants/{id}/datasets`          | GET, POST     | List/create datasets                          | `manage_list_datasets`, `manage_create_dataset`       |
+| `/api/v1/manage/tenants/{id}/datasets/{name}`   | DELETE        | Delete a dataset by name                      | `manage_delete_dataset`                               |
+| `/api/v1/manage/tenants/{id}/api-keys`          | GET, POST     | List/create API keys                          | `manage_list_api_keys`, `manage_create_api_key`       |
+| `/api/v1/manage/tenants/{id}/api-keys/{key_id}` | DELETE, PATCH | Revoke / update an API key                    | `manage_revoke_api_key`, `manage_update_api_key`      |
+| `/api/v1/manage/tenants/{id}/memberships`       | GET, PUT      | List / upsert a member's role                 | `manage_list_memberships`, `manage_upsert_membership` |
+| `/api/v1/manage/tenants/{id}/memberships/{uid}` | DELETE        | Remove a member                               | `manage_remove_membership`                            |
+| `/api/v1/manage/schema`                         | GET           | Logical + physical schema                     | `manage_get_schema`                                   |
 
 CLI (`signaldb_cli::commands::tenant_self`, API key with `tenant:manage`):
 `tenant dataset {list,create,delete}`, `tenant api-key {list,create,update,revoke}`,
@@ -342,7 +371,9 @@ and `docs/users/authentication.md#tenant-management-api`.
 Subcommands: `query` (one required language flag —
 `--sql`/`--promql`/`--logql`/`--traceql`/`--ir`, plus `--trace-id` for a
 single trace by ID, and `--start`/`--end`/`--step` on `--promql`/`--logql`
-for a range query), `whoami`, `discover`, `schema`
+for a range query), `whoami`, `connection` (this deployment's public
+ingest/query/mcp endpoints, headers, scopes, and OTel env vars —
+`GET /api/v1/connection` / MCP `connection_info`), `discover`, `schema`
 (`registry`/`attribute`/`entity`/`metric` lookup with a tenant key holding
 `schema:read`), `admin` (`tenant`/`api-key`/`dataset`, plus `schema`
 create/replace/delete/validate with a tenant key holding `schema:write`),
@@ -363,6 +394,7 @@ signaldb-cli admin schema create --file conventions.yaml --api-key <schema:write
 signaldb-cli schema attribute get k8s.pod.uid --api-key <schema:read key> --tenant-id acme
 signaldb-cli tenant table provision --api-key <any tenant key> --tenant-id acme
 signaldb-cli whoami --api-key <tenant key> --tenant-id acme
+signaldb-cli connection --api-key <tenant key> --tenant-id acme
 signaldb-cli query --sql "SELECT ..."   # also --promql/--logql/--traceql/--ir/--trace-id
 signaldb-cli tui                         # Interactive terminal UI
 ```
@@ -378,20 +410,20 @@ API keys keep the existing fast SHA-256 path — the split is entropy-based.
 
 ## Key Implementation Files
 
-| File                                           | Purpose                                                           |
-| ---------------------------------------------- | ----------------------------------------------------------------- |
-| `src/common/src/config/mod.rs`                 | Tenant/dataset config structs                                     |
-| `src/common/src/auth/`                         | Authenticator, TenantContext, middleware, validation              |
-| `src/common/src/auth/password.rs`              | Argon2id password hashing + opaque session tokens                 |
-| `src/common/src/catalog_manager.rs`            | Slug resolution                                                   |
-| `src/router/src/endpoints/admin.rs`            | Admin API endpoints (incl. quota checks)                          |
+| File                                           | Purpose                                                                            |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `src/common/src/config/mod.rs`                 | Tenant/dataset config structs                                                      |
+| `src/common/src/auth/`                         | Authenticator, TenantContext, middleware, validation                               |
+| `src/common/src/auth/password.rs`              | Argon2id password hashing + opaque session tokens                                  |
+| `src/common/src/catalog_manager.rs`            | Slug resolution                                                                    |
+| `src/router/src/endpoints/admin.rs`            | Admin API endpoints (incl. quota checks)                                           |
 | `src/router/src/endpoints/management.rs`       | Management API endpoints (tenant admin or `tenant:manage` key; `authorize_tenant`) |
-| `src/router/src/endpoints/tenant.rs`           | Tenant self-service API endpoints (API-key-friendly)              |
-| `src/router/src/endpoints/session.rs`          | UI session login/logout + whoami endpoints                        |
-| `src/common/src/auth/session.rs`               | Session cookie codec (`signaldb_session`)                         |
-| `src/common/src/ratelimit.rs`                  | Per-tenant token-bucket rate limiter                              |
-| `src/signaldb-cli/`                            | CLI for tenant management                                         |
-| `src/signaldb-cli/src/commands/tenant_self.rs` | `tenant table` group (only the API-key-friendly surface)          |
-| `src/mcp-server/src/server.rs`                 | MCP tools, incl. platform-admin and `tenant_*` families           |
+| `src/router/src/endpoints/tenant.rs`           | Tenant self-service API endpoints (API-key-friendly)                               |
+| `src/router/src/endpoints/session.rs`          | UI session login/logout + whoami endpoints                                         |
+| `src/common/src/auth/session.rs`               | Session cookie codec (`signaldb_session`)                                          |
+| `src/common/src/ratelimit.rs`                  | Per-tenant token-bucket rate limiter                                               |
+| `src/signaldb-cli/`                            | CLI for tenant management                                                          |
+| `src/signaldb-cli/src/commands/tenant_self.rs` | `tenant table` group (only the API-key-friendly surface)                           |
+| `src/mcp-server/src/server.rs`                 | MCP tools, incl. platform-admin and `tenant_*` families                            |
 
 Under `[compactor.attr_promotion]` (auto-promotion decision pass), a tenant's resolved materialized-label allowlist is the _pinned_ set: those keys are never demotion candidates.

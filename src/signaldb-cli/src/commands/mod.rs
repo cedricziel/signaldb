@@ -23,6 +23,60 @@ pub(crate) fn print_json<T: serde::Serialize>(value: &T) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Render an API key's dataset restriction for human display: the
+/// comma-joined set, or `unrestricted` when there is none.
+pub(crate) fn format_dataset_restriction(ids: Option<&[String]>) -> String {
+    match ids {
+        Some(ids) if !ids.is_empty() => ids.join(", "),
+        _ => "unrestricted".to_string(),
+    }
+}
+
+/// Render `ID  NAME  SCOPES  DATASETS` rows, column-aligned, shared by the
+/// admin and tenant `api-key list` human-readable output.
+pub(crate) fn format_api_key_table(rows: &[(String, String, String, String)]) -> String {
+    if rows.is_empty() {
+        return "No API keys.".to_string();
+    }
+
+    let widths = [
+        rows.iter()
+            .map(|(v, ..)| v.len())
+            .chain(std::iter::once("ID".len()))
+            .max()
+            .unwrap_or(0),
+        rows.iter()
+            .map(|(_, v, ..)| v.len())
+            .chain(std::iter::once("NAME".len()))
+            .max()
+            .unwrap_or(0),
+        rows.iter()
+            .map(|(_, _, v, _)| v.len())
+            .chain(std::iter::once("SCOPES".len()))
+            .max()
+            .unwrap_or(0),
+    ];
+
+    let mut out = format!(
+        "{:w0$}  {:w1$}  {:w2$}  DATASETS\n",
+        "ID",
+        "NAME",
+        "SCOPES",
+        w0 = widths[0],
+        w1 = widths[1],
+        w2 = widths[2]
+    );
+    for (id, name, scopes, datasets) in rows {
+        out.push_str(&format!(
+            "{id:w0$}  {name:w1$}  {scopes:w2$}  {datasets}\n",
+            w0 = widths[0],
+            w1 = widths[1],
+            w2 = widths[2]
+        ));
+    }
+    out.trim_end().to_string()
+}
+
 /// SignalDB CLI — manage tenants, API keys, and datasets
 #[derive(Parser)]
 #[command(name = "signaldb-cli", version, about)]
@@ -93,6 +147,10 @@ enum Commands {
     /// Report the authenticated identity (tenant, dataset, user) for the
     /// given credential
     Whoami(discover::ConnectArgs),
+    /// Print this deployment's connection details (ingest/query/mcp
+    /// endpoints, headers, scopes, ready-to-paste OTel env vars) for the
+    /// given credential's tenant — meant to be pasted or consumed by tooling
+    Connection(discover::ConnectArgs),
     /// Generate a shell completion script on stdout
     ///
     /// Install it with your shell's completion mechanism, e.g.:
@@ -219,6 +277,11 @@ impl Cli {
             return query::print_json_response(v.map(|r| r.into_inner()), "whoami");
         }
 
+        if let Commands::Connection(connect) = self.command {
+            let v = connect.build_client()?.connection_info().send().await;
+            return query::print_json_response(v.map(|r| r.into_inner()), "connection");
+        }
+
         // Custom-registry management authenticates with a tenant API key
         // carrying `schema:write` (the schema API is tenant-scoped), not the
         // instance admin key the other `admin` nouns use.
@@ -294,6 +357,7 @@ impl Cli {
             Commands::Tui { .. } => unreachable!(),
             Commands::Tenant { .. } => unreachable!(),
             Commands::Whoami(_) => unreachable!(),
+            Commands::Connection(_) => unreachable!(),
         }
     }
 

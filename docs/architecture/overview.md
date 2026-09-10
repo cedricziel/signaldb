@@ -39,6 +39,7 @@ Write-Ahead Logging ensures data persistence and crash recovery:
 - **Per-tenant/dataset isolation on the append path**: Both the acceptor and the writer hold a separate WAL instance — own segments, own flush mutex, own dead-letter directory — per tenant, dataset, and signal type, so one tenant's corrupted segment or slow fsync cannot block another tenant's `append`/`flush`. The writer's _drain_ is still one sequential loop over those WALs, so a tenant with slow Iceberg commits delays the others' commit latency within a cycle; failure is isolated, latency is not
 - **Record integrity**: Every WAL record is length-framed and CRC-32 checked, so corruption is attributed to one entry and skipped rather than poisoning a segment
 - **Segment management**: Automatic rotation, compaction, and cleanup of processed segments
+- **Bounded instance cache**: Idle eviction alone cannot bound a fleet whose _active_ tenant/dataset/signal cardinality exhausts `RLIMIT_NOFILE`, so `WalManager`'s cache also carries a soft `[wal].max_instances` cap, evicting the least-recently-appended drained, unreferenced WAL rather than ever failing a write
 
 ### 3. Dual Catalog System
 
@@ -91,8 +92,8 @@ Parquet storage with DataFusion query processing:
 | **prometheus-api**    | `src/prometheus-api/`        | Library    | Prometheus HTTP API response types (PromQL query surface)                                                                                                                                |
 | **logql**             | `src/logql/`                 | Library    | LogQL lexer, AST, and parser — syntax only, no product dependency; published as `logql-parser`                                                                                           |
 | **traceql**           | `src/traceql/`               | Library    | TraceQL parser for the supported equality subset — syntax only, no product dependency; published as `traceql-parser`                                                                     |
-| **query-ir**          | `src/query-ir/`              | Library    | Signal-agnostic query IR: document model, validation, field resolution — leaf crate, not published; re-exported as `common::query_ir`                                                     |
-| **ql-ir**             | `src/ql-ir/`                 | Library    | Lowers parsed LogQL/TraceQL onto the query IR — no FDAP dependency, so query text can become an executable document without the engine; not published                                     |
+| **query-ir**          | `src/query-ir/`              | Library    | Signal-agnostic query IR: document model, validation, field resolution — leaf crate, not published; re-exported as `common::query_ir`                                                    |
+| **ql-ir**             | `src/ql-ir/`                 | Library    | Lowers parsed LogQL/TraceQL onto the query IR — no FDAP dependency, so query text can become an executable document without the engine; not published                                    |
 | **schema-model**      | `src/schema-model/`          | Library    | OTel Weaver semantic-convention model: parser, resolver (flat attribute/entity/metric definitions), and the validator applied to custom schema registries                                |
 | **signaldb-bin**      | `src/signaldb-bin/`          | Binary     | The `signaldb` executable: monolith by default, or one service via a subcommand (`signaldb router`, …); every service crate exposes `cli::Args` + `cli::run`                             |
 | **signaldb-api**      | `src/signaldb-api/`          | Library    | Hand-written admin API DTOs (utoipa `ToSchema`); OpenAPI schema source — see [OpenAPI codegen](openapi-codegen.md)                                                                       |
@@ -191,16 +192,16 @@ flowchart LR
 - `WalManager` (the same type the acceptor uses) gives the writer one WAL per tenant/dataset/signal, created on that combination's first write; existing directories are opened at startup so a previous run's entries drain
 - `WalProcessor`: Background task (5s interval, exponential backoff on failure) that reads every tenant WAL's entries and writes them to Iceberg tables; a WAL it cannot read is skipped for that cycle, never aborting the others
 - Caches `IcebergTableWriter` instances per `{tenant}:{dataset}:{table}` combination
-- Creates Iceberg tables with schema and partition spec from `iceberg_schemas` — on first write, and ahead of it via the table reconciler (`reconcile.rs`): a startup pass plus one every `[writer].table_reconcile_interval` over the tenant registry, so every registered tenant/dataset holds a table for each signal type enabled for it before any telemetry arrives. Both paths go through the same load-or-create `CatalogManager::ensure_table`, so a failing reconciler degrades to create-on-first-write. What actually landed in the catalog is visible through the router's tenant self-service `GET /api/v1/tenants/{id}/tables`, grouped by dataset. See [Signal table provisioning](../operations/table-provisioning.md)
+- Creates Iceberg tables with schema and partition spec from `iceberg_schemas` — on first write, synchronously and best-effort when the router creates a dataset (management/admin API), and ahead of both via the table reconciler (`reconcile.rs`): a startup pass plus one every `[writer].table_reconcile_interval` over the tenant registry, so every registered tenant/dataset holds a table for each signal type enabled for it before any telemetry arrives. All three paths go through the same load-or-create `CatalogManager::ensure_table`, so a failing reconciler (or a failed synchronous attempt at creation) degrades to create-on-first-write. What actually landed in the catalog is visible through the router's tenant self-service `GET /api/v1/tenants/{id}/tables`, grouped by dataset. See [Signal table provisioning](../operations/table-provisioning.md)
 
 ### Router
 
 **Purpose**: HTTP API gateway and query routing
 
-| Property       | Value                                                                                                                                                             |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Ports**      | HTTP: 3000, Flight: 50053                                                                                                                                         |
-| **Capability** | `Routing`                                                                                                                                                         |
+| Property       | Value                                                                                                                                                     |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**      | HTTP: 3000, Flight: 50053                                                                                                                                 |
+| **Capability** | `Routing`                                                                                                                                                 |
 | **APIs**       | Tempo-compatible, Pyroscope-compatible, Loki-compatible, native Query IR (`POST /api/v1/query`), schema registry (`/api/v1/schema/*`), Admin API, OpenAPI |
 
 The router also serves the explore UI (a static SPA built from `src/ui`)
@@ -215,8 +216,11 @@ carries the user's memberships so the UI can offer a picker (a sole
 membership is auto-selected); each request then re-validates the
 `X-Tenant-ID` header against those memberships. `GET /api/v1/whoami`
 returns the human identity and memberships plus the selected tenant's
-datasets for the UI's tenant selector. API-key authentication remains
-available for machine clients and ingestion.
+datasets for the UI's tenant selector. `GET /api/v1/connection` (same
+middleware, any tenant key) returns the deployment's public ingest and query
+endpoints from `[public]` config with the caller's tenant/dataset filled in,
+so agents and the UI's "Send data" page never guess hosts or ports.
+API-key authentication remains available for machine clients and ingestion.
 
 When `[auth.oidc]` is configured, the router also acts as an OIDC
 **relying party** (`src/router/src/oidc.rs` runtime,

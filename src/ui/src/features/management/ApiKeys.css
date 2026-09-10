@@ -1,7 +1,15 @@
+/* breakpoints: tablet <=900px, mobile <=600px */
+
 .api-keys-page {
   padding: 24px;
   max-width: 800px;
   margin: 0 auto;
+}
+
+@media (max-width: 600px) {
+  .api-keys-page {
+    padding: 12px;
+  }
 }
 
 .api-keys-title {
@@ -80,6 +88,40 @@
   font-size: 11px;
 }
 
+.dataset-picker {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  margin: 0;
+}
+
+.dataset-picker legend {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0 4px;
+}
+
+.dataset-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.dataset-option label {
+  font: 11px var(--mono);
+}
+
+.dataset-clear {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
 .api-key-main {
   flex: 1;
   min-width: 0;
@@ -98,6 +140,7 @@
 .api-key-editor-actions,
 .api-key-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
 }
 
@@ -119,6 +162,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--border);
 }
@@ -157,24 +201,12 @@
   border-color: var(--err);
 }
 
-.secret-modal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-  background: color-mix(in srgb, var(--surface) 72%, transparent);
-  backdrop-filter: blur(5px);
-}
-
-.secret-modal {
+/* Doubled with .dialog-panel so the accent edge wins on specificity, not on
+   which stylesheet the bundle happens to emit last. */
+.dialog-panel.secret-modal {
   width: min(500px, 100%);
   padding: 24px;
-  border: 1px solid var(--accent);
-  border-radius: 10px;
-  background: var(--surface);
-  box-shadow: 0 24px 80px rgb(0 0 0 / 35%);
+  border-color: var(--accent);
 }
 
 .secret-modal code {
@@ -190,6 +222,7 @@
 
 .secret-modal-footer {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   justify-content: flex-end;
   margin-top: 16px;
@@ -199,4 +232,15 @@
   padding: 7px 11px;
   border: 1px solid var(--border);
   border-radius: 5px;
+}
+
+@media (max-width: 600px) {
+  .api-key-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .api-key-actions {
+    justify-content: flex-end;
+  }
 }

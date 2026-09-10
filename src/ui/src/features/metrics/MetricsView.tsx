@@ -4,6 +4,7 @@ import { promQueryRange, seriesName } from "../../api/prom";
 import { buildMetricIrDoc, irSeriesToPromSeries } from "../../api/metricsIr";
 import { runIrQuery } from "../../api/queryIr";
 import { AttributeValue } from "../../components/AttributeValue";
+import { QueryError } from "../../components/QueryError";
 import {
   durationToSeconds,
   rangeScopeKey,
@@ -197,20 +198,16 @@ export function MetricsView({ state, update }: Props) {
       )}
 
       {promql === "" && (
-        <div className="metrics-note">
+        <div className="view-note">
           Build a query above, or switch to PromQL, then Run to chart metrics.
         </div>
       )}
-      {chart.isError && (
-        <div className="query-error" role="alert">
-          Query failed: {(chart.error as Error).message}
-        </div>
-      )}
+      {chart.isError && <QueryError what="metrics" error={chart.error} />}
       {chart.isFetching && !chart.data && (
-        <div className="metrics-note">Loading…</div>
+        <div className="view-note">Loading…</div>
       )}
       {chart.data && chart.data.length === 0 && (
-        <div className="metrics-note">No series returned.</div>
+        <div className="view-note">No series returned.</div>
       )}
       {chart.data && chart.data.length > 0 && (
         <>

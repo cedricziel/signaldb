@@ -13,6 +13,7 @@ import {
   consentContext,
   submitConsentDecision,
 } from "../../api/consent";
+import { Dialog } from "../../components/Dialog";
 import { LoginPanel } from "../shell/LoginPanel";
 import "../shell/LoginPanel.css";
 import "./consent.css";
@@ -69,8 +70,18 @@ export function ConsentView() {
   const [context, setContext] = useState<ConsentContextResponse | null>(null);
   const [needsLogin, setNeedsLogin] = useState(false);
   const [selectedTenant, setSelectedTenant] = useState<string | null>(null);
+  // D5: an explicit choice, not a checklist that means "everything" when
+  // empty. Reset to "all" whenever the selected tenant changes (below) so a
+  // restriction chosen for one tenant never silently carries over to another.
+  const [datasetMode, setDatasetMode] = useState<"all" | "only">("all");
+  const [selectedDatasetIds, setSelectedDatasetIds] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setDatasetMode("all");
+    setSelectedDatasetIds([]);
+  }, [selectedTenant]);
 
   useEffect(() => {
     // While login is required, wait — the LoginPanel's onSuccess flips
@@ -98,15 +109,13 @@ export function ConsentView() {
 
   if (!params) {
     return (
-      <div className="login-backdrop">
-        <div className="login-panel">
-          <h2>Invalid authorization request</h2>
-          <p className="login-hint">
-            This page is missing required OAuth parameters. Start the connection
-            again from your client (Claude or ChatGPT).
-          </p>
-        </div>
-      </div>
+      <Dialog label="Invalid authorization request" className="login-panel">
+        <h2>Invalid authorization request</h2>
+        <p className="login-hint">
+          This page is missing required OAuth parameters. Start the connection
+          again from your client (Claude or ChatGPT).
+        </p>
+      </Dialog>
     );
   }
 
@@ -123,16 +132,14 @@ export function ConsentView() {
 
   if (!context) {
     return (
-      <div className="login-backdrop">
-        <div className="login-panel">
-          <p className="login-hint">Loading…</p>
-          {error && (
-            <p className="login-error" role="alert">
-              {error}
-            </p>
-          )}
-        </div>
-      </div>
+      <Dialog label="Authorize access" className="login-panel">
+        <p className="login-hint">Loading…</p>
+        {error && (
+          <p className="login-error" role="alert">
+            {error}
+          </p>
+        )}
+      </Dialog>
     );
   }
 
@@ -142,6 +149,12 @@ export function ConsentView() {
   const decide = (approved: boolean) => {
     if (approved && !selectedTenant) {
       setError("Choose a tenant to grant access to.");
+      return;
+    }
+    if (approved && datasetMode === "only" && selectedDatasetIds.length === 0) {
+      // Redundant with the disabled submit button below (D5) — the server
+      // also rejects an empty array (D1a), but this avoids a round trip.
+      setError("Choose at least one dataset, or switch to all datasets.");
       return;
     }
     setBusy(true);
@@ -156,6 +169,7 @@ export function ConsentView() {
       resource: params.resource ?? undefined,
       tenant: selectedTenant ?? "",
       approved,
+      ...(datasetMode === "only" ? { dataset_ids: selectedDatasetIds } : {}),
     })
       .then((redirect) => {
         window.location.href = redirect;
@@ -167,93 +181,149 @@ export function ConsentView() {
   };
 
   const single = context.tenants.length === 1 ? context.tenants[0] : null;
+  const currentTenant = context.tenants.find((t) => t.id === selectedTenant);
+  // "All datasets" is always a valid submission; "only these" needs at least
+  // one box checked (D5) — never sent as an empty array (D1a).
+  const canSubmit =
+    context.tenants.length > 0 &&
+    (datasetMode === "all" || selectedDatasetIds.length > 0);
 
   return (
-    <div className="login-backdrop" role="dialog" aria-label="Authorize access">
-      <div className="login-panel consent-panel">
-        <div className="consent-header">
-          <span className="consent-badge" aria-hidden="true">
-            <ShieldIcon />
-          </span>
-          <h2>Authorize {clientLabel}</h2>
-          <p className="consent-sub">
-            It's asking to read your observability data in SignalDB.
+    <Dialog label="Authorize access" className="login-panel consent-panel">
+      <div className="consent-header">
+        <span className="consent-badge" aria-hidden="true">
+          <ShieldIcon />
+        </span>
+        <h2>Authorize {clientLabel}</h2>
+        <p className="consent-sub">
+          It's asking to read your observability data in SignalDB.
+        </p>
+      </div>
+
+      <ul className="consent-perms">
+        {scopes.map((s) => (
+          <li key={s}>
+            <EyeIcon />
+            <span>{scopeLabel(s)}</span>
+          </li>
+        ))}
+      </ul>
+
+      <div className="consent-field">
+        <span className="consent-field-label">
+          {single ? "Tenant" : "Grant access to"}
+        </span>
+        {context.tenants.length === 0 ? (
+          <p className="consent-empty">
+            You aren't a member of any tenant, so there's nothing to grant.
           </p>
-        </div>
+        ) : single ? (
+          <div className="consent-single">
+            <span className="consent-tenant-name">{single.id}</span>
+            <span className="consent-tenant-meta">{single.role}</span>
+          </div>
+        ) : (
+          <ul className="consent-tenants">
+            {context.tenants.map((t) => (
+              <li key={t.id}>
+                <label>
+                  <input
+                    type="radio"
+                    name="tenant"
+                    value={t.id}
+                    checked={selectedTenant === t.id}
+                    onChange={() => setSelectedTenant(t.id)}
+                  />
+                  <span className="consent-tenant-name">{t.id}</span>
+                  <span className="consent-tenant-meta">{t.role}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
 
-        <ul className="consent-perms">
-          {scopes.map((s) => (
-            <li key={s}>
-              <EyeIcon />
-              <span>{scopeLabel(s)}</span>
-            </li>
-          ))}
-        </ul>
-
+      {currentTenant && (
         <div className="consent-field">
-          <span className="consent-field-label">
-            {single ? "Tenant" : "Grant access to"}
-          </span>
-          {context.tenants.length === 0 ? (
-            <p className="consent-empty">
-              You aren't a member of any tenant, so there's nothing to grant.
-            </p>
-          ) : single ? (
-            <div className="consent-single">
-              <span className="consent-tenant-name">{single.id}</span>
-              <span className="consent-tenant-meta">{single.role}</span>
-            </div>
-          ) : (
-            <ul className="consent-tenants">
-              {context.tenants.map((t) => (
-                <li key={t.id}>
+          <span className="consent-field-label">Access</span>
+          <ul className="consent-dataset-modes">
+            <li>
+              <label>
+                <input
+                  type="radio"
+                  name="dataset-mode"
+                  checked={datasetMode === "all"}
+                  onChange={() => setDatasetMode("all")}
+                />
+                <span>All datasets in {currentTenant.id}</span>
+              </label>
+            </li>
+            <li>
+              <label>
+                <input
+                  type="radio"
+                  name="dataset-mode"
+                  checked={datasetMode === "only"}
+                  onChange={() => setDatasetMode("only")}
+                />
+                <span>Only these datasets:</span>
+              </label>
+            </li>
+          </ul>
+          {datasetMode === "only" && (
+            <ul className="consent-datasets">
+              {currentTenant.datasets.map((dataset) => (
+                <li key={dataset.id}>
                   <label>
                     <input
-                      type="radio"
-                      name="tenant"
-                      value={t.id}
-                      checked={selectedTenant === t.id}
-                      onChange={() => setSelectedTenant(t.id)}
+                      type="checkbox"
+                      checked={selectedDatasetIds.includes(dataset.id)}
+                      onChange={(event) =>
+                        setSelectedDatasetIds((prev) =>
+                          event.target.checked
+                            ? [...prev, dataset.id]
+                            : prev.filter((id) => id !== dataset.id),
+                        )
+                      }
                     />
-                    <span className="consent-tenant-name">{t.id}</span>
-                    <span className="consent-tenant-meta">{t.role}</span>
+                    <span>{dataset.name}</span>
                   </label>
                 </li>
               ))}
             </ul>
           )}
         </div>
+      )}
 
-        {error && (
-          <p className="login-error" role="alert">
-            {error}
-          </p>
-        )}
-
-        <div className="consent-actions">
-          <button
-            type="button"
-            className="consent-deny"
-            disabled={busy}
-            onClick={() => decide(false)}
-          >
-            Deny
-          </button>
-          <button
-            type="button"
-            className="consent-approve"
-            disabled={busy || context.tenants.length === 0}
-            onClick={() => decide(true)}
-          >
-            {busy ? "Authorizing…" : "Authorize"}
-          </button>
-        </div>
-
-        <p className="consent-foot">
-          Read-only access to one tenant. You can revoke it anytime.
+      {error && (
+        <p className="login-error" role="alert">
+          {error}
         </p>
+      )}
+
+      <div className="consent-actions">
+        <button
+          type="button"
+          className="consent-deny"
+          disabled={busy}
+          onClick={() => decide(false)}
+        >
+          Deny
+        </button>
+        <button
+          type="button"
+          className="consent-approve"
+          disabled={busy || !canSubmit}
+          onClick={() => decide(true)}
+        >
+          {busy ? "Authorizing…" : "Authorize"}
+        </button>
       </div>
-    </div>
+
+      <p className="consent-foot">
+        Read-only access to one tenant. You can revoke it anytime.
+      </p>
+    </Dialog>
   );
 }
 

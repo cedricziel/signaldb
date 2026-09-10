@@ -181,6 +181,7 @@ async fn setup_services() -> TestServices {
         internal_service_key: None,
         default_limits: Default::default(),
         storage_usage_refresh_interval: Duration::from_secs(60),
+        dataset_restriction_rollout_complete: false,
     };
 
     let wal_config = WalConfig {
@@ -294,7 +295,7 @@ async fn setup_services() -> TestServices {
                 dataset_slug: TEST_DATASET.to_string(),
                 api_key_name: Some("test-key".to_string()),
                 api_key_scopes: None,
-                api_key_dataset_id: None,
+                api_key_dataset_ids: None,
                 user_id: None,
                 role: None,
                 is_instance_admin: false,
@@ -1046,7 +1047,10 @@ async fn mcp_discover_profile_types_lists_the_ingested_profile_type() {
             Some(&session_id),
             serde_json::json!({
                 "jsonrpc": "2.0", "id": next_id, "method": "tools/call",
-                "params": {"name": "discover_profile_types", "arguments": {}}
+                "params": {
+                    "name": "discover_profile_types",
+                    "arguments": {"tenant": TEST_TENANT, "dataset": TEST_DATASET}
+                }
             }),
         );
         let response = mcp_app

@@ -78,7 +78,7 @@ describe("Histogram", () => {
         scale="linear"
       />,
     );
-    expect(screen.getByText(/no volume in range/i)).toBeInTheDocument();
+    expect(screen.getByText(/no volume in this window/i)).toBeInTheDocument();
   });
 });
 

@@ -15,6 +15,7 @@ datafusion.workspace = true
 
 opentelemetry-proto.workspace = true
 tonic.workspace = true
+http-body.workspace = true
 
 tracing.workspace = true
 tokio.workspace = true

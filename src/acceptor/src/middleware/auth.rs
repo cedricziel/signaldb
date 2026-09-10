@@ -98,10 +98,11 @@ pub async fn auth_middleware(
     };
 
     let required_signal = match request.uri().path() {
-        "/api/v1/write" | "/v1/metrics" => Some("metrics"),
-        "/v1/logs" => Some("logs"),
-        "/v1/traces" => Some("traces"),
-        "/v1development/profiles" => Some("profiles"),
+        common::endpoints::PROMETHEUS_REMOTE_WRITE_PATH
+        | common::endpoints::OTLP_HTTP_METRICS_PATH => Some("metrics"),
+        common::endpoints::OTLP_HTTP_LOGS_PATH => Some("logs"),
+        common::endpoints::OTLP_HTTP_TRACES_PATH => Some("traces"),
+        common::endpoints::OTLP_HTTP_PROFILES_PATH => Some("profiles"),
         _ => None,
     };
     if let Some(signal) = required_signal

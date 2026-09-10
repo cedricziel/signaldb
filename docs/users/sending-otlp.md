@@ -6,6 +6,8 @@ sources:
   - src/acceptor/src/lib.rs
   - src/acceptor/src/cli.rs
   - src/acceptor/src/middleware/grpc_auth.rs
+  - src/router/src/endpoints/session.rs
+  - src/common/src/config/mod.rs
 ---
 
 # Send OTLP data to SignalDB
@@ -45,6 +47,15 @@ http://<acceptor-host>:4318/v1/logs
 http://<acceptor-host>:4318/v1/metrics
 ```
 
+`<acceptor-host>` above is a placeholder — for a real deployment, ask the
+deployment itself: `GET /api/v1/connection` (any tenant API key) returns this
+deployment's actual public OTLP gRPC/HTTP endpoints, ready-to-paste
+`OTEL_EXPORTER_OTLP_*` env vars, and the headers below filled in for your
+tenant/dataset. The same information is available through the MCP
+`connection_info` tool. Operators set these endpoints in `[public]` in
+`signaldb.toml`; unset, both `GET /api/v1/connection` and this doc fall back
+to the localhost defaults above.
+
 ### 2. Attach the auth metadata
 
 Each request — gRPC metadata or HTTP headers alike — must carry these keys
@@ -55,6 +66,11 @@ Each request — gRPC metadata or HTTP headers alike — must carry these keys
 | `authorization`       | yes      | `Bearer <api-key>`                                  |
 | `x-tenant-id`         | yes      | your tenant ID                                      |
 | `x-dataset-id`        | no       | dataset within the tenant; omitted → tenant default |
+
+OTLP ingest always authenticates with a tenant API key as shown above; the
+browser Explore UI's email/password or SSO login (see [Setting up SSO / OIDC
+login](../operations/oidc-sso.md)) is a separate, human-facing credential and
+has no effect on this path.
 
 ### 3. Configure your exporter
 
@@ -100,7 +116,10 @@ signaldb-cli query --sql "SELECT trace_id, span_name, service_name FROM traces L
 ```
 
 The acceptor writes to its WAL before acknowledging an export, so a
-successful export response means the data is durable.
+successful export response means the data is durable. Its per-tenant WAL
+cache is soft-capped (`[wal].max_instances`) and warns at startup when
+`RLIMIT_NOFILE` looks thin for the expected tenant count — see
+[WAL Persistence](../operations/wal-persistence.md#instance-cap).
 
 ## Per-signal support
 

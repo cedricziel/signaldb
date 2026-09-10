@@ -49,9 +49,9 @@ export type ApiKeyResponse = {
      */
     created_at: string;
     /**
-     * Dataset the key is restricted to, if any.
+     * Dataset set the key is restricted to, if any; `null` is unrestricted.
      */
-    dataset_id?: string | null;
+    dataset_ids?: Array<string> | null;
     /**
      * Unique key identifier.
      */
@@ -161,6 +161,105 @@ export type CardinalityEstimate = {
 };
 
 /**
+ * Path prefixes for the Tempo/Loki/Prometheus/Pyroscope compatibility
+ * dialects, relative to [`ConnectionQuery::api_url`]. External clients only
+ * — first-party callers use [`ConnectionQuery::query_ir`].
+ */
+export type ConnectionCompat = {
+    loki: string;
+    prometheus: string;
+    pyroscope: string;
+    tempo: string;
+};
+
+/**
+ * `Authorization`/`X-Tenant-ID`/`X-Dataset-ID` headers to send with the
+ * filled-in credential placeholder, ready to paste into a client config.
+ */
+export type ConnectionHeaders = {
+    authorization: string;
+    'x-dataset-id': string;
+    'x-tenant-id': string;
+};
+
+/**
+ * `GET /api/v1/connection` response: everything needed to send data to and
+ * query this deployment from outside, for the caller's own tenant/dataset.
+ */
+export type ConnectionInfoResponse = {
+    dataset_id: string;
+    headers: ConnectionHeaders;
+    ingest: ConnectionIngest;
+    mcp?: null | ConnectionMcp;
+    /**
+     * Operator guidance, e.g. that `[public]` is unset and URLs are
+     * localhost fallbacks. Empty when everything is configured.
+     */
+    notes: Array<string>;
+    otel_env: ConnectionOtelEnv;
+    /**
+     * Whether every required `[public]` field (OTLP gRPC/HTTP, API URL) has
+     * been explicitly set. `false` means at least one of those URLs below is
+     * a localhost fallback, unlikely to be reachable from outside this
+     * machine — see `notes` for which.
+     */
+    public_endpoints_configured: boolean;
+    query: ConnectionQuery;
+    required_scopes: ConnectionScopes;
+    tenant_id: string;
+};
+
+/**
+ * Every ingest endpoint this deployment exposes.
+ */
+export type ConnectionIngest = {
+    otlp_grpc: OtlpGrpcEndpoint;
+    otlp_http: OtlpHttpEndpoint;
+    /**
+     * The Prometheus remote-write ingest URL.
+     */
+    prometheus_remote_write: string;
+};
+
+/**
+ * The MCP Streamable HTTP endpoint, present only when this deployment has
+ * one configured (directly or via `[mcp.oauth].resource_url`).
+ */
+export type ConnectionMcp = {
+    transport: string;
+    url: string;
+};
+
+/**
+ * Ready-to-paste `OTEL_EXPORTER_OTLP_*` environment variables for an
+ * OTel-instrumented application.
+ */
+export type ConnectionOtelEnv = {
+    OTEL_EXPORTER_OTLP_ENDPOINT: string;
+    OTEL_EXPORTER_OTLP_HEADERS: string;
+    OTEL_EXPORTER_OTLP_PROTOCOL: string;
+};
+
+/**
+ * The router's query surface: the native Query IR plus the compatibility
+ * dialects, relative to `api_url`.
+ */
+export type ConnectionQuery = {
+    api_url: string;
+    compat: ConnectionCompat;
+    openapi: string;
+    query_ir: string;
+};
+
+/**
+ * The API-key scopes ingest and query each require.
+ */
+export type ConnectionScopes = {
+    ingest: Array<string>;
+    query: Array<string>;
+};
+
+/**
  * Context the consent screen renders: the requesting client and the tenants
  * the signed-in user may grant.
  */
@@ -176,8 +275,28 @@ export type ConsentContextResponse = {
 };
 
 /**
+ * A dataset within a tenant the consenting user may restrict a grant to
+ * (D5).
+ */
+export type ConsentDataset = {
+    /**
+     * Dataset id.
+     */
+    id: string;
+    /**
+     * Dataset name.
+     */
+    name: string;
+};
+
+/**
  * Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user
  * is authenticated by their session cookie; `tenant` is their chosen grant.
+ *
+ * The legacy singular `dataset_id` field is not accepted (removed in the
+ * multi-dataset-key-restriction change, D8): a request body carrying it is
+ * rejected rather than silently ignored, since dropping it would grant
+ * unrestricted access when the caller asked for a restricted one.
  */
 export type ConsentDecision = {
     /**
@@ -193,6 +312,18 @@ export type ConsentDecision = {
      */
     code_challenge: string;
     code_challenge_method?: string | null;
+    /**
+     * Dataset set to restrict the grant to (D5/D6). Omitted or `null`
+     * grants unrestricted access to the tenant — today's only behavior,
+     * and `#[serde(default)]` so a decision from a client built before
+     * this change (which omits the field entirely) keeps working
+     * unmodified. A non-empty array restricts the grant to exactly that
+     * set; every named dataset must belong to `tenant`. An explicit empty
+     * array is rejected (D1a), as is any non-empty selection while
+     * `[auth].dataset_restriction_rollout_complete` is `false` (stricter
+     * than the API-key rule — OAuth has no legacy column to fall back to).
+     */
+    dataset_ids?: Array<string> | null;
     /**
      * The redirect URI to return to (must be registered for the client).
      */
@@ -232,6 +363,11 @@ export type ConsentDecisionResponse = {
  */
 export type ConsentTenant = {
     /**
+     * Datasets in the tenant, so the consent screen can offer a per-tenant
+     * "only these datasets" checklist (D5).
+     */
+    datasets: Array<ConsentDataset>;
+    /**
      * Tenant id.
      */
     id: string;
@@ -253,12 +389,21 @@ export type CostMode = 'metadata' | 'sampled_scan' | 'none';
  * explicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,
  * `profiles:write`, `traces:read`, `logs:read`, `metrics:read`,
  * `profiles:read`, `schema:read`, `schema:write`.
+ *
+ * The legacy singular `dataset_id` field is not accepted here (removed in
+ * the multi-dataset-key-restriction change): a request body carrying it is
+ * rejected with a validation error rather than silently ignored, since
+ * dropping it would create an unrestricted key when the caller asked for a
+ * restricted one.
  */
 export type CreateApiKeyRequest = {
     /**
-     * Optional dataset the key is restricted to.
+     * Dataset set the key is restricted to. Omitted or `null` creates an
+     * unrestricted key; a non-empty array restricts it to exactly that set.
+     * An explicit empty array, or a duplicate name within the set, is
+     * rejected.
      */
-    dataset_id?: string | null;
+    dataset_ids?: Array<string> | null;
     /**
      * Optional human-readable name for the key.
      */
@@ -278,9 +423,9 @@ export type CreateApiKeyResponse = {
      */
     created_at: string;
     /**
-     * Dataset the key is restricted to, if any.
+     * Dataset set the key is restricted to, if any; `null` is unrestricted.
      */
-    dataset_id?: string | null;
+    dataset_ids?: Array<string> | null;
     /**
      * Unique key identifier.
      */
@@ -781,15 +926,24 @@ export type LogicalType = 'string' | 'bool' | 'int64' | 'float64' | 'timestamp_n
 
 export type ManageApiKeyResponse = {
     created_at: string;
-    dataset_id?: string | null;
+    dataset_ids?: Array<string> | null;
     id: string;
     name?: string | null;
     revoked: boolean;
     scopes?: Array<string> | null;
 };
 
+/**
+ * `dataset_ids` mirrors [`signaldb_api::CreateApiKeyRequest`] (D1a): omitted
+ * or `null` creates an unrestricted key, a non-empty array restricts it,
+ * and an explicit empty array or duplicate name is rejected. The legacy
+ * singular `dataset_id` field is not accepted — `deny_unknown_fields`
+ * rejects a request body still sending it, rather than silently dropping
+ * it and creating an unrestricted key when the caller asked for a
+ * restricted one.
+ */
 export type ManageCreateApiKeyRequest = {
-    dataset_id?: string | null;
+    dataset_ids?: Array<string> | null;
     name?: string | null;
     scopes: Array<string>;
 };
@@ -808,10 +962,10 @@ export type ManageCreateTenantRequest = {
  * 201 response body for API key creation via the management API.
  *
  * Fields mirror the previous `json!` body exactly (including `null` for
- * absent `name`/`dataset_id`), preserving the wire format.
+ * absent `name`), preserving the wire format.
  */
 export type ManageCreatedApiKey = {
-    dataset_id?: string | null;
+    dataset_ids?: Array<string> | null;
     id: string;
     key: string;
     name?: string | null;
@@ -888,13 +1042,23 @@ export type ManageSchemaResponse = {
 
 /**
  * Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.
- * Absent fields are left untouched.
+ * Absent fields are left untouched. `dataset_ids`/`clear_dataset_restriction`
+ * mirror [`signaldb_api::UpdateApiKeyRequest`] (D1a); the legacy singular
+ * `dataset_id` field is rejected via `deny_unknown_fields` rather than
+ * silently dropped.
  */
 export type ManageUpdateApiKeyRequest = {
     /**
-     * Replacement dataset restriction.
+     * Clear an existing dataset restriction back to unrestricted. Must not
+     * be combined with a non-empty `dataset_ids` in the same request.
      */
-    dataset_id?: string | null;
+    clear_dataset_restriction?: boolean;
+    /**
+     * Replacement dataset set (non-empty; an explicit empty array is
+     * rejected). Omitted/`null` leaves the current restriction unchanged.
+     * Mutually exclusive with `clear_dataset_restriction: true`.
+     */
+    dataset_ids?: Array<string> | null;
     /**
      * Replacement scope list (non-empty, drawn from the shared vocabulary).
      */
@@ -994,6 +1158,41 @@ export type MetricResolution = {
 
 export type MetricSearchResponse = {
     hits: Array<MetricHit>;
+};
+
+/**
+ * The public OTLP/gRPC ingest endpoint.
+ */
+export type OtlpGrpcEndpoint = {
+    /**
+     * `host[:port]`, with the port included only when the configured URL
+     * states one explicitly.
+     */
+    authority: string;
+    protocol: string;
+    signals: Array<string>;
+    tls: boolean;
+    url: string;
+};
+
+/**
+ * The public OTLP/HTTP ingest endpoint.
+ */
+export type OtlpHttpEndpoint = {
+    paths: OtlpHttpPaths;
+    protocol: string;
+    tls: boolean;
+    url: string;
+};
+
+/**
+ * Per-signal paths appended to [`OtlpHttpEndpoint::url`].
+ */
+export type OtlpHttpPaths = {
+    logs: string;
+    metrics: string;
+    profiles: string;
+    traces: string;
 };
 
 /**
@@ -1508,13 +1707,22 @@ export type Trace = {
 /**
  * Request body for updating a live API key's scopes and/or dataset restriction.
  *
- * Absent fields are left untouched. Revoked keys cannot be updated.
+ * Absent fields are left untouched. Revoked keys cannot be updated. The
+ * legacy singular `dataset_id` field is not accepted (see
+ * [`CreateApiKeyRequest`]).
  */
 export type UpdateApiKeyRequest = {
     /**
-     * New dataset restriction.
+     * Clear an existing dataset restriction back to unrestricted. Must not
+     * be combined with a non-empty `dataset_ids` in the same request.
      */
-    dataset_id?: string | null;
+    clear_dataset_restriction?: boolean;
+    /**
+     * Replacement dataset set (non-empty; an explicit empty array is
+     * rejected). Omitted/`null` leaves the current restriction unchanged.
+     * Mutually exclusive with `clear_dataset_restriction: true`.
+     */
+    dataset_ids?: Array<string> | null;
     /**
      * New scope list (replaces the current one; must be non-empty).
      */
@@ -1599,6 +1807,11 @@ export type ValueOrigin = 'registry' | 'statistics' | 'sampled';
  */
 export type WhoamiIdentityResponse = {
     dataset: string;
+    /**
+     * The credential's own dataset-set restriction, if any; `null`/absent
+     * means unrestricted. See [`WhoamiResponse::dataset_ids`].
+     */
+    dataset_ids?: Array<string> | null;
     tenant: WhoamiTenant;
     /**
      * Stable authenticated user ID. Empty for API key credentials.
@@ -2113,6 +2326,52 @@ export type CreateUserResponses = {
 };
 
 export type CreateUserResponse = CreateUserResponses[keyof CreateUserResponses];
+
+export type ConnectionInfoData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/connection';
+};
+
+export type ConnectionInfoErrors = {
+    /**
+     * Invalid or expired credential
+     */
+    401: unknown;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type ConnectionInfoError = ConnectionInfoErrors[keyof ConnectionInfoErrors];
+
+export type ConnectionInfoResponses = {
+    /**
+     * Connection details for this deployment, scoped to the caller's tenant
+     */
+    200: ConnectionInfoResponse;
+};
+
+export type ConnectionInfoResponse2 = ConnectionInfoResponses[keyof ConnectionInfoResponses];
 
 export type ManageGetSchemaData = {
     body?: never;

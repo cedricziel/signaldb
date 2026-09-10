@@ -2,6 +2,12 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { lokiLabels, lokiQueryHistogram, lokiQueryLogs } from "../../api/loki";
 import {
+  MobileFiltersToggle,
+  MobileSidebarDrawer,
+} from "../../components/MobileSidebarDrawer";
+import { QueryError } from "../../components/QueryError";
+import { useMobileSidebar } from "../../hooks/useMobileSidebar";
+import {
   compileHistogramQL,
   compileLogQL,
   upsertFilter,
@@ -31,6 +37,7 @@ export function LogsView({ state, update }: Props) {
   const [editingRaw, setEditingRaw] = useState(false);
   const [rawDraft, setRawDraft] = useState("");
   const [searchDraft, setSearchDraft] = useState(state.search);
+  const mobileSidebar = useMobileSidebar();
 
   const model = {
     filters: state.filters,
@@ -147,13 +154,23 @@ export function LogsView({ state, update }: Props) {
         )}
       </div>
 
+      <MobileFiltersToggle
+        open={mobileSidebar.open}
+        onToggle={mobileSidebar.toggle}
+      />
+
       <div className="logs-body">
-        <FieldSidebar
-          labels={labels.data ?? []}
-          range={resolvedForStep}
-          rangeKey={rangeKey}
-          onAddFilter={addFilter}
-        />
+        <MobileSidebarDrawer
+          open={mobileSidebar.open}
+          onClose={mobileSidebar.close}
+        >
+          <FieldSidebar
+            labels={labels.data ?? []}
+            range={resolvedForStep}
+            rangeKey={rangeKey}
+            onAddFilter={addFilter}
+          />
+        </MobileSidebarDrawer>
         <div className="logs-main">
           {/* The row count describes the list below, not the chart: the
               histogram is a separate unlimited aggregate, so keeping the two
@@ -181,11 +198,7 @@ export function LogsView({ state, update }: Props) {
               />
             </div>
           )}
-          {logs.isError && (
-            <div className="query-error" role="alert">
-              Query failed: {(logs.error as Error).message}
-            </div>
-          )}
+          {logs.isError && <QueryError what="logs" error={logs.error} />}
           {logs.isPending && !logs.isError && (
             <div className="loglist-empty">Loading…</div>
           )}

@@ -174,6 +174,9 @@ async fn main() -> Result<()> {
             .await
             .context("Failed to bootstrap default tenant")?
     {
+        let otlp_grpc_url = config.public.otlp_grpc_url();
+        let otlp_http_url = config.public.otlp_http_url();
+        let api_url = config.public.api_url();
         tracing::info!(
             "\n============================================================\n\
              First boot: no tenants were configured or provisioned, so a\n\
@@ -187,10 +190,11 @@ async fn main() -> Result<()> {
              \n\
              Point any OpenTelemetry SDK or Collector at SignalDB:\n\
              \n\
-               export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317\n\
+               export OTEL_EXPORTER_OTLP_ENDPOINT={otlp_grpc_url}\n\
                export OTEL_EXPORTER_OTLP_HEADERS=\"authorization=Bearer {api_key},x-tenant-id=default\"\n\
              \n\
-             (OTLP/HTTP uses port 4318 instead.)\n\
+             (OTLP/HTTP uses {otlp_http_url} instead.)\n\
+             Full connection details: GET {api_url}/api/v1/connection (or the MCP `connection_info` tool).\n\
              To create a UI user: signaldb-cli user create <email> --tenant default\n\
              ============================================================"
         );
@@ -237,8 +241,11 @@ async fn main() -> Result<()> {
 
     // One WAL per tenant/dataset/signal (#932); WALs left by a previous run
     // are opened now so their pending entries drain.
-    let writer_wal_manager = Arc::new(WalManager::uniform(writer_wal_config));
+    let writer_wal_manager = Arc::new(
+        WalManager::uniform(writer_wal_config).with_max_instances(config.wal.max_instances),
+    );
     writer::cli::open_existing_writer_wals(&writer_wal_manager).await;
+    writer_wal_manager.warn_if_fd_headroom_thin("writer").await;
 
     // Create Iceberg-based Flight ingestion service with CatalogManager
     let writer_flight_service = IcebergWriterFlightService::new(
@@ -431,8 +438,8 @@ async fn main() -> Result<()> {
         "acceptor",
         std::env::var("ACCEPTOR_WAL_DIR").ok().map(Into::into),
     );
-    let grpc_addr = SocketAddr::from(([0, 0, 0, 0], 4317));
-    let http_addr = SocketAddr::from(([0, 0, 0, 0], 4318));
+    let grpc_addr = SocketAddr::from(([0, 0, 0, 0], common::endpoints::DEFAULT_OTLP_GRPC_PORT));
+    let http_addr = SocketAddr::from(([0, 0, 0, 0], common::endpoints::DEFAULT_OTLP_HTTP_PORT));
     let advertise_addr =
         std::env::var("ACCEPTOR_ADVERTISE_ADDR").unwrap_or_else(|_| grpc_addr.to_string());
 
@@ -489,7 +496,8 @@ async fn main() -> Result<()> {
 
     // Start HTTP router
     let app = create_router(state.clone());
-    let http_router_addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+    let http_router_addr =
+        SocketAddr::from(([0, 0, 0, 0], common::endpoints::DEFAULT_ROUTER_HTTP_PORT));
     let http_router_handle = tokio::spawn(async move {
         tracing::info!("Starting HTTP router on {http_router_addr}");
         let listener = tokio::net::TcpListener::bind(http_router_addr)

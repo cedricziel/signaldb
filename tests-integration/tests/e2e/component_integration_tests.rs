@@ -41,7 +41,7 @@ fn test_tenant_context() -> common::auth::TenantContext {
         dataset_slug: "test-dataset".to_string(),
         api_key_name: Some("test-key".to_string()),
         api_key_scopes: None,
-        api_key_dataset_id: None,
+        api_key_dataset_ids: None,
         user_id: None,
         role: None,
         is_instance_admin: false,
@@ -106,6 +106,7 @@ fn test_configuration(temp_dir: &TempDir) -> Configuration {
         internal_service_key: None,
         default_limits: Default::default(),
         storage_usage_refresh_interval: Duration::from_secs(60),
+        dataset_restriction_rollout_complete: false,
     };
     config
 }

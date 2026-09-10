@@ -10,14 +10,13 @@ use common::catalog_manager::CatalogManager;
 use compactor::executor::{CompactionExecutor, ExecutorConfig};
 use compactor::planner::{CompactionPlanner, PlannerConfig};
 use datafusion::arrow::array::RecordBatch;
-use futures::stream;
-use iceberg_rust::arrow::write::write_parquet_partitioned;
 use object_store::memory::InMemory;
 use std::sync::Arc;
 use tests_integration::compaction_helpers::{
     aligned_hour_start, attested_sort_order_ids, context_for, load_table, trace_sort_keys,
 };
 use tests_integration::generators;
+use tests_integration::ordering::append_unattested;
 use writer::IcebergTableWriter;
 
 const TENANT: &str = "converge-tenant";
@@ -35,20 +34,14 @@ async fn scan_all(catalog_manager: &Arc<CatalogManager>) -> Result<Vec<RecordBat
 }
 
 /// Write `batch` into the table the way a build predating the ordering
-/// contract did: straight through the unattested write path, so the resulting
-/// file claims no sort order whatever its rows happen to look like.
+/// contract did, so the resulting file claims no sort order whatever its
+/// rows happen to look like.
 async fn append_legacy_file(
     catalog_manager: &Arc<CatalogManager>,
     batch: RecordBatch,
 ) -> Result<()> {
     let mut table = load_table(catalog_manager, TENANT, DATASET, TABLE).await?;
-    let files = write_parquet_partitioned(&table, stream::iter(vec![Ok(batch)]), None).await?;
-    table
-        .new_transaction(None)
-        .append_data(files)
-        .commit()
-        .await?;
-    Ok(())
+    append_unattested(&mut table, batch).await
 }
 
 #[tokio::test]

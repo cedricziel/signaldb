@@ -134,6 +134,14 @@ required-features = ["benchmarks"]
 name = "wal_pending_gauge"
 required-features = ["testing"]
 
+# Same reasoning as `wal_pending_gauge` above: this test reaches
+# `Wal::set_last_append_secs`, also gated on `cfg(any(test, feature =
+# "testing"))`, to age WAL instances deterministically for the instance-cap
+# regression case.
+[[test]]
+name = "wal_manager_active_cardinality_not_evicted"
+required-features = ["testing"]
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tokio-stream = { workspace = true, features = ["net"] }

@@ -36,12 +36,19 @@ to `/logs`, preserving any query string from the original URL.
 
 ### Requirement: Root path redirects to the logs view
 
-Navigating to the site root SHALL redirect to `/logs`.
+Navigating to the site root SHALL redirect to `/logs`, preserving any query
+string from the original URL.
 
 #### Scenario: Root redirects to logs
 
 - **WHEN** a user opens `/`
 - **THEN** the browser URL becomes `/logs` and the logs view renders
+
+#### Scenario: Root redirect preserving query params
+
+- **WHEN** a user opens `/?tenant=acme&dataset=prod`
+- **THEN** the browser URL becomes `/logs?tenant=acme&dataset=prod` and the
+  logs view renders
 
 ### Requirement: Tenant management is reachable via a dedicated URL
 

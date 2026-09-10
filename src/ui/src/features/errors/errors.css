@@ -12,7 +12,6 @@
 }
 
 .errors-table th {
-  text-align: left;
   padding: 6px 10px;
   font-size: 10.5px;
   text-transform: uppercase;
@@ -108,7 +107,6 @@
 }
 
 .errors-occurrences th {
-  text-align: left;
   padding: 6px 10px;
   font-size: 10.5px;
   text-transform: uppercase;

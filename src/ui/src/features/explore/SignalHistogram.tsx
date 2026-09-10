@@ -143,7 +143,7 @@ export function SignalHistogram({
   }, [series, rangeMs.fromMs, rangeMs.toMs, stepMs]);
 
   if (buckets.length === 0 || buckets.every((b) => b.total === 0)) {
-    return <div className="svol svol-empty">No volume in range</div>;
+    return <div className="svol svol-empty">No volume in this window</div>;
   }
 
   const max = Math.max(...buckets.map((b) => b.total));

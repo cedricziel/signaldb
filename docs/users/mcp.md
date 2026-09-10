@@ -28,40 +28,54 @@ missing tool.
 Available to every authenticated tenant session — there is no role gating on
 these:
 
-| Tool                       | Purpose                                                                                                                                                                                        |
-| -------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `server_info`              | Confirm connectivity and which tenant your credential resolves to.                                                                                                                             |
-| `search_traces`            | TraceQL search over your tenant's traces.                                                                                                                                                      |
-| `get_trace`                | Fetch a single trace by ID (renders as a waterfall — see below).                                                                                                                               |
-| `get_profile`              | Fetch a single profile's flamegraph by ID (renders as an interactive flamegraph — see below).                                                                                                  |
-| `discover_attributes`      | List queryable attribute/label names, or the values for one. Signal-aware: `traces` (default, Tempo tags), `logs` (Loki labels), `metrics` (Prometheus labels), `profiles` (Pyroscope labels). |
-| `discover_metrics`         | List the distinct metric names visible to your tenant.                                                                                                                                         |
+| Tool                       | Purpose                                                                                                                                                                                                              |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `server_info`              | Confirm connectivity and which tenant your credential resolves to.                                                                                                                                                   |
+| `connection_info`          | This deployment's public OTLP gRPC/HTTP and Prometheus remote-write endpoints, the query API base, headers with your tenant/dataset filled in, the API-key scopes ingest and query need, and ready-to-paste `OTEL_EXPORTER_OTLP_*` env vars. |
+| `discover_datasets`        | The tenant and datasets your credential can access, as a nested Markdown list, marking the session's current default dataset. Filtered to your credential's dataset restriction, if any — a dataset outside it never appears, even by name. Call before passing an explicit `dataset` or `tenant` argument elsewhere.             |
+| `search_traces`            | TraceQL search over your tenant's traces.                                                                                                                                                                            |
+| `get_trace`                | Fetch a single trace by ID (renders as a waterfall — see below).                                                                                                                                                     |
+| `get_profile`              | Fetch a single profile's flamegraph by ID (renders as an interactive flamegraph — see below).                                                                                                                        |
+| `discover_attributes`      | List queryable attribute/label names, or the values for one. Signal-aware: `traces` (default, Tempo tags), `logs` (Loki labels), `metrics` (Prometheus labels), `profiles` (Pyroscope labels).                       |
+| `discover_metrics`         | List the distinct metric names visible to your tenant.                                                                                                                                                               |
 | `discover_fields`          | The queryable fields of a signal source, as logical dotted OTel names with type, `origin`, coverage and approximate cardinality. Answered from the schema registry and maintained statistics — reads no signal data. |
-| `discover_field_values`    | Value suggestions for one field. Exact and free for a declared value set; otherwise it names the query that would answer it, and only `sample: true` runs that query.                            |
-| `discover_sources`         | The signal sources available to your tenant, with whether each is queryable.                                                                                                                   |
-| `discover_profile_types`   | List the Pyroscope profile types with data for your tenant (e.g. CPU, heap).                                                                                                                   |
-| `query_metrics`            | PromQL query over your tenant's metrics (native Prometheus result); instant by default, or a range query when `start`/`end` (and optionally `step`) are given.                                 |
-| `search_logs`              | LogQL query over your tenant's logs (native Loki result); instant or range, same as `query_metrics`.                                                                                           |
-| `search_profiles`          | Search profiles with a Pyroscope selector and a time range; returns the aggregated flame graph (flamebearer encoding).                                                                         |
-| `compare_profiles`         | Compare profiles between two time ranges with a shared Pyroscope selector; returns the differential flame graph.                                                                               |
-| `profiles_for_trace`       | List the profiles correlated with a trace id.                                                                                                                                                  |
-| `query_ir`                 | Native Query IR document (the structured, versioned query surface).                                                                                                                            |
-| `list_schema_registries`   | List the schema registries visible to your tenant in precedence order (custom first, then the bundled `signaldb` and `otel` semconv), with definition counts.                                  |
-| `get_schema_registry`      | Fetch one registry's summary and full document by `namespace`/`version`.                                                                                                                       |
-| `resolve_attribute`        | What an attribute key means: every definition across the visible registries, precedence-ordered (`primary` first), with brief, type, examples, deprecation.                                    |
-| `resolve_entity`           | What an entity type (`k8s.pod`, `service`, ...) means: identifying/descriptive attributes, what it extends, associated metrics.                                                                |
-| `resolve_metric`           | What a metric means: instrument, unit, brief, recorded attributes, associated entities.                                                                                                        |
-| `search_schema`            | Prefix search over attributes, entities, or metrics (`kind`, `prefix`, `limit`) to find the right vocabulary before querying.                                                                  |
-| `create_schema_registry`   | Upload a custom Weaver-model registry document (JSON object) for your tenant (requires `schema:write`).                                                                                        |
-| `replace_schema_registry`  | Replace a custom registry's document by namespace/version (requires `schema:write`; bundled registries refuse).                                                                                |
-| `validate_schema_registry` | Validate a registry document without storing it; errors carry document paths (requires `schema:write`).                                                                                        |
-| `delete_schema_registry`   | Delete a custom registry by namespace/version (requires `schema:write`; bundled registries refuse).                                                                                            |
+| `discover_field_values`    | Value suggestions for one field. Exact and free for a declared value set; otherwise it names the query that would answer it, and only `sample: true` runs that query.                                                |
+| `discover_sources`         | The signal sources available to your tenant, with whether each is queryable.                                                                                                                                         |
+| `discover_profile_types`   | List the Pyroscope profile types with data for your tenant (e.g. CPU, heap).                                                                                                                                         |
+| `query_metrics`            | PromQL query over your tenant's metrics (native Prometheus result); instant by default, or a range query when `start`/`end` (and optionally `step`) are given.                                                       |
+| `search_logs`              | LogQL query over your tenant's logs (native Loki result); instant or range, same as `query_metrics`.                                                                                                                 |
+| `search_profiles`          | Search profiles with a Pyroscope selector and a time range; returns the aggregated flame graph (flamebearer encoding).                                                                                               |
+| `compare_profiles`         | Compare profiles between two time ranges with a shared Pyroscope selector; returns the differential flame graph.                                                                                                     |
+| `profiles_for_trace`       | List the profiles correlated with a trace id.                                                                                                                                                                        |
+| `query_ir`                 | Native Query IR document (the structured, versioned query surface).                                                                                                                                                  |
+| `list_schema_registries`   | List the schema registries visible to your tenant in precedence order (custom first, then the bundled `signaldb` and `otel` semconv), with definition counts.                                                        |
+| `get_schema_registry`      | Fetch one registry's summary and full document by `namespace`/`version`.                                                                                                                                             |
+| `resolve_attribute`        | What an attribute key means: every definition across the visible registries, precedence-ordered (`primary` first), with brief, type, examples, deprecation.                                                          |
+| `resolve_entity`           | What an entity type (`k8s.pod`, `service`, ...) means: identifying/descriptive attributes, what it extends, associated metrics.                                                                                      |
+| `resolve_metric`           | What a metric means: instrument, unit, brief, recorded attributes, associated entities.                                                                                                                              |
+| `search_schema`            | Prefix search over attributes, entities, or metrics (`kind`, `prefix`, `limit`) to find the right vocabulary before querying.                                                                                        |
+| `create_schema_registry`   | Upload a custom Weaver-model registry document (JSON object) for your tenant (requires `schema:write`).                                                                                                              |
+| `replace_schema_registry`  | Replace a custom registry's document by namespace/version (requires `schema:write`; bundled registries refuse).                                                                                                      |
+| `validate_schema_registry` | Validate a registry document without storing it; errors carry document paths (requires `schema:write`).                                                                                                              |
+| `delete_schema_registry`   | Delete a custom registry by namespace/version (requires `schema:write`; bundled registries refuse).                                                                                                                  |
 
-Each query tool accepts an optional `dataset` argument. Omit it to use your
-session's default dataset; pass one to target another dataset your tenant may
-access (the router validates access and rejects the rest). Large results are
-capped and returned with a `truncated: true` flag telling the agent to narrow
-the query.
+Each query tool requires a `dataset` argument, targeting the dataset your
+tenant may access (the router validates access and rejects the rest). Large
+results are capped and returned with a `truncated: true` flag telling the
+agent to narrow the query.
+
+Most of these tools also require a `tenant` argument: a confirmation check,
+not a way to switch tenants. It must equal the tenant *this specific call's*
+credential resolves to (`server_info`, `discover_datasets`), and a mismatch
+fails the call with an error naming both tenants, before any request reaches
+the router. Both arguments are required rather than optional because one MCP
+session (one `mcp-session-id`) can hold credentials for several tenants and
+datasets across its calls — there is no single implicit session-wide default
+left to fall back to. To reach a second tenant within one session, present a
+different credential (`Authorization` bearer token plus `X-Tenant-ID`) on a
+later call rather than opening a second connection; the router
+independently authenticates each call, up to a bounded number of distinct
+identities per session.
 
 ### Operational control
 
@@ -87,9 +101,9 @@ Unprefixed, admin-authenticated (the administrative API key can manage
 | `create_user`                      | Create a human user and grant an initial tenant membership.                                                                                                                          |
 | `list_datasets` / `create_dataset` | List or create a tenant's datasets.                                                                                                                                                  |
 | `delete_dataset`                   | Delete a dataset by ID. **Destructive**: requires `confirm` equal to `dataset_id`.                                                                                                   |
-| `list_api_keys`                    | List a tenant's API keys with their scopes and dataset restriction. Raw secrets are never returned.                                                                                  |
-| `create_api_key`                   | Create an API key carrying explicit `scopes` (required; e.g. `traces:write`, `schema:read`) and an optional `dataset_id`. The raw secret is returned exactly once, in this response. |
-| `update_api_key_scopes`            | Change a live key's scopes and/or dataset restriction without rotating its secret; revoked keys are rejected.                                                                        |
+| `list_api_keys`                    | List a tenant's API keys with their scopes and dataset set (or that they're unrestricted). Raw secrets are never returned.                                                                                  |
+| `create_api_key`                   | Create an API key carrying explicit `scopes` (required; e.g. `traces:write`, `schema:read`) and an optional `dataset_ids` set. The raw secret is returned exactly once, in this response. |
+| `update_api_key_scopes`            | Change a live key's scopes and/or dataset set without rotating its secret; `dataset_ids` replaces the restriction, `clear_dataset_restriction: true` (with no `dataset_ids`) removes it, and omitting both leaves it unchanged — sending both together is rejected before any request is made. Revoked keys are rejected.                                                                        |
 | `revoke_api_key`                   | Revoke an API key by ID. **Destructive**: requires `confirm` equal to `key_id`.                                                                                                      |
 
 ### Tenant self-management
@@ -103,7 +117,7 @@ plain tenant API key, exactly like the query tools above:
 | Tool                           | Purpose                                                                                                                                    |
 | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------ |
 | `tenant_info`                  | The caller's own tenant: id, enabled flag, schema configuration (mirrors `signaldb-cli tenant show`).                                      |
-| `tenant_list_tables`           | List the tenant's provisioned signal tables.                                                                                               |
+| `tenant_list_tables`           | List the tenant's provisioned signal tables. Filtered to your credential's dataset restriction, if any, the same way `discover_datasets` is.                                                                                               |
 | `tenant_create_tables`         | Provision (create) the tenant's enabled signal tables — the manual trigger from [table provisioning](../operations/table-provisioning.md). |
 | `tenant_list_table_schemas`    | List the tenant's configured table schema types (distinct from `tenant_list_tables`, which lists what is actually provisioned).            |
 | `list_available_table_schemas` | List every table schema type SignalDB knows how to provision, regardless of tenant configuration.                                          |
@@ -122,17 +136,17 @@ access-denied error naming the required scope rather than succeeding or
 404ing. `tenant:manage` is never granted through OAuth consent; see
 [API-key scopes](authentication.md#api-key-scopes).
 
-| Tool                                                   | Purpose                                                                                                                                            |
-| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `tenant_list_datasets` / `tenant_create_dataset`       | List or create the caller's own tenant's datasets.                                                                                                 |
-| `tenant_delete_dataset`                                | Delete a dataset by name. **Destructive**: requires `confirm` equal to `dataset_name`.                                                             |
-| `tenant_list_api_keys`                                 | List the caller's own tenant's API keys. Raw secrets are never returned.                                                                           |
-| `tenant_create_api_key`                                | Create an API key for the caller's own tenant. The raw secret is returned exactly once.                                                            |
-| `tenant_update_api_key`                                | Update the scopes and/or dataset restriction of one of the caller's own tenant's API keys.                                                         |
-| `tenant_revoke_api_key`                                | Revoke one of the caller's own tenant's API keys. **Destructive**: requires `confirm` equal to `key_id`.                                           |
-| `tenant_list_memberships` / `tenant_upsert_membership` | List the caller's own tenant's memberships, or create/update a member's role.                                                                      |
-| `tenant_remove_membership`                             | Remove a member from the caller's own tenant. **Destructive**: requires `confirm` equal to `user_id`.                                              |
-| `tenant_get_schema`                                    | The registered logical (client-visible) and physical (storage) schema for every signal source.                                                     |
+| Tool                                                   | Purpose                                                                                                  |
+| ------------------------------------------------------ | -------------------------------------------------------------------------------------------------------- |
+| `tenant_list_datasets` / `tenant_create_dataset`       | List or create the caller's own tenant's datasets.                                                       |
+| `tenant_delete_dataset`                                | Delete a dataset by name. **Destructive**: requires `confirm` equal to `dataset_name`.                   |
+| `tenant_list_api_keys`                                 | List the caller's own tenant's API keys. Raw secrets are never returned.                                 |
+| `tenant_create_api_key`                                | Create an API key for the caller's own tenant. The raw secret is returned exactly once.                  |
+| `tenant_update_api_key`                                | Update the scopes and/or dataset set of one of the caller's own tenant's API keys — same `dataset_ids`/`clear_dataset_restriction` semantics as `update_api_key_scopes` above.               |
+| `tenant_revoke_api_key`                                | Revoke one of the caller's own tenant's API keys. **Destructive**: requires `confirm` equal to `key_id`. |
+| `tenant_list_memberships` / `tenant_upsert_membership` | List the caller's own tenant's memberships, or create/update a member's role.                            |
+| `tenant_remove_membership`                             | Remove a member from the caller's own tenant. **Destructive**: requires `confirm` equal to `user_id`.    |
+| `tenant_get_schema`                                    | The registered logical (client-visible) and physical (storage) schema for every signal source.           |
 
 Destructive tools carry the MCP `destructiveHint` annotation; read-only tools
 carry `readOnlyHint` — a client that inspects `tools/list` annotations can
@@ -269,7 +283,11 @@ need the double-underscore form): `SIGNALDB__MCP__ENABLED`,
 `SIGNALDB__MCP__MAX_CONCURRENT_TOOL_CALLS`, and `SIGNALDB__MCP__ALLOWED_HOSTS`
 (see below). The sidecar also honours `[self_monitoring]` (from `--config`,
 `signaldb.toml`, or `SIGNALDB__SELF_MONITORING__*`) so its own spans, audit
-events, and metrics can be exported — see below.
+events, and metrics can be exported — see below. It parses the same shared
+`Configuration` as every other service, so unrelated sections like
+`[wal].max_instances` (see [WAL Persistence](../operations/wal-persistence.md))
+are accepted but unused here — the standalone MCP server holds no WAL of its
+own.
 
 ### The `Host` allowlist (serving beyond localhost)
 
@@ -386,6 +404,22 @@ read scopes it requested; the token it receives is bound to that tenant. To let
 a connector reach a second tenant, add it a second time and grant the other
 tenant.
 
+After choosing a tenant, the consent screen also offers a dataset choice:
+**all datasets** in that tenant (the default — identical to every connector
+granted before this choice existed) or **only these datasets**, which reveals
+a checklist of the tenant's datasets and requires at least one checked box to
+approve. Picking specific datasets binds the token to exactly that set —
+queries against any other dataset in the tenant are refused, and a query
+naming no dataset at all is rejected rather than silently falling back to the
+tenant default when the set has more than one dataset (a single-dataset
+restriction resolves to that dataset the same way an unrestricted token
+resolves to the tenant default). A refresh preserves whichever restriction the
+original grant had. Restricting a grant to specific datasets is refused,
+naming the `dataset_restriction_rollout_complete` config key, until an
+operator has set `[auth] dataset_restriction_rollout_complete = true` on
+every router node — see [Multi-dataset rollout](authentication.md#multi-dataset-rollout);
+choosing "all datasets" is unaffected by this and always available.
+
 The endpoint **must be HTTPS with a valid certificate** — these clients will not
 connect to a raw LAN port, so the TLS reverse proxy is required here.
 
@@ -455,6 +489,11 @@ exported when `[self_monitoring]` is enabled for the sidecar (service name
 `signaldb-mcp`); see `docs/operations/self-monitoring-traces.md`.
 
 ## Example flow
+
+Configuring a new application to send data here? Call `connection_info` first —
+it returns the deployment's public OTLP endpoints, the headers to send, and
+ready-to-paste `OTEL_EXPORTER_OTLP_*` env vars — then mint an ingest key with
+`tenant_create_api_key` and substitute it for the placeholder.
 
 1. `server_info` — confirm you are connected as the expected tenant.
 2. `discover_attributes` — list tag names, then values for `service.name`.

@@ -116,6 +116,7 @@ async fn setup_metrics_test() -> (axum::Router, Arc<WalManager>, TempDir) {
             schema_config: None,
             limits: None,
         }],
+        dataset_restriction_rollout_complete: false,
     };
 
     let service_bootstrap = ServiceBootstrap::new(

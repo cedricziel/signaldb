@@ -15,6 +15,7 @@ import {
   fetchSessionConfig,
   whoami,
 } from "../../api/session";
+import { Dialog } from "../../components/Dialog";
 import "./LoginPanel.css";
 
 export interface LoginResult {
@@ -110,129 +111,125 @@ export function LoginPanel({ onSuccess }: PanelProps) {
 
   if (choices) {
     return (
-      <div className="login-backdrop" role="dialog" aria-label="Choose tenant">
-        <div className="login-panel">
-          <h2>Choose a tenant</h2>
-          <p className="login-hint">
-            Your account belongs to several tenants. Pick the one to explore —
-            you can switch later from the top bar.
+      <Dialog label="Choose tenant" className="login-panel" layer="system">
+        <h2>Choose a tenant</h2>
+        <p className="login-hint">
+          Your account belongs to several tenants. Pick the one to explore — you
+          can switch later from the top bar.
+        </p>
+        <ul className="login-tenants">
+          {choices.map((membership) => (
+            <li key={membership.tenant_id}>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => finishWithTenant(membership.tenant_id)}
+              >
+                <span className="login-tenant-name">{membership.name}</span>
+                <span className="login-tenant-meta">
+                  {membership.tenant_id} · {membership.role}
+                </span>
+              </button>
+            </li>
+          ))}
+        </ul>
+        {error && (
+          <p className="login-error" role="alert">
+            {error}
           </p>
-          <ul className="login-tenants">
-            {choices.map((membership) => (
-              <li key={membership.tenant_id}>
-                <button
-                  type="button"
-                  disabled={busy}
-                  onClick={() => finishWithTenant(membership.tenant_id)}
-                >
-                  <span className="login-tenant-name">{membership.name}</span>
-                  <span className="login-tenant-meta">
-                    {membership.tenant_id} · {membership.role}
-                  </span>
-                </button>
-              </li>
-            ))}
-          </ul>
-          {error && (
-            <p className="login-error" role="alert">
-              {error}
-            </p>
-          )}
-        </div>
-      </div>
+        )}
+      </Dialog>
     );
   }
 
   const noDoorsAvailable = !passwordEnabled && !oidc;
 
   return (
-    <div className="login-backdrop" role="dialog" aria-label="Sign in">
-      <div className="login-panel">
-        <h2>Sign in to SignalDB</h2>
-        {passwordEnabled && (
-          <p className="login-hint">
-            Queries were rejected as unauthenticated. Sign in with your user
-            account.
-          </p>
-        )}
-        {noDoorsAvailable && (
-          <p className="login-error" role="alert">
-            No login methods are currently available. Single sign-on is
-            temporarily unavailable; contact your administrator.
-          </p>
-        )}
-        {passwordEnabled && (
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              const data = new FormData(e.currentTarget);
-              const creds = {
-                email: String(data.get("email") ?? "").trim(),
-                password: String(data.get("password") ?? ""),
-              };
-              setBusy(true);
-              setError(null);
-              createSession(creds)
-                .then((result) => {
-                  if (result.tenant) {
-                    onSuccess({
-                      tenant: result.tenant,
-                      dataset: result.dataset ?? "",
-                    });
-                  } else {
-                    setChoices(result.memberships);
-                  }
-                })
-                .catch((err: unknown) => {
-                  setError(toErrorMessage(err));
-                })
-                .finally(() => setBusy(false));
-            }}
-          >
-            <label>
-              Email
-              <input
-                name="email"
-                type="email"
-                aria-label="Email"
-                autoComplete="username"
-                required
-                autoFocus
-              />
-            </label>
-            <label>
-              Password
-              <input
-                name="password"
-                type="password"
-                aria-label="Password"
-                autoComplete="current-password"
-                required
-              />
-            </label>
-            {error && (
-              <p className="login-error" role="alert">
-                {error}
-              </p>
-            )}
-            <button type="submit" disabled={busy}>
-              {busy ? "Signing in…" : "Sign in"}
-            </button>
-          </form>
-        )}
-        {oidc && (
-          <button
-            type="button"
-            className="login-sso-button"
-            disabled={busy}
-            onClick={() => {
-              window.location.href = OIDC_START_PATH;
-            }}
-          >
-            Continue with {oidc.name}
+    <Dialog label="Sign in" className="login-panel" layer="system">
+      <h2>Sign in to SignalDB</h2>
+      {passwordEnabled && (
+        <p className="login-hint">
+          Queries were rejected as unauthenticated. Sign in with your user
+          account.
+        </p>
+      )}
+      {noDoorsAvailable && (
+        <p className="login-error" role="alert">
+          No login methods are currently available. Single sign-on is
+          temporarily unavailable; contact your administrator.
+        </p>
+      )}
+      {passwordEnabled && (
+        <form
+          onSubmit={(e) => {
+            e.preventDefault();
+            const data = new FormData(e.currentTarget);
+            const creds = {
+              email: String(data.get("email") ?? "").trim(),
+              password: String(data.get("password") ?? ""),
+            };
+            setBusy(true);
+            setError(null);
+            createSession(creds)
+              .then((result) => {
+                if (result.tenant) {
+                  onSuccess({
+                    tenant: result.tenant,
+                    dataset: result.dataset ?? "",
+                  });
+                } else {
+                  setChoices(result.memberships);
+                }
+              })
+              .catch((err: unknown) => {
+                setError(toErrorMessage(err));
+              })
+              .finally(() => setBusy(false));
+          }}
+        >
+          <label>
+            Email
+            <input
+              name="email"
+              type="email"
+              aria-label="Email"
+              autoComplete="username"
+              required
+              autoFocus
+            />
+          </label>
+          <label>
+            Password
+            <input
+              name="password"
+              type="password"
+              aria-label="Password"
+              autoComplete="current-password"
+              required
+            />
+          </label>
+          {error && (
+            <p className="login-error" role="alert">
+              {error}
+            </p>
+          )}
+          <button type="submit" disabled={busy}>
+            {busy ? "Signing in…" : "Sign in"}
           </button>
-        )}
-      </div>
-    </div>
+        </form>
+      )}
+      {oidc && (
+        <button
+          type="button"
+          className="login-sso-button"
+          disabled={busy}
+          onClick={() => {
+            window.location.href = OIDC_START_PATH;
+          }}
+        >
+          Continue with {oidc.name}
+        </button>
+      )}
+    </Dialog>
   );
 }

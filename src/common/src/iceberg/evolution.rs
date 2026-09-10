@@ -27,6 +27,75 @@ use crate::schema::schema_parser::{
     ResolvedField, SchemaDefinitions, TableSchemaDefinition, version_chain,
 };
 
+/// The `doc` prefix [`label_doc`] stamps on every materialized label
+/// column, recording the attribute key it was created for. Authoritative
+/// over the column *name*: two keys can sanitize to the same
+/// [`materialized_column_name`] candidate (#814), but never to the same
+/// recorded origin key.
+const LABEL_DOC_PREFIX: &str = "Materialized attribute label '";
+
+/// Formats the field `doc` recording `key` as a materialized label
+/// column's authoritative origin key. [`add_label_columns`] stamps every
+/// new label column's `doc` with this; [`origin_key_of`] inverts it.
+pub fn label_doc(key: &str) -> String {
+    format!("{LABEL_DOC_PREFIX}{key}'")
+}
+
+/// Extracts the origin key from a materialized label column's field
+/// `doc`. Returns `None` for a base column (no doc, or a doc not in this
+/// format).
+pub fn origin_key_of(doc: Option<&str>) -> Option<&str> {
+    doc?.strip_prefix(LABEL_DOC_PREFIX)?.strip_suffix('\'')
+}
+
+/// The column already materializing `key` in `schema`, found by its
+/// recorded origin-key `doc` -- immune to a sanitization collision with a
+/// different key (#814), and stable across calls because it is looked up
+/// from the schema already committed, never recomputed from scratch.
+pub fn column_for_key<'a>(schema: &'a Schema, key: &str) -> Option<&'a str> {
+    schema
+        .fields()
+        .iter()
+        .find(|f| origin_key_of(f.doc.as_deref()) == Some(key))
+        .map(|f| f.name.as_str())
+}
+
+/// Resolves the physical column each of `keys` should use against
+/// `current`: a key that already has a column (found via
+/// [`column_for_key`]) keeps it; a brand-new key gets
+/// [`materialized_column_name`], or the next free deterministic suffix
+/// (`_2`, `_3`, ...) when that candidate is already taken by a *different*
+/// key or a base column. Two keys that sanitize identically therefore
+/// always resolve to distinct columns (#814), whether passed in the same
+/// call or resolved across separate calls on the same table (the second
+/// call's `current` already carries the first key's column and `doc`). A
+/// key repeated within one call resolves once, to its first assignment.
+pub fn resolve_label_columns(current: &Schema, keys: &[String]) -> Vec<(String, String)> {
+    let mut taken: HashSet<String> = current.fields().iter().map(|f| f.name.clone()).collect();
+    let mut resolved: Vec<(String, String)> = Vec::new();
+
+    for key in keys {
+        if resolved.iter().any(|(k, _)| k == key) {
+            continue;
+        }
+        if let Some(column) = column_for_key(current, key) {
+            resolved.push((key.clone(), column.to_string()));
+            continue;
+        }
+        let base = materialized_column_name(key);
+        let mut candidate = base.clone();
+        let mut suffix = 2;
+        while taken.contains(&candidate) {
+            candidate = format!("{base}_{suffix}");
+            suffix += 1;
+        }
+        taken.insert(candidate.clone());
+        resolved.push((key.clone(), candidate));
+    }
+
+    resolved
+}
+
 /// The highest field id used anywhere in the schema tree: top-level
 /// fields plus nested struct fields, list element ids, and map key/value
 /// ids. New columns must continue from this id — nested ids are allocated
@@ -114,12 +183,15 @@ async fn load_table(catalog: &Arc<dyn Catalog>, identifier: &Identifier) -> Resu
 /// Add one optional string `label_<key>` column per attribute key to the
 /// table's current schema and make the evolved schema current.
 ///
-/// Idempotent: keys whose materialized column (see
-/// [`materialized_column_name`]) already exists are skipped, and when no
-/// new columns remain the current schema is returned without a commit.
-/// Field ids continue after the maximum id across the whole existing
-/// schema tree (nested map/list ids included), and the new schema id is
-/// one past the highest existing schema id.
+/// Idempotent: a key whose column already exists (resolved via
+/// [`resolve_label_columns`], keyed off the column's origin-key `doc` --
+/// see [`column_for_key`]) is skipped, and when no new columns remain the
+/// current schema is returned without a commit. Two keys that sanitize to
+/// the same [`materialized_column_name`] candidate (#814) are resolved to
+/// distinct columns rather than merged. Field ids continue after the
+/// maximum id across the whole existing schema tree (nested map/list ids
+/// included), and the new schema id is one past the highest existing
+/// schema id.
 ///
 /// The change is committed as `AddSchema` + `SetCurrentSchema` through
 /// [`Catalog::update_table`], then the table is reloaded and the evolved
@@ -137,19 +209,15 @@ pub async fn add_label_columns(
         .current_schema()
         .map_err(|e| anyhow::anyhow!("Failed to resolve current schema of {identifier}: {e}"))?;
 
-    // Resolve keys to column names, skipping columns that already exist
-    // and collapsing duplicates (two keys can encode to the same column).
-    let existing: Vec<&str> = current.fields().iter().map(|f| f.name.as_str()).collect();
-    let mut new_columns: Vec<(String, String)> = Vec::new(); // (key, column)
-    for key in keys {
-        let column = materialized_column_name(key);
-        if existing.iter().any(|name| *name == column)
-            || new_columns.iter().any(|(_, c)| *c == column)
-        {
-            continue;
-        }
-        new_columns.push((key.clone(), column));
-    }
+    // Resolve every key to its column: an already-materialized key keeps
+    // its existing column (found via its origin-key `doc`), and a new key
+    // gets a collision-proof candidate name (#814) -- two keys that
+    // sanitize identically never share a column.
+    let existing: HashSet<&str> = current.fields().iter().map(|f| f.name.as_str()).collect();
+    let new_columns: Vec<(String, String)> = resolve_label_columns(current, keys)
+        .into_iter()
+        .filter(|(_, column)| !existing.contains(column.as_str()))
+        .collect();
     if new_columns.is_empty() {
         return Ok(current.clone());
     }
@@ -169,7 +237,7 @@ pub async fn add_label_columns(
             name: column.clone(),
             required: false,
             field_type: Type::Primitive(PrimitiveType::String),
-            doc: Some(format!("Materialized attribute label '{key}'")),
+            doc: Some(label_doc(key)),
             initial_default: None,
             write_default: None,
         });
@@ -223,15 +291,14 @@ pub async fn add_label_columns(
 /// keys from the table's current schema and make the pruned schema
 /// current (the demotion half of #734).
 ///
-/// Idempotent: keys whose materialized column (see
-/// [`materialized_column_name`]) is already absent are skipped, and when
+/// Idempotent: a key with no column (resolved via [`column_for_key`],
+/// keyed off the column's origin-key `doc` -- #814) is skipped, and when
 /// nothing remains to drop the current schema is returned without a
-/// commit. Only `label_<key>` columns can ever be named — the key ->
-/// column encoding always carries the `label_` prefix, so base columns
-/// are unreachable by construction. Field ids of dropped columns are
-/// never reused: the metadata's `last_column_id` is left untouched
-/// (`AddSchema` with `last_column_id: None`) and [`add_label_columns`]
-/// allocates past it.
+/// commit. Only a genuine `label_<key>` column carries an origin-key
+/// `doc`, so a base column is unreachable by construction. Field ids of
+/// dropped columns are never reused: the metadata's `last_column_id` is
+/// left untouched (`AddSchema` with `last_column_id: None`) and
+/// [`add_label_columns`] allocates past it.
 ///
 /// The change is committed as `AddSchema` + `SetCurrentSchema` through
 /// [`Catalog::update_table`], then the table is reloaded and the pruned
@@ -250,13 +317,15 @@ pub async fn remove_label_columns(
         .current_schema()
         .map_err(|e| anyhow::anyhow!("Failed to resolve current schema of {identifier}: {e}"))?;
 
-    // Resolve keys to column names, keeping only columns that exist and
-    // collapsing duplicates (two keys can encode to the same column).
+    // Resolve each key to its actual column via the schema's recorded
+    // origin-key `doc` (#814) -- not by recomputing the candidate name,
+    // which could point at a different key's column after a collision.
     let mut drop_columns: Vec<String> = Vec::new();
     for key in keys {
-        let column = materialized_column_name(key);
-        if current.fields().iter().any(|f| f.name == column) && !drop_columns.contains(&column) {
-            drop_columns.push(column);
+        if let Some(column) = column_for_key(current, key)
+            && !drop_columns.iter().any(|c| c == column)
+        {
+            drop_columns.push(column.to_string());
         }
     }
     if drop_columns.is_empty() {
@@ -857,26 +926,78 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn duplicate_keys_collapse_to_one_column() -> anyhow::Result<()> {
+    async fn collision_proof_naming_assigns_distinct_columns_to_colliding_keys()
+    -> anyhow::Result<()> {
         let manager = CatalogManager::new_in_memory().await?;
         let catalog = manager.catalog();
         let identifier = create_test_table(&catalog, "events").await?;
 
-        // `http.method` and `http_method` encode to the same column name.
+        // `http.method` and `http_method` sanitize to the same candidate
+        // column name -- each key must still get its own column (#814).
         let schema = add_label_columns(
             catalog.clone(),
             &identifier,
             &["http.method".to_string(), "http_method".to_string()],
         )
         .await?;
+
+        let first = field(&schema, "label_http_method").expect("label_http_method missing");
+        let second = field(&schema, "label_http_method_2").expect("label_http_method_2 missing");
+        assert_eq!(origin_key_of(first.doc.as_deref()), Some("http.method"));
+        assert_eq!(origin_key_of(second.doc.as_deref()), Some("http_method"));
         assert_eq!(
             schema
                 .fields()
                 .iter()
-                .filter(|f| f.name == "label_http_method")
+                .filter(|f| f.name.starts_with("label_http_method"))
                 .count(),
-            1
+            2,
+            "colliding keys must get distinct columns, not merge into one"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn collision_proof_naming_is_stable_across_separate_calls() -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let identifier = create_test_table(&catalog, "events").await?;
+
+        // Promote `http.method` first, in its own call...
+        let first_schema =
+            add_label_columns(catalog.clone(), &identifier, &["http.method".to_string()]).await?;
+        assert!(field(&first_schema, "label_http_method").is_some());
+
+        // ...then `http_method` later, in a separate call. It sanitizes to
+        // the same candidate name but must land on a fresh column rather
+        // than merging into (or displacing) `http.method`'s column (#814).
+        let second_schema =
+            add_label_columns(catalog.clone(), &identifier, &["http_method".to_string()]).await?;
+
+        let http_method_column = field(&second_schema, "label_http_method")
+            .expect("http.method's column must still exist");
+        assert_eq!(
+            origin_key_of(http_method_column.doc.as_deref()),
+            Some("http.method"),
+            "http.method must keep its original column across the second call"
+        );
+        let http_underscore_method_column = field(&second_schema, "label_http_method_2")
+            .expect("http_method must get a fresh, distinct column");
+        assert_eq!(
+            origin_key_of(http_underscore_method_column.doc.as_deref()),
+            Some("http_method")
+        );
+
+        // Per-key routing resolves each key to its correct column.
+        assert_eq!(
+            column_for_key(&second_schema, "http.method"),
+            Some("label_http_method")
+        );
+        assert_eq!(
+            column_for_key(&second_schema, "http_method"),
+            Some("label_http_method_2")
+        );
+
         Ok(())
     }
 

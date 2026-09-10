@@ -392,7 +392,7 @@ describe("RegistryEditor", () => {
     ).toBe(false);
 
     await user.click(screen.getByRole("button", { name: "Delete" }));
-    await user.click(screen.getByRole("button", { name: "Confirm delete" }));
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
     await waitFor(() =>
       expect(screen.getByTestId("location")).toHaveTextContent(
         /^\/schema\/conventions$/,

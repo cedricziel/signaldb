@@ -155,12 +155,15 @@ pub mod types {
     ///      "description": "ISO 8601 creation timestamp.",
     ///      "type": "string"
     ///    },
-    ///    "dataset_id": {
-    ///      "description": "Dataset the key is restricted to, if any.",
+    ///    "dataset_ids": {
+    ///      "description": "Dataset set the key is restricted to, if any; `null` is unrestricted.",
     ///      "type": [
-    ///        "string",
+    ///        "array",
     ///        "null"
-    ///      ]
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
     ///    },
     ///    "id": {
     ///      "description": "Unique key identifier.",
@@ -198,9 +201,9 @@ pub mod types {
     pub struct ApiKeyResponse {
         ///ISO 8601 creation timestamp.
         pub created_at: ::std::string::String,
-        ///Dataset the key is restricted to, if any.
+        ///Dataset set the key is restricted to, if any; `null` is unrestricted.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-        pub dataset_id: ::std::option::Option<::std::string::String>,
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///Unique key identifier.
         pub id: ::std::string::String,
         ///Optional human-readable name.
@@ -656,6 +659,376 @@ pub mod types {
             Default::default()
         }
     }
+    /**Path prefixes for the Tempo/Loki/Prometheus/Pyroscope compatibility
+    dialects, relative to [`ConnectionQuery::api_url`]. External clients only
+    — first-party callers use [`ConnectionQuery::query_ir`].*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Path prefixes for the Tempo/Loki/Prometheus/Pyroscope compatibility\ndialects, relative to [`ConnectionQuery::api_url`]. External clients only\n— first-party callers use [`ConnectionQuery::query_ir`].",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "loki",
+    ///    "prometheus",
+    ///    "pyroscope",
+    ///    "tempo"
+    ///  ],
+    ///  "properties": {
+    ///    "loki": {
+    ///      "type": "string"
+    ///    },
+    ///    "prometheus": {
+    ///      "type": "string"
+    ///    },
+    ///    "pyroscope": {
+    ///      "type": "string"
+    ///    },
+    ///    "tempo": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConnectionCompat {
+        pub loki: ::std::string::String,
+        pub prometheus: ::std::string::String,
+        pub pyroscope: ::std::string::String,
+        pub tempo: ::std::string::String,
+    }
+    impl ConnectionCompat {
+        pub fn builder() -> builder::ConnectionCompat {
+            Default::default()
+        }
+    }
+    /**`Authorization`/`X-Tenant-ID`/`X-Dataset-ID` headers to send with the
+    filled-in credential placeholder, ready to paste into a client config.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "`Authorization`/`X-Tenant-ID`/`X-Dataset-ID` headers to send with the\nfilled-in credential placeholder, ready to paste into a client config.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "authorization",
+    ///    "x-dataset-id",
+    ///    "x-tenant-id"
+    ///  ],
+    ///  "properties": {
+    ///    "authorization": {
+    ///      "type": "string"
+    ///    },
+    ///    "x-dataset-id": {
+    ///      "type": "string"
+    ///    },
+    ///    "x-tenant-id": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConnectionHeaders {
+        pub authorization: ::std::string::String,
+        #[serde(rename = "x-dataset-id")]
+        pub x_dataset_id: ::std::string::String,
+        #[serde(rename = "x-tenant-id")]
+        pub x_tenant_id: ::std::string::String,
+    }
+    impl ConnectionHeaders {
+        pub fn builder() -> builder::ConnectionHeaders {
+            Default::default()
+        }
+    }
+    /**`GET /api/v1/connection` response: everything needed to send data to and
+    query this deployment from outside, for the caller's own tenant/dataset.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "`GET /api/v1/connection` response: everything needed to send data to and\nquery this deployment from outside, for the caller's own tenant/dataset.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "dataset_id",
+    ///    "headers",
+    ///    "ingest",
+    ///    "notes",
+    ///    "otel_env",
+    ///    "public_endpoints_configured",
+    ///    "query",
+    ///    "required_scopes",
+    ///    "tenant_id"
+    ///  ],
+    ///  "properties": {
+    ///    "dataset_id": {
+    ///      "type": "string"
+    ///    },
+    ///    "headers": {
+    ///      "$ref": "#/components/schemas/ConnectionHeaders"
+    ///    },
+    ///    "ingest": {
+    ///      "$ref": "#/components/schemas/ConnectionIngest"
+    ///    },
+    ///    "mcp": {
+    ///      "$ref": "#/components/schemas/ConnectionMcp"
+    ///    },
+    ///    "notes": {
+    ///      "description": "Operator guidance, e.g. that `[public]` is unset and URLs are\nlocalhost fallbacks. Empty when everything is configured.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "otel_env": {
+    ///      "$ref": "#/components/schemas/ConnectionOtelEnv"
+    ///    },
+    ///    "public_endpoints_configured": {
+    ///      "description": "Whether every required `[public]` field (OTLP gRPC/HTTP, API URL) has\nbeen explicitly set. `false` means at least one of those URLs below is\na localhost fallback, unlikely to be reachable from outside this\nmachine — see `notes` for which.",
+    ///      "type": "boolean"
+    ///    },
+    ///    "query": {
+    ///      "$ref": "#/components/schemas/ConnectionQuery"
+    ///    },
+    ///    "required_scopes": {
+    ///      "$ref": "#/components/schemas/ConnectionScopes"
+    ///    },
+    ///    "tenant_id": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConnectionInfoResponse {
+        pub dataset_id: ::std::string::String,
+        pub headers: ConnectionHeaders,
+        pub ingest: ConnectionIngest,
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub mcp: ::std::option::Option<ConnectionMcp>,
+        /**Operator guidance, e.g. that `[public]` is unset and URLs are
+        localhost fallbacks. Empty when everything is configured.*/
+        pub notes: ::std::vec::Vec<::std::string::String>,
+        pub otel_env: ConnectionOtelEnv,
+        /**Whether every required `[public]` field (OTLP gRPC/HTTP, API URL) has
+        been explicitly set. `false` means at least one of those URLs below is
+        a localhost fallback, unlikely to be reachable from outside this
+        machine — see `notes` for which.*/
+        pub public_endpoints_configured: bool,
+        pub query: ConnectionQuery,
+        pub required_scopes: ConnectionScopes,
+        pub tenant_id: ::std::string::String,
+    }
+    impl ConnectionInfoResponse {
+        pub fn builder() -> builder::ConnectionInfoResponse {
+            Default::default()
+        }
+    }
+    ///Every ingest endpoint this deployment exposes.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Every ingest endpoint this deployment exposes.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "otlp_grpc",
+    ///    "otlp_http",
+    ///    "prometheus_remote_write"
+    ///  ],
+    ///  "properties": {
+    ///    "otlp_grpc": {
+    ///      "$ref": "#/components/schemas/OtlpGrpcEndpoint"
+    ///    },
+    ///    "otlp_http": {
+    ///      "$ref": "#/components/schemas/OtlpHttpEndpoint"
+    ///    },
+    ///    "prometheus_remote_write": {
+    ///      "description": "The Prometheus remote-write ingest URL.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConnectionIngest {
+        pub otlp_grpc: OtlpGrpcEndpoint,
+        pub otlp_http: OtlpHttpEndpoint,
+        ///The Prometheus remote-write ingest URL.
+        pub prometheus_remote_write: ::std::string::String,
+    }
+    impl ConnectionIngest {
+        pub fn builder() -> builder::ConnectionIngest {
+            Default::default()
+        }
+    }
+    /**The MCP Streamable HTTP endpoint, present only when this deployment has
+    one configured (directly or via `[mcp.oauth].resource_url`).*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The MCP Streamable HTTP endpoint, present only when this deployment has\none configured (directly or via `[mcp.oauth].resource_url`).",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "transport",
+    ///    "url"
+    ///  ],
+    ///  "properties": {
+    ///    "transport": {
+    ///      "type": "string"
+    ///    },
+    ///    "url": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConnectionMcp {
+        pub transport: ::std::string::String,
+        pub url: ::std::string::String,
+    }
+    impl ConnectionMcp {
+        pub fn builder() -> builder::ConnectionMcp {
+            Default::default()
+        }
+    }
+    /**Ready-to-paste `OTEL_EXPORTER_OTLP_*` environment variables for an
+    OTel-instrumented application.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Ready-to-paste `OTEL_EXPORTER_OTLP_*` environment variables for an\nOTel-instrumented application.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "OTEL_EXPORTER_OTLP_ENDPOINT",
+    ///    "OTEL_EXPORTER_OTLP_HEADERS",
+    ///    "OTEL_EXPORTER_OTLP_PROTOCOL"
+    ///  ],
+    ///  "properties": {
+    ///    "OTEL_EXPORTER_OTLP_ENDPOINT": {
+    ///      "type": "string"
+    ///    },
+    ///    "OTEL_EXPORTER_OTLP_HEADERS": {
+    ///      "type": "string"
+    ///    },
+    ///    "OTEL_EXPORTER_OTLP_PROTOCOL": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConnectionOtelEnv {
+        #[serde(rename = "OTEL_EXPORTER_OTLP_ENDPOINT")]
+        pub otel_exporter_otlp_endpoint: ::std::string::String,
+        #[serde(rename = "OTEL_EXPORTER_OTLP_HEADERS")]
+        pub otel_exporter_otlp_headers: ::std::string::String,
+        #[serde(rename = "OTEL_EXPORTER_OTLP_PROTOCOL")]
+        pub otel_exporter_otlp_protocol: ::std::string::String,
+    }
+    impl ConnectionOtelEnv {
+        pub fn builder() -> builder::ConnectionOtelEnv {
+            Default::default()
+        }
+    }
+    /**The router's query surface: the native Query IR plus the compatibility
+    dialects, relative to `api_url`.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The router's query surface: the native Query IR plus the compatibility\ndialects, relative to `api_url`.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "api_url",
+    ///    "compat",
+    ///    "openapi",
+    ///    "query_ir"
+    ///  ],
+    ///  "properties": {
+    ///    "api_url": {
+    ///      "type": "string"
+    ///    },
+    ///    "compat": {
+    ///      "$ref": "#/components/schemas/ConnectionCompat"
+    ///    },
+    ///    "openapi": {
+    ///      "type": "string"
+    ///    },
+    ///    "query_ir": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConnectionQuery {
+        pub api_url: ::std::string::String,
+        pub compat: ConnectionCompat,
+        pub openapi: ::std::string::String,
+        pub query_ir: ::std::string::String,
+    }
+    impl ConnectionQuery {
+        pub fn builder() -> builder::ConnectionQuery {
+            Default::default()
+        }
+    }
+    ///The API-key scopes ingest and query each require.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The API-key scopes ingest and query each require.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "ingest",
+    ///    "query"
+    ///  ],
+    ///  "properties": {
+    ///    "ingest": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "query": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConnectionScopes {
+        pub ingest: ::std::vec::Vec<::std::string::String>,
+        pub query: ::std::vec::Vec<::std::string::String>,
+    }
+    impl ConnectionScopes {
+        pub fn builder() -> builder::ConnectionScopes {
+            Default::default()
+        }
+    }
     /**Context the consent screen renders: the requesting client and the tenants
     the signed-in user may grant.*/
     ///
@@ -700,14 +1073,57 @@ pub mod types {
             Default::default()
         }
     }
-    /**Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user
-    is authenticated by their session cookie; `tenant` is their chosen grant.*/
+    /**A dataset within a tenant the consenting user may restrict a grant to
+    (D5).*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user\nis authenticated by their session cookie; `tenant` is their chosen grant.",
+    ///  "description": "A dataset within a tenant the consenting user may restrict a grant to\n(D5).",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "id",
+    ///    "name"
+    ///  ],
+    ///  "properties": {
+    ///    "id": {
+    ///      "description": "Dataset id.",
+    ///      "type": "string"
+    ///    },
+    ///    "name": {
+    ///      "description": "Dataset name.",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConsentDataset {
+        ///Dataset id.
+        pub id: ::std::string::String,
+        ///Dataset name.
+        pub name: ::std::string::String,
+    }
+    impl ConsentDataset {
+        pub fn builder() -> builder::ConsentDataset {
+            Default::default()
+        }
+    }
+    /**Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user
+    is authenticated by their session cookie; `tenant` is their chosen grant.
+
+    The legacy singular `dataset_id` field is not accepted (removed in the
+    multi-dataset-key-restriction change, D8): a request body carrying it is
+    rejected rather than silently ignored, since dropping it would grant
+    unrestricted access when the caller asked for a restricted one.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user\nis authenticated by their session cookie; `tenant` is their chosen grant.\n\nThe legacy singular `dataset_id` field is not accepted (removed in the\nmulti-dataset-key-restriction change, D8): a request body carrying it is\nrejected rather than silently ignored, since dropping it would grant\nunrestricted access when the caller asked for a restricted one.",
     ///  "type": "object",
     ///  "required": [
     ///    "approved",
@@ -734,6 +1150,17 @@ pub mod types {
     ///        "string",
     ///        "null"
     ///      ]
+    ///    },
+    ///    "dataset_ids": {
+    ///      "description": "Dataset set to restrict the grant to (D5/D6). Omitted or `null`\ngrants unrestricted access to the tenant — today's only behavior,\nand `#[serde(default)]` so a decision from a client built before\nthis change (which omits the field entirely) keeps working\nunmodified. A non-empty array restricts the grant to exactly that\nset; every named dataset must belong to `tenant`. An explicit empty\narray is rejected (D1a), as is any non-empty selection while\n`[auth].dataset_restriction_rollout_complete` is `false` (stricter\nthan the API-key rule — OAuth has no legacy column to fall back to).",
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      },
+    ///      "minItems": 1
     ///    },
     ///    "redirect_uri": {
     ///      "description": "The redirect URI to return to (must be registered for the client).",
@@ -764,11 +1191,13 @@ pub mod types {
     ///      "description": "The tenant the user grants access to (must be one they belong to).",
     ///      "type": "string"
     ///    }
-    ///  }
+    ///  },
+    ///  "additionalProperties": false
     ///}
     /// ```
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
     pub struct ConsentDecision {
         ///Whether the user approved (`true`) or denied (`false`).
         pub approved: bool,
@@ -778,6 +1207,17 @@ pub mod types {
         pub code_challenge: ::std::string::String,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub code_challenge_method: ::std::option::Option<::std::string::String>,
+        /**Dataset set to restrict the grant to (D5/D6). Omitted or `null`
+        grants unrestricted access to the tenant — today's only behavior,
+        and `#[serde(default)]` so a decision from a client built before
+        this change (which omits the field entirely) keeps working
+        unmodified. A non-empty array restricts the grant to exactly that
+        set; every named dataset must belong to `tenant`. An explicit empty
+        array is rejected (D1a), as is any non-empty selection while
+        `[auth].dataset_restriction_rollout_complete` is `false` (stricter
+        than the API-key rule — OAuth has no legacy column to fall back to).*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///The redirect URI to return to (must be registered for the client).
         pub redirect_uri: ::std::string::String,
         ///Requested resource (audience); must match the configured MCP resource.
@@ -838,10 +1278,18 @@ pub mod types {
     ///  "description": "A tenant the consenting user may grant a connector access to.",
     ///  "type": "object",
     ///  "required": [
+    ///    "datasets",
     ///    "id",
     ///    "role"
     ///  ],
     ///  "properties": {
+    ///    "datasets": {
+    ///      "description": "Datasets in the tenant, so the consent screen can offer a per-tenant\n\"only these datasets\" checklist (D5).",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/ConsentDataset"
+    ///      }
+    ///    },
     ///    "id": {
     ///      "description": "Tenant id.",
     ///      "type": "string"
@@ -855,6 +1303,9 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ConsentTenant {
+        /**Datasets in the tenant, so the consent screen can offer a per-tenant
+        "only these datasets" checklist (D5).*/
+        pub datasets: ::std::vec::Vec<ConsentDataset>,
         ///Tenant id.
         pub id: ::std::string::String,
         pub role: MembershipRole,
@@ -947,24 +1398,34 @@ pub mod types {
     `scopes` is required and non-empty: a key's permissions are always
     explicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,
     `profiles:write`, `traces:read`, `logs:read`, `metrics:read`,
-    `profiles:read`, `schema:read`, `schema:write`.*/
+    `profiles:read`, `schema:read`, `schema:write`.
+
+    The legacy singular `dataset_id` field is not accepted here (removed in
+    the multi-dataset-key-restriction change): a request body carrying it is
+    rejected with a validation error rather than silently ignored, since
+    dropping it would create an unrestricted key when the caller asked for a
+    restricted one.*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Request body for creating a new API key.\n\n`scopes` is required and non-empty: a key's permissions are always\nexplicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,\n`profiles:write`, `traces:read`, `logs:read`, `metrics:read`,\n`profiles:read`, `schema:read`, `schema:write`.",
+    ///  "description": "Request body for creating a new API key.\n\n`scopes` is required and non-empty: a key's permissions are always\nexplicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,\n`profiles:write`, `traces:read`, `logs:read`, `metrics:read`,\n`profiles:read`, `schema:read`, `schema:write`.\n\nThe legacy singular `dataset_id` field is not accepted here (removed in\nthe multi-dataset-key-restriction change): a request body carrying it is\nrejected with a validation error rather than silently ignored, since\ndropping it would create an unrestricted key when the caller asked for a\nrestricted one.",
     ///  "type": "object",
     ///  "required": [
     ///    "scopes"
     ///  ],
     ///  "properties": {
-    ///    "dataset_id": {
-    ///      "description": "Optional dataset the key is restricted to.",
+    ///    "dataset_ids": {
+    ///      "description": "Dataset set the key is restricted to. Omitted or `null` creates an\nunrestricted key; a non-empty array restricts it to exactly that set.\nAn explicit empty array, or a duplicate name within the set, is\nrejected.",
     ///      "type": [
-    ///        "string",
+    ///        "array",
     ///        "null"
-    ///      ]
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      },
+    ///      "minItems": 1
     ///    },
     ///    "name": {
     ///      "description": "Optional human-readable name for the key.",
@@ -980,15 +1441,20 @@ pub mod types {
     ///        "type": "string"
     ///      }
     ///    }
-    ///  }
+    ///  },
+    ///  "additionalProperties": false
     ///}
     /// ```
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
     pub struct CreateApiKeyRequest {
-        ///Optional dataset the key is restricted to.
+        /**Dataset set the key is restricted to. Omitted or `null` creates an
+        unrestricted key; a non-empty array restricts it to exactly that set.
+        An explicit empty array, or a duplicate name within the set, is
+        rejected.*/
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-        pub dataset_id: ::std::option::Option<::std::string::String>,
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///Optional human-readable name for the key.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
@@ -1019,12 +1485,15 @@ pub mod types {
     ///      "description": "ISO 8601 creation timestamp.",
     ///      "type": "string"
     ///    },
-    ///    "dataset_id": {
-    ///      "description": "Dataset the key is restricted to, if any.",
+    ///    "dataset_ids": {
+    ///      "description": "Dataset set the key is restricted to, if any; `null` is unrestricted.",
     ///      "type": [
-    ///        "string",
+    ///        "array",
     ///        "null"
-    ///      ]
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
     ///    },
     ///    "id": {
     ///      "description": "Unique key identifier.",
@@ -1056,9 +1525,9 @@ pub mod types {
     pub struct CreateApiKeyResponse {
         ///ISO 8601 creation timestamp.
         pub created_at: ::std::string::String,
-        ///Dataset the key is restricted to, if any.
+        ///Dataset set the key is restricted to, if any; `null` is unrestricted.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-        pub dataset_id: ::std::option::Option<::std::string::String>,
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///Unique key identifier.
         pub id: ::std::string::String,
         ///The raw API key (only shown once at creation time).
@@ -2904,11 +3373,14 @@ pub mod types {
     ///    "created_at": {
     ///      "type": "string"
     ///    },
-    ///    "dataset_id": {
+    ///    "dataset_ids": {
     ///      "type": [
-    ///        "string",
+    ///        "array",
     ///        "null"
-    ///      ]
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
     ///    },
     ///    "id": {
     ///      "type": "string"
@@ -2939,7 +3411,7 @@ pub mod types {
     pub struct ManageApiKeyResponse {
         pub created_at: ::std::string::String,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-        pub dataset_id: ::std::option::Option<::std::string::String>,
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         pub id: ::std::string::String,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
@@ -2952,22 +3424,33 @@ pub mod types {
             Default::default()
         }
     }
-    ///`ManageCreateApiKeyRequest`
+    /**`dataset_ids` mirrors [`signaldb_api::CreateApiKeyRequest`] (D1a): omitted
+    or `null` creates an unrestricted key, a non-empty array restricts it,
+    and an explicit empty array or duplicate name is rejected. The legacy
+    singular `dataset_id` field is not accepted — `deny_unknown_fields`
+    rejects a request body still sending it, rather than silently dropping
+    it and creating an unrestricted key when the caller asked for a
+    restricted one.*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
+    ///  "description": "`dataset_ids` mirrors [`signaldb_api::CreateApiKeyRequest`] (D1a): omitted\nor `null` creates an unrestricted key, a non-empty array restricts it,\nand an explicit empty array or duplicate name is rejected. The legacy\nsingular `dataset_id` field is not accepted — `deny_unknown_fields`\nrejects a request body still sending it, rather than silently dropping\nit and creating an unrestricted key when the caller asked for a\nrestricted one.",
     ///  "type": "object",
     ///  "required": [
     ///    "scopes"
     ///  ],
     ///  "properties": {
-    ///    "dataset_id": {
+    ///    "dataset_ids": {
     ///      "type": [
-    ///        "string",
+    ///        "array",
     ///        "null"
-    ///      ]
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      },
+    ///      "minItems": 1
     ///    },
     ///    "name": {
     ///      "type": [
@@ -2981,14 +3464,16 @@ pub mod types {
     ///        "type": "string"
     ///      }
     ///    }
-    ///  }
+    ///  },
+    ///  "additionalProperties": false
     ///}
     /// ```
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
     pub struct ManageCreateApiKeyRequest {
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-        pub dataset_id: ::std::option::Option<::std::string::String>,
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
         pub scopes: ::std::vec::Vec<::std::string::String>,
@@ -3068,13 +3553,13 @@ pub mod types {
     /**201 response body for API key creation via the management API.
 
     Fields mirror the previous `json!` body exactly (including `null` for
-    absent `name`/`dataset_id`), preserving the wire format.*/
+    absent `name`), preserving the wire format.*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "201 response body for API key creation via the management API.\n\nFields mirror the previous `json!` body exactly (including `null` for\nabsent `name`/`dataset_id`), preserving the wire format.",
+    ///  "description": "201 response body for API key creation via the management API.\n\nFields mirror the previous `json!` body exactly (including `null` for\nabsent `name`), preserving the wire format.",
     ///  "type": "object",
     ///  "required": [
     ///    "id",
@@ -3082,11 +3567,14 @@ pub mod types {
     ///    "scopes"
     ///  ],
     ///  "properties": {
-    ///    "dataset_id": {
+    ///    "dataset_ids": {
     ///      "type": [
-    ///        "string",
+    ///        "array",
     ///        "null"
-    ///      ]
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
     ///    },
     ///    "id": {
     ///      "type": "string"
@@ -3113,7 +3601,7 @@ pub mod types {
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ManageCreatedApiKey {
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-        pub dataset_id: ::std::option::Option<::std::string::String>,
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         pub id: ::std::string::String,
         pub key: ::std::string::String,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -3434,21 +3922,32 @@ pub mod types {
         }
     }
     /**Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.
-    Absent fields are left untouched.*/
+    Absent fields are left untouched. `dataset_ids`/`clear_dataset_restriction`
+    mirror [`signaldb_api::UpdateApiKeyRequest`] (D1a); the legacy singular
+    `dataset_id` field is rejected via `deny_unknown_fields` rather than
+    silently dropped.*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.\nAbsent fields are left untouched.",
+    ///  "description": "Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.\nAbsent fields are left untouched. `dataset_ids`/`clear_dataset_restriction`\nmirror [`signaldb_api::UpdateApiKeyRequest`] (D1a); the legacy singular\n`dataset_id` field is rejected via `deny_unknown_fields` rather than\nsilently dropped.",
     ///  "type": "object",
     ///  "properties": {
-    ///    "dataset_id": {
-    ///      "description": "Replacement dataset restriction.",
+    ///    "clear_dataset_restriction": {
+    ///      "description": "Clear an existing dataset restriction back to unrestricted. Must not\nbe combined with a non-empty `dataset_ids` in the same request.",
+    ///      "type": "boolean"
+    ///    },
+    ///    "dataset_ids": {
+    ///      "description": "Replacement dataset set (non-empty; an explicit empty array is\nrejected). Omitted/`null` leaves the current restriction unchanged.\nMutually exclusive with `clear_dataset_restriction: true`.",
     ///      "type": [
-    ///        "string",
+    ///        "array",
     ///        "null"
-    ///      ]
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      },
+    ///      "minItems": 1
     ///    },
     ///    "scopes": {
     ///      "description": "Replacement scope list (non-empty, drawn from the shared vocabulary).",
@@ -3460,15 +3959,23 @@ pub mod types {
     ///        "type": "string"
     ///      }
     ///    }
-    ///  }
+    ///  },
+    ///  "additionalProperties": false
     ///}
     /// ```
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
     pub struct ManageUpdateApiKeyRequest {
-        ///Replacement dataset restriction.
+        /**Clear an existing dataset restriction back to unrestricted. Must not
+        be combined with a non-empty `dataset_ids` in the same request.*/
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-        pub dataset_id: ::std::option::Option<::std::string::String>,
+        pub clear_dataset_restriction: ::std::option::Option<bool>,
+        /**Replacement dataset set (non-empty; an explicit empty array is
+        rejected). Omitted/`null` leaves the current restriction unchanged.
+        Mutually exclusive with `clear_dataset_restriction: true`.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///Replacement scope list (non-empty, drawn from the shared vocabulary).
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub scopes: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
@@ -3476,7 +3983,8 @@ pub mod types {
     impl ::std::default::Default for ManageUpdateApiKeyRequest {
         fn default() -> Self {
             Self {
-                dataset_id: Default::default(),
+                clear_dataset_restriction: Default::default(),
+                dataset_ids: Default::default(),
                 scopes: Default::default(),
             }
         }
@@ -4016,6 +4524,146 @@ pub mod types {
     }
     impl MetricSearchResponse {
         pub fn builder() -> builder::MetricSearchResponse {
+            Default::default()
+        }
+    }
+    ///The public OTLP/gRPC ingest endpoint.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The public OTLP/gRPC ingest endpoint.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "authority",
+    ///    "protocol",
+    ///    "signals",
+    ///    "tls",
+    ///    "url"
+    ///  ],
+    ///  "properties": {
+    ///    "authority": {
+    ///      "description": "`host[:port]`, with the port included only when the configured URL\nstates one explicitly.",
+    ///      "type": "string"
+    ///    },
+    ///    "protocol": {
+    ///      "type": "string"
+    ///    },
+    ///    "signals": {
+    ///      "type": "array",
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "tls": {
+    ///      "type": "boolean"
+    ///    },
+    ///    "url": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct OtlpGrpcEndpoint {
+        /**`host[:port]`, with the port included only when the configured URL
+        states one explicitly.*/
+        pub authority: ::std::string::String,
+        pub protocol: ::std::string::String,
+        pub signals: ::std::vec::Vec<::std::string::String>,
+        pub tls: bool,
+        pub url: ::std::string::String,
+    }
+    impl OtlpGrpcEndpoint {
+        pub fn builder() -> builder::OtlpGrpcEndpoint {
+            Default::default()
+        }
+    }
+    ///The public OTLP/HTTP ingest endpoint.
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "The public OTLP/HTTP ingest endpoint.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "paths",
+    ///    "protocol",
+    ///    "tls",
+    ///    "url"
+    ///  ],
+    ///  "properties": {
+    ///    "paths": {
+    ///      "$ref": "#/components/schemas/OtlpHttpPaths"
+    ///    },
+    ///    "protocol": {
+    ///      "type": "string"
+    ///    },
+    ///    "tls": {
+    ///      "type": "boolean"
+    ///    },
+    ///    "url": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct OtlpHttpEndpoint {
+        pub paths: OtlpHttpPaths,
+        pub protocol: ::std::string::String,
+        pub tls: bool,
+        pub url: ::std::string::String,
+    }
+    impl OtlpHttpEndpoint {
+        pub fn builder() -> builder::OtlpHttpEndpoint {
+            Default::default()
+        }
+    }
+    ///Per-signal paths appended to [`OtlpHttpEndpoint::url`].
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "Per-signal paths appended to [`OtlpHttpEndpoint::url`].",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "logs",
+    ///    "metrics",
+    ///    "profiles",
+    ///    "traces"
+    ///  ],
+    ///  "properties": {
+    ///    "logs": {
+    ///      "type": "string"
+    ///    },
+    ///    "metrics": {
+    ///      "type": "string"
+    ///    },
+    ///    "profiles": {
+    ///      "type": "string"
+    ///    },
+    ///    "traces": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct OtlpHttpPaths {
+        pub logs: ::std::string::String,
+        pub metrics: ::std::string::String,
+        pub profiles: ::std::string::String,
+        pub traces: ::std::string::String,
+    }
+    impl OtlpHttpPaths {
+        pub fn builder() -> builder::OtlpHttpPaths {
             Default::default()
         }
     }
@@ -5996,21 +6644,31 @@ pub mod types {
     }
     /**Request body for updating a live API key's scopes and/or dataset restriction.
 
-    Absent fields are left untouched. Revoked keys cannot be updated.*/
+    Absent fields are left untouched. Revoked keys cannot be updated. The
+    legacy singular `dataset_id` field is not accepted (see
+    [`CreateApiKeyRequest`]).*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Request body for updating a live API key's scopes and/or dataset restriction.\n\nAbsent fields are left untouched. Revoked keys cannot be updated.",
+    ///  "description": "Request body for updating a live API key's scopes and/or dataset restriction.\n\nAbsent fields are left untouched. Revoked keys cannot be updated. The\nlegacy singular `dataset_id` field is not accepted (see\n[`CreateApiKeyRequest`]).",
     ///  "type": "object",
     ///  "properties": {
-    ///    "dataset_id": {
-    ///      "description": "New dataset restriction.",
+    ///    "clear_dataset_restriction": {
+    ///      "description": "Clear an existing dataset restriction back to unrestricted. Must not\nbe combined with a non-empty `dataset_ids` in the same request.",
+    ///      "type": "boolean"
+    ///    },
+    ///    "dataset_ids": {
+    ///      "description": "Replacement dataset set (non-empty; an explicit empty array is\nrejected). Omitted/`null` leaves the current restriction unchanged.\nMutually exclusive with `clear_dataset_restriction: true`.",
     ///      "type": [
-    ///        "string",
+    ///        "array",
     ///        "null"
-    ///      ]
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      },
+    ///      "minItems": 1
     ///    },
     ///    "scopes": {
     ///      "description": "New scope list (replaces the current one; must be non-empty).",
@@ -6022,15 +6680,23 @@ pub mod types {
     ///        "type": "string"
     ///      }
     ///    }
-    ///  }
+    ///  },
+    ///  "additionalProperties": false
     ///}
     /// ```
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
     pub struct UpdateApiKeyRequest {
-        ///New dataset restriction.
+        /**Clear an existing dataset restriction back to unrestricted. Must not
+        be combined with a non-empty `dataset_ids` in the same request.*/
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-        pub dataset_id: ::std::option::Option<::std::string::String>,
+        pub clear_dataset_restriction: ::std::option::Option<bool>,
+        /**Replacement dataset set (non-empty; an explicit empty array is
+        rejected). Omitted/`null` leaves the current restriction unchanged.
+        Mutually exclusive with `clear_dataset_restriction: true`.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///New scope list (replaces the current one; must be non-empty).
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub scopes: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
@@ -6038,7 +6704,8 @@ pub mod types {
     impl ::std::default::Default for UpdateApiKeyRequest {
         fn default() -> Self {
             Self {
-                dataset_id: Default::default(),
+                clear_dataset_restriction: Default::default(),
+                dataset_ids: Default::default(),
                 scopes: Default::default(),
             }
         }
@@ -6379,6 +7046,16 @@ pub mod types {
     ///    "dataset": {
     ///      "type": "string"
     ///    },
+    ///    "dataset_ids": {
+    ///      "description": "The credential's own dataset-set restriction, if any; `null`/absent\nmeans unrestricted. See [`WhoamiResponse::dataset_ids`].",
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
     ///    "tenant": {
     ///      "$ref": "#/components/schemas/WhoamiTenant"
     ///    },
@@ -6393,6 +7070,10 @@ pub mod types {
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct WhoamiIdentityResponse {
         pub dataset: ::std::string::String,
+        /**The credential's own dataset-set restriction, if any; `null`/absent
+        means unrestricted. See [`WhoamiResponse::dataset_ids`].*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         pub tenant: WhoamiTenant,
         ///Stable authenticated user ID. Empty for API key credentials.
         pub user_id: ::std::string::String,
@@ -6581,8 +7262,8 @@ pub mod types {
         #[derive(Clone, Debug)]
         pub struct ApiKeyResponse {
             created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
-            dataset_id: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
             >,
             id: ::std::result::Result<::std::string::String, ::std::string::String>,
@@ -6603,7 +7284,7 @@ pub mod types {
             fn default() -> Self {
                 Self {
                     created_at: Err("no value supplied for created_at".to_string()),
-                    dataset_id: Ok(Default::default()),
+                    dataset_ids: Ok(Default::default()),
                     id: Err("no value supplied for id".to_string()),
                     name: Ok(Default::default()),
                     revoked_at: Ok(Default::default()),
@@ -6622,14 +7303,16 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for created_at: {e}"));
                 self
             }
-            pub fn dataset_id<T>(mut self, value: T) -> Self
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
                 T::Error: ::std::fmt::Display,
             {
-                self.dataset_id = value
+                self.dataset_ids = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn id<T>(mut self, value: T) -> Self
@@ -6682,7 +7365,7 @@ pub mod types {
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
                     created_at: value.created_at?,
-                    dataset_id: value.dataset_id?,
+                    dataset_ids: value.dataset_ids?,
                     id: value.id?,
                     name: value.name?,
                     revoked_at: value.revoked_at?,
@@ -6694,7 +7377,7 @@ pub mod types {
             fn from(value: super::ApiKeyResponse) -> Self {
                 Self {
                     created_at: Ok(value.created_at),
-                    dataset_id: Ok(value.dataset_id),
+                    dataset_ids: Ok(value.dataset_ids),
                     id: Ok(value.id),
                     name: Ok(value.name),
                     revoked_at: Ok(value.revoked_at),
@@ -7435,6 +8118,674 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct ConnectionCompat {
+            loki: ::std::result::Result<::std::string::String, ::std::string::String>,
+            prometheus: ::std::result::Result<::std::string::String, ::std::string::String>,
+            pyroscope: ::std::result::Result<::std::string::String, ::std::string::String>,
+            tempo: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConnectionCompat {
+            fn default() -> Self {
+                Self {
+                    loki: Err("no value supplied for loki".to_string()),
+                    prometheus: Err("no value supplied for prometheus".to_string()),
+                    pyroscope: Err("no value supplied for pyroscope".to_string()),
+                    tempo: Err("no value supplied for tempo".to_string()),
+                }
+            }
+        }
+        impl ConnectionCompat {
+            pub fn loki<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.loki = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for loki: {e}"));
+                self
+            }
+            pub fn prometheus<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.prometheus = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for prometheus: {e}"));
+                self
+            }
+            pub fn pyroscope<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.pyroscope = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for pyroscope: {e}"));
+                self
+            }
+            pub fn tempo<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tempo = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tempo: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConnectionCompat> for super::ConnectionCompat {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConnectionCompat,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    loki: value.loki?,
+                    prometheus: value.prometheus?,
+                    pyroscope: value.pyroscope?,
+                    tempo: value.tempo?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConnectionCompat> for ConnectionCompat {
+            fn from(value: super::ConnectionCompat) -> Self {
+                Self {
+                    loki: Ok(value.loki),
+                    prometheus: Ok(value.prometheus),
+                    pyroscope: Ok(value.pyroscope),
+                    tempo: Ok(value.tempo),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ConnectionHeaders {
+            authorization: ::std::result::Result<::std::string::String, ::std::string::String>,
+            x_dataset_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            x_tenant_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConnectionHeaders {
+            fn default() -> Self {
+                Self {
+                    authorization: Err("no value supplied for authorization".to_string()),
+                    x_dataset_id: Err("no value supplied for x_dataset_id".to_string()),
+                    x_tenant_id: Err("no value supplied for x_tenant_id".to_string()),
+                }
+            }
+        }
+        impl ConnectionHeaders {
+            pub fn authorization<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.authorization = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for authorization: {e}"));
+                self
+            }
+            pub fn x_dataset_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.x_dataset_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for x_dataset_id: {e}"));
+                self
+            }
+            pub fn x_tenant_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.x_tenant_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for x_tenant_id: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConnectionHeaders> for super::ConnectionHeaders {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConnectionHeaders,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    authorization: value.authorization?,
+                    x_dataset_id: value.x_dataset_id?,
+                    x_tenant_id: value.x_tenant_id?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConnectionHeaders> for ConnectionHeaders {
+            fn from(value: super::ConnectionHeaders) -> Self {
+                Self {
+                    authorization: Ok(value.authorization),
+                    x_dataset_id: Ok(value.x_dataset_id),
+                    x_tenant_id: Ok(value.x_tenant_id),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ConnectionInfoResponse {
+            dataset_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            headers: ::std::result::Result<super::ConnectionHeaders, ::std::string::String>,
+            ingest: ::std::result::Result<super::ConnectionIngest, ::std::string::String>,
+            mcp: ::std::result::Result<
+                ::std::option::Option<super::ConnectionMcp>,
+                ::std::string::String,
+            >,
+            notes: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            otel_env: ::std::result::Result<super::ConnectionOtelEnv, ::std::string::String>,
+            public_endpoints_configured: ::std::result::Result<bool, ::std::string::String>,
+            query: ::std::result::Result<super::ConnectionQuery, ::std::string::String>,
+            required_scopes: ::std::result::Result<super::ConnectionScopes, ::std::string::String>,
+            tenant_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConnectionInfoResponse {
+            fn default() -> Self {
+                Self {
+                    dataset_id: Err("no value supplied for dataset_id".to_string()),
+                    headers: Err("no value supplied for headers".to_string()),
+                    ingest: Err("no value supplied for ingest".to_string()),
+                    mcp: Ok(Default::default()),
+                    notes: Err("no value supplied for notes".to_string()),
+                    otel_env: Err("no value supplied for otel_env".to_string()),
+                    public_endpoints_configured: Err(
+                        "no value supplied for public_endpoints_configured".to_string(),
+                    ),
+                    query: Err("no value supplied for query".to_string()),
+                    required_scopes: Err("no value supplied for required_scopes".to_string()),
+                    tenant_id: Err("no value supplied for tenant_id".to_string()),
+                }
+            }
+        }
+        impl ConnectionInfoResponse {
+            pub fn dataset_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                self
+            }
+            pub fn headers<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::ConnectionHeaders>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.headers = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for headers: {e}"));
+                self
+            }
+            pub fn ingest<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::ConnectionIngest>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.ingest = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for ingest: {e}"));
+                self
+            }
+            pub fn mcp<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::ConnectionMcp>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.mcp = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for mcp: {e}"));
+                self
+            }
+            pub fn notes<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.notes = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for notes: {e}"));
+                self
+            }
+            pub fn otel_env<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::ConnectionOtelEnv>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.otel_env = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for otel_env: {e}"));
+                self
+            }
+            pub fn public_endpoints_configured<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.public_endpoints_configured = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for public_endpoints_configured: {e}")
+                });
+                self
+            }
+            pub fn query<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::ConnectionQuery>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.query = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for query: {e}"));
+                self
+            }
+            pub fn required_scopes<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::ConnectionScopes>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.required_scopes = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for required_scopes: {e}")
+                });
+                self
+            }
+            pub fn tenant_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tenant_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tenant_id: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConnectionInfoResponse> for super::ConnectionInfoResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConnectionInfoResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    dataset_id: value.dataset_id?,
+                    headers: value.headers?,
+                    ingest: value.ingest?,
+                    mcp: value.mcp?,
+                    notes: value.notes?,
+                    otel_env: value.otel_env?,
+                    public_endpoints_configured: value.public_endpoints_configured?,
+                    query: value.query?,
+                    required_scopes: value.required_scopes?,
+                    tenant_id: value.tenant_id?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConnectionInfoResponse> for ConnectionInfoResponse {
+            fn from(value: super::ConnectionInfoResponse) -> Self {
+                Self {
+                    dataset_id: Ok(value.dataset_id),
+                    headers: Ok(value.headers),
+                    ingest: Ok(value.ingest),
+                    mcp: Ok(value.mcp),
+                    notes: Ok(value.notes),
+                    otel_env: Ok(value.otel_env),
+                    public_endpoints_configured: Ok(value.public_endpoints_configured),
+                    query: Ok(value.query),
+                    required_scopes: Ok(value.required_scopes),
+                    tenant_id: Ok(value.tenant_id),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ConnectionIngest {
+            otlp_grpc: ::std::result::Result<super::OtlpGrpcEndpoint, ::std::string::String>,
+            otlp_http: ::std::result::Result<super::OtlpHttpEndpoint, ::std::string::String>,
+            prometheus_remote_write:
+                ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConnectionIngest {
+            fn default() -> Self {
+                Self {
+                    otlp_grpc: Err("no value supplied for otlp_grpc".to_string()),
+                    otlp_http: Err("no value supplied for otlp_http".to_string()),
+                    prometheus_remote_write: Err(
+                        "no value supplied for prometheus_remote_write".to_string()
+                    ),
+                }
+            }
+        }
+        impl ConnectionIngest {
+            pub fn otlp_grpc<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::OtlpGrpcEndpoint>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.otlp_grpc = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for otlp_grpc: {e}"));
+                self
+            }
+            pub fn otlp_http<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::OtlpHttpEndpoint>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.otlp_http = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for otlp_http: {e}"));
+                self
+            }
+            pub fn prometheus_remote_write<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.prometheus_remote_write = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for prometheus_remote_write: {e}")
+                });
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConnectionIngest> for super::ConnectionIngest {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConnectionIngest,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    otlp_grpc: value.otlp_grpc?,
+                    otlp_http: value.otlp_http?,
+                    prometheus_remote_write: value.prometheus_remote_write?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConnectionIngest> for ConnectionIngest {
+            fn from(value: super::ConnectionIngest) -> Self {
+                Self {
+                    otlp_grpc: Ok(value.otlp_grpc),
+                    otlp_http: Ok(value.otlp_http),
+                    prometheus_remote_write: Ok(value.prometheus_remote_write),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ConnectionMcp {
+            transport: ::std::result::Result<::std::string::String, ::std::string::String>,
+            url: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConnectionMcp {
+            fn default() -> Self {
+                Self {
+                    transport: Err("no value supplied for transport".to_string()),
+                    url: Err("no value supplied for url".to_string()),
+                }
+            }
+        }
+        impl ConnectionMcp {
+            pub fn transport<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.transport = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for transport: {e}"));
+                self
+            }
+            pub fn url<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.url = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for url: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConnectionMcp> for super::ConnectionMcp {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConnectionMcp,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    transport: value.transport?,
+                    url: value.url?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConnectionMcp> for ConnectionMcp {
+            fn from(value: super::ConnectionMcp) -> Self {
+                Self {
+                    transport: Ok(value.transport),
+                    url: Ok(value.url),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ConnectionOtelEnv {
+            otel_exporter_otlp_endpoint:
+                ::std::result::Result<::std::string::String, ::std::string::String>,
+            otel_exporter_otlp_headers:
+                ::std::result::Result<::std::string::String, ::std::string::String>,
+            otel_exporter_otlp_protocol:
+                ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConnectionOtelEnv {
+            fn default() -> Self {
+                Self {
+                    otel_exporter_otlp_endpoint: Err(
+                        "no value supplied for otel_exporter_otlp_endpoint".to_string(),
+                    ),
+                    otel_exporter_otlp_headers: Err(
+                        "no value supplied for otel_exporter_otlp_headers".to_string(),
+                    ),
+                    otel_exporter_otlp_protocol: Err(
+                        "no value supplied for otel_exporter_otlp_protocol".to_string(),
+                    ),
+                }
+            }
+        }
+        impl ConnectionOtelEnv {
+            pub fn otel_exporter_otlp_endpoint<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.otel_exporter_otlp_endpoint = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for otel_exporter_otlp_endpoint: {e}")
+                });
+                self
+            }
+            pub fn otel_exporter_otlp_headers<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.otel_exporter_otlp_headers = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for otel_exporter_otlp_headers: {e}")
+                });
+                self
+            }
+            pub fn otel_exporter_otlp_protocol<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.otel_exporter_otlp_protocol = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for otel_exporter_otlp_protocol: {e}")
+                });
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConnectionOtelEnv> for super::ConnectionOtelEnv {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConnectionOtelEnv,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    otel_exporter_otlp_endpoint: value.otel_exporter_otlp_endpoint?,
+                    otel_exporter_otlp_headers: value.otel_exporter_otlp_headers?,
+                    otel_exporter_otlp_protocol: value.otel_exporter_otlp_protocol?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConnectionOtelEnv> for ConnectionOtelEnv {
+            fn from(value: super::ConnectionOtelEnv) -> Self {
+                Self {
+                    otel_exporter_otlp_endpoint: Ok(value.otel_exporter_otlp_endpoint),
+                    otel_exporter_otlp_headers: Ok(value.otel_exporter_otlp_headers),
+                    otel_exporter_otlp_protocol: Ok(value.otel_exporter_otlp_protocol),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ConnectionQuery {
+            api_url: ::std::result::Result<::std::string::String, ::std::string::String>,
+            compat: ::std::result::Result<super::ConnectionCompat, ::std::string::String>,
+            openapi: ::std::result::Result<::std::string::String, ::std::string::String>,
+            query_ir: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConnectionQuery {
+            fn default() -> Self {
+                Self {
+                    api_url: Err("no value supplied for api_url".to_string()),
+                    compat: Err("no value supplied for compat".to_string()),
+                    openapi: Err("no value supplied for openapi".to_string()),
+                    query_ir: Err("no value supplied for query_ir".to_string()),
+                }
+            }
+        }
+        impl ConnectionQuery {
+            pub fn api_url<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.api_url = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for api_url: {e}"));
+                self
+            }
+            pub fn compat<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::ConnectionCompat>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.compat = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for compat: {e}"));
+                self
+            }
+            pub fn openapi<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.openapi = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for openapi: {e}"));
+                self
+            }
+            pub fn query_ir<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.query_ir = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for query_ir: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConnectionQuery> for super::ConnectionQuery {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConnectionQuery,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    api_url: value.api_url?,
+                    compat: value.compat?,
+                    openapi: value.openapi?,
+                    query_ir: value.query_ir?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConnectionQuery> for ConnectionQuery {
+            fn from(value: super::ConnectionQuery) -> Self {
+                Self {
+                    api_url: Ok(value.api_url),
+                    compat: Ok(value.compat),
+                    openapi: Ok(value.openapi),
+                    query_ir: Ok(value.query_ir),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ConnectionScopes {
+            ingest: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            query: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for ConnectionScopes {
+            fn default() -> Self {
+                Self {
+                    ingest: Err("no value supplied for ingest".to_string()),
+                    query: Err("no value supplied for query".to_string()),
+                }
+            }
+        }
+        impl ConnectionScopes {
+            pub fn ingest<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.ingest = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for ingest: {e}"));
+                self
+            }
+            pub fn query<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.query = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for query: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConnectionScopes> for super::ConnectionScopes {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConnectionScopes,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    ingest: value.ingest?,
+                    query: value.query?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConnectionScopes> for ConnectionScopes {
+            fn from(value: super::ConnectionScopes) -> Self {
+                Self {
+                    ingest: Ok(value.ingest),
+                    query: Ok(value.query),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct ConsentContextResponse {
             client_name: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
@@ -7493,12 +8844,70 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct ConsentDataset {
+            id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConsentDataset {
+            fn default() -> Self {
+                Self {
+                    id: Err("no value supplied for id".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                }
+            }
+        }
+        impl ConsentDataset {
+            pub fn id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConsentDataset> for super::ConsentDataset {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConsentDataset,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    id: value.id?,
+                    name: value.name?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConsentDataset> for ConsentDataset {
+            fn from(value: super::ConsentDataset) -> Self {
+                Self {
+                    id: Ok(value.id),
+                    name: Ok(value.name),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct ConsentDecision {
             approved: ::std::result::Result<bool, ::std::string::String>,
             client_id: ::std::result::Result<::std::string::String, ::std::string::String>,
             code_challenge: ::std::result::Result<::std::string::String, ::std::string::String>,
             code_challenge_method: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
             >,
             redirect_uri: ::std::result::Result<::std::string::String, ::std::string::String>,
@@ -7523,6 +8932,7 @@ pub mod types {
                     client_id: Err("no value supplied for client_id".to_string()),
                     code_challenge: Err("no value supplied for code_challenge".to_string()),
                     code_challenge_method: Ok(Default::default()),
+                    dataset_ids: Ok(Default::default()),
                     redirect_uri: Err("no value supplied for redirect_uri".to_string()),
                     resource: Ok(Default::default()),
                     scope: Ok(Default::default()),
@@ -7570,6 +8980,18 @@ pub mod types {
                 self.code_challenge_method = value.try_into().map_err(|e| {
                     format!("error converting supplied value for code_challenge_method: {e}")
                 });
+                self
+            }
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_ids = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn redirect_uri<T>(mut self, value: T) -> Self
@@ -7633,6 +9055,7 @@ pub mod types {
                     client_id: value.client_id?,
                     code_challenge: value.code_challenge?,
                     code_challenge_method: value.code_challenge_method?,
+                    dataset_ids: value.dataset_ids?,
                     redirect_uri: value.redirect_uri?,
                     resource: value.resource?,
                     scope: value.scope?,
@@ -7648,6 +9071,7 @@ pub mod types {
                     client_id: Ok(value.client_id),
                     code_challenge: Ok(value.code_challenge),
                     code_challenge_method: Ok(value.code_challenge_method),
+                    dataset_ids: Ok(value.dataset_ids),
                     redirect_uri: Ok(value.redirect_uri),
                     resource: Ok(value.resource),
                     scope: Ok(value.scope),
@@ -7698,18 +9122,33 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct ConsentTenant {
+            datasets: ::std::result::Result<
+                ::std::vec::Vec<super::ConsentDataset>,
+                ::std::string::String,
+            >,
             id: ::std::result::Result<::std::string::String, ::std::string::String>,
             role: ::std::result::Result<super::MembershipRole, ::std::string::String>,
         }
         impl ::std::default::Default for ConsentTenant {
             fn default() -> Self {
                 Self {
+                    datasets: Err("no value supplied for datasets".to_string()),
                     id: Err("no value supplied for id".to_string()),
                     role: Err("no value supplied for role".to_string()),
                 }
             }
         }
         impl ConsentTenant {
+            pub fn datasets<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::ConsentDataset>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.datasets = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for datasets: {e}"));
+                self
+            }
             pub fn id<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::string::String>,
@@ -7737,6 +9176,7 @@ pub mod types {
                 value: ConsentTenant,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    datasets: value.datasets?,
                     id: value.id?,
                     role: value.role?,
                 })
@@ -7745,6 +9185,7 @@ pub mod types {
         impl ::std::convert::From<super::ConsentTenant> for ConsentTenant {
             fn from(value: super::ConsentTenant) -> Self {
                 Self {
+                    datasets: Ok(value.datasets),
                     id: Ok(value.id),
                     role: Ok(value.role),
                 }
@@ -7752,8 +9193,8 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct CreateApiKeyRequest {
-            dataset_id: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
             >,
             name: ::std::result::Result<
@@ -7768,21 +9209,23 @@ pub mod types {
         impl ::std::default::Default for CreateApiKeyRequest {
             fn default() -> Self {
                 Self {
-                    dataset_id: Ok(Default::default()),
+                    dataset_ids: Ok(Default::default()),
                     name: Ok(Default::default()),
                     scopes: Err("no value supplied for scopes".to_string()),
                 }
             }
         }
         impl CreateApiKeyRequest {
-            pub fn dataset_id<T>(mut self, value: T) -> Self
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
                 T::Error: ::std::fmt::Display,
             {
-                self.dataset_id = value
+                self.dataset_ids = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn name<T>(mut self, value: T) -> Self
@@ -7812,7 +9255,7 @@ pub mod types {
                 value: CreateApiKeyRequest,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
-                    dataset_id: value.dataset_id?,
+                    dataset_ids: value.dataset_ids?,
                     name: value.name?,
                     scopes: value.scopes?,
                 })
@@ -7821,7 +9264,7 @@ pub mod types {
         impl ::std::convert::From<super::CreateApiKeyRequest> for CreateApiKeyRequest {
             fn from(value: super::CreateApiKeyRequest) -> Self {
                 Self {
-                    dataset_id: Ok(value.dataset_id),
+                    dataset_ids: Ok(value.dataset_ids),
                     name: Ok(value.name),
                     scopes: Ok(value.scopes),
                 }
@@ -7830,8 +9273,8 @@ pub mod types {
         #[derive(Clone, Debug)]
         pub struct CreateApiKeyResponse {
             created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
-            dataset_id: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
             >,
             id: ::std::result::Result<::std::string::String, ::std::string::String>,
@@ -7849,7 +9292,7 @@ pub mod types {
             fn default() -> Self {
                 Self {
                     created_at: Err("no value supplied for created_at".to_string()),
-                    dataset_id: Ok(Default::default()),
+                    dataset_ids: Ok(Default::default()),
                     id: Err("no value supplied for id".to_string()),
                     key: Err("no value supplied for key".to_string()),
                     name: Ok(Default::default()),
@@ -7868,14 +9311,16 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for created_at: {e}"));
                 self
             }
-            pub fn dataset_id<T>(mut self, value: T) -> Self
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
                 T::Error: ::std::fmt::Display,
             {
-                self.dataset_id = value
+                self.dataset_ids = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn id<T>(mut self, value: T) -> Self
@@ -7926,7 +9371,7 @@ pub mod types {
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
                     created_at: value.created_at?,
-                    dataset_id: value.dataset_id?,
+                    dataset_ids: value.dataset_ids?,
                     id: value.id?,
                     key: value.key?,
                     name: value.name?,
@@ -7938,7 +9383,7 @@ pub mod types {
             fn from(value: super::CreateApiKeyResponse) -> Self {
                 Self {
                     created_at: Ok(value.created_at),
-                    dataset_id: Ok(value.dataset_id),
+                    dataset_ids: Ok(value.dataset_ids),
                     id: Ok(value.id),
                     key: Ok(value.key),
                     name: Ok(value.name),
@@ -10361,8 +11806,8 @@ pub mod types {
         #[derive(Clone, Debug)]
         pub struct ManageApiKeyResponse {
             created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
-            dataset_id: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
             >,
             id: ::std::result::Result<::std::string::String, ::std::string::String>,
@@ -10380,7 +11825,7 @@ pub mod types {
             fn default() -> Self {
                 Self {
                     created_at: Err("no value supplied for created_at".to_string()),
-                    dataset_id: Ok(Default::default()),
+                    dataset_ids: Ok(Default::default()),
                     id: Err("no value supplied for id".to_string()),
                     name: Ok(Default::default()),
                     revoked: Err("no value supplied for revoked".to_string()),
@@ -10399,14 +11844,16 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for created_at: {e}"));
                 self
             }
-            pub fn dataset_id<T>(mut self, value: T) -> Self
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
                 T::Error: ::std::fmt::Display,
             {
-                self.dataset_id = value
+                self.dataset_ids = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn id<T>(mut self, value: T) -> Self
@@ -10459,7 +11906,7 @@ pub mod types {
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
                     created_at: value.created_at?,
-                    dataset_id: value.dataset_id?,
+                    dataset_ids: value.dataset_ids?,
                     id: value.id?,
                     name: value.name?,
                     revoked: value.revoked?,
@@ -10471,7 +11918,7 @@ pub mod types {
             fn from(value: super::ManageApiKeyResponse) -> Self {
                 Self {
                     created_at: Ok(value.created_at),
-                    dataset_id: Ok(value.dataset_id),
+                    dataset_ids: Ok(value.dataset_ids),
                     id: Ok(value.id),
                     name: Ok(value.name),
                     revoked: Ok(value.revoked),
@@ -10481,8 +11928,8 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct ManageCreateApiKeyRequest {
-            dataset_id: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
             >,
             name: ::std::result::Result<
@@ -10497,21 +11944,23 @@ pub mod types {
         impl ::std::default::Default for ManageCreateApiKeyRequest {
             fn default() -> Self {
                 Self {
-                    dataset_id: Ok(Default::default()),
+                    dataset_ids: Ok(Default::default()),
                     name: Ok(Default::default()),
                     scopes: Err("no value supplied for scopes".to_string()),
                 }
             }
         }
         impl ManageCreateApiKeyRequest {
-            pub fn dataset_id<T>(mut self, value: T) -> Self
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
                 T::Error: ::std::fmt::Display,
             {
-                self.dataset_id = value
+                self.dataset_ids = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn name<T>(mut self, value: T) -> Self
@@ -10541,7 +11990,7 @@ pub mod types {
                 value: ManageCreateApiKeyRequest,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
-                    dataset_id: value.dataset_id?,
+                    dataset_ids: value.dataset_ids?,
                     name: value.name?,
                     scopes: value.scopes?,
                 })
@@ -10550,7 +11999,7 @@ pub mod types {
         impl ::std::convert::From<super::ManageCreateApiKeyRequest> for ManageCreateApiKeyRequest {
             fn from(value: super::ManageCreateApiKeyRequest) -> Self {
                 Self {
-                    dataset_id: Ok(value.dataset_id),
+                    dataset_ids: Ok(value.dataset_ids),
                     name: Ok(value.name),
                     scopes: Ok(value.scopes),
                 }
@@ -10667,8 +12116,8 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct ManageCreatedApiKey {
-            dataset_id: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
             >,
             id: ::std::result::Result<::std::string::String, ::std::string::String>,
@@ -10685,7 +12134,7 @@ pub mod types {
         impl ::std::default::Default for ManageCreatedApiKey {
             fn default() -> Self {
                 Self {
-                    dataset_id: Ok(Default::default()),
+                    dataset_ids: Ok(Default::default()),
                     id: Err("no value supplied for id".to_string()),
                     key: Err("no value supplied for key".to_string()),
                     name: Ok(Default::default()),
@@ -10694,14 +12143,16 @@ pub mod types {
             }
         }
         impl ManageCreatedApiKey {
-            pub fn dataset_id<T>(mut self, value: T) -> Self
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
                 T::Error: ::std::fmt::Display,
             {
-                self.dataset_id = value
+                self.dataset_ids = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn id<T>(mut self, value: T) -> Self
@@ -10751,7 +12202,7 @@ pub mod types {
                 value: ManageCreatedApiKey,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
-                    dataset_id: value.dataset_id?,
+                    dataset_ids: value.dataset_ids?,
                     id: value.id?,
                     key: value.key?,
                     name: value.name?,
@@ -10762,7 +12213,7 @@ pub mod types {
         impl ::std::convert::From<super::ManageCreatedApiKey> for ManageCreatedApiKey {
             fn from(value: super::ManageCreatedApiKey) -> Self {
                 Self {
-                    dataset_id: Ok(value.dataset_id),
+                    dataset_ids: Ok(value.dataset_ids),
                     id: Ok(value.id),
                     key: Ok(value.key),
                     name: Ok(value.name),
@@ -11321,8 +12772,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct ManageUpdateApiKeyRequest {
-            dataset_id: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
+            clear_dataset_restriction:
+                ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
             >,
             scopes: ::std::result::Result<
@@ -11333,20 +12786,33 @@ pub mod types {
         impl ::std::default::Default for ManageUpdateApiKeyRequest {
             fn default() -> Self {
                 Self {
-                    dataset_id: Ok(Default::default()),
+                    clear_dataset_restriction: Ok(Default::default()),
+                    dataset_ids: Ok(Default::default()),
                     scopes: Ok(Default::default()),
                 }
             }
         }
         impl ManageUpdateApiKeyRequest {
-            pub fn dataset_id<T>(mut self, value: T) -> Self
+            pub fn clear_dataset_restriction<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T: ::std::convert::TryInto<::std::option::Option<bool>>,
                 T::Error: ::std::fmt::Display,
             {
-                self.dataset_id = value
+                self.clear_dataset_restriction = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for clear_dataset_restriction: {e}")
+                });
+                self
+            }
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_ids = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn scopes<T>(mut self, value: T) -> Self
@@ -11368,7 +12834,8 @@ pub mod types {
                 value: ManageUpdateApiKeyRequest,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
-                    dataset_id: value.dataset_id?,
+                    clear_dataset_restriction: value.clear_dataset_restriction?,
+                    dataset_ids: value.dataset_ids?,
                     scopes: value.scopes?,
                 })
             }
@@ -11376,7 +12843,8 @@ pub mod types {
         impl ::std::convert::From<super::ManageUpdateApiKeyRequest> for ManageUpdateApiKeyRequest {
             fn from(value: super::ManageUpdateApiKeyRequest) -> Self {
                 Self {
-                    dataset_id: Ok(value.dataset_id),
+                    clear_dataset_restriction: Ok(value.clear_dataset_restriction),
+                    dataset_ids: Ok(value.dataset_ids),
                     scopes: Ok(value.scopes),
                 }
             }
@@ -12170,6 +13638,269 @@ pub mod types {
             fn from(value: super::MetricSearchResponse) -> Self {
                 Self {
                     hits: Ok(value.hits),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct OtlpGrpcEndpoint {
+            authority: ::std::result::Result<::std::string::String, ::std::string::String>,
+            protocol: ::std::result::Result<::std::string::String, ::std::string::String>,
+            signals: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            tls: ::std::result::Result<bool, ::std::string::String>,
+            url: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for OtlpGrpcEndpoint {
+            fn default() -> Self {
+                Self {
+                    authority: Err("no value supplied for authority".to_string()),
+                    protocol: Err("no value supplied for protocol".to_string()),
+                    signals: Err("no value supplied for signals".to_string()),
+                    tls: Err("no value supplied for tls".to_string()),
+                    url: Err("no value supplied for url".to_string()),
+                }
+            }
+        }
+        impl OtlpGrpcEndpoint {
+            pub fn authority<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.authority = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for authority: {e}"));
+                self
+            }
+            pub fn protocol<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.protocol = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for protocol: {e}"));
+                self
+            }
+            pub fn signals<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.signals = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for signals: {e}"));
+                self
+            }
+            pub fn tls<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tls = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tls: {e}"));
+                self
+            }
+            pub fn url<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.url = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for url: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<OtlpGrpcEndpoint> for super::OtlpGrpcEndpoint {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: OtlpGrpcEndpoint,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    authority: value.authority?,
+                    protocol: value.protocol?,
+                    signals: value.signals?,
+                    tls: value.tls?,
+                    url: value.url?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::OtlpGrpcEndpoint> for OtlpGrpcEndpoint {
+            fn from(value: super::OtlpGrpcEndpoint) -> Self {
+                Self {
+                    authority: Ok(value.authority),
+                    protocol: Ok(value.protocol),
+                    signals: Ok(value.signals),
+                    tls: Ok(value.tls),
+                    url: Ok(value.url),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct OtlpHttpEndpoint {
+            paths: ::std::result::Result<super::OtlpHttpPaths, ::std::string::String>,
+            protocol: ::std::result::Result<::std::string::String, ::std::string::String>,
+            tls: ::std::result::Result<bool, ::std::string::String>,
+            url: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for OtlpHttpEndpoint {
+            fn default() -> Self {
+                Self {
+                    paths: Err("no value supplied for paths".to_string()),
+                    protocol: Err("no value supplied for protocol".to_string()),
+                    tls: Err("no value supplied for tls".to_string()),
+                    url: Err("no value supplied for url".to_string()),
+                }
+            }
+        }
+        impl OtlpHttpEndpoint {
+            pub fn paths<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::OtlpHttpPaths>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.paths = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for paths: {e}"));
+                self
+            }
+            pub fn protocol<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.protocol = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for protocol: {e}"));
+                self
+            }
+            pub fn tls<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tls = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tls: {e}"));
+                self
+            }
+            pub fn url<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.url = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for url: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<OtlpHttpEndpoint> for super::OtlpHttpEndpoint {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: OtlpHttpEndpoint,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    paths: value.paths?,
+                    protocol: value.protocol?,
+                    tls: value.tls?,
+                    url: value.url?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::OtlpHttpEndpoint> for OtlpHttpEndpoint {
+            fn from(value: super::OtlpHttpEndpoint) -> Self {
+                Self {
+                    paths: Ok(value.paths),
+                    protocol: Ok(value.protocol),
+                    tls: Ok(value.tls),
+                    url: Ok(value.url),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct OtlpHttpPaths {
+            logs: ::std::result::Result<::std::string::String, ::std::string::String>,
+            metrics: ::std::result::Result<::std::string::String, ::std::string::String>,
+            profiles: ::std::result::Result<::std::string::String, ::std::string::String>,
+            traces: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for OtlpHttpPaths {
+            fn default() -> Self {
+                Self {
+                    logs: Err("no value supplied for logs".to_string()),
+                    metrics: Err("no value supplied for metrics".to_string()),
+                    profiles: Err("no value supplied for profiles".to_string()),
+                    traces: Err("no value supplied for traces".to_string()),
+                }
+            }
+        }
+        impl OtlpHttpPaths {
+            pub fn logs<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.logs = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for logs: {e}"));
+                self
+            }
+            pub fn metrics<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.metrics = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for metrics: {e}"));
+                self
+            }
+            pub fn profiles<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.profiles = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for profiles: {e}"));
+                self
+            }
+            pub fn traces<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.traces = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for traces: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<OtlpHttpPaths> for super::OtlpHttpPaths {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: OtlpHttpPaths,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    logs: value.logs?,
+                    metrics: value.metrics?,
+                    profiles: value.profiles?,
+                    traces: value.traces?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::OtlpHttpPaths> for OtlpHttpPaths {
+            fn from(value: super::OtlpHttpPaths) -> Self {
+                Self {
+                    logs: Ok(value.logs),
+                    metrics: Ok(value.metrics),
+                    profiles: Ok(value.profiles),
+                    traces: Ok(value.traces),
                 }
             }
         }
@@ -14958,8 +16689,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct UpdateApiKeyRequest {
-            dataset_id: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
+            clear_dataset_restriction:
+                ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
             >,
             scopes: ::std::result::Result<
@@ -14970,20 +16703,33 @@ pub mod types {
         impl ::std::default::Default for UpdateApiKeyRequest {
             fn default() -> Self {
                 Self {
-                    dataset_id: Ok(Default::default()),
+                    clear_dataset_restriction: Ok(Default::default()),
+                    dataset_ids: Ok(Default::default()),
                     scopes: Ok(Default::default()),
                 }
             }
         }
         impl UpdateApiKeyRequest {
-            pub fn dataset_id<T>(mut self, value: T) -> Self
+            pub fn clear_dataset_restriction<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T: ::std::convert::TryInto<::std::option::Option<bool>>,
                 T::Error: ::std::fmt::Display,
             {
-                self.dataset_id = value
+                self.clear_dataset_restriction = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for clear_dataset_restriction: {e}")
+                });
+                self
+            }
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_ids = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for dataset_id: {e}"));
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn scopes<T>(mut self, value: T) -> Self
@@ -15005,7 +16751,8 @@ pub mod types {
                 value: UpdateApiKeyRequest,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
-                    dataset_id: value.dataset_id?,
+                    clear_dataset_restriction: value.clear_dataset_restriction?,
+                    dataset_ids: value.dataset_ids?,
                     scopes: value.scopes?,
                 })
             }
@@ -15013,7 +16760,8 @@ pub mod types {
         impl ::std::convert::From<super::UpdateApiKeyRequest> for UpdateApiKeyRequest {
             fn from(value: super::UpdateApiKeyRequest) -> Self {
                 Self {
-                    dataset_id: Ok(value.dataset_id),
+                    clear_dataset_restriction: Ok(value.clear_dataset_restriction),
+                    dataset_ids: Ok(value.dataset_ids),
                     scopes: Ok(value.scopes),
                 }
             }
@@ -15401,6 +17149,10 @@ pub mod types {
         #[derive(Clone, Debug)]
         pub struct WhoamiIdentityResponse {
             dataset: ::std::result::Result<::std::string::String, ::std::string::String>,
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
             tenant: ::std::result::Result<super::WhoamiTenant, ::std::string::String>,
             user_id: ::std::result::Result<::std::string::String, ::std::string::String>,
         }
@@ -15408,6 +17160,7 @@ pub mod types {
             fn default() -> Self {
                 Self {
                     dataset: Err("no value supplied for dataset".to_string()),
+                    dataset_ids: Ok(Default::default()),
                     tenant: Err("no value supplied for tenant".to_string()),
                     user_id: Err("no value supplied for user_id".to_string()),
                 }
@@ -15422,6 +17175,18 @@ pub mod types {
                 self.dataset = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for dataset: {e}"));
+                self
+            }
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_ids = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
             pub fn tenant<T>(mut self, value: T) -> Self
@@ -15452,6 +17217,7 @@ pub mod types {
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
                     dataset: value.dataset?,
+                    dataset_ids: value.dataset_ids?,
                     tenant: value.tenant?,
                     user_id: value.user_id?,
                 })
@@ -15461,6 +17227,7 @@ pub mod types {
             fn from(value: super::WhoamiIdentityResponse) -> Self {
                 Self {
                     dataset: Ok(value.dataset),
+                    dataset_ids: Ok(value.dataset_ids),
                     tenant: Ok(value.tenant),
                     user_id: Ok(value.user_id),
                 }
@@ -15817,6 +17584,26 @@ impl Client {
     ```*/
     pub fn create_user(&self) -> builder::CreateUser<'_> {
         builder::CreateUser::new(self)
+    }
+    /**GET /api/v1/connection
+
+    Everything needed to send data to and query this deployment from outside:
+    public OTLP gRPC/HTTP and Prometheus remote-write endpoints, the query API
+    base and compatibility-dialect paths, the headers to send (with this
+    request's tenant/dataset filled in), the API-key scopes ingest and query
+    each require, and ready-to-paste `OTEL_EXPORTER_OTLP_*` env vars. Behind
+    the tenant auth middleware, so any valid tenant credential — including an
+    ingest-only key — may call it.
+
+    Sends a `GET` request to `/api/v1/connection`
+
+    ```ignore
+    let response = client.connection_info()
+        .send()
+        .await;
+    ```*/
+    pub fn connection_info(&self) -> builder::ConnectionInfo<'_> {
+        builder::ConnectionInfo::new(self)
     }
     /**GET /api/v1/manage/schema
 
@@ -17972,6 +19759,51 @@ pub mod builder {
                 409u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::connection_info`]
+
+    [`Client::connection_info`]: super::Client::connection_info*/
+    #[derive(Debug, Clone)]
+    pub struct ConnectionInfo<'a> {
+        client: &'a super::Client,
+    }
+    impl<'a> ConnectionInfo<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self { client: client }
+        }
+        ///Sends a `GET` request to `/api/v1/connection`
+        pub async fn send(self) -> Result<ResponseValue<types::ConnectionInfoResponse>, Error<()>> {
+            let Self { client } = self;
+            let url = format!("{}/api/v1/connection", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "connection_info",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -23039,6 +24871,7 @@ pub mod prelude {
 /// Every operation id declared in the OpenAPI document, alphabetized.
 /// Regenerated by `cargo xtask generate`; see `client-surface-parity`.
 pub const OPERATIONS: &[&str] = &[
+    "connection_info",
     "create_api_key",
     "create_dataset",
     "create_tenant",

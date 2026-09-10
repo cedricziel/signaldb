@@ -41,7 +41,7 @@ const API_KEYS = [
   {
     id: "key-1",
     name: "collector-production",
-    dataset_id: "production",
+    dataset_ids: ["production"],
     scopes: ["metrics:write", "logs:write"],
     created_at: "2026-08-01T00:00:00Z",
     revoked: false,
@@ -49,7 +49,7 @@ const API_KEYS = [
   {
     id: "key-2",
     name: "staging-deploy",
-    dataset_id: "staging",
+    dataset_ids: ["staging"],
     scopes: ["metrics:write", "logs:write", "traces:write", "profiles:write"],
     created_at: "2026-07-15T00:00:00Z",
     revoked: false,
@@ -57,7 +57,7 @@ const API_KEYS = [
   {
     id: "key-3",
     name: "old-key",
-    dataset_id: null,
+    dataset_ids: null,
     scopes: [],
     created_at: "2026-07-01T00:00:00Z",
     revoked: true,
@@ -65,7 +65,7 @@ const API_KEYS = [
   {
     id: "key-4",
     name: "ci-provisioner",
-    dataset_id: null,
+    dataset_ids: null,
     scopes: ["tenant:manage"],
     created_at: "2026-08-10T00:00:00Z",
     revoked: false,
@@ -129,13 +129,13 @@ describe("ApiKeys page", () => {
     ).toBeInTheDocument();
     expect(
       screen.getByText((content) =>
-        content.startsWith("all datasets · legacy unrestricted"),
+        content.startsWith("unrestricted · legacy unrestricted"),
       ),
     ).toBeInTheDocument();
     // A management key lists its tenant:manage scope like any other scope.
     expect(
       screen.getByText((content) =>
-        content.startsWith("all datasets · tenant:manage"),
+        content.startsWith("unrestricted · tenant:manage"),
       ),
     ).toBeInTheDocument();
 
@@ -143,6 +143,35 @@ describe("ApiKeys page", () => {
     // (jsdom doesn't apply stylesheet rules, so we check the class).
     const revokedRow = screen.getByText("old-key").closest("li");
     expect(revokedRow?.className).toContain("revoked");
+  });
+
+  it("shows a multi-dataset key's restriction as the joined dataset list", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      {
+        match: API_KEYS_PATH,
+        body: [
+          {
+            id: "key-multi",
+            name: "multi-dataset-key",
+            dataset_ids: ["production", "staging"],
+            scopes: ["metrics:write"],
+            created_at: "2026-08-05T00:00:00Z",
+            revoked: false,
+          },
+        ],
+      },
+    ]);
+    renderApiKeys();
+
+    await waitFor(() =>
+      expect(screen.getByText("multi-dataset-key")).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText((content) =>
+        content.startsWith("production, staging · metrics:write"),
+      ),
+    ).toBeInTheDocument();
   });
 
   it("shows create form for admins", async () => {
@@ -156,10 +185,38 @@ describe("ApiKeys page", () => {
       expect(
         screen.getByPlaceholderText("collector-production"),
       ).toBeInTheDocument();
-      expect(screen.getByText("All datasets")).toBeInTheDocument();
+      expect(
+        screen.getByRole("group", { name: "Datasets" }),
+      ).toBeInTheDocument();
+      expect(screen.getByLabelText("production")).toBeInTheDocument();
+      expect(screen.getByLabelText("staging")).toBeInTheDocument();
+      expect(screen.getByLabelText("production")).not.toBeChecked();
       expect(screen.getByText("metrics:write")).toBeInTheDocument();
       expect(screen.getByText("Create API key")).toBeInTheDocument();
     });
+  });
+
+  it("pre-checks all four ingestion scopes by default, leaving other scopes unchecked", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, body: [] },
+    ]);
+    renderApiKeys();
+
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+    for (const scope of [
+      "metrics:write",
+      "logs:write",
+      "traces:write",
+      "profiles:write",
+    ]) {
+      expect(screen.getByLabelText(scope)).toBeChecked();
+    }
+    expect(screen.getByLabelText("schema:read")).not.toBeChecked();
+    expect(screen.getByLabelText("schema:write")).not.toBeChecked();
+    expect(screen.getByLabelText("tenant:manage")).not.toBeChecked();
   });
 
   it("groups the scope picker into Ingestion and Schema with descriptions", async () => {
@@ -201,9 +258,7 @@ describe("ApiKeys page", () => {
       expect(screen.getByText("Create API key")).toBeInTheDocument(),
     );
     const management = screen.getByRole("group", { name: "Management" });
-    expect(management).toContainElement(
-      screen.getByLabelText("tenant:manage"),
-    );
+    expect(management).toContainElement(screen.getByLabelText("tenant:manage"));
     expect(management).toHaveTextContent(/datasets, keys, and members/i);
   });
 
@@ -218,7 +273,15 @@ describe("ApiKeys page", () => {
       expect(screen.getByText("Create API key")).toBeInTheDocument(),
     );
 
-    await userEvent.click(screen.getByLabelText("metrics:write"));
+    // Deselect the default ingestion scopes, pick only tenant:manage.
+    for (const scope of [
+      "metrics:write",
+      "logs:write",
+      "traces:write",
+      "profiles:write",
+    ]) {
+      await userEvent.click(screen.getByLabelText(scope));
+    }
     await userEvent.click(screen.getByLabelText("tenant:manage"));
     await userEvent.click(screen.getByText("Create API key"));
 
@@ -240,8 +303,15 @@ describe("ApiKeys page", () => {
       expect(screen.getByText("Create API key")).toBeInTheDocument(),
     );
 
-    // Deselect the default ingestion scope, pick both schema scopes.
-    await userEvent.click(screen.getByLabelText("metrics:write"));
+    // Deselect the default ingestion scopes, pick both schema scopes.
+    for (const scope of [
+      "metrics:write",
+      "logs:write",
+      "traces:write",
+      "profiles:write",
+    ]) {
+      await userEvent.click(screen.getByLabelText(scope));
+    }
     await userEvent.click(screen.getByLabelText("schema:read"));
     await userEvent.click(screen.getByLabelText("schema:write"));
     await userEvent.click(screen.getByText("Create API key"));
@@ -255,7 +325,7 @@ describe("ApiKeys page", () => {
     });
   });
 
-  it("edits the scopes of a live key via PATCH", async () => {
+  it("edits the scopes of a live key via PATCH, keeping its dataset restriction explicit", async () => {
     const fetchMock = stubFetchRoutes([
       { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
       { match: API_KEYS_PATH, method: "GET", body: API_KEYS },
@@ -281,6 +351,10 @@ describe("ApiKeys page", () => {
     expect(getByLabelText("metrics:write")).toBeChecked();
     expect(getByLabelText("logs:write")).toBeChecked();
     expect(getByLabelText("schema:read")).not.toBeChecked();
+    // key-1 is restricted to `production`: the dataset picker reflects that.
+    expect(getByLabelText("production")).toBeChecked();
+    expect(getByLabelText("staging")).not.toBeChecked();
+    expect(getByLabelText("Remove dataset restriction")).not.toBeChecked();
     await userEvent.click(getByLabelText("logs:write"));
     await userEvent.click(getByLabelText("schema:read"));
     await userEvent.click(getByText("Save scopes"));
@@ -293,6 +367,7 @@ describe("ApiKeys page", () => {
     const patch = findFetchCall(fetchMock, "/api-keys/key-1", "PATCH")!;
     expect(await patch.clone().json()).toEqual({
       scopes: ["metrics:write", "schema:read"],
+      dataset_ids: ["production"],
     });
     // Editor closes and the list refetches.
     await waitFor(() =>
@@ -300,6 +375,135 @@ describe("ApiKeys page", () => {
         screen.queryByRole("form", { name: "Edit scopes" }),
       ).not.toBeInTheDocument(),
     );
+  });
+
+  it("clears an existing dataset restriction only via the explicit clear control", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, method: "GET", body: API_KEYS },
+      {
+        match: `${API_KEYS_PATH}/key-1`,
+        method: "PATCH",
+        body: { ...API_KEYS[0], dataset_id: null, dataset_ids: null },
+      },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("collector-production")).toBeInTheDocument(),
+    );
+
+    await userEvent.click(screen.getAllByText("Edit scopes")[0]!);
+    const editor = screen.getByRole("form", { name: "Edit scopes" });
+    const { getByLabelText, getByText } = within(editor);
+
+    await userEvent.click(getByLabelText("Remove dataset restriction"));
+    // Distinct from unchecking every box: the picker itself is disabled once
+    // the explicit clear control is chosen.
+    expect(getByLabelText("production")).toBeDisabled();
+    await userEvent.click(getByText("Save scopes"));
+
+    await waitFor(() =>
+      expect(
+        findFetchCall(fetchMock, "/api-keys/key-1", "PATCH"),
+      ).toBeDefined(),
+    );
+    const patch = findFetchCall(fetchMock, "/api-keys/key-1", "PATCH")!;
+    expect(await patch.clone().json()).toEqual({
+      scopes: ["metrics:write", "logs:write"],
+      clear_dataset_restriction: true,
+    });
+  });
+
+  it("leaves an existing dataset restriction unchanged when boxes are simply unchecked, never sending an empty dataset_ids array", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, method: "GET", body: API_KEYS },
+      {
+        match: `${API_KEYS_PATH}/key-1`,
+        method: "PATCH",
+        body: { ...API_KEYS[0] },
+      },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("collector-production")).toBeInTheDocument(),
+    );
+
+    await userEvent.click(screen.getAllByText("Edit scopes")[0]!);
+    const editor = screen.getByRole("form", { name: "Edit scopes" });
+    const { getByLabelText, getByText } = within(editor);
+
+    await userEvent.click(getByLabelText("production")); // uncheck, no clear control used
+    await userEvent.click(getByText("Save scopes"));
+
+    await waitFor(() =>
+      expect(
+        findFetchCall(fetchMock, "/api-keys/key-1", "PATCH"),
+      ).toBeDefined(),
+    );
+    const patch = findFetchCall(fetchMock, "/api-keys/key-1", "PATCH")!;
+    const body = (await patch.clone().json()) as Record<string, unknown>;
+    expect(body).not.toHaveProperty("dataset_ids");
+    expect(body).not.toHaveProperty("clear_dataset_restriction");
+    expect(body).toEqual({ scopes: ["metrics:write", "logs:write"] });
+  });
+
+  it("omits the dataset fields entirely when editing an already-unrestricted key without touching the picker", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, method: "GET", body: API_KEYS },
+      {
+        match: `${API_KEYS_PATH}/key-4`,
+        method: "PATCH",
+        body: { ...API_KEYS[3] },
+      },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("ci-provisioner")).toBeInTheDocument(),
+    );
+
+    const editButtons = screen.getAllByText("Edit scopes");
+    await userEvent.click(editButtons[editButtons.length - 1]!);
+    const editor = screen.getByRole("form", { name: "Edit scopes" });
+    const { getByLabelText, getByText } = within(editor);
+    expect(getByLabelText("production")).not.toBeChecked();
+    await userEvent.click(getByText("Save scopes"));
+
+    await waitFor(() =>
+      expect(
+        findFetchCall(fetchMock, "/api-keys/key-4", "PATCH"),
+      ).toBeDefined(),
+    );
+    const patch = findFetchCall(fetchMock, "/api-keys/key-4", "PATCH")!;
+    const body = (await patch.clone().json()) as Record<string, unknown>;
+    expect(body).not.toHaveProperty("dataset_ids");
+    expect(body).not.toHaveProperty("clear_dataset_restriction");
+  });
+
+  it("creates a key restricted to the checked datasets", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, method: "GET", body: [] },
+      { match: API_KEYS_PATH, method: "POST", body: { key: "sdbk_multi" } },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+
+    await userEvent.click(screen.getByLabelText("production"));
+    await userEvent.click(screen.getByLabelText("staging"));
+    await userEvent.click(screen.getByText("Create API key"));
+
+    await waitFor(() =>
+      expect(findFetchCall(fetchMock, "/api-keys", "POST")).toBeDefined(),
+    );
+    const post = findFetchCall(fetchMock, "/api-keys", "POST")!;
+    expect(await post.clone().json()).toEqual({
+      dataset_ids: ["production", "staging"],
+      scopes: ["metrics:write", "logs:write", "traces:write", "profiles:write"],
+    });
   });
 
   it("creates new API key and shows secret modal", async () => {
@@ -326,10 +530,9 @@ describe("ApiKeys page", () => {
       screen.getByPlaceholderText("collector-production"),
       "my-key",
     );
-    // Select dataset option
-    const select = screen.getByRole("combobox");
-    await userEvent.selectOptions(select, "production");
-    // metrics:write already checked by default, uncheck logs:write
+    // Select dataset
+    await userEvent.click(screen.getByLabelText("production"));
+    // All four ingestion scopes are checked by default; uncheck logs:write
     await userEvent.click(screen.getByLabelText("logs:write"));
     await userEvent.click(screen.getByText("Create API key"));
 
@@ -365,9 +568,10 @@ describe("ApiKeys page", () => {
       expect(screen.getByText("collector-production")).toBeInTheDocument();
     });
 
-    const revokeButtons = screen.getAllByText("Revoke");
+    const revokeButtons = screen.getAllByRole("button", { name: "Revoke" });
     const firstRevoke = revokeButtons[0];
     if (firstRevoke) await userEvent.click(firstRevoke);
+    await userEvent.click(screen.getByRole("button", { name: "Confirm" }));
 
     // The DELETE request is dispatched
     await waitFor(() =>

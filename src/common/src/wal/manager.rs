@@ -8,9 +8,10 @@
 //! poisoned segment, lock contention, or fsync latency cannot stall another
 //! tenant's ingest path.
 
-use crate::wal::{Wal, WalConfig};
+use crate::wal::{Wal, WalConfig, rlimit};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use tokio::sync::Mutex;
 
 /// Key for WAL cache: (tenant_id, dataset_id, signal_type)
@@ -35,6 +36,15 @@ pub struct CleanupStats {
 pub struct WalManager {
     /// Cache of WAL instances keyed by (tenant_id, dataset_id, signal_type)
     wals: Arc<Mutex<HashMap<WalKey, Arc<Wal>>>>,
+    /// The legacy drain-only WAL [`Self::adopt_root_segments`] found, if any.
+    ///
+    /// This used to ride `wals` under a sentinel key
+    /// ([`Self::LEGACY_ROOT_KEY`]), indistinguishable from a real tenant
+    /// entry to any consumer except by comparing against that constant, and
+    /// silently dropped with no re-adoption path by [`Self::clear_cache`].
+    /// Modeling it as its own field makes the special case visible in the
+    /// type and lets `clear_cache` leave it alone (#1308).
+    legacy_wal: Arc<Mutex<Option<Arc<Wal>>>>,
     /// Per-key initialization guards to prevent duplicate WAL creation
     init_guards: Arc<Mutex<HashMap<WalKey, Arc<Mutex<()>>>>>,
     /// When [`Self::cleanup_all_if_due`] last let a sweep through; `None`
@@ -43,6 +53,16 @@ pub struct WalManager {
     /// How long a WAL may go without an append before [`Self::evict_idle`]
     /// closes and drops it. Zero disables eviction.
     idle_timeout: std::time::Duration,
+    /// Soft cap on cached WAL instances (`[wal].max_instances`). On
+    /// `get_wal`'s miss path, [`Self::enforce_instance_cap`] tries to evict
+    /// the least-recently-appended, drained, unreferenced WAL to make room
+    /// before a write over the cap is simply let through. Zero disables the
+    /// cap.
+    max_instances: usize,
+    /// Unix seconds [`Self::enforce_instance_cap`] last logged an over-cap
+    /// warning, rate-limited so a fleet parked over the cap does not flood
+    /// logs on every miss.
+    last_cap_warn_secs: AtomicU64,
     /// Base configuration template for trace WALs
     traces_config: WalConfig,
     /// Base configuration template for log WALs
@@ -73,9 +93,12 @@ impl WalManager {
     ) -> Self {
         Self {
             wals: Arc::new(Mutex::new(HashMap::new())),
+            legacy_wal: Arc::new(Mutex::new(None)),
             init_guards: Arc::new(Mutex::new(HashMap::new())),
             last_cleanup: Arc::new(Mutex::new(None)),
             idle_timeout: Self::DEFAULT_IDLE_TIMEOUT,
+            max_instances: Self::DEFAULT_MAX_INSTANCES,
+            last_cap_warn_secs: AtomicU64::new(0),
             traces_config,
             logs_config,
             metrics_config,
@@ -106,23 +129,45 @@ impl WalManager {
         self
     }
 
-    /// Cache key under which [`Self::adopt_root_segments`] registers a
-    /// legacy single-directory WAL. It uses a signal name no `get_wal`
-    /// caller can produce, so it never collides with a real
-    /// tenant/dataset/signal WAL.
-    pub const LEGACY_ROOT_KEY: (&'static str, &'static str, &'static str) =
+    /// Soft cap on cached WAL instances absent an explicit
+    /// `[wal].max_instances`. Sized so its implied descriptor demand
+    /// (`DEFAULT_MAX_INSTANCES * 3 fds + rlimit::RESERVED_FDS`) fits inside
+    /// the common 1024 `RLIMIT_NOFILE` soft limit: 256 × 3 + 128 = 896.
+    ///
+    /// Used as the field's own initial value in [`Self::new`], not just a
+    /// config fallback: a wiring that forgets `.with_max_instances(...)`
+    /// degrades to this bounded default rather than to unbounded.
+    pub const DEFAULT_MAX_INSTANCES: usize = 256;
+
+    /// Override [`Self::DEFAULT_MAX_INSTANCES`]. Zero disables the cap.
+    pub fn with_max_instances(mut self, max_instances: usize) -> Self {
+        self.max_instances = max_instances;
+        self
+    }
+
+    /// The configured instance cap.
+    pub fn max_instances(&self) -> usize {
+        self.max_instances
+    }
+
+    /// The key under which [`Self::all_wals`] reports the legacy
+    /// drain-only WAL, matching what a pre-#932 writer's entries carry no
+    /// routing metadata for. It uses a signal name no `get_wal` caller can
+    /// produce, so it never collides with a real tenant/dataset/signal WAL.
+    const LEGACY_ROOT_KEY: (&'static str, &'static str, &'static str) =
         ("_legacy", "_legacy", "_root");
 
     /// Register an already-open WAL under `key`, returning the instance it
-    /// displaced, if any. Used to adopt WALs the manager did not create
-    /// itself (see [`Self::adopt_root_segments`]) and by tests that build a
-    /// WAL by hand.
+    /// displaced, if any. Used by tests that build a WAL by hand and feed it
+    /// to a manager, including the writer's (a different crate, hence the
+    /// feature gate rather than `cfg(test)`).
     ///
     /// The displaced instance is handed back deliberately: two live `Wal`
     /// values over the same directory keep independent write handles and
     /// offset state, which is the desync class that #883 fixed. A caller that
     /// drops the returned `Arc` without any other clone alive is safe; one
     /// that keeps writing through it is not.
+    #[cfg(any(test, feature = "testing"))]
     #[must_use = "the displaced WAL must not keep writing to the same directory"]
     pub async fn register(&self, key: WalKey, wal: Arc<Wal>) -> Option<Arc<Wal>> {
         let displaced = self.wals.lock().await.insert(key, wal);
@@ -157,13 +202,14 @@ impl WalManager {
     /// Adopt segments left directly in the base directory by a pre-#932
     /// writer, which kept one global WAL there instead of a per-tenant tree.
     ///
-    /// The segments are opened as a single drain-only WAL registered under
-    /// [`Self::LEGACY_ROOT_KEY`] so a consumer iterating [`Self::all_wals`]
-    /// still processes their pending entries: an entry that carries routing
-    /// metadata is routed by it, and one that does not falls back to the
-    /// WAL's configured tenant/dataset, which is why the config below stays
-    /// `default`/`default` even though the cache key does not. New writes
-    /// never go there: `get_wal` always resolves to the per-tenant tree.
+    /// The segments are opened as a single drain-only WAL held in
+    /// [`Self::legacy_wal`] and reported under [`Self::LEGACY_ROOT_KEY`] by
+    /// [`Self::all_wals`], so a consumer iterating it still processes their
+    /// pending entries: an entry that carries routing metadata is routed by
+    /// it, and one that does not falls back to the WAL's configured
+    /// tenant/dataset, which is why the config below stays `default`/`default`
+    /// even though the reported key does not. New writes never go there:
+    /// `get_wal` always resolves to the per-tenant tree.
     ///
     /// Once every adopted entry is drained the segments are reclaimed by the
     /// regular [`Self::cleanup_all_if_due`] sweep, so the adoption (and its
@@ -176,6 +222,11 @@ impl WalManager {
     /// [`Self::new`] and per-signal directories would need each of them
     /// scanned; no such manager has legacy root segments to adopt.
     ///
+    /// Safe under concurrent invocation: the `legacy_wal` guard is held
+    /// across the whole check-create-set sequence (including the `Wal::new`
+    /// await), so two overlapping calls cannot both create a `Wal` and have
+    /// the second silently replace the first's `Arc` without closing it.
+    ///
     /// Returns whether a legacy root WAL was found and adopted.
     pub async fn adopt_root_segments(&self) -> Result<bool, anyhow::Error> {
         let base_dir = self.traces_config.wal_dir.clone();
@@ -186,9 +237,8 @@ impl WalManager {
             return Ok(false);
         }
 
-        let (tenant, dataset, signal) = Self::LEGACY_ROOT_KEY;
-        let key: WalKey = (tenant.to_string(), dataset.to_string(), signal.to_string());
-        if self.wals.lock().await.contains_key(&key) {
+        let mut legacy_wal = self.legacy_wal.lock().await;
+        if legacy_wal.is_some() {
             return Ok(true);
         }
 
@@ -197,18 +247,20 @@ impl WalManager {
             "Adopting legacy single-directory WAL segments for draining; new writes use \
              the per-tenant/dataset/signal tree"
         );
-        // The cache KEY is `_legacy/_legacy/_root` so it can never collide
-        // with a real WAL, but the CONFIG keeps `default`/`default`: an entry
-        // that carries no metadata is stamped with, and routed by, its WAL's
-        // configured tenant/dataset (`WalEntry::tenant_id`), and a pre-#932
-        // writer wrote exactly such entries into a `default`/`default` WAL.
-        // Naming the config `_legacy` would silently re-namespace that
-        // upgrade-time data into an Iceberg namespace nobody asked for.
+        // The reported KEY is `_legacy/_legacy/_root` so it can never
+        // collide with a real WAL, but the CONFIG keeps `default`/`default`:
+        // an entry that carries no metadata is stamped with, and routed by,
+        // its WAL's configured tenant/dataset (`WalEntry::tenant_id`), and a
+        // pre-#932 writer wrote exactly such entries into a
+        // `default`/`default` WAL. Naming the config `_legacy` would
+        // silently re-namespace that upgrade-time data into an Iceberg
+        // namespace nobody asked for.
         let mut config = self.traces_config.clone();
         config.tenant_id = "default".to_string();
         config.dataset_id = "default".to_string();
         let wal = Wal::new(config).await?;
-        let _ = self.register(key, Arc::new(wal)).await;
+        *legacy_wal = Some(Arc::new(wal));
+        Self::record_instance_opened();
         Ok(true)
     }
 
@@ -268,6 +320,15 @@ impl WalManager {
                 return Ok(wal.clone());
             }
         }
+
+        // Give the instance cap a chance to free a slot for the WAL this
+        // call is about to create. Must run before this key's own init guard
+        // is taken below: `enforce_instance_cap` takes *other* keys' guards
+        // internally (non-blocking `try_lock`, so it cannot deadlock even if
+        // called concurrently for different keys), and taking two different
+        // keys' guards in a fixed order across concurrent calls is what
+        // avoids a cycle.
+        self.enforce_instance_cap().await;
 
         // Get or create per-key initialization guard
         let init_guard = self.init_guard_for(&key).await;
@@ -564,7 +625,8 @@ impl WalManager {
         }
     }
 
-    /// Close and drop every cached WAL that has taken no append for
+    /// Close and drop every cached WAL — including the adopted legacy WAL,
+    /// see [`Self::adopt_root_segments`] — that has taken no append for
     /// `idle_after` and holds no unprocessed entries. Returns how many were
     /// evicted.
     ///
@@ -588,6 +650,12 @@ impl WalManager {
     ///   the instance while holding it. Two live `Wal` values over one
     ///   directory keep independent offset state — the desync class #883 fixed
     ///   — so the old instance must be inert before a new one can be created.
+    ///   The legacy WAL has no such guard: `get_wal` rejects
+    ///   [`Self::LEGACY_ROOT_KEY`]'s signal as unknown before it ever touches
+    ///   a key, so nothing can race it there. The only other writer of
+    ///   `legacy_wal` is [`Self::adopt_root_segments`], and the `legacy_wal`
+    ///   mutex itself — held across the whole check-backlog-close sequence,
+    ///   including the awaits — is what serializes against it.
     pub async fn evict_idle(&self, idle_after: std::time::Duration) -> usize {
         // Scan under the map lock and clone only the keys that are actually
         // idle — usually none. Cloning every key on every pass would allocate
@@ -599,76 +667,292 @@ impl WalManager {
                 .map(|(key, _)| key.clone())
                 .collect()
         };
-        if candidates.is_empty() {
-            return 0;
-        }
 
         let mut evicted = 0;
         for key in candidates {
-            // Serialize against `get_wal` for this key for the whole
-            // check-remove-close sequence.
-            let guard = self.init_guard_for(&key).await;
-            let _guard = guard.lock().await;
-
-            let Some(wal) = self.wals.lock().await.get(&key).cloned() else {
-                continue;
-            };
-            // Re-check under the guard: a write may have landed since the scan.
-            if wal.idle_for() < idle_after {
-                continue;
-            }
-            match wal.get_unprocessed_entries().await {
-                Ok(entries) if entries.is_empty() => {}
-                Ok(_) => continue,
-                Err(e) => {
-                    let (tenant, dataset, signal) = &key;
-                    tracing::debug!(
-                        tenant_id = %tenant,
-                        dataset_id = %dataset,
-                        signal = %signal,
-                        error = %e,
-                        "Could not check WAL backlog before eviction; keeping it"
-                    );
-                    continue;
-                }
-            }
-
-            self.wals.lock().await.remove(&key);
-            if let Err(e) = wal.close().await {
-                let (tenant, dataset, signal) = &key;
-                tracing::warn!(
-                    tenant_id = %tenant,
-                    dataset_id = %dataset,
-                    signal = %signal,
-                    error = %e,
-                    "Failed to close an evicted WAL; its descriptors may leak until exit"
-                );
-            }
-            Self::record_instances_closed(1);
-            evicted += 1;
-
-            // Retire the guard too, or `init_guards` becomes the same
-            // unbounded-growth shape this method exists to fix — one resident
-            // entry per `(tenant, dataset, signal)` ever seen, including
-            // tenants that never come back.
-            //
-            // Only safe while no one else holds a clone: a `get_wal` blocked
-            // on this guard would otherwise proceed against a mutex no longer
-            // in the map, while the next caller creates a *different* one —
-            // two creators for one directory. Both the map and this scope hold
-            // a clone, so a count of exactly two means nobody is waiting, and
-            // the `init_guards` lock is what a new waiter would have to take
-            // to clone it.
-            let mut guards = self.init_guards.lock().await;
-            if Arc::strong_count(&guard) == 2 {
-                guards.remove(&key);
+            // `wait_for_guard: true` — this sweep is the only eviction path
+            // that runs at a pass boundary rather than on `get_wal`'s hot
+            // path, so blocking briefly on a guard `get_wal` currently holds
+            // is the right trade. `require_unreferenced: false` keeps this
+            // path's existing contract: a caller may hold a clone of an idle,
+            // drained WAL across eviction (several tests rely on exactly
+            // that), unlike the instance-cap path below.
+            if self.evict_one(&key, idle_after, true, false).await {
+                evicted += 1;
             }
         }
+
+        // The legacy WAL is a candidate too: it is drained by the same
+        // consumers that iterate `all_wals`, and once drained it goes idle
+        // immediately, since nothing ever writes to it again.
+        //
+        // The `legacy_wal` guard is held for the whole check-backlog-close
+        // sequence, including both awaits. `Wal::get_unprocessed_entries`
+        // and `Wal::close` only touch the WAL's own internals (segments,
+        // flush handle) and never call back into `WalManager` — grep finds
+        // `WalManager` in `wal/mod.rs` only in doc comments — so this nests
+        // no other lock and cannot deadlock against `all_wals`, `wal_count`,
+        // `flush_all`, `clear_cache`, or `adopt_root_segments`.
+        //
+        // An earlier version dropped the guard between the eligibility
+        // check and the close so those two awaits ran unguarded. But
+        // `legacy_wal` was then briefly `None` mid-eviction, and a
+        // concurrent `adopt_root_segments` reads exactly that field to
+        // decide whether to open a fresh `Wal` — it would see nothing
+        // adopted and open a *second* live `Wal` over the same directory,
+        // two independent instances with independent segment state. That is
+        // worse than blocking `all_wals`/`wal_count` for the duration of
+        // one dormant, already-drained WAL's eviction. Do not narrow this
+        // lock scope again.
+        let mut legacy = self.legacy_wal.lock().await;
+        let eligible_legacy = legacy
+            .as_ref()
+            .filter(|wal| wal.idle_for() >= idle_after)
+            .cloned();
+        if let Some(wal) = eligible_legacy {
+            match wal.get_unprocessed_entries().await {
+                Ok(entries) if entries.is_empty() => {
+                    *legacy = None;
+                    if let Err(e) = wal.close().await {
+                        tracing::warn!(
+                            error = %e,
+                            "Failed to close the evicted legacy WAL; its descriptors may leak \
+                             until exit"
+                        );
+                    }
+                    Self::record_instances_closed(1);
+                    evicted += 1;
+                }
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::debug!(
+                        error = %e,
+                        "Could not check the legacy WAL's backlog before eviction; keeping it"
+                    );
+                }
+            }
+        }
+        drop(legacy);
 
         if evicted > 0 {
             tracing::info!(evicted, "Evicted idle WALs");
         }
         evicted
+    }
+
+    /// Try to evict one WAL, shared by [`Self::evict_idle`] and
+    /// [`Self::enforce_instance_cap`]. Returns whether it was evicted.
+    ///
+    /// * `min_idle` — the WAL must not have appended within this long.
+    /// * `wait_for_guard` — whether to block on `key`'s per-key init guard
+    ///   (`evict_idle`'s pass-boundary sweep can afford to) or skip the key
+    ///   when it is contended (`enforce_instance_cap` runs on `get_wal`'s hot
+    ///   path and must never block there — a contended guard means some
+    ///   other task is already creating or evicting this exact key).
+    /// * `require_unreferenced` — additionally require that nothing besides
+    ///   this manager's own cache holds a clone of the WAL. `evict_idle`
+    ///   leaves this false on purpose: several callers deliberately hold a
+    ///   clone of an idle, drained WAL across eviction, and its 900s default
+    ///   window already makes that safe. The instance cap can run with near-
+    ///   zero idleness, so it additionally proves no appender is using the
+    ///   victim before closing it.
+    ///
+    /// Either way, a WAL with buffered (unflushed) or unprocessed entries is
+    /// never evicted: reopening would re-read them, but the cached instance
+    /// is also what the drain loops iterate, so evicting early would stall
+    /// that tenant until new traffic arrived.
+    async fn evict_one(
+        &self,
+        key: &WalKey,
+        min_idle: std::time::Duration,
+        wait_for_guard: bool,
+        require_unreferenced: bool,
+    ) -> bool {
+        let guard = self.init_guard_for(key).await;
+        let _guard = if wait_for_guard {
+            guard.lock().await
+        } else {
+            match guard.try_lock() {
+                Ok(g) => g,
+                Err(_) => return false,
+            }
+        };
+
+        // Re-fetch and re-check eligibility under the guard: a write, or
+        // another eviction, may have landed since the caller decided this key
+        // looked like a candidate.
+        let Some(wal) = self.wals.lock().await.get(key).cloned() else {
+            return false;
+        };
+        if wal.idle_for() < min_idle {
+            return false;
+        }
+        if wal.buffered_entry_count().await > 0 {
+            return false;
+        }
+        match wal.get_unprocessed_entries().await {
+            Ok(entries) if entries.is_empty() => {}
+            Ok(_) => return false,
+            Err(e) => {
+                let (tenant, dataset, signal) = key;
+                tracing::debug!(
+                    tenant_id = %tenant,
+                    dataset_id = %dataset,
+                    signal = %signal,
+                    error = %e,
+                    "Could not check WAL backlog before eviction; keeping it"
+                );
+                return false;
+            }
+        }
+        // Drop this clone before the ownership check below: while it is
+        // alive the strong count can never read back as 1.
+        drop(wal);
+
+        let wal = {
+            let mut wals = self.wals.lock().await;
+            if require_unreferenced {
+                match wals.get(key) {
+                    Some(arc) if Arc::strong_count(arc) == 1 => {}
+                    _ => return false,
+                }
+            }
+            match wals.remove(key) {
+                Some(wal) => wal,
+                None => return false,
+            }
+        };
+
+        if let Err(e) = wal.close().await {
+            let (tenant, dataset, signal) = key;
+            tracing::warn!(
+                tenant_id = %tenant,
+                dataset_id = %dataset,
+                signal = %signal,
+                error = %e,
+                "Failed to close an evicted WAL; its descriptors may leak until exit"
+            );
+        }
+        Self::record_instances_closed(1);
+
+        // Retire the guard too, or `init_guards` becomes the same
+        // unbounded-growth shape eviction exists to fix — one resident entry
+        // per `(tenant, dataset, signal)` ever seen, including tenants that
+        // never come back.
+        //
+        // Only safe while no one else holds a clone: a `get_wal` blocked on
+        // this guard would otherwise proceed against a mutex no longer in the
+        // map, while the next caller creates a *different* one — two
+        // creators for one directory. Both the map and this scope hold a
+        // clone, so a count of exactly two means nobody is waiting, and the
+        // `init_guards` lock is what a new waiter would have to take to
+        // clone it.
+        let mut guards = self.init_guards.lock().await;
+        if Arc::strong_count(&guard) == 2 {
+            guards.remove(key);
+        }
+
+        true
+    }
+
+    /// A cap-path eviction requires a WAL to be idle for at least this long.
+    /// This is a thrash damper, not the safety mechanism — that is
+    /// `require_unreferenced` plus the buffer/backlog emptiness checks in
+    /// [`Self::evict_one`]. A fleet that writes every one of its keys more
+    /// often than this legitimately finds no victim and runs over the cap;
+    /// see [`Self::enforce_instance_cap`].
+    const CAP_MIN_IDLE: std::time::Duration = std::time::Duration::from_secs(5);
+
+    /// Try to keep the cache at or under [`Self::max_instances`] by evicting
+    /// the least-recently-appended WAL that [`Self::evict_one`] finds
+    /// provably drained and unreferenced.
+    ///
+    /// Called from [`Self::get_wal`]'s miss path before the new WAL is
+    /// created, so freeing exactly one slot is enough. When no candidate
+    /// qualifies — every WAL is either recently written, still has entries
+    /// outstanding, or is in use — the write proceeds over the cap rather
+    /// than failing: honouring a soft cap is never worth failing a write
+    /// whose durability a caller may already be waiting on.
+    async fn enforce_instance_cap(&self) {
+        if self.max_instances == 0 {
+            return;
+        }
+
+        let mut candidates: Vec<(WalKey, u64)> = {
+            let wals = self.wals.lock().await;
+            if wals.len() < self.max_instances {
+                return;
+            }
+            wals.iter()
+                .map(|(key, wal)| (key.clone(), wal.last_append_secs()))
+                .collect()
+        };
+        let count = candidates.len();
+        candidates.sort_by_key(|(_, last_append_secs)| *last_append_secs);
+
+        for (key, _) in candidates {
+            if self.evict_one(&key, Self::CAP_MIN_IDLE, false, true).await {
+                Self::record_instance_cap_hit("evicted");
+                return;
+            }
+        }
+
+        Self::record_instance_cap_hit("over_cap");
+        self.warn_over_cap_if_due(count);
+    }
+
+    /// Increment `signaldb.wal.instance_cap_hits` for one `get_wal` miss that
+    /// found the cache at or over [`Self::max_instances`].
+    fn record_instance_cap_hit(outcome: &'static str) {
+        crate::self_monitoring::app_metrics()
+            .wal_instance_cap_hits
+            .add(1, &[opentelemetry::KeyValue::new("outcome", outcome)]);
+    }
+
+    /// How often [`Self::enforce_instance_cap`] may log its over-cap
+    /// warning. A fleet parked over the cap hits this on every miss; without
+    /// a limit that is a log flood, the export-churn loop of the #865
+    /// incident.
+    const CAP_WARN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(60);
+
+    /// Log that the instance cap was hit and nothing was evictable, at most
+    /// once per [`Self::CAP_WARN_INTERVAL`].
+    fn warn_over_cap_if_due(&self, count: usize) {
+        let now = crate::wal::unix_now_secs();
+        let last = self.last_cap_warn_secs.load(Ordering::Relaxed);
+        if now.saturating_sub(last) < Self::CAP_WARN_INTERVAL.as_secs() {
+            return;
+        }
+        if self
+            .last_cap_warn_secs
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            // Another task just logged this; skip rather than double up.
+            return;
+        }
+        tracing::warn!(
+            wal_instances = count,
+            max_instances = self.max_instances,
+            "WAL instance cache is at its configured cap with nothing evictable \
+             (every cached WAL is recently written, still has entries outstanding, or is in \
+             use); the write proceeded over the cap. Raise [wal].max_instances or investigate \
+             why WALs are not draining"
+        );
+    }
+
+    /// Warn (never fail) if `RLIMIT_NOFILE` looks thin against this
+    /// manager's expected WAL descriptor demand: the larger of its
+    /// configured cap and its currently-open WAL count, so the check reflects
+    /// what startup discovery actually opened rather than just the cap.
+    pub async fn warn_if_fd_headroom_thin(&self, service: &str) {
+        let open = self.wal_count().await as u64;
+        let expected = if self.max_instances == 0 {
+            open
+        } else {
+            (self.max_instances as u64).max(open)
+        };
+        rlimit::warn_on_thin_fd_headroom(service, expected, self.max_instances);
     }
 
     /// The per-key initialization guard, creating it if absent. Guards are
@@ -689,24 +973,38 @@ impl WalManager {
     /// a large tenant count cannot swamp the runtime's blocking pool.
     const CLEANUP_ALL_CONCURRENCY: usize = 32;
 
-    /// Get the number of cached WAL instances
+    /// Get the number of cached WAL instances, including the adopted legacy
+    /// WAL if any.
     ///
     /// Useful for monitoring and debugging.
     pub async fn wal_count(&self) -> usize {
-        self.wals.lock().await.len()
+        let ordinary = self.wals.lock().await.len();
+        let legacy = usize::from(self.legacy_wal.lock().await.is_some());
+        ordinary + legacy
     }
 
-    /// Snapshot of all cached WAL instances with their keys
+    /// Snapshot of all cached WAL instances with their keys, including the
+    /// adopted legacy WAL (see [`Self::adopt_root_segments`]) under
+    /// [`Self::LEGACY_ROOT_KEY`] if one was found.
     ///
     /// Used by the WAL retry consumer to scan every tenant/dataset/signal
     /// WAL for unprocessed entries.
     pub async fn all_wals(&self) -> Vec<(WalKey, Arc<Wal>)> {
-        self.wals
+        let mut all: Vec<(WalKey, Arc<Wal>)> = self
+            .wals
             .lock()
             .await
             .iter()
             .map(|(key, wal)| (key.clone(), wal.clone()))
-            .collect()
+            .collect();
+        if let Some(wal) = self.legacy_wal.lock().await.clone() {
+            let (tenant, dataset, signal) = Self::LEGACY_ROOT_KEY;
+            all.push((
+                (tenant.to_string(), dataset.to_string(), signal.to_string()),
+                wal,
+            ));
+        }
+        all
     }
 
     /// Discover WAL directories left on disk by previous runs and open them
@@ -819,13 +1117,18 @@ impl WalManager {
         Ok(found)
     }
 
-    /// Close and drop all cached WAL instances. They are recreated on next
-    /// access; the files on disk are untouched.
+    /// Close and drop all cached per-tenant WAL instances. They are
+    /// recreated on next access; the files on disk are untouched.
     ///
     /// Each instance is closed rather than merely dropped: its flush task
     /// holds clones of the WAL's internals, so dropping the `Arc` alone leaves
     /// the timer running and the segments' descriptors open — the leak #1305
     /// is about.
+    ///
+    /// The adopted legacy WAL (see [`Self::adopt_root_segments`]) is left in
+    /// place: it carries no tenant/dataset routing metadata, so once dropped
+    /// it could only be found again by a process restart. `wal_count` and
+    /// `all_wals` still report it after this call.
     pub async fn clear_cache(&self) {
         let drained: Vec<(WalKey, Arc<Wal>)> = self.wals.lock().await.drain().collect();
         for (key, wal) in &drained {
@@ -1085,6 +1388,101 @@ mod tests {
         let manager = WalManager::uniform(create_test_config(temp_dir.path()));
         assert!(!manager.adopt_root_segments().await.unwrap());
         assert_eq!(manager.wal_count().await, 0);
+    }
+
+    /// Sets up a base dir with one legacy segment and a manager that has
+    /// adopted it plus two ordinary per-tenant WALs.
+    async fn manager_with_legacy_and_ordinary_wals(base_path: &Path) -> WalManager {
+        let legacy = Wal::new(create_test_config(base_path)).await.unwrap();
+        legacy
+            .append(
+                crate::wal::WalOperation::WriteTraces,
+                b"legacy".to_vec(),
+                None,
+            )
+            .await
+            .unwrap();
+        legacy.flush().await.unwrap();
+        drop(legacy);
+
+        let manager = WalManager::uniform(create_test_config(base_path));
+        assert!(manager.adopt_root_segments().await.unwrap());
+        manager
+            .get_wal("acme", "production", "traces")
+            .await
+            .unwrap();
+        manager.get_wal("acme", "production", "logs").await.unwrap();
+        manager
+    }
+
+    #[tokio::test]
+    async fn clear_cache_keeps_the_legacy_wal_but_drops_ordinary_ones() {
+        // #1308: the legacy WAL used to ride the same map as ordinary
+        // per-tenant WALs, so `clear_cache` dropped it with no re-adoption
+        // path short of a process restart. It must now survive.
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path().to_path_buf();
+        let manager = manager_with_legacy_and_ordinary_wals(&base_path).await;
+        assert_eq!(manager.wal_count().await, 3, "legacy + 2 ordinary WALs");
+
+        let (_, legacy_before) = manager
+            .all_wals()
+            .await
+            .into_iter()
+            .find(|(key, _)| {
+                (key.0.as_str(), key.1.as_str(), key.2.as_str()) == WalManager::LEGACY_ROOT_KEY
+            })
+            .expect("legacy WAL present before clear_cache");
+
+        manager.clear_cache().await;
+
+        assert_eq!(
+            manager.wals.lock().await.len(),
+            0,
+            "ordinary per-tenant WALs must be cleared"
+        );
+
+        let all = manager.all_wals().await;
+        assert_eq!(all.len(), 1, "only the legacy WAL should remain");
+        let (key, legacy_after) = &all[0];
+        assert_eq!(
+            (key.0.as_str(), key.1.as_str(), key.2.as_str()),
+            WalManager::LEGACY_ROOT_KEY
+        );
+        assert!(
+            Arc::ptr_eq(&legacy_before, legacy_after),
+            "clear_cache must not close and silently reopen the legacy WAL"
+        );
+
+        // Usable: an operation against it does not hit a "closed" error.
+        legacy_after.get_unprocessed_entries().await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn all_wals_yields_legacy_and_ordinary_wals_together() {
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path().to_path_buf();
+        let manager = manager_with_legacy_and_ordinary_wals(&base_path).await;
+
+        let keys: std::collections::HashSet<WalKey> = manager
+            .all_wals()
+            .await
+            .into_iter()
+            .map(|(k, _)| k)
+            .collect();
+        assert_eq!(keys.len(), 3, "legacy plus two ordinary WALs");
+        let (tenant, dataset, signal) = WalManager::LEGACY_ROOT_KEY;
+        assert!(keys.contains(&(tenant.to_string(), dataset.to_string(), signal.to_string())));
+        assert!(keys.contains(&(
+            "acme".to_string(),
+            "production".to_string(),
+            "traces".to_string()
+        )));
+        assert!(keys.contains(&(
+            "acme".to_string(),
+            "production".to_string(),
+            "logs".to_string()
+        )));
     }
 
     #[tokio::test]
@@ -1403,6 +1801,128 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn idle_drained_legacy_wal_is_evicted_too() {
+        // #1308: the legacy WAL used to ride `wals` and so was evicted like
+        // any other idle, drained WAL. Moving it to its own field must not
+        // pin it resident for the process lifetime — it goes idle the
+        // instant it is drained, since nothing writes to it again.
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path().to_path_buf();
+
+        let legacy = Wal::new(create_test_config(&base_path)).await.unwrap();
+        let id = legacy
+            .append(
+                crate::wal::WalOperation::WriteTraces,
+                b"legacy".to_vec(),
+                None,
+            )
+            .await
+            .unwrap();
+        legacy.flush().await.unwrap();
+        legacy.mark_processed(id).await.unwrap();
+        drop(legacy);
+
+        let manager = uniform_manager(&base_path);
+        assert!(manager.adopt_root_segments().await.unwrap());
+        assert_eq!(manager.wal_count().await, 1);
+
+        let (_, legacy_wal) = manager.all_wals().await.into_iter().next().unwrap();
+
+        let evicted = manager.evict_idle(Duration::from_secs(0)).await;
+        assert_eq!(evicted, 1, "a drained, idle legacy WAL must be evicted");
+        assert_eq!(manager.wal_count().await, 0, "the cache must drop it");
+        assert!(
+            manager.all_wals().await.is_empty(),
+            "all_wals must no longer report the evicted legacy WAL's key"
+        );
+
+        // The evicted instance is inert, same as an ordinary evicted WAL.
+        let err = match legacy_wal
+            .append(
+                crate::wal::WalOperation::WriteTraces,
+                b"after".to_vec(),
+                None,
+            )
+            .await
+        {
+            Ok(_) => legacy_wal
+                .flush()
+                .await
+                .expect_err("an evicted legacy WAL must not accept further writes as durable"),
+            Err(e) => e,
+        };
+        assert!(
+            err.to_string().contains("closed"),
+            "expected a closed-WAL error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_legacy_wal_with_undrained_entries_is_never_evicted() {
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path().to_path_buf();
+
+        let legacy = Wal::new(create_test_config(&base_path)).await.unwrap();
+        legacy
+            .append(
+                crate::wal::WalOperation::WriteTraces,
+                b"pending".to_vec(),
+                None,
+            )
+            .await
+            .unwrap();
+        legacy.flush().await.unwrap();
+        drop(legacy);
+
+        let manager = uniform_manager(&base_path);
+        assert!(manager.adopt_root_segments().await.unwrap());
+
+        let evicted = manager.evict_idle(Duration::from_secs(0)).await;
+        assert_eq!(
+            evicted, 0,
+            "a legacy WAL with unprocessed entries must be kept"
+        );
+        assert_eq!(manager.wal_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn concurrent_adopt_root_segments_adopts_the_legacy_wal_exactly_once() {
+        use tokio::task::JoinSet;
+
+        let temp_dir = TempDir::new().unwrap();
+        let base_path = temp_dir.path().to_path_buf();
+
+        let legacy = Wal::new(create_test_config(&base_path)).await.unwrap();
+        legacy
+            .append(
+                crate::wal::WalOperation::WriteTraces,
+                b"legacy".to_vec(),
+                None,
+            )
+            .await
+            .unwrap();
+        legacy.flush().await.unwrap();
+        drop(legacy);
+
+        let manager = Arc::new(uniform_manager(&base_path));
+
+        let mut join_set = JoinSet::new();
+        for _ in 0..10 {
+            let manager = manager.clone();
+            join_set.spawn(async move { manager.adopt_root_segments().await.unwrap() });
+        }
+        while let Some(result) = join_set.join_next().await {
+            assert!(result.unwrap());
+        }
+
+        assert_eq!(
+            manager.wal_count().await,
+            1,
+            "only one legacy WAL must be adopted, however many callers raced to do it"
+        );
+    }
+
+    #[tokio::test]
     async fn eviction_retires_the_per_key_init_guard_too() {
         // Guards are kept resident so eviction and `get_wal` contend on the
         // same mutex. That is only sound if eviction also retires the guard:
@@ -1505,6 +2025,155 @@ mod tests {
         assert_eq!(
             second.read_entry_data(entry).await.unwrap(),
             b"two".to_vec()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_instance_cap_evicts_the_least_recently_appended_drained_wal() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = uniform_manager(temp_dir.path()).with_max_instances(2);
+
+        let a = manager.get_wal("a", "production", "traces").await.unwrap();
+        write_and_drain(&a, b"a").await;
+        a.set_last_append_secs(0); // Force A to be the oldest by a wide margin.
+        drop(a);
+
+        let b = manager.get_wal("b", "production", "traces").await.unwrap();
+        write_and_drain(&b, b"b").await;
+        drop(b);
+
+        // Opening a third key finds the cache at the cap of 2 and must evict
+        // A, the oldest drained, unreferenced WAL, to make room.
+        let c = manager.get_wal("c", "production", "traces").await.unwrap();
+        write_and_drain(&c, b"c").await;
+        drop(c);
+
+        assert_eq!(
+            manager.wal_count().await,
+            2,
+            "the cap of 2 must hold after opening a third key"
+        );
+        let keys: HashSet<WalKey> = manager
+            .all_wals()
+            .await
+            .into_iter()
+            .map(|(key, _)| key)
+            .collect();
+        assert!(
+            !keys.contains(&(
+                "a".to_string(),
+                "production".to_string(),
+                "traces".to_string()
+            )),
+            "the oldest drained, unreferenced WAL must be evicted"
+        );
+        assert!(keys.contains(&(
+            "b".to_string(),
+            "production".to_string(),
+            "traces".to_string()
+        )));
+        assert!(keys.contains(&(
+            "c".to_string(),
+            "production".to_string(),
+            "traces".to_string()
+        )));
+    }
+
+    #[tokio::test]
+    async fn a_write_over_the_cap_succeeds_when_nothing_is_drainable() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = uniform_manager(temp_dir.path()).with_max_instances(1);
+
+        let a = manager.get_wal("a", "production", "traces").await.unwrap();
+        a.append(
+            crate::wal::WalOperation::WriteTraces,
+            b"pending".to_vec(),
+            None,
+        )
+        .await
+        .unwrap();
+        a.flush().await.unwrap();
+        a.set_last_append_secs(0);
+        drop(a);
+
+        let result = manager.get_wal("b", "production", "traces").await;
+        assert!(
+            result.is_ok(),
+            "a write over the cap must succeed rather than fail: {:?}",
+            result.err().map(|e| e.to_string())
+        );
+        assert_eq!(
+            manager.wal_count().await,
+            2,
+            "A had unprocessed entries so it could not be evicted; both WALs remain cached"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_cap_never_evicts_a_wal_a_caller_still_holds() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = uniform_manager(temp_dir.path()).with_max_instances(1);
+
+        let a = manager.get_wal("a", "production", "traces").await.unwrap();
+        write_and_drain(&a, b"a").await;
+        a.set_last_append_secs(0);
+        // `a` is deliberately kept alive across the next call.
+
+        manager.get_wal("b", "production", "traces").await.unwrap();
+
+        assert_eq!(
+            manager.wal_count().await,
+            2,
+            "a WAL a caller still holds must not be evicted, however idle and drained it is"
+        );
+        drop(a);
+    }
+
+    #[tokio::test]
+    async fn the_cap_never_evicts_a_wal_with_buffered_entries() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = uniform_manager(temp_dir.path()).with_max_instances(1);
+
+        let a = manager.get_wal("a", "production", "traces").await.unwrap();
+        // Appended but never flushed: the segment backlog is empty, but the
+        // in-memory buffer is not.
+        a.append(
+            crate::wal::WalOperation::WriteTraces,
+            b"buffered".to_vec(),
+            None,
+        )
+        .await
+        .unwrap();
+        a.set_last_append_secs(0);
+        drop(a);
+
+        manager.get_wal("b", "production", "traces").await.unwrap();
+
+        assert_eq!(
+            manager.wal_count().await,
+            2,
+            "a WAL with buffered but unflushed entries must not be evicted"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unbounded_cap_keeps_every_wal() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = uniform_manager(temp_dir.path()).with_max_instances(0);
+
+        for i in 0..5 {
+            let wal = manager
+                .get_wal(&format!("tenant-{i}"), "production", "traces")
+                .await
+                .unwrap();
+            write_and_drain(&wal, b"payload").await;
+            wal.set_last_append_secs(0);
+        }
+
+        assert_eq!(
+            manager.wal_count().await,
+            5,
+            "max_instances = 0 must keep every WAL uncapped"
         );
     }
 }

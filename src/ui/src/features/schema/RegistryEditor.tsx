@@ -8,6 +8,7 @@ import {
   useSearchParams,
 } from "react-router";
 import YAML from "yaml";
+import { ConfirmButton } from "../../components/ConfirmButton";
 import {
   createRegistry,
   deleteRegistry,
@@ -25,6 +26,7 @@ import {
   type DiffSummary,
 } from "./registryIndex";
 import { useSchemaSession } from "./useSchemaSession";
+import { toErrorMessage } from "../../api/http";
 
 /**
  * `/schema/conventions/new` and `/schema/conventions/:ns/:version/edit` —
@@ -53,10 +55,7 @@ export function RegistryEditor() {
     return (
       <div className="schema-page">
         <p className="schema-error">
-          Failed to load {ns}@{version}:{" "}
-          {stored.error instanceof Error
-            ? stored.error.message
-            : String(stored.error)}
+          Could not load {ns}@{version}: {toErrorMessage(stored.error)}
         </p>
         <Link to={CONVENTIONS}>Back to conventions</Link>
       </div>
@@ -109,7 +108,6 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
   const [outcome, setOutcome] = useState<Report | null>(null);
   const [validatedText, setValidatedText] = useState<string | null>(null);
   const [newVersion, setNewVersion] = useState("");
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   // "Upload registry" from the list opens the file picker on arrival.
@@ -288,35 +286,13 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
               >
                 Save as new version
               </button>
-              {confirmingDelete ? (
-                <span className="schema-editor-confirm">
-                  Delete {title}?{" "}
-                  <button
-                    type="button"
-                    className="schema-button danger"
-                    disabled={busy}
-                    onClick={() => remove.mutate()}
-                  >
-                    Confirm delete
-                  </button>{" "}
-                  <button
-                    type="button"
-                    className="schema-button"
-                    onClick={() => setConfirmingDelete(false)}
-                  >
-                    Cancel
-                  </button>
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  className="schema-button danger"
-                  disabled={busy}
-                  onClick={() => setConfirmingDelete(true)}
-                >
-                  Delete
-                </button>
-              )}
+              <ConfirmButton
+                className="schema-button danger"
+                label="Delete"
+                prompt={`Delete ${title}?`}
+                disabled={busy}
+                onConfirm={() => remove.mutate()}
+              />
             </>
           )}
         </div>

@@ -80,7 +80,7 @@ function TenantRow({
       {isExpanded && (
         <div className="dataset-list">
           {isLoading ? (
-            <div className="dataset-loading">Loading...</div>
+            <div className="dataset-loading">Loading…</div>
           ) : (
             datasets.map((dataset) => (
               <button

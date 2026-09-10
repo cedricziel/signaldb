@@ -27,7 +27,7 @@ export function TraceVolumeHeatmap({ heatmap, label }: Props) {
     times.push(t);
   const rows = heatmap.y.bounds.length + 1;
   if (heatmap.cells.length === 0)
-    return <div className="trace-heatmap-empty">No spans in range</div>;
+    return <div className="trace-heatmap-empty">No spans in this window</div>;
   // Epoch nanoseconds exceed JavaScript's safe integer range, so use relative
   // bucket positions rather than independently-rounded absolute coordinates.
   const columnOf = (time: number) =>

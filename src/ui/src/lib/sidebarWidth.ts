@@ -1,49 +1,117 @@
-// Facet/field sidebar width persistence. One width for every signal — logs'
-// field panel and traces' facets are the same furniture (see explore.css) —
-// so the saved value lives under one key and is applied to <html> as a CSS
-// custom property, the same way lib/theme.ts applies the saved theme.
+// Draggable panel width persistence, shared by every resizable pane in the
+// app: the facet/field sidebar (logs' field panel and traces' facets — the
+// same furniture, see explore.css) and the trace waterfall's span-detail
+// pane. Each panel gets its own storage key, CSS custom property, and size
+// range, applied to <html> the same way lib/theme.ts applies the saved
+// theme, so the value is available wherever the panel renders regardless of
+// which page's instance is mounted. Width never lives in React state: a
+// drag only rewrites the custom property, so nothing re-renders per move.
 
-const STORAGE_KEY = "signaldb.explore.sidebarWidth";
-const CSS_VAR = "--sidebar-w";
-
-export const SIDEBAR_MIN_PX = 200;
-export const SIDEBAR_MAX_PX = 480;
-export const SIDEBAR_DEFAULT_PX = 248;
-
-export function clampSidebarWidth(px: number): number {
-  return Math.min(SIDEBAR_MAX_PX, Math.max(SIDEBAR_MIN_PX, px));
+export interface PanelWidth {
+  /** Which side of its resizer the panel sits on; a drag toward it widens. */
+  readonly grows: "left" | "right";
+  /** Class and accessible name of the panel's drag handle. */
+  readonly resizerClassName: string;
+  readonly resizerLabel: string;
+  /** The saved width, clamped; the default when nothing was saved. */
+  read(): number;
+  /** Apply the saved width (if any) to <html> before first paint. */
+  init(): void;
+  /** Clamp and apply a width without persisting it (mid-drag). */
+  apply(px: number): number;
+  /** Clamp, apply, and persist a width. Returns the clamped value. */
+  set(px: number): number;
+  clamp(px: number): number;
 }
 
-/** The saved width, clamped; the default when nothing was saved. */
-export function readSidebarWidth(): number {
-  try {
-    const stored = Number(localStorage.getItem(STORAGE_KEY));
-    return stored > 0 ? clampSidebarWidth(stored) : SIDEBAR_DEFAULT_PX;
-  } catch {
-    return SIDEBAR_DEFAULT_PX;
-  }
+interface PanelWidthConfig {
+  storageKey: string;
+  cssVar: string;
+  min: number;
+  max: number;
+  defaultPx: number;
+  grows: "left" | "right";
+  resizerClassName: string;
+  resizerLabel: string;
 }
 
-/** Apply the saved sidebar width (if any) to <html> before first paint. */
-export function initSidebarWidth(): void {
-  try {
-    document.documentElement.style.setProperty(
-      CSS_VAR,
-      `${readSidebarWidth()}px`,
-    );
-  } catch {
-    // localStorage unavailable
-  }
+export function createPanelWidth({
+  storageKey,
+  cssVar,
+  min,
+  max,
+  defaultPx,
+  grows,
+  resizerClassName,
+  resizerLabel,
+}: PanelWidthConfig): PanelWidth {
+  const clamp = (px: number): number => Math.min(max, Math.max(min, px));
+
+  const read = (): number => {
+    try {
+      const stored = Number(localStorage.getItem(storageKey));
+      return stored > 0 ? clamp(stored) : defaultPx;
+    } catch {
+      return defaultPx;
+    }
+  };
+
+  const apply = (px: number): number => {
+    const clamped = clamp(px);
+    document.documentElement.style.setProperty(cssVar, `${clamped}px`);
+    return clamped;
+  };
+
+  const init = (): void => {
+    try {
+      apply(read());
+    } catch {
+      // localStorage unavailable
+    }
+  };
+
+  const set = (px: number): number => {
+    const clamped = apply(px);
+    try {
+      localStorage.setItem(storageKey, String(clamped));
+    } catch {
+      // localStorage unavailable
+    }
+    return clamped;
+  };
+
+  return {
+    grows,
+    resizerClassName,
+    resizerLabel,
+    read,
+    init,
+    apply,
+    set,
+    clamp,
+  };
 }
 
-/** Clamp, persist, and apply a new sidebar width. Returns the clamped value. */
-export function setSidebarWidth(px: number): number {
-  const clamped = clampSidebarWidth(px);
-  document.documentElement.style.setProperty(CSS_VAR, `${clamped}px`);
-  try {
-    localStorage.setItem(STORAGE_KEY, String(clamped));
-  } catch {
-    // localStorage unavailable
-  }
-  return clamped;
-}
+/** Facet/field sidebar: logs' field panel and traces' facets. */
+export const sidebarWidth = createPanelWidth({
+  storageKey: "signaldb.explore.sidebarWidth",
+  cssVar: "--sidebar-w",
+  min: 200,
+  max: 480,
+  defaultPx: 248,
+  grows: "right",
+  resizerClassName: "sidebar-resizer",
+  resizerLabel: "Resize sidebar",
+});
+
+/** Span-detail pane in the trace waterfall, right of its resizer. */
+export const spanDetailWidth = createPanelWidth({
+  storageKey: "signaldb.trace.sidebarWidth",
+  cssVar: "--span-detail-w",
+  min: 260,
+  max: 640,
+  defaultPx: 320,
+  grows: "left",
+  resizerClassName: "trace-resizer",
+  resizerLabel: "Resize span details",
+});
