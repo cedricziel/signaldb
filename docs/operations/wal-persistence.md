@@ -75,7 +75,7 @@ max_instances = 256             # Soft cap on cached WAL instances; 0 = unbounde
 dead_letter_retention = "30d"   # How long a dead-lettered entry is kept before the retention sweep deletes it; "0s" disables the sweep
 ```
 
-Note: segment size, buffer, and flush tuning currently ship as built-in defaults compiled into the services (64MB segments, 1000-entry buffer, 30s flush; the acceptor uses more aggressive per-signal settings for logs and metrics). The `[wal]` TOML block matches these defaults but the services do not yet read the tuning knobs from it — of the `[wal]` settings, `wal_dir` and `max_instances` change runtime behavior today.
+Note: segment size, buffer, and flush tuning currently ship as built-in defaults compiled into the services (64MB segments, 1000-entry buffer, 30s flush; the acceptor uses more aggressive per-signal settings for logs and metrics). The `[wal]` TOML block matches these defaults but the services do not yet read the tuning knobs from it — of the `[wal]` settings, `wal_dir`, `max_instances`, and `dead_letter_retention` change runtime behavior today.
 
 `max_segment_size` caps **both** the entry-log file and the payload data file. Because payloads dominate size (the log holds only fixed-size per-entry metadata), rotation is driven in practice by the data file crossing the cap; a segment is sealed and a new one started before either file exceeds it. This keeps individual segments small, bounds recovery cost, and keeps data-file offsets well clear of the 4 GB (2³²) range.
 
@@ -653,9 +653,11 @@ du -sh /data/wal/*
 # Segment count (acceptor: per tenant/dataset/signal)
 find /data/wal -name 'wal-*.log' | wc -l
 
-# Dead-lettered entries (0 in a healthy deployment; a sustained nonzero
-# count is also visible as signaldb.wal.dead_letter_entries)
-find /data/wal -path '*/dead-letter/*' | wc -l
+# Dead-letter artifacts -- files, not entries: a rejected entry is a .bin
+# plus a .rejected.json marker, and *.corrupt.bin quarantine files count
+# too, so this over-counts relative to signaldb.wal.dead_letter_entries
+# (0 in a healthy deployment; that gauge is the true per-entry count)
+find /data/wal -path '*/dead-letter/*' -type f | wc -l
 ```
 
 When `[self_monitoring]` is enabled, services also export `signaldb.wal.*` metrics (entries written/processed/pending, flush duration) via OTLP into SignalDB itself. `signaldb.wal.entries_pending` is the backlog signal: it is process-local (a restart resets it, then re-seeds it from the recovered backlog) and is broken down by `signaldb.tenant.id`, `signaldb.dataset.id`, `signal`, and `role` (`acceptor` | `writer`), so a plateau can be attributed to the exact directory holding the backlog instead of showing up only as one unlabelled number.
