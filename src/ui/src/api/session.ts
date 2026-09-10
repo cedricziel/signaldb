@@ -1,9 +1,22 @@
 // Client for the router's UI session endpoints (/ui/session) and the
 // tenant-scoped whoami endpoint (/api/v1/whoami). The session cookie is
 // HttpOnly — browser code never reads it; it only creates and clears it.
-
+//
+// `loginConfig` and `currentSession` go through the generated OpenAPI client
+// (`import "./client"` registers its shared config) instead of raw fetch —
+// new endpoints are consumed through `src/api/gen` per the migration in
+// progress; the rest of this file predates that and is migrated separately.
 import "./client";
-import { sessionConfig as sessionConfigOp } from "./gen";
+
+import {
+  type CurrentSessionResponse,
+  currentSession as currentSessionSdk,
+  type LoginConfigResponse,
+  loginConfig as loginConfigSdk,
+  type OidcLoginConfig,
+  type SessionMembership,
+  type SessionUser,
+} from "./gen";
 import {
   ApiError,
   retryAfterMsFrom,
@@ -12,6 +25,34 @@ import {
   unwrapSdkResult,
 } from "./http";
 
+/** `GET /ui/session/config`: which credentials the login page may offer.
+ * Unauthenticated; throws `ApiError` on a non-2xx response (a 404 from an
+ * older router, a 5xx). */
+export async function loginConfig(): Promise<LoginConfigResponse> {
+  return unwrapSdkResult(
+    await loginConfigSdk(),
+    (status) => `Request failed (${status})`,
+  );
+}
+
+/** `GET /ui/session`: the signed-in user, their memberships, and the
+ * auto-selected tenant/dataset — authenticated by the session cookie alone.
+ * Throws `ApiError(401)` without a valid session. */
+export async function currentSession(): Promise<CurrentSessionResponse> {
+  return unwrapSdkResult(
+    await currentSessionSdk(),
+    (status) => `Request failed (${status})`,
+  );
+}
+
+export type {
+  CurrentSessionResponse,
+  LoginConfigResponse,
+  OidcLoginConfig,
+  SessionMembership,
+  SessionUser,
+};
+
 export interface SessionCredentials {
   email: string;
   password: string;
@@ -19,12 +60,6 @@ export interface SessionCredentials {
    * returns the membership list for the UI's tenant picker. */
   tenant?: string;
   dataset?: string;
-}
-
-export interface SessionMembership {
-  tenant_id: string;
-  name: string;
-  role: "admin" | "member" | "viewer";
 }
 
 export interface SessionResult {
@@ -114,30 +149,4 @@ export async function whoami(tenant?: string): Promise<WhoamiResponse> {
     );
   }
   return (await res.json()) as WhoamiResponse;
-}
-
-/** The SSO offering, when OIDC is configured and currently usable. */
-export interface SessionOidcOffering {
-  /** Display label for the SSO button. */
-  name: string;
-}
-
-/** Login surface reported by the unauthenticated `GET /ui/session/config`
- * probe: which doors the login panel should offer. */
-export interface SessionConfig {
-  /** Whether the email/password form should be shown. */
-  password_enabled: boolean;
-  /** The SSO button to offer, or `null` when OIDC isn't configured/usable. */
-  oidc: SessionOidcOffering | null;
-}
-
-/** Path the SSO button navigates to (full-page redirect, never fetched). */
-export const OIDC_START_PATH = "/ui/session/oidc/start";
-
-/** Probe the login surface via the generated client. Throws on any
- * non-2xx/network failure so callers can fall back to the password form
- * (a probe failure must never block password login). */
-export async function fetchSessionConfig(): Promise<SessionConfig> {
-  const data = unwrapSdkResult(await sessionConfigOp(), "Session config");
-  return { password_enabled: data.password_enabled, oidc: data.oidc ?? null };
 }

@@ -64,11 +64,13 @@ See proposal.md — Why. What shapes the approach:
    stashing the return URL in `sessionStorage` and the callback landing on a
    fixed SPA route — rejected because it adds a landing route and a second
    hop for the same outcome, and the pending cookie already exists, so the
-   extra field is free. A `GET /ui/session/config` probe reports
-   `{password_enabled: bool, oidc: {name: string} | null}` — `oidc` is a
-   nullable object, `null` whenever OIDC is not configured or discovery has
-   not succeeded yet, so the generated clients get one schema for both
-   states. All three unauthenticated, all in OpenAPI. _Alternative:_
+   extra field is free. The `GET /ui/session/config` probe
+   (`{password_enabled: bool, oidc: {name: string} | null}` — `oidc` always
+   present, `null` whenever OIDC is not configured or discovery has not
+   succeeded yet) already ships with the `dedicated-login-page` change,
+   answering the password-only constant; this change replaces the constant
+   with the provider state without altering the schema. All three
+   unauthenticated, all in OpenAPI. _Alternative:_
    persisting pending logins in the catalog — needless writes and cleanup for
    a 5-minute artifact; the signed cookie carries the same guarantees.
    **Pending-login cookie policy:** `signaldb_oidc_pending`, HMAC-signed
@@ -147,9 +149,12 @@ See proposal.md — Why. What shapes the approach:
    (it would have to special-case the consent screen, which has its own
    tenant choice), the `App` shell resolves the context: today it already
    falls back to the remembered tenant from local storage; it gains the last
-   step for a browser that remembers nothing — read memberships from
-   `whoami`, select a sole membership with its default dataset into the
-   URL, or send several memberships to `/select-tenant?redirect=<target>`,
+   step for a browser that remembers nothing — read the session through
+   `GET /ui/session` (the tenant-less introspection endpoint from
+   `dedicated-login-page`; `whoami` is a 401 without `X-Tenant-ID`, which is
+   exactly the state a fresh browser is in), take the auto-selected sole
+   membership with its default dataset into the URL, or send several
+   memberships to `/select-tenant?redirect=<target>`,
    which learns to navigate to `redirect` instead of a fixed `/logs`
    (tenant-selection delta). `safeRedirectTarget` moves out of
    `LoginRoute.tsx` into a shared `lib` helper so `/select-tenant`, which is

@@ -4306,21 +4306,49 @@
         ]
       }
     },
-    "/ui/session/config": {
+    "/ui/session": {
       "get": {
         "tags": [
-          "tenants"
+          "session"
         ],
-        "summary": "GET /ui/session/config",
-        "description": "Unauthenticated probe the login panel calls before rendering, so it can\noffer the password form, the SSO button, or both without guessing from\nhardcoded configuration or trial-and-error requests (spec: \"The SSO\nsurface is part of the published contract\").",
-        "operationId": "session_config",
+        "summary": "GET /ui/session",
+        "description": "Authenticated by the `signaldb_session` HttpOnly cookie only; an API key or `X-Tenant-ID` header does not substitute for it.",
+        "operationId": "current_session",
         "responses": {
           "200": {
-            "description": "Login surface configuration",
+            "description": "Signed-in user, memberships, and auto-selected tenant/dataset",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/SessionConfigResponse"
+                  "$ref": "#/components/schemas/CurrentSessionResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "No valid session cookie"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
+    "/ui/session/config": {
+      "get": {
+        "tags": [
+          "session"
+        ],
+        "summary": "GET /ui/session/config",
+        "description": "Unauthenticated probe the login page reads before rendering its\ncredential step. Until OIDC support ships this always answers\npassword-only; the schema does not change when it does.",
+        "operationId": "login_config",
+        "responses": {
+          "200": {
+            "description": "Login credential configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LoginConfigResponse"
                 }
               }
             }
@@ -5263,6 +5291,41 @@
           }
         }
       },
+      "CurrentSessionResponse": {
+        "type": "object",
+        "description": "`GET /ui/session`'s response: the signed-in user, the memberships the\nsession may enter, and the auto-selected tenant/dataset.",
+        "required": [
+          "user",
+          "tenant",
+          "dataset",
+          "memberships"
+        ],
+        "properties": {
+          "dataset": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Always serialized, `null` when no tenant is auto-selected — not an\nomittable field."
+          },
+          "memberships": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionMembership"
+            }
+          },
+          "tenant": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Always serialized, `null` when no tenant is auto-selected — not an\nomittable field."
+          },
+          "user": {
+            "$ref": "#/components/schemas/SessionUser"
+          }
+        }
+      },
       "DatasetResponse": {
         "type": "object",
         "description": "Dataset information returned by the API.",
@@ -6042,6 +6105,30 @@
           "any_value"
         ]
       },
+      "LoginConfigResponse": {
+        "type": "object",
+        "description": "`GET /ui/session/config`'s response: which credentials the login page\nmay offer. `oidc` is `null` until an OIDC provider is configured.",
+        "required": [
+          "password_enabled",
+          "oidc"
+        ],
+        "properties": {
+          "oidc": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/OidcLoginConfig",
+                "description": "Always serialized, `null` until an OIDC provider is configured — not\nan omittable field."
+              }
+            ]
+          },
+          "password_enabled": {
+            "type": "boolean"
+          }
+        }
+      },
       "ManageApiKeyResponse": {
         "type": "object",
         "required": [
@@ -6628,6 +6715,19 @@
             "items": {
               "$ref": "#/components/schemas/MetricHit"
             }
+          }
+        }
+      },
+      "OidcLoginConfig": {
+        "type": "object",
+        "description": "A single-sign-on provider offered by the login-configuration probe.",
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "description": "Display name shown on the \"Continue with {name}\" control."
           }
         }
       },
@@ -7232,40 +7332,49 @@
           }
         }
       },
-      "SessionConfigResponse": {
+      "SessionMembership": {
         "type": "object",
-        "description": "Response of the unauthenticated login-configuration probe. One schema\ncovers every state: `password_enabled` is always present, `oidc` is\n`null` whenever SSO isn't something the UI should offer right now.",
+        "description": "A tenant the signed-in user may select, returned by `POST /ui/session`\nand `GET /ui/session` so the UI can present a picker instead of\nfree-text tenant entry.",
         "required": [
-          "password_enabled"
-        ],
-        "properties": {
-          "oidc": {
-            "oneOf": [
-              {
-                "type": "null"
-              },
-              {
-                "$ref": "#/components/schemas/SessionOidcConfig",
-                "description": "`Some` only when OIDC is configured *and* discovery has (so far)\nsucceeded; `None` both when OIDC is unconfigured and while discovery\nhasn't (yet) succeeded, so the UI never offers a button that 404s or\n503s."
-              }
-            ]
-          },
-          "password_enabled": {
-            "type": "boolean",
-            "description": "Whether the email/password door is open. `false` only when\n`[auth.oidc].disable_password_login` is set."
-          }
-        }
-      },
-      "SessionOidcConfig": {
-        "type": "object",
-        "description": "The SSO offering, present only when OIDC is configured and currently\nusable (change: oidc-login, task 4.1).",
-        "required": [
-          "name"
+          "tenant_id",
+          "name",
+          "role"
         ],
         "properties": {
           "name": {
-            "type": "string",
-            "description": "Display label for the SSO button: `[auth.oidc].display_name` if set,\nelse the issuer host."
+            "type": "string"
+          },
+          "role": {
+            "$ref": "#/components/schemas/MembershipRole"
+          },
+          "tenant_id": {
+            "type": "string"
+          }
+        }
+      },
+      "SessionUser": {
+        "type": "object",
+        "description": "The signed-in user, as reported by `GET /ui/session`.",
+        "required": [
+          "id",
+          "email",
+          "is_instance_admin"
+        ],
+        "properties": {
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "is_instance_admin": {
+            "type": "boolean"
           }
         }
       },
@@ -8020,6 +8129,10 @@
     {
       "name": "oauth",
       "description": "OAuth 2.1 connector consent flow"
+    },
+    {
+      "name": "session",
+      "description": "Browser session login for the embedded UI"
     },
     {
       "name": "schema",

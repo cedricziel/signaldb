@@ -517,6 +517,25 @@ export type CreateUserRequest = {
 };
 
 /**
+ * `GET /ui/session`'s response: the signed-in user, the memberships the
+ * session may enter, and the auto-selected tenant/dataset.
+ */
+export type CurrentSessionResponse = {
+    /**
+     * Always serialized, `null` when no tenant is auto-selected — not an
+     * omittable field.
+     */
+    dataset: string | null;
+    memberships: Array<SessionMembership>;
+    /**
+     * Always serialized, `null` when no tenant is auto-selected — not an
+     * omittable field.
+     */
+    tenant: string | null;
+    user: SessionUser;
+};
+
+/**
  * Dataset information returned by the API.
  */
 export type DatasetResponse = {
@@ -924,6 +943,15 @@ export type LogicalFieldKind = 'attribute' | 'record_metadata' | 'join_key' | 's
  */
 export type LogicalType = 'string' | 'bool' | 'int64' | 'float64' | 'timestamp_ns' | 'duration_ns' | 'bytes' | 'any_value';
 
+/**
+ * `GET /ui/session/config`'s response: which credentials the login page
+ * may offer. `oidc` is `null` until an OIDC provider is configured.
+ */
+export type LoginConfigResponse = {
+    oidc: null | OidcLoginConfig;
+    password_enabled: boolean;
+};
+
 export type ManageApiKeyResponse = {
     created_at: string;
     dataset_ids?: Array<string> | null;
@@ -1158,6 +1186,16 @@ export type MetricResolution = {
 
 export type MetricSearchResponse = {
     hits: Array<MetricHit>;
+};
+
+/**
+ * A single-sign-on provider offered by the login-configuration probe.
+ */
+export type OidcLoginConfig = {
+    /**
+     * Display name shown on the "Continue with {name}" control.
+     */
+    name: string;
 };
 
 /**
@@ -1448,29 +1486,24 @@ export type SearchResult = {
 };
 
 /**
- * Response of the unauthenticated login-configuration probe. One schema
- * covers every state: `password_enabled` is always present, `oidc` is
- * `null` whenever SSO isn't something the UI should offer right now.
+ * A tenant the signed-in user may select, returned by `POST /ui/session`
+ * and `GET /ui/session` so the UI can present a picker instead of
+ * free-text tenant entry.
  */
-export type SessionConfigResponse = {
-    oidc?: null | SessionOidcConfig;
-    /**
-     * Whether the email/password door is open. `false` only when
-     * `[auth.oidc].disable_password_login` is set.
-     */
-    password_enabled: boolean;
+export type SessionMembership = {
+    name: string;
+    role: MembershipRole;
+    tenant_id: string;
 };
 
 /**
- * The SSO offering, present only when OIDC is configured and currently
- * usable (change: oidc-login, task 4.1).
+ * The signed-in user, as reported by `GET /ui/session`.
  */
-export type SessionOidcConfig = {
-    /**
-     * Display label for the SSO button: `[auth.oidc].display_name` if set,
-     * else the issuer host.
-     */
-    name: string;
+export type SessionUser = {
+    display_name?: string | null;
+    email: string;
+    id: string;
+    is_instance_admin: boolean;
 };
 
 export type Span = {
@@ -5301,21 +5334,44 @@ export type SearchTagsV2Responses = {
 
 export type SearchTagsV2Response = SearchTagsV2Responses[keyof SearchTagsV2Responses];
 
-export type SessionConfigData = {
+export type CurrentSessionData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/ui/session';
+};
+
+export type CurrentSessionErrors = {
+    /**
+     * No valid session cookie
+     */
+    401: unknown;
+};
+
+export type CurrentSessionResponses = {
+    /**
+     * Signed-in user, memberships, and auto-selected tenant/dataset
+     */
+    200: CurrentSessionResponse;
+};
+
+export type CurrentSessionResponse2 = CurrentSessionResponses[keyof CurrentSessionResponses];
+
+export type LoginConfigData = {
     body?: never;
     path?: never;
     query?: never;
     url: '/ui/session/config';
 };
 
-export type SessionConfigResponses = {
+export type LoginConfigResponses = {
     /**
-     * Login surface configuration
+     * Login credential configuration
      */
-    200: SessionConfigResponse;
+    200: LoginConfigResponse;
 };
 
-export type SessionConfigResponse2 = SessionConfigResponses[keyof SessionConfigResponses];
+export type LoginConfigResponse2 = LoginConfigResponses[keyof LoginConfigResponses];
 
 export type SessionOidcCallbackData = {
     body?: never;

@@ -114,10 +114,16 @@ export type ManagedMembership = MembershipResponse;
 /** Logical + physical schema, as returned by the management API. */
 export type ManagedSchema = ManageSchemaResponse;
 
-/** Unwrap a generated SDK result with the "Management" label. */
-function unwrap<T>(result: SdkResult<T>): T {
-  return unwrapSdkResult(result, "Management");
+function managementErrorMessage(error: unknown): string | undefined {
+  return (error as { error?: string } | undefined)?.error;
 }
+
+const unwrap = <T>(result: SdkResult<T>): T =>
+  unwrapSdkResult(
+    result,
+    (status) => `Management request failed (${status})`,
+    managementErrorMessage,
+  );
 
 export const listApiKeys = async (tenant: string): Promise<ManagedApiKey[]> =>
   unwrap(await manageListApiKeys({ path: { tenant_id: tenant } }));

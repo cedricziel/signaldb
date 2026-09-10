@@ -67,6 +67,17 @@ the headers, for browsers using the [embedded explore UI](explore-ui.md):
   The optional `X-Dataset-ID` selects a dataset in that tenant.
 - `DELETE /ui/session` revokes the server-side session before clearing the
   cookie. Disabling a user immediately invalidates all of their sessions.
+- `GET /ui/session` (cookie only) introspects the current session without a
+  tenant header: it returns the signed-in user, every membership the session
+  may enter, and `tenant`/`dataset` resolved by the same rule as login (a
+  sole membership is auto-selected, several leave both `null`). A user with
+  no memberships gets `200` with an empty list, not `403`, so the login page
+  can explain the situation. Without a valid cookie the response is `401`;
+  an API key or `X-Tenant-ID` header does not substitute for the cookie.
+- `GET /ui/session/config` (public) reports which credentials the login page
+  should offer: `{"password_enabled": true, "oidc": null}` today. `oidc` is
+  always present and becomes `{"name": ...}` once an OIDC provider is
+  configured (see the pending `oidc-login` change).
 - `GET /api/v1/whoami` returns the human identity, all memberships, and the
   selected tenant's datasets. API-key requests remain supported and omit
   the human identity.

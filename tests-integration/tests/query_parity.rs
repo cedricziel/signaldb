@@ -28,12 +28,16 @@ const EXCLUDED: &[(&str, &str)] = &[
         "browser OAuth 2.1 consent flow, authenticated by the session cookie — no CLI or MCP surface makes sense",
     ),
     (
-        "manage_create_tenant",
-        "human self-serve tenant creation by a signed-in instance administrator (`TenantContext::is_instance_admin`); API-key clients create tenants through the admin API's `create_tenant` (`admin tenant create` / MCP `create_tenant`), so no `tenant`-group surface is owed (management-api-key-scope, design D5)",
+        "login_config",
+        "the browser login page's credential probe (which sign-in methods to offer) — the CLI and MCP have no login page (dedicated-login-page)",
     ),
     (
-        "session_config",
-        "browser login-configuration probe (change: oidc-login) — UI/HTTP-only, no CLI command or MCP tool makes sense",
+        "current_session",
+        "browser session introspection authenticated by the session cookie alone — no CLI or MCP surface makes sense (dedicated-login-page)",
+    ),
+    (
+        "manage_create_tenant",
+        "human self-serve tenant creation by a signed-in instance administrator (`TenantContext::is_instance_admin`); API-key clients create tenants through the admin API's `create_tenant` (`admin tenant create` / MCP `create_tenant`), so no `tenant`-group surface is owed (management-api-key-scope, design D5)",
     ),
     (
         "session_oidc_start",

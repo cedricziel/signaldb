@@ -1,21 +1,20 @@
 // Session login for embedded deployments: when any query fails with 401
-// the gate overlays a minimal email/password form that POSTs /ui/session.
-// Accounts spanning several tenants then pick one from their memberships;
-// on success the React Query cache is refetched with the new session
-// cookie (after cancelling fetches that started without it, whose late
-// 401s would otherwise re-open the gate).
+// the gate overlays a minimal login dialog offering whatever credentials the
+// login-configuration probe reports. Accounts spanning several tenants then
+// pick one from their memberships; on success the React Query cache is
+// refetched with the new session cookie (after cancelling fetches that
+// started without it, whose late 401s would otherwise re-open the gate).
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { isAuthError, setTenantContext, toErrorMessage } from "../../api/http";
-import type { SessionMembership } from "../../api/session";
-import {
-  OIDC_START_PATH,
-  createSession,
-  fetchSessionConfig,
-  whoami,
-} from "../../api/session";
+import { useLocation } from "react-router";
+import { isAuthError, setTenantContext } from "../../api/http";
+import { useLoginConfig } from "../../lib/useLoginConfig";
+import { CHOOSE_TENANT_HINT, useTenantStep } from "../../lib/tenantResolution";
 import { Dialog } from "../../components/Dialog";
+import { LoginCard } from "./LoginCard";
+import { LoginMethods } from "./LoginMethods";
+import { TenantPicker } from "./TenantPicker";
 import "./LoginPanel.css";
 
 export interface LoginResult {
@@ -57,6 +56,7 @@ export function LoginGate({ onLoggedIn }: GateProps) {
 
   return (
     <LoginPanel
+      hint="Your session has expired. Sign in to continue."
       onSuccess={(result) => {
         setNeedsLogin(false);
         // Make the resolved tenant visible to fetches immediately: the
@@ -75,162 +75,44 @@ export function LoginGate({ onLoggedIn }: GateProps) {
 }
 
 interface PanelProps {
+  /** Copy shown above the credential controls; the caller names why a
+   * login is required (session expiry, authorizing a client, ...). */
+  hint: string;
+  /** Same-app path the SSO control should return to. Defaults to the
+   * current location (the page being gated) — pass it explicitly only when
+   * that default is wrong. */
+  redirect?: string;
   onSuccess: (result: LoginResult) => void;
 }
 
-export function LoginPanel({ onSuccess }: PanelProps) {
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [choices, setChoices] = useState<SessionMembership[] | null>(null);
+export function LoginPanel({ hint, redirect, onSuccess }: PanelProps) {
+  const config = useLoginConfig();
+  const location = useLocation();
+  const ssoRedirect = redirect ?? `${location.pathname}${location.search}`;
+  const { pending, onAuthenticated, pick, busy } = useTenantStep(
+    (tenant, dataset) => onSuccess({ tenant, dataset }),
+  );
 
-  // Probe which doors to offer. A probe failure (network error, older
-  // server without the endpoint) must never block password login, so it
-  // defaults to the historical password-only behavior — both while the
-  // probe is still in flight and if it errors out.
-  const configQuery = useQuery({
-    queryKey: ["session-config"],
-    queryFn: fetchSessionConfig,
-    retry: 2,
-    staleTime: 30_000,
-    refetchInterval: 30_000,
-  });
-  const passwordEnabled = configQuery.data?.password_enabled ?? true;
-  const oidc = configQuery.data?.oidc ?? null;
-
-  const finishWithTenant = (tenant: string) => {
-    setBusy(true);
-    setError(null);
-    // Resolve the tenant's default dataset; the session cookie is already
-    // set, so a failure here only means starting without a dataset.
-    whoami(tenant)
-      .then((info) =>
-        onSuccess({ tenant, dataset: info.default_dataset ?? "" }),
-      )
-      .catch(() => onSuccess({ tenant, dataset: "" }))
-      .finally(() => setBusy(false));
-  };
-
-  if (choices) {
+  if (pending) {
     return (
       <Dialog label="Choose tenant" className="login-panel" layer="system">
-        <h2>Choose a tenant</h2>
-        <p className="login-hint">
-          Your account belongs to several tenants. Pick the one to explore — you
-          can switch later from the top bar.
-        </p>
-        <ul className="login-tenants">
-          {choices.map((membership) => (
-            <li key={membership.tenant_id}>
-              <button
-                type="button"
-                disabled={busy}
-                onClick={() => finishWithTenant(membership.tenant_id)}
-              >
-                <span className="login-tenant-name">{membership.name}</span>
-                <span className="login-tenant-meta">
-                  {membership.tenant_id} · {membership.role}
-                </span>
-              </button>
-            </li>
-          ))}
-        </ul>
-        {error && (
-          <p className="login-error" role="alert">
-            {error}
-          </p>
-        )}
+        <LoginCard title="Choose a tenant" hint={CHOOSE_TENANT_HINT}>
+          <TenantPicker memberships={pending} onPicked={pick} busy={busy} />
+        </LoginCard>
       </Dialog>
     );
   }
 
-  const noDoorsAvailable = !passwordEnabled && !oidc;
-
   return (
     <Dialog label="Sign in" className="login-panel" layer="system">
-      <h2>Sign in to SignalDB</h2>
-      {passwordEnabled && (
-        <p className="login-hint">
-          Queries were rejected as unauthenticated. Sign in with your user
-          account.
-        </p>
-      )}
-      {noDoorsAvailable && (
-        <p className="login-error" role="alert">
-          No login methods are currently available. Single sign-on is
-          temporarily unavailable; contact your administrator.
-        </p>
-      )}
-      {passwordEnabled && (
-        <form
-          onSubmit={(e) => {
-            e.preventDefault();
-            const data = new FormData(e.currentTarget);
-            const creds = {
-              email: String(data.get("email") ?? "").trim(),
-              password: String(data.get("password") ?? ""),
-            };
-            setBusy(true);
-            setError(null);
-            createSession(creds)
-              .then((result) => {
-                if (result.tenant) {
-                  onSuccess({
-                    tenant: result.tenant,
-                    dataset: result.dataset ?? "",
-                  });
-                } else {
-                  setChoices(result.memberships);
-                }
-              })
-              .catch((err: unknown) => {
-                setError(toErrorMessage(err));
-              })
-              .finally(() => setBusy(false));
-          }}
-        >
-          <label>
-            Email
-            <input
-              name="email"
-              type="email"
-              aria-label="Email"
-              autoComplete="username"
-              required
-              autoFocus
-            />
-          </label>
-          <label>
-            Password
-            <input
-              name="password"
-              type="password"
-              aria-label="Password"
-              autoComplete="current-password"
-              required
-            />
-          </label>
-          {error && (
-            <p className="login-error" role="alert">
-              {error}
-            </p>
-          )}
-          <button type="submit" disabled={busy}>
-            {busy ? "Signing in…" : "Sign in"}
-          </button>
-        </form>
-      )}
-      {oidc && (
-        <button
-          type="button"
-          className="login-sso-button"
-          disabled={busy}
-          onClick={() => {
-            window.location.href = OIDC_START_PATH;
-          }}
-        >
-          Continue with {oidc.name}
-        </button>
-      )}
+      <LoginCard title="Sign in">
+        <LoginMethods
+          config={config}
+          redirect={ssoRedirect}
+          onAuthenticated={onAuthenticated}
+          hint={hint}
+        />
+      </LoginCard>
     </Dialog>
   );
 }
