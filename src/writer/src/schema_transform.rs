@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Datelike, Timelike};
 use common::flight::conversion::UNKNOWN_SERVICE_NAME;
-use common::schema::resource_identity::{resource_identity, resource_identity_from_json};
+use common::schema::resource_identity::resource_identity_from_json;
 use common::schema::schema_parser::ResolvedSchema;
 use common::schema::{ATTR_TOKENS_COLUMN, SCHEMA_DEFINITIONS, materialized_column_name};
 use datafusion::arrow::{
@@ -1322,14 +1322,6 @@ fn extract_resource_context(resource_json: Option<&str>) -> ResourceContext {
         };
     };
 
-    // The same "attributes or the whole object" disambiguation
-    // `resource_identity_from_json` applies, reused here against the object
-    // already parsed above rather than re-parsing `resource_json`.
-    let identity_attributes = obj
-        .get("attributes")
-        .and_then(|value| value.as_object())
-        .unwrap_or(&obj);
-
     let resource_attributes = if obj.get("attributes").is_some() {
         serialize_json(obj.get("attributes"))
     } else {
@@ -1345,7 +1337,14 @@ fn extract_resource_context(resource_json: Option<&str>) -> ResourceContext {
             .and_then(|value| value.as_str())
             .map(ToString::to_string),
         resource_attributes,
-        resource_identity: Some(resource_identity(identity_attributes)),
+        // Delegates to the shared envelope classifier rather than
+        // re-deriving it here: an `attributes` key alone doesn't mean
+        // envelope-shaped (a flat resource may legitimately carry its own
+        // `attributes` attribute), and duplicating that disambiguation
+        // risked drifting from `resource_identity_from_json`'s rule -- as it
+        // already had, once that rule went from "has an `attributes` key" to
+        // "every key is an envelope key" (see its doc comment).
+        resource_identity: resource_identity_from_json(resource_json),
     }
 }
 
@@ -3203,6 +3202,29 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap();
         assert!(identities.is_null(0));
+    }
+
+    /// A flat resource that also happens to carry its own `attributes` key
+    /// alongside other keys is not the envelope shape -- only "every key is
+    /// an envelope key" is (see `resource_identity_from_json`'s doc comment).
+    /// `extract_resource_context` must defer to that shared classification
+    /// rather than derive its own looser one ("has an `attributes` key"),
+    /// which would silently disagree with what traces/logs compute for the
+    /// identical `resource_json`.
+    #[test]
+    fn metrics_gauge_transform_resource_identity_matches_the_shared_envelope_classifier() {
+        let resource_json = r#"{"service.name":"checkout","attributes":{"region":"us"}}"#;
+        let batch = metrics_v1_batch(Some(resource_json));
+        let result = transform_metrics_gauge_v1_to_iceberg(batch, &[]).unwrap();
+        let identities = result
+            .column(result.schema().index_of("resource_identity").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(
+            identities.value(0),
+            resource_identity_from_json(resource_json).unwrap()
+        );
     }
 
     /// The remaining four metrics representations share `extract_resource_context`
