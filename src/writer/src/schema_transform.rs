@@ -3468,9 +3468,17 @@ mod tests {
     fn schema_creation_and_writer_resolution_agree_on_the_same_configured_list() {
         // The literal #1448 acceptance criterion: schema creation
         // (`ResolvedSchema::to_iceberg_schema_with_labels`, backing table
-        // creation) and the write path (`materialized_label_columns`) must
-        // assign the same physical column to the same configured label for
-        // the same list, including under a collision.
+        // creation) and the write path's resolver
+        // (`resolve_label_columns_fresh`, which `materialized_label_columns`
+        // calls) must assign the same physical column to the same
+        // configured *key* for the same list -- not merely the same *set*
+        // of column names to some permutation of keys, which a
+        // same-columns-different-keys bug would also pass.
+        //
+        // The writer side is fed the list in reversed order: agreement must
+        // hold regardless of which order each call site happens to see the
+        // same configured set in, not just when both sort it identically.
+        use common::iceberg::evolution::{origin_key_of, resolve_label_columns_fresh};
         use common::schema::schema_parser::ResolvedField;
 
         let labels = vec![
@@ -3478,6 +3486,7 @@ mod tests {
             "http.method".to_string(),
             "http_method".to_string(),
         ];
+        let reversed: Vec<String> = labels.iter().rev().cloned().collect();
 
         let base = ResolvedSchema {
             version: "test-only".to_string(),
@@ -3493,23 +3502,51 @@ mod tests {
             partition_by: vec![],
         };
         let schema = base.to_iceberg_schema_with_labels(&labels).unwrap();
-        let schema_columns: std::collections::HashSet<String> = schema
+        let schema_mapping: std::collections::HashMap<String, String> = schema
             .fields()
             .iter()
-            .filter(|f| f.name != "timestamp")
-            .map(|f| f.name.clone())
+            .filter_map(|f| {
+                origin_key_of(f.doc.as_deref()).map(|key| (key.to_string(), f.name.clone()))
+            })
             .collect();
 
-        let batch = attr_batch(vec![None], vec![None], vec![None]);
-        let (fields, _cols) = materialized_label_columns(&batch, 1, &labels).unwrap();
-        let writer_columns: std::collections::HashSet<String> =
-            fields.iter().map(|f| f.name().clone()).collect();
+        let writer_mapping: std::collections::HashMap<String, String> =
+            resolve_label_columns_fresh(&reversed).into_iter().collect();
 
         assert_eq!(
-            schema_columns, writer_columns,
-            "schema creation and the writer must resolve the same configured list \
-             to the same set of physical columns"
+            schema_mapping, writer_mapping,
+            "schema creation and the writer must resolve the same configured key to \
+             the same physical column, regardless of each side's input order"
         );
+
+        // And `materialized_label_columns` -- the writer's actual call
+        // site -- really does use this mapping, not a different one that
+        // happens to produce the same column *names*.
+        let batch = attr_batch(
+            vec![None],
+            vec![None],
+            vec![Some(
+                r#"{"namespace":"n","http.method":"a","http_method":"b"}"#,
+            )],
+        );
+        let (fields, cols) = materialized_label_columns(&batch, 1, &reversed).unwrap();
+        for (key, expected_value) in [
+            ("namespace", "n"),
+            ("http.method", "a"),
+            ("http_method", "b"),
+        ] {
+            let column = &writer_mapping[key];
+            let idx = fields.iter().position(|f| f.name() == column).unwrap();
+            let value = cols[idx]
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0);
+            assert_eq!(
+                value, expected_value,
+                "key {key} routed to the wrong column"
+            );
+        }
     }
 
     /// One row's tokens, sorted for stable comparison.

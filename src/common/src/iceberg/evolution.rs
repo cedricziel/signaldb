@@ -1066,25 +1066,23 @@ mod tests {
 
     #[test]
     fn resolve_label_columns_fresh_handles_a_three_way_collision() {
-        // Three distinct keys sanitizing to the same candidate name all get
-        // distinct columns, in canonical (sorted) order regardless of input
-        // order.
+        // Three distinct keys sanitizing to the same candidate name each get
+        // their own distinct column, assigned in canonical (sorted) order
+        // regardless of input order -- '-' < '.' < '_' in ASCII, so
+        // `http-method` claims the unsuffixed candidate.
         let keys = vec![
             "http_method".to_string(),
             "http.method".to_string(),
             "http-method".to_string(),
         ];
-        let resolved = resolve_label_columns_fresh(&keys);
-        let columns: std::collections::HashSet<&str> =
-            resolved.iter().map(|(_, c)| c.as_str()).collect();
         assert_eq!(
-            columns.len(),
-            3,
-            "expected 3 distinct columns: {resolved:?}"
+            resolve_label_columns_fresh(&keys),
+            vec![
+                ("http-method".to_string(), "label_http_method".to_string()),
+                ("http.method".to_string(), "label_http_method_2".to_string()),
+                ("http_method".to_string(), "label_http_method_3".to_string()),
+            ]
         );
-        assert!(columns.contains("label_http_method"));
-        assert!(columns.contains("label_http_method_2"));
-        assert!(columns.contains("label_http_method_3"));
     }
 
     #[tokio::test]

@@ -289,9 +289,12 @@ impl ResolvedSchema {
 
     /// Convert to an Iceberg Schema, appending an optional `label_<key>`
     /// column for each materialized attribute label (see
-    /// [`crate::schema::materialized_column_name`]). Duplicate or
-    /// base-column-colliding labels are skipped, and field IDs continue
-    /// after the base columns.
+    /// [`crate::schema::materialized_column_name`]). A label colliding with
+    /// a base column, or with another label's candidate name, is suffixed
+    /// (`_2`, `_3`, ...) rather than skipped or merged -- see
+    /// `common::iceberg::evolution::resolve_label_columns_canonical`. An
+    /// exact-duplicate label still collapses to its first assignment.
+    /// Field IDs continue after the base columns.
     pub fn to_iceberg_schema_with_labels(&self, labels: &[String]) -> Result<Schema> {
         self.build_iceberg_schema(labels, false)
     }

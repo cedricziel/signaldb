@@ -306,16 +306,6 @@ impl IcebergTableManager {
             }
         }
 
-        // Enable a Parquet bloom filter for every materialized label column,
-        // plus (for logs) the derived `attr_tokens` column and (for traces
-        // and logs) the `trace_id`/`span_id` point-lookup columns. The
-        // pinned iceberg-rust Parquet writer reads these standard Iceberg
-        // properties from the table metadata on every write.
-        let bloom_properties = crate::schema::bloom_filter_properties_for_table(
-            &table_schema,
-            table_schema.materialized_labels_of(labels),
-        );
-
         // Drop the min/max bounds of the free-text columns. Bounds ride along
         // in every data file's manifest entry, and no query compares these
         // columns by range, so they are permanent cost for no pruning. Every
@@ -326,6 +316,17 @@ impl IcebergTableManager {
             .iter()
             .map(|field| field.name.clone())
             .collect();
+
+        // Enable a Parquet bloom filter for every materialized label column,
+        // plus (for logs) the derived `attr_tokens` column and (for traces
+        // and logs) the `trace_id`/`span_id` point-lookup columns. The
+        // pinned iceberg-rust Parquet writer reads these standard Iceberg
+        // properties from the table metadata on every write. Read back from
+        // `schema` itself (built just above) rather than independently
+        // re-resolved from `labels`, so the two can never target different
+        // columns under a collision (#1448).
+        let bloom_properties =
+            crate::schema::bloom_filter_properties_for_table(&table_schema, &schema);
         let metrics_properties =
             crate::schema::metrics_properties_for_free_text_columns(&column_names);
 
