@@ -231,6 +231,18 @@ impl MetricsService {
                 )
                 .await
             }
+            QueryPlan::Transform { inner, ops } => {
+                let batches = Box::pin(self.eval_query_plan(
+                    inner,
+                    start,
+                    end,
+                    step,
+                    tenant_slug,
+                    dataset_slug,
+                ))
+                .await?;
+                apply_value_ops_to_batches(batches, ops)
+            }
         }
     }
 
@@ -425,25 +437,25 @@ impl MetricsService {
     /// Execute a `left OP right` vector-to-vector arithmetic: evaluate both
     /// sides, then match one-to-one on (bucket, service_name) and combine the
     /// values. The output series drops the metric name (`__name__`), matching
-    /// Prometheus. Only series present on both sides are emitted.
+    /// Prometheus. Only series present on both sides are emitted. Either side
+    /// may itself be a nested [`QueryPlan`] (`a + b + c`), so both are
+    /// evaluated recursively rather than assuming a leaf `MetricPlan`.
     #[allow(clippy::too_many_arguments)]
     async fn eval_binary(
         &self,
-        left: &MetricPlan,
+        left: &QueryPlan,
         op: ArithOp,
-        right: &MetricPlan,
+        right: &QueryPlan,
         start: i64,
         end: i64,
         step: i64,
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<RecordBatch>, QuerierError> {
-        let left_batches = self
-            .eval_plan(left, start, end, step, tenant_slug, dataset_slug)
-            .await?;
-        let right_batches = self
-            .eval_plan(right, start, end, step, tenant_slug, dataset_slug)
-            .await?;
+        let (left_batches, right_batches) = tokio::try_join!(
+            Box::pin(self.eval_query_plan(left, start, end, step, tenant_slug, dataset_slug)),
+            Box::pin(self.eval_query_plan(right, start, end, step, tenant_slug, dataset_slug)),
+        )?;
 
         // Index the right side by (bucket, service_name).
         let mut rhs: BTreeMap<(i64, String), f64> = BTreeMap::new();
@@ -1270,6 +1282,7 @@ impl MetricsService {
                 .collect()
         };
 
+        let drop_name = !plan.transforms.is_empty();
         let mut ts = Vec::with_capacity(groups.len());
         let mut names = Vec::with_capacity(groups.len());
         let mut services = Vec::with_capacity(groups.len());
@@ -1287,7 +1300,7 @@ impl MetricsService {
                 continue;
             }
             ts.push(bucket_ns);
-            names.push(metric);
+            names.push(if drop_name { String::new() } else { metric });
             services.push(service);
             values.push(val);
         }
@@ -2342,7 +2355,10 @@ fn aggregate_expr_over(agg: MetricAgg, param: Option<f64>, value: Expr) -> Expr 
 }
 
 /// Re-project a matrix DataFrame with the `value` column transformed by
-/// `ops`, preserving `bucket`, `metric_name`, and the grouping columns.
+/// `ops`, preserving `bucket` and the grouping columns. Any transform blanks
+/// the metric name (`__name__`): as in Prometheus, arithmetic, math
+/// functions, and `bool` comparisons yield a derived value that no longer
+/// belongs to the source metric.
 fn apply_transforms_df(
     df: DataFrame,
     ops: &[ValueOp],
@@ -2351,10 +2367,48 @@ fn apply_transforms_df(
     if ops.is_empty() {
         return Ok(df);
     }
-    let mut proj = vec![col("bucket"), col("metric_name")];
+    let mut proj = vec![col("bucket"), lit("").alias("metric_name")];
     proj.extend(group_cols.iter().map(|c| col(c.as_str())));
     proj.push(apply_value_ops_expr(col("value"), ops).alias("value"));
     df.select(proj).map_err(QuerierError::QueryFailed)
+}
+
+/// Re-apply value transforms over an already-materialized matrix — used for
+/// a scalar transform layered over a nested vector plan (`(a / b) * 100`)
+/// whose result no longer exists as a DataFusion `DataFrame`.
+fn apply_value_ops_to_batches(
+    batches: Vec<RecordBatch>,
+    ops: &[ValueOp],
+) -> Result<Vec<RecordBatch>, QuerierError> {
+    if ops.is_empty() {
+        return Ok(batches);
+    }
+    batches
+        .into_iter()
+        .map(|batch| {
+            let value = batch
+                .column_by_name("value")
+                .and_then(|c| c.as_any().downcast_ref::<Float64Array>())
+                .ok_or_else(|| QuerierError::InvalidInput("value column missing".to_string()))?;
+            let values: Float64Array = (0..batch.num_rows())
+                .map(|i| (!value.is_null(i)).then(|| apply_transforms_f64(value.value(i), ops)))
+                .collect();
+
+            let schema = batch.schema();
+            let mut columns = batch.columns().to_vec();
+            columns[schema
+                .index_of("value")
+                .map_err(|e| QuerierError::InvalidInput(e.to_string()))?] = Arc::new(values);
+            if let Ok(idx) = schema.index_of("metric_name") {
+                columns[idx] = Arc::new(StringArray::from_iter_values(std::iter::repeat_n(
+                    "",
+                    batch.num_rows(),
+                )));
+            }
+            RecordBatch::try_new(schema, columns)
+                .map_err(|e| QuerierError::InvalidInput(e.to_string()))
+        })
+        .collect()
 }
 
 /// Compose the value transforms into a DataFusion expression.
@@ -3907,6 +3961,85 @@ mod tests {
                 .query_range("this is ((not promql", 0, 10, 1, "t", "d")
                 .await
                 .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn scalar_arithmetic_applies_the_op_and_drops_the_metric_name() {
+        let service = service_with_data();
+        assert_eq!(
+            matrix(&service, "reqs * 2", 1000).await,
+            vec![
+                (String::new(), Some("api".into()), 6.0),
+                (String::new(), Some("web".into()), 10.0),
+            ]
+        );
+        assert_eq!(
+            matrix(&service, "reqs + 0", 1000).await,
+            vec![
+                (String::new(), Some("api".into()), 3.0),
+                (String::new(), Some("web".into()), 5.0),
+            ]
+        );
+    }
+
+    /// A gauge table holding one sample each of `reqs` (10) and `errs` (2)
+    /// for the same service and bucket.
+    fn service_with_two_metrics() -> MetricsService {
+        let schema = metrics_schema();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![100, 100])),
+                Arc::new(TimestampNanosecondArray::from(vec![None, None])),
+                Arc::new(StringArray::from(vec!["api", "api"])),
+                Arc::new(StringArray::from(vec!["reqs", "errs"])),
+                Arc::new(Float64Array::from(vec![10.0, 2.0])),
+                Arc::new(StringArray::from(vec!["{}", "{}"])),
+                Arc::new(StringArray::from(vec!["{}", "{}"])),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let schema_provider = Arc::new(MemorySchemaProvider::new());
+        schema_provider
+            .register_table("metrics_gauge".to_string(), Arc::new(table))
+            .unwrap();
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        catalog.register_schema("d", schema_provider).unwrap();
+        ctx.register_catalog("t", catalog);
+        MetricsService::new(ctx)
+    }
+
+    #[tokio::test]
+    async fn scalar_arithmetic_over_an_aggregation_drops_the_metric_name() {
+        let service = service_with_two_metrics();
+        assert_eq!(
+            matrix(&service, "sum(reqs) * 2", 1000).await,
+            vec![(String::new(), None, 20.0)]
+        );
+    }
+
+    #[tokio::test]
+    async fn vector_arithmetic_matches_series_one_to_one() {
+        let service = service_with_two_metrics();
+        assert_eq!(
+            matrix(&service, "reqs + errs", 1000).await,
+            vec![(String::new(), Some("api".into()), 12.0)]
+        );
+    }
+
+    #[tokio::test]
+    async fn nested_vector_arithmetic_evaluates_recursively() {
+        let service = service_with_two_metrics();
+        assert_eq!(
+            matrix(&service, "reqs + errs + reqs", 1000).await,
+            vec![(String::new(), Some("api".into()), 22.0)]
+        );
+        assert_eq!(
+            matrix(&service, "reqs / errs * 100", 1000).await,
+            vec![(String::new(), Some("api".into()), 500.0)]
         );
     }
 
