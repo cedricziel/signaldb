@@ -35,44 +35,6 @@ pub fn materialized_column_name(label: &str) -> String {
     out
 }
 
-/// Resolves every key in `labels` to a distinct physical column: the first
-/// key to claim a [`materialized_column_name`] candidate keeps it, and a
-/// later key whose candidate is already taken by a *different* key gets the
-/// next free deterministic suffix (`_2`, `_3`, ...). A key repeated
-/// verbatim resolves once, to its first assignment, matching the prior
-/// single-column-per-configured-key behavior.
-///
-/// This is the static-config counterpart of
-/// `common::iceberg::evolution::resolve_label_columns`: that function
-/// resolves against a table's already-committed schema (via each column's
-/// origin-key `doc`) because auto-promotion's key set grows over time
-/// (#814); `[schema.materialized_labels]` is a fixed, operator-curated list
-/// with no natural place to stamp a `doc` at ingest time (#1448), so the
-/// assignment is instead recomputed from the full ordered list on every
-/// call. It is deterministic and stable as long as the list itself doesn't
-/// reorder, which lets the writer (`label_columns_from_maps`) and the
-/// table-creation path (`ResolvedSchema::build_iceberg_schema`) agree on the
-/// same column for the same configured list without sharing any state.
-pub fn resolve_materialized_label_columns(labels: &[String]) -> Vec<(String, String)> {
-    let mut resolved: Vec<(String, String)> = Vec::with_capacity(labels.len());
-    let mut taken: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for label in labels {
-        if resolved.iter().any(|(key, _)| key == label) {
-            continue;
-        }
-        let base = materialized_column_name(label);
-        let mut candidate = base.clone();
-        let mut suffix = 2;
-        while taken.contains(&candidate) {
-            candidate = format!("{base}_{suffix}");
-            suffix += 1;
-        }
-        taken.insert(candidate.clone());
-        resolved.push((label.clone(), candidate));
-    }
-    resolved
-}
-
 /// The derived `key=value` token column on logs tables. Each row carries
 /// one token per attribute across resource, scope, and record scopes, so a
 /// single bloom-filtered column can answer "does this file contain
@@ -230,26 +192,27 @@ pub fn compression_properties() -> Vec<(String, String)> {
 /// For each label key this yields
 /// `write.parquet.bloom-filter-enabled.column.label_<key> = "true"`, the
 /// standard Iceberg property the pinned iceberg-rust Parquet writer honors
-/// per column. Column names come from [`materialized_column_name`], so the
-/// properties always target the promoted `label_<key>` columns. Duplicate
-/// labels (after sanitization) collapse to a single property.
+/// per column. Column names are resolved through
+/// [`crate::iceberg::evolution::resolve_label_columns_fresh`] -- the same
+/// mechanism [`crate::schema_parser::ResolvedSchema::build_iceberg_schema`]
+/// uses to create the columns themselves -- so two keys that sanitize to the
+/// same candidate name each get their own bloom-filter property instead of
+/// the second key silently going unfiltered (#1448). An exact-duplicate key
+/// still collapses to a single property.
 ///
-/// Shared by table creation and the compactor's attribute-promotion path,
-/// so both set identical properties for a promoted label.
+/// Called at table creation only today (the compactor's attribute-promotion
+/// path does not yet set bloom-filter properties for the columns it
+/// evolves, tracked as #731).
 pub fn bloom_filter_properties_for_labels(labels: &[String]) -> Vec<(String, String)> {
     use iceberg_rust::spec::table_metadata::WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX;
 
-    let mut seen = std::collections::HashSet::new();
-    labels
-        .iter()
-        .filter_map(|label| {
-            let column = materialized_column_name(label);
-            seen.insert(column.clone()).then(|| {
-                (
-                    format!("{WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX}{column}"),
-                    "true".to_string(),
-                )
-            })
+    crate::iceberg::evolution::resolve_label_columns_fresh(labels)
+        .into_iter()
+        .map(|(_, column)| {
+            (
+                format!("{WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX}{column}"),
+                "true".to_string(),
+            )
         })
         .collect()
 }
@@ -766,27 +729,24 @@ mod tests {
     }
 
     #[test]
-    fn resolve_materialized_label_columns_gives_colliding_keys_distinct_columns() {
+    fn bloom_filter_properties_for_labels_gives_colliding_keys_distinct_properties() {
         // `http.method` and `http_method` sanitize to the same candidate
-        // column name; each must still get its own column (#1448).
+        // column name; both must get their own bloom-filter property, not
+        // just the first (#1448).
         let labels = vec!["http.method".to_string(), "http_method".to_string()];
-        let resolved = resolve_materialized_label_columns(&labels);
+        let properties = bloom_filter_properties_for_labels(&labels);
         assert_eq!(
-            resolved,
+            properties,
             vec![
-                ("http.method".to_string(), "label_http_method".to_string()),
-                ("http_method".to_string(), "label_http_method_2".to_string()),
+                (
+                    "write.parquet.bloom-filter-enabled.column.label_http_method".to_string(),
+                    "true".to_string()
+                ),
+                (
+                    "write.parquet.bloom-filter-enabled.column.label_http_method_2".to_string(),
+                    "true".to_string()
+                ),
             ]
-        );
-    }
-
-    #[test]
-    fn resolve_materialized_label_columns_collapses_exact_duplicate_keys() {
-        let labels = vec!["namespace".to_string(), "namespace".to_string()];
-        let resolved = resolve_materialized_label_columns(&labels);
-        assert_eq!(
-            resolved,
-            vec![("namespace".to_string(), "label_namespace".to_string())]
         );
     }
 
@@ -835,18 +795,23 @@ mod tests {
         let labels = vec![
             "namespace".to_string(),
             "http.method".to_string(),
-            // Sanitizes to the same column as `http.method` → collapsed.
+            // Sanitizes to the same candidate name as `http.method` — gets
+            // its own suffixed column and property, not collapsed (#1448).
             "http_method".to_string(),
         ];
         assert_eq!(
             bloom_filter_properties_for_labels(&labels),
             vec![
                 (
-                    "write.parquet.bloom-filter-enabled.column.label_namespace".to_string(),
+                    "write.parquet.bloom-filter-enabled.column.label_http_method".to_string(),
                     "true".to_string()
                 ),
                 (
-                    "write.parquet.bloom-filter-enabled.column.label_http_method".to_string(),
+                    "write.parquet.bloom-filter-enabled.column.label_http_method_2".to_string(),
+                    "true".to_string()
+                ),
+                (
+                    "write.parquet.bloom-filter-enabled.column.label_namespace".to_string(),
                     "true".to_string()
                 ),
             ]

@@ -491,17 +491,35 @@ logs = ["team", "region"]
 - **Collision-proof naming**: two configured keys that sanitize to the same
   candidate name (e.g. `http.method` and `http_method` both →
   `label_http_method`) never share a column or drop each other's values.
-  The first key in the configured list keeps the candidate name; a later
-  colliding key gets the next free deterministic suffix
-  (`label_http_method_2`). This assignment is recomputed from the full
-  ordered list on every call (`resolve_materialized_label_columns` in
-  `src/common/src/schema/mod.rs`) rather than stamped on a committed
-  column's `doc` like [auto-promotion's evolution
-  path](#label-columns-can-be-added-to-existing-tables) — the configured
-  list is fixed at any given moment, so it is stable as long as the list
-  itself doesn't reorder, and schema creation
-  (`ResolvedSchema::build_iceberg_schema`) and the writer's transforms
-  share the same resolution.
+  Resolution goes through
+  `common::iceberg::evolution::resolve_label_columns_canonical` /
+  `resolve_label_columns_fresh` — the same doc-stamping mechanism [auto-promotion's
+  evolution path](#label-columns-can-be-added-to-existing-tables) uses
+  (`resolve_label_columns`), wrapped to sort the configured keys into a
+  canonical (alphabetical) order before resolving: the key that sorts first
+  claims the unsuffixed candidate, a later colliding key gets the next free
+  deterministic suffix (`label_http_method_2`). Table creation
+  (`ResolvedSchema::build_iceberg_schema`) seeds the resolution from the
+  table's own base columns (so a label colliding with a _base_ column name
+  is suffixed rather than dropped too) and stamps each label column's `doc`
+  the same way `add_label_columns` does, so the compactor's backfill
+  resolves a statically-configured column exactly as it would one added by
+  auto-promotion. Sorting first — rather than resolving in the configured
+  list's literal order — means reordering `[schema.materialized_labels]`
+  (a no-op edit under any reasonable reading of that config) can never
+  silently reassign an already-colliding key to a different physical
+  column.
+  **Known limitation**: the writer's Flight ingest path resolves
+  labels _before_ a batch is written to WAL, deliberately without a
+  catalog round trip (see `flight_iceberg.rs`'s module doc), so it cannot
+  consult a table's actual committed schema the way `add_label_columns`
+  does — it uses `resolve_label_columns_fresh`, which recomputes the
+  canonical assignment from the configured key _set_ alone. This agrees
+  with what table creation assigned as long as that set hasn't changed
+  since the table was created; adding or removing a configured key on an
+  existing table can still shift which suffix a colliding key gets on new
+  writes without the already-written columns being reconciled (tracked
+  with the same-shaped gap below).
 - **Population** (writer): each row's value is taken from its **resource**,
   then **scope**, then **record** attributes (first non-null wins); the value
   is also left in the attribute JSON, so label discovery is unaffected.
@@ -517,9 +535,32 @@ logs = ["team", "region"]
   the JSON substring path;
   the writer's schema coercion drops columns a table lacks and null-fills
   nullable columns it has but the current config no longer produces.
+  **Known limitation**: nothing reconciles `[schema.materialized_labels]`
+  against an _existing_ table's schema — the writer's signal-table
+  reconciler (see the multi-tenancy skill) only walks `schemas.toml`
+  versions, and the compactor's auto-promotion decision engine explicitly
+  skips keys already pinned by static config. A key added to the config
+  after a table already exists keeps falling back to the JSON substring
+  path (silently, not incorrectly) until the table is recreated or a
+  dedicated reconciliation path is added; tracked as a follow-up to #1448.
 - **Querying**: the querier routes a label to its `label_<key>` column when
   the table has one, else to the JSON match (see the
   [LogQL reference](../users/logql-reference.md#materialized-labels)).
+  **Known limitation**: every querier resolution point
+  (`SchemaResolver::column_for`/`is_known` in `ir_planner.rs`, plus the
+  `logql`/`logs`/`metrics` lowerings) recomputes `materialized_column_name`
+  directly rather than consulting a column's `doc` or the tenant's
+  configured list — this predates #1448 and also affects auto-promoted
+  columns (#814). Under a collision, a query for the _second_ colliding key
+  still resolves to the first key's column instead of failing to resolve at
+  all: the query no longer errors, but it can silently read the wrong
+  key's values rather than its own. Closing this needs either the tenant's
+  resolved materialized-label list threaded into query planning (which
+  today runs in tenant-_slug_ space, while the config lookup is keyed by
+  tenant _id_ — bridging that safely is its own scoped change) or `doc`
+  propagated into the Arrow schema DataFusion scans so `SchemaResolver` can
+  resolve both mechanisms uniformly by origin key; tracked as a follow-up
+  to #1448, out of scope for the writer/schema-creation fix here.
 
 The same mechanism applies across all four signals:
 

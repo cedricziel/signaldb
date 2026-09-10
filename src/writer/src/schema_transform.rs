@@ -3,7 +3,7 @@ use chrono::{DateTime, Datelike, Timelike};
 use common::flight::conversion::UNKNOWN_SERVICE_NAME;
 use common::schema::resource_identity::resource_identity_from_json;
 use common::schema::schema_parser::ResolvedSchema;
-use common::schema::{ATTR_TOKENS_COLUMN, SCHEMA_DEFINITIONS, resolve_materialized_label_columns};
+use common::schema::{ATTR_TOKENS_COLUMN, SCHEMA_DEFINITIONS};
 use datafusion::arrow::{
     array::{
         Array, ArrayRef, BinaryArray, BooleanArray, Date32Array, Float64Array, Int32Array,
@@ -583,10 +583,19 @@ fn materialized_label_columns_from_json(
 /// taking each value from resource, then scope, then record (first
 /// non-null). An exact-duplicate label collapses to a single column; two
 /// distinct labels that sanitize to the same candidate name (#1448) get
-/// distinct columns via [`resolve_materialized_label_columns`] -- the same
-/// resolution the table-creation path
+/// distinct columns via
+/// [`resolve_label_columns_fresh`](common::iceberg::evolution::resolve_label_columns_fresh),
+/// the same canonical-order resolution the table-creation path
 /// (`ResolvedSchema::build_iceberg_schema`) uses, so both agree on the
-/// column for a given configured list.
+/// column for a given configured list regardless of the order its keys
+/// happen to be iterated in.
+///
+/// This ingest path resolves before a batch is even written to WAL,
+/// deliberately decoupled from any catalog round trip (see
+/// `flight_iceberg.rs`'s module doc), so unlike
+/// `common::iceberg::evolution::add_label_columns` it cannot consult a
+/// table's actual committed schema -- see `resolve_label_columns_fresh`'s
+/// doc for what that leaves unprotected.
 fn label_columns_from_maps(
     resource: &[Option<AttrMap>],
     scope: &[Option<AttrMap>],
@@ -596,7 +605,7 @@ fn label_columns_from_maps(
 ) -> (Vec<Field>, Vec<ArrayRef>) {
     let mut fields = Vec::new();
     let mut columns: Vec<ArrayRef> = Vec::new();
-    for (label, name) in resolve_materialized_label_columns(labels) {
+    for (label, name) in common::iceberg::evolution::resolve_label_columns_fresh(labels) {
         let values: Vec<Option<String>> = (0..num_rows)
             .map(|i| {
                 for src in [resource.get(i), scope.get(i), record.get(i)] {
@@ -3355,15 +3364,18 @@ mod tests {
         let (fields, cols) = materialized_label_columns(&batch, 2, &labels).unwrap();
 
         assert_eq!(fields.len(), 3);
-        assert_eq!(fields[0].name(), "label_namespace");
         assert!(
             fields
                 .iter()
                 .all(|f| f.is_nullable() && *f.data_type() == DataType::Utf8)
         );
 
-        let val = |c: &ArrayRef, i: usize| {
-            let a = c.as_any().downcast_ref::<StringArray>().unwrap();
+        // Columns are looked up by name rather than position: resolution
+        // order is the labels' canonical (sorted) order, not their
+        // configured order (#1448), which this test must not assume.
+        let val = |name: &str, i: usize| {
+            let idx = fields.iter().position(|f| f.name() == name).unwrap();
+            let a = cols[idx].as_any().downcast_ref::<StringArray>().unwrap();
             if a.is_null(i) {
                 None
             } else {
@@ -3371,14 +3383,14 @@ mod tests {
             }
         };
         // namespace: resource on both rows.
-        assert_eq!(val(&cols[0], 0).as_deref(), Some("prod"));
-        assert_eq!(val(&cols[0], 1).as_deref(), Some("staging"));
+        assert_eq!(val("label_namespace", 0).as_deref(), Some("prod"));
+        assert_eq!(val("label_namespace", 1).as_deref(), Some("staging"));
         // http.method: row 0 only in record (GET); row 1 resource wins over record (PUT).
-        assert_eq!(val(&cols[1], 0).as_deref(), Some("GET"));
-        assert_eq!(val(&cols[1], 1).as_deref(), Some("PUT"));
+        assert_eq!(val("label_http_method", 0).as_deref(), Some("GET"));
+        assert_eq!(val("label_http_method", 1).as_deref(), Some("PUT"));
         // scopekey: row 0 from scope; row 1 absent.
-        assert_eq!(val(&cols[2], 0).as_deref(), Some("sv"));
-        assert_eq!(val(&cols[2], 1), None);
+        assert_eq!(val("label_scopekey", 0).as_deref(), Some("sv"));
+        assert_eq!(val("label_scopekey", 1), None);
 
         // No configured labels → no extra columns.
         let (f, c) = materialized_label_columns(&batch, 2, &[]).unwrap();
@@ -3414,6 +3426,90 @@ mod tests {
         };
         assert_eq!(val("label_http_method"), "GET");
         assert_eq!(val("label_http_method_2"), "POST");
+    }
+
+    #[test]
+    fn materialized_label_columns_handles_a_three_way_collision() {
+        // Three distinct keys sanitizing to the same candidate name each
+        // get their own column; none of their values are dropped (#1448).
+        let batch = attr_batch(
+            vec![None],
+            vec![None],
+            vec![Some(
+                r#"{"http.method":"a","http_method":"b","http-method":"c"}"#,
+            )],
+        );
+        let labels = vec![
+            "http_method".to_string(),
+            "http.method".to_string(),
+            "http-method".to_string(),
+        ];
+        let (fields, cols) = materialized_label_columns(&batch, 1, &labels).unwrap();
+
+        let names: Vec<String> = fields.iter().map(|f| f.name().clone()).collect();
+        assert_eq!(names.len(), 3, "expected one column per key, got {names:?}");
+        let val = |name: &str| {
+            let idx = names.iter().position(|n| n == name).unwrap();
+            cols[idx]
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0)
+                .to_string()
+        };
+        // Canonical order is sorted by key string ('-' < '.' < '_' in
+        // ASCII), so `http-method` claims the unsuffixed candidate.
+        assert_eq!(val("label_http_method"), "c");
+        assert_eq!(val("label_http_method_2"), "a");
+        assert_eq!(val("label_http_method_3"), "b");
+    }
+
+    #[test]
+    fn schema_creation_and_writer_resolution_agree_on_the_same_configured_list() {
+        // The literal #1448 acceptance criterion: schema creation
+        // (`ResolvedSchema::to_iceberg_schema_with_labels`, backing table
+        // creation) and the write path (`materialized_label_columns`) must
+        // assign the same physical column to the same configured label for
+        // the same list, including under a collision.
+        use common::schema::schema_parser::ResolvedField;
+
+        let labels = vec![
+            "namespace".to_string(),
+            "http.method".to_string(),
+            "http_method".to_string(),
+        ];
+
+        let base = ResolvedSchema {
+            version: "test-only".to_string(),
+            description: "fixture".to_string(),
+            fields: vec![ResolvedField {
+                name: "timestamp".to_string(),
+                field_type: "timestamp_ns".to_string(),
+                required: true,
+                computed: None,
+                physical_only: false,
+                field_id: 1,
+            }],
+            partition_by: vec![],
+        };
+        let schema = base.to_iceberg_schema_with_labels(&labels).unwrap();
+        let schema_columns: std::collections::HashSet<String> = schema
+            .fields()
+            .iter()
+            .filter(|f| f.name != "timestamp")
+            .map(|f| f.name.clone())
+            .collect();
+
+        let batch = attr_batch(vec![None], vec![None], vec![None]);
+        let (fields, _cols) = materialized_label_columns(&batch, 1, &labels).unwrap();
+        let writer_columns: std::collections::HashSet<String> =
+            fields.iter().map(|f| f.name().clone()).collect();
+
+        assert_eq!(
+            schema_columns, writer_columns,
+            "schema creation and the writer must resolve the same configured list \
+             to the same set of physical columns"
+        );
     }
 
     /// One row's tokens, sorted for stable comparison.
