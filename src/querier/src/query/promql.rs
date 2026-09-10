@@ -564,11 +564,14 @@ pub fn plan_promql(query: &str) -> Result<MetricPlan, QuerierError> {
 pub enum QueryPlan {
     Single(Box<MetricPlan>),
     /// `left OP right` between two instant/range vectors (arithmetic only for
-    /// now; matched one-to-one on the shared materialized label).
+    /// now; matched one-to-one on the shared materialized label). Either
+    /// side may itself be a nested [`QueryPlan`] (e.g. `a + b + c` lowers to
+    /// `(a + b) + c`), so nested vector-to-vector arithmetic plans
+    /// recursively instead of erroring.
     BinaryVector {
-        left: Box<MetricPlan>,
+        left: Box<QueryPlan>,
         op: ArithOp,
-        right: Box<MetricPlan>,
+        right: Box<QueryPlan>,
     },
     /// `left CMP right` between two vectors. Without `bool` it filters `left`
     /// to the series whose value satisfies the comparison against the matched
@@ -592,6 +595,16 @@ pub enum QueryPlan {
         range_ns: i64,
         res_ns: i64,
         reducer: MetricAgg,
+    },
+    /// A scalar-arithmetic transform layered over a nested plan that isn't a
+    /// single selector, e.g. `(a / b) * 100`. A bare `vector OP scalar` over
+    /// one selector stays a `Single` plan with the op folded into
+    /// [`MetricPlan::transforms`] instead, since that runs through
+    /// DataFusion; `Transform` re-applies `ops` row-wise over `inner`'s
+    /// already-materialized matrix.
+    Transform {
+        inner: Box<QueryPlan>,
+        ops: Vec<ValueOp>,
     },
 }
 
@@ -701,29 +714,72 @@ fn plan_query_expr(expr: &Expr) -> Result<QueryPlan, QuerierError> {
             return Ok(QueryPlan::BinaryLogical { left, op, right });
         }
     }
+    // Arithmetic. `vector OP vector` matches series one-to-one (on/ignoring/
+    // group_left modifiers are accepted; matching resolves to `service_name`);
+    // `vector OP scalar` layers a value transform over the vector side. Both
+    // sides recurse, since either may itself be a binary: `a + b + c` lowers
+    // left-associatively to `(a + b) + c`, and `(a / b) * 100` nests a scalar
+    // op over a vector binary. Constant-only arithmetic falls through to
+    // `lower`, which rejects it.
     if let Expr::Binary(bin) = unwrap_paren(&expr)
         && !bin.op.is_comparison_operator()
-        && as_scalar(&bin.lhs).is_none()
-        && as_scalar(&bin.rhs).is_none()
+        && let Some(op) = arith_op(bin.op)
     {
-        // Plain arithmetic tokens; on/ignoring/group_left modifiers are
-        // accepted (matching resolves to `service_name`).
-        let op = match format!("{}", bin.op).as_str() {
-            "+" => Some(ArithOp::Add),
-            "-" => Some(ArithOp::Sub),
-            "*" => Some(ArithOp::Mul),
-            "/" => Some(ArithOp::Div),
-            "%" => Some(ArithOp::Mod),
-            "^" => Some(ArithOp::Pow),
-            _ => None,
-        };
-        if let Some(op) = op {
-            let left = Box::new(lower(unwrap_paren(&bin.lhs))?);
-            let right = Box::new(lower(unwrap_paren(&bin.rhs))?);
-            return Ok(QueryPlan::BinaryVector { left, op, right });
+        match (as_scalar(&bin.lhs), as_scalar(&bin.rhs)) {
+            (None, None) => {
+                let left = Box::new(plan_query_expr(unwrap_paren(&bin.lhs))?);
+                let right = Box::new(plan_query_expr(unwrap_paren(&bin.rhs))?);
+                return Ok(QueryPlan::BinaryVector { left, op, right });
+            }
+            (Some(s), None) => {
+                let inner = plan_query_expr(unwrap_paren(&bin.rhs))?;
+                return Ok(with_scalar_transform(inner, op, s, true));
+            }
+            (None, Some(s)) => {
+                let inner = plan_query_expr(unwrap_paren(&bin.lhs))?;
+                return Ok(with_scalar_transform(inner, op, s, false));
+            }
+            (Some(_), Some(_)) => {}
         }
     }
     Ok(QueryPlan::Single(Box::new(lower(&expr)?)))
+}
+
+/// Layer a `vector OP scalar` arithmetic transform onto an already-lowered
+/// plan. A `Single` plan folds the op into its `transforms` (still one
+/// DataFusion projection); anything else (a nested binary, a subquery, …)
+/// wraps in a [`QueryPlan::Transform`] that re-applies it over the inner
+/// plan's matrix after execution.
+/// The arithmetic operator a binary token denotes, if it is one.
+fn arith_op(op: impl std::fmt::Display) -> Option<ArithOp> {
+    match format!("{op}").as_str() {
+        "+" => Some(ArithOp::Add),
+        "-" => Some(ArithOp::Sub),
+        "*" => Some(ArithOp::Mul),
+        "/" => Some(ArithOp::Div),
+        "%" => Some(ArithOp::Mod),
+        "^" => Some(ArithOp::Pow),
+        _ => None,
+    }
+}
+
+fn with_scalar_transform(
+    plan: QueryPlan,
+    op: ArithOp,
+    scalar: f64,
+    scalar_left: bool,
+) -> QueryPlan {
+    let value_op = ValueOp::Arith(op, scalar, scalar_left);
+    match plan {
+        QueryPlan::Single(mut mp) => {
+            mp.transforms.push(value_op);
+            QueryPlan::Single(mp)
+        }
+        other => QueryPlan::Transform {
+            inner: Box::new(other),
+            ops: vec![value_op],
+        },
+    }
 }
 
 fn lower(expr: &Expr) -> Result<MetricPlan, QuerierError> {
@@ -1382,18 +1438,11 @@ fn lower_binary(bin: &parser::BinaryExpr) -> Result<MetricPlan, QuerierError> {
     if bin.op.is_comparison_operator() {
         return lower_comparison(bin);
     }
-    let arith = match format!("{}", bin.op).as_str() {
-        "+" => ArithOp::Add,
-        "-" => ArithOp::Sub,
-        "*" => ArithOp::Mul,
-        "/" => ArithOp::Div,
-        "%" => ArithOp::Mod,
-        "^" => ArithOp::Pow,
-        other => {
-            return Err(QuerierError::Unsupported(format!(
-                "binary operator '{other}'"
-            )));
-        }
+    let Some(arith) = arith_op(bin.op) else {
+        return Err(QuerierError::Unsupported(format!(
+            "binary operator '{}'",
+            bin.op
+        )));
     };
     match (as_scalar(&bin.lhs), as_scalar(&bin.rhs)) {
         (Some(_), Some(_)) => Err(QuerierError::Unsupported(
@@ -2037,12 +2086,20 @@ mod tests {
         ));
     }
 
+    /// The metric name of a `QueryPlan::Single`, panicking otherwise.
+    fn single_name(p: QueryPlan) -> String {
+        match p {
+            QueryPlan::Single(mp) => mp.metric_name,
+            other => panic!("expected a single plan, got {other:?}"),
+        }
+    }
+
     #[test]
     fn vector_arithmetic_is_a_binary_plan() {
         match plan_query("a / b").expect("plan") {
             QueryPlan::BinaryVector { left, op, right } => {
-                assert_eq!(left.metric_name, "a");
-                assert_eq!(right.metric_name, "b");
+                assert_eq!(single_name(*left), "a");
+                assert_eq!(single_name(*right), "b");
                 assert_eq!(op, ArithOp::Div);
             }
             other => panic!("expected binary, got {other:?}"),
@@ -2062,6 +2119,39 @@ mod tests {
             plan_query("a / on(job) b").expect("plan"),
             QueryPlan::BinaryVector { .. }
         ));
+    }
+
+    #[test]
+    fn nested_vector_arithmetic_plans_recursively() {
+        // `a + b + c` is left-associative: `(a + b) + c`.
+        match plan_query("a + b + c").expect("plan") {
+            QueryPlan::BinaryVector { left, op, right } => {
+                assert_eq!(op, ArithOp::Add);
+                assert_eq!(single_name(*right), "c");
+                match *left {
+                    QueryPlan::BinaryVector { left, op, right } => {
+                        assert_eq!(op, ArithOp::Add);
+                        assert_eq!(single_name(*left), "a");
+                        assert_eq!(single_name(*right), "b");
+                    }
+                    other => panic!("expected a nested binary, got {other:?}"),
+                }
+            }
+            other => panic!("expected binary, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn scalar_transform_over_nested_binary_wraps_in_transform() {
+        // `a / b * 100` is `(a / b) * 100`: a scalar op over a nested
+        // vector-to-vector plan, which can't fold into a `MetricPlan`.
+        match plan_query("a / b * 100").expect("plan") {
+            QueryPlan::Transform { inner, ops } => {
+                assert_eq!(ops, vec![ValueOp::Arith(ArithOp::Mul, 100.0, false)]);
+                assert!(matches!(*inner, QueryPlan::BinaryVector { .. }));
+            }
+            other => panic!("expected a wrapped transform, got {other:?}"),
+        }
     }
 
     #[test]
