@@ -81,20 +81,6 @@ impl LogicalField {
         }
     }
 
-    pub fn signaldb_resource_identity(source: &str) -> Self {
-        Self {
-            id: LogicalFieldId {
-                source: source.to_string(),
-                level: None,
-                name: "resource.identity".to_string(),
-            },
-            value_type: LogicalType::String,
-            filterability: Filterability::Filterable,
-            kind: LogicalFieldKind::SignalDbDefined,
-            non_native: true,
-        }
-    }
-
     pub fn record_metadata(source: &str, name: &str, value_type: LogicalType) -> Self {
         Self {
             id: LogicalFieldId {
@@ -321,7 +307,6 @@ impl LogicalSchema {
         for source in ["logs", "traces"] {
             fields.push(LogicalField::join_key(source, "trace_id"));
             fields.push(LogicalField::join_key(source, "span_id"));
-            fields.push(LogicalField::signaldb_resource_identity(source));
             fields.push(LogicalField::attribute(
                 source,
                 AttributeLevel::Resource,
@@ -417,12 +402,19 @@ mod tests {
         assert_eq!(field.filterability, Filterability::RetrievalOnly);
     }
 
+    /// `resource.identity` was declared on every source but never produced
+    /// anywhere in the write path, so field discovery advertised a name that
+    /// failed whenever it was actually used (#1340). Implementing a real
+    /// resource identity is tracked separately (#1339); until then the field
+    /// must not be advertised at all.
     #[test]
-    fn resource_identity_is_explicitly_non_native() {
-        let field = LogicalField::signaldb_resource_identity("logs");
+    fn core_schema_does_not_advertise_the_unproduced_resource_identity_field() {
+        let schema = LogicalSchema::core();
+        let offender = schema
+            .fields()
+            .find(|field| field.id.name == "resource.identity");
 
-        assert_eq!(field.kind, LogicalFieldKind::SignalDbDefined);
-        assert!(field.non_native);
+        assert!(offender.is_none(), "{offender:?}");
     }
 
     #[test]
