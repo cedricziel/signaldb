@@ -53,11 +53,11 @@ SignalDB stores metric names in their OTel dotted form (`signaldb.wal.entries_pe
 
 | Function | Status |
 |----------|--------|
-| `rate` | ✅ (counter delta ÷ range seconds) |
-| `increase` | ✅ (counter delta) |
+| `rate` | ✅ (counter delta ÷ range seconds; a drop between consecutive samples counts as a reset, so the result is never negative) |
+| `increase` | ✅ (counter delta, reset-corrected) |
 | `delta` | ✅ (gauge delta: last − first, no reset correction) |
 | `deriv` | ✅ (per-second slope via linear regression; needs ≥2 samples) |
-| `irate`, `idelta` | ✅ (from the last two samples in the window) |
+| `irate`, `idelta` | ✅ (from the last two samples in the window; `irate` is reset-corrected) |
 | `avg_over_time`, `sum_over_time`, `min_over_time`, `max_over_time` | ✅ |
 | `count_over_time`, `last_over_time` | ✅ |
 | `stddev_over_time`, `stdvar_over_time` | ✅ (population) |
