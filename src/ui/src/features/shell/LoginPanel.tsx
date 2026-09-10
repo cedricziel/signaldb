@@ -10,6 +10,7 @@ import { useEffect, useState } from "react";
 import { useLocation } from "react-router";
 import { isAuthError, setTenantContext } from "../../api/http";
 import { useLoginConfig } from "../../lib/useLoginConfig";
+import { safeRedirectTarget } from "../../lib/redirectTarget";
 import { CHOOSE_TENANT_HINT, useTenantStep } from "../../lib/tenantResolution";
 import { Dialog } from "../../components/Dialog";
 import { LoginCard } from "./LoginCard";
@@ -88,7 +89,13 @@ interface PanelProps {
 export function LoginPanel({ hint, redirect, onSuccess }: PanelProps) {
   const config = useLoginConfig();
   const location = useLocation();
-  const ssoRedirect = redirect ?? `${location.pathname}${location.search}`;
+  // The same-app validation the shared helper applies everywhere else a
+  // redirect target is derived from the current location (LoginRoute, the
+  // app shell) — defence in depth, since `location` is already same-app in
+  // practice.
+  const ssoRedirect = safeRedirectTarget(
+    redirect ?? `${location.pathname}${location.search}`,
+  );
   const { pending, onAuthenticated, pick, busy } = useTenantStep(
     (tenant, dataset) => onSuccess({ tenant, dataset }),
   );

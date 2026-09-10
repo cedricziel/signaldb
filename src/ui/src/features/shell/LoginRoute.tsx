@@ -11,6 +11,7 @@ import { BrandMark } from "../../components/BrandMark";
 import { isAuthError, toErrorMessage } from "../../api/http";
 import { deleteSession } from "../../api/session";
 import { useLoginConfig } from "../../lib/useLoginConfig";
+import { safeRedirectTarget } from "../../lib/redirectTarget";
 import { CHOOSE_TENANT_HINT, useTenantStep } from "../../lib/tenantResolution";
 import { useCurrentSession } from "../../lib/useWhoami";
 import { LoginCard } from "./LoginCard";
@@ -18,8 +19,6 @@ import { LoginMethods } from "./LoginMethods";
 import { TenantPicker } from "./TenantPicker";
 import "./LoginPanel.css";
 import "./LoginPage.css";
-
-const DEFAULT_TARGET = "/logs";
 
 /** `?error=<code>` messages for a redirect-based login (the OIDC callback,
  * see `openspec/changes/oidc-login`). One small table so that change can add
@@ -30,25 +29,6 @@ const ERROR_MESSAGES: Record<string, string> = {
   no_membership:
     "Your account has no tenant access yet. Ask a tenant admin to add you, then sign in again.",
 };
-
-/** Only accept a same-app relative path as the redirect target, other than
- * `/login` itself (looping the credential step back onto its own landing
- * pad). Parses the candidate against the app's own origin and requires the
- * two to match — `//evil.com`, `https://evil.com`, and even a same-app-
- * looking `/\evil.com` (browsers normalize a leading backslash to a second
- * slash, so this would otherwise resolve to `evil.com` too) all fall back
- * to the default. */
-function safeRedirectTarget(raw: string | null): string {
-  if (!raw || !raw.startsWith("/")) return DEFAULT_TARGET;
-  try {
-    const url = new URL(raw, window.location.origin);
-    if (url.origin !== window.location.origin) return DEFAULT_TARGET;
-    if (url.pathname === "/login") return DEFAULT_TARGET;
-    return `${url.pathname}${url.search}${url.hash}`;
-  } catch {
-    return DEFAULT_TARGET;
-  }
-}
 
 /** `target` with the resolved tenant/dataset appended, as a router path. */
 function withTenantDataset(
