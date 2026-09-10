@@ -53,20 +53,40 @@ pub fn resource_identity(attributes: &serde_json::Map<String, serde_json::Value>
 
 /// Same, from the `resource_json` string the acceptor puts in v1 Flight
 /// batches. Accepts both shapes that exist in the codebase: a flat
-/// attribute object, and `{"attributes": {...}, "schema_url": "..."}` (the
-/// same disambiguation `extract_resource_context` in
-/// `writer::schema_transform` applies) — `schema_url` is never part of the
-/// identity either way. Returns `None` when `resource_json` is not valid
-/// JSON or is not a JSON object.
+/// attribute object, and the envelope `{"attributes": {...}, "schema_url":
+/// "...", "dropped_attributes_count": ...}` — `schema_url` and
+/// `dropped_attributes_count` are never part of the identity either way.
+///
+/// The object is the envelope only when every one of its own keys is one of
+/// [`ENVELOPE_KEYS`] and `attributes` holds an object; otherwise it is
+/// treated as flat and hashed whole, `attributes` key and all. That
+/// disqualification matters: a flat resource can legitimately carry its own
+/// `attributes` attribute (e.g. `{"attributes":{"tenant":"a"},
+/// "service.name":"checkout"}`) alongside unrelated keys like
+/// `service.name`, and only the presence of a sibling key outside
+/// [`ENVELOPE_KEYS`] tells the two shapes apart — checking for an
+/// `attributes` key alone would treat that flat map as an envelope, drop
+/// `service.name`, and collide it with every other flat map sharing the
+/// same nested `attributes` value.
+///
+/// Returns `None` when `resource_json` is not valid JSON or is not a JSON
+/// object.
 pub fn resource_identity_from_json(resource_json: &str) -> Option<String> {
     let value: serde_json::Value = serde_json::from_str(resource_json).ok()?;
     let obj = value.as_object()?;
-    let attributes = obj
-        .get("attributes")
-        .and_then(|value| value.as_object())
-        .unwrap_or(obj);
-    Some(resource_identity(attributes))
+
+    let is_envelope = obj.keys().all(|key| ENVELOPE_KEYS.contains(&key.as_str()));
+    let envelope_attributes = is_envelope
+        .then(|| obj.get("attributes").and_then(|value| value.as_object()))
+        .flatten();
+
+    Some(resource_identity(envelope_attributes.unwrap_or(obj)))
 }
+
+/// The envelope shape's own keys. An object whose keys are not a subset of
+/// these is never the envelope, no matter what it carries under
+/// `attributes` — see [`resource_identity_from_json`].
+const ENVELOPE_KEYS: [&str; 3] = ["attributes", "schema_url", "dropped_attributes_count"];
 
 /// Appends the canonical form of a JSON object to `out`: keys sorted
 /// lexicographically, values canonicalised recursively.
@@ -226,6 +246,39 @@ mod tests {
         assert_eq!(
             resource_identity_from_json(with_schema_url),
             resource_identity_from_json(without_schema_url)
+        );
+    }
+
+    /// A flat resource may legitimately carry its own `attributes` key
+    /// alongside other keys. Checking for `attributes` alone would
+    /// misdetect this as the envelope shape, drop every sibling key, and
+    /// collide two flat resources that only share the nested `attributes`
+    /// value.
+    #[test]
+    fn a_flat_map_with_a_sibling_attributes_key_is_not_mistaken_for_the_envelope() {
+        let checkout = r#"{"attributes":{"tenant":"a"},"service.name":"checkout"}"#;
+        let billing = r#"{"attributes":{"tenant":"a"},"service.name":"billing"}"#;
+
+        assert_ne!(
+            resource_identity_from_json(checkout),
+            resource_identity_from_json(billing)
+        );
+
+        let checkout_map = map(&[
+            ("attributes", json!({"tenant": "a"})),
+            ("service.name", json!("checkout")),
+        ]);
+        let billing_map = map(&[
+            ("attributes", json!({"tenant": "a"})),
+            ("service.name", json!("billing")),
+        ]);
+        assert_eq!(
+            resource_identity_from_json(checkout),
+            Some(resource_identity(&checkout_map))
+        );
+        assert_eq!(
+            resource_identity_from_json(billing),
+            Some(resource_identity(&billing_map))
         );
     }
 

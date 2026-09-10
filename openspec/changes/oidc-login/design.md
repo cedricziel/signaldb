@@ -49,11 +49,28 @@ See proposal.md — Why. What shapes the approach:
 2. **Endpoints live on the router beside the session endpoints:**
    `GET /ui/session/oidc/start` (302 to IdP; sets a short-lived pending-login
    cookie holding state/nonce/PKCE-verifier, server-side stateless) and
-   `GET /ui/session/oidc/callback`. A `GET /ui/session/config` probe reports
-   `{password_enabled: bool, oidc: {name: string} | null}` — `oidc` is a
-   nullable object, `null` whenever OIDC is not configured or discovery has
-   not succeeded yet, so the generated clients get one schema for both
-   states. All three unauthenticated, all in OpenAPI. _Alternative:_
+   `GET /ui/session/oidc/callback`. The start endpoint takes an optional
+   `redirect` query parameter — the same name the `/login` route already
+   uses — carried inside the signed pending-login cookie so the callback
+   knows where to send the user once the session is issued. The router
+   mirrors the same-origin rule of `safeRedirectTarget` in
+   `src/ui/src/features/shell/LoginRoute.tsx`, including the
+   backslash-normalisation case (`/\evil.example` parses as `//evil.example`)
+   and the same `/logs` fallback (`DEFAULT_TARGET` there), rather than
+   inventing a second rule set. Without a return target the MCP
+   OAuth consent screen would lose the authorize request: SSO is a full-page
+   navigation, unlike the inline password form, so the consent URL and its
+   query string must round-trip through the IdP. _Alternative:_ the SPA
+   stashing the return URL in `sessionStorage` and the callback landing on a
+   fixed SPA route — rejected because it adds a landing route and a second
+   hop for the same outcome, and the pending cookie already exists, so the
+   extra field is free. The `GET /ui/session/config` probe
+   (`{password_enabled: bool, oidc: {name: string} | null}` — `oidc` always
+   present, `null` whenever OIDC is not configured or discovery has not
+   succeeded yet) already ships with the `dedicated-login-page` change,
+   answering the password-only constant; this change replaces the constant
+   with the provider state without altering the schema. All three
+   unauthenticated, all in OpenAPI. _Alternative:_
    persisting pending logins in the catalog — needless writes and cleanup for
    a 5-minute artifact; the signed cookie carries the same guarantees.
    **Pending-login cookie policy:** `signaldb_oidc_pending`, HMAC-signed
@@ -102,7 +119,11 @@ See proposal.md — Why. What shapes the approach:
      that supplied it. `list_user_memberships` / `list_tenant_memberships`
      return every row with its `granted_by`, so admins can see that a
      membership is mapping-managed before trying to edit it; the UI/CLI
-     surfaces render the source.
+     surfaces render the source. Session-facing views are the exception:
+     `whoami` and the password session endpoint collapse the rows per
+     `tenant_id` to the effective role before deciding between "sole
+     membership" and "choose a tenant", otherwise a local-plus-mapped user
+     in one tenant would be bounced to tenant selection.
 6. **Mapping sync is transactional per login:** compute the desired mapped
    set from token groups × config rules and hand it to
    `sync_oidc_memberships`. Local rows are never read by the sync. Conflict
@@ -114,11 +135,58 @@ See proposal.md — Why. What shapes the approach:
    startup error, so an operator cannot lock every human out by typo.
 8. **UI:** login panel consumes `/ui/session/config` through the generated
    client; SSO button does a full-page navigation to the start endpoint (no
-   XHR — the flow is redirect-based).
-9. **Testing:** unit-level RP tests against a wiremock IdP (discovery, JWKS,
-   token endpoint; tampered nonce/signature/state cases). One
-   tests-integration case against a Dex or Keycloak testcontainer for the
-   full browser flow (Docker-gated, like other testcontainer suites).
+   XHR — the flow is redirect-based). The return target is an explicit
+   `redirect` prop on `LoginPanel`, not a `window.location` read inside the
+   shared component: `LoginRoute` passes its already-validated target,
+   `ConsentView` passes its own path and query (the authorize request), and
+   `LoginGate` — the mid-session 401 popup, the third consumer — passes the
+   current location, accepting that a full-page SSO navigation discards
+   in-flight SPA state, which the expired session already invalidated.
+   **Post-login tenant context.** Password login gets its tenant from the
+   session response (sole membership) or the panel's picker, and `LoginRoute`
+   appends `tenant`/`dataset` to the target; the OIDC callback redirects
+   itself and can run neither. Rather than teach the callback to enrich URLs
+   (it would have to special-case the consent screen, which has its own
+   tenant choice), the `App` shell resolves the context: today it already
+   falls back to the remembered tenant from local storage; it gains the last
+   step for a browser that remembers nothing — read the session through
+   `GET /ui/session` (the tenant-less introspection endpoint from
+   `dedicated-login-page`; `whoami` is a 401 without `X-Tenant-ID`, which is
+   exactly the state a fresh browser is in), take the auto-selected sole
+   membership with its default dataset into the URL, or send several
+   memberships to `/select-tenant?redirect=<target>`,
+   which learns to navigate to `redirect` instead of a fixed `/logs`
+   (tenant-selection delta). `safeRedirectTarget` moves out of
+   `LoginRoute.tsx` into a shared `lib` helper so `/select-tenant`, which is
+   directly reachable, validates its `redirect` with the identical rule.
+   Zero memberships cannot reach the shell for a non-admin: after mapping
+   sync has had its chance, the callback issues no session and leaves the
+   JIT-created row for an admin to grant — the same refusal the password
+   session endpoint makes with `403 User has no tenant memberships`, but a
+   browser cannot show a 403 usefully, so **callback failures travel as a
+   code on the login route**: `302 /login?error=<code>&redirect=<target>`,
+   with `sso_failed` for every validation failure (one value, so nothing
+   leaks about which check tripped) and `no_membership` for this case.
+   `LoginRoute` renders the message for the code and keeps `redirect`, so
+   retrying SSO lands where the user started. An instance admin with no memberships goes to
+   `/select-tenant` like any several-membership user. This also fixes
+   bookmarks and stale links on a fresh browser, which had the same gap. The
+   consent view is outside the shell and unaffected.
+9. **Testing — three layers, each owning what only it can prove** (the
+   enumerated cases live in tasks.md §2 and §4):
+   - Unit tests: RP behaviour in `router` against a wiremock IdP; component
+     states in vitest. The exhaustive probe-state matrix and the SSO link's
+     `href` live here only.
+   - Browser e2e in `src/ui/e2e` (Playwright, mocked API, runs in CI on
+     every PR like the existing navigation specs): what needs the production
+     bundle and a real router — the consent screen without a session
+     offering SSO that returns to the consent URL, and an SSO-only instance
+     rendering no password form anywhere.
+   - tests-integration against one Dex testcontainer: the only real IdP
+     round trip. Note that this repo's testcontainer suites run in the
+     regular workspace test job wherever Docker exists, so this suite is a
+     cost on every core PR — one container, one full MCP-OAuth-through-SSO
+     round trip, with the other SSO assertions sharing it.
 10. **Startup: fail hard on bad config, degrade on an unreachable issuer.**
     Configuration errors (`disable_password_login` without a provider,
     malformed `issuer_url`, unusable mapping rules) fail startup — they are

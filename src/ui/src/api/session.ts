@@ -1,13 +1,57 @@
 // Client for the router's UI session endpoints (/ui/session) and the
 // tenant-scoped whoami endpoint (/api/v1/whoami). The session cookie is
 // HttpOnly — browser code never reads it; it only creates and clears it.
+//
+// `loginConfig` and `currentSession` go through the generated OpenAPI client
+// (`import "./client"` registers its shared config) instead of raw fetch —
+// new endpoints are consumed through `src/api/gen` per the migration in
+// progress; the rest of this file predates that and is migrated separately.
+import "./client";
 
+import {
+  type CurrentSessionResponse,
+  currentSession as currentSessionSdk,
+  type LoginConfigResponse,
+  loginConfig as loginConfigSdk,
+  type OidcLoginConfig,
+  type SessionMembership,
+  type SessionUser,
+} from "./gen";
 import {
   ApiError,
   retryAfterMsFrom,
   retryingFetch,
   tenantHeaders,
+  unwrapSdkResult,
 } from "./http";
+
+/** `GET /ui/session/config`: which credentials the login page may offer.
+ * Unauthenticated; throws `ApiError` on a non-2xx response (a 404 from an
+ * older router, a 5xx). */
+export async function loginConfig(): Promise<LoginConfigResponse> {
+  return unwrapSdkResult(
+    await loginConfigSdk(),
+    (status) => `Request failed (${status})`,
+  );
+}
+
+/** `GET /ui/session`: the signed-in user, their memberships, and the
+ * auto-selected tenant/dataset — authenticated by the session cookie alone.
+ * Throws `ApiError(401)` without a valid session. */
+export async function currentSession(): Promise<CurrentSessionResponse> {
+  return unwrapSdkResult(
+    await currentSessionSdk(),
+    (status) => `Request failed (${status})`,
+  );
+}
+
+export type {
+  CurrentSessionResponse,
+  LoginConfigResponse,
+  OidcLoginConfig,
+  SessionMembership,
+  SessionUser,
+};
 
 export interface SessionCredentials {
   email: string;
@@ -16,12 +60,6 @@ export interface SessionCredentials {
    * returns the membership list for the UI's tenant picker. */
   tenant?: string;
   dataset?: string;
-}
-
-export interface SessionMembership {
-  tenant_id: string;
-  name: string;
-  role: "admin" | "member" | "viewer";
 }
 
 export interface SessionResult {
