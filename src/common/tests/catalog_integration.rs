@@ -1,8 +1,8 @@
 use common::catalog::{Catalog, GrantSource, MembershipRole};
 use common::flight::transport::ServiceCapability;
 use common::service_bootstrap::ServiceType;
+use common::testing::start_container_with_retry;
 use testcontainers_modules::postgres::Postgres;
-use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use tokio::time::{Duration, sleep};
 use uuid::Uuid;
 
@@ -33,10 +33,7 @@ async fn connect_catalog_with_retry(dsn: &str) -> Catalog {
 
 #[tokio::test]
 async fn test_ingester_operations() {
-    let container = Postgres::default()
-        .start()
-        .await
-        .expect("Failed to start database");
+    let container = start_container_with_retry(Postgres::default).await;
 
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let dsn = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
@@ -83,10 +80,7 @@ async fn test_ingester_operations() {
 
 #[tokio::test]
 async fn test_shard_operations() {
-    let container = Postgres::default()
-        .start()
-        .await
-        .expect("Failed to start database");
+    let container = start_container_with_retry(Postgres::default).await;
 
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let dsn = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
@@ -163,10 +157,7 @@ async fn schema_registry_round_trips_on_postgres() {
     use common::schema_registry::{RegistrySource, SchemaResolver};
     use schema_model::RegistryDocument;
 
-    let container = Postgres::default()
-        .start()
-        .await
-        .expect("Failed to start database");
+    let container = start_container_with_retry(Postgres::default).await;
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let dsn = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
     let catalog = connect_catalog_with_retry(&dsn).await;
@@ -214,10 +205,7 @@ async fn schema_registry_round_trips_on_postgres() {
 /// (change: oidc-login, task 1.1/1.2).
 #[tokio::test]
 async fn users_support_nullable_password_and_oidc_identity_on_postgres() {
-    let container = Postgres::default()
-        .start()
-        .await
-        .expect("Failed to start database");
+    let container = start_container_with_retry(Postgres::default).await;
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let dsn = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
     let catalog = connect_catalog_with_retry(&dsn).await;
@@ -262,10 +250,7 @@ async fn users_support_nullable_password_and_oidc_identity_on_postgres() {
 /// task 1.3/1.4).
 #[tokio::test]
 async fn tenant_memberships_are_source_aware_on_postgres() {
-    let container = Postgres::default()
-        .start()
-        .await
-        .expect("Failed to start database");
+    let container = start_container_with_retry(Postgres::default).await;
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let dsn = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
     let catalog = connect_catalog_with_retry(&dsn).await;
@@ -334,10 +319,7 @@ async fn tenant_memberships_are_source_aware_on_postgres() {
 /// (change: oidc-login migration plan).
 #[tokio::test]
 async fn postgres_migration_from_pre_oidc_schema_preserves_data() {
-    let container = Postgres::default()
-        .start()
-        .await
-        .expect("Failed to start database");
+    let container = start_container_with_retry(Postgres::default).await;
     let port = container.get_host_port_ipv4(5432).await.unwrap();
     let dsn = format!("postgres://postgres:postgres@127.0.0.1:{port}/postgres");
 

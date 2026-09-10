@@ -1,7 +1,8 @@
 use anyhow::Result;
+use common::testing::start_container_with_retry;
 use testcontainers_modules::minio::MinIO;
+use testcontainers_modules::testcontainers::ContainerAsync;
 use testcontainers_modules::testcontainers::core::ExecCommand;
-use testcontainers_modules::testcontainers::{ContainerAsync, runners::AsyncRunner};
 use url::Url;
 
 pub struct MinioTestContext {
@@ -12,8 +13,7 @@ pub struct MinioTestContext {
 impl MinioTestContext {
     pub async fn new() -> Result<Self> {
         // Start MinIO container
-        let minio = MinIO::default();
-        let container = minio.start().await?;
+        let container = start_container_with_retry(MinIO::default).await;
 
         // Get connection details
         let host_port = container.get_host_port_ipv4(9000).await?;

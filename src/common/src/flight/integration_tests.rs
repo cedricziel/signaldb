@@ -2,9 +2,10 @@ use crate::catalog::Catalog;
 use crate::config::{Configuration, DatabaseConfig, DiscoveryConfig};
 use crate::flight::transport::ServiceCapability;
 use crate::service_bootstrap::{ServiceBootstrap, ServiceType};
+use crate::testing::start_container_with_retry;
 use std::time::Duration;
 use tempfile::TempDir;
-use testcontainers_modules::{postgres, testcontainers::runners::AsyncRunner};
+use testcontainers_modules::postgres;
 
 /// Test helper to create a temporary SQLite database for testing
 async fn create_test_sqlite_config() -> (Configuration, TempDir) {
@@ -31,7 +32,7 @@ async fn create_test_postgres_config() -> (
     Configuration,
     testcontainers_modules::testcontainers::ContainerAsync<postgres::Postgres>,
 ) {
-    let postgres_container = postgres::Postgres::default().start().await.unwrap();
+    let postgres_container = start_container_with_retry(postgres::Postgres::default).await;
     let host_ip = postgres_container.get_host().await.unwrap();
     let host_port = postgres_container.get_host_port_ipv4(5432).await.unwrap();
 

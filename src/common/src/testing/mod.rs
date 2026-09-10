@@ -24,12 +24,16 @@
 //! ```
 
 mod config_builder;
+#[cfg(any(test, feature = "testing-containers"))]
+mod containers;
 mod flush;
 mod otel_capture;
 mod otlp_fixtures;
 mod temp_catalog;
 
 pub use config_builder::TestConfigBuilder;
+#[cfg(any(test, feature = "testing-containers"))]
+pub use containers::start_container_with_retry;
 pub use flush::flush_storage_writers;
 pub use otel_capture::OtelExportProbe;
 pub use otlp_fixtures::{
