@@ -5835,7 +5835,11 @@ mod multi_tenancy_tests {
 
         // Outlasts writer_pool's 50ms busy_timeout, so a single attempt
         // fails with SQLITE_BUSY; the retry loop's backoff must ride it out.
-        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        // Held well under the retry loop's total budget (attempts *
+        // busy_timeout + backoff sleeps, comfortably >200ms) so the
+        // assertion below doesn't race scheduling jitter under parallel
+        // test execution.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         query("COMMIT").execute(&mut blocker).await.unwrap();
 
         write
