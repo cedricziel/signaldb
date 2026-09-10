@@ -179,6 +179,16 @@ exactly as at password login.
 - **THEN** the response is the same generic "invalid email or password"
   failure, the verifier is not invoked, and no session is created
 
+#### Scenario: No membership means no session
+
+- **WHEN** an identity completes the provider flow, is provisioned or
+  matched, and ends up with no tenant membership after mapping sync (and is
+  not an instance admin)
+- **THEN** no session is issued, the user is returned to the login page with
+  a message saying an administrator must grant them a tenant — mirroring
+  password login's refusal for a membership-less user — and the user row
+  stays so an admin can grant one
+
 #### Scenario: Disabled user cannot enter via SSO
 
 - **WHEN** a user with a non-null `disabled_at` completes the provider flow
