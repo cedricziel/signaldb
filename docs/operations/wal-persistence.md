@@ -526,6 +526,51 @@ cat /data/wal/*/*/*/dead-letter/*.rejected.json | jq -r '.reason'
 A recurring reason across many entries points at a systematic conversion or
 schema fault rather than isolated corruption.
 
+#### Replaying, listing, and purging dead-lettered entries
+
+`signaldb wal dead-letter list|replay|purge` operates on one WAL's
+`dead-letter/` directory directly. Run it on the node that owns the WAL
+directory; `--wal-dir` is the same _base_ directory as `[wal].wal_dir` /
+`ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR` (e.g. `/data/wal/acceptor`), not the
+`dead-letter/` path itself:
+
+```bash
+# Counts and bytes by kind
+signaldb wal dead-letter list \
+  --wal-dir /data/wal/acceptor --tenant acme --dataset production --signal metrics
+
+# Re-append every intact, decodable rejected payload — once the rejection
+# cause is fixed — and remove it from dead-letter on success
+signaldb wal dead-letter replay \
+  --wal-dir /data/wal/acceptor --tenant acme --dataset production --signal metrics \
+  --kind rejected
+
+# See what replay/purge would do without touching anything
+signaldb wal dead-letter replay ... --dry-run
+
+# Discard entries outright (e.g. confirmed-unreplayable ones)
+signaldb wal dead-letter purge \
+  --wal-dir /data/wal/acceptor --tenant acme --dataset production --signal metrics \
+  --kind unreadable
+```
+
+`replay` opens a live `Wal` for that tenant/dataset/signal and re-appends
+each payload through the same `Wal::append` path ingest uses, so the
+acceptor's retry consumer or the writer's drain loop picks it up through the
+normal path on its next pass — nothing about replay is special-cased once
+the entry is back in the WAL. A payload that fails to decode
+(`bytes_to_record_batch`) is left in place and counted rather than replayed,
+since replaying a still-broken payload would only recreate the failure that
+dead-lettered it. `--kind` restricts to `rejected` or `unreadable`; omit it
+to operate on everything (`unreadable` entries have no recoverable payload,
+so `replay` always leaves them in place and counts them — `purge` is the
+only way to clear them).
+
+The WAL format does not coordinate two processes writing the same
+directory: prefer running `replay` during a lull in traffic for that tenant,
+or briefly stop the owning service first if the WAL is under heavy write
+load.
+
 ## Permissions
 
 Ensure proper file system permissions:
