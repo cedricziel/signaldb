@@ -76,8 +76,11 @@ the headers, for browsers using the [embedded explore UI](explore-ui.md):
   an API key or `X-Tenant-ID` header does not substitute for the cookie.
 - `GET /ui/session/config` (public) reports which credentials the login page
   should offer: `{"password_enabled": true, "oidc": null}` today. `oidc` is
-  always present and becomes `{"name": ...}` once an OIDC provider is
-  configured (see the pending `oidc-login` change).
+  always present and stays `null` until provider discovery succeeds; even
+  with `[auth.oidc]` configured, it reports `null` while discovery is still
+  pending or the provider is unreachable, and becomes `{"name": ...}` once
+  discovery resolves (retried in the background on failure, no restart
+  needed).
 - `GET /api/v1/whoami` returns the human identity, all memberships, and the
   selected tenant's datasets. API-key requests remain supported and omit
   the human identity.

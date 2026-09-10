@@ -204,9 +204,12 @@ flowchart LR
 | **Capability** | `Routing`                                                                                                                                                 |
 | **APIs**       | Tempo-compatible, Pyroscope-compatible, Loki-compatible, native Query IR (`POST /api/v1/query`), schema registry (`/api/v1/schema/*`), Admin API, OpenAPI |
 
-The router also serves the explore UI (a static SPA built from `src/ui`)
-under `/ui`, from the directory named by `SIGNALDB_UI_DIR`. See
-[the explore UI guide](../users/explore-ui.md).
+The router also serves the explore UI (a static SPA built from `src/ui`) as
+the root SPA fallback (unprefixed routes such as `/runtime-config.js`, behind
+the API routes), from the directory named by `SIGNALDB_UI_DIR`. See
+[the explore UI guide](../users/explore-ui.md). (`/ui/session` and the other
+`/ui/session/*` endpoints below are separate session API paths, not part of
+the UI's own mount.)
 
 For browsers, the router exposes `POST`/`DELETE /ui/session`
 (`src/router/src/endpoints/session.rs`): a public login endpoint that
