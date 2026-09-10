@@ -55,8 +55,9 @@ See proposal.md — Why. What shapes the approach:
    knows where to send the user once the session is issued. The router
    mirrors the same-origin rule of `safeRedirectTarget` in
    `src/ui/src/features/shell/LoginRoute.tsx`, including the
-   backslash-normalisation case (`/\evil.example` parses as `//evil.example`),
-   rather than inventing a second rule set. Without a return target the MCP
+   backslash-normalisation case (`/\evil.example` parses as `//evil.example`)
+   and the same `/logs` fallback (`DEFAULT_TARGET` there), rather than
+   inventing a second rule set. Without a return target the MCP
    OAuth consent screen would lose the authorize request: SSO is a full-page
    navigation, unlike the inline password form, so the consent URL and its
    query string must round-trip through the IdP. _Alternative:_ the SPA

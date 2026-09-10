@@ -90,7 +90,9 @@ The SSO start endpoint SHALL accept an optional `redirect` query parameter —
 the same parameter the `/login` route accepts — carry it through the pending
 login attempt, and the callback SHALL send the user there after issuing the
 session. Only a same-origin path is honoured; anything else falls back to
-`/`, under the same rule the `/login` route applies. Any screen that
+the login route's default target (`/logs`), under the same rule the `/login`
+route applies, so password and SSO logins land in the same place for the
+same bad input. Any screen that
 demands a login can therefore hand the user to the IdP and get them back on
 the same URL with its query string intact. The MCP OAuth consent screen
 depends on this: SSO is a full-page navigation, and the authorize request
@@ -109,7 +111,8 @@ lives in that screen's URL.
 
 - **WHEN** the start endpoint is called with `redirect=https://evil.example/`
   or `redirect=//evil.example/`
-- **THEN** the login still proceeds and the callback lands on `/`
+- **THEN** the login still proceeds and the callback lands on `/logs`, where
+  the `/login` route would also have sent it
 
 ### Requirement: Just-in-time provisioning with an allowlist
 
