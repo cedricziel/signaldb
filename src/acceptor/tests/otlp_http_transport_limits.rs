@@ -109,6 +109,7 @@ async fn setup_traces_test_with_limit(
     config.auth = common::config::AuthConfig {
         admin_api_key: None,
         internal_service_key: None,
+        oidc: None,
         default_limits: common::config::TenantLimits::default(),
         storage_usage_refresh_interval: Duration::from_secs(60),
         tenants: vec![common::config::TenantConfig {
