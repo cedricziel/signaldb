@@ -6,6 +6,14 @@
 # doc itself was not touched in the same diff, the doc is reported as possibly
 # stale. Docs with `status: record` (decision records) are exempt.
 #
+# A doc that would otherwise be reported stale can be individually acknowledged
+# via the DOC_FRESHNESS_ACK environment variable: a newline- or comma-separated
+# list of repo-relative doc paths, exactly as this script prints them. An
+# acknowledged doc that would have been stale is reported as ACK instead of
+# failing the gate. An acknowledged path that isn't a real doc (a typo) fails as
+# INVALID, so acks can't rot silently. An ack for a doc that wasn't flagged is
+# ignored.
+#
 # Usage:
 #   check-doc-freshness.sh <diff-range>   # e.g. origin/main...HEAD (CI)
 #   check-doc-freshness.sh                # working tree + commits since
@@ -14,6 +22,14 @@
 # Exit 0 if no doc debt found, 1 otherwise. Report lines go to stdout.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
+
+known_docs=$(find docs .claude/skills -name '*.md' -type f 2>/dev/null | sort)
+acked_docs=$(
+    printf '%s' "${DOC_FRESHNESS_ACK:-}" |
+        tr ',' '\n' |
+        sed 's/^[[:space:]]*//; s/[[:space:]]*$//' |
+        sed '/^$/d'
+)
 
 if [[ $# -ge 1 && -n "$1" ]]; then
     changed=$(git diff --name-only "$1")
@@ -102,6 +118,17 @@ while IFS= read -r doc; do
     done <<<"$globs"
 done < <(find docs .claude/skills -name '*.md' -type f 2>/dev/null | sort)
 
+# --- Acknowledgement validation ----------------------------------------------
+# Every path in DOC_FRESHNESS_ACK must be a real doc; a typo would otherwise
+# silently fail to acknowledge anything.
+while IFS= read -r ack; do
+    [[ -z "$ack" ]] && continue
+    if ! grep -qxF "$ack" <<<"$known_docs"; then
+        echo "INVALID $ack: acknowledged via DOC_FRESHNESS_ACK but is not a known doc"
+        errors=1
+    fi
+done <<<"$acked_docs"
+
 # --- Freshness: changed sources without a doc update ------------------------
 stale=0
 while IFS= read -r doc; do
@@ -134,6 +161,10 @@ while IFS= read -r doc; do
     done <<<"$globs"
 
     if [[ -n "$hits" ]]; then
+        if grep -qxF "$doc" <<<"$acked_docs"; then
+            echo "ACK $doc — sources changed: $hits"
+            continue
+        fi
         echo "$doc — sources changed: $hits"
         stale=1
     fi
