@@ -302,7 +302,7 @@ sequenceDiagram
     A->>A: convert to Arrow (otlp_traces_to_arrow)
     A->>A: append to Acceptor WAL + flush
     A->>W: Flight DoPut (Arrow batches)
-    W->>W: transform v1 to physical-v3, append to Writer WAL
+    W->>W: transform v1 to physical-v4, append to Writer WAL
     W-->>A: confirm
     A->>A: mark WAL entry processed
     A-->>C: acknowledge
@@ -314,7 +314,7 @@ sequenceDiagram
 2. Acceptor converts OTLP to Arrow format using `otlp_traces_to_arrow`
 3. Acceptor appends the batch to its WAL and flushes for durability
 4. Acceptor uses Flight `DoPut` to send Arrow data to Writer (Storage capability)
-5. Writer transforms to the physical-v3 storage schema (function name says "v2" for historical reasons; the target version is a hardcoded literal bumped alongside `schemas.toml`'s `current_trace_version`, not resolved dynamically) and appends to its own WAL — the WAL of the batch's own tenant/dataset/signal, one instance per combination, so a poisoned segment or a slow flush on the append path does not block another tenant's `do_put` (the background drain over those WALs commits groups concurrently, so a tenant whose Iceberg round trip is slow no longer delays another tenant's commit in the same cycle). This transform resolves a materialization plan once per schema version (`compiled-schema-materializer`) rather than dispatching per field per batch — see the `flight-schemas` skill.
+5. Writer transforms to the physical-v4 storage schema (function name says "v2" for historical reasons; unlike the logs transform, it resolves the target version dynamically via `SCHEMA_DEFINITIONS.current_trace_version()`, so bumping `schemas.toml`'s `current_trace_version` alone moves it) and appends to its own WAL — the WAL of the batch's own tenant/dataset/signal, one instance per combination, so a poisoned segment or a slow flush on the append path does not block another tenant's `do_put` (the background drain over those WALs commits groups concurrently, so a tenant whose Iceberg round trip is slow no longer delays another tenant's commit in the same cycle). This transform resolves a materialization plan once per schema version (`compiled-schema-materializer`) rather than dispatching per field per batch — see the `flight-schemas` skill.
 6. Writer confirms after its WAL flush (it does **not** block the confirm on the Iceberg commit); Acceptor marks its WAL entry as processed
 7. Writer's `WalProcessor` asynchronously commits WAL entries to Iceberg (Parquet in the object store), **coalescing** pending entries per `(tenant, dataset, table)` — a group commits when `[writer].commit_interval` elapses or its rows reach `[writer].max_uncommitted_rows`. This caps the Iceberg snapshot / catalog-metadata write rate independent of ingest rate.
 
