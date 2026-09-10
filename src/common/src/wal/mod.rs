@@ -997,7 +997,7 @@ pub struct Wal {
     /// `signaldb.wal.entries_pending` — `0` if this identity's seed was
     /// already claimed by an earlier open in this process (see
     /// [`Self::claim_pending_seed`]).
-    recovered_pending: i64,
+    recovered_pending: usize,
     /// Guards [`Self::flush_recovered_seed`] running exactly once, and not
     /// until whichever of {`with_gauge_attribution`, the first real
     /// gauge-touching call} runs first — so the seed's one-time emission
@@ -1117,11 +1117,11 @@ impl Wal {
         // immediate emission here would carry a placeholder role, creating a
         // second, orphaned metric series that never gets corrected once real
         // traffic switches to the real role attribution.
-        let mut recovered_pending: i64 = 0;
+        let mut recovered_pending: usize = 0;
         if Self::claim_pending_seed(&writer_id) {
             for segment_arc in &all_segments {
                 let segment = segment_arc.lock().await;
-                recovered_pending += segment.entries.iter().filter(|e| !e.processed).count() as i64;
+                recovered_pending += segment.entries.iter().filter(|e| !e.processed).count();
             }
         }
 
@@ -1194,17 +1194,24 @@ impl Wal {
         self.seed_flush
             .get_or_init(|| async {
                 if self.recovered_pending > 0 {
+                    // Every use below re-casts rather than sharing one `let`:
+                    // the registry-pins test statically greps this call
+                    // site's own `as i64` text (see registry_pins.rs) to pin
+                    // int-typed attributes against the tracing→OTel bridge
+                    // exporting an un-cast u64/usize as a string.
                     tracing::info!(
-                        signaldb.wal.recovered_pending = self.recovered_pending,
+                        signaldb.wal.recovered_pending = self.recovered_pending as i64,
                         signal = %self.signal_type,
                         role = %self.role,
                         "Recovered unprocessed WAL entries from disk"
                     );
                     crate::self_monitoring::app_metrics()
                         .wal_entries_pending
-                        .add(self.recovered_pending, &self.gauge_attrs);
-                    self.belief
-                        .fetch_add(self.recovered_pending, std::sync::atomic::Ordering::Relaxed);
+                        .add(self.recovered_pending as i64, &self.gauge_attrs);
+                    self.belief.fetch_add(
+                        self.recovered_pending as i64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
                 }
             })
             .await;
@@ -1280,12 +1287,21 @@ impl Wal {
     /// that already computed this WAL's true unprocessed-entry count this
     /// cycle — skips the extra segment scan.
     ///
+    /// `segment_pending` must count only entries already in a segment (what
+    /// [`Self::get_unprocessed_entries`] / [`Self::pending_count`] return),
+    /// not buffered ones — this adds [`Self::buffered_entry_count`] itself.
+    /// `append` increments `belief` as soon as an entry is buffered, before
+    /// it is ever flushed into a segment, so a caller whose count skipped the
+    /// buffer would see `believed > segment_pending` for any WAL with
+    /// unflushed entries and "correct" that phantom gap by subtracting real,
+    /// still-pending entries from the gauge.
+    ///
     /// A non-zero delta means some path changed the pending set without
     /// telling the gauge; that is logged and corrected every time it happens,
     /// not just the first.
-    pub async fn reconcile_pending_gauge_with_count(&self, true_pending: usize) {
+    pub async fn reconcile_pending_gauge_with_count(&self, segment_pending: usize) {
         self.flush_recovered_seed().await;
-        let true_pending = true_pending as i64;
+        let true_pending = (segment_pending + self.buffered_entry_count().await) as i64;
         let believed = self.belief.load(std::sync::atomic::Ordering::Relaxed);
         let delta = true_pending - believed;
         if delta != 0 {

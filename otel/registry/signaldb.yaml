@@ -199,6 +199,14 @@ groups:
         brief: >
           Number of unprocessed WAL entries recovered from disk at startup,
           seeded into signaldb.wal.entries_pending.
+      - id: signaldb.wal.writer_id
+        type: string
+        stability: development
+        brief: >
+          Stable identity of a WAL directory, persisted in its writer.id
+          file. Names which directory's signaldb.wal.entries_pending gauge a
+          drift correction applies to.
+        examples: ["3f9c2b1a7e4d4c8a9b0f1a2b3c4d5e6f"]
 
   - id: registry.signaldb.query
     type: attribute_group
