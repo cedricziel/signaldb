@@ -401,6 +401,7 @@ mod tests {
         use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
         use tracing::instrument::WithSubscriber;
         use tracing_subscriber::prelude::*;
+        common::testing::install_global_tracing_fallback();
 
         let service = make_service().await;
 

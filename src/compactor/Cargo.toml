@@ -44,3 +44,4 @@ axum.workspace = true
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["trace", "testing"] }
 tracing-opentelemetry.workspace = true
+common = { workspace = true, features = ["testing"] }

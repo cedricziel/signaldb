@@ -1334,6 +1334,7 @@ mod tests {
         use opentelemetry::trace::{SpanKind, TracerProvider as _};
         use tracing::instrument::WithSubscriber;
         use tracing_subscriber::prelude::*;
+        common::testing::install_global_tracing_fallback();
 
         let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
         let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
@@ -1427,6 +1428,7 @@ mod tests {
         use crate::iceberg::partition::test_support::{hour_partition, test_data_file};
         use tracing::instrument::WithSubscriber;
         use tracing_subscriber::prelude::*;
+        common::testing::install_global_tracing_fallback();
 
         let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
         let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
@@ -1585,6 +1587,7 @@ mod tests {
         use crate::iceberg::partition::test_support::{hour_partition, test_data_file};
         use tracing::instrument::WithSubscriber;
         use tracing_subscriber::prelude::*;
+        common::testing::install_global_tracing_fallback();
 
         let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
         let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
