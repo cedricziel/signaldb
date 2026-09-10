@@ -539,6 +539,34 @@ impl SchemaResolver {
         Ok(out)
     }
 
+    /// Resolve many metric names against one snapshot of the tenant's
+    /// visible registries, for batch definition lookups. Only names a
+    /// registry defines appear in the result.
+    pub async fn resolve_metrics(
+        &self,
+        tenant_id: &str,
+        names: impl IntoIterator<Item = String>,
+    ) -> Result<BTreeMap<String, MetricHit>, StoreError> {
+        let visible = self.visible(tenant_id).await?;
+        let mut out = BTreeMap::new();
+        for name in names {
+            if out.contains_key(&name) {
+                continue;
+            }
+            if let Some(hit) = visible.iter().find_map(|v| {
+                v.resolved.metrics.get(&name).map(|def| MetricHit {
+                    namespace: v.resolved.namespace.clone(),
+                    version: v.resolved.version.clone(),
+                    source: v.source,
+                    def: def.clone(),
+                })
+            }) {
+                out.insert(name, hit);
+            }
+        }
+        Ok(out)
+    }
+
     pub async fn resolve_entity(
         &self,
         tenant_id: &str,

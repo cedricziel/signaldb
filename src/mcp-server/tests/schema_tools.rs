@@ -93,7 +93,9 @@ async fn schema_tools_are_listed_with_their_parameters() {
         .get("properties")
         .and_then(|p| p.as_object())
         .expect("search_schema has properties");
-    assert!(props.contains_key("prefix") && props.contains_key("limit"));
+    assert!(
+        props.contains_key("prefix") && props.contains_key("limit") && props.contains_key("keys")
+    );
     let text = schema.to_string();
     for kind in ["\"attribute\"", "\"entity\"", "\"metric\""] {
         assert!(text.contains(kind), "kind names {kind}: {text}");

@@ -4596,6 +4596,13 @@ pub mod types {
     ///      "items": {
     ///        "$ref": "#/components/schemas/MetricHit"
     ///      }
+    ///    },
+    ///    "resolutions": {
+    ///      "description": "Present when `keys=` was given: one resolution per requested name.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/MetricResolution"
+    ///      }
     ///    }
     ///  }
     ///}
@@ -4604,6 +4611,9 @@ pub mod types {
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct MetricSearchResponse {
         pub hits: ::std::vec::Vec<MetricHit>,
+        ///Present when `keys=` was given: one resolution per requested name.
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub resolutions: ::std::vec::Vec<MetricResolution>,
     }
     impl MetricSearchResponse {
         pub fn builder() -> builder::MetricSearchResponse {
@@ -13866,11 +13876,16 @@ pub mod types {
         #[derive(Clone, Debug)]
         pub struct MetricSearchResponse {
             hits: ::std::result::Result<::std::vec::Vec<super::MetricHit>, ::std::string::String>,
+            resolutions: ::std::result::Result<
+                ::std::vec::Vec<super::MetricResolution>,
+                ::std::string::String,
+            >,
         }
         impl ::std::default::Default for MetricSearchResponse {
             fn default() -> Self {
                 Self {
                     hits: Err("no value supplied for hits".to_string()),
+                    resolutions: Ok(Default::default()),
                 }
             }
         }
@@ -13885,19 +13900,33 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for hits: {e}"));
                 self
             }
+            pub fn resolutions<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::MetricResolution>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.resolutions = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for resolutions: {e}"));
+                self
+            }
         }
         impl ::std::convert::TryFrom<MetricSearchResponse> for super::MetricSearchResponse {
             type Error = super::error::ConversionError;
             fn try_from(
                 value: MetricSearchResponse,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
-                Ok(Self { hits: value.hits? })
+                Ok(Self {
+                    hits: value.hits?,
+                    resolutions: value.resolutions?,
+                })
             }
         }
         impl ::std::convert::From<super::MetricSearchResponse> for MetricSearchResponse {
             fn from(value: super::MetricSearchResponse) -> Self {
                 Self {
                     hits: Ok(value.hits),
+                    resolutions: Ok(value.resolutions),
                 }
             }
         }
@@ -18207,7 +18236,8 @@ impl Client {
     /**Sends a `GET` request to `/api/v1/schema/attributes`
 
     Arguments:
-    - `keys`: Comma-separated exact keys to resolve in one call (attributes only).
+    - `keys`: Comma-separated exact keys to resolve in one call (attributes and
+    metrics only).
     - `limit`: Maximum hits (default 50, max 200).
     - `prefix`: Name prefix (empty lists from the top).
     ```ignore
@@ -18237,12 +18267,10 @@ impl Client {
     /**Sends a `GET` request to `/api/v1/schema/entities`
 
     Arguments:
-    - `keys`: Comma-separated exact keys to resolve in one call (attributes only).
     - `limit`: Maximum hits (default 50, max 200).
     - `prefix`: Name prefix (empty lists from the top).
     ```ignore
     let response = client.schema_search_entities()
-        .keys(keys)
         .limit(limit)
         .prefix(prefix)
         .send()
@@ -18267,7 +18295,8 @@ impl Client {
     /**Sends a `GET` request to `/api/v1/schema/metrics`
 
     Arguments:
-    - `keys`: Comma-separated exact keys to resolve in one call (attributes only).
+    - `keys`: Comma-separated exact keys to resolve in one call (attributes and
+    metrics only).
     - `limit`: Maximum hits (default 50, max 200).
     - `prefix`: Name prefix (empty lists from the top).
     ```ignore
@@ -21681,7 +21710,6 @@ pub mod builder {
     #[derive(Debug, Clone)]
     pub struct SchemaSearchEntities<'a> {
         client: &'a super::Client,
-        keys: Result<Option<::std::string::String>, String>,
         limit: Result<Option<u64>, String>,
         prefix: Result<Option<::std::string::String>, String>,
     }
@@ -21689,19 +21717,9 @@ pub mod builder {
         pub fn new(client: &'a super::Client) -> Self {
             Self {
                 client: client,
-                keys: Ok(None),
                 limit: Ok(None),
                 prefix: Ok(None),
             }
-        }
-        pub fn keys<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.keys = value.try_into().map(Some).map_err(|_| {
-                "conversion to `:: std :: string :: String` for keys failed".to_string()
-            });
-            self
         }
         pub fn limit<V>(mut self, value: V) -> Self
         where
@@ -21728,11 +21746,9 @@ pub mod builder {
         ) -> Result<ResponseValue<types::EntitySearchResponse>, Error<types::SchemaError>> {
             let Self {
                 client,
-                keys,
                 limit,
                 prefix,
             } = self;
-            let keys = keys.map_err(Error::InvalidRequest)?;
             let limit = limit.map_err(Error::InvalidRequest)?;
             let prefix = prefix.map_err(Error::InvalidRequest)?;
             let url = format!("{}/api/v1/schema/entities", client.baseurl,);
@@ -21749,7 +21765,6 @@ pub mod builder {
                     ::reqwest::header::ACCEPT,
                     ::reqwest::header::HeaderValue::from_static("application/json"),
                 )
-                .query(&progenitor_client::QueryParam::new("keys", &keys))
                 .query(&progenitor_client::QueryParam::new("limit", &limit))
                 .query(&progenitor_client::QueryParam::new("prefix", &prefix))
                 .headers(header_map)

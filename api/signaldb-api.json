@@ -1944,7 +1944,7 @@
           {
             "name": "keys",
             "in": "query",
-            "description": "Comma-separated exact keys to resolve in one call (attributes only).",
+            "description": "Comma-separated exact keys to resolve in one call (attributes and\nmetrics only).",
             "required": false,
             "schema": {
               "type": [
@@ -2063,18 +2063,6 @@
               ],
               "minimum": 0
             }
-          },
-          {
-            "name": "keys",
-            "in": "query",
-            "description": "Comma-separated exact keys to resolve in one call (attributes only).",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
           }
         ],
         "responses": {
@@ -2190,7 +2178,7 @@
           {
             "name": "keys",
             "in": "query",
-            "description": "Comma-separated exact keys to resolve in one call (attributes only).",
+            "description": "Comma-separated exact keys to resolve in one call (attributes and\nmetrics only).",
             "required": false,
             "schema": {
               "type": [
@@ -2202,7 +2190,7 @@
         ],
         "responses": {
           "200": {
-            "description": "Metrics whose name starts with the prefix",
+            "description": "Prefix hits (and per-name resolutions when keys= is given)",
             "content": {
               "application/json": {
                 "schema": {
@@ -6636,6 +6624,13 @@
             "items": {
               "$ref": "#/components/schemas/MetricHit"
             }
+          },
+          "resolutions": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/MetricResolution"
+            },
+            "description": "Present when `keys=` was given: one resolution per requested name."
           }
         }
       },
