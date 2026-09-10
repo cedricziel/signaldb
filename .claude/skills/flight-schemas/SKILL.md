@@ -16,7 +16,7 @@ sources:
 
 Schemas are defined in `schemas.toml` (compiled into binary via `include_str!`) and support:
 
-- **Versioning**: Each signal type tracks a current physical version (traces=physical-v4, logs=physical-v2, metrics=physical-v1). A separate `logical_schema_version` (`otel-2026-08`) tracks the client-visible OTel logical schema, independent of the physical Iceberg realization.
+- **Versioning**: Each signal type tracks a current physical version (traces=physical-v4, logs=physical-v2, metrics=physical-v2, profiles=physical-v2). A separate `logical_schema_version` (`otel-2026-08`) tracks the client-visible OTel logical schema, independent of the physical Iceberg realization.
 - **Inheritance**: `inherits = "physical-v1"` pulls all parent fields
 - **Field renames**: `{ from = "name", to = "span_name" }`
 - **Field removals**: `{ name = "deprecated_field" }` drops a field inherited from a parent version
@@ -117,9 +117,11 @@ Plus, when `[schema.materialized_labels].<signal>` is configured, a nullable `la
 
 On new tables the metric/profile attribute columns are `Map<String,String>` (nested IDs after labels, via `ResolvedSchema::to_iceberg_schema_with_labels`); legacy tables have JSON strings.
 
-`schemas.toml` defines `physical-v1` for all five metrics representations
-(`metrics_gauge`, `metrics_sum`, `metrics_histogram`,
-`metrics_exponential_histogram`, `metrics_summary`) and for `profiles`.
+`schemas.toml` defines `physical-v1` and `physical-v2` for all five metrics
+representations (`metrics_gauge`, `metrics_sum`, `metrics_histogram`,
+`metrics_exponential_histogram`, `metrics_summary`) and for `profiles`; v2
+(#1340) adds the same nullable `resource_identity` digest column traces/logs
+gained, null on any row written before the column existed.
 `iceberg::schemas`'s `create_*_schema_with()` functions resolve from it via
 `ResolvedSchema::to_iceberg_schema_with_labels` — the same path traces/logs
 already used — rather than building `StructField` lists by hand. (Until
@@ -127,7 +129,10 @@ this consolidation, only `metrics_gauge`/`metrics_sum`/`metrics_histogram`
 had a `schemas.toml` section at all, and even those were wired only to
 admin introspection, not the real tables; the sections had also drifted —
 attribute fields were typed `string` there but built as
-`Map<String,String>` in the real hand-written functions.)
+`Map<String,String>` in the real hand-written functions.) Live-table
+evolution (`common::iceberg::evolution`, via `TableManager::ensure_schema_evolved`)
+now covers all five metrics tables and `profiles` too, the same as
+traces/logs.
 
 Tables:
 

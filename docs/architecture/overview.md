@@ -497,7 +497,7 @@ Each service creates a `ServiceBootstrap` at startup which:
 
 Schema definitions are managed in `schemas.toml` at the repository root and compiled into the binary via `include_str!`. The schema system supports:
 
-- **Versioned schemas** with metadata tracking current physical versions (e.g., traces physical-v4, logs physical-v2, metrics physical-v1) and a separate `logical_schema_version` (`otel-2026-08`) for the client-visible OTel logical schema
+- **Versioned schemas** with metadata tracking current physical versions (e.g., traces physical-v4, logs physical-v2, metrics physical-v2, profiles physical-v2) and a separate `logical_schema_version` (`otel-2026-08`) for the client-visible OTel logical schema
 - **Inheritance**: A schema version can inherit fields from a parent version
 - **Field renames**: e.g., `name` -> `span_name` in traces physical-v2
 - **Field additions**: e.g., `timestamp`, `date_day`, `hour` computed partition fields

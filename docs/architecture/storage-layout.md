@@ -587,35 +587,36 @@ DataFusion's physical filter-pushdown injects the query predicate into the
 defaulting on, a bloom-filtered file skips row groups that cannot contain the
 target. See `tests-integration/tests/querier/trace_bloom_pruning.rs`.
 
-#### Metrics Gauge Table (v1 -- current)
+#### Metrics Gauge Table (v2 -- current)
 
-Defined in `src/common/src/iceberg/schemas.rs`.
+Defined in `schemas.toml`. v2 (#1340) adds the `resource_identity` digest column.
 
-| #   | Field                      | Iceberg Type       | Required | Notes                           |
-| --- | -------------------------- | ------------------ | -------- | ------------------------------- |
-| 1   | `timestamp`                | Timestamp          | Yes      | Partition key                   |
-| 2   | `start_timestamp`          | Timestamp          | No       |                                 |
-| 3   | `service_name`             | String             | Yes      |                                 |
-| 4   | `metric_name`              | String             | Yes      |                                 |
-| 5   | `metric_description`       | String             | No       |                                 |
-| 6   | `metric_unit`              | String             | No       |                                 |
-| 7   | `value`                    | Double             | Yes      |                                 |
-| 8   | `flags`                    | Int                | No       |                                 |
-| 9   | `resource_schema_url`      | String             | No       |                                 |
-| 10  | `resource_attributes`      | String             | No       | JSON                            |
-| 11  | `scope_name`               | String             | No       |                                 |
-| 12  | `scope_version`            | String             | No       |                                 |
-| 13  | `scope_schema_url`         | String             | No       |                                 |
-| 14  | `scope_attributes`         | String             | No       | JSON                            |
-| 15  | `scope_dropped_attr_count` | Int                | No       |                                 |
-| 16  | `attributes`               | Map<String,String> | No       | typed map (legacy: JSON string) |
-| 17  | `exemplars`                | String             | No       | JSON                            |
-| 18  | `date_day`                 | Date               | Yes      | Computed                        |
-| 19  | `hour`                     | Int                | Yes      | Computed                        |
+| #   | Field                      | Iceberg Type       | Required | Notes                                                                                                        |
+| --- | -------------------------- | ------------------ | -------- | ------------------------------------------------------------------------------------------------------------ |
+| 1   | `timestamp`                | Timestamp          | Yes      | Partition key                                                                                                |
+| 2   | `start_timestamp`          | Timestamp          | No       |                                                                                                              |
+| 3   | `service_name`             | String             | Yes      |                                                                                                              |
+| 4   | `metric_name`              | String             | Yes      |                                                                                                              |
+| 5   | `metric_description`       | String             | No       |                                                                                                              |
+| 6   | `metric_unit`              | String             | No       |                                                                                                              |
+| 7   | `value`                    | Double             | Yes      |                                                                                                              |
+| 8   | `flags`                    | Int                | No       |                                                                                                              |
+| 9   | `resource_schema_url`      | String             | No       |                                                                                                              |
+| 10  | `resource_attributes`      | String             | No       | JSON                                                                                                         |
+| 11  | `scope_name`               | String             | No       |                                                                                                              |
+| 12  | `scope_version`            | String             | No       |                                                                                                              |
+| 13  | `scope_schema_url`         | String             | No       |                                                                                                              |
+| 14  | `scope_attributes`         | String             | No       | JSON                                                                                                         |
+| 15  | `scope_dropped_attr_count` | Int                | No       |                                                                                                              |
+| 16  | `attributes`               | Map<String,String> | No       | typed map (legacy: JSON string)                                                                              |
+| 17  | `exemplars`                | String             | No       | JSON                                                                                                         |
+| 18  | `date_day`                 | Date               | Yes      | Computed                                                                                                     |
+| 19  | `hour`                     | Int                | Yes      | Computed                                                                                                     |
+| 20  | `resource_identity`        | String             | No       | v2: digest of the point's resource attribute set (#1340). Null on any row written before the column existed. |
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
-#### Metrics Sum Table (v1 -- current)
+#### Metrics Sum Table (v2 -- current)
 
 Extends Gauge with aggregation fields.
 
@@ -625,49 +626,52 @@ Extends Gauge with aggregation fields.
 | 9     | `aggregation_temporality` | Int          | Yes      | 0=Unspecified, 1=Delta, 2=Cumulative |
 | 10    | `is_monotonic`            | Boolean      | Yes      |                                      |
 | 11-21 | _(same as Gauge 9-19)_    |              |          |                                      |
+| 22    | `resource_identity`       | String       | No       | v2: as Gauge's (#1340)               |
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
-#### Metrics Histogram Table (v1 -- current)
+#### Metrics Histogram Table (v2 -- current)
 
-| #     | Field                                                 | Iceberg Type | Required | Notes       |
-| ----- | ----------------------------------------------------- | ------------ | -------- | ----------- |
-| 1-6   | _(same as Gauge 1-6)_                                 |              |          |             |
-| 7     | `count`                                               | Long         | Yes      | Total count |
-| 8     | `sum`                                                 | Double       | No       |             |
-| 9     | `min`                                                 | Double       | No       |             |
-| 10    | `max`                                                 | Double       | No       |             |
-| 11    | `bucket_counts`                                       | String       | No       | JSON array  |
-| 12    | `explicit_bounds`                                     | String       | No       | JSON array  |
-| 13    | `flags`                                               | Int          | No       |             |
-| 14    | `aggregation_temporality`                             | Int          | Yes      |             |
-| 15-25 | _(resource/scope/attributes/exemplars/date_day/hour)_ |              |          |             |
-
-**Partition**: `Hour(timestamp)` as `timestamp_hour`
-
-#### Metrics Exponential Histogram Table (v1 -- current)
-
-| #     | Field                                                 | Iceberg Type | Required | Notes      |
-| ----- | ----------------------------------------------------- | ------------ | -------- | ---------- |
-| 1-6   | _(same as Gauge 1-6)_                                 |              |          |            |
-| 7     | `count`                                               | Long         | Yes      |            |
-| 8     | `sum`                                                 | Double       | No       |            |
-| 9     | `min`                                                 | Double       | No       |            |
-| 10    | `max`                                                 | Double       | No       |            |
-| 11    | `scale`                                               | Int          | No       |            |
-| 12    | `zero_count`                                          | Long         | No       |            |
-| 13    | `positive_offset`                                     | Int          | No       |            |
-| 14    | `positive_bucket_counts`                              | String       | No       | JSON array |
-| 15    | `negative_offset`                                     | Int          | No       |            |
-| 16    | `negative_bucket_counts`                              | String       | No       | JSON array |
-| 17    | `flags`                                               | Int          | No       |            |
-| 18    | `aggregation_temporality`                             | Int          | Yes      |            |
-| 19    | `zero_threshold`                                      | Double       | No       |            |
-| 20-30 | _(resource/scope/attributes/exemplars/date_day/hour)_ |              |          |            |
+| #     | Field                                                 | Iceberg Type | Required | Notes                  |
+| ----- | ----------------------------------------------------- | ------------ | -------- | ---------------------- |
+| 1-6   | _(same as Gauge 1-6)_                                 |              |          |                        |
+| 7     | `count`                                               | Long         | Yes      | Total count            |
+| 8     | `sum`                                                 | Double       | No       |                        |
+| 9     | `min`                                                 | Double       | No       |                        |
+| 10    | `max`                                                 | Double       | No       |                        |
+| 11    | `bucket_counts`                                       | String       | No       | JSON array             |
+| 12    | `explicit_bounds`                                     | String       | No       | JSON array             |
+| 13    | `flags`                                               | Int          | No       |                        |
+| 14    | `aggregation_temporality`                             | Int          | Yes      |                        |
+| 15-25 | _(resource/scope/attributes/exemplars/date_day/hour)_ |              |          |                        |
+| 26    | `resource_identity`                                   | String       | No       | v2: as Gauge's (#1340) |
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
-#### Metrics Summary Table (v1 -- current)
+#### Metrics Exponential Histogram Table (v2 -- current)
+
+| #     | Field                                                 | Iceberg Type | Required | Notes                  |
+| ----- | ----------------------------------------------------- | ------------ | -------- | ---------------------- |
+| 1-6   | _(same as Gauge 1-6)_                                 |              |          |                        |
+| 7     | `count`                                               | Long         | Yes      |                        |
+| 8     | `sum`                                                 | Double       | No       |                        |
+| 9     | `min`                                                 | Double       | No       |                        |
+| 10    | `max`                                                 | Double       | No       |                        |
+| 11    | `scale`                                               | Int          | No       |                        |
+| 12    | `zero_count`                                          | Long         | No       |                        |
+| 13    | `positive_offset`                                     | Int          | No       |                        |
+| 14    | `positive_bucket_counts`                              | String       | No       | JSON array             |
+| 15    | `negative_offset`                                     | Int          | No       |                        |
+| 16    | `negative_bucket_counts`                              | String       | No       | JSON array             |
+| 17    | `flags`                                               | Int          | No       |                        |
+| 18    | `aggregation_temporality`                             | Int          | Yes      |                        |
+| 19    | `zero_threshold`                                      | Double       | No       |                        |
+| 20-30 | _(resource/scope/attributes/exemplars/date_day/hour)_ |              |          |                        |
+| 31    | `resource_identity`                                   | String       | No       | v2: as Gauge's (#1340) |
+
+**Partition**: `Hour(timestamp)` as `timestamp_hour`
+
+#### Metrics Summary Table (v2 -- current)
 
 | #     | Field                                                 | Iceberg Type | Required | Notes                                     |
 | ----- | ----------------------------------------------------- | ------------ | -------- | ----------------------------------------- |
@@ -677,6 +681,16 @@ Extends Gauge with aggregation fields.
 | 9     | `quantile_values`                                     | String       | No       | JSON array of `{quantile, value}` objects |
 | 10    | `flags`                                               | Int          | No       |                                           |
 | 11-21 | _(resource/scope/attributes/exemplars/date_day/hour)_ |              |          |                                           |
+| 22    | `resource_identity`                                   | String       | No       | v2: as Gauge's (#1340)                    |
+
+**Partition**: `Hour(timestamp)` as `timestamp_hour`
+
+#### Profiles Table (v2 -- current)
+
+Defined in `schemas.toml` (see `[profiles.*]` for the full field list, not
+reproduced here). v2 (#1340) adds the same nullable `resource_identity`
+digest column the tables above gained, null on any row written before the
+column existed.
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
@@ -993,7 +1007,7 @@ Requires iceberg-rust rev >= 96f28c18; earlier revisions resolved `current_schem
 
 ### An existing table's schema tracks and catches up to schemas.toml's version
 
-Beyond ad hoc label columns, `common::iceberg::evolution` also brings a **traces or logs** table's whole schema forward to `schemas.toml`'s current version whenever `ensure_table` loads it (not just at creation) — the general-purpose counterpart to the label-specific helper above, and the mechanism issue #1208's `span_kind_number`/`status_code_number`/dropped-count columns ship through.
+Beyond ad hoc label columns, `common::iceberg::evolution` also brings a table's whole schema forward to `schemas.toml`'s current version whenever `ensure_table` loads it (not just at creation) — the general-purpose counterpart to the label-specific helper above, and the mechanism issue #1208's `span_kind_number`/`status_code_number`/dropped-count columns ship through. Covers every `schemas.toml`-sourced signal: traces, logs, all five metrics representations, and profiles.
 
 - **Version tracked as a table property**, not a separate migrations store: `signaldb.schema.version` (e.g. `"physical-v3"`) is stamped in the same commit as any schema change (`SetProperties` alongside `AddSchema`/`SetCurrentSchema`). A table's version and its actual columns can never diverge independently of the table's own commit history the way an external tracking table could.
 - **Diffed by field name against the table's live schema**, never by regenerating `ResolvedSchema::to_iceberg_schema()` fresh — that function assigns field ids positionally on every call, safe only for a table created new; diffing a live table by position would shift every field after a removal and corrupt the id mapping already burned into its Parquet files. `diff_schema` instead reuses existing ids untouched and mints new ones (past both the schema tree's true maximum and the metadata's `last_column_id`) only for genuine additions.
@@ -1001,7 +1015,6 @@ Beyond ad hoc label columns, `common::iceberg::evolution` also brings a **traces
 - **Straight to current, additions only, when the starting version is untrusted**: a table with no recorded property (pre-dates this mechanism), or one whose recorded property isn't actually found while walking `version_chain` back from the current version (a corrupted or retired version name), skips hop-walking and migrates directly to the current version in one step, never renaming or removing a field. Hop-by-hop removal assumes the starting shape is trusted; an inferred baseline isn't — a table already ahead of an early hop could otherwise lose fields the diff can't tell it legitimately has.
 - **Renames preserve the field id**: a hop's own `field_renames` (e.g. v1→v2's `name`→`span_name`) are resolved as a rename in place, not a removal plus a fresh-id addition — Iceberg readers map columns by id, so re-adding under a new id would orphan every historical value written under the old name's id.
 - **No backfill**: additions are always nullable and historical rows are never rewritten; `field_removals` only stops a column being read/written going forward, it never deletes the column's data from already-written Parquet files.
-- **Not yet covering metrics/profiles**: those five tables are hand-written in `iceberg_schemas.rs` with no `schemas.toml` definition to evolve against.
 
 ## Multi-Tenant Storage Isolation
 
