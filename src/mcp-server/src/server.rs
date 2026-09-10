@@ -2742,6 +2742,12 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
+        if p.kind == SchemaKind::Entity && p.keys.as_deref().is_some_and(|k| !k.trim().is_empty()) {
+            return Err(ErrorData::invalid_params(
+                "search_schema: `keys` is only valid with kind: \"attribute\" or kind: \"metric\"; entity search does not support it".to_string(),
+                None,
+            ));
+        }
         let client = self.router_client(&parts, None)?;
         let prefix = p.prefix.unwrap_or_default();
         // Each kind has its own generated response type, so each arm sends and
@@ -4464,6 +4470,33 @@ mod tests {
         for kind in ["\"attribute\"", "\"entity\"", "\"metric\""] {
             assert!(text.contains(kind), "schema names {kind}: {text}");
         }
+    }
+
+    #[tokio::test]
+    async fn search_schema_rejects_keys_for_entity_kind() {
+        // No mock router needed: the tool must reject before any request is
+        // sent, since `search_entities` ignores `keys` and would otherwise
+        // silently run an unrelated prefix search.
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+
+        let err = server
+            .search_schema(
+                Parameters(SearchSchemaParams {
+                    tenant: "acme".to_string(),
+                    kind: SchemaKind::Entity,
+                    prefix: None,
+                    limit: None,
+                    keys: Some("k8s.pod,service".to_string()),
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect_err("keys with kind: entity must be rejected");
+        assert!(err.message.contains("keys"), "got {}", err.message);
+        assert!(err.message.contains("entity"), "got {}", err.message);
     }
 
     #[test]
