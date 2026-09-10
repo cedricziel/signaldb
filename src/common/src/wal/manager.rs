@@ -71,6 +71,10 @@ pub struct WalManager {
     metrics_config: WalConfig,
     /// Base configuration template for profile WALs
     profiles_config: WalConfig,
+    /// `"acceptor"` | `"writer"` for the `role` attribute this manager's
+    /// WALs report on `signaldb.wal.entries_pending`. Set via
+    /// [`Self::with_role`]; `"unknown"` otherwise (chiefly tests).
+    role: &'static str,
 }
 
 impl WalManager {
@@ -103,6 +107,7 @@ impl WalManager {
             logs_config,
             metrics_config,
             profiles_config,
+            role: "unknown",
         }
     }
 
@@ -111,6 +116,14 @@ impl WalManager {
     /// `{tenant}/{dataset}/{signal}` tree is created.
     pub fn uniform(base: WalConfig) -> Self {
         Self::new(base.clone(), base.clone(), base.clone(), base)
+    }
+
+    /// Set the `role` (`"acceptor"` | `"writer"`) every WAL this manager
+    /// opens attributes its `signaldb.wal.entries_pending` data points with —
+    /// how a plateau in the gauge is told apart from a directory (#1493).
+    pub fn with_role(mut self, role: &'static str) -> Self {
+        self.role = role;
+        self
     }
 
     /// How long a WAL may go without an append before [`Self::evict_idle`]
@@ -258,7 +271,9 @@ impl WalManager {
         let mut config = self.traces_config.clone();
         config.tenant_id = "default".to_string();
         config.dataset_id = "default".to_string();
-        let wal = Wal::new(config).await?;
+        let wal = Wal::new(config)
+            .await?
+            .with_gauge_attribution(self.role, "_legacy");
         *legacy_wal = Some(Arc::new(wal));
         Self::record_instance_opened();
         Ok(true)
@@ -370,7 +385,7 @@ impl WalManager {
 
         // Initialize WAL
         let mut wal = match Wal::new(wal_config).await {
-            Ok(wal) => wal,
+            Ok(wal) => wal.with_gauge_attribution(self.role, signal_type),
             Err(e) => return Err(e),
         };
 
