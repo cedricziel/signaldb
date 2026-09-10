@@ -68,11 +68,11 @@ use common::config::{
     ApiKeyConfig, AuthConfig, Configuration, DatasetConfig, GroupMapping, OAuthConfig, OidcConfig,
     TenantConfig,
 };
+use common::testing::start_container_with_retry;
 use router::{RouterAppState, RouterState, create_router};
 use std::time::Duration;
 use testcontainers_modules::testcontainers::core::wait::HttpWaitStrategy;
 use testcontainers_modules::testcontainers::core::{ContainerPort, WaitFor};
-use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{GenericImage, ImageExt};
 use tower::ServiceExt;
 use url::Url;
@@ -165,24 +165,26 @@ fn realm_import_json() -> Vec<u8> {
 /// Waits on the realm's own discovery document (not just the base HTTP
 /// port) so the returned container is actually ready to serve `/authorize`.
 async fn start_keycloak() -> testcontainers_modules::testcontainers::ContainerAsync<GenericImage> {
-    let image = GenericImage::new("quay.io/keycloak/keycloak", "26.0")
-        .with_exposed_port(ContainerPort::Tcp(8080))
-        .with_wait_for(WaitFor::http(
-            HttpWaitStrategy::new(format!("/realms/{REALM}/.well-known/openid-configuration"))
-                .with_port(ContainerPort::Tcp(8080))
-                .with_expected_status_code(200u16),
-        ))
-        // Both env-var pairs are set since Keycloak's bootstrap-admin
-        // variable name changed across major versions; the unused pair is
-        // harmless. Not otherwise used by this test (no admin-console
-        // calls).
-        .with_env_var("KEYCLOAK_ADMIN", "admin")
-        .with_env_var("KEYCLOAK_ADMIN_PASSWORD", "admin")
-        .with_env_var("KC_BOOTSTRAP_ADMIN_USERNAME", "admin")
-        .with_env_var("KC_BOOTSTRAP_ADMIN_PASSWORD", "admin")
-        .with_copy_to("/opt/keycloak/data/import/realm.json", realm_import_json())
-        .with_cmd(["start-dev", "--import-realm"]);
-    image.start().await.expect("Keycloak container starts")
+    start_container_with_retry(|| {
+        GenericImage::new("quay.io/keycloak/keycloak", "26.0")
+            .with_exposed_port(ContainerPort::Tcp(8080))
+            .with_wait_for(WaitFor::http(
+                HttpWaitStrategy::new(format!("/realms/{REALM}/.well-known/openid-configuration"))
+                    .with_port(ContainerPort::Tcp(8080))
+                    .with_expected_status_code(200u16),
+            ))
+            // Both env-var pairs are set since Keycloak's bootstrap-admin
+            // variable name changed across major versions; the unused pair is
+            // harmless. Not otherwise used by this test (no admin-console
+            // calls).
+            .with_env_var("KEYCLOAK_ADMIN", "admin")
+            .with_env_var("KEYCLOAK_ADMIN_PASSWORD", "admin")
+            .with_env_var("KC_BOOTSTRAP_ADMIN_USERNAME", "admin")
+            .with_env_var("KC_BOOTSTRAP_ADMIN_PASSWORD", "admin")
+            .with_copy_to("/opt/keycloak/data/import/realm.json", realm_import_json())
+            .with_cmd(["start-dev", "--import-realm"])
+    })
+    .await
 }
 
 fn tenant_config() -> TenantConfig {

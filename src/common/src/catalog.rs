@@ -6552,8 +6552,8 @@ mod multi_tenancy_tests {
 #[cfg(test)]
 mod postgres_dataset_ids_tests {
     use super::*;
+    use crate::testing::start_container_with_retry;
     use testcontainers_modules::postgres::Postgres;
-    use testcontainers_modules::testcontainers::runners::AsyncRunner;
 
     /// Start a Postgres testcontainer and return its connection DSN
     /// alongside the container handle (which must be kept alive for the
@@ -6562,7 +6562,7 @@ mod postgres_dataset_ids_tests {
         String,
         testcontainers_modules::testcontainers::ContainerAsync<Postgres>,
     ) {
-        let container = Postgres::default().start().await.unwrap();
+        let container = start_container_with_retry(Postgres::default).await;
         let host = container.get_host().await.unwrap();
         let port = container.get_host_port_ipv4(5432).await.unwrap();
         let dsn = format!("postgres://postgres:postgres@{host}:{port}/postgres");

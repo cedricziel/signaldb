@@ -7,6 +7,10 @@ license.workspace = true
 [features]
 default = []
 testing = ["dep:tempfile"]
+# Docker-backed test helpers (`testing::start_container_with_retry`). Split
+# from `testing` so crates that only want `TempCatalog` do not compile the
+# Docker client stack.
+testing-containers = ["testing", "dep:testcontainers-modules"]
 # Enables the Criterion ingest/WAL benchmarks under benches/. They build
 # their inputs from `common::testing`, hence the `testing` dependency.
 benchmarks = ["dep:criterion", "testing"]
@@ -22,6 +26,8 @@ jemalloc-profiling = [
 [dependencies]
 # Optional: only pulled in by the `testing` feature, for `TempCatalog`.
 tempfile = { workspace = true, optional = true }
+# Optional: only pulled in by the `testing-containers` feature.
+testcontainers-modules = { workspace = true, optional = true }
 anyhow.workspace = true
 schema-model = { path = "../schema-model" }
 query-ir = { path = "../query-ir" }
@@ -142,14 +148,20 @@ required-features = ["testing"]
 name = "wal_manager_active_cardinality_not_evicted"
 required-features = ["testing"]
 
+# Same reasoning again: `catalog_integration` starts Postgres through
+# `testing::start_container_with_retry`, gated on `testing-containers`.
+[[test]]
+name = "catalog_integration"
+required-features = ["testing-containers"]
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tokio-stream = { workspace = true, features = ["net"] }
-testcontainers-modules.workspace = true
-testcontainers.workspace = true
-# Also a dev-dependency: `testing` compiles under plain `cfg(test)` too,
-# where the feature (and so `dep:tempfile`) is not enabled.
+# Also dev-dependencies, mirrored above as optional normal dependencies:
+# `testing` compiles under plain `cfg(test)` too, where the features (and so
+# `dep:tempfile`/`dep:testcontainers-modules`) are not enabled.
 tempfile.workspace = true
+testcontainers-modules.workspace = true
 figment = { workspace = true, features = ["test"] }
 opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "logs", "testing"] }
 sha2 = "0.11"
@@ -157,7 +169,7 @@ sha2 = "0.11"
 [package.metadata.cargo-machete]
 # async-trait is used by discovery backends
 # opentelemetry-semantic-conventions is used in self_monitoring module
-ignored = ["async-trait", "humantime-serde", "testcontainers", "opentelemetry-semantic-conventions"]
+ignored = ["async-trait", "humantime-serde", "opentelemetry-semantic-conventions"]
 
 [build-dependencies]
 schema-model = { path = "../schema-model" }
