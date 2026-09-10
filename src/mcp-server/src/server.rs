@@ -1678,7 +1678,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Discover metric names for your tenant. Returns the distinct metric names visible via PromQL (backed by Prometheus label discovery on `__name__`). Use this to construct valid `query_metrics` queries."
+        description = "Discover metric names for your tenant. Returns the distinct metric names visible via PromQL (backed by Prometheus label discovery on `__name__`). Names are often OTel dotted form (e.g. `signaldb.wal.entries_pending`); `query_metrics` accepts these bare, or written as `{\"a.b.c\"}` / `{__name__=\"a.b.c\"}`. Use this to construct valid `query_metrics` queries."
     )]
     async fn discover_metrics(
         &self,
@@ -1697,7 +1697,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Query metrics with PromQL. Provide `query` as a PromQL expression (e.g. `rate(http_requests_total[5m])`) and optionally `time` (unix seconds or RFC3339) for an instant query. Provide `start`/`end` (and optionally `step`) instead of `time` for a range query. Returns the native Prometheus result scoped to your tenant.",
+        description = "Query metrics with PromQL. Provide `query` as a PromQL expression (e.g. `rate(http_requests_total[5m])`) and optionally `time` (unix seconds or RFC3339) for an instant query. Provide `start`/`end` (and optionally `step`) instead of `time` for a range query. A metric name in OTel dotted form (e.g. `signaldb.wal.entries_pending`) may be used bare, or written as `{\"signaldb.wal.entries_pending\"}` or `{__name__=\"signaldb.wal.entries_pending\"}`. Returns the native Prometheus result scoped to your tenant.",
         annotations(read_only_hint = true)
     )]
     async fn query_metrics(
