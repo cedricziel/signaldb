@@ -154,7 +154,7 @@ fn realm_import_json() -> Vec<u8> {
             "consentRequired": false,
             "protocol": "openid-connect",
             "redirectUris": [REDIRECT_URL],
-            "defaultClientScopes": ["openid", "profile", "email", "signaldb-groups"],
+            "defaultClientScopes": ["profile", "email", "signaldb-groups"],
         }],
     })
     .to_string()
