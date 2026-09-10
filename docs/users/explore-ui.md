@@ -531,21 +531,47 @@ typed here directly will still 400, same as any other PromQL client.
 
 ## Signing in
 
-On an embedded deployment (the UI served by the router at `/ui`), the
-first query that fails as unauthenticated opens a sign-in form asking only
-for a user email and password. Accounts that belong to a single tenant land
-directly in it (on its default dataset); accounts spanning several tenants
-pick one from a selector listing each membership by name and role. See
-[the authentication reference](authentication.md).
+Sign-in lives at `/login`, a standalone page (brand, one card, no top bar
+or signal tabs) served with the rest of the UI. It is the destination for
+sign-out, for bookmarks, and for every redirect-based login, and it accepts
+two query parameters:
 
-The same form is also reachable directly at `/login` — a standalone,
-linkable sign-in screen (no top bar, no signal tabs) for bookmarking or
-sharing, rather than only appearing reactively after a failed query. It
-accepts an optional `?redirect=<path>` to return to a specific page after
-signing in (only a same-app path is honored; anything else falls back to
-`/logs`), and redirects an already-authenticated visitor straight to that
-target without showing the form. Signing out (see [User menu](#user-menu))
-lands here.
+- `?redirect=<path>` — where to go afterwards. Only a same-app path is
+  honored; anything else falls back to `/logs`. An already-authenticated
+  visitor is forwarded straight to the target without seeing the form.
+- `?error=<code>` — a failed redirect-based login lands here with a code
+  that renders one generic alert: `sso_failed` for any SSO validation
+  failure, `no_membership` when a non-admin SSO login resolves to no tenant
+  membership. The page then drops `error` from the URL so a reload does not
+  repeat it.
+
+![The standalone login page offering single sign-on above the email and password form](../assets/screenshots/login-page.png)
+
+Which credentials the card offers comes from `GET /ui/session/config`, read
+through the generated client — never guessed. With
+`{"password_enabled": true, "oidc": null}` (every instance today) it shows
+the email/password form. Once an instance reports an OIDC provider, a
+"Continue with …" link appears above the form (or alone, when password
+login is disabled); that link is a plain full-page navigation to the SSO
+start endpoint carrying the validated redirect target. If the probe itself
+cannot be read, the page falls back to the password form with a notice and
+never offers SSO, so break-glass password access stays visible during a
+partial outage.
+
+Every credential then hands over to the same tenant step: a sole membership
+is auto-selected (with the tenant's default dataset); several memberships
+show a selector listing each by name and role; none shows a "no tenant
+access yet" message with a sign-out action. After a password login the
+memberships come from the `POST /ui/session` response; after a
+redirect-based login the page asks `GET /ui/session`, which introspects the
+cookie without a tenant header (see
+[the authentication reference](authentication.md)).
+
+On an embedded deployment a query that fails as unauthenticated mid-session
+still opens the same card as a modal over the page you were on, with the
+hint "Your session has expired"; signing in there (by password, or by SSO
+with the current page as the redirect target) retries the queries in place.
+The OAuth consent screen reuses the card the same way.
 
 Any URL — including the site root (`/`) with `?tenant=&dataset=`
 attached — that doesn't match a known route redirects to `/logs`,
@@ -584,7 +610,7 @@ Once signed in, a user menu appears in the top bar showing an avatar
 - **Docs** — opens the SignalDB documentation in a new tab.
 - **Switch tenant** — opens the Tenant Selection page (see below).
 - **Sign out** — deletes the session, clears the query cache, and
-  reloads on the [`/login`](#signing-in) screen.
+  reloads on the [`/login`](#signing-in) page.
 
 The menu closes on Escape or backdrop click.
 

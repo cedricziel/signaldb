@@ -122,6 +122,7 @@ export function ConsentView() {
   if (needsLogin) {
     return (
       <LoginPanel
+        hint="Sign in to authorize this application."
         onSuccess={() => {
           // Session established; re-fetch the consent context.
           setNeedsLogin(false);

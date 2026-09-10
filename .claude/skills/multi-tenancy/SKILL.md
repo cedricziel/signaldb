@@ -54,7 +54,11 @@ against the user's memberships on every request. The cookie is set by
 Login `tenant` is optional: the response always lists the user's
 memberships (`SessionMembership { tenant_id, name, role }`); a sole
 membership is auto-selected, several leave `tenant` null so the UI shows a
-picker, none is a 403.
+picker, none is a 403. `GET /ui/session` applies the same auto-select rule
+(shared `auto_select_tenant` helper) to an existing cookie and returns the
+user plus memberships — `200` with an empty list for no memberships — and
+`GET /ui/session/config` is the public login-configuration probe
+(`{password_enabled, oidc}`) the `/login` page renders its credentials from.
 
 ### OAuth 2.1 access tokens (MCP connectors)
 

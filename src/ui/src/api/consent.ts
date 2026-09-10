@@ -9,29 +9,12 @@ import {
   oauthConsentContext,
   oauthConsentDecision,
 } from "./gen";
-import { ApiError, retryAfterMsFrom } from "./http";
+import { unwrapSdkResult } from "./http";
 
-interface SdkResult<T> {
-  data?: T;
-  error?: unknown;
-  response?: Response;
-}
-
-/** Unwrap a generated SDK result into its data, re-throwing failures as
- * `ApiError` (with the HTTP status, so `isAuthError(401)` keeps working). */
-function unwrap<T>(result: SdkResult<T>): T {
-  const { error, response } = result;
-  if (error !== undefined || !response?.ok) {
-    const status = response?.status ?? 0;
-    const err = error as
-      { error_description?: string; error?: string } | undefined;
-    const message =
-      err?.error_description ??
-      err?.error ??
-      `Consent request failed (${status})`;
-    throw new ApiError(message, status, retryAfterMsFrom(response));
-  }
-  return result.data as T;
+function consentErrorMessage(error: unknown): string | undefined {
+  const err = error as
+    { error_description?: string; error?: string } | undefined;
+  return err?.error_description ?? err?.error;
 }
 
 /** Fetch the consent context for a client: its display name and the tenants
@@ -39,7 +22,11 @@ function unwrap<T>(result: SdkResult<T>): T {
 export async function consentContext(
   clientId: string,
 ): Promise<ConsentContextResponse> {
-  return unwrap(await oauthConsentContext({ query: { client_id: clientId } }));
+  return unwrapSdkResult(
+    await oauthConsentContext({ query: { client_id: clientId } }),
+    (status) => `Consent request failed (${status})`,
+    consentErrorMessage,
+  );
 }
 
 /** Submit the consent decision; returns the URL the browser should navigate to
@@ -47,7 +34,11 @@ export async function consentContext(
 export async function submitConsentDecision(
   decision: ConsentDecision,
 ): Promise<string> {
-  const result = unwrap(await oauthConsentDecision({ body: decision }));
+  const result = unwrapSdkResult(
+    await oauthConsentDecision({ body: decision }),
+    (status) => `Consent request failed (${status})`,
+    consentErrorMessage,
+  );
   return result.redirect;
 }
 
