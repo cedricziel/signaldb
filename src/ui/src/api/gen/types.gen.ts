@@ -3447,11 +3447,6 @@ export type SchemaSearchEntitiesData = {
          * Maximum hits (default 50, max 200).
          */
         limit?: number | null;
-        /**
-         * Comma-separated exact keys to resolve in one call (attributes and
-         * metrics only).
-         */
-        keys?: string | null;
     };
     url: '/api/v1/schema/entities';
 };

@@ -18267,13 +18267,10 @@ impl Client {
     /**Sends a `GET` request to `/api/v1/schema/entities`
 
     Arguments:
-    - `keys`: Comma-separated exact keys to resolve in one call (attributes and
-    metrics only).
     - `limit`: Maximum hits (default 50, max 200).
     - `prefix`: Name prefix (empty lists from the top).
     ```ignore
     let response = client.schema_search_entities()
-        .keys(keys)
         .limit(limit)
         .prefix(prefix)
         .send()
@@ -21713,7 +21710,6 @@ pub mod builder {
     #[derive(Debug, Clone)]
     pub struct SchemaSearchEntities<'a> {
         client: &'a super::Client,
-        keys: Result<Option<::std::string::String>, String>,
         limit: Result<Option<u64>, String>,
         prefix: Result<Option<::std::string::String>, String>,
     }
@@ -21721,19 +21717,9 @@ pub mod builder {
         pub fn new(client: &'a super::Client) -> Self {
             Self {
                 client: client,
-                keys: Ok(None),
                 limit: Ok(None),
                 prefix: Ok(None),
             }
-        }
-        pub fn keys<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.keys = value.try_into().map(Some).map_err(|_| {
-                "conversion to `:: std :: string :: String` for keys failed".to_string()
-            });
-            self
         }
         pub fn limit<V>(mut self, value: V) -> Self
         where
@@ -21760,11 +21746,9 @@ pub mod builder {
         ) -> Result<ResponseValue<types::EntitySearchResponse>, Error<types::SchemaError>> {
             let Self {
                 client,
-                keys,
                 limit,
                 prefix,
             } = self;
-            let keys = keys.map_err(Error::InvalidRequest)?;
             let limit = limit.map_err(Error::InvalidRequest)?;
             let prefix = prefix.map_err(Error::InvalidRequest)?;
             let url = format!("{}/api/v1/schema/entities", client.baseurl,);
@@ -21781,7 +21765,6 @@ pub mod builder {
                     ::reqwest::header::ACCEPT,
                     ::reqwest::header::HeaderValue::from_static("application/json"),
                 )
-                .query(&progenitor_client::QueryParam::new("keys", &keys))
                 .query(&progenitor_client::QueryParam::new("limit", &limit))
                 .query(&progenitor_client::QueryParam::new("prefix", &prefix))
                 .headers(header_map)
