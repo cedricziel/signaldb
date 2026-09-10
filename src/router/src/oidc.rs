@@ -129,6 +129,11 @@ pub const PENDING_COOKIE_PATH: &str = "/ui/session/oidc";
 /// `Max-Age` of the pending cookie, and the independent server-side TTL the
 /// signed payload's `issued_at` is checked against.
 pub const PENDING_COOKIE_TTL_SECS: i64 = 300;
+/// Bounded allowance for a negative cookie age: replicas' clocks can skew
+/// slightly, so a cookie verified on a different router instance than the
+/// one that issued it may appear to have been issued a few seconds in the
+/// future.
+const CLOCK_SKEW_LEEWAY_SECS: i64 = 30;
 
 /// Domain-separation label for deriving the pending-cookie HMAC key from the
 /// configured OIDC client secret. `[auth.oidc]` has no dedicated signing
@@ -218,7 +223,7 @@ pub fn verify_pending_login(client_secret: &str, cookie_value: &str) -> Option<P
     let json = URL_SAFE_NO_PAD.decode(encoded_payload).ok()?;
     let payload: PendingLoginPayload = serde_json::from_slice(&json).ok()?;
     let age = chrono::Utc::now().timestamp() - payload.issued_at;
-    if !(0..=PENDING_COOKIE_TTL_SECS).contains(&age) {
+    if !(-CLOCK_SKEW_LEEWAY_SECS..=PENDING_COOKIE_TTL_SECS).contains(&age) {
         return None;
     }
     Some(PendingLogin {
@@ -749,23 +754,52 @@ mod tests {
         assert!(verify_pending_login("s3cret", "").is_none());
     }
 
-    #[test]
-    fn pending_login_rejects_expired_payload() {
+    /// Signs a pending-login cookie with an explicit `issued_at`, bypassing
+    /// `sign_pending_login`'s `chrono::Utc::now()` so tests can exercise
+    /// specific ages (expired, skewed, or in the future).
+    fn cookie_issued_at(client_secret: &str, issued_at: i64) -> String {
         let payload = PendingLoginPayload {
             state: "s".to_string(),
             nonce: "n".to_string(),
             pkce_verifier: "v".to_string(),
             redirect_uri: "https://example.com/cb".to_string(),
-            issued_at: chrono::Utc::now().timestamp() - (PENDING_COOKIE_TTL_SECS + 30),
+            issued_at,
         };
         let json = serde_json::to_vec(&payload).unwrap();
         let encoded_payload = URL_SAFE_NO_PAD.encode(json);
-        let key = derive_pending_cookie_key("s3cret");
+        let key = derive_pending_cookie_key(client_secret);
         let mut mac = HmacSha256::new_from_slice(&key).unwrap();
         mac.update(encoded_payload.as_bytes());
         let tag = URL_SAFE_NO_PAD.encode(mac.finalize().into_bytes());
-        let cookie = format!("{encoded_payload}.{tag}");
+        format!("{encoded_payload}.{tag}")
+    }
 
+    #[test]
+    fn pending_login_rejects_expired_payload() {
+        let cookie = cookie_issued_at(
+            "s3cret",
+            chrono::Utc::now().timestamp() - (PENDING_COOKIE_TTL_SECS + 30),
+        );
+        assert!(verify_pending_login("s3cret", &cookie).is_none());
+    }
+
+    #[test]
+    fn pending_login_accepts_bounded_negative_age_from_clock_skew() {
+        // Issued a few seconds "in the future" relative to this replica's
+        // clock — within CLOCK_SKEW_LEEWAY_SECS, so it must still verify.
+        let cookie = cookie_issued_at(
+            "s3cret",
+            chrono::Utc::now().timestamp() + CLOCK_SKEW_LEEWAY_SECS,
+        );
+        assert!(verify_pending_login("s3cret", &cookie).is_some());
+    }
+
+    #[test]
+    fn pending_login_rejects_negative_age_beyond_skew_leeway() {
+        let cookie = cookie_issued_at(
+            "s3cret",
+            chrono::Utc::now().timestamp() + CLOCK_SKEW_LEEWAY_SECS + 30,
+        );
         assert!(verify_pending_login("s3cret", &cookie).is_none());
     }
 
