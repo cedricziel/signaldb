@@ -536,15 +536,6 @@ impl Catalog {
                         .iter()
                         .any(|row| row.get::<String, _>("name") == name)
                 };
-                // D1: drop the legacy single-value column left by a
-                // pre-this-change database; a fresh install never creates it
-                // (removed from `CREATE TABLE` above), so the guard is
-                // simply false and skipped there.
-                if has_api_key_column("dataset_id") {
-                    query("ALTER TABLE api_keys DROP COLUMN dataset_id")
-                        .execute(pool)
-                        .await?;
-                }
                 if !has_api_key_column("scopes") {
                     query("ALTER TABLE api_keys ADD COLUMN scopes TEXT")
                         .execute(pool)
@@ -556,6 +547,55 @@ impl Catalog {
                         .await?;
                 }
                 ensure_sqlite_text_column(pool, "api_keys", "dataset_ids").await?;
+                // D1: drop the legacy single-value column left by a
+                // pre-this-change database — but first backfill any row
+                // whose dataset_ids was never synced to it (a row that
+                // predates the dataset_ids column above, or was created
+                // under code old enough to predate `dataset_ids` entirely
+                // and never had a chance to run the backfill
+                // `multi-dataset-key-restriction` shipped). Without this, a
+                // database jumping straight from before that change to
+                // after this one — skipping any boot of the intermediate
+                // dual-write code — would drop `dataset_id` before anything
+                // ever copied its data forward, silently turning every
+                // single-dataset-restricted key unrestricted. The `AND
+                // dataset_ids IS NULL` guard on the `UPDATE` (not just the
+                // `SELECT` above it) makes this safe against a concurrent
+                // legitimate write from another service instance already
+                // running this code: if that write lands between this
+                // `SELECT` and this row's `UPDATE`, the `UPDATE` sees
+                // `dataset_ids` no longer `NULL` and affects zero rows
+                // instead of clobbering it. A fresh install never creates
+                // `dataset_id` at all (removed from `CREATE TABLE` above),
+                // so both the backfill and the guard below are simply
+                // skipped there.
+                if has_api_key_column("dataset_id") {
+                    let pending = query(
+                        "SELECT id, dataset_id FROM api_keys WHERE dataset_id IS NOT NULL AND dataset_ids IS NULL",
+                    )
+                    .fetch_all(pool)
+                    .await?;
+                    for row in pending {
+                        let id: String = row.get("id");
+                        let dataset_id: String = row.get("dataset_id");
+                        let dataset_ids_json =
+                            serde_json::to_string(&[dataset_id]).map_err(|e| {
+                                sqlx::Error::Protocol(format!(
+                                    "failed to serialize dataset_ids backfill: {e}"
+                                ))
+                            })?;
+                        query(
+                            "UPDATE api_keys SET dataset_ids = ? WHERE id = ? AND dataset_ids IS NULL",
+                        )
+                        .bind(&dataset_ids_json)
+                        .bind(&id)
+                        .execute(pool)
+                        .await?;
+                    }
+                    query("ALTER TABLE api_keys DROP COLUMN dataset_id")
+                        .execute(pool)
+                        .await?;
+                }
 
                 let create_datasets = r#"
                 CREATE TABLE IF NOT EXISTS datasets (
@@ -886,12 +926,6 @@ impl Catalog {
                     UNIQUE(tenant_id, name)
                 )"#;
                 query(create_api_keys).execute(pool).await?;
-                // D1: drop the legacy single-value column left by a
-                // pre-this-change database; a fresh install never creates it
-                // (removed from `CREATE TABLE` above).
-                query("ALTER TABLE api_keys DROP COLUMN IF EXISTS dataset_id")
-                    .execute(pool)
-                    .await?;
                 query("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scopes TEXT")
                     .execute(pool)
                     .await?;
@@ -901,6 +935,53 @@ impl Catalog {
                 query("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS dataset_ids TEXT")
                     .execute(pool)
                     .await?;
+                // D1: drop the legacy single-value column left by a
+                // pre-this-change database — but first backfill any row
+                // whose dataset_ids was never synced to it. See the SQLite
+                // branch above for the full rationale (a database jumping
+                // straight from before `multi-dataset-key-restriction` to
+                // after this change, skipping any boot of the intermediate
+                // dual-write code, would otherwise silently turn every
+                // single-dataset-restricted key unrestricted); the same
+                // `AND dataset_ids IS NULL` write-time guard applies here.
+                // Postgres has no `PRAGMA table_info` equivalent, so the
+                // existence check goes through `information_schema`; a
+                // fresh install never creates `dataset_id` at all (removed
+                // from `CREATE TABLE` above), so both the backfill and the
+                // guard below are simply skipped there.
+                let has_legacy_dataset_id_column = query(
+                    "SELECT 1 FROM information_schema.columns WHERE table_name = 'api_keys' AND column_name = 'dataset_id'",
+                )
+                .fetch_optional(pool)
+                .await?
+                .is_some();
+                if has_legacy_dataset_id_column {
+                    let pending = query(
+                        "SELECT id, dataset_id FROM api_keys WHERE dataset_id IS NOT NULL AND dataset_ids IS NULL",
+                    )
+                    .fetch_all(pool)
+                    .await?;
+                    for row in pending {
+                        let id: String = row.get("id");
+                        let dataset_id: String = row.get("dataset_id");
+                        let dataset_ids_json =
+                            serde_json::to_string(&[dataset_id]).map_err(|e| {
+                                sqlx::Error::Protocol(format!(
+                                    "failed to serialize dataset_ids backfill: {e}"
+                                ))
+                            })?;
+                        query(
+                            "UPDATE api_keys SET dataset_ids = $1 WHERE id = $2 AND dataset_ids IS NULL",
+                        )
+                        .bind(&dataset_ids_json)
+                        .bind(&id)
+                        .execute(pool)
+                        .await?;
+                    }
+                    query("ALTER TABLE api_keys DROP COLUMN IF EXISTS dataset_id")
+                        .execute(pool)
+                        .await?;
+                }
 
                 let create_datasets = r#"
                 CREATE TABLE IF NOT EXISTS datasets (
@@ -5341,6 +5422,108 @@ mod multi_tenancy_tests {
         assert_no_legacy_dataset_id_column(&catalog).await;
     }
 
+    /// Simulates a database that jumps straight from before
+    /// `multi-dataset-key-restriction` to after this change, skipping any
+    /// boot of the intermediate dual-write code: the pre-#1475 schema
+    /// (legacy `dataset_id` column present, no `dataset_ids` column at all
+    /// yet) with a restricted row and an unrestricted row. `Catalog::init()`
+    /// must backfill the restricted row's `dataset_id` into the
+    /// newly-created `dataset_ids` column *before* dropping `dataset_id` —
+    /// dropping it first (the order this codebase originally shipped) would
+    /// silently turn the key unrestricted, since nothing would ever have
+    /// copied its restriction into `dataset_ids`.
+    #[tokio::test]
+    async fn catalog_init_backfills_dataset_ids_before_dropping_legacy_column_with_no_intermediate_boot()
+     {
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        // Seed the pre-#1475 schema: dataset_id exists, dataset_ids does not.
+        query(
+            r#"CREATE TABLE tenants (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                default_dataset TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                source TEXT NOT NULL CHECK(source IN ('config', 'database'))
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE api_keys (
+                id TEXT PRIMARY KEY,
+                key_hash TEXT NOT NULL UNIQUE,
+                tenant_id TEXT NOT NULL,
+                name TEXT,
+                dataset_id TEXT,
+                scopes TEXT,
+                created_by_user_id TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                revoked_at TEXT,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+                UNIQUE(tenant_id, name)
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        query("INSERT INTO tenants (id, name, source) VALUES ('acme', 'Acme', 'database')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        query(
+            "INSERT INTO api_keys \
+             (id, key_hash, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at) \
+             VALUES \
+             ('key-restricted', 'hash-1', 'acme', 'pre-1475-restricted', 'production', '[\"traces:read\"]', 'user-1', '2023-01-01T00:00:00Z', NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        query(
+            "INSERT INTO api_keys \
+             (id, key_hash, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at) \
+             VALUES \
+             ('key-unrestricted', 'hash-2', 'acme', 'pre-1475-unrestricted', NULL, '[\"traces:read\"]', 'user-1', '2023-01-01T00:00:00Z', NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let catalog = Catalog::Sqlite(pool);
+        catalog.init().await.unwrap();
+        assert_no_legacy_dataset_id_column(&catalog).await;
+
+        let Catalog::Sqlite(pool) = &catalog else {
+            panic!("expected a SQLite catalog");
+        };
+        let restricted = query("SELECT dataset_ids FROM api_keys WHERE id = 'key-restricted'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            restricted.get::<String, _>("dataset_ids"),
+            "[\"production\"]",
+            "a single-dataset restriction from a database that never booted \
+             the intermediate dual-write code must survive the column drop, \
+             not silently become unrestricted"
+        );
+        let unrestricted = query("SELECT dataset_ids FROM api_keys WHERE id = 'key-unrestricted'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            unrestricted.get::<Option<String>, _>("dataset_ids"),
+            None,
+            "a key that was already unrestricted must stay unrestricted"
+        );
+    }
+
     #[test]
     fn dataset_restriction_update_from_request_covers_every_combination() {
         // Both absent -> Keep.
@@ -6515,6 +6698,102 @@ mod postgres_dataset_ids_tests {
         // A second boot against the already-migrated pool is a no-op.
         catalog.init().await.unwrap();
         assert_no_legacy_dataset_id_column(pool).await;
+    }
+
+    /// Simulates a database that jumps straight from before
+    /// `multi-dataset-key-restriction` to after this change, skipping any
+    /// boot of the intermediate dual-write code: the pre-#1475 schema
+    /// (legacy `dataset_id` column present, no `dataset_ids` column at all
+    /// yet) with a restricted row and an unrestricted row. `Catalog::init()`
+    /// must backfill the restricted row's `dataset_id` into the
+    /// newly-created `dataset_ids` column *before* dropping `dataset_id` —
+    /// dropping it first would silently turn the key unrestricted.
+    #[tokio::test]
+    async fn postgres_catalog_init_backfills_dataset_ids_before_dropping_legacy_column_with_no_intermediate_boot()
+     {
+        let (pool, _container) = raw_postgres_pool().await;
+
+        // Seed the pre-#1475 schema: dataset_id exists, dataset_ids does not.
+        query(
+            r#"CREATE TABLE tenants (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                default_dataset TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                source TEXT NOT NULL CHECK(source IN ('config', 'database'))
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE api_keys (
+                id TEXT PRIMARY KEY,
+                key_hash TEXT NOT NULL UNIQUE,
+                tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                name TEXT,
+                dataset_id TEXT,
+                scopes TEXT,
+                created_by_user_id TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                revoked_at TIMESTAMPTZ,
+                UNIQUE(tenant_id, name)
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        query("INSERT INTO tenants (id, name, source) VALUES ('acme', 'Acme', 'database')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        query(
+            "INSERT INTO api_keys \
+             (id, key_hash, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at) \
+             VALUES \
+             ('key-restricted', 'hash-1', 'acme', 'pre-1475-restricted', 'production', '[\"traces:read\"]', 'user-1', '2023-01-01T00:00:00Z', NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        query(
+            "INSERT INTO api_keys \
+             (id, key_hash, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at) \
+             VALUES \
+             ('key-unrestricted', 'hash-2', 'acme', 'pre-1475-unrestricted', NULL, '[\"traces:read\"]', 'user-1', '2023-01-01T00:00:00Z', NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let catalog = Catalog::Postgres(pool);
+        catalog.init().await.unwrap();
+        let Catalog::Postgres(pool) = &catalog else {
+            panic!("expected a Postgres catalog");
+        };
+        assert_no_legacy_dataset_id_column(pool).await;
+
+        let restricted = query("SELECT dataset_ids FROM api_keys WHERE id = 'key-restricted'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            restricted.get::<String, _>("dataset_ids"),
+            "[\"production\"]",
+            "a single-dataset restriction from a database that never booted \
+             the intermediate dual-write code must survive the column drop, \
+             not silently become unrestricted"
+        );
+        let unrestricted = query("SELECT dataset_ids FROM api_keys WHERE id = 'key-unrestricted'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            unrestricted.get::<Option<String>, _>("dataset_ids"),
+            None,
+            "a key that was already unrestricted must stay unrestricted"
+        );
     }
 }
 

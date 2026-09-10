@@ -43,6 +43,26 @@ dataset_id`.
       accordingly. `cargo test -p common` green; `cargo machete
 --with-metadata` (a helper going unused entirely should be deleted,
       not left dead).
+- [x] 1.6 Code-review fix (CodeRabbit, PR #1480): 1.2's drop ran before
+      `dataset_ids` was ensured to exist, and 1.3 deleted the backfill
+      entirely — together, a database jumping straight from before
+      `multi-dataset-key-restriction` to after this change (skipping any
+      boot of the intermediate dual-write code) would drop `dataset_id`
+      before anything ever copied its data into `dataset_ids`, silently
+      turning every single-dataset-restricted key unrestricted. Failing
+      tests first (both dialects):
+      `catalog_init_backfills_dataset_ids_before_dropping_legacy_column_with_no_intermediate_boot`
+      seeds the pre-#1475 schema (legacy column present, `dataset_ids`
+      column absent) with a restricted and an unrestricted row, runs
+      `Catalog::init()`, and asserts the restriction survives. Implement:
+      reorder so `dataset_ids` is ensured to exist first; before the drop,
+      backfill every row where `dataset_id IS NOT NULL AND dataset_ids IS
+  NULL` (a per-row `SELECT` then `UPDATE ... WHERE id = ? AND
+  dataset_ids IS NULL`, re-checking `IS NULL` at write time so a
+      concurrent legitimate `dataset_ids` write from another already-
+      upgraded instance wins instead of being clobbered — no compare-and-
+      swap on the old value needed, since there is no longer a legacy write
+      to race against). See `design.md`'s revised D2.
 
 ## 2. Response DTOs, router, and regenerated clients
 
