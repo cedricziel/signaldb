@@ -434,9 +434,9 @@ fn column_is_all_null(batches: &[RecordBatch], column: &str) -> bool {
     rows > 0 && rows == nulls
 }
 
-/// Up to three logical field names of `source` closest to `field`: an exact
-/// match once punctuation and case are ignored first (`statusCode` →
-/// `status.code`), then near-misses by edit distance.
+/// Up to three logical field names of `source` closest to `field`, excluding
+/// `field` itself: an exact match once punctuation and case are ignored
+/// first (`statusCode` → `status.code`), then near-misses by edit distance.
 fn closest_fields(
     schema: &common::schema::logical::LogicalSchema,
     source: &str,
@@ -453,6 +453,7 @@ fn closest_fields(
         .fields()
         .filter(|f| f.id.source == source)
         .map(|f| f.id.name.clone())
+        .filter(|name| name != field)
         .map(|name| (edit_distance(&target, &normalize(&name)), name))
         // A distance beyond a third of the name is a different word, not a
         // typo — suggesting it would be noise.
@@ -1096,7 +1097,7 @@ mod row_encoding {
 /// reject the legitimate case of a real attribute absent from a short window.
 #[cfg(test)]
 mod group_by_warnings {
-    use super::{UNKNOWN_GROUP_BY_FIELD, unknown_group_by_warnings};
+    use super::{UNKNOWN_GROUP_BY_FIELD, closest_fields, unknown_group_by_warnings};
     use datafusion::arrow::array::{ArrayRef, Int64Array, RecordBatch, StringArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
@@ -1150,6 +1151,20 @@ mod group_by_warnings {
             warnings[0].suggestions.contains(&"status.code".to_string()),
             "{:?}",
             warnings[0].suggestions
+        );
+    }
+
+    /// The exact field the caller already used must never come back as a
+    /// suggestion for itself — that spelling is what just failed to
+    /// resolve, so echoing it teaches the caller nothing (#1340).
+    #[test]
+    fn suggestions_never_include_the_exact_field_the_caller_used() {
+        let schema = common::schema::logical::LogicalSchema::core();
+        let suggestions = closest_fields(&schema, "traces", "status.code");
+
+        assert!(
+            !suggestions.contains(&"status.code".to_string()),
+            "{suggestions:?}"
         );
     }
 
