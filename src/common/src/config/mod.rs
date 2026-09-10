@@ -366,10 +366,32 @@ pub struct WalConfig {
     /// Environment: `SIGNALDB__WAL__MAX_INSTANCES`.
     #[serde(default = "default_wal_max_instances")]
     pub max_instances: usize,
+    /// How long a dead-lettered entry (`<wal_dir>/.../dead-letter/`) is kept
+    /// before the retention sweep deletes its marker and payload. `0s`
+    /// disables the sweep.
+    ///
+    /// A dead-letter pair is not a live-data retention concern — those are
+    /// governed by `[compactor.retention]` once a batch actually lands in a
+    /// table — it is an unclaimed backlog that grows without bound until an
+    /// operator notices (#1494: 45k rejected entries, 493 MB, sat for a month
+    /// with nothing reporting or expiring them). The default matches the
+    /// signal retention default so a schema-rejection burst does not outlive
+    /// the data it would have produced.
+    ///
+    /// Environment: `SIGNALDB__WAL__DEAD_LETTER_RETENTION`.
+    #[serde(with = "humantime_serde", default = "default_dead_letter_retention")]
+    pub dead_letter_retention: Duration,
 }
 
 fn default_wal_max_instances() -> usize {
     crate::wal::manager::WalManager::DEFAULT_MAX_INSTANCES
+}
+
+/// Default for [`WalConfig::dead_letter_retention`] and the fallback used by
+/// callers that read `[wal]` off the process-global `CONFIG` (which may be
+/// unset in a test or an early-startup code path).
+pub fn default_dead_letter_retention() -> Duration {
+    Duration::from_secs(30 * 24 * 3600) // 30 days
 }
 
 impl WalConfig {
@@ -400,6 +422,7 @@ impl Default for WalConfig {
             flush_interval: Duration::from_secs(30),
             max_buffer_size_bytes: 128 * 1024 * 1024, // 128MB
             max_instances: default_wal_max_instances(),
+            dead_letter_retention: default_dead_letter_retention(),
         }
     }
 }
@@ -2538,6 +2561,43 @@ mod tests {
         assert_eq!(
             wal.max_instances,
             crate::wal::manager::WalManager::DEFAULT_MAX_INSTANCES
+        );
+    }
+
+    #[test]
+    fn wal_config_toml_without_dead_letter_retention_uses_the_thirty_day_default() {
+        // Same forward-compatibility guarantee as the `max_instances` test
+        // above: a `[wal]` block written before this key existed must still
+        // parse, defaulting to 30 days.
+        let toml = r#"
+            wal_dir = ".data/wal"
+            max_segment_size = 67108864
+            max_buffer_entries = 1000
+            flush_interval = "30s"
+            max_buffer_size_bytes = 134217728
+        "#;
+        let wal: WalConfig = toml::from_str(toml)
+            .expect("a [wal] block without dead_letter_retention must still parse");
+        assert_eq!(
+            wal.dead_letter_retention,
+            std::time::Duration::from_secs(30 * 24 * 3600)
+        );
+    }
+
+    #[test]
+    fn wal_config_toml_parses_go_style_dead_letter_retention() {
+        let toml = r#"
+            wal_dir = ".data/wal"
+            max_segment_size = 67108864
+            max_buffer_entries = 1000
+            flush_interval = "30s"
+            max_buffer_size_bytes = 134217728
+            dead_letter_retention = "14d"
+        "#;
+        let wal: WalConfig = toml::from_str(toml).expect("14d must parse as a duration");
+        assert_eq!(
+            wal.dead_letter_retention,
+            std::time::Duration::from_secs(14 * 24 * 3600)
         );
     }
 
