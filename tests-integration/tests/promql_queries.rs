@@ -286,6 +286,48 @@ fn gauge_metrics_at(
     }
 }
 
+/// A single counter (`Sum`) metric data point, mirroring how
+/// `otelcol_exporter_send_failed_spans` is shaped in production.
+fn sum_metrics(service: &str, name: &str, value: f64) -> ExportMetricsServiceRequest {
+    use opentelemetry_proto::tonic::metrics::v1::{AggregationTemporality, Sum};
+    ExportMetricsServiceRequest {
+        resource_metrics: vec![ResourceMetrics {
+            resource: Some(Resource {
+                attributes: vec![KeyValue {
+                    key: "service.name".to_string(),
+                    value: Some(string_value(service)),
+                    ..Default::default()
+                }],
+                dropped_attributes_count: 0,
+                ..Default::default()
+            }),
+            scope_metrics: vec![ScopeMetrics {
+                scope: None,
+                metrics: vec![Metric {
+                    name: name.to_string(),
+                    description: String::new(),
+                    unit: "1".to_string(),
+                    data: Some(Data::Sum(Sum {
+                        data_points: vec![NumberDataPoint {
+                            attributes: vec![],
+                            start_time_unix_nano: BASE_NS,
+                            time_unix_nano: BASE_NS,
+                            value: Some(number_data_point::Value::AsDouble(value)),
+                            exemplars: vec![],
+                            flags: 0,
+                        }],
+                        aggregation_temporality: AggregationTemporality::Cumulative.into(),
+                        is_monotonic: true,
+                    })),
+                    metadata: vec![],
+                }],
+                schema_url: String::new(),
+            }],
+            schema_url: String::new(),
+        }],
+    }
+}
+
 /// A single `latency` histogram data point with bounds [1,2,4] and bucket
 /// counts [1,2,3,4] (incl. +Inf) — total 10. The 0.5-quantile interpolates
 /// to 2 + 2*(5-3)/3 = 3.333… within the (2,4] bucket.
@@ -677,6 +719,98 @@ async fn promql_sum_by_service_sums_the_latest_sample_of_each_member_series() {
     assert!(
         (total - 350.0).abs() < 1e-9,
         "sum by (service_name) must total the latest per-series values (350), got {total}"
+    );
+}
+
+/// Ingest two counters for one service: `failed` = 13847 and `failed_logs`
+/// = 42, the shape behind #1501. The services own the temp storage, so the
+/// caller keeps them alive for as long as it queries.
+async fn setup_with_two_counters() -> (TestServices, Router) {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+    for (name, value) in [("failed", 13847.0), ("failed_logs", 42.0)] {
+        services
+            .metrics_handler
+            .handle_grpc_otlp_metrics(&ctx, sum_metrics("otelcol", name, value))
+            .await
+            .expect("ingest counter");
+    }
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
+        .await
+        .expect("flush writer");
+    let app = build_router(&services).await;
+    (services, app)
+}
+
+/// Run an instant query and return each series' (labels, value).
+async fn instant_series(app: &Router, query: &str) -> Vec<(serde_json::Value, f64)> {
+    let params = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("query", query)
+        .append_pair("time", &at_timestamp().to_string())
+        .finish();
+    let (status, body) = get(app, &format!("/prometheus/api/v1/query?{params}")).await;
+    assert_eq!(status, StatusCode::OK, "{query}: {body}");
+    assert_eq!(body["data"]["resultType"], "vector", "{query}: {body}");
+    body["data"]["result"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{query}: {body}"))
+        .iter()
+        .map(|s| {
+            let v = s["value"][1].as_str().unwrap().parse::<f64>().unwrap();
+            (s["metric"].clone(), v)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn promql_scalar_arithmetic_applies_the_op_and_drops_name() {
+    let (_services, app) = setup_with_two_counters().await;
+    for (query, expected) in [
+        ("failed * 2", 27694.0),
+        ("2 * failed", 27694.0),
+        ("failed + 0", 13847.0),
+        ("sum(failed) * 2", 27694.0),
+    ] {
+        let series = instant_series(&app, query).await;
+        assert_eq!(series.len(), 1, "{query}: {series:?}");
+        let (labels, value) = &series[0];
+        assert!((value - expected).abs() < 1e-9, "{query}: {series:?}");
+        assert!(
+            labels.get("__name__").is_none(),
+            "{query} must drop __name__: {labels}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn promql_vector_arithmetic_matches_series_and_nests() {
+    let (_services, app) = setup_with_two_counters().await;
+    for (query, expected) in [
+        ("failed + failed_logs", 13889.0),
+        ("failed + failed_logs + failed", 27736.0),
+        ("failed / failed_logs * 100", 13847.0 / 42.0 * 100.0),
+    ] {
+        let series = instant_series(&app, query).await;
+        assert_eq!(series.len(), 1, "{query}: {series:?}");
+        let (labels, value) = &series[0];
+        assert!((value - expected).abs() < 1e-6, "{query}: {series:?}");
+        assert_eq!(labels["service_name"], "otelcol", "{query}: {labels}");
+        assert!(
+            labels.get("__name__").is_none(),
+            "{query} must drop __name__: {labels}"
+        );
+    }
+
+    let w = window();
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/query_range?query=failed%2Bfailed_logs&{w}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "range failed+failed_logs: {body}");
+    assert!(
+        (matrix_value_sum(&body) - 13889.0).abs() < 1e-9,
+        "range failed+failed_logs: {body}"
     );
 }
 
