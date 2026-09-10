@@ -53,9 +53,7 @@ test("an unknown path redirects to /logs, preserving the query string", async ({
   await expect(page).toHaveURL(/\/logs\?range=15m$/);
 });
 
-test("/ redirects to /logs, preserving the query string", async ({
-  page,
-}) => {
+test("/ redirects to /logs, preserving the query string", async ({ page }) => {
   await page.goto("/?tenant=homelab&dataset=default");
   await expect(page).toHaveURL(/\/logs\?tenant=homelab&dataset=default$/);
 });
@@ -110,11 +108,53 @@ test("/oauth/consent renders standalone, without the explore shell", async ({
 test("/login renders standalone, without the explore shell", async ({
   page,
 }) => {
-  // No mocks: whoami naturally fails without a backend, so the sign-in
-  // form renders.
+  // No mocks: currentSession() naturally fails without a backend, so the
+  // sign-in form renders.
   await page.goto("/login");
   await expect(page).toHaveURL(/\/login$/);
   // No signal tabs, no top bar — this route bypasses the shell entirely.
   await expect(page.getByRole("tablist", { name: "Signal" })).toHaveCount(0);
-  await expect(page.getByRole("dialog", { name: "Sign in" })).toBeVisible();
+  // The page is a standalone destination, not a modal dialog (design
+  // decision 1): a level-one "Sign in" heading, no role="dialog".
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Sign in" }),
+  ).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+});
+
+test("/login offers SSO when the login-configuration probe reports a provider", async ({
+  page,
+}) => {
+  await page.route("**/ui/session/config", (route) =>
+    json(route, { password_enabled: true, oidc: { name: "Acme" } }),
+  );
+  await page.route("**/ui/session", (route) =>
+    route.request().method() === "GET"
+      ? route.fulfill({ status: 401, body: "{}" })
+      : route.continue(),
+  );
+
+  await page.goto("/login");
+
+  const ssoLink = page.getByRole("link", { name: "Continue with Acme" });
+  await expect(ssoLink).toBeVisible();
+  await expect(ssoLink).toHaveAttribute("href", /^\/ui\/session\/oidc\/start/);
+});
+
+test("/login stays usable at a narrow (360x740) viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 740 });
+  await page.goto("/login");
+
+  const submit = page.getByRole("button", { name: "Sign in" });
+  await expect(submit).toBeVisible();
+
+  const scrollWidth = await page.evaluate(
+    () => document.documentElement.scrollWidth,
+  );
+  expect(scrollWidth).toBeLessThanOrEqual(360);
+
+  const box = await submit.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.x).toBeGreaterThanOrEqual(0);
+  expect(box!.x + box!.width).toBeLessThanOrEqual(360);
 });

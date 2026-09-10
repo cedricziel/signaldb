@@ -168,7 +168,7 @@ Every connection the Iceberg catalog's pool opens gets three pragmas, set in two
 | `busy_timeout = 30000` | the catalog itself ([#381](https://github.com/JanKaul/iceberg-rust/pull/381)) | sqlx's 5s default is short enough that a commit contending with a compaction gives up while the lock is still moving.                                                                                                                                                                    |
 | `synchronous = normal` | SignalDB, via `sqlite_session_statements` (`src/common/src/iceberg/mod.rs`)   | Under WAL this skips an fsync per commit while staying crash-safe.                                                                                                                                                                                                                       |
 
-Together these match what the service discovery catalog (`src/common/src/catalog.rs`) sets. Pragmas cannot be carried on the DSN — sqlx's SQLite URL parser rejects them as query parameters — so they have to be set on the connection; SignalDB reaches them through the catalog's session-statement support ([#386](https://github.com/JanKaul/iceberg-rust/pull/386), currently a fork pin). Session statements run _after_ the catalog's own, so SignalDB could override a default if it ever needed to; today it only adds.
+Together these match what the service discovery catalog (`src/common/src/catalog.rs`) sets. Pragmas cannot be carried on the DSN — sqlx's SQLite URL parser rejects them as query parameters — so they have to be set on the connection; SignalDB reaches them through the catalog's session-statement support ([#386](https://github.com/JanKaul/iceberg-rust/pull/386)). Session statements run _after_ the catalog's own, so SignalDB could override a default if it ever needed to; today it only adds.
 
 The pool connects lazily, so the pragmas are applied on first use rather than at construction. Nothing touches the database in between.
 
@@ -181,7 +181,7 @@ Every Iceberg commit writes a new `metadata.json`. To stop these accumulating wi
 
 The properties are applied at table creation, and `ensure_table` backfills any that are absent when it loads a pre-existing table (#959: tables created before the properties existed never pruned, so metadata accumulated forever). The backfill only adds missing keys — operator-set values are never overwritten — so it commits at most once per table; a commit lost to a concurrent-writer race is logged and retried on the next load. Note the backfill bounds growth going forward only: metadata files that already aged out of the metadata-log before the backfill are orphaned and need a one-time cleanup.
 
-These are honored by the SQL catalog's delete-after-commit support (contributed upstream as [JanKaul/iceberg-rust#382](https://github.com/JanKaul/iceberg-rust/pull/382); SignalDB is temporarily pinned to a fork commit carrying it — see the note in `Cargo.toml`). This is safe because SignalDB queries only current snapshots (no metadata time-travel), and snapshot history is separately bounded by the compactor's snapshot expiration.
+These are honored by the SQL catalog's delete-after-commit support ([JanKaul/iceberg-rust#382](https://github.com/JanKaul/iceberg-rust/pull/382)). This is safe because SignalDB queries only current snapshots (no metadata time-travel), and snapshot history is separately bounded by the compactor's snapshot expiration.
 
 ### Output file size
 

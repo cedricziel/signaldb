@@ -1,6 +1,13 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { client } from "./gen/client.gen";
 import { ApiError, setTenantContext } from "./http";
-import { createSession, deleteSession, whoami } from "./session";
+import {
+  createSession,
+  currentSession,
+  deleteSession,
+  loginConfig,
+  whoami,
+} from "./session";
 
 function mockFetchOnce(body: unknown, status = 200) {
   const fn = vi.fn().mockResolvedValue(
@@ -130,5 +137,62 @@ describe("whoami", () => {
     const err = await whoami().catch((e: unknown) => e);
     expect(err).toBeInstanceOf(ApiError);
     expect((err as ApiError).status).toBe(404);
+  });
+});
+
+// The generated client needs an absolute base URL under jsdom's stricter
+// Request parsing (see management.test.ts / consent.test.ts).
+describe("loginConfig / currentSession (generated client)", () => {
+  beforeEach(() => {
+    client.setConfig({ baseUrl: "http://localhost" });
+  });
+
+  afterEach(() => {
+    client.setConfig({ baseUrl: "" });
+  });
+
+  it("loginConfig() returns the probe response", async () => {
+    mockFetchOnce({ password_enabled: true, oidc: null });
+    await expect(loginConfig()).resolves.toEqual({
+      password_enabled: true,
+      oidc: null,
+    });
+  });
+
+  it("loginConfig() throws ApiError(404) on an older router", async () => {
+    mockFetchOnce({}, 404);
+    const err = await loginConfig().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(404);
+  });
+
+  it("loginConfig() throws ApiError(500) on a server error", async () => {
+    mockFetchOnce({}, 500);
+    const err = await loginConfig().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(500);
+  });
+
+  it("currentSession() returns the introspection response", async () => {
+    const body = {
+      user: {
+        id: "user-1",
+        email: "alice@example.com",
+        display_name: "Alice",
+        is_instance_admin: false,
+      },
+      tenant: "acme",
+      dataset: "prod",
+      memberships: [{ tenant_id: "acme", name: "Acme", role: "admin" }],
+    };
+    mockFetchOnce(body);
+    await expect(currentSession()).resolves.toEqual(body);
+  });
+
+  it("currentSession() throws ApiError(401) without a session cookie", async () => {
+    mockFetchOnce({}, 401);
+    const err = await currentSession().catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ApiError);
+    expect((err as ApiError).status).toBe(401);
   });
 });

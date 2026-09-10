@@ -117,7 +117,14 @@ export type RetryDecision =
   | { action: "retry"; waitMs: number }
   | { action: "fail-fast" };
 
-const IDEMPOTENT = new Set(["GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE"]);
+const IDEMPOTENT = new Set([
+  "GET",
+  "HEAD",
+  "PUT",
+  "DELETE",
+  "OPTIONS",
+  "TRACE",
+]);
 
 export function isIdempotentMethod(method: string): boolean {
   return IDEMPOTENT.has(method.toUpperCase());
@@ -317,6 +324,37 @@ export async function retryingFetch(
  * credentials) that a login can fix. */
 export function isAuthError(err: unknown): boolean {
   return err instanceof ApiError && err.status === 401;
+}
+
+// --- generated-client result unwrapping -------------------------------------
+
+/** Result envelope produced by the generated SDK (`RequestResult` with the
+ * default `fields` response style): `data` on success, `error` set (and
+ * `response` unset on a network/URL error) otherwise. */
+export interface SdkResult<T> {
+  data?: T;
+  error?: unknown;
+  response?: Response;
+}
+
+/** Unwrap a generated SDK result into its data, re-throwing failures as
+ * `ApiError` (with the HTTP status, so `isAuthError(401)` keeps working).
+ * `fallbackMessage` supplies the message shown when nothing better is
+ * found; `messageFromError`, when given, is tried first against the raw
+ * `error` value — each caller's own precedence for reading a message out of
+ * the error body (`error_description`, `error`, ...). */
+export function unwrapSdkResult<T>(
+  result: SdkResult<T>,
+  fallbackMessage: (status: number) => string,
+  messageFromError?: (error: unknown) => string | undefined,
+): T {
+  const { data, error, response } = result;
+  if (error !== undefined || !response?.ok) {
+    const status = response?.status ?? 0;
+    const message = messageFromError?.(error) ?? fallbackMessage(status);
+    throw new ApiError(message, status, retryAfterMsFrom(response));
+  }
+  return data as T;
 }
 
 /** Render a caught value as a display string, whether or not it's an Error. */

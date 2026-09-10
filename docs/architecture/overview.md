@@ -211,7 +211,10 @@ under `/ui`, from the directory named by `SIGNALDB_UI_DIR`. See
 For browsers, the router exposes `POST`/`DELETE /ui/session`
 (`src/router/src/endpoints/session.rs`): a public login endpoint that
 validates a user's email/password, then creates or revokes an opaque
-server-side session. The tenant is optional at login — the response
+server-side session. `GET /ui/session` introspects that session from the
+cookie alone (user, memberships, auto-selected tenant) and
+`GET /ui/session/config` tells the login page which credentials to offer,
+so `/login` can finish a redirect-based sign-in without a tenant header. The tenant is optional at login — the response
 carries the user's memberships so the UI can offer a picker (a sole
 membership is auto-selected); each request then re-validates the
 `X-Tenant-ID` header against those memberships. `GET /api/v1/whoami`
