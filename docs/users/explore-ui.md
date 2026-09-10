@@ -540,11 +540,15 @@ pick one from a selector listing each membership by name and role. See
 
 When your operator has configured SSO, the sign-in form also offers a
 **Continue with &lt;provider&gt;** button — the panel probes
-`GET /ui/session/config` and shows it only while the provider is reachable,
-so you never see a button that fails. Clicking it signs you in through your
-identity provider and lands you in the same tenant/dataset selection as a
-password login; if the operator turned password login off, SSO is the only
-door. See [Signing in with SSO](authentication.md#signing-in-with-sso-oidc).
+`GET /ui/session/config` and shows the button once discovery against the
+identity provider has completed successfully. That only confirms discovery
+succeeded, not that the provider will stay reachable: the button can still
+fail at sign-in time if the issuer or token endpoint goes down afterward,
+since the discovery retry loop stops once it has succeeded once. Clicking
+it signs you in through your identity provider and lands you in the same
+tenant/dataset selection as a password login; if the operator turned
+password login off, SSO is the only door. See
+[Signing in with SSO](authentication.md#signing-in-with-sso-oidc).
 
 The same form is also reachable directly at `/login` — a standalone,
 linkable sign-in screen (no top bar, no signal tabs) for bookmarking or
