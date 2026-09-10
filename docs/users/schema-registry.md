@@ -106,7 +106,8 @@ custom entities that extend it; metric lookups include instrument, unit, and
 
 Prefix search (`GET /api/v1/schema/attributes?prefix=http.re&limit=20`, also
 `/entities` and `/metrics`) powers autocomplete; `?keys=a,b,c` resolves several
-attribute keys in one call.
+attribute keys in one call, and the same parameter on `/metrics` batch-resolves
+an exact metric name set.
 
 The MCP server exposes the same lookups as tools (`resolve_attribute`,
 `resolve_entity`, `resolve_metric`, `search_schema`, `list_schema_registries`,
