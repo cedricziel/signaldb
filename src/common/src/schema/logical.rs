@@ -160,6 +160,20 @@ impl LogicalSchema {
     }
 
     pub fn resolve(&self, source: &str, name: &str) -> Option<&LogicalField> {
+        // A SignalDB-defined field (e.g. `resource.identity`) is registered
+        // verbatim with `level: None`, including any dot it contains. Try
+        // that exact identity first so the prefix-stripping rules below
+        // never shadow it — those rules exist for OTel's own
+        // `resource.`/`scope.`/`record.` qualifiers, not for names SignalDB
+        // itself chose to dot.
+        if let Some(field) = self.fields.get(&LogicalFieldId {
+            source: source.to_string(),
+            level: None,
+            name: name.to_string(),
+        }) {
+            return Some(field);
+        }
+
         let (level, name) = match name {
             value if let Some(name) = value.strip_prefix("resource.") => {
                 (Some(AttributeLevel::Resource), name)
@@ -293,6 +307,12 @@ impl LogicalSchema {
             "service.name",
             LogicalType::String,
         ));
+        // resource_identity is materialized on metrics_gauge/metrics_sum
+        // (the tables backing the "metrics" source) and on profiles, same
+        // as logs/traces below — but not on metrics_histogram, which has no
+        // alias table at all (see ir_planner's `SourcePlan::for_source`).
+        fields.push(LogicalField::signaldb_resource_identity("metrics"));
+        fields.push(LogicalField::signaldb_resource_identity("profiles"));
         // A record's whole attribute bag per OTel scope, as one map value.
         // Retrieval-only: individual attributes are addressed by name (with
         // an optional scope qualifier); the bag itself is not a predicate
@@ -423,6 +443,38 @@ mod tests {
 
         assert_eq!(field.kind, LogicalFieldKind::SignalDbDefined);
         assert!(field.non_native);
+    }
+
+    /// #1340: `resource.identity` is declared with `level: None` and a dot
+    /// in its own name. The generic `resource.`/`scope.`/`record.`
+    /// prefix-stripping in `resolve` must not shadow that exact identity —
+    /// it used to strip `resource.` and look for a Resource-level attribute
+    /// named `identity`, which doesn't exist, so a field discovery
+    /// advertised could never actually be resolved.
+    #[test]
+    fn resource_identity_resolves_on_every_source_that_declares_it() {
+        let schema = LogicalSchema::core();
+
+        for source in ["logs", "traces", "metrics", "profiles"] {
+            let field = schema
+                .resolve(source, "resource.identity")
+                .unwrap_or_else(|| panic!("{source}.resource.identity should resolve"));
+            assert_eq!(field.kind, LogicalFieldKind::SignalDbDefined, "{source}");
+            assert_eq!(field.id.name, "resource.identity", "{source}");
+        }
+    }
+
+    #[test]
+    fn resource_service_name_still_resolves_after_resource_identity_fix() {
+        let schema = LogicalSchema::core();
+
+        for source in ["logs", "traces"] {
+            let field = schema
+                .resolve(source, "resource.service.name")
+                .unwrap_or_else(|| panic!("{source}.resource.service.name should resolve"));
+            assert_eq!(field.value_type, LogicalType::String, "{source}");
+            assert_eq!(field.kind, LogicalFieldKind::Attribute, "{source}");
+        }
     }
 
     #[test]
