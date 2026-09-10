@@ -272,11 +272,16 @@ impl LookupAction {
                 LookupAction::Search {
                     prefix,
                     limit,
-                    keys: _,
+                    keys,
                     connect,
                 },
                 Kind::Entity,
             ) => {
+                if keys.as_deref().is_some_and(|k| !k.trim().is_empty()) {
+                    anyhow::bail!(
+                        "`--keys` is not supported by `schema entity search`; entity search does not resolve exact keys, only attribute and metric search do"
+                    );
+                }
                 let client = connect.build_client()?;
                 let mut req = client.schema_search_entities().prefix(prefix);
                 if let Some(limit) = limit {
@@ -461,13 +466,17 @@ mod tests {
             assert_eq!(prefix, "k8s.");
             assert_eq!(limit, Some(5));
 
+            // `--keys` parses for every noun (the flag is shared structurally
+            // across attribute/entity/metric search), but only attribute and
+            // metric resolve it at `run()` time — entity rejects it there,
+            // see `schema_entity_search_rejects_keys` below.
+            if noun == "entity" {
+                continue;
+            }
             let cli = SchemaCli::try_parse_from(["schema", noun, "search", "--keys", "a,b,c"])
                 .expect(noun);
             let keys = match cli.action {
                 SchemaAction::Attribute {
-                    action: LookupAction::Search { keys, .. },
-                }
-                | SchemaAction::Entity {
                     action: LookupAction::Search { keys, .. },
                 }
                 | SchemaAction::Metric {
@@ -633,6 +642,24 @@ mod tests {
         .await
         .expect("schema metric search with keys succeeds");
         mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn schema_entity_search_rejects_keys() {
+        // No mock server needed: the router's entity search ignores `keys`
+        // entirely, so the CLI must reject it before sending any request.
+        let err = SchemaAction::Entity {
+            action: LookupAction::Search {
+                prefix: String::new(),
+                limit: None,
+                keys: Some("k8s.pod,service".to_string()),
+                connect: connect("http://router.invalid"),
+            },
+        }
+        .run()
+        .await
+        .expect_err("--keys with `schema entity search` must be rejected");
+        assert!(err.to_string().contains("keys"), "{err}");
     }
 
     #[tokio::test]
