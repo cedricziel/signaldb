@@ -3,7 +3,7 @@ use chrono::{DateTime, Datelike, Timelike};
 use common::flight::conversion::UNKNOWN_SERVICE_NAME;
 use common::schema::resource_identity::resource_identity_from_json;
 use common::schema::schema_parser::ResolvedSchema;
-use common::schema::{ATTR_TOKENS_COLUMN, SCHEMA_DEFINITIONS, materialized_column_name};
+use common::schema::{ATTR_TOKENS_COLUMN, SCHEMA_DEFINITIONS, resolve_materialized_label_columns};
 use datafusion::arrow::{
     array::{
         Array, ArrayRef, BinaryArray, BooleanArray, Date32Array, Float64Array, Int32Array,
@@ -581,7 +581,12 @@ fn materialized_label_columns_from_json(
 
 /// Build one `label_<key>` column per label from per-row attribute maps,
 /// taking each value from resource, then scope, then record (first
-/// non-null). Duplicate labels collapse to a single column.
+/// non-null). An exact-duplicate label collapses to a single column; two
+/// distinct labels that sanitize to the same candidate name (#1448) get
+/// distinct columns via [`resolve_materialized_label_columns`] -- the same
+/// resolution the table-creation path
+/// (`ResolvedSchema::build_iceberg_schema`) uses, so both agree on the
+/// column for a given configured list.
 fn label_columns_from_maps(
     resource: &[Option<AttrMap>],
     scope: &[Option<AttrMap>],
@@ -591,17 +596,12 @@ fn label_columns_from_maps(
 ) -> (Vec<Field>, Vec<ArrayRef>) {
     let mut fields = Vec::new();
     let mut columns: Vec<ArrayRef> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for label in labels {
-        let name = materialized_column_name(label);
-        if !seen.insert(name.clone()) {
-            continue; // duplicate label → single column
-        }
+    for (label, name) in resolve_materialized_label_columns(labels) {
         let values: Vec<Option<String>> = (0..num_rows)
             .map(|i| {
                 for src in [resource.get(i), scope.get(i), record.get(i)] {
                     if let Some(Some(map)) = src
-                        && let Some(v) = map.get(label)
+                        && let Some(v) = map.get(&label)
                         && let Some(s) = attr_value_to_string(v)
                     {
                         return Some(s);
@@ -3383,6 +3383,37 @@ mod tests {
         // No configured labels → no extra columns.
         let (f, c) = materialized_label_columns(&batch, 2, &[]).unwrap();
         assert!(f.is_empty() && c.is_empty());
+    }
+
+    #[test]
+    fn materialized_label_columns_gives_colliding_keys_distinct_columns() {
+        // `http.method` and `http_method` sanitize to the same candidate
+        // column name; both must be materialized in distinct columns, and
+        // neither key's values may be dropped (#1448).
+        let batch = attr_batch(
+            vec![None],
+            vec![None],
+            vec![Some(r#"{"http.method":"GET","http_method":"POST"}"#)],
+        );
+        let labels = vec!["http.method".to_string(), "http_method".to_string()];
+        let (fields, cols) = materialized_label_columns(&batch, 1, &labels).unwrap();
+
+        let names: Vec<String> = fields.iter().map(|f| f.name().clone()).collect();
+        assert_eq!(names.len(), 2, "expected one column per key, got {names:?}");
+        assert!(names.contains(&"label_http_method".to_string()));
+        assert!(names.contains(&"label_http_method_2".to_string()));
+
+        let val = |name: &str| {
+            let idx = names.iter().position(|n| n == name).unwrap();
+            cols[idx]
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0)
+                .to_string()
+        };
+        assert_eq!(val("label_http_method"), "GET");
+        assert_eq!(val("label_http_method_2"), "POST");
     }
 
     /// One row's tokens, sorted for stable comparison.

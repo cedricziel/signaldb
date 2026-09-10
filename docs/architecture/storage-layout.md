@@ -488,6 +488,20 @@ logs = ["team", "region"]
   `label_<k>` with non-alphanumeric characters replaced by `_` (so
   `http.method` → `label_http_method`). This is the one mapping used by
   schema generation, the writer, and the querier.
+- **Collision-proof naming**: two configured keys that sanitize to the same
+  candidate name (e.g. `http.method` and `http_method` both →
+  `label_http_method`) never share a column or drop each other's values.
+  The first key in the configured list keeps the candidate name; a later
+  colliding key gets the next free deterministic suffix
+  (`label_http_method_2`). This assignment is recomputed from the full
+  ordered list on every call (`resolve_materialized_label_columns` in
+  `src/common/src/schema/mod.rs`) rather than stamped on a committed
+  column's `doc` like [auto-promotion's evolution
+  path](#label-columns-can-be-added-to-existing-tables) — the configured
+  list is fixed at any given moment, so it is stable as long as the list
+  itself doesn't reorder, and schema creation
+  (`ResolvedSchema::build_iceberg_schema`) and the writer's transforms
+  share the same resolution.
 - **Population** (writer): each row's value is taken from its **resource**,
   then **scope**, then **record** attributes (first non-null wins); the value
   is also left in the attribute JSON, so label discovery is unaffected.

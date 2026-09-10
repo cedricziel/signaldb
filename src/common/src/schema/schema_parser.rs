@@ -383,11 +383,15 @@ impl ResolvedSchema {
 
         // Append materialized-label columns after the base fields. They are
         // always optional strings (a row may not carry the attribute).
+        // Resolved up front so two keys that sanitize to the same
+        // candidate name (#1448) land on distinct columns instead of the
+        // second key's column being silently skipped; the same resolution
+        // is shared with the write path (see
+        // `crate::schema::resolve_materialized_label_columns`).
         let mut next_id = next_nested_id;
-        for label in labels {
-            let name = crate::schema::materialized_column_name(label);
+        for (label, name) in crate::schema::resolve_materialized_label_columns(labels) {
             if fields.iter().any(|f| f.name == name) {
-                continue; // collides with a base column or an earlier label
+                continue; // collides with a base column
             }
             fields.push(StructField {
                 id: next_id,
@@ -511,6 +515,38 @@ mod tests {
             .unwrap();
         assert!(!ns.required);
         assert_eq!(ns.field_type, Type::Primitive(PrimitiveType::String));
+    }
+
+    #[test]
+    fn colliding_label_keys_get_distinct_columns_not_dropped() {
+        // `http.method` and `http_method` sanitize to the same candidate
+        // column name; both must be materialized, in distinct columns
+        // (#1448) -- the second key must never be silently dropped.
+        let base = ResolvedSchema {
+            version: "v1".to_string(),
+            description: "test".to_string(),
+            fields: vec![ResolvedField {
+                name: "timestamp".to_string(),
+                field_type: "timestamp_ns".to_string(),
+                required: true,
+                computed: None,
+                physical_only: false,
+                field_id: 1,
+            }],
+            partition_by: vec![],
+        };
+
+        let labels = vec!["http.method".to_string(), "http_method".to_string()];
+        let s = base.to_iceberg_schema_with_labels(&labels).unwrap();
+        let names: Vec<String> = s.fields().iter().map(|f| f.name.clone()).collect();
+        assert!(
+            names.contains(&"label_http_method".to_string()),
+            "expected label_http_method in {names:?}"
+        );
+        assert!(
+            names.contains(&"label_http_method_2".to_string()),
+            "http_method must get its own distinct column, got {names:?}"
+        );
     }
 
     #[test]
