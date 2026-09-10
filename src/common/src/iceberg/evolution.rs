@@ -760,6 +760,7 @@ pub async fn ensure_schema_current(
 mod tests {
     use super::*;
     use crate::CatalogManager;
+    use crate::schema::SCHEMA_DEFINITIONS;
     use iceberg_rust::catalog::create::CreateTableBuilder;
     use iceberg_rust::spec::partition::PartitionSpec;
     use iceberg_rust::spec::types::MapType;
@@ -1310,6 +1311,78 @@ mod tests {
             table.metadata().properties.get(SCHEMA_VERSION_PROPERTY),
             Some(&"physical-v3".to_string())
         );
+        Ok(())
+    }
+
+    /// End-to-end against the real `schemas.toml` (not a hand-built
+    /// fixture): a traces table created at physical-v3 -- the shape every
+    /// table predating #1340 actually has -- gains a nullable
+    /// `resource_identity` column and its recorded version property moves
+    /// to `current_trace_version()` (physical-v4) when
+    /// `TableManager::ensure_schema_evolved`'s underlying
+    /// `ensure_schema_current` brings it current. Logs' physical-v1 ->
+    /// physical-v2 hop is the same one-field-addition shape, so this one
+    /// signal stands for both; covering it too would just re-assert the
+    /// identical mechanism.
+    ///
+    /// The table is created directly at the full v3 shape (rather than via
+    /// `apply_schema_migration` onto a smaller base, as other tests here
+    /// do) because the real traces schema declares `attributes_json`,
+    /// `resource_json`, and `scope_attributes` as `map<string,string>` --
+    /// live-table evolution's `diff_schema` doesn't support *adding* a
+    /// map/list column (only `resource_identity`'s plain `string` addition
+    /// exercises that path), so creating fresh is the only way to land a
+    /// v3-shaped table for this test.
+    #[tokio::test]
+    async fn ensure_schema_current_adds_resource_identity_to_a_real_traces_v3_table()
+    -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+
+        let namespace = crate::iceberg::names::build_namespace("evo", "test")?;
+        let _ = catalog.clone().create_namespace(&namespace, None).await;
+        let identifier = crate::iceberg::names::build_table_identifier("evo", "test", "traces_v3");
+        let v3_schema = SCHEMA_DEFINITIONS
+            .resolve_trace_schema("physical-v3")?
+            .to_iceberg_schema()?;
+        let create = CreateTableBuilder::default()
+            .with_name("traces_v3".to_string())
+            .with_schema(v3_schema)
+            .with_partition_spec(PartitionSpec::default())
+            .with_location(crate::iceberg::names::build_table_location(
+                "evo",
+                "test",
+                "traces_v3",
+            ))
+            .with_properties(HashMap::from([(
+                SCHEMA_VERSION_PROPERTY.to_string(),
+                "physical-v3".to_string(),
+            )]))
+            .create()
+            .map_err(|e| anyhow::anyhow!("create table build: {e}"))?;
+        catalog
+            .clone()
+            .create_table(identifier.clone(), create)
+            .await?;
+
+        ensure_schema_current(
+            catalog.clone(),
+            &identifier,
+            &SCHEMA_DEFINITIONS,
+            &SCHEMA_DEFINITIONS.traces,
+            SCHEMA_DEFINITIONS.current_trace_version(),
+        )
+        .await?;
+
+        let table = load_table(&catalog, &identifier).await?;
+        assert_eq!(
+            table.metadata().properties.get(SCHEMA_VERSION_PROPERTY),
+            Some(&"physical-v4".to_string())
+        );
+        let current = table.current_schema()?;
+        let added = field(current, "resource_identity").expect("resource_identity added");
+        assert!(!added.required, "resource_identity must be nullable");
+        assert_eq!(added.field_type, Type::Primitive(PrimitiveType::String));
         Ok(())
     }
 
