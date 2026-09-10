@@ -37,6 +37,17 @@ use crate::oidc::{
     self, PENDING_COOKIE_NAME, PENDING_COOKIE_PATH, PENDING_COOKIE_TTL_SECS, VerifiedIdentity,
 };
 
+/// `?error=` code for every generic callback failure — a bad/missing pending
+/// cookie, a state/nonce/signature/expiry mismatch, an allowlist refusal, a
+/// disabled user, or any other validation failure. One value so the login
+/// page (and an observer) learns nothing about which check failed (spec:
+/// "SHALL be rejected ... without revealing which check failed").
+const ERROR_SSO_FAILED: &str = "sso_failed";
+/// `?error=` code for a login that resolved to a real, enabled identity but
+/// ended with no tenant membership after mapping sync (change: oidc-login,
+/// "No membership means no session").
+const ERROR_NO_MEMBERSHIP: &str = "no_membership";
+
 /// Routes mounted at the router root, beside `/ui/session`.
 pub fn router<S: RouterState>() -> Router<S> {
     Router::new()
@@ -44,28 +55,49 @@ pub fn router<S: RouterState>() -> Router<S> {
         .route("/ui/session/oidc/callback", get(callback::<S>))
 }
 
+/// Query parameters `GET /ui/session/oidc/start` accepts.
+#[derive(Debug, Deserialize)]
+pub struct StartParams {
+    /// Where the callback should send the browser after a successful login
+    /// — the same parameter the `/login` route accepts (change: oidc-login,
+    /// "SSO login returns to where it started"). Validated by
+    /// [`oidc::safe_redirect_target`]; anything unsafe or absent falls back
+    /// to `/logs`.
+    #[serde(default)]
+    redirect: Option<String>,
+}
+
 /// GET /ui/session/oidc/start
 ///
 /// 302s to the IdP's authorization endpoint with a fresh PKCE challenge,
 /// `state`, and `nonce`, and sets the signed pending-login cookie carrying
-/// what the callback needs to complete the exchange. 404 when OIDC isn't
-/// configured; 503 naming the issuer while discovery hasn't (yet) succeeded.
+/// what the callback needs to complete the exchange, including the
+/// validated `redirect` return target. 404 when OIDC isn't configured; 503
+/// naming the issuer while discovery hasn't (yet) succeeded.
 #[utoipa::path(
     get,
     path = "/ui/session/oidc/start",
     operation_id = "session_oidc_start",
     tag = "tenants",
     security(()),
+    params(
+        ("redirect" = Option<String>, Query, description = "Same-origin path to return to after a successful login; anything else (or absent) falls back to `/logs`"),
+    ),
     responses(
         (status = 302, description = "Redirect to the IdP's authorization endpoint; sets the signed pending-login cookie"),
         (status = 404, description = "OIDC is not configured"),
         (status = 503, description = "OIDC provider is currently unavailable"),
     )
 )]
-pub async fn start<S: RouterState>(State(state): State<S>, headers: HeaderMap) -> Response {
+pub async fn start<S: RouterState>(
+    State(state): State<S>,
+    Query(params): Query<StartParams>,
+    headers: HeaderMap,
+) -> Response {
     let Some(runtime) = state.oidc() else {
         return error_response(StatusCode::NOT_FOUND, "OIDC is not configured");
     };
+    let redirect_target = oidc::safe_redirect_target(params.redirect.as_deref());
     let Some(provider) = runtime.provider().await else {
         return error_response(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -110,6 +142,7 @@ pub async fn start<S: RouterState>(State(state): State<S>, headers: HeaderMap) -
         authorization.nonce.secret(),
         authorization.pkce_verifier.secret(),
         &redirect_uri,
+        &redirect_target,
     ) {
         Ok(value) => value,
         Err(error) => {
@@ -159,11 +192,15 @@ pub struct CallbackParams {
 ///
 /// Reads state/nonce/PKCE-verifier from the pending-login cookie, exchanges
 /// the code, validates the ID token, resolves the identity, and issues the
-/// standard session on success. Every failure — missing/invalid pending
-/// cookie, state mismatch, a bad nonce/signature/expiry, an unverified email
-/// on the link path, an allowlist refusal, or a disabled user — collapses
-/// into the same generic redirect with no session created and no disclosure
-/// of which check failed.
+/// standard session on success — redirecting to the `redirect` target the
+/// start request carried. Every validation failure — missing/invalid
+/// pending cookie, state mismatch, a bad nonce/signature/expiry, an
+/// unverified email on the link path, an allowlist refusal, or a disabled
+/// user — collapses into the same generic `/login?error=sso_failed`
+/// redirect with no session created and no disclosure of which check
+/// failed; a resolved, enabled identity left with no tenant membership
+/// after mapping sync instead redirects to `/login?error=no_membership`,
+/// keeping the just-in-time-provisioned user row.
 #[utoipa::path(
     get,
     path = "/ui/session/oidc/callback",
@@ -176,7 +213,7 @@ pub struct CallbackParams {
         ("error" = Option<String>, Query, description = "Present when the IdP failed the request before ever issuing a code"),
     ),
     responses(
-        (status = 302, description = "Redirect to `/` on success (session cookie set) or `/?sso_error=1` on any failure"),
+        (status = 302, description = "Redirect to the carried `redirect` target on success (session cookie set), `/login?error=sso_failed[&redirect=...]` on a generic validation failure, or `/login?error=no_membership&redirect=...` when the user ends up with no tenant membership"),
         (status = 404, description = "OIDC is not configured"),
     )
 )]
@@ -194,31 +231,39 @@ pub async fn callback<S: RouterState>(
          Max-Age=0"
     );
 
+    // Before the pending cookie has been read and verified, there is no
+    // trustworthy redirect target to carry — these rejections land on the
+    // bare `/login?error=sso_failed`.
     let Some(provider) = runtime.provider().await else {
-        return reject(&clear_pending_cookie, "provider_unavailable");
+        return reject(&clear_pending_cookie, "provider_unavailable", None);
     };
     let Some(http_client) = runtime.http_client() else {
-        return reject(&clear_pending_cookie, "http_client_unavailable");
+        return reject(&clear_pending_cookie, "http_client_unavailable", None);
     };
     let Some(pending_cookie_value) = pending_cookie_from_headers(&headers) else {
-        return reject(&clear_pending_cookie, "missing_pending_cookie");
+        return reject(&clear_pending_cookie, "missing_pending_cookie", None);
     };
     let Some(pending) =
         oidc::verify_pending_login(&runtime.config.client_secret, &pending_cookie_value)
     else {
-        return reject(&clear_pending_cookie, "invalid_pending_cookie");
+        return reject(&clear_pending_cookie, "invalid_pending_cookie", None);
     };
+
+    // From here on, `pending.redirect_target` is a value `safe_redirect_target`
+    // already validated at `/start` time, so every later rejection can carry
+    // it without re-validating.
+    let target = pending.redirect_target.as_str();
     if params.error.is_some() {
-        return reject(&clear_pending_cookie, "provider_denied");
+        return reject(&clear_pending_cookie, "provider_denied", Some(target));
     }
     let Some(returned_state) = params.state.as_deref() else {
-        return reject(&clear_pending_cookie, "missing_state");
+        return reject(&clear_pending_cookie, "missing_state", Some(target));
     };
     if returned_state != pending.state {
-        return reject(&clear_pending_cookie, "state_mismatch");
+        return reject(&clear_pending_cookie, "state_mismatch", Some(target));
     }
     let Some(code) = params.code else {
-        return reject(&clear_pending_cookie, "missing_code");
+        return reject(&clear_pending_cookie, "missing_code", Some(target));
     };
 
     let identity = match provider
@@ -239,21 +284,25 @@ pub async fn callback<S: RouterState>(
                 error = %error,
                 "OIDC token exchange or ID-token verification failed"
             );
-            return reject(&clear_pending_cookie, "exchange_failed");
+            return reject(&clear_pending_cookie, "exchange_failed", Some(target));
         }
     };
 
     let user = match resolve_identity(&state, &runtime.issuer_url, &identity, &runtime.config).await
     {
         Ok(Some(user)) => user,
-        Ok(None) => return reject(&clear_pending_cookie, "identity_refused"),
+        Ok(None) => return reject(&clear_pending_cookie, "identity_refused", Some(target)),
         Err(error) => {
             tracing::error!(error = %error, "OIDC identity resolution failed");
-            return reject(&clear_pending_cookie, "identity_resolution_error");
+            return reject(
+                &clear_pending_cookie,
+                "identity_resolution_error",
+                Some(target),
+            );
         }
     };
     if user.disabled_at.is_some() {
-        return reject(&clear_pending_cookie, "disabled_user");
+        return reject(&clear_pending_cookie, "disabled_user", Some(target));
     }
 
     // Group-claim -> membership mapping (tasks 3.2/3.3, design decision 6):
@@ -295,7 +344,7 @@ pub async fn callback<S: RouterState>(
                 }
                 Err(error) => {
                     tracing::error!(user_id = %user.id, error = %error, "OIDC group-mapping tenant lookup failed");
-                    return reject(&clear_pending_cookie, "membership_sync_error");
+                    return reject(&clear_pending_cookie, "membership_sync_error", Some(target));
                 }
             }
         }
@@ -306,7 +355,38 @@ pub async fn callback<S: RouterState>(
             .await
         {
             tracing::error!(user_id = %user.id, error = %error, "OIDC group-mapping membership sync failed");
-            return reject(&clear_pending_cookie, "membership_sync_error");
+            return reject(&clear_pending_cookie, "membership_sync_error", Some(target));
+        }
+    }
+
+    // No-membership refusal (change: oidc-login, "No membership means no
+    // session"): an instance admin needs no membership row to proceed (they
+    // may act in any tenant), but any other user left with none after
+    // mapping sync gets no session — the JIT-provisioned/linked user row
+    // stays, so an admin can grant a tenant later.
+    //
+    // Re-fetched fresh here rather than reusing the `desired` list computed
+    // above: `desired` is only the *mapped* memberships this login's groups
+    // resolve to, filtered to tenants that exist — it says nothing about a
+    // locally granted membership, and doesn't reflect whatever
+    // `sync_oidc_memberships` actually persisted (or partially persisted,
+    // on a sync that later still errors). A fresh read is the only source
+    // of truth for "does this user actually hold a membership row now".
+    if !user.is_instance_admin {
+        match state.catalog().list_memberships_for_user(&user.id).await {
+            Ok(memberships) if memberships.is_empty() => {
+                tracing::warn!(user_id = %user.id, "OIDC callback rejected: user has no tenant membership");
+                return reject_with_code(&clear_pending_cookie, ERROR_NO_MEMBERSHIP, Some(target));
+            }
+            Ok(_) => {}
+            Err(error) => {
+                tracing::error!(user_id = %user.id, error = %error, "OIDC no-membership check failed");
+                return reject(
+                    &clear_pending_cookie,
+                    "membership_check_error",
+                    Some(target),
+                );
+            }
         }
     }
 
@@ -319,7 +399,11 @@ pub async fn callback<S: RouterState>(
         .await
     {
         tracing::error!(user_id = %user.id, error = %error, "OIDC session persistence failed");
-        return reject(&clear_pending_cookie, "session_persistence_error");
+        return reject(
+            &clear_pending_cookie,
+            "session_persistence_error",
+            Some(target),
+        );
     }
 
     tracing::info!(user_id = %user.id, issuer = %runtime.issuer_url, "OIDC SSO login succeeded");
@@ -327,7 +411,7 @@ pub async fn callback<S: RouterState>(
     let session_cookie = session_cookie_header(&token);
     match axum::http::Response::builder()
         .status(StatusCode::FOUND)
-        .header(header::LOCATION, "/")
+        .header(header::LOCATION, target)
         .header(header::SET_COOKIE, clear_pending_cookie)
         .header(header::SET_COOKIE, session_cookie)
         .body(Body::empty())
@@ -343,14 +427,30 @@ pub async fn callback<S: RouterState>(
     }
 }
 
-/// Every callback rejection lands here: clear the pending cookie and bounce
-/// to the login page with a generic, non-disclosing failure marker.
-/// `reason` is logged by the caller (never sent to the client).
-fn reject(clear_pending_cookie: &str, reason: &str) -> Response {
+/// Every generic callback failure lands here: clear the pending cookie and
+/// bounce to `/login` with the one non-disclosing `sso_failed` code, and the
+/// `redirect` target when it's already known (i.e. once the pending cookie
+/// has been read — see [`callback`]). `reason` is logged server-side only,
+/// never sent to the client (spec: "without revealing which check failed").
+fn reject(clear_pending_cookie: &str, reason: &str, target: Option<&str>) -> Response {
     tracing::warn!(reason, "OIDC callback rejected");
+    reject_with_code(clear_pending_cookie, ERROR_SSO_FAILED, target)
+}
+
+/// Shared by [`reject`] (`sso_failed`) and the no-membership refusal
+/// (`no_membership`): clears the pending cookie and redirects to
+/// `/login?error=<code>[&redirect=<target>]`, without ever setting a
+/// session cookie.
+fn reject_with_code(clear_pending_cookie: &str, code: &str, target: Option<&str>) -> Response {
+    let mut query = url::form_urlencoded::Serializer::new(String::new());
+    query.append_pair("error", code);
+    if let Some(target) = target {
+        query.append_pair("redirect", target);
+    }
+    let location = format!("/login?{}", query.finish());
     match axum::http::Response::builder()
         .status(StatusCode::FOUND)
-        .header(header::LOCATION, "/?sso_error=1")
+        .header(header::LOCATION, location)
         .header(header::SET_COOKIE, clear_pending_cookie)
         .body(Body::empty())
     {
@@ -851,11 +951,15 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
         pending_cookie: String,
     }
 
-    async fn drive_start(app: &axum::Router) -> StartedLogin {
-        let request = Request::builder()
-            .uri("/ui/session/oidc/start")
-            .body(Body::empty())
-            .unwrap();
+    async fn drive_start(app: &axum::Router, redirect: Option<&str>) -> StartedLogin {
+        let mut uri = "/ui/session/oidc/start".to_string();
+        if let Some(redirect) = redirect {
+            let mut query = url::form_urlencoded::Serializer::new(String::new());
+            query.append_pair("redirect", redirect);
+            uri.push('?');
+            uri.push_str(&query.finish());
+        }
+        let request = Request::builder().uri(uri).body(Body::empty()).unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::FOUND);
         let location = response
@@ -907,17 +1011,30 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
             .unwrap()
     }
 
-    fn assert_generic_rejection_without_session(response: &axum::response::Response) {
+    /// `expected_redirect`: `Some(target)` when a pending cookie was read
+    /// (so the rejection carries the original `redirect` target), `None`
+    /// for a rejection that happens before the cookie is ever read.
+    fn assert_generic_rejection_without_session(
+        response: &axum::response::Response,
+        expected_redirect: Option<&str>,
+    ) {
         assert_eq!(response.status(), StatusCode::FOUND);
-        assert_eq!(
-            response
-                .headers()
-                .get(header::LOCATION)
-                .unwrap()
-                .to_str()
-                .unwrap(),
-            "/?sso_error=1"
-        );
+        let location = response
+            .headers()
+            .get(header::LOCATION)
+            .unwrap()
+            .to_str()
+            .unwrap();
+        let expected = match expected_redirect {
+            Some(target) => {
+                let mut query = url::form_urlencoded::Serializer::new(String::new());
+                query.append_pair("error", "sso_failed");
+                query.append_pair("redirect", target);
+                format!("/login?{}", query.finish())
+            }
+            None => "/login?error=sso_failed".to_string(),
+        };
+        assert_eq!(location, expected);
         // A rejection may clear the pending cookie but must never set a
         // session cookie.
         for value in response.headers().get_all(header::SET_COOKIE) {
@@ -955,7 +1072,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
             .unwrap();
 
         let app = create_router(state);
-        let login = drive_start(&app).await;
+        let login = drive_start(&app, None).await;
         let id_token = sign_id_token(
             KEY_1_PEM,
             "kid1",
@@ -986,7 +1103,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
                 .unwrap()
                 .to_str()
                 .unwrap(),
-            "/"
+            "/logs"
         );
         let session_cookie = response
             .headers()
@@ -1036,7 +1153,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
         let catalog = state.catalog().clone();
         let app = create_router(state);
 
-        let login = drive_start(&app).await;
+        let login = drive_start(&app, None).await;
         let id_token = sign_id_token(
             KEY_1_PEM,
             "kid1",
@@ -1059,8 +1176,21 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
         )
         .await;
         assert_eq!(response.status(), StatusCode::FOUND);
-        assert!(
+        // A brand-new JIT-created user starts with no tenant membership, so
+        // the callback refuses to issue a session (change: oidc-login,
+        // "No membership means no session") — but the row it just
+        // provisioned survives for an admin to grant one later.
+        assert_eq!(
             response
+                .headers()
+                .get(header::LOCATION)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "/login?error=no_membership&redirect=%2Flogs"
+        );
+        assert!(
+            !response
                 .headers()
                 .get_all(header::SET_COOKIE)
                 .iter()
@@ -1091,7 +1221,9 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
         let app = create_router(state);
 
         let response = drive_callback(&app, Some("code"), Some("some-state"), None).await;
-        assert_generic_rejection_without_session(&response);
+        // No pending cookie was ever read, so there is no trustworthy
+        // redirect target to carry — the bare `sso_failed` code, no target.
+        assert_generic_rejection_without_session(&response, None);
     }
 
     #[tokio::test]
@@ -1106,7 +1238,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
         wait_for_ready(&state).await;
         let app = create_router(state);
 
-        let login = drive_start(&app).await;
+        let login = drive_start(&app, None).await;
         let response = drive_callback(
             &app,
             Some("code"),
@@ -1114,7 +1246,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
             Some(&login.pending_cookie),
         )
         .await;
-        assert_generic_rejection_without_session(&response);
+        assert_generic_rejection_without_session(&response, Some("/logs"));
     }
 
     #[tokio::test]
@@ -1129,7 +1261,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
         wait_for_ready(&state).await;
         let app = create_router(state);
 
-        let login = drive_start(&app).await;
+        let login = drive_start(&app, None).await;
         // Signed with a nonce that does NOT match the one `/start` minted.
         let id_token = sign_id_token(
             KEY_1_PEM,
@@ -1152,7 +1284,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
             Some(&login.pending_cookie),
         )
         .await;
-        assert_generic_rejection_without_session(&response);
+        assert_generic_rejection_without_session(&response, Some("/logs"));
     }
 
     #[tokio::test]
@@ -1168,7 +1300,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
         wait_for_ready(&state).await;
         let app = create_router(state);
 
-        let login = drive_start(&app).await;
+        let login = drive_start(&app, None).await;
         // Signed with KEY_2 but the header claims `kid1` — the verifier
         // finds `kid1`'s (KEY_1) public key and the signature fails to
         // verify against it, a different failure than an unknown `kid`.
@@ -1193,7 +1325,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
             Some(&login.pending_cookie),
         )
         .await;
-        assert_generic_rejection_without_session(&response);
+        assert_generic_rejection_without_session(&response, Some("/logs"));
     }
 
     #[tokio::test]
@@ -1208,7 +1340,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
         wait_for_ready(&state).await;
         let app = create_router(state);
 
-        let login = drive_start(&app).await;
+        let login = drive_start(&app, None).await;
         let id_token = sign_id_token(
             KEY_1_PEM,
             "kid1",
@@ -1231,7 +1363,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
             Some(&login.pending_cookie),
         )
         .await;
-        assert_generic_rejection_without_session(&response);
+        assert_generic_rejection_without_session(&response, Some("/logs"));
     }
 
     #[tokio::test]
@@ -1256,7 +1388,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
             .unwrap();
 
         let app = create_router(state);
-        let login = drive_start(&app).await;
+        let login = drive_start(&app, None).await;
         let id_token = sign_id_token(
             KEY_1_PEM,
             "kid1",
@@ -1280,7 +1412,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
             Some(&login.pending_cookie),
         )
         .await;
-        assert_generic_rejection_without_session(&response);
+        assert_generic_rejection_without_session(&response, Some("/logs"));
 
         let unchanged = catalog.get_user(&user.id).await.unwrap().unwrap();
         assert!(unchanged.oidc_issuer.is_none(), "must not have been linked");
@@ -1306,7 +1438,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
         let users_before = catalog.list_users().await.unwrap().len();
 
         let app = create_router(state);
-        let login = drive_start(&app).await;
+        let login = drive_start(&app, None).await;
         let id_token = sign_id_token(
             KEY_1_PEM,
             "kid1",
@@ -1328,7 +1460,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
             Some(&login.pending_cookie),
         )
         .await;
-        assert_generic_rejection_without_session(&response);
+        assert_generic_rejection_without_session(&response, Some("/logs"));
         assert_eq!(catalog.list_users().await.unwrap().len(), users_before);
     }
 
@@ -1355,7 +1487,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
         catalog.set_user_disabled(&user.id, true).await.unwrap();
 
         let app = create_router(state);
-        let login = drive_start(&app).await;
+        let login = drive_start(&app, None).await;
         let id_token = sign_id_token(
             KEY_1_PEM,
             "kid1",
@@ -1377,7 +1509,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
             Some(&login.pending_cookie),
         )
         .await;
-        assert_generic_rejection_without_session(&response);
+        assert_generic_rejection_without_session(&response, Some("/logs"));
     }
 
     #[tokio::test]
@@ -1410,7 +1542,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
         catalog.set_user_disabled(&user.id, true).await.unwrap();
 
         let app = create_router(state);
-        let login = drive_start(&app).await;
+        let login = drive_start(&app, None).await;
         let id_token = sign_id_token(
             KEY_1_PEM,
             "kid1",
@@ -1432,7 +1564,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
             Some(&login.pending_cookie),
         )
         .await;
-        assert_generic_rejection_without_session(&response);
+        assert_generic_rejection_without_session(&response, Some("/logs"));
 
         let unchanged = catalog.get_user(&user.id).await.unwrap().unwrap();
         assert!(
@@ -1464,7 +1596,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
         wait_for_ready(&state).await;
         let app = create_router(state);
 
-        let login = drive_start(&app).await;
+        let login = drive_start(&app, None).await;
         let id_token = sign_id_token(
             KEY_1_PEM,
             "kid1",
@@ -1488,7 +1620,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
             Some(&login.pending_cookie),
         )
         .await;
-        assert_generic_rejection_without_session(&response);
+        assert_generic_rejection_without_session(&response, Some("/logs"));
     }
 
     #[tokio::test]
@@ -1506,9 +1638,21 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
         )))
         .await;
         wait_for_ready(&state).await;
+        // Pre-provisioned with a tenant membership so the first redemption
+        // issues a session (a bare JIT-created identity would instead hit
+        // the zero-membership refusal — orthogonal to what this test pins).
+        let catalog = state.catalog().clone();
+        let replay_user = catalog
+            .create_user("replay@example.com", Some("Replay"), None, false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&replay_user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
         let app = create_router(state);
 
-        let login = drive_start(&app).await;
+        let login = drive_start(&app, None).await;
         let id_token = sign_id_token(
             KEY_1_PEM,
             "kid1",
@@ -1563,7 +1707,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
             Some(&login.pending_cookie),
         )
         .await;
-        assert_generic_rejection_without_session(&second);
+        assert_generic_rejection_without_session(&second, Some("/logs"));
     }
 
     #[tokio::test]
@@ -1591,9 +1735,15 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
             )
             .await
             .unwrap();
+        // Membership pre-granted so this pins the allowlist/link nuance in
+        // isolation, unaffected by the separate zero-membership refusal.
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
 
         let app = create_router(state);
-        let login = drive_start(&app).await;
+        let login = drive_start(&app, None).await;
         let id_token = sign_id_token(
             KEY_1_PEM,
             "kid1",
@@ -1640,9 +1790,21 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
         )))
         .await;
         wait_for_ready(&state).await;
+        // Pre-provisioned with a tenant membership so a successful rotation
+        // recovery is distinguishable from the separate zero-membership
+        // refusal by session-cookie presence alone.
+        let catalog = state.catalog().clone();
+        let rotated_user = catalog
+            .create_user("rotated@example.com", Some("Rotated"), None, false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&rotated_user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
         let app = create_router(state);
 
-        let login = drive_start(&app).await;
+        let login = drive_start(&app, None).await;
         // Signed with a second key/kid that the JWKS served at discovery
         // time never advertised.
         let id_token = sign_id_token(
@@ -1685,7 +1847,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
                 .unwrap()
                 .to_str()
                 .unwrap(),
-            "/"
+            "/logs"
         );
         assert!(
             response
@@ -1769,7 +1931,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
         let catalog = state.catalog().clone();
         let app = create_router(state);
 
-        let login = drive_start(&app).await;
+        let login = drive_start(&app, None).await;
         let id_token = sign_id_token_with_groups(
             KEY_1_PEM,
             "kid1",
@@ -1832,7 +1994,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
         let catalog = state.catalog().clone();
         let app = create_router(state);
 
-        let login = drive_start(&app).await;
+        let login = drive_start(&app, None).await;
         let id_token = sign_id_token_with_groups(
             KEY_1_PEM,
             "kid1",
@@ -1892,7 +2054,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
         let catalog = state.catalog().clone();
         let app = create_router(state);
 
-        let login = drive_start(&app).await;
+        let login = drive_start(&app, None).await;
         let id_token = sign_id_token_with_groups(
             KEY_1_PEM,
             "kid1",
@@ -1976,7 +2138,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
             .unwrap();
 
         let app = create_router(state);
-        let login = drive_start(&app).await;
+        let login = drive_start(&app, None).await;
         // This login's token no longer carries `observability-admins`.
         let id_token = sign_id_token_with_groups(
             KEY_1_PEM,
@@ -2045,7 +2207,7 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
         let before = catalog.list_memberships_for_user(&user.id).await.unwrap();
 
         let app = create_router(state);
-        let login = drive_start(&app).await;
+        let login = drive_start(&app, None).await;
         let id_token = sign_id_token_with_groups(
             KEY_1_PEM,
             "kid1",
@@ -2078,17 +2240,314 @@ bjkNcKEJskeng2DMpy0SXaOVUOc6sU5cxc7F6vtWUDblAWQmMg0Y/g==\n\
         assert_eq!(after[0].granted_by, GrantSource::Local);
     }
 
+    // --- Redirect return-target (change: oidc-login, "SSO login returns to
+    // where it started") ---
+
+    #[tokio::test]
+    async fn start_carries_a_safe_redirect_into_the_pending_cookie_and_callback_honours_it() {
+        let server = MockServer::start().await;
+        mount_discovery_and_jwks(&server, vec![jwk_json(KEY_1_PEM, "kid1")]).await;
+        let state = test_state(Some(oidc_config(
+            server.uri(),
+            Some(REDIRECT_URL.to_string()),
+        )))
+        .await;
+        wait_for_ready(&state).await;
+        // Pre-provisioned with a tenant membership: this test pins the
+        // redirect-target carrying, orthogonal to the zero-membership
+        // refusal a bare JIT-created identity would otherwise hit.
+        let catalog = state.catalog().clone();
+        let redirect_user = catalog
+            .create_user("redirect-target@example.com", None, None, false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&redirect_user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        let app = create_router(state);
+
+        let login = drive_start(&app, Some("/traces")).await;
+        let id_token = sign_id_token(
+            KEY_1_PEM,
+            "kid1",
+            &server.uri(),
+            "test-client",
+            "idp-subject-redirect",
+            &login.nonce,
+            Some("redirect-target@example.com"),
+            Some(true),
+            None,
+            chrono::Duration::minutes(5),
+        );
+        mount_token_response(&server, &id_token).await;
+
+        let response = drive_callback(
+            &app,
+            Some("code"),
+            Some(&login.state),
+            Some(&login.pending_cookie),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::LOCATION)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "/traces"
+        );
+    }
+
+    #[tokio::test]
+    async fn start_preserves_a_full_oauth_consent_url_as_the_redirect_target() {
+        // The MCP OAuth consent screen depends on this exact round trip
+        // (spec: "MCP OAuth consent rides the SSO session"): the consent
+        // URL's own query string (client_id, state, ...) must survive intact.
+        let server = MockServer::start().await;
+        mount_discovery_and_jwks(&server, vec![jwk_json(KEY_1_PEM, "kid1")]).await;
+        let state = test_state(Some(oidc_config(
+            server.uri(),
+            Some(REDIRECT_URL.to_string()),
+        )))
+        .await;
+        wait_for_ready(&state).await;
+        let catalog = state.catalog().clone();
+        let consent_user = catalog
+            .create_user("consent-target@example.com", None, None, false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&consent_user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        let app = create_router(state);
+
+        let consent_url = "/oauth/consent?client_id=mcp-client&state=xyz&redirect_uri=https%3A%2F%2Fclient.example%2Fcb";
+        let login = drive_start(&app, Some(consent_url)).await;
+        let id_token = sign_id_token(
+            KEY_1_PEM,
+            "kid1",
+            &server.uri(),
+            "test-client",
+            "idp-subject-consent",
+            &login.nonce,
+            Some("consent-target@example.com"),
+            Some(true),
+            None,
+            chrono::Duration::minutes(5),
+        );
+        mount_token_response(&server, &id_token).await;
+
+        let response = drive_callback(
+            &app,
+            Some("code"),
+            Some(&login.state),
+            Some(&login.pending_cookie),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::LOCATION)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            consent_url
+        );
+    }
+
+    #[tokio::test]
+    async fn start_falls_back_to_logs_for_an_unsafe_redirect_target() {
+        let server = MockServer::start().await;
+        mount_discovery_and_jwks(&server, vec![jwk_json(KEY_1_PEM, "kid1")]).await;
+        let state = test_state(Some(oidc_config(
+            server.uri(),
+            Some(REDIRECT_URL.to_string()),
+        )))
+        .await;
+        wait_for_ready(&state).await;
+        let catalog = state.catalog().clone();
+        let unsafe_redirect_user = catalog
+            .create_user("unsafe-redirect@example.com", None, None, false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&unsafe_redirect_user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        let app = create_router(state);
+
+        let login = drive_start(&app, Some("https://evil.example/")).await;
+        let id_token = sign_id_token(
+            KEY_1_PEM,
+            "kid1",
+            &server.uri(),
+            "test-client",
+            "idp-subject-unsafe-redirect",
+            &login.nonce,
+            Some("unsafe-redirect@example.com"),
+            Some(true),
+            None,
+            chrono::Duration::minutes(5),
+        );
+        mount_token_response(&server, &id_token).await;
+
+        let response = drive_callback(
+            &app,
+            Some("code"),
+            Some(&login.state),
+            Some(&login.pending_cookie),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::LOCATION)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "/logs"
+        );
+    }
+
+    // --- Zero-membership refusal (change: oidc-login, "No membership means
+    // no session") ---
+
+    #[tokio::test]
+    async fn callback_refuses_non_admin_with_no_membership_but_keeps_the_jit_row() {
+        let server = MockServer::start().await;
+        mount_discovery_and_jwks(&server, vec![jwk_json(KEY_1_PEM, "kid1")]).await;
+        let state = test_state(Some(oidc_config(
+            server.uri(),
+            Some(REDIRECT_URL.to_string()),
+        )))
+        .await;
+        wait_for_ready(&state).await;
+        let catalog = state.catalog().clone();
+        let app = create_router(state);
+
+        let login = drive_start(&app, Some("/traces")).await;
+        let id_token = sign_id_token(
+            KEY_1_PEM,
+            "kid1",
+            &server.uri(),
+            "test-client",
+            "idp-subject-no-membership",
+            &login.nonce,
+            Some("no-membership@example.com"),
+            Some(true),
+            Some("No Membership"),
+            chrono::Duration::minutes(5),
+        );
+        mount_token_response(&server, &id_token).await;
+
+        let response = drive_callback(
+            &app,
+            Some("code"),
+            Some(&login.state),
+            Some(&login.pending_cookie),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::LOCATION)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "/login?error=no_membership&redirect=%2Ftraces"
+        );
+        for value in response.headers().get_all(header::SET_COOKIE) {
+            assert!(!value.to_str().unwrap().starts_with("signaldb_session="));
+        }
+
+        let created = catalog
+            .find_user_by_oidc_identity(&server.uri(), "idp-subject-no-membership")
+            .await
+            .unwrap();
+        assert!(
+            created.is_some(),
+            "the JIT-provisioned user row must survive a no-membership refusal"
+        );
+    }
+
+    #[tokio::test]
+    async fn callback_allows_instance_admin_with_no_membership_to_get_a_session() {
+        let server = MockServer::start().await;
+        mount_discovery_and_jwks(&server, vec![jwk_json(KEY_1_PEM, "kid1")]).await;
+        let state = test_state(Some(oidc_config(
+            server.uri(),
+            Some(REDIRECT_URL.to_string()),
+        )))
+        .await;
+        wait_for_ready(&state).await;
+        let catalog = state.catalog().clone();
+        // An existing instance admin with no tenant membership at all:
+        // matched via the verified-email link path (not JIT-created, which
+        // never sets `is_instance_admin`).
+        catalog
+            .create_user(
+                "admin-no-membership@example.com",
+                Some("Admin No Membership"),
+                None,
+                true,
+            )
+            .await
+            .unwrap();
+
+        let app = create_router(state);
+        let login = drive_start(&app, Some("/traces")).await;
+        let id_token = sign_id_token(
+            KEY_1_PEM,
+            "kid1",
+            &server.uri(),
+            "test-client",
+            "idp-subject-admin-no-membership",
+            &login.nonce,
+            Some("admin-no-membership@example.com"),
+            Some(true),
+            None,
+            chrono::Duration::minutes(5),
+        );
+        mount_token_response(&server, &id_token).await;
+
+        let response = drive_callback(
+            &app,
+            Some("code"),
+            Some(&login.state),
+            Some(&login.pending_cookie),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            response
+                .headers()
+                .get(header::LOCATION)
+                .unwrap()
+                .to_str()
+                .unwrap(),
+            "/traces"
+        );
+        assert!(
+            response
+                .headers()
+                .get_all(header::SET_COOKIE)
+                .iter()
+                .any(|v| v.to_str().unwrap().starts_with("signaldb_session=")),
+            "an instance admin needs no membership row to get a session"
+        );
+    }
+
     /// Task 4.1 (change: oidc-login): once discovery has succeeded, the
     /// login-configuration probe reports `oidc: {name}`, defaulting `name`
     /// to the issuer host when `display_name` is unset.
-    ///
-    /// Ignored pending task 4.2: the `dedicated-login-page` merge
-    /// (integration of #1484 into this branch) kept `login_config` hardcoded
-    /// to `oidc: None` — re-homing it onto `RouterState::oidc()` is the next
-    /// task, not part of that merge. Re-enable once `login_config` reads the
-    /// OIDC runtime.
     #[tokio::test]
-    #[ignore = "login_config does not read the OIDC runtime yet (oidc-login task 4.2)"]
     async fn login_config_probe_reports_oidc_when_available() {
         let server = MockServer::start().await;
         mount_discovery_and_jwks(&server, vec![jwk_json(KEY_1_PEM, "kid1")]).await;

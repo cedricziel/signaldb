@@ -163,6 +163,13 @@ struct PendingLoginPayload {
     nonce: String,
     pkce_verifier: String,
     redirect_uri: String,
+    /// Where the browser lands after a successful callback (change:
+    /// oidc-login, "SSO login returns to where it started"). Always a
+    /// value [`safe_redirect_target`] has already validated — the cookie is
+    /// HMAC-signed, so this can't be tampered with in transit, but the
+    /// value signed in here is only ever one `safe_redirect_target` already
+    /// approved.
+    redirect_target: String,
     issued_at: i64,
 }
 
@@ -173,6 +180,87 @@ pub struct PendingLogin {
     pub nonce: Nonce,
     pub pkce_verifier: PkceCodeVerifier,
     pub redirect_uri: String,
+    /// Where the callback sends the browser on success, or on a failure
+    /// once the pending cookie has been read (change: oidc-login).
+    pub redirect_target: String,
+}
+
+/// Default landing page for an SSO login with no (or an unsafe) `redirect`
+/// target — the same default the `/login` route applies to its own
+/// `redirect` query parameter (change: oidc-login, "SSO login returns to
+/// where it started").
+pub const DEFAULT_REDIRECT_TARGET: &str = "/logs";
+
+/// Validate an SSO `redirect` query parameter the same way the UI's
+/// `safeRedirectTarget` (`LoginRoute.tsx`) validates its own: only a
+/// same-origin absolute path is honoured. Rejects a missing value, anything
+/// not starting with a single `/` (so `//evil.example`, `/\evil.example`,
+/// and absolute URLs all fall through immediately), anything that resolves
+/// to a different origin once parsed (a protocol-relative or backslash-
+/// normalized host escape), and the `/login` route itself (which would loop
+/// the credential step back onto its own landing pad). Everything else
+/// (including a bare `/logs?x=1`) is returned with its path, query, and
+/// fragment intact.
+///
+/// This is a security boundary: the return value is written straight into
+/// the callback's `Location` header (`endpoints::oidc::callback`), so it
+/// must never carry a control character (a raw CR/LF could inject a header
+/// or split the response) or resolve to a bare `//host` (protocol-relative,
+/// read by a browser as an origin escape even though it stayed same-origin
+/// through this function's own parsing — dot-segment path normalization can
+/// produce one, e.g. `/.//evil.example`). Both are checked explicitly
+/// below rather than trusted to `url`'s parser: a parser detail (what it
+/// happens to strip or normalize today) is not something this function's
+/// safety should depend on.
+pub fn safe_redirect_target(raw: Option<&str>) -> String {
+    let fallback = || DEFAULT_REDIRECT_TARGET.to_string();
+    let Some(raw) = raw else {
+        return fallback();
+    };
+    // Reject outright on any control character (CR, LF, tab, or anything
+    // below 0x20) — checked against the raw input, not the parsed result,
+    // so this can't be bypassed by whatever the parser does or doesn't
+    // strip.
+    if raw.chars().any(|c| (c as u32) < 0x20) {
+        return fallback();
+    }
+    if !raw.starts_with('/') {
+        return fallback();
+    }
+    // A fixed, arbitrary base: only used to detect whether `raw` parses to a
+    // different origin (a protocol-relative `//host` or a backslash the
+    // WHATWG URL algorithm normalizes into one, the same escapes browsers
+    // apply when resolving the UI's own `new URL(raw, location.origin)`).
+    let Ok(base) = url::Url::parse("http://signaldb-oidc-redirect.invalid") else {
+        return fallback();
+    };
+    let Ok(joined) = base.join(raw) else {
+        return fallback();
+    };
+    if joined.origin() != base.origin() {
+        return fallback();
+    }
+    if joined.path() == "/login" {
+        return fallback();
+    }
+    let mut target = joined.path().to_string();
+    if let Some(query) = joined.query() {
+        target.push('?');
+        target.push_str(query);
+    }
+    if let Some(fragment) = joined.fragment() {
+        target.push('#');
+        target.push_str(fragment);
+    }
+    // Defense in depth against a dot-segment path escape (see the doc
+    // comment above): even though `joined`'s *origin* stayed same-origin,
+    // a normalized path starting with `//` would read as protocol-relative
+    // once written alone into the `Location` header, outside the base this
+    // function joined against.
+    if target.starts_with("//") {
+        return fallback();
+    }
+    target
 }
 
 /// Sign a pending login into the cookie value: `state`/`nonce` are passed as
@@ -189,12 +277,14 @@ pub fn sign_pending_login(
     nonce: &str,
     pkce_verifier: &str,
     redirect_uri: &str,
+    redirect_target: &str,
 ) -> anyhow::Result<String> {
     let payload = PendingLoginPayload {
         state: state.to_string(),
         nonce: nonce.to_string(),
         pkce_verifier: pkce_verifier.to_string(),
         redirect_uri: redirect_uri.to_string(),
+        redirect_target: redirect_target.to_string(),
         issued_at: chrono::Utc::now().timestamp(),
     };
     let json = serde_json::to_vec(&payload)
@@ -231,6 +321,7 @@ pub fn verify_pending_login(client_secret: &str, cookie_value: &str) -> Option<P
         nonce: Nonce::new(payload.nonce),
         pkce_verifier: PkceCodeVerifier::new(payload.pkce_verifier),
         redirect_uri: payload.redirect_uri,
+        redirect_target: payload.redirect_target,
     })
 }
 
@@ -721,6 +812,7 @@ mod tests {
             "nonce-1",
             "verifier-1",
             "https://signaldb.example.com/ui/session/oidc/callback",
+            "/traces",
         )
         .unwrap();
         let pending = verify_pending_login("s3cret", &cookie).expect("valid cookie verifies");
@@ -731,17 +823,20 @@ mod tests {
             pending.redirect_uri,
             "https://signaldb.example.com/ui/session/oidc/callback"
         );
+        assert_eq!(pending.redirect_target, "/traces");
     }
 
     #[test]
     fn pending_login_rejects_wrong_key() {
-        let cookie = sign_pending_login("s3cret", "s", "n", "v", "https://example.com/cb").unwrap();
+        let cookie =
+            sign_pending_login("s3cret", "s", "n", "v", "https://example.com/cb", "/logs").unwrap();
         assert!(verify_pending_login("different-secret", &cookie).is_none());
     }
 
     #[test]
     fn pending_login_rejects_tampered_payload() {
-        let cookie = sign_pending_login("s3cret", "s", "n", "v", "https://example.com/cb").unwrap();
+        let cookie =
+            sign_pending_login("s3cret", "s", "n", "v", "https://example.com/cb", "/logs").unwrap();
         let (payload, tag) = cookie.split_once('.').unwrap();
         let mut bytes = URL_SAFE_NO_PAD.decode(payload).unwrap();
         // Flip a byte in the encoded JSON payload without recomputing the tag.
@@ -765,6 +860,7 @@ mod tests {
             nonce: "n".to_string(),
             pkce_verifier: "v".to_string(),
             redirect_uri: "https://example.com/cb".to_string(),
+            redirect_target: "/logs".to_string(),
             issued_at,
         };
         let json = serde_json::to_vec(&payload).unwrap();
@@ -811,5 +907,115 @@ mod tests {
             issuer_host("https://idp.example.com/realms/signaldb"),
             "idp.example.com"
         );
+    }
+
+    // --- safe_redirect_target (change: oidc-login, "SSO login returns to
+    // where it started") ---
+
+    #[test]
+    fn safe_redirect_target_defaults_to_logs_when_missing() {
+        assert_eq!(safe_redirect_target(None), "/logs");
+        assert_eq!(safe_redirect_target(Some("")), "/logs");
+    }
+
+    #[test]
+    fn safe_redirect_target_preserves_a_same_origin_path_with_query() {
+        assert_eq!(safe_redirect_target(Some("/logs?x=1")), "/logs?x=1");
+        assert_eq!(safe_redirect_target(Some("/traces")), "/traces");
+    }
+
+    #[test]
+    fn safe_redirect_target_preserves_the_full_oauth_consent_url_intact() {
+        let consent =
+            "/oauth/consent?client_id=abc&redirect_uri=https%3A%2F%2Fclient.example%2Fcb&state=xyz";
+        assert_eq!(safe_redirect_target(Some(consent)), consent);
+    }
+
+    #[test]
+    fn safe_redirect_target_rejects_absolute_urls() {
+        assert_eq!(safe_redirect_target(Some("https://evil.example/")), "/logs");
+        assert_eq!(safe_redirect_target(Some("http://evil.example/")), "/logs");
+    }
+
+    #[test]
+    fn safe_redirect_target_rejects_protocol_relative_urls() {
+        assert_eq!(safe_redirect_target(Some("//evil.example/")), "/logs");
+    }
+
+    #[test]
+    fn safe_redirect_target_rejects_backslash_host_escape() {
+        assert_eq!(safe_redirect_target(Some("/\\evil.example")), "/logs");
+    }
+
+    #[test]
+    fn safe_redirect_target_rejects_a_relative_path_not_starting_with_slash() {
+        assert_eq!(safe_redirect_target(Some("logs")), "/logs");
+        assert_eq!(safe_redirect_target(Some("evil.example")), "/logs");
+    }
+
+    #[test]
+    fn safe_redirect_target_rejects_the_login_route_itself() {
+        assert_eq!(safe_redirect_target(Some("/login")), "/logs");
+        assert_eq!(
+            safe_redirect_target(Some("/login?error=sso_failed")),
+            "/logs"
+        );
+    }
+
+    // The return value is written straight into the `Location` header
+    // (`endpoints::oidc::callback`), so a raw control character or a
+    // protocol-relative escape reaching the header would be a header/
+    // response-injection or origin-escape bug, not just a cosmetic one.
+
+    #[test]
+    fn safe_redirect_target_rejects_embedded_tab() {
+        assert_eq!(safe_redirect_target(Some("/\t/evil.example")), "/logs");
+    }
+
+    #[test]
+    fn safe_redirect_target_rejects_embedded_newline() {
+        assert_eq!(safe_redirect_target(Some("/\n/evil.example")), "/logs");
+    }
+
+    #[test]
+    fn safe_redirect_target_rejects_embedded_cr_and_crlf() {
+        assert_eq!(safe_redirect_target(Some("/\r/evil.example")), "/logs");
+        assert_eq!(
+            safe_redirect_target(Some("/logs\r\nSet-Cookie:%20evil=1")),
+            "/logs"
+        );
+    }
+
+    #[test]
+    fn safe_redirect_target_rejects_dot_segment_host_escapes() {
+        assert_eq!(safe_redirect_target(Some("/.//evil.example")), "/logs");
+        assert_eq!(safe_redirect_target(Some("/../\\evil.example")), "/logs");
+    }
+
+    #[test]
+    fn safe_redirect_target_never_returns_a_control_character_or_bare_double_slash() {
+        for raw in [
+            "/\t/evil.example",
+            "/\n/evil.example",
+            "/\r/evil.example",
+            "/logs\r\nSet-Cookie:%20evil=1",
+            "/.//evil.example",
+            "/../\\evil.example",
+            "//evil.example/",
+            "/\\evil.example",
+            "https://evil.example/",
+            "/traces",
+            "/logs?x=1",
+        ] {
+            let target = safe_redirect_target(Some(raw));
+            assert!(
+                target.chars().all(|c| (c as u32) >= 0x20),
+                "control character leaked into redirect target {target:?} from {raw:?}"
+            );
+            assert!(
+                !target.starts_with("//"),
+                "protocol-relative target {target:?} leaked from {raw:?}"
+            );
+        }
     }
 }
