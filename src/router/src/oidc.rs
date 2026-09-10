@@ -246,6 +246,8 @@ impl TracedHttpClient {
             // Following redirects on an IdP response opens the client up to
             // SSRF (the crate's own docs warn about this).
             .redirect(openidconnect::reqwest::redirect::Policy::none())
+            .connect_timeout(Duration::from_secs(5))
+            .timeout(Duration::from_secs(15))
             .build()?;
         Ok(Self(client))
     }
