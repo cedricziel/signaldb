@@ -159,6 +159,7 @@ impl SourcePlan {
                     ("log.attributes", "log_attributes"),
                     ("scope.attributes", "scope_attributes"),
                     ("resource.attributes", "resource_attributes"),
+                    ("resource.identity", "resource_identity"),
                 ],
             }),
             "traces" => Some(SourcePlan {
@@ -196,6 +197,7 @@ impl SourcePlan {
                     ("span.attributes", "span_attributes"),
                     ("scope.attributes", "scope_attributes"),
                     ("resource.attributes", "resource_attributes"),
+                    ("resource.identity", "resource_identity"),
                 ],
             }),
             "profiles" => Some(SourcePlan {
@@ -241,6 +243,7 @@ impl SourcePlan {
                     ("service.name", "service_name"),
                     ("trace.id", "trace_id"),
                     ("span.id", "span_id"),
+                    ("resource.identity", "resource_identity"),
                 ],
             }),
             "metrics" => Some(SourcePlan {
@@ -273,6 +276,7 @@ impl SourcePlan {
                     // distinct logical name, same reasoning as traces'
                     // `duration` → `duration_nanos`.
                     ("metric.value", "value"),
+                    ("resource.identity", "resource_identity"),
                 ],
             }),
             "metrics_histogram" => Some(SourcePlan {
@@ -5345,6 +5349,149 @@ mod tests {
             })
             .collect();
         assert_eq!(counts, vec![2, 1], "descending by span count");
+    }
+
+    /// A minimal table for one logical source, carrying only its time
+    /// column and a nullable `resource_identity` column: two rows share one
+    /// digest, a third carries a different one. Enough to exercise
+    /// `resource.identity` as a `rows` projection target, a `where`
+    /// operand, and an `aggregate.by` key without pulling in every other
+    /// physical column that source's real schema has (#1340).
+    fn resource_identity_ctx(
+        table: &str,
+        time_col: &str,
+        time_is_timestamp: bool,
+    ) -> SessionContext {
+        let time_field = if time_is_timestamp {
+            Field::new(
+                time_col,
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            )
+        } else {
+            Field::new(time_col, DataType::Int64, false)
+        };
+        let schema = Arc::new(Schema::new(vec![
+            time_field,
+            Field::new("resource_identity", DataType::Utf8, true),
+        ]));
+        let identities = StringArray::from(vec![
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
+            Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        ]);
+        let time_array: ArrayRef = if time_is_timestamp {
+            Arc::new(TimestampNanosecondArray::from(vec![10_i64, 20, 30]))
+        } else {
+            Arc::new(Int64Array::from(vec![10_i64, 20, 30]))
+        };
+        let batch =
+            RecordBatch::try_new(schema.clone(), vec![time_array, Arc::new(identities)]).unwrap();
+        let ctx = SessionContext::new();
+        let mem = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table(table.to_string(), Arc::new(mem)).unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
+    #[tokio::test]
+    async fn resource_identity_projects_filters_and_groups_by_the_physical_column() {
+        for (source, table, time_col, time_is_timestamp) in [
+            ("logs", "logs", "timestamp", true),
+            ("traces", "traces", "start_time_unix_nano", false),
+            ("profiles", "profiles", "timestamp", true),
+            ("metrics", "metrics_gauge", "timestamp", true),
+        ] {
+            let svc = IrService::new(resource_identity_ctx(table, time_col, time_is_timestamp));
+
+            // `rows`: the projected column is the physical `resource_identity`.
+            let d = doc(serde_json::json!({
+                "irVersion": 1, "from": source, "range": { "from": 0, "to": 1000 },
+                "result": "rows",
+                "fields": ["resource.identity"],
+                "pipeline": []
+            }));
+            let (df, _) = svc
+                .plan(&d, "t", "d", 0)
+                .await
+                .unwrap_or_else(|e| panic!("{source}: rows projection should plan: {e}"))
+                .expect("source table is registered");
+            let batches = df.collect().await.unwrap();
+            assert_eq!(
+                batches[0].schema().field(0).name(),
+                "resource_identity",
+                "{source}: projects the physical column"
+            );
+
+            // `where`: filtering on resource.identity narrows to the two
+            // rows sharing that digest.
+            let d = doc(serde_json::json!({
+                "irVersion": 1, "from": source, "range": { "from": 0, "to": 1000 },
+                "result": "rows",
+                "fields": ["resource.identity"],
+                "pipeline": [{ "where": { "field": "resource.identity", "op": "eq",
+                                           "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" } }]
+            }));
+            let (df, _) = svc
+                .plan(&d, "t", "d", 0)
+                .await
+                .unwrap_or_else(|e| panic!("{source}: filter should plan: {e}"))
+                .expect("source table is registered");
+            let batches = df.collect().await.unwrap();
+            let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+            assert_eq!(
+                total, 2,
+                "{source}: filter matches both rows of one identity"
+            );
+
+            // `aggregate.by`: grouping by resource.identity yields the two
+            // distinct digests, never a null group.
+            let d = doc(serde_json::json!({
+                "irVersion": 1, "from": source, "range": { "from": 0, "to": 1000 },
+                "result": "table",
+                "pipeline": [{ "aggregate": { "by": ["resource.identity"],
+                                               "aggs": [{ "fn": "count", "as": "n" }] } }]
+            }));
+            let (df, _) = svc
+                .plan(&d, "t", "d", 0)
+                .await
+                .unwrap_or_else(|e| panic!("{source}: aggregate should plan: {e}"))
+                .expect("source table is registered");
+            let batches = df.collect().await.unwrap();
+            let mut groups: Vec<(Option<String>, i64)> = Vec::new();
+            for b in &batches {
+                let keys = b
+                    .column_by_name("resource_identity")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap();
+                let ns = b
+                    .column_by_name("n")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
+                for i in 0..b.num_rows() {
+                    groups.push((
+                        (!keys.is_null(i)).then(|| keys.value(i).to_string()),
+                        ns.value(i),
+                    ));
+                }
+            }
+            groups.sort();
+            assert_eq!(
+                groups,
+                vec![
+                    (Some("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa".to_string()), 2),
+                    (Some("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb".to_string()), 1),
+                ],
+                "{source}: two non-null groups, never a null bucket"
+            );
+        }
     }
 
     /// Like [`traces_ctx`], plus the `timestamp` partition column the real v2
