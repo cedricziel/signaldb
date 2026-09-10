@@ -406,8 +406,13 @@ impl Eq for ValueOp {}
 /// A lowered PromQL query.
 #[derive(Debug, Clone, PartialEq)]
 pub struct MetricPlan {
-    /// The metric name being queried.
+    /// The metric name being queried: a literal name for a bare selector or
+    /// `__name__=`, or the raw (unanchored) pattern/value for `__name__` used
+    /// with `!=`/`=~`/`!~` — see [`Self::metric_name_op`].
     pub metric_name: String,
+    /// How [`Self::metric_name`] is compared against the `metric_name`
+    /// column. `Eq` for a bare selector or a `__name__=` matcher.
+    pub metric_name_op: MatchKind,
     /// Label matchers to filter series (excluding `__name__`).
     pub matchers: Vec<LabelMatch>,
     /// The aggregate computed per bucket per series. Ignored for the
@@ -994,12 +999,18 @@ fn lower_selector(
     grouping: Grouping,
     range: Option<RangeSpec>,
 ) -> Result<MetricPlan, QuerierError> {
-    // The metric name may be given directly or via a `__name__` matcher.
+    // The metric name may be given directly or via a `__name__` matcher; a
+    // matcher other than `=` (regex, negated) is kept as-is rather than
+    // folded into an exact match.
     let mut metric_name = vs.name.clone();
+    let mut metric_name_op = MatchKind::Eq;
     let mut matchers = Vec::new();
     for m in &vs.matchers.matchers {
         if m.name == "__name__" {
-            metric_name.get_or_insert_with(|| m.value.clone());
+            if metric_name.is_none() {
+                metric_name = Some(m.value.clone());
+                metric_name_op = match_kind(&m.op);
+            }
             continue;
         }
         matchers.push(LabelMatch {
@@ -1030,6 +1041,7 @@ fn lower_selector(
     };
     Ok(MetricPlan {
         metric_name,
+        metric_name_op,
         matchers,
         aggregate,
         grouping,
@@ -1061,6 +1073,7 @@ fn lower_selector(
 fn time_plan() -> MetricPlan {
     MetricPlan {
         metric_name: String::new(),
+        metric_name_op: MatchKind::Eq,
         matchers: Vec::new(),
         aggregate: MetricAgg::Last,
         grouping: Grouping::Collapse,
@@ -1678,8 +1691,40 @@ mod tests {
     fn name_via_name_matcher() {
         let p = plan(r#"{__name__="up", job="api"}"#);
         assert_eq!(p.metric_name, "up");
+        assert_eq!(p.metric_name_op, MatchKind::Eq);
         assert_eq!(p.matchers.len(), 1);
         assert_eq!(p.matchers[0].name, "job");
+    }
+
+    #[test]
+    fn bare_selector_name_op_is_eq() {
+        let p = plan(r#"http_requests_total"#);
+        assert_eq!(p.metric_name_op, MatchKind::Eq);
+    }
+
+    #[test]
+    fn name_regex_matcher_is_not_collapsed_to_exact() {
+        // A `__name__=~` matcher must keep the raw pattern and its operator
+        // rather than being folded into an exact-match metric name. The
+        // PromQL string literal escapes `\.` as `\\.`, same as the issue.
+        let p = plan(r#"{__name__=~"signaldb\\.wal\\..*"}"#);
+        assert_eq!(p.metric_name, r"signaldb\.wal\..*");
+        assert_eq!(p.metric_name_op, MatchKind::Re);
+        assert!(p.matchers.is_empty());
+    }
+
+    #[test]
+    fn name_negated_regex_matcher_lowers_to_nre() {
+        // A lone `__name__!~` matcher matches the empty name too, so PromQL
+        // requires another matcher to keep the selector non-trivial.
+        let p = plan(r#"{__name__!~"req.*", job="api"}"#);
+        assert_eq!(p.metric_name_op, MatchKind::Nre);
+    }
+
+    #[test]
+    fn name_not_equal_matcher_lowers_to_neq() {
+        let p = plan(r#"{__name__!="up", job="api"}"#);
+        assert_eq!(p.metric_name_op, MatchKind::Neq);
     }
 
     #[test]

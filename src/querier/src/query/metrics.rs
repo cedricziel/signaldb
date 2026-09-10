@@ -2215,7 +2215,7 @@ fn apply_filters(
         // Metrics tables carry no derived token column (logs only).
         attr_tokens: false,
     };
-    let mut predicate = col("metric_name").eq(lit(plan.metric_name.clone()));
+    let mut predicate = metric_name_expr(plan);
     for m in &plan.matchers {
         predicate = predicate.and(matcher_expr(m, &attr_ctx)?);
     }
@@ -2226,6 +2226,44 @@ fn apply_filters(
             .and(predicate),
     )
     .map_err(QuerierError::QueryFailed)
+}
+
+/// Build an exact/negated/regex predicate against a non-nullable column.
+/// `anchored` fully anchors the regex pattern (`^(?:pattern)$`), matching
+/// Prometheus' `__name__` matcher semantics; other labels keep the
+/// pre-existing unanchored (substring) regex behavior.
+fn column_op_expr(column: Expr, op: MatchKind, value: &str, anchored: bool) -> Expr {
+    let pattern = |p: &str| {
+        if anchored {
+            anchor_regex(p)
+        } else {
+            p.to_string()
+        }
+    };
+    match op {
+        MatchKind::Eq => column.eq(lit(value.to_string())),
+        MatchKind::Neq => column.not_eq(lit(value.to_string())),
+        MatchKind::Re => regexp_like(column, lit(pattern(value)), None),
+        MatchKind::Nre => not(regexp_like(column, lit(pattern(value)), None)),
+    }
+}
+
+/// Anchor a PromQL regex pattern to the whole value, matching Prometheus'
+/// `^(?:pattern)$` matcher semantics.
+fn anchor_regex(pattern: &str) -> String {
+    format!("^(?:{pattern})$")
+}
+
+/// Build the predicate for the `__name__` selector against the `metric_name`
+/// column, anchoring `=~`/`!~` patterns to the whole name per Prometheus
+/// semantics (`{__name__=~"wal"}` does not match `"signaldb.wal.count"`).
+fn metric_name_expr(plan: &MetricPlan) -> Expr {
+    column_op_expr(
+        col("metric_name"),
+        plan.metric_name_op,
+        &plan.metric_name,
+        true,
+    )
 }
 
 /// Lower one label matcher to a filter expression, mapping well-known
@@ -2250,12 +2288,7 @@ fn matcher_expr(m: &LabelMatch, ctx: &super::logql::AttrContext) -> Result<Expr,
         ))),
     };
     match column_for_label(&m.name) {
-        Some(column) => Ok(match m.op {
-            MatchKind::Eq => col(column).eq(lit(m.value.clone())),
-            MatchKind::Neq => col(column).not_eq(lit(m.value.clone())),
-            MatchKind::Re => regexp_like(col(column), lit(m.value.clone()), None),
-            MatchKind::Nre => not(regexp_like(col(column), lit(m.value.clone()), None)),
-        }),
+        Some(column) => Ok(column_op_expr(col(column), m.op, &m.value, false)),
         None if materialized.contains(&materialized_column_name(&m.name)) => {
             Ok(column_match(materialized_column_name(&m.name)))
         }
@@ -2805,6 +2838,37 @@ mod tests {
         service_with_counter_series(&[(100, 20.0), (200, 5.0)])
     }
 
+    /// Two distinct metric names (`reqs`, `errors`) on the same service, so
+    /// a `__name__` regex matcher's inclusion/exclusion can be told apart
+    /// from an accidental empty-match fast path.
+    fn service_with_reqs_and_errors() -> MetricsService {
+        let schema = metrics_schema();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![100, 100])),
+                Arc::new(TimestampNanosecondArray::from(vec![None, None])),
+                Arc::new(StringArray::from(vec!["api", "api"])),
+                Arc::new(StringArray::from(vec!["reqs", "errors"])),
+                Arc::new(Float64Array::from(vec![3.0, 7.0])),
+                Arc::new(StringArray::from(vec!["{}", "{}"])),
+                Arc::new(StringArray::from(vec!["{}", "{}"])),
+            ],
+        )
+        .unwrap();
+
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let schema_provider = Arc::new(MemorySchemaProvider::new());
+        schema_provider
+            .register_table("metrics_gauge".to_string(), Arc::new(table))
+            .unwrap();
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        catalog.register_schema("d", schema_provider).unwrap();
+        ctx.register_catalog("t", catalog);
+        MetricsService::new(ctx)
+    }
+
     /// Collect (metric_name, service?, value) tuples from a matrix.
     async fn matrix(
         service: &MetricsService,
@@ -3020,6 +3084,38 @@ mod tests {
             .unwrap();
         assert_eq!(api.2, 3.0); // last of [1,3]
         assert_eq!(web.2, 5.0);
+    }
+
+    #[tokio::test]
+    async fn name_regex_matcher_matches_by_pattern() {
+        let service = service_with_data();
+        // `.*` after a prefix only matches when the matcher is a real regex,
+        // not an exact-match fast path on the literal pattern string.
+        let out = matrix(&service, r#"{__name__=~"re.*"}"#, 1000).await;
+        assert!(out.iter().any(|(name, _, _)| name == "reqs"), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn name_regex_matcher_is_anchored() {
+        let service = service_with_data();
+        // Prometheus regexes are fully anchored (`^(?:pattern)$`), so a
+        // pattern that only matches a substring must select nothing.
+        let out = matrix(&service, r#"{__name__=~"eqs"}"#, 1000).await;
+        assert!(out.is_empty(), "{out:?}");
+    }
+
+    #[tokio::test]
+    async fn name_negated_regex_matcher_excludes_matches() {
+        // Two distinct metric names so a wrongly-collapsed exact match
+        // (which would filter out everything) is distinguishable from a
+        // real negated regex (which keeps the non-matching metric).
+        let service = service_with_reqs_and_errors();
+        let out = matrix(&service, r#"{__name__!~"re.*", job="api"}"#, 1000).await;
+        assert_eq!(
+            out.iter().map(|(n, _, _)| n.as_str()).collect::<Vec<_>>(),
+            vec!["errors"],
+            "{out:?}"
+        );
     }
 
     #[tokio::test]
