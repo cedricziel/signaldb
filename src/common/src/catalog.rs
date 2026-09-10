@@ -356,6 +356,68 @@ async fn migrate_tenant_memberships_granted_by_postgres(pool: &PgPool) -> Result
     Ok(())
 }
 
+/// Maximum connections handed out for an on-disk SQLite catalog pool.
+///
+/// SQLite allows exactly one writer at a time regardless of pool size, so a
+/// large pool only means more connections piling up as `SQLITE_BUSY`
+/// contenders. In monolithic mode every service (router, writer, querier,
+/// compactor) opens its own [`Catalog`] against the same `[discovery]` DSN
+/// (see `ServiceBootstrap::new`), so the default pool size of 10 multiplies
+/// into dozens of connections hammering one file (issue #1495). This pool
+/// also serves the router's per-request tenant/API-key auth lookups — not
+/// just the tiny `ingesters`/`compactor_leases` tables — so the cap stays
+/// well above 1 to leave room for concurrent reads rather than forcing a
+/// single-connection bottleneck onto that hot path.
+const SQLITE_CATALOG_MAX_CONNECTIONS: u32 = 8;
+
+/// Whether `err` is SQLite reporting lock contention (`SQLITE_BUSY` /
+/// `SQLITE_LOCKED`, including their extended codes) that a short retry can
+/// reasonably ride out, as opposed to a real failure.
+fn is_retriable_sqlite_busy(err: &sqlx::Error) -> bool {
+    let Some(code) = err.as_database_error().and_then(|e| e.code()) else {
+        return false;
+    };
+    // sqlx-sqlite's `code()` reports SQLite's *extended* result code (e.g.
+    // 261 for SQLITE_BUSY_TIMEOUT), whose low byte is still the primary
+    // code: 5 (SQLITE_BUSY, "database is locked") or 6 (SQLITE_LOCKED,
+    // "database table is locked").
+    matches!(code.parse::<i32>(), Ok(c) if matches!(c & 0xff, 5 | 6))
+}
+
+/// Retry a SQLite write a few times with short backoff when it hits
+/// `SQLITE_BUSY`/`SQLITE_LOCKED` contention. `busy_timeout` (set on every
+/// connection this pool hands out) already makes a single attempt wait out
+/// brief contention, but under a slow commit elsewhere — a competing pool's
+/// writer, or a multi-second storage-layer fsync — that wait can still be
+/// exhausted; this widens the window instead of surfacing the failure to
+/// the caller on the first miss. Non-busy errors (including a genuine
+/// `RowNotFound`) return immediately, unretried.
+async fn retry_on_sqlite_busy<T, F, Fut>(mut op: F) -> Result<T, sqlx::Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, sqlx::Error>>,
+{
+    // 3 attempts against a 10s busy_timeout bounds the worst case at ~30s —
+    // roughly what a single attempt already risked before this pool's
+    // busy_timeout was 30s (see the comment on `Catalog::new`'s
+    // `busy_timeout` call) — while still giving a lock-convoy a couple of
+    // fresh windows to clear instead of failing on the first one.
+    const MAX_ATTEMPTS: u32 = 3;
+    const BASE_DELAY: std::time::Duration = std::time::Duration::from_millis(40);
+
+    let mut attempt = 0;
+    loop {
+        match op().await {
+            Ok(value) => return Ok(value),
+            Err(err) if attempt + 1 < MAX_ATTEMPTS && is_retriable_sqlite_busy(&err) => {
+                attempt += 1;
+                tokio::time::sleep(BASE_DELAY * 2u32.pow(attempt - 1)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
+}
+
 /// Catalog provides an interface to the catalog database (PostgreSQL or SQLite).
 #[derive(Clone)]
 pub enum Catalog {
@@ -426,6 +488,12 @@ impl Catalog {
             // creation). WAL lets readers proceed during a write and makes each
             // write cheaper. In-memory databases don't support WAL, so only
             // tune on-disk files.
+            //
+            // 10s, not longer: `retry_on_sqlite_busy` retries the hot write
+            // paths (heartbeat, reap, lease renew/expire) on top of this, and
+            // each of its attempts can itself wait out a full busy_timeout
+            // window before failing — a 30s window times a handful of
+            // retries turns a "short backoff" into minutes (#1495).
             let is_memory = dsn.contains(":memory:");
             let mut connect_options = SqliteConnectOptions::from_str(&dsn_with_create)
                 .map_err(|e| {
@@ -437,7 +505,7 @@ impl Catalog {
                     e
                 })?
                 .create_if_missing(true)
-                .busy_timeout(std::time::Duration::from_secs(30));
+                .busy_timeout(std::time::Duration::from_secs(10));
             if !is_memory {
                 connect_options = connect_options
                     .journal_mode(SqliteJournalMode::Wal)
@@ -445,6 +513,7 @@ impl Catalog {
             }
 
             let pool = SqlitePoolOptions::new()
+                .max_connections(SQLITE_CATALOG_MAX_CONNECTIONS)
                 .connect_with(connect_options)
                 .await
                 .map_err(|e| {
@@ -1357,17 +1426,24 @@ impl Catalog {
     async fn heartbeat_inner(&self, id: Uuid) -> Result<(), sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
-                let now = Utc::now().to_rfc3339();
                 let id_str = id.to_string();
-                let stmt = r#"
-                UPDATE ingesters SET last_seen = ?
-                WHERE id = ?
-                "#;
-                Self::record_query_text(stmt);
-                let result = query(stmt).bind(&now).bind(&id_str).execute(pool).await?;
-                if result.rows_affected() == 0 {
-                    return Err(sqlx::Error::RowNotFound);
-                }
+                retry_on_sqlite_busy(|| async {
+                    let stmt = r#"
+                    UPDATE ingesters SET last_seen = ?
+                    WHERE id = ?
+                    "#;
+                    Self::record_query_text(stmt);
+                    let result = query(stmt)
+                        .bind(Utc::now().to_rfc3339())
+                        .bind(&id_str)
+                        .execute(pool)
+                        .await?;
+                    if result.rows_affected() == 0 {
+                        return Err(sqlx::Error::RowNotFound);
+                    }
+                    Ok(())
+                })
+                .await?;
             }
             Catalog::Postgres(pool) => {
                 let stmt = r#"
@@ -1667,15 +1743,18 @@ impl Catalog {
                 // last_seen is stored as chrono RFC3339 text (UTC, +00:00
                 // offset), so lexicographic comparison against another
                 // RFC3339 UTC timestamp is chronologically correct.
-                let stmt = r#"
-                DELETE FROM ingesters
-                WHERE last_seen < ?
-                "#;
-                query(stmt)
-                    .bind(cutoff.to_rfc3339())
-                    .execute(pool)
-                    .await?
-                    .rows_affected()
+                retry_on_sqlite_busy(|| async {
+                    let stmt = r#"
+                    DELETE FROM ingesters
+                    WHERE last_seen < ?
+                    "#;
+                    query(stmt)
+                        .bind(cutoff.to_rfc3339())
+                        .execute(pool)
+                        .await
+                        .map(|r| r.rows_affected())
+                })
+                .await?
             }
             Catalog::Postgres(pool) => {
                 let stmt = r#"
@@ -1727,22 +1806,65 @@ impl Catalog {
     }
 }
 
+/// Tracks how long a recurring background operation has been failing
+/// continuously, so a caller can log transient contention quietly and only
+/// escalate once the streak outlasts some threshold — e.g. a heartbeat or
+/// lease renewal failing past the registration/lease TTL is worth an ERROR;
+/// failing for one tick under ordinary SQLite contention is not (#1495).
+#[derive(Default)]
+pub struct FailureStreak {
+    since: Option<std::time::Instant>,
+}
+
+impl FailureStreak {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Clear an in-progress streak after a success.
+    pub fn record_success(&mut self) {
+        self.since = None;
+    }
+
+    /// Record a failure and report whether it has now been failing
+    /// continuously for at least `escalate_after`.
+    pub fn record_failure(&mut self, escalate_after: std::time::Duration) -> bool {
+        let since = *self.since.get_or_insert_with(std::time::Instant::now);
+        since.elapsed() >= escalate_after
+    }
+}
+
 /// Extension methods for Catalog to manage heartbeats.
 impl Catalog {
     /// Spawn a background task that updates the heartbeat (last_seen) for the given ingester ID
     /// at the specified interval. Returns a JoinHandle for the spawned task.
+    ///
+    /// A failure is logged at WARN — under ordinary SQLite contention a
+    /// heartbeat misses a tick and catches up on the next one — and
+    /// escalated to ERROR only once it has been failing continuously for
+    /// `escalate_after` (the registration TTL), since that is when a peer
+    /// can actually reap this service as stale.
     pub fn spawn_ingester_heartbeat(
         &self,
         id: Uuid,
         interval: std::time::Duration,
+        escalate_after: std::time::Duration,
     ) -> tokio::task::JoinHandle<()> {
         let catalog = self.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
+            let mut failures = FailureStreak::new();
             loop {
                 ticker.tick().await;
-                if let Err(e) = catalog.heartbeat(id).await {
-                    tracing::error!(service_id = %id, error = %e, "Failed to send heartbeat for ingester");
+                match catalog.heartbeat(id).await {
+                    Ok(()) => failures.record_success(),
+                    Err(e) => {
+                        if failures.record_failure(escalate_after) {
+                            tracing::error!(service_id = %id, error = %e, "Failed to send heartbeat for ingester (failing past the registration TTL)");
+                        } else {
+                            tracing::warn!(service_id = %id, error = %e, "Failed to send heartbeat for ingester");
+                        }
+                    }
                 }
             }
         })
@@ -1751,6 +1873,9 @@ impl Catalog {
     /// Spawn a background task that periodically deletes service rows
     /// whose heartbeat stopped more than `reap_after` ago. Every service
     /// runs one; the DELETE is idempotent across instances.
+    ///
+    /// Same WARN/ERROR escalation as [`Self::spawn_ingester_heartbeat`],
+    /// using `reap_after` itself as the escalation threshold.
     pub fn spawn_ingester_reaper(
         &self,
         interval: std::time::Duration,
@@ -1758,14 +1883,22 @@ impl Catalog {
     ) -> tokio::task::JoinHandle<()> {
         let catalog = self.clone();
         tokio::spawn(async move {
-            let reap_after =
+            let reap_after_chrono =
                 chrono::Duration::from_std(reap_after).unwrap_or(chrono::Duration::MAX);
             let mut ticker = tokio::time::interval(interval);
+            let mut failures = FailureStreak::new();
             loop {
                 ticker.tick().await;
-                let cutoff = Utc::now() - reap_after;
-                if let Err(e) = catalog.reap_stale_ingesters(cutoff).await {
-                    tracing::error!(error = %e, "Failed to reap stale service registrations");
+                let cutoff = Utc::now() - reap_after_chrono;
+                match catalog.reap_stale_ingesters(cutoff).await {
+                    Ok(_) => failures.record_success(),
+                    Err(e) => {
+                        if failures.record_failure(reap_after) {
+                            tracing::error!(error = %e, "Failed to reap stale service registrations (failing past the registration TTL)");
+                        } else {
+                            tracing::warn!(error = %e, "Failed to reap stale service registrations");
+                        }
+                    }
                 }
             }
         })
@@ -5130,27 +5263,30 @@ impl Catalog {
 
         match self {
             Catalog::Sqlite(pool) => {
-                let stmt = r#"
-                UPDATE compactor_leases
-                SET expires_at = ?,
-                    renewed_at = ?
-                WHERE tenant_id    = ?
-                  AND dataset_id   = ?
-                  AND table_name   = ?
-                  AND partition_id = ?
-                  AND holder_id    = ?
-                "#;
-                let result = query(stmt)
-                    .bind(expires_at.to_rfc3339())
-                    .bind(now.to_rfc3339())
-                    .bind(tenant_id)
-                    .bind(dataset_id)
-                    .bind(table_name)
-                    .bind(partition_id)
-                    .bind(holder_id)
-                    .execute(pool)
-                    .await?;
-                Ok(result.rows_affected() > 0)
+                retry_on_sqlite_busy(|| async {
+                    let stmt = r#"
+                    UPDATE compactor_leases
+                    SET expires_at = ?,
+                        renewed_at = ?
+                    WHERE tenant_id    = ?
+                      AND dataset_id   = ?
+                      AND table_name   = ?
+                      AND partition_id = ?
+                      AND holder_id    = ?
+                    "#;
+                    query(stmt)
+                        .bind(expires_at.to_rfc3339())
+                        .bind(now.to_rfc3339())
+                        .bind(tenant_id)
+                        .bind(dataset_id)
+                        .bind(table_name)
+                        .bind(partition_id)
+                        .bind(holder_id)
+                        .execute(pool)
+                        .await
+                        .map(|r| r.rows_affected() > 0)
+                })
+                .await
             }
             Catalog::Postgres(pool) => {
                 // DB clock, matching try_acquire (clock-skew immunity).
@@ -5242,11 +5378,14 @@ impl Catalog {
         let now = Utc::now();
         match self {
             Catalog::Sqlite(pool) => {
-                let result = query("DELETE FROM compactor_leases WHERE expires_at < ?")
-                    .bind(now.to_rfc3339())
-                    .execute(pool)
-                    .await?;
-                Ok(result.rows_affected())
+                retry_on_sqlite_busy(|| async {
+                    query("DELETE FROM compactor_leases WHERE expires_at < ?")
+                        .bind(now.to_rfc3339())
+                        .execute(pool)
+                        .await
+                        .map(|r| r.rows_affected())
+                })
+                .await
             }
             Catalog::Postgres(pool) => {
                 let result = query("DELETE FROM compactor_leases WHERE expires_at < NOW()")
@@ -5332,6 +5471,7 @@ impl Catalog {
 mod multi_tenancy_tests {
     use super::*;
     use sha2::{Digest, Sha256};
+    use sqlx::ConnectOptions;
 
     fn hash_api_key(key: &str) -> String {
         let mut hasher = Sha256::new();
@@ -5618,6 +5758,109 @@ mod multi_tenancy_tests {
             .unwrap()
             .get(0);
         assert_eq!(mode.to_lowercase(), "wal");
+    }
+
+    /// Monolithic mode opens one `Catalog` per service (router, writer,
+    /// querier, compactor — see `ServiceBootstrap::new`), each against the
+    /// same on-disk `[discovery]` DSN. With sqlx's default pool size of 10
+    /// that's up to 40 connections contending for one SQLite file's single
+    /// writer lock (issue #1495); the pool must cap itself well below that
+    /// default regardless of how many `Catalog`s point at the same file.
+    #[tokio::test]
+    async fn on_disk_sqlite_catalog_caps_pool_connections() {
+        let dir = tempfile::tempdir().unwrap();
+        let dsn = format!("sqlite://{}", dir.path().join("signaldb.db").display());
+
+        let catalog = Catalog::new(&dsn).await.unwrap();
+        let Catalog::Sqlite(pool) = catalog else {
+            panic!("expected a SQLite catalog");
+        };
+
+        assert_eq!(
+            pool.options().get_max_connections(),
+            SQLITE_CATALOG_MAX_CONNECTIONS
+        );
+    }
+
+    /// Reproduces the contention behind #1495: a second connection holds an
+    /// open write transaction on the same on-disk file while a write goes
+    /// through `retry_on_sqlite_busy`. The held connection's `busy_timeout`
+    /// is set far shorter than the hold, so a single attempt is guaranteed
+    /// to see `SQLITE_BUSY` ((code: 5) "database is locked") — exactly what
+    /// an extra `SqlitePool` against the same DSN looks like in monolithic
+    /// mode. Only the retry-with-backoff wrapper, not `busy_timeout` alone,
+    /// can make this succeed.
+    #[tokio::test]
+    async fn retry_on_sqlite_busy_rides_out_contention_a_single_attempt_would_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let dsn = format!("sqlite://{}", dir.path().join("contend.db").display());
+
+        let mut blocker = SqliteConnectOptions::from_str(&dsn)
+            .unwrap()
+            .create_if_missing(true)
+            .connect()
+            .await
+            .unwrap();
+        query("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)")
+            .execute(&mut blocker)
+            .await
+            .unwrap();
+
+        let writer_options = SqliteConnectOptions::from_str(&dsn)
+            .unwrap()
+            .busy_timeout(std::time::Duration::from_millis(50));
+        let writer_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(writer_options)
+            .await
+            .unwrap();
+
+        query("BEGIN IMMEDIATE")
+            .execute(&mut blocker)
+            .await
+            .unwrap();
+        query("INSERT INTO t (v) VALUES (1)")
+            .execute(&mut blocker)
+            .await
+            .unwrap();
+
+        let write = tokio::spawn(async move {
+            retry_on_sqlite_busy(|| async {
+                query("INSERT INTO t (v) VALUES (2)")
+                    .execute(&writer_pool)
+                    .await
+            })
+            .await
+        });
+
+        // Outlasts writer_pool's 50ms busy_timeout, so a single attempt
+        // fails with SQLITE_BUSY; the retry loop's backoff must ride it out.
+        // Held well under the retry loop's total budget (attempts *
+        // busy_timeout + backoff sleeps, comfortably >200ms) so the
+        // assertion below doesn't race scheduling jitter under parallel
+        // test execution.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        query("COMMIT").execute(&mut blocker).await.unwrap();
+
+        write
+            .await
+            .unwrap()
+            .expect("retry_on_sqlite_busy should recover once the blocking writer commits");
+    }
+
+    #[test]
+    fn failure_streak_escalates_only_after_the_threshold() {
+        let mut streak = FailureStreak::new();
+        // First failure: the streak has been running for ~0 time, well
+        // under an hour-long threshold.
+        assert!(!streak.record_failure(std::time::Duration::from_secs(3600)));
+        // Checked again immediately against a zero-length threshold: the
+        // streak already started strictly before now, so it has exceeded it.
+        assert!(streak.record_failure(std::time::Duration::from_millis(0)));
+        streak.record_success();
+        // A success must reset the streak, so the next failure starts a
+        // fresh window and is not yet past even a generous threshold.
+        assert!(!streak.record_failure(std::time::Duration::from_secs(3600)));
     }
 
     #[tokio::test]
