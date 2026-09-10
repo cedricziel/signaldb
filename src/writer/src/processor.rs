@@ -486,6 +486,16 @@ impl WalProcessor {
         self.wal_manager.cleanup_all_if_due().await;
         self.retire_stale_markers_if_due().await;
 
+        // Same reasoning as cleanup above, and doubly so here:
+        // `force_commit_pending` calls `drain_pending` in a loop under
+        // `FLUSH_TIMEOUT`, so a dead-letter reconcile living *inside*
+        // `drain_pending` would re-scan every WAL's dead-letter directory on
+        // every loop iteration of a scoped, time-bounded flush — spending
+        // that budget on work the caller never asked for. One reconcile per
+        // background cycle here still keeps the gauge and retention sweep on
+        // the cadence the acceptor/writer docs describe.
+        common::wal::dead_letter::reconcile_all(&self.wal_manager, "writer").await;
+
         drained
     }
 
@@ -682,8 +692,6 @@ impl WalProcessor {
         common::self_monitoring::app_metrics()
             .writer_entries_deferred_by_budget
             .record(budget_deferred_entries as u64, &[]);
-
-        common::wal::dead_letter::reconcile_all(&self.wal_manager, "writer").await;
 
         if pending_entries.is_empty() {
             // Keep the backlog gauge honest on an idle WAL: without this it

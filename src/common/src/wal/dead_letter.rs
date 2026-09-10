@@ -209,6 +209,12 @@ pub async fn sweep_expired_at(
     for entry in entries {
         let age = now.duration_since(entry.modified).unwrap_or_default();
         if !retention.is_zero() && age > retention {
+            // Only count this entry as reclaimed once every one of its files
+            // is actually gone — a partial failure (e.g. the marker deletes
+            // but the bin does not) must not report space as freed while the
+            // payload is still on disk, nor drop the entry from `remaining`
+            // where the gauge and a later sweep would still find it.
+            let mut fully_deleted = true;
             for path in [&entry.bin_path, &entry.marker_path].into_iter().flatten() {
                 if let Err(e) = tokio::fs::remove_file(path).await
                     && e.kind() != std::io::ErrorKind::NotFound
@@ -218,10 +224,15 @@ pub async fn sweep_expired_at(
                         error = %e,
                         "Failed to delete an expired WAL dead-letter file"
                     );
+                    fully_deleted = false;
                 }
             }
-            deleted_entries += 1;
-            freed_bytes += entry.bytes;
+            if fully_deleted {
+                deleted_entries += 1;
+                freed_bytes += entry.bytes;
+            } else {
+                remaining.push(entry);
+            }
         } else {
             remaining.push(entry);
         }
@@ -324,21 +335,32 @@ pub async fn purge(dir: &Path, kind: Option<DeadLetterKind>, dry_run: bool) -> R
         {
             continue;
         }
-        if !dry_run {
-            for path in [&entry.bin_path, &entry.marker_path].into_iter().flatten() {
-                if let Err(e) = tokio::fs::remove_file(path).await
-                    && e.kind() != std::io::ErrorKind::NotFound
-                {
-                    tracing::warn!(
-                        path = %path.display(),
-                        error = %e,
-                        "Failed to delete a purged WAL dead-letter file"
-                    );
-                }
+        if dry_run {
+            deleted_entries += 1;
+            freed_bytes += entry.bytes;
+            continue;
+        }
+        // Same accounting rule as `sweep_expired_at`: only count this entry
+        // as deleted once every one of its files is actually gone, so a
+        // partial failure does not report space as freed while a payload is
+        // still on disk.
+        let mut fully_deleted = true;
+        for path in [&entry.bin_path, &entry.marker_path].into_iter().flatten() {
+            if let Err(e) = tokio::fs::remove_file(path).await
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "Failed to delete a purged WAL dead-letter file"
+                );
+                fully_deleted = false;
             }
         }
-        deleted_entries += 1;
-        freed_bytes += entry.bytes;
+        if fully_deleted {
+            deleted_entries += 1;
+            freed_bytes += entry.bytes;
+        }
     }
 
     Ok(PurgeResult {
@@ -572,6 +594,59 @@ mod tests {
     }
 
     #[tokio::test]
+    #[cfg(unix)]
+    async fn sweep_does_not_count_a_failed_deletion_as_reclaimed() {
+        // A partial or total failure to remove an expired pair's files must
+        // not be reported as space reclaimed while the payload is still on
+        // disk, and the entry must stay in `remaining` so the gauge and a
+        // later sweep still see it.
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        write_rejected_pair(dir.path(), "old", Duration::from_secs(3600));
+
+        // Read-only directory: `remove_file` inside it fails (not
+        // `NotFound`), while `list_entries`'s readdir/stat still succeed.
+        let mut perms = fs::metadata(dir.path()).unwrap().permissions();
+        perms.set_mode(0o555);
+        fs::set_permissions(dir.path(), perms).unwrap();
+
+        let result = sweep_expired_at(dir.path(), Duration::from_secs(1800), SystemTime::now())
+            .await
+            .unwrap();
+
+        // Restore permissions so TempDir cleanup can remove the directory
+        // before asserting -- a failed assertion must not leave a
+        // non-writable temp dir behind.
+        let mut restore = fs::metadata(dir.path()).unwrap().permissions();
+        restore.set_mode(0o755);
+        fs::set_permissions(dir.path(), restore).unwrap();
+
+        // Whether the restricted permissions actually block deletion depends
+        // on whether the process honors Unix permission bits (e.g. it does
+        // not when running as root in some CI containers). Either outcome
+        // is verified concretely rather than assuming failure.
+        if dir.path().join("old.bin").exists() {
+            assert_eq!(
+                result.deleted_entries, 0,
+                "a failed deletion must not be counted as reclaimed"
+            );
+            assert_eq!(result.freed_bytes, 0);
+            assert_eq!(
+                result.remaining.rejected_entries, 1,
+                "an entry whose deletion failed must stay in remaining"
+            );
+        } else {
+            // Permission bits were bypassed (e.g. running as root); confirm
+            // the deletion genuinely succeeded and was counted, rather than
+            // silently accepting either outcome.
+            assert_eq!(result.deleted_entries, 1);
+            assert!(result.freed_bytes > 0);
+            assert_eq!(result.remaining.rejected_entries, 0);
+        }
+    }
+
+    #[tokio::test]
     async fn zero_retention_disables_the_sweep() {
         let dir = TempDir::new().unwrap();
         write_rejected_pair(dir.path(), "old", Duration::from_secs(365 * 24 * 3600));
@@ -649,6 +724,35 @@ mod tests {
             dir.path().join("b.unreadable.json").exists(),
             "purge scoped to kind=rejected must not touch an unreadable entry"
         );
+    }
+
+    #[tokio::test]
+    #[cfg(unix)]
+    async fn purge_does_not_count_a_failed_deletion_as_reclaimed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let dir = TempDir::new().unwrap();
+        write_rejected_pair(dir.path(), "a", Duration::from_secs(1));
+
+        let mut perms = fs::metadata(dir.path()).unwrap().permissions();
+        perms.set_mode(0o555);
+        fs::set_permissions(dir.path(), perms).unwrap();
+
+        let result = purge(dir.path(), None, false).await.unwrap();
+
+        let mut restore = fs::metadata(dir.path()).unwrap().permissions();
+        restore.set_mode(0o755);
+        fs::set_permissions(dir.path(), restore).unwrap();
+
+        if dir.path().join("a.bin").exists() {
+            assert_eq!(
+                result.deleted_entries, 0,
+                "a failed deletion must not be counted as reclaimed"
+            );
+            assert_eq!(result.freed_bytes, 0);
+        } else {
+            assert_eq!(result.deleted_entries, 1);
+        }
     }
 
     #[tokio::test]
