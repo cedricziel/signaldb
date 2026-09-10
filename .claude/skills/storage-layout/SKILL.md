@@ -178,12 +178,12 @@ Cleanup runs via `WalManager::cleanup_all_if_due` at a **pass boundary** — end
 
 ## Table Types (up to 7 per tenant-dataset)
 
-| Signal   | Table Name                                                                                              | Schema Source                                |
-| -------- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------- |
-| Traces   | `traces`                                                                                                | `schemas.toml` (v3, inherits v2 inherits v1) |
-| Logs     | `logs`                                                                                                  | `schemas.toml` (v1)                          |
-| Metrics  | `metrics_gauge`, `metrics_sum`, `metrics_histogram`, `metrics_exponential_histogram`, `metrics_summary` | `schemas.toml` (v1)                          |
-| Profiles | `profiles`                                                                                              | `schemas.toml` (v1)                          |
+| Signal   | Table Name                                                                                              | Schema Source                                            |
+| -------- | ------------------------------------------------------------------------------------------------------- | -------------------------------------------------------- |
+| Traces   | `traces`                                                                                                | `schemas.toml` (v4, inherits v3 inherits v2 inherits v1) |
+| Logs     | `logs`                                                                                                  | `schemas.toml` (v2, inherits v1)                         |
+| Metrics  | `metrics_gauge`, `metrics_sum`, `metrics_histogram`, `metrics_exponential_histogram`, `metrics_summary` | `schemas.toml` (v1)                                      |
+| Profiles | `profiles`                                                                                              | `schemas.toml` (v1)                                      |
 
 All tables partitioned by `Hour(timestamp)` as `timestamp_hour`.
 

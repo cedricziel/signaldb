@@ -396,64 +396,73 @@ lists — metrics/profiles only gained this in the same change that added
 their `schemas.toml` sections; before that, only traces/logs resolved from
 TOML and metrics/profiles were hand-written Rust.
 
-#### Traces Table (v2 -- current)
+#### Traces Table (v4 -- current)
 
-Defined in `schemas.toml` via v1 base + v2 inheritance with renames and additions.
+Defined in `schemas.toml` via v1 base plus v2 (renames, computed fields), v3 (#1208's numeric/dropped-count columns), and v4 (#1340's `resource_identity`) inheritance.
 
-| #   | Field                  | Iceberg Type | Required | Notes                                                |
-| --- | ---------------------- | ------------ | -------- | ---------------------------------------------------- |
-| 1   | `trace_id`             | String       | Yes      |                                                      |
-| 2   | `span_id`              | String       | Yes      |                                                      |
-| 3   | `parent_span_id`       | String       | No       |                                                      |
-| 4   | `span_name`            | String       | Yes      | Renamed from `name` in v2                            |
-| 5   | `service_name`         | String       | Yes      |                                                      |
-| 6   | `start_time_unix_nano` | Long         | Yes      | Nanoseconds since epoch                              |
-| 7   | `end_time_unix_nano`   | Long         | Yes      | Nanoseconds since epoch                              |
-| 8   | `duration_nanos`       | Long         | Yes      | Renamed from `duration_nano` in v2                   |
-| 9   | `span_kind`            | String       | Yes      |                                                      |
-| 10  | `status_code`          | String       | Yes      |                                                      |
-| 11  | `status_message`       | String       | No       |                                                      |
-| 12  | `is_root`              | Boolean      | Yes      |                                                      |
-| 13  | `span_attributes`      | String       | No       | JSON. Renamed from `attributes_json` in v2           |
-| 14  | `resource_attributes`  | String       | No       | JSON. Renamed from `resource_json` in v2             |
-| 15  | `events`               | String       | No       | JSON serialized (nested List<Struct> in Flight)      |
-| 16  | `links`                | String       | No       | JSON serialized (nested List<Struct> in Flight)      |
-| 17  | `trace_state`          | String       | No       |                                                      |
-| 18  | `resource_schema_url`  | String       | No       |                                                      |
-| 19  | `scope_name`           | String       | No       |                                                      |
-| 20  | `scope_version`        | String       | No       |                                                      |
-| 21  | `scope_schema_url`     | String       | No       |                                                      |
-| 22  | `scope_attributes`     | String       | No       |                                                      |
-| 23  | `timestamp`            | Timestamp    | Yes      | Computed from `start_time_unix_nano`. Partition key. |
-| 24  | `date_day`             | Date         | Yes      | Computed from timestamp                              |
-| 25  | `hour`                 | Int          | Yes      | Computed from timestamp                              |
+| #   | Field                      | Iceberg Type | Required | Notes                                                                                             |
+| --- | -------------------------- | ------------ | -------- | ------------------------------------------------------------------------------------------------- |
+| 1   | `trace_id`                 | String       | Yes      |                                                                                                   |
+| 2   | `span_id`                  | String       | Yes      |                                                                                                   |
+| 3   | `parent_span_id`           | String       | No       |                                                                                                   |
+| 4   | `span_name`                | String       | Yes      | Renamed from `name` in v2                                                                         |
+| 5   | `service_name`             | String       | Yes      |                                                                                                   |
+| 6   | `start_time_unix_nano`     | Long         | Yes      | Nanoseconds since epoch                                                                           |
+| 7   | `end_time_unix_nano`       | Long         | Yes      | Nanoseconds since epoch                                                                           |
+| 8   | `duration_nanos`           | Long         | Yes      | Renamed from `duration_nano` in v2                                                                |
+| 9   | `span_kind`                | String       | Yes      | Derived from `span_kind_number`, never the reverse                                                |
+| 10  | `status_code`              | String       | Yes      | Derived from `status_code_number`, never the reverse                                              |
+| 11  | `status_message`           | String       | No       |                                                                                                   |
+| 12  | `is_root`                  | Boolean      | Yes      |                                                                                                   |
+| 13  | `span_attributes`          | String       | No       | JSON. Renamed from `attributes_json` in v2                                                        |
+| 14  | `resource_attributes`      | String       | No       | JSON. Renamed from `resource_json` in v2                                                          |
+| 15  | `events`                   | String       | No       | JSON serialized (nested List<Struct> in Flight)                                                   |
+| 16  | `links`                    | String       | No       | JSON serialized (nested List<Struct> in Flight)                                                   |
+| 17  | `trace_state`              | String       | No       |                                                                                                   |
+| 18  | `resource_schema_url`      | String       | No       |                                                                                                   |
+| 19  | `scope_name`               | String       | No       |                                                                                                   |
+| 20  | `scope_version`            | String       | No       |                                                                                                   |
+| 21  | `scope_schema_url`         | String       | No       |                                                                                                   |
+| 22  | `scope_attributes`         | String       | No       |                                                                                                   |
+| 23  | `timestamp`                | Timestamp    | Yes      | Computed from `start_time_unix_nano`. Partition key.                                              |
+| 24  | `date_day`                 | Date         | Yes      | Computed from timestamp                                                                           |
+| 25  | `hour`                     | Int          | Yes      | Computed from timestamp                                                                           |
+| 26  | `span_kind_number`         | Int          | No       | v3: numeric OTel source of truth for `span_kind` (#1208)                                          |
+| 27  | `status_code_number`       | Int          | No       | v3: numeric OTel source of truth for `status_code` (#1208)                                        |
+| 28  | `dropped_attributes_count` | Long         | No       | v3: preserved verbatim from the OTel span (#1208)                                                 |
+| 29  | `dropped_events_count`     | Long         | No       | v3: as above                                                                                      |
+| 30  | `dropped_links_count`      | Long         | No       | v3: as above                                                                                      |
+| 31  | `resource_identity`        | String       | No       | v4: digest of the span's resource attribute set, from `common::schema::resource_identity` (#1340) |
+
+All v3/v4 additions are nullable; null on any row written before its column existed.
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
-#### Logs Table (v1 -- current)
+#### Logs Table (v2 -- current)
 
 Defined in `schemas.toml`.
 
-| #   | Field                 | Iceberg Type       | Required | Notes                                  |
-| --- | --------------------- | ------------------ | -------- | -------------------------------------- |
-| 1   | `timestamp`           | Timestamp          | Yes      | Partition key                          |
-| 2   | `observed_timestamp`  | Timestamp          | No       |                                        |
-| 3   | `trace_id`            | String             | No       | Correlation with traces                |
-| 4   | `span_id`             | String             | No       | Correlation with traces                |
-| 5   | `trace_flags`         | Int                | No       |                                        |
-| 6   | `severity_text`       | String             | No       |                                        |
-| 7   | `severity_number`     | Int                | No       |                                        |
-| 8   | `service_name`        | String             | Yes      |                                        |
-| 9   | `body`                | String             | No       |                                        |
-| 10  | `resource_schema_url` | String             | No       |                                        |
-| 11  | `resource_attributes` | Map<String,String> | No       | typed map (legacy tables: JSON string) |
-| 12  | `scope_schema_url`    | String             | No       |                                        |
-| 13  | `scope_name`          | String             | No       |                                        |
-| 14  | `scope_version`       | String             | No       |                                        |
-| 15  | `scope_attributes`    | Map<String,String> | No       | typed map (legacy tables: JSON string) |
-| 16  | `log_attributes`      | Map<String,String> | No       | typed map (legacy tables: JSON string) |
-| 17  | `date_day`            | Date               | Yes      | Computed from timestamp                |
-| 18  | `hour`                | Int                | Yes      | Computed from timestamp                |
+| #   | Field                 | Iceberg Type       | Required | Notes                                                                                                         |
+| --- | --------------------- | ------------------ | -------- | ------------------------------------------------------------------------------------------------------------- |
+| 1   | `timestamp`           | Timestamp          | Yes      | Partition key                                                                                                 |
+| 2   | `observed_timestamp`  | Timestamp          | No       |                                                                                                               |
+| 3   | `trace_id`            | String             | No       | Correlation with traces                                                                                       |
+| 4   | `span_id`             | String             | No       | Correlation with traces                                                                                       |
+| 5   | `trace_flags`         | Int                | No       |                                                                                                               |
+| 6   | `severity_text`       | String             | No       |                                                                                                               |
+| 7   | `severity_number`     | Int                | No       |                                                                                                               |
+| 8   | `service_name`        | String             | Yes      |                                                                                                               |
+| 9   | `body`                | String             | No       |                                                                                                               |
+| 10  | `resource_schema_url` | String             | No       |                                                                                                               |
+| 11  | `resource_attributes` | Map<String,String> | No       | typed map (legacy tables: JSON string)                                                                        |
+| 12  | `scope_schema_url`    | String             | No       |                                                                                                               |
+| 13  | `scope_name`          | String             | No       |                                                                                                               |
+| 14  | `scope_version`       | String             | No       |                                                                                                               |
+| 15  | `scope_attributes`    | Map<String,String> | No       | typed map (legacy tables: JSON string)                                                                        |
+| 16  | `log_attributes`      | Map<String,String> | No       | typed map (legacy tables: JSON string)                                                                        |
+| 17  | `resource_identity`   | String             | No       | v2: digest of the record's resource attribute set (#1340). Null on any row written before the column existed. |
+| 18  | `date_day`            | Date               | Yes      | Computed from timestamp                                                                                       |
+| 19  | `hour`                | Int                | Yes      | Computed from timestamp                                                                                       |
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
@@ -967,7 +976,7 @@ The Writer applies `transform_trace_v1_to_v2()` (`src/writer/src/schema_transfor
 4. **Complex type serialization**: `List<Struct>` events/links -> JSON strings
 5. **Computed fields**: Generates `timestamp`, `date_day`, `hour` from `start_time_unix_nano`
 
-The transformation is applied in the Writer's Flight `do_put` handler before data is written to the WAL, ensuring all WAL data is in physical-v3 format (despite the function's name).
+The transformation is applied in the Writer's Flight `do_put` handler before data is written to the WAL, ensuring all WAL data is in the current physical format (despite the function's name) -- physical-v4 for traces.
 
 ### Label columns can be added to existing tables
 
