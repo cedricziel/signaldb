@@ -157,15 +157,18 @@ impl ServiceBootstrap {
             .as_ref()
             .map(|d| d.heartbeat_interval)
             .unwrap_or(Duration::from_secs(30));
+        // A heartbeat only matters once it has missed the registration TTL
+        // (that's when a peer can reap this service as stale), so that TTL
+        // is also the threshold for escalating a failing heartbeat to ERROR.
+        let ttl = Self::discovery_ttl(&config);
         let heartbeat_handle =
-            Some(catalog.spawn_ingester_heartbeat(service_id, heartbeat_interval));
+            Some(catalog.spawn_ingester_heartbeat(service_id, heartbeat_interval, ttl));
 
         // Reap registrations whose heartbeat stopped: crashed services
         // never deregister, so without this the catalog leaks a row per
         // crash and routers keep handing out dead addresses (issue #555).
         // Rows are deleted once they are 2x TTL stale — well past the
         // staleness filter consumers apply at TTL.
-        let ttl = Self::discovery_ttl(&config);
         let reaper_handle = Some(catalog.spawn_ingester_reaper(ttl, ttl * 2));
 
         Ok(ServiceBootstrap {
