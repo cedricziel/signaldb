@@ -39,7 +39,7 @@ function withTenantDataset(
   const url = new URL(target, window.location.origin);
   url.searchParams.set("tenant", tenant);
   url.searchParams.set("dataset", dataset);
-  return `${url.pathname}${url.search}`;
+  return `${url.pathname}${url.search}${url.hash}`;
 }
 
 function LoginPageShell({ children }: { children: ReactNode }) {
@@ -67,6 +67,8 @@ export function LoginRoute() {
   const [alert] = useState<string | null>(
     () => ERROR_MESSAGES[searchParams.get("error") ?? ""] ?? null,
   );
+  const [signOutError, setSignOutError] = useState<string | null>(null);
+  const [signingOut, setSigningOut] = useState(false);
   // Strip `error` from the URL once read, through the router (not a raw
   // history call) so it doesn't fight React Router's own location state; a
   // reload then doesn't re-report a stale failure. `redirect` (and anything
@@ -133,16 +135,29 @@ export function LoginRoute() {
             <a href="https://signaldb.dev/docs">bootstrap guide</a> for a new
             instance.
           </p>
+          {signOutError && (
+            <p className="login-alert" role="alert">
+              {signOutError}
+            </p>
+          )}
           <p className="login-account">
             <button
               type="button"
+              disabled={signingOut}
               onClick={() => {
-                void deleteSession().finally(() => {
-                  window.location.href = "/login";
-                });
+                setSignOutError(null);
+                setSigningOut(true);
+                void deleteSession()
+                  .then(() => {
+                    window.location.href = "/login";
+                  })
+                  .catch((err: unknown) => {
+                    setSigningOut(false);
+                    setSignOutError(toErrorMessage(err));
+                  });
               }}
             >
-              Sign out
+              {signingOut ? "Signing out…" : "Sign out"}
             </button>
           </p>
         </LoginCard>

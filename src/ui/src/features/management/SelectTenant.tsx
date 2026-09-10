@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "react-router";
 import { useState, type ReactNode } from "react";
+import { toErrorMessage } from "../../api/http";
 import { whoami, type CurrentSessionResponse } from "../../api/session";
 import { safeRedirectTarget } from "../../lib/redirectTarget";
 import { useOutletState } from "../../lib/outletState";
@@ -36,7 +37,13 @@ function TenantRow({
   // context — this renders correctly even before any tenant is chosen (a
   // fresh SSO landing with several memberships), when there is no "current"
   // tenant to special-case.
-  const { data: tenantData, isLoading } = useQuery<{
+  const {
+    data: tenantData,
+    isLoading,
+    isError,
+    error,
+    refetch,
+  } = useQuery<{
     datasets: TenantDataset[];
   }>({
     queryKey: ["whoami", tenantId],
@@ -65,6 +72,13 @@ function TenantRow({
         <div className="dataset-list">
           {isLoading ? (
             <div className="dataset-loading">Loading…</div>
+          ) : isError ? (
+            <div className="dataset-error" role="alert">
+              <p>Failed to load datasets: {toErrorMessage(error)}</p>
+              <button type="button" onClick={() => void refetch()}>
+                Retry
+              </button>
+            </div>
           ) : (
             datasets.map((dataset) => (
               <button

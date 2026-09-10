@@ -161,6 +161,34 @@ describe("SelectTenant", () => {
     },
   );
 
+  it("shows an error with a retry control when the datasets query fails, not an empty list", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        new Response(JSON.stringify({ error: "boom" }), { status: 500 }),
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({
+            datasets: [
+              { id: "production", slug: "production", is_default: true },
+            ],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderSelectTenant(sessionWithMemberships);
+    expect(await screen.findByText(/Failed to load datasets/)).toBeInTheDocument();
+    expect(screen.queryByText(/production/)).toBeNull();
+
+    await userEvent.click(screen.getByRole("button", { name: "Retry" }));
+
+    expect(await screen.findByText(/production/)).toBeInTheDocument();
+    expect(screen.queryByText(/Failed to load datasets/)).toBeNull();
+  });
+
   it("other tenants are collapsed initially and fetch their own datasets on click", async () => {
     const fetchMock = vi.fn().mockImplementation((_url, init?: RequestInit) => {
       const tenantId = (init?.headers as Record<string, string> | undefined)?.[
