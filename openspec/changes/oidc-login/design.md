@@ -151,15 +151,17 @@ See proposal.md — Why. What shapes the approach:
    `whoami`, select a sole membership with its default dataset into the
    URL, or send several memberships to `/select-tenant?redirect=<target>`,
    which learns to navigate to `redirect` instead of a fixed `/logs`
-   (tenant-selection delta).
+   (tenant-selection delta). `safeRedirectTarget` moves out of
+   `LoginRoute.tsx` into a shared `lib` helper so `/select-tenant`, which is
+   directly reachable, validates its `redirect` with the identical rule.
    Zero memberships cannot reach the shell for a non-admin: the callback
    refuses a session for a membership-less user exactly as the password
    session endpoint does today (`403 User has no tenant memberships`), after
    mapping sync has had its chance, and leaves the JIT-created row for an
    admin to grant. An instance admin with no memberships goes to
-   `/select-tenant` like any several-membership user. This also fixes bookmarks and stale links on a
-   fresh browser, which had the same gap. The consent view is outside the
-   shell and unaffected.
+   `/select-tenant` like any several-membership user. This also fixes
+   bookmarks and stale links on a fresh browser, which had the same gap. The
+   consent view is outside the shell and unaffected.
 9. **Testing — three layers, each owning what only it can prove** (the
    enumerated cases live in tasks.md §2 and §4):
    - Unit tests: RP behaviour in `router` against a wiremock IdP; component

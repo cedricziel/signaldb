@@ -219,6 +219,7 @@ the instance-admin flag.
 - **THEN** both rows exist with their own source, the user's effective role in
   `acme` is `admin`, removing the local membership leaves the mapped one, and
   losing the group leaves the local one
+
 #### Scenario: Session views count a tenant once
 
 - **WHEN** a user holds a local and a mapped membership in `acme` and nothing
@@ -226,20 +227,6 @@ the instance-admin flag.
 - **THEN** `acme` appears once with the effective role, and the login treats
   the user as having a sole membership rather than sending them to tenant
   selection
-
-#### Scenario: Lost group revokes only what mapping granted
-
-- **WHEN** a user's token no longer carries a group that previously granted a
-  mapped membership, while an admin has separately granted them a membership
-  in another tenant
-- **THEN** the mapped membership is removed at login and the locally granted
-  membership is untouched
-
-#### Scenario: No mapping, no membership changes
-
-- **WHEN** no mapping rules are configured and a user with existing
-  memberships signs in via SSO
-- **THEN** their memberships after login are exactly their memberships before
 
 #### Scenario: Lost group revokes only what mapping granted
 
