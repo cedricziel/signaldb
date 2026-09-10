@@ -8,7 +8,9 @@
 //! - `signaldb-cli schema attribute|entity|metric get <name>` — every
 //!   definition of the name across the tenant's visible registries, in
 //!   precedence order (custom → signaldb → otel), `primary` first
-//! - `signaldb-cli schema attribute|entity|metric search <prefix> [--limit]`
+//! - `signaldb-cli schema attribute|entity|metric search <prefix> [--limit]`,
+//!   or `--keys a,b,c` to batch-resolve an exact name set instead of a
+//!   prefix (attribute and metric only)
 //! - `signaldb-cli admin schema create|replace|validate --file <path>` (YAML
 //!   or JSON) and `admin schema delete <ns> <version>`
 //!
@@ -83,6 +85,10 @@ pub enum LookupAction {
         /// Maximum hits (server default 50, max 200)
         #[arg(long)]
         limit: Option<u64>,
+        /// Comma-separated exact names to resolve in one call instead of a
+        /// prefix search (attributes and metrics only; capped at 200)
+        #[arg(long)]
+        keys: Option<String>,
         #[command(flatten)]
         connect: ConnectArgs,
     },
@@ -246,6 +252,7 @@ impl LookupAction {
                 LookupAction::Search {
                     prefix,
                     limit,
+                    keys,
                     connect,
                 },
                 Kind::Attribute,
@@ -255,6 +262,9 @@ impl LookupAction {
                 if let Some(limit) = limit {
                     req = req.limit(limit);
                 }
+                if let Some(keys) = keys {
+                    req = req.keys(keys);
+                }
                 let result = req.send().await.map(|r| r.into_inner());
                 print_json_response(result, "schema attribute search")
             }
@@ -262,6 +272,7 @@ impl LookupAction {
                 LookupAction::Search {
                     prefix,
                     limit,
+                    keys: _,
                     connect,
                 },
                 Kind::Entity,
@@ -278,6 +289,7 @@ impl LookupAction {
                 LookupAction::Search {
                     prefix,
                     limit,
+                    keys,
                     connect,
                 },
                 Kind::Metric,
@@ -286,6 +298,9 @@ impl LookupAction {
                 let mut req = client.schema_search_metrics().prefix(prefix);
                 if let Some(limit) = limit {
                     req = req.limit(limit);
+                }
+                if let Some(keys) = keys {
+                    req = req.keys(keys);
                 }
                 let result = req.send().await.map(|r| r.into_inner());
                 print_json_response(result, "schema metric search")
@@ -445,6 +460,22 @@ mod tests {
             };
             assert_eq!(prefix, "k8s.");
             assert_eq!(limit, Some(5));
+
+            let cli = SchemaCli::try_parse_from(["schema", noun, "search", "--keys", "a,b,c"])
+                .expect(noun);
+            let keys = match cli.action {
+                SchemaAction::Attribute {
+                    action: LookupAction::Search { keys, .. },
+                }
+                | SchemaAction::Entity {
+                    action: LookupAction::Search { keys, .. },
+                }
+                | SchemaAction::Metric {
+                    action: LookupAction::Search { keys, .. },
+                } => keys,
+                _ => panic!("expected {noun} search"),
+            };
+            assert_eq!(keys.as_deref(), Some("a,b,c"));
         }
         // `get` requires a name; `search` prefix defaults to empty.
         assert!(SchemaCli::try_parse_from(["schema", "attribute", "get"]).is_err());
@@ -565,12 +596,42 @@ mod tests {
             action: LookupAction::Search {
                 prefix: "k8s.".to_string(),
                 limit: Some(3),
+                keys: None,
                 connect: connect(&server.url()),
             },
         }
         .run()
         .await
         .expect("schema metric search succeeds");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn schema_metric_search_passes_keys() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("GET", "/api/v1/schema/metrics")
+            .match_query(mockito::Matcher::UrlEncoded(
+                "keys".into(),
+                "k8s.pod.cpu.time,acme.checkout.latency".into(),
+            ))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"hits":[],"resolutions":[]}"#)
+            .create_async()
+            .await;
+
+        SchemaAction::Metric {
+            action: LookupAction::Search {
+                prefix: String::new(),
+                limit: None,
+                keys: Some("k8s.pod.cpu.time,acme.checkout.latency".to_string()),
+                connect: connect(&server.url()),
+            },
+        }
+        .run()
+        .await
+        .expect("schema metric search with keys succeeds");
         mock.assert_async().await;
     }
 
