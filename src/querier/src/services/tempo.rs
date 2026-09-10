@@ -11,8 +11,9 @@
 //!
 //! `SearchBlock` is answered with `Unimplemented`: SignalDB stores data in
 //! Iceberg tables, not Tempo blocks, so block-scoped search has no meaning
-//! here. Tag endpoints return the statically queryable tag set (the same
-//! set the HTTP API advertises) rather than fabricated values.
+//! here. Tag endpoints delegate to [`TraceService::get_tags`], the same
+//! discovery path the HTTP Tempo-compat API uses, rather than returning a
+//! fabricated or hand-maintained list.
 
 use std::collections::HashMap;
 
@@ -27,13 +28,8 @@ use tonic::{Request, Response, Status};
 
 use crate::query::error::QuerierError;
 use crate::query::trace::TraceService;
-use crate::query::{FindTraceByIdParams, SearchQueryParams};
+use crate::query::{FindTraceByIdParams, SearchQueryParams, TraceTagsParams};
 use common::model::span::{Span as ModelSpan, SpanKind, SpanStatus};
-
-// Keep in sync with the router's HTTP tag endpoints: these are the tags
-// search can actually filter on today.
-const RESOURCE_TAGS: &[&str] = &["service.name"];
-const INTRINSIC_TAGS: &[&str] = &["name", "status"];
 
 /// Tempo gRPC querier backed by SignalDB's trace query service.
 #[derive(Debug, Clone)]
@@ -301,6 +297,56 @@ fn search_request_to_params(req: &SearchRequest) -> SearchQueryParams {
     }
 }
 
+/// Parse the Tempo gRPC `scope` field the same way the HTTP tag endpoints'
+/// `scope` query parameter is validated: `TagScope`'s own
+/// `#[serde(rename_all = "lowercase")]` deserializer is the single source
+/// of truth for the accepted spelling (`resource`/`span`/`intrinsic`).
+/// Empty means "all scopes".
+fn parse_tag_scope(scope: &str) -> Result<Option<tempo_api::TagScope>, Status> {
+    if scope.is_empty() {
+        return Ok(None);
+    }
+    serde_json::from_value(serde_json::Value::String(scope.to_string()))
+        .map(Some)
+        .map_err(|_| Status::invalid_argument(format!("unknown tag scope '{scope}'")))
+}
+
+/// Map a Tempo `SearchTagsRequest` onto [`TraceTagsParams`]. `start`/`end`
+/// are unix seconds where zero means unbounded on that side of the window.
+fn search_tags_request_to_params(req: &SearchTagsRequest) -> Result<TraceTagsParams, Status> {
+    let start = i64::from(req.start).saturating_mul(1_000_000_000);
+    let end = if req.end == 0 {
+        i64::MAX
+    } else {
+        i64::from(req.end).saturating_mul(1_000_000_000)
+    };
+    let scope = parse_tag_scope(&req.scope)?;
+    Ok(TraceTagsParams { start, end, scope })
+}
+
+/// Build the v2 scope list from discovered tag names, narrowed to a single
+/// scope when the request asked for one — mirrors the HTTP v2 handler
+/// (`router::endpoints::tempo::search_tags_v2`).
+fn tag_names_to_v2_scopes(
+    names: crate::query::TraceTagNames,
+    scope: Option<tempo_api::TagScope>,
+) -> Vec<SearchTagsV2Scope> {
+    let scope_entry = |name: &str, tags: Vec<String>| SearchTagsV2Scope {
+        name: name.to_string(),
+        tags,
+    };
+    match scope {
+        Some(tempo_api::TagScope::Resource) => vec![scope_entry("resource", names.resource)],
+        Some(tempo_api::TagScope::Span) => vec![scope_entry("span", names.span)],
+        Some(tempo_api::TagScope::Intrinsic) => vec![scope_entry("intrinsic", names.intrinsic)],
+        None => vec![
+            scope_entry("resource", names.resource),
+            scope_entry("span", names.span),
+            scope_entry("intrinsic", names.intrinsic),
+        ],
+    }
+}
+
 #[tonic::async_trait]
 impl Querier for SignalDBQuerier {
     #[tracing::instrument(skip_all)]
@@ -387,38 +433,51 @@ impl Querier for SignalDBQuerier {
     #[tracing::instrument(skip_all)]
     async fn search_tags(
         &self,
-        _request: tonic::Request<SearchTagsRequest>,
+        request: tonic::Request<SearchTagsRequest>,
     ) -> Result<tonic::Response<SearchTagsResponse>, tonic::Status> {
-        let response = SearchTagsResponse {
+        let (tenant_slug, dataset_slug) = Self::resolve_tenant(&request);
+        let params = search_tags_request_to_params(request.get_ref())?;
+        tracing::info!(
+            tenant_slug = %tenant_slug,
+            dataset_slug = %dataset_slug,
+            "Tempo gRPC tag search"
+        );
+
+        let names = self
+            .trace_service
+            .get_tags(&params, &tenant_slug, &dataset_slug)
+            .await
+            .map_err(querier_error_to_status)?;
+
+        Ok(Response::new(SearchTagsResponse {
             metrics: None,
-            tag_names: RESOURCE_TAGS
-                .iter()
-                .chain(INTRINSIC_TAGS)
-                .map(|t| t.to_string())
-                .collect(),
-        };
-        Ok(Response::new(response))
+            tag_names: names.flattened(),
+        }))
     }
 
     #[tracing::instrument(skip_all)]
     async fn search_tags_v2(
         &self,
-        _request: tonic::Request<SearchTagsRequest>,
+        request: tonic::Request<SearchTagsRequest>,
     ) -> Result<tonic::Response<SearchTagsV2Response>, tonic::Status> {
-        let response = SearchTagsV2Response {
+        let (tenant_slug, dataset_slug) = Self::resolve_tenant(&request);
+        let params = search_tags_request_to_params(request.get_ref())?;
+        tracing::info!(
+            tenant_slug = %tenant_slug,
+            dataset_slug = %dataset_slug,
+            "Tempo gRPC scoped tag search"
+        );
+
+        let names = self
+            .trace_service
+            .get_tags(&params, &tenant_slug, &dataset_slug)
+            .await
+            .map_err(querier_error_to_status)?;
+
+        Ok(Response::new(SearchTagsV2Response {
             metrics: None,
-            scopes: vec![
-                SearchTagsV2Scope {
-                    name: "resource".to_string(),
-                    tags: RESOURCE_TAGS.iter().map(|t| t.to_string()).collect(),
-                },
-                SearchTagsV2Scope {
-                    name: "intrinsic".to_string(),
-                    tags: INTRINSIC_TAGS.iter().map(|t| t.to_string()).collect(),
-                },
-            ],
-        };
-        Ok(Response::new(response))
+            scopes: tag_names_to_v2_scopes(names, params.scope),
+        }))
     }
 
     #[tracing::instrument(skip_all)]
@@ -571,5 +630,157 @@ mod tests {
             SignalDBQuerier::resolve_tenant(&Request::new(())),
             ("default".to_string(), "default".to_string())
         );
+    }
+
+    /// Minimal `traces` table for tag discovery: just the columns
+    /// `TraceService::get_tags` reads (`timestamp`, `resource_attributes`,
+    /// `span_attributes`) with one resource key beyond the always-present
+    /// `service.name` and one span key.
+    fn tag_fixture_querier() -> SignalDBQuerier {
+        use datafusion::arrow::array::{
+            ArrayRef, MapBuilder, MapFieldNames, RecordBatch, StringBuilder,
+            TimestampNanosecondArray,
+        };
+        use datafusion::arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
+        use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
+        use datafusion::catalog::{CatalogProvider, MemTable, SchemaProvider};
+        use datafusion::prelude::SessionContext;
+        use std::sync::Arc;
+
+        fn map_field(name: &str) -> Field {
+            let entries = Field::new(
+                "entries",
+                DataType::Struct(Fields::from(vec![
+                    Field::new("keys", DataType::Utf8, false),
+                    Field::new("values", DataType::Utf8, true),
+                ])),
+                false,
+            );
+            Field::new(name, DataType::Map(Arc::new(entries), false), true)
+        }
+
+        fn maps(rows: &[&[(&str, &str)]]) -> ArrayRef {
+            let names = MapFieldNames {
+                entry: "entries".to_string(),
+                key: "keys".to_string(),
+                value: "values".to_string(),
+            };
+            let mut b = MapBuilder::new(Some(names), StringBuilder::new(), StringBuilder::new());
+            for row in rows {
+                for (k, v) in *row {
+                    b.keys().append_value(k);
+                    b.values().append_value(v);
+                }
+                b.append(true).unwrap();
+            }
+            Arc::new(b.finish())
+        }
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            map_field("span_attributes"),
+            map_field("resource_attributes"),
+        ]));
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![1_000_i64])),
+                maps(&[&[("http.route", "/api/orders")]]),
+                maps(&[&[("deployment.environment.name", "prod")]]),
+            ],
+        )
+        .unwrap();
+
+        // Matches `SignalDBQuerier::resolve_tenant`'s default when a
+        // request carries neither a `TenantContext` extension nor an
+        // `x-scope-orgid` header.
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("traces".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("default", sp).unwrap();
+        ctx.register_catalog("default", cat);
+
+        SignalDBQuerier::new(crate::query::trace::TraceService::new(
+            ctx,
+            "traces".to_string(),
+        ))
+    }
+
+    fn tags_request(scope: &str) -> Request<SearchTagsRequest> {
+        Request::new(SearchTagsRequest {
+            scope: scope.to_string(),
+            query: String::new(),
+            start: 0,
+            end: 0,
+        })
+    }
+
+    #[tokio::test]
+    async fn search_tags_v2_reflects_real_tag_discovery() {
+        let querier = tag_fixture_querier();
+        let response = querier
+            .search_tags_v2(tags_request(""))
+            .await
+            .unwrap()
+            .into_inner();
+
+        let intrinsic = response
+            .scopes
+            .iter()
+            .find(|s| s.name == "intrinsic")
+            .expect("intrinsic scope present");
+        let expected_intrinsics: Vec<String> = crate::query::trace::INTRINSIC_TAGS
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        assert_eq!(intrinsic.tags, expected_intrinsics);
+
+        let resource = response
+            .scopes
+            .iter()
+            .find(|s| s.name == "resource")
+            .expect("resource scope present");
+        assert!(resource.tags.contains(&"service.name".to_string()));
+        assert!(
+            resource
+                .tags
+                .contains(&"deployment.environment.name".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn search_tags_returns_flat_union_including_duration_and_kind() {
+        let querier = tag_fixture_querier();
+        let response = querier
+            .search_tags(tags_request(""))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert!(response.tag_names.contains(&"kind".to_string()));
+        assert!(response.tag_names.contains(&"duration".to_string()));
+        assert!(response.tag_names.contains(&"service.name".to_string()));
+        assert!(response.tag_names.contains(&"http.route".to_string()));
+    }
+
+    #[tokio::test]
+    async fn search_tags_v2_scope_filter_returns_only_that_scope() {
+        let querier = tag_fixture_querier();
+        let response = querier
+            .search_tags_v2(tags_request("intrinsic"))
+            .await
+            .unwrap()
+            .into_inner();
+
+        assert_eq!(response.scopes.len(), 1);
+        assert_eq!(response.scopes[0].name, "intrinsic");
     }
 }
