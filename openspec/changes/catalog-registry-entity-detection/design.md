@@ -168,11 +168,12 @@ retire the unanalyzed state entirely.
 
 The schema already reserves the join key such a table needs —
 `resource.identity` is declared as a `SignalDbDefined` logical field on every
-source (`common/src/schema/logical.rs:84`) with no producer anywhere in the
-workspace. This design neither implements nor depends on it; the point is that
-nothing here forecloses it. Tracked as #1339 (entity table) and #1340 (the
-unproduced `resource.identity` field) — write-path work that wants its own
-proposal.
+source (`common/src/schema/logical.rs:84`), produced at ingest (the writer
+materialises it from each record's resource attributes, #1340) and queryable
+through the Query IR. This design neither implements nor depends on a
+materialized entity table keyed by it; the point is that nothing here
+forecloses one. Tracked as #1339 (entity table) — write-path work that wants
+its own proposal.
 
 ## Open Questions
 

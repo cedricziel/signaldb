@@ -1164,3 +1164,127 @@ async fn scoped_aggregate_keeps_groups_with_no_match() {
         "the error-free group is kept, reporting zero: {body}"
     );
 }
+
+/// #1340: `resource.identity` is declared on `logs` (and every other
+/// source) but had no producer, so grouping by it always fell into one null
+/// bucket with a self-contradicting warning. The writer now materialises it
+/// (PRs 1-3 of this stack); this proves the Query IR surface can group by
+/// it end to end — two distinct resources land in two distinct, non-null
+/// digest groups — and that `describe` advertises a field the query surface
+/// can actually answer.
+#[tokio::test]
+async fn logs_group_by_resource_identity_end_to_end() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    // Two distinct resources (only `service.name` differs, so the digest is
+    // the identity of that one-attribute resource each).
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request(
+                "resource-identity-svc-a",
+                vec![
+                    log_record(0, "INFO", "a1"),
+                    log_record(1_000_000, "INFO", "a2"),
+                ],
+            ),
+        )
+        .await
+        .expect("ingest resource-identity-svc-a logs");
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request(
+                "resource-identity-svc-b",
+                vec![log_record(2_000_000, "INFO", "b1")],
+            ),
+        )
+        .await
+        .expect("ingest resource-identity-svc-b logs");
+
+    let app = build_router(&services).await;
+
+    let (status, body) = post_ir_until_rows(
+        &app,
+        serde_json::json!({
+            "irVersion": 1,
+            "from": "logs",
+            "range": range(),
+            "result": "table",
+            "pipeline": [ { "aggregate": { "by": ["resource.identity"],
+                "aggs": [ { "fn": "count", "as": "n" } ] } } ]
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "group by resource.identity: {body}");
+
+    let resource_map = |service: &str| {
+        let mut map = serde_json::Map::new();
+        map.insert(
+            "service.name".to_string(),
+            serde_json::Value::String(service.to_string()),
+        );
+        map
+    };
+    let identity_a = common::schema::resource_identity::resource_identity(&resource_map(
+        "resource-identity-svc-a",
+    ));
+    let identity_b = common::schema::resource_identity::resource_identity(&resource_map(
+        "resource-identity-svc-b",
+    ));
+    assert_ne!(
+        identity_a, identity_b,
+        "distinct resources digest distinctly"
+    );
+    for digest in [&identity_a, &identity_b] {
+        assert_eq!(
+            digest.len(),
+            32,
+            "digest is 32 lowercase hex chars: {digest}"
+        );
+        assert!(
+            digest
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "digest is lowercase hex: {digest}"
+        );
+    }
+
+    let groups = table_pairs(&body, "resource_identity", "n");
+    let mut expected = vec![(identity_a.clone(), 2_i64), (identity_b.clone(), 1_i64)];
+    expected.sort();
+    assert_eq!(
+        groups, expected,
+        "two non-null groups, one per resource: {body}"
+    );
+
+    // `describe {"target": "fields"}` advertises the field this query just
+    // used successfully — the issue's self-contradiction (advertised but
+    // unusable) must not reappear.
+    let (status, describe_body) = post_ir(
+        &app,
+        serde_json::json!({
+            "irVersion": 4,
+            "from": "logs",
+            "range": range(),
+            "result": "metadata",
+            "pipeline": [ { "describe": { "target": "fields" } } ]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "describe fields: {describe_body}");
+    let names: Vec<&str> = describe_body["metadata"]["fields"]
+        .as_array()
+        .expect("fields array")
+        .iter()
+        .map(|f| f["name"].as_str().unwrap())
+        .collect();
+    assert!(
+        names.contains(&"resource.identity"),
+        "describe advertises resource.identity: {names:?}"
+    );
+}
