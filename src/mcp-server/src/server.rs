@@ -776,6 +776,11 @@ struct SearchSchemaParams {
     /// Maximum hits (server default 50, max 200).
     #[serde(default)]
     limit: Option<u64>,
+    /// Comma-separated exact names to resolve in one call instead of a
+    /// prefix search (`kind: attribute` or `kind: metric` only; capped at
+    /// 200). When set, `prefix`/`limit` are ignored.
+    #[serde(default)]
+    keys: Option<String>,
 }
 
 /// Parameters for `create_schema_registry`.
@@ -2729,7 +2734,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Search the schema registries by name prefix to find the right vocabulary before building a query: `kind` is `attribute`, `entity`, or `metric`; `prefix` narrows by name (e.g. `k8s.pod.`), `limit` caps the hits (max 200). Each hit is namespace-tagged with its brief, so you can pick the correct attribute key, entity type, or metric name and then call the matching `resolve_*` tool for the full definition."
+        description = "Search the schema registries by name prefix to find the right vocabulary before building a query: `kind` is `attribute`, `entity`, or `metric`; `prefix` narrows by name (e.g. `k8s.pod.`), `limit` caps the hits (max 200). Each hit is namespace-tagged with its brief, so you can pick the correct attribute key, entity type, or metric name and then call the matching `resolve_*` tool for the full definition. When you already know the exact name set (`kind: attribute` or `kind: metric`), pass `keys` (comma-separated, capped at 200) instead of `prefix` to batch-resolve definitions in one call."
     )]
     async fn search_schema(
         &self,
@@ -2746,6 +2751,9 @@ impl McpServer {
                 let mut req = client.schema_search_attributes().prefix(prefix);
                 if let Some(limit) = p.limit {
                     req = req.limit(limit);
+                }
+                if let Some(keys) = p.keys {
+                    req = req.keys(keys);
                 }
                 let resp = req
                     .send()
@@ -2768,6 +2776,9 @@ impl McpServer {
                 let mut req = client.schema_search_metrics().prefix(prefix);
                 if let Some(limit) = p.limit {
                     req = req.limit(limit);
+                }
+                if let Some(keys) = p.keys {
+                    req = req.keys(keys);
                 }
                 let resp = req
                     .send()
