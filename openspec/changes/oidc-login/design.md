@@ -154,11 +154,16 @@ See proposal.md — Why. What shapes the approach:
    (tenant-selection delta). `safeRedirectTarget` moves out of
    `LoginRoute.tsx` into a shared `lib` helper so `/select-tenant`, which is
    directly reachable, validates its `redirect` with the identical rule.
-   Zero memberships cannot reach the shell for a non-admin: the callback
-   refuses a session for a membership-less user exactly as the password
-   session endpoint does today (`403 User has no tenant memberships`), after
-   mapping sync has had its chance, and leaves the JIT-created row for an
-   admin to grant. An instance admin with no memberships goes to
+   Zero memberships cannot reach the shell for a non-admin: after mapping
+   sync has had its chance, the callback issues no session and leaves the
+   JIT-created row for an admin to grant — the same refusal the password
+   session endpoint makes with `403 User has no tenant memberships`, but a
+   browser cannot show a 403 usefully, so **callback failures travel as a
+   code on the login route**: `302 /login?error=<code>&redirect=<target>`,
+   with `sso_failed` for every validation failure (one value, so nothing
+   leaks about which check tripped) and `no_membership` for this case.
+   `LoginRoute` renders the message for the code and keeps `redirect`, so
+   retrying SSO lands where the user started. An instance admin with no memberships goes to
    `/select-tenant` like any several-membership user. This also fixes
    bookmarks and stale links on a fresh browser, which had the same gap. The
    consent view is outside the shell and unaffected.

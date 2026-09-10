@@ -67,7 +67,11 @@ nonce), and — on success — issue the same server-side session and cookie as
 password login, with the same lifetime and revocation semantics. A callback
 whose state does not match a pending login attempt, or whose ID token fails
 any validation, SHALL be rejected without creating a session and without
-revealing which check failed.
+revealing which check failed. Because the callback answers a browser
+navigation, every refusal SHALL be a redirect to the `/login` route carrying
+a short failure code and the original return target, and the login page
+SHALL render the message for that code; the code for a failed validation
+SHALL be one generic value so it reveals nothing about which check failed.
 
 #### Scenario: Successful SSO login issues a standard session
 
@@ -82,7 +86,8 @@ revealing which check failed.
   attempt, or with a code yielding an ID token whose nonce or signature does
   not verify
 - **THEN** no session is created and the user is returned to the login page
-  with a generic failure message
+  with a generic failure message, and retrying SSO from there returns to
+  the original target
 
 ### Requirement: SSO login returns to where it started
 
