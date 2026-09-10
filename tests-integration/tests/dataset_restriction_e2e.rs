@@ -316,7 +316,7 @@ async fn dataset_restricted_manage_key_is_refused_by_management_api() {
 async fn app_with_session(email: &str, role: MembershipRole) -> (axum::Router, Catalog, String) {
     let (app, catalog) = router_with_tenant().await;
     let user = catalog
-        .create_user(email, None, "phc", false)
+        .create_user(email, None, Some("phc"), false)
         .await
         .unwrap();
     catalog
