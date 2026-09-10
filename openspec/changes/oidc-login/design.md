@@ -117,7 +117,11 @@ See proposal.md — Why. What shapes the approach:
      that supplied it. `list_user_memberships` / `list_tenant_memberships`
      return every row with its `granted_by`, so admins can see that a
      membership is mapping-managed before trying to edit it; the UI/CLI
-     surfaces render the source.
+     surfaces render the source. Session-facing views are the exception:
+     `whoami` and the password session endpoint collapse the rows per
+     `tenant_id` to the effective role before deciding between "sole
+     membership" and "choose a tenant", otherwise a local-plus-mapped user
+     in one tenant would be bounced to tenant selection.
 6. **Mapping sync is transactional per login:** compute the desired mapped
    set from token groups × config rules and hand it to
    `sync_oidc_memberships`. Local rows are never read by the sync. Conflict
