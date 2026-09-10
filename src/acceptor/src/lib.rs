@@ -119,7 +119,8 @@ pub async fn init_acceptor_resources(
             // profiles - large payloads, lower entry count
             wal_config(&wal_dir, 256, 500, 60),
         )
-        .with_max_instances(wal_settings.max_instances),
+        .with_max_instances(wal_settings.max_instances)
+        .with_role("acceptor"),
     );
 
     tracing::info!(

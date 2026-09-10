@@ -154,8 +154,11 @@ pub async fn run(common: &CommonArgs, args: Args) -> anyhow::Result<()> {
     // One WAL per tenant/dataset/signal (#932): WALs are created lazily on
     // first write; ones left on disk by a previous run are opened now so their
     // pending entries drain before that tenant sends new traffic.
-    let wal_manager =
-        Arc::new(WalManager::uniform(wal_config).with_max_instances(config.wal.max_instances));
+    let wal_manager = Arc::new(
+        WalManager::uniform(wal_config)
+            .with_max_instances(config.wal.max_instances)
+            .with_role("writer"),
+    );
     open_existing_writer_wals(&wal_manager).await;
     wal_manager.warn_if_fd_headroom_thin("writer").await;
 

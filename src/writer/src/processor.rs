@@ -636,6 +636,10 @@ impl WalProcessor {
         for ((tenant, dataset, signal), wal) in self.wal_manager.all_wals().await {
             match wal.get_unprocessed_entries().await {
                 Ok(entries) => {
+                    // Reuse this listing's count to correct
+                    // `signaldb.wal.entries_pending` drift (#1493) instead of
+                    // a separate sweep that would re-scan the same segments.
+                    wal.reconcile_pending_gauge_with_count(entries.len()).await;
                     let (taken, deferred) =
                         apply_drain_budget(entries, self.max_drain_bytes_per_cycle);
                     budget_deferred_entries += deferred;

@@ -134,6 +134,11 @@ impl WalRetryConsumer {
                 }
             };
 
+            // Reuse this listing's count to correct
+            // `signaldb.wal.entries_pending` drift (#1493) instead of a
+            // separate sweep that would re-scan the same segments.
+            wal.reconcile_pending_gauge_with_count(entries.len()).await;
+
             for entry in entries {
                 if matches!(entry.operation, WalOperation::Flush) {
                     continue;

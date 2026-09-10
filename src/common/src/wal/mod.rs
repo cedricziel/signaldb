@@ -10,7 +10,7 @@ use framing::{
     segment_header, validate_data_record,
 };
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -909,6 +909,49 @@ static PENDING_SEED_CLAIMS: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashSet<String>>,
 > = std::sync::LazyLock::new(Default::default);
 
+/// Per-directory (`writer_id`, like [`PENDING_SEED_CLAIMS`]) cell holding the
+/// last value `signaldb.wal.entries_pending` was told for that WAL.
+///
+/// The gauge itself is maintained incrementally (seed on recovery, `+1` per
+/// [`Wal::append`], `-n` per [`Wal::mark_processed_many`]), which only stays
+/// faithful if *every* path that adds or removes a pending entry touches it —
+/// a future path that forgets is exactly how issue #1493 (23.3k phantom
+/// pending entries, flat for 53h with commits flowing) could go unnoticed.
+/// [`Wal::reconcile_pending_gauge`] closes that class structurally: it
+/// compares this belief against a fresh on-disk count and corrects any
+/// difference, so drift from an as-yet-undiscovered unbalanced path self-heals
+/// within one reconciliation pass instead of persisting until a restart.
+///
+/// Registered process-globally (keyed by `writer_id`) for the same reason as
+/// `PENDING_SEED_CLAIMS`: the cell must survive `WalManager::clear_cache`
+/// dropping and later recreating the `Wal` instance for a directory that
+/// still has entries pending. Once looked up, a `Wal` holds its own `Arc`
+/// clone (see the `belief` field) so `append`/`mark_processed_many` — both
+/// per-request hot paths — update it with one atomic op, never a lock.
+static PENDING_GAUGE_BELIEF: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<String, Arc<std::sync::atomic::AtomicI64>>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Look up (or create) the [`PENDING_GAUGE_BELIEF`] cell for a WAL directory.
+/// The registry lock is held only for this one map operation — never on the
+/// hot path — because every caller keeps the returned `Arc` for as long as it
+/// needs to update the cell.
+fn pending_gauge_belief_cell(writer_id: &str) -> Arc<std::sync::atomic::AtomicI64> {
+    PENDING_GAUGE_BELIEF
+        .lock()
+        .map(|mut cells| {
+            cells
+                .entry(writer_id.to_string())
+                .or_insert_with(|| Arc::new(std::sync::atomic::AtomicI64::new(0)))
+                .clone()
+        })
+        // A poisoned lock means another thread panicked mid-update. A fresh,
+        // unregistered cell under-tracks belief for this open (the next
+        // `reconcile_pending_gauge` call self-heals it against the true
+        // on-disk count) rather than propagating the panic.
+        .unwrap_or_else(|_| Arc::new(std::sync::atomic::AtomicI64::new(0)))
+}
+
 /// Write-Ahead Log implementation for durability
 pub struct Wal {
     config: WalConfig,
@@ -933,6 +976,37 @@ pub struct Wal {
     /// Survives restarts so downstream consumers can key idempotency
     /// markers to the WAL whose entries they process.
     writer_id: String,
+    /// `"acceptor"` | `"writer"` for the `signaldb.wal.entries_pending`
+    /// `role` attribute. Set by [`Self::with_gauge_attribution`];
+    /// `"unknown"` for a `Wal` built without it (chiefly tests).
+    role: &'static str,
+    /// Signal type (`"traces"` | `"logs"` | `"metrics"` | `"profiles"`) for
+    /// the gauge's `signal` attribute. Set by
+    /// [`Self::with_gauge_attribution`]; empty for a `Wal` built without it.
+    signal_type: String,
+    /// Attribute set for every `signaldb.wal.entries_pending` data point this
+    /// WAL contributes: tenant, dataset, signal, role. Built once (rebuilt by
+    /// [`Self::with_gauge_attribution`] once role/signal are known) instead
+    /// of allocating fresh `KeyValue`s on every hot-path `append` /
+    /// `mark_processed_many` call.
+    gauge_attrs: [opentelemetry::KeyValue; 4],
+    /// This WAL directory's [`PENDING_GAUGE_BELIEF`] cell. Held as an `Arc`
+    /// clone so every update is one atomic op, not a registry lookup.
+    belief: Arc<std::sync::atomic::AtomicI64>,
+    /// Backlog recovered from disk at open, not yet reflected in
+    /// `signaldb.wal.entries_pending` — `0` if this identity's seed was
+    /// already claimed by an earlier open in this process (see
+    /// [`Self::claim_pending_seed`]).
+    recovered_pending: usize,
+    /// Guards [`Self::flush_recovered_seed`] running exactly once, and not
+    /// until whichever of {`with_gauge_attribution`, the first real
+    /// gauge-touching call} runs first — so the seed's one-time emission
+    /// always carries this WAL's final role/signal attribution rather than
+    /// the placeholder it starts with. `with_gauge_attribution` runs
+    /// synchronously right after construction and before the `Wal` is ever
+    /// shared, so by the time any concurrent caller could reach the flush,
+    /// attribution (if any) has already landed.
+    seed_flush: tokio::sync::OnceCell<()>,
 }
 
 impl Wal {
@@ -1019,7 +1093,7 @@ impl Wal {
                 .clone()
         };
 
-        // Seed the pending gauge with the backlog recovered from disk.
+        // Count (but do not yet report) the backlog recovered from disk.
         //
         // `signaldb.wal.entries_pending` is an UpDownCounter: `append`
         // increments as an entry enters the pending set, `mark_processed_many`
@@ -1030,11 +1104,19 @@ impl Wal {
         // (a pending count below zero is impossible by construction, which
         // makes the metric useless as a backlog alarm).
         //
-        // Seeding is once per WAL directory per process, keyed on the
+        // Recovery is once per WAL directory per process, keyed on the
         // directory's stable `writer_id`. Only the first open can encounter
         // entries this process did not count: anything still pending at a
-        // later open was either seeded by that first open or incremented by an
-        // `append` here, so seeding again would double-count it.
+        // later open was either recovered by that first open or incremented by
+        // an `append` here, so counting it again would double-count it.
+        //
+        // The actual gauge emission is deferred to [`Self::flush_recovered_seed`]
+        // — called lazily by the first real gauge-touching method — rather than
+        // done here, because `role`/`signal_type` are not known yet:
+        // `with_gauge_attribution` only runs once this constructor returns. An
+        // immediate emission here would carry a placeholder role, creating a
+        // second, orphaned metric series that never gets corrected once real
+        // traffic switches to the real role attribution.
         let mut recovered_pending: usize = 0;
         if Self::claim_pending_seed(&writer_id) {
             for segment_arc in &all_segments {
@@ -1042,15 +1124,11 @@ impl Wal {
                 recovered_pending += segment.entries.iter().filter(|e| !e.processed).count();
             }
         }
-        if recovered_pending > 0 {
-            tracing::info!(
-                signaldb.wal.recovered_pending = recovered_pending as i64,
-                "Recovered unprocessed WAL entries from disk"
-            );
-            crate::self_monitoring::app_metrics()
-                .wal_entries_pending
-                .add(recovered_pending as i64, &[]);
-        }
+
+        let belief = pending_gauge_belief_cell(&writer_id);
+        let role = "unknown";
+        let signal_type = String::new();
+        let gauge_attrs = Self::build_gauge_attrs(&config, role, &signal_type);
 
         let wal = Self {
             config: config.clone(),
@@ -1061,9 +1139,82 @@ impl Wal {
             segments: Arc::new(Mutex::new(all_segments)),
             last_append: std::sync::atomic::AtomicU64::new(unix_now_secs()),
             writer_id,
+            role,
+            signal_type,
+            gauge_attrs,
+            belief,
+            recovered_pending,
+            seed_flush: tokio::sync::OnceCell::new(),
         };
 
         Ok(wal)
+    }
+
+    /// Attach this WAL's role (`"acceptor"` | `"writer"`) and signal type for
+    /// the `signaldb.wal.entries_pending` attributes. Called by
+    /// [`crate::wal::manager::WalManager`] right after construction, before
+    /// the `Wal` is wrapped in an `Arc` and shared — so it always completes
+    /// before any concurrent caller could reach
+    /// [`Self::flush_recovered_seed`]. A `Wal` built directly (chiefly tests)
+    /// keeps the `"unknown"` role and empty signal set in [`Self::new`].
+    pub fn with_gauge_attribution(
+        mut self,
+        role: &'static str,
+        signal_type: impl Into<String>,
+    ) -> Self {
+        self.role = role;
+        self.signal_type = signal_type.into();
+        self.gauge_attrs = Self::build_gauge_attrs(&self.config, self.role, &self.signal_type);
+        self
+    }
+
+    /// Build the attribute set for `signaldb.wal.entries_pending` data points:
+    /// tenant, dataset, signal, and role.
+    fn build_gauge_attrs(
+        config: &WalConfig,
+        role: &'static str,
+        signal_type: &str,
+    ) -> [opentelemetry::KeyValue; 4] {
+        [
+            opentelemetry::KeyValue::new("signaldb.tenant.id", config.tenant_id.clone()),
+            opentelemetry::KeyValue::new("signaldb.dataset.id", config.dataset_id.clone()),
+            opentelemetry::KeyValue::new("signal", signal_type.to_string()),
+            opentelemetry::KeyValue::new("role", role),
+        ]
+    }
+
+    /// Emit this WAL's recovered-on-open backlog to
+    /// `signaldb.wal.entries_pending`, exactly once, using whatever
+    /// attribution (`role`/`signal_type`) is current by the time this first
+    /// runs. Called at the top of every real gauge-touching method
+    /// (`append`, `mark_processed_many`, `reconcile_pending_gauge`) so it is
+    /// never missed regardless of whether — or in what order relative to
+    /// `with_gauge_attribution` — the caller reaches this `Wal` first.
+    async fn flush_recovered_seed(&self) {
+        self.seed_flush
+            .get_or_init(|| async {
+                if self.recovered_pending > 0 {
+                    // Every use below re-casts rather than sharing one `let`:
+                    // the registry-pins test statically greps this call
+                    // site's own `as i64` text (see registry_pins.rs) to pin
+                    // int-typed attributes against the tracing→OTel bridge
+                    // exporting an un-cast u64/usize as a string.
+                    tracing::info!(
+                        signaldb.wal.recovered_pending = self.recovered_pending as i64,
+                        signal = %self.signal_type,
+                        role = %self.role,
+                        "Recovered unprocessed WAL entries from disk"
+                    );
+                    crate::self_monitoring::app_metrics()
+                        .wal_entries_pending
+                        .add(self.recovered_pending as i64, &self.gauge_attrs);
+                    self.belief.fetch_add(
+                        self.recovered_pending as i64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                }
+            })
+            .await;
     }
 
     /// Claim the one-time pending-gauge seed for a WAL directory identity,
@@ -1096,11 +1247,109 @@ impl Wal {
         if let Ok(mut claimed) = PENDING_SEED_CLAIMS.lock() {
             claimed.clear();
         }
+        if let Ok(mut belief) = PENDING_GAUGE_BELIEF.lock() {
+            belief.clear();
+        }
     }
 
     /// Stable identity of this WAL directory (see the `writer_id` field).
     pub fn writer_id(&self) -> &str {
         &self.writer_id
+    }
+
+    /// True count of unprocessed entries across every segment, without
+    /// cloning them (unlike [`Self::get_unprocessed_entries`]) — cheap enough
+    /// to call on every reconciliation pass.
+    pub async fn pending_count(&self) -> usize {
+        let segments = self.segments.lock().await;
+        let mut count = 0;
+        for segment_arc in segments.iter() {
+            let segment = segment_arc.lock().await;
+            count += segment.entries.iter().filter(|e| !e.processed).count();
+        }
+        count
+    }
+
+    /// Correct any drift between `signaldb.wal.entries_pending` and this
+    /// WAL's true on-disk backlog (see [`PENDING_GAUGE_BELIEF`]).
+    ///
+    /// Re-scans this WAL's segments; prefer
+    /// [`Self::reconcile_pending_gauge_with_count`] when the caller already
+    /// has a fresh count on hand (the writer's drain loop and the acceptor's
+    /// retry consumer both list every WAL's unprocessed entries every cycle
+    /// anyway).
+    pub async fn reconcile_pending_gauge(&self) {
+        let true_pending = self.pending_count().await;
+        self.reconcile_pending_gauge_with_count(true_pending).await;
+    }
+
+    /// Same correction as [`Self::reconcile_pending_gauge`], but for a caller
+    /// that already computed this WAL's true unprocessed-entry count this
+    /// cycle — skips the extra segment scan.
+    ///
+    /// `segment_pending` must count only entries already in a segment (what
+    /// [`Self::get_unprocessed_entries`] / [`Self::pending_count`] return),
+    /// not buffered ones — this adds [`Self::buffered_entry_count`] itself.
+    /// `append` increments `belief` as soon as an entry is buffered, before
+    /// it is ever flushed into a segment, so a caller whose count skipped the
+    /// buffer would see `believed > segment_pending` for any WAL with
+    /// unflushed entries and "correct" that phantom gap by subtracting real,
+    /// still-pending entries from the gauge.
+    ///
+    /// A non-zero delta means some path changed the pending set without
+    /// telling the gauge; that is logged and corrected every time it happens,
+    /// not just the first.
+    pub async fn reconcile_pending_gauge_with_count(&self, segment_pending: usize) {
+        self.flush_recovered_seed().await;
+        let true_pending = (segment_pending + self.buffered_entry_count().await) as i64;
+        let believed = self.belief.load(std::sync::atomic::Ordering::Relaxed);
+        let delta = true_pending - believed;
+        if delta != 0 {
+            tracing::warn!(
+                signaldb.wal.writer_id = %self.writer_id,
+                signaldb.tenant.id = %self.config.tenant_id,
+                signaldb.dataset.id = %self.config.dataset_id,
+                signal = %self.signal_type,
+                role = %self.role,
+                believed_pending = believed,
+                true_pending,
+                delta,
+                "signaldb.wal.entries_pending drifted from the true WAL backlog; correcting"
+            );
+            crate::self_monitoring::app_metrics()
+                .wal_entries_pending
+                .add(delta, &self.gauge_attrs);
+            self.belief
+                .fetch_add(delta, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Test-only: mark an entry processed on disk *without* touching
+    /// `signaldb.wal.entries_pending` or [`PENDING_GAUGE_BELIEF`].
+    ///
+    /// Every real path that removes an entry from the pending set
+    /// (`mark_processed_many`, and everything built on it —
+    /// `dead_letter`/`dead_letter_rejected`/`dead_letter_unreadable`) keeps
+    /// the gauge and the belief map in lockstep by construction, so there is
+    /// no legitimate way to reach this state through the public API. This
+    /// exists to simulate the defect class issue #1493 is about — a future
+    /// path (bulk retirement, a new adoption route, whatever) that changes
+    /// the true pending set without telling the gauge — so
+    /// [`Self::reconcile_pending_gauge`]'s correcting behaviour has a test.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn mark_processed_bypassing_gauge_for_test(&self, entry_id: Uuid) -> Result<()> {
+        let segments = self.segments.lock().await;
+        for segment_arc in segments.iter() {
+            let mut segment = segment_arc.lock().await;
+            if let Some(&idx) = segment.entry_index.get(&entry_id) {
+                if !segment.entries[idx].processed {
+                    segment.entries[idx].processed = true;
+                    segment.save_index().await?;
+                }
+                return Ok(());
+            }
+        }
+        anyhow::bail!("WAL entry {entry_id} not found in any segment")
     }
 
     /// Retire an entry whose payload cannot be read at all.
@@ -1318,6 +1567,8 @@ impl Wal {
         data: Vec<u8>,
         metadata: Option<String>,
     ) -> Result<Uuid> {
+        self.flush_recovered_seed().await;
+
         let entry_id = Uuid::new_v4();
         self.last_append
             .store(unix_now_secs(), std::sync::atomic::Ordering::Relaxed);
@@ -1329,7 +1580,9 @@ impl Wal {
                 format!("{operation:?}"),
             )];
             metrics.wal_entries_written.add(1, &attrs);
-            metrics.wal_entries_pending.add(1, &[]);
+            metrics.wal_entries_pending.add(1, &self.gauge_attrs);
+            self.belief
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
 
         // Add to buffer first for batching, checking the flush threshold
@@ -1620,6 +1873,7 @@ impl Wal {
         if entry_ids.is_empty() {
             return Ok(());
         }
+        self.flush_recovered_seed().await;
 
         // Count only unprocessed -> processed transitions so repeated calls
         // don't skew the metrics.
@@ -1670,7 +1924,11 @@ impl Wal {
             metrics
                 .wal_entries_processed
                 .add(newly_processed as u64, &[]);
-            metrics.wal_entries_pending.add(-newly_processed, &[]);
+            metrics
+                .wal_entries_pending
+                .add(-newly_processed, &self.gauge_attrs);
+            self.belief
+                .fetch_sub(newly_processed, std::sync::atomic::Ordering::Relaxed);
         }
 
         if !remaining.is_empty() {
