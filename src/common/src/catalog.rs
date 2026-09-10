@@ -4266,6 +4266,37 @@ impl Catalog {
         }
     }
 
+    /// List a user's memberships folded to one effective row per tenant
+    /// (change: oidc-login, "session views count a tenant once"): a user
+    /// holding both a `local` and an `oidc_mapping` row in the same tenant
+    /// is reported once here, at the higher-ranked role via
+    /// [`effective_membership`] — the same resolution
+    /// [`Catalog::get_tenant_membership`] applies to a single tenant,
+    /// applied across every tenant the user belongs to.
+    ///
+    /// For session-facing surfaces only (`GET /ui/session`,
+    /// `POST /ui/session`, `GET /api/v1/whoami`): the admin management list
+    /// (`list_members_for_tenant`) deliberately keeps showing both rows, so
+    /// an admin can tell a local grant from a mapped one.
+    pub async fn list_effective_memberships_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<TenantMembershipRecord>, sqlx::Error> {
+        let rows = self.list_memberships_for_user(user_id).await?;
+        let mut by_tenant: std::collections::BTreeMap<String, Vec<TenantMembershipRecord>> =
+            std::collections::BTreeMap::new();
+        for row in rows {
+            by_tenant
+                .entry(row.tenant_id.clone())
+                .or_default()
+                .push(row);
+        }
+        Ok(by_tenant
+            .into_values()
+            .filter_map(effective_membership)
+            .collect())
+    }
+
     /// List every tenant-membership row for a tenant, including both
     /// `local` and `oidc_mapping` rows for the same user when both exist.
     pub async fn list_members_for_tenant(
@@ -7787,6 +7818,83 @@ mod user_membership_tests {
             effective.granted_by,
             GrantSource::Local,
             "on a role tie, Local must win deterministically"
+        );
+    }
+
+    /// Change: oidc-login, "session views count a tenant once": a user
+    /// holding a `local` and an `oidc_mapping` row in the same tenant must
+    /// be reported once, at the higher-ranked role.
+    #[tokio::test]
+    async fn list_effective_memberships_collapses_local_and_mapped_row_in_one_tenant() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme Corp", None, "config")
+            .await
+            .unwrap();
+        let user = catalog
+            .create_user("collapsed@example.com", None, None, false)
+            .await
+            .unwrap();
+
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        catalog
+            .sync_oidc_memberships(&user.id, &[("acme".to_string(), MembershipRole::Admin)])
+            .await
+            .unwrap();
+
+        let effective = catalog
+            .list_effective_memberships_for_user(&user.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            effective.len(),
+            1,
+            "a local + mapped row in one tenant must collapse to one entry"
+        );
+        assert_eq!(effective[0].tenant_id, "acme");
+        assert_eq!(effective[0].role, MembershipRole::Admin);
+    }
+
+    /// Distinct tenants must not collapse into each other: a user with
+    /// memberships in two different tenants still sees two.
+    #[tokio::test]
+    async fn list_effective_memberships_keeps_distinct_tenants_separate() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme Corp", None, "config")
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant("globex", "Globex Corp", None, "config")
+            .await
+            .unwrap();
+        let user = catalog
+            .create_user("two-tenants@example.com", None, None, false)
+            .await
+            .unwrap();
+
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "globex", MembershipRole::Member)
+            .await
+            .unwrap();
+
+        let effective = catalog
+            .list_effective_memberships_for_user(&user.id)
+            .await
+            .unwrap();
+        assert_eq!(effective.len(), 2);
+        let tenant_ids: std::collections::BTreeSet<&str> =
+            effective.iter().map(|m| m.tenant_id.as_str()).collect();
+        assert_eq!(
+            tenant_ids,
+            std::collections::BTreeSet::from(["acme", "globex"])
         );
     }
 
