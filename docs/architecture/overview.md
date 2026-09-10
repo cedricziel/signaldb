@@ -118,7 +118,7 @@ flowchart LR
     Writer -->|"append (v2 schema)"| WWal[("Writer WAL")]
     WWal -->|"WalProcessor (5s loop, backoff on failure)"| Iceberg["Iceberg commit"]
     Iceberg --> Store[("Object store (Parquet)")]
-    Iceberg --> Cat[("Iceberg catalog (SQLite)")]
+    Iceberg --> Cat[("Iceberg catalog (SQLite/PostgreSQL)")]
 ```
 
 Query path:
@@ -127,7 +127,7 @@ Query path:
 flowchart LR
     Client["Tempo API client"] -->|"HTTP :3000"| Router["Router :3000 / :50053"]
     Router -->|"Flight do_get"| Querier["Querier :50054"]
-    Querier -->|"table metadata"| Cat[("Iceberg catalog (SQLite)")]
+    Querier -->|"table metadata"| Cat[("Iceberg catalog (SQLite/PostgreSQL)")]
     Querier -->|"DataFusion scan"| Store[("Object store (Parquet)")]
     Router -->|"JSON (Tempo format)"| Client
 ```

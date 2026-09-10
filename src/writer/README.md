@@ -10,8 +10,8 @@ columnar storage.
 
 ## Endpoint
 
-| Protocol | Port | Purpose |
-|----------|------|---------|
+| Protocol      | Port  | Purpose                                        |
+| ------------- | ----- | ---------------------------------------------- |
 | Flight (gRPC) | 50061 | `do_put` ingestion of trace/log/metric batches |
 
 The writer registers itself in the catalog with the `Storage` capability so
@@ -96,8 +96,9 @@ The writer is configured through the shared SignalDB configuration
 ```toml
 [schema]
 catalog_type = "sql"
-# Only SQLite catalog URIs are supported (create_sql_catalog_with_builder
-# rejects everything else).
+# SQLite or PostgreSQL catalog URIs are supported (create_sql_catalog_with_builder
+# in src/common/src/iceberg/mod.rs); PostgreSQL is the CAS-capable choice once
+# writer, querier, and compactor commit against the same catalog.
 catalog_uri = "sqlite:///.data/catalog.db"
 
 [storage]
@@ -147,7 +148,7 @@ Watch for these log signals in production:
 - `Iceberg commit reported an error but the marker landed` — an ambiguous
   commit resolved as success by verification; harmless but worth tracking.
 - `Iceberg commit reported success but the marker is absent (catalog CAS
-  silently lost)` — a concurrent commit won the race; the writer retries with
+silently lost)` — a concurrent commit won the race; the writer retries with
   fresh metadata. Sustained occurrences indicate commit contention on a table.
 
 ```bash

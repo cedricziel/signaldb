@@ -81,7 +81,7 @@ catalog_uri = "sqlite::memory:"      # or sqlite:///path/to/catalog.db
 
 Env: `SIGNALDB__SCHEMA__CATALOG_TYPE`, `SIGNALDB__SCHEMA__CATALOG_URI` (double-underscore form). Beware: `signaldb.dist.toml` and `scripts/run-dev.sh` mention/set the single-underscore forms `SIGNALDB_SCHEMA_CATALOG_TYPE`/`SIGNALDB_SCHEMA_CATALOG_URI`, which split to `schema.catalog.type` and silently do nothing.
 
-**Note**: Only SQLite supported for Iceberg catalog (not PostgreSQL).
+**Note**: Iceberg catalog accepts `sqlite://`/`sqlite:file:` or `postgres://`/`postgresql://` URIs (`create_sql_catalog_with_builder`, `src/common/src/iceberg/mod.rs`).
 
 #### Materialized labels
 

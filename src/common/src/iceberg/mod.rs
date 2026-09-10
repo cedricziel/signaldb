@@ -172,6 +172,13 @@ fn sqlite_catalog_options() -> SqlCatalogOptions {
 /// defaults (sqlx's own pool sizing, no extra per-session statements) match
 /// what `src/common/src/catalog.rs`'s service-discovery catalog uses for its
 /// PostgreSQL connections.
+///
+/// Empty is a deliberate starting point, not an oversight: a PostgreSQL
+/// equivalent of the SQLite tuning (e.g. a `set statement_timeout = '...'`
+/// session statement, mirroring `busy_timeout`) is a plausible future
+/// addition once we have production signal that the default is too
+/// permissive, the same way the SQLite pragmas above were added in response
+/// to observed contention rather than upfront.
 fn postgres_catalog_options() -> SqlCatalogOptions {
     SqlCatalogOptions::new()
 }
@@ -213,7 +220,13 @@ pub(crate) async fn create_sql_catalog_with_builder(
             sqlite_catalog_options(),
         )
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to create SQLite catalog at '{}': {}", uri, e))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to create SQLite catalog at '{}': {}",
+                crate::config::redact_dsn(&uri),
+                e
+            )
+        })?;
         Arc::new(catalog) as Arc<dyn IcebergCatalog>
     } else if catalog_uri.starts_with("sqlite:file:") {
         // Named in-memory or file-URI SQLite (e.g. sqlite:file:mydb?mode=memory&cache=shared).
@@ -236,7 +249,13 @@ pub(crate) async fn create_sql_catalog_with_builder(
             sqlite_catalog_options(),
         )
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to create SQLite catalog '{}': {}", uri, e))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to create SQLite catalog '{}': {}",
+                crate::config::redact_dsn(&uri),
+                e
+            )
+        })?;
         Arc::new(catalog) as Arc<dyn IcebergCatalog>
     } else if catalog_uri == "sqlite://"
         || catalog_uri.contains(":memory:")
@@ -270,12 +289,18 @@ pub(crate) async fn create_sql_catalog_with_builder(
             postgres_catalog_options(),
         )
         .await
-        .map_err(|e| anyhow::anyhow!("Failed to create PostgreSQL catalog: {}", e))?;
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to create PostgreSQL catalog at '{}': {}",
+                crate::config::redact_dsn(catalog_uri),
+                e
+            )
+        })?;
         Arc::new(catalog) as Arc<dyn IcebergCatalog>
     } else {
         return Err(anyhow::anyhow!(
             "Unsupported catalog URI: {}. Supported: sqlite://, sqlite:file:, postgres://, postgresql://.",
-            catalog_uri
+            crate::config::redact_dsn(catalog_uri)
         ));
     };
 
@@ -404,6 +429,29 @@ mod tests {
             result.is_ok(),
             "expected a postgres:// catalog URI to be accepted, got {:?}",
             result.err()
+        );
+    }
+
+    /// A password in the catalog URI must never reach the "Unsupported
+    /// catalog URI" error message. A typo'd scheme (`postgre://` instead of
+    /// `postgres://`) is a realistic way to land here with credentials still
+    /// attached, since every other branch matches on scheme prefix first.
+    #[tokio::test]
+    async fn unsupported_catalog_uri_error_redacts_credentials() {
+        let uri = "postgre://user:hunter2@db/iceberg";
+
+        let err = create_sql_catalog_with_builder(uri, "test", ObjectStoreBuilder::memory())
+            .await
+            .expect_err("a typo'd scheme must be rejected");
+
+        let message = err.to_string();
+        assert!(
+            !message.contains("hunter2"),
+            "error message leaked the catalog URI password: {message}"
+        );
+        assert!(
+            message.contains("***"),
+            "error message should carry the redacted marker: {message}"
         );
     }
 
