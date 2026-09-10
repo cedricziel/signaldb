@@ -80,8 +80,9 @@ SignalDB stores metric names in their OTel dotted form (`signaldb.wal.entries_pe
 
 | Operator | Status |
 |----------|--------|
-| Arithmetic `+ - * / % ^` with a scalar (`metric * 8`, `1024 / metric`) | ✅ |
-| Comparison `== != > < >= <=` with a scalar (`metric > 5`, `5 < metric`) | ✅ (filters series; with `bool` maps to 1/0) |
+| Arithmetic `+ - * / % ^` with a scalar (`metric * 8`, `1024 / metric`) | ✅ (drops `__name__`) |
+| Comparison `== != > < >= <=` with a scalar (`metric > 5`, `5 < metric`) | ✅ (filters series; with `bool` maps to 1/0 and drops `__name__`) |
+| Nested expressions (`a + b + c`, `(a / b) * 100`) | ✅ |
 | Arithmetic `+ - * / % ^` between two vectors (`a / b`) | ✅ (one-to-one match on `job`/`service`; drops `__name__`) |
 | Comparison `== != > < >= <=` between two vectors (`a > b`, with `bool`) | ✅ (one-to-one match; filters `left` or maps to 1/0) |
 | Logical/set `and`, `or`, `unless` | ✅ (matched on `job`/`service` identity) |
@@ -91,8 +92,8 @@ SignalDB stores metric names in their OTel dotted form (`signaldb.wal.entries_pe
 
 | Function | Status |
 |----------|--------|
-| `abs`, `ceil`, `floor`, `round`, `clamp`, `clamp_min`, `clamp_max` | ✅ |
-| `exp`, `ln`, `log2`, `log10`, `sqrt`, `sgn` | ✅ |
+| `abs`, `ceil`, `floor`, `round`, `clamp`, `clamp_min`, `clamp_max` | ✅ (drop `__name__`, as in Prometheus) |
+| `exp`, `ln`, `log2`, `log10`, `sqrt`, `sgn` | ✅ (drop `__name__`) |
 | `sort`, `sort_desc` | ✅ (order the output by value) |
 | `label_replace`, `label_join` | ✅ (over the materialized `service_name`/`__name__` labels) |
 | `absent` | ✅ (1 per empty step bucket; carries the `job`/`service` matcher) |
