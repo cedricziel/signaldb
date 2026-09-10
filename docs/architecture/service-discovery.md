@@ -38,6 +38,7 @@ sources:
 - Periodic heartbeats maintain liveness via `last_seen` timestamp updates
 - Other services query the catalog for active service endpoints, filtering out rows whose `last_seen` is older than the discovery TTL
 - Graceful shutdown deletes the row (`deregister_ingester`); crashed services never deregister, so a background reaper (`reap_stale_ingesters`, issue #555) deletes rows whose heartbeat is 2x TTL stale
+- Monolithic mode opens one `Catalog` (one `SqlitePool`) per service against the same on-disk file, so an on-disk SQLite catalog caps its pool at `SQLITE_CATALOG_MAX_CONNECTIONS` (8) and retries `SQLITE_BUSY`/`SQLITE_LOCKED` with short backoff (`retry_on_sqlite_busy`) on the heartbeat, reap, and compaction-lease renew/expire writes, on top of the `journal_mode = wal` + `busy_timeout = 10s` already set on every connection; a failure logs at WARN and escalates to ERROR only once it has persisted past the registration/lease TTL (issue #1495)
 
 **Current Service Registry Schema** (PostgreSQL flavor; SQLite uses TEXT columns):
 

@@ -55,6 +55,25 @@ let bootstrap =
 // bootstrap.shutdown().await? deregisters gracefully; Drop also deregisters
 ```
 
+### On-disk SQLite catalog: pool size, busy retries, log escalation
+
+Monolithic mode opens one `Catalog` per service (router, writer, querier,
+compactor each call `ServiceBootstrap::new` independently — see
+`src/signaldb-bin/src/main.rs`), so several separate `SqlitePool`s can end up
+pointed at the same `[discovery]`/`[database]` file. To keep that from
+multiplying into dozens of connections contending for SQLite's single writer
+lock, an on-disk SQLite `Catalog` caps its pool at
+`SQLITE_CATALOG_MAX_CONNECTIONS` (8) connections, on top of the
+`journal_mode = wal` + `busy_timeout = 10s` every connection already gets.
+The heartbeat, stale-registration reap, and compaction-lease renew/expire
+writes additionally retry `SQLITE_BUSY`/`SQLITE_LOCKED` ((code: 5)/(code: 6))
+with short backoff via `retry_on_sqlite_busy`, for contention that outlasts a
+single connection's `busy_timeout` window (issue #1495). A heartbeat, reap,
+or lease-renewal failure logs at WARN; it only escalates to ERROR once it has
+been failing continuously past the registration/lease TTL (`FailureStreak`)
+— that's the point at which a peer can actually reap the registration or
+steal the lease, so a transient miss shouldn't page anyone.
+
 ## Service Catalog Schema
 
 ```sql
