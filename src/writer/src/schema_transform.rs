@@ -1,7 +1,7 @@
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Datelike, Timelike};
 use common::flight::conversion::UNKNOWN_SERVICE_NAME;
-use common::schema::resource_identity::resource_identity_from_json;
+use common::schema::resource_identity::{resource_identity, resource_identity_from_json};
 use common::schema::schema_parser::ResolvedSchema;
 use common::schema::{ATTR_TOKENS_COLUMN, SCHEMA_DEFINITIONS, materialized_column_name};
 use datafusion::arrow::{
@@ -1021,6 +1021,7 @@ struct ResourceContext {
     service_name: Option<String>,
     resource_schema_url: Option<String>,
     resource_attributes: Option<String>,
+    resource_identity: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -1061,6 +1062,7 @@ pub fn create_metrics_gauge_arrow_schema() -> Arc<Schema> {
         Field::new("exemplars", DataType::Utf8, true),
         Field::new("date_day", DataType::Date32, false),
         Field::new("hour", DataType::Int32, false),
+        Field::new("resource_identity", DataType::Utf8, true),
     ]))
 }
 
@@ -1095,6 +1097,7 @@ fn create_metrics_sum_arrow_schema() -> Arc<Schema> {
         Field::new("exemplars", DataType::Utf8, true),
         Field::new("date_day", DataType::Date32, false),
         Field::new("hour", DataType::Int32, false),
+        Field::new("resource_identity", DataType::Utf8, true),
     ]))
 }
 
@@ -1133,6 +1136,7 @@ fn create_metrics_histogram_arrow_schema() -> Arc<Schema> {
         Field::new("exemplars", DataType::Utf8, true),
         Field::new("date_day", DataType::Date32, false),
         Field::new("hour", DataType::Int32, false),
+        Field::new("resource_identity", DataType::Utf8, true),
     ]))
 }
 
@@ -1305,6 +1309,7 @@ fn extract_resource_context(resource_json: Option<&str>) -> ResourceContext {
             service_name: unknown(),
             resource_schema_url: None,
             resource_attributes: Some(resource_json.to_string()),
+            resource_identity: None,
         };
     };
 
@@ -1313,8 +1318,17 @@ fn extract_resource_context(resource_json: Option<&str>) -> ResourceContext {
             service_name: unknown(),
             resource_schema_url: None,
             resource_attributes: Some(resource_json.to_string()),
+            resource_identity: None,
         };
     };
+
+    // The same "attributes or the whole object" disambiguation
+    // `resource_identity_from_json` applies, reused here against the object
+    // already parsed above rather than re-parsing `resource_json`.
+    let identity_attributes = obj
+        .get("attributes")
+        .and_then(|value| value.as_object())
+        .unwrap_or(&obj);
 
     let resource_attributes = if obj.get("attributes").is_some() {
         serialize_json(obj.get("attributes"))
@@ -1331,6 +1345,7 @@ fn extract_resource_context(resource_json: Option<&str>) -> ResourceContext {
             .and_then(|value| value.as_str())
             .map(ToString::to_string),
         resource_attributes,
+        resource_identity: Some(resource_identity(identity_attributes)),
     }
 }
 
@@ -1406,6 +1421,7 @@ pub fn transform_metrics_gauge_v1_to_iceberg(
     let mut exemplars: Vec<Option<String>> = Vec::new();
     let mut date_days: Vec<Option<i32>> = Vec::new();
     let mut hours: Vec<Option<i32>> = Vec::new();
+    let mut resource_identities: Vec<Option<String>> = Vec::new();
 
     for row in 0..batch.num_rows() {
         let metric_name = string_value(name_array, row);
@@ -1441,6 +1457,7 @@ pub fn transform_metrics_gauge_v1_to_iceberg(
             exemplars.push(serialize_json(point.get("exemplars")));
             date_days.push(date_day);
             hours.push(hour);
+            resource_identities.push(resource_context.resource_identity.clone());
         }
     }
 
@@ -1470,6 +1487,7 @@ pub fn transform_metrics_gauge_v1_to_iceberg(
         Arc::new(StringArray::from(exemplars)),
         Arc::new(Date32Array::from(date_days)),
         Arc::new(Int32Array::from(hours)),
+        Arc::new(StringArray::from(resource_identities)),
     ];
     let out_schema =
         extend_schema_with_labels(output_schema, label_fields, &mut columns, label_columns);
@@ -1518,6 +1536,7 @@ pub fn transform_metrics_sum_v1_to_iceberg(
     let mut exemplars: Vec<Option<String>> = Vec::new();
     let mut date_days: Vec<Option<i32>> = Vec::new();
     let mut hours: Vec<Option<i32>> = Vec::new();
+    let mut resource_identities: Vec<Option<String>> = Vec::new();
 
     for row in 0..batch.num_rows() {
         let metric_name = string_value(name_array, row);
@@ -1557,6 +1576,7 @@ pub fn transform_metrics_sum_v1_to_iceberg(
             exemplars.push(serialize_json(point.get("exemplars")));
             date_days.push(date_day);
             hours.push(hour);
+            resource_identities.push(resource_context.resource_identity.clone());
         }
     }
 
@@ -1588,6 +1608,7 @@ pub fn transform_metrics_sum_v1_to_iceberg(
         Arc::new(StringArray::from(exemplars)),
         Arc::new(Date32Array::from(date_days)),
         Arc::new(Int32Array::from(hours)),
+        Arc::new(StringArray::from(resource_identities)),
     ];
     let out_schema =
         extend_schema_with_labels(output_schema, label_fields, &mut columns, label_columns);
@@ -1639,6 +1660,7 @@ pub fn transform_metrics_histogram_v1_to_iceberg(
     let mut exemplars: Vec<Option<String>> = Vec::new();
     let mut date_days: Vec<Option<i32>> = Vec::new();
     let mut hours: Vec<Option<i32>> = Vec::new();
+    let mut resource_identities: Vec<Option<String>> = Vec::new();
 
     for row in 0..batch.num_rows() {
         let metric_name = string_value(name_array, row);
@@ -1681,6 +1703,7 @@ pub fn transform_metrics_histogram_v1_to_iceberg(
             exemplars.push(serialize_json(point.get("exemplars")));
             date_days.push(date_day);
             hours.push(hour);
+            resource_identities.push(resource_context.resource_identity.clone());
         }
     }
 
@@ -1716,6 +1739,7 @@ pub fn transform_metrics_histogram_v1_to_iceberg(
         Arc::new(StringArray::from(exemplars)),
         Arc::new(Date32Array::from(date_days)),
         Arc::new(Int32Array::from(hours)),
+        Arc::new(StringArray::from(resource_identities)),
     ];
     let out_schema =
         extend_schema_with_labels(output_schema, label_fields, &mut columns, label_columns);
@@ -1767,6 +1791,7 @@ fn create_metrics_exponential_histogram_arrow_schema() -> Arc<Schema> {
         Field::new("exemplars", DataType::Utf8, true),
         Field::new("date_day", DataType::Date32, false),
         Field::new("hour", DataType::Int32, false),
+        Field::new("resource_identity", DataType::Utf8, true),
     ]))
 }
 
@@ -1801,6 +1826,7 @@ fn create_metrics_summary_arrow_schema() -> Arc<Schema> {
         Field::new("exemplars", DataType::Utf8, true),
         Field::new("date_day", DataType::Date32, false),
         Field::new("hour", DataType::Int32, false),
+        Field::new("resource_identity", DataType::Utf8, true),
     ]))
 }
 
@@ -1849,6 +1875,7 @@ pub fn transform_metrics_exponential_histogram_v1_to_iceberg(
     let mut exemplars: Vec<Option<String>> = Vec::new();
     let mut date_days: Vec<Option<i32>> = Vec::new();
     let mut hours: Vec<Option<i32>> = Vec::new();
+    let mut resource_identities: Vec<Option<String>> = Vec::new();
 
     for row in 0..batch.num_rows() {
         let metric_name = string_value(name_array, row);
@@ -1903,6 +1930,7 @@ pub fn transform_metrics_exponential_histogram_v1_to_iceberg(
             exemplars.push(serialize_json(point.get("exemplars")));
             date_days.push(date_day);
             hours.push(hour);
+            resource_identities.push(resource_context.resource_identity.clone());
         }
     }
 
@@ -1943,6 +1971,7 @@ pub fn transform_metrics_exponential_histogram_v1_to_iceberg(
         Arc::new(StringArray::from(exemplars)),
         Arc::new(Date32Array::from(date_days)),
         Arc::new(Int32Array::from(hours)),
+        Arc::new(StringArray::from(resource_identities)),
     ];
     let out_schema =
         extend_schema_with_labels(output_schema, label_fields, &mut columns, label_columns);
@@ -1988,6 +2017,7 @@ pub fn transform_metrics_summary_v1_to_iceberg(
     let mut exemplars: Vec<Option<String>> = Vec::new();
     let mut date_days: Vec<Option<i32>> = Vec::new();
     let mut hours: Vec<Option<i32>> = Vec::new();
+    let mut resource_identities: Vec<Option<String>> = Vec::new();
 
     for row in 0..batch.num_rows() {
         let metric_name = string_value(name_array, row);
@@ -2025,6 +2055,7 @@ pub fn transform_metrics_summary_v1_to_iceberg(
             exemplars.push(serialize_json(point.get("exemplars")));
             date_days.push(date_day);
             hours.push(hour);
+            resource_identities.push(resource_context.resource_identity.clone());
         }
     }
 
@@ -2056,6 +2087,7 @@ pub fn transform_metrics_summary_v1_to_iceberg(
         Arc::new(StringArray::from(exemplars)),
         Arc::new(Date32Array::from(date_days)),
         Arc::new(Int32Array::from(hours)),
+        Arc::new(StringArray::from(resource_identities)),
     ];
     let out_schema =
         extend_schema_with_labels(output_schema, label_fields, &mut columns, label_columns);
@@ -2092,6 +2124,7 @@ pub fn create_profiles_arrow_schema() -> Arc<Schema> {
         Field::new("span_id", DataType::Utf8, true),
         Field::new("date_day", DataType::Date32, false),
         Field::new("hour", DataType::Int32, false),
+        Field::new("resource_identity", DataType::Utf8, true),
     ]))
 }
 
@@ -2222,6 +2255,7 @@ pub fn transform_profiles_v1_to_iceberg(
                     .collect();
                 Arc::new(Int32Array::from(hours))
             }
+            "resource_identity" => resource_identity_from_resource_json_column(&batch)?,
             other => return Err(anyhow!("Unknown field in profiles schema: {other}")),
         };
         new_columns.push(column);
@@ -2806,6 +2840,82 @@ mod tests {
         assert!(schema.index_of("time_unix_nano").is_err());
     }
 
+    /// A minimal profile carrying the given resource attributes (`None`
+    /// leaves the resource unset, as an OTLP profile without a resource
+    /// processor would).
+    fn profile_with_resource(
+        resource_attributes: Option<serde_json::Value>,
+    ) -> common::model::profile::Profile {
+        use common::model::profile::{Frame, Profile, Sample, Stacktrace, ValueType};
+        Profile {
+            profile_id: [0xab; 16],
+            time_unix_nano: 1_700_000_000_000_000_000,
+            duration_nano: 1,
+            sample_type: ValueType {
+                type_: "cpu".to_string(),
+                unit: "nanoseconds".to_string(),
+            },
+            service_name: "checkout".to_string(),
+            stacktraces: vec![Stacktrace {
+                frames: vec![Frame {
+                    function_name: "work".to_string(),
+                    ..Frame::default()
+                }],
+            }],
+            samples: vec![Sample {
+                stacktrace_index: 0,
+                values: vec![1],
+                ..Sample::default()
+            }],
+            resource_attributes,
+            ..Profile::default()
+        }
+    }
+
+    #[test]
+    fn profiles_transform_resource_identity_groups_by_resource() {
+        let profiles = vec![
+            profile_with_resource(Some(serde_json::json!({"service.name": "checkout"}))),
+            profile_with_resource(Some(serde_json::json!({"service.name": "checkout"}))),
+            profile_with_resource(Some(serde_json::json!({"service.name": "billing"}))),
+        ];
+        let wire_batch = common::flight::conversion::profiles_to_arrow(&profiles);
+        let result = transform_profiles_v1_to_iceberg(wire_batch, &[]).unwrap();
+        let identities = result
+            .column(result.schema().index_of("resource_identity").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(identities.len(), 3);
+        assert_eq!(
+            identities.value(0),
+            identities.value(1),
+            "first two profiles share the checkout resource"
+        );
+        assert_ne!(
+            identities.value(0),
+            identities.value(2),
+            "third profile has a different resource"
+        );
+        assert_eq!(
+            identities.value(0),
+            resource_identity_from_json(r#"{"service.name":"checkout"}"#).unwrap()
+        );
+    }
+
+    #[test]
+    fn profiles_transform_null_resource_json_yields_null_resource_identity() {
+        let wire_batch =
+            common::flight::conversion::profiles_to_arrow(&[profile_with_resource(None)]);
+        let result = transform_profiles_v1_to_iceberg(wire_batch, &[]).unwrap();
+        let identities = result
+            .column(result.schema().index_of("resource_identity").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert!(identities.is_null(0));
+    }
+
     #[test]
     fn determine_wal_operation_maps_profiles() {
         assert!(matches!(
@@ -2892,6 +3002,53 @@ mod tests {
                 Arc::new(StringArray::from(vec![data_json])),
                 Arc::new(Int32Array::from(vec![Some(2)])),
                 Arc::new(BooleanArray::from(vec![Some(false)])),
+            ],
+        )
+        .unwrap()
+    }
+
+    /// A v1 metrics batch with one gauge/sum data point per row, each row
+    /// carrying its own resource JSON -- for asserting `resource_identity`
+    /// groups points by resource.
+    fn metrics_v1_batch_multi_resource(resource_jsons: &[Option<&str>]) -> RecordBatch {
+        use datafusion::arrow::array::{BooleanArray, Int32Array};
+        let n = resource_jsons.len();
+        let data_json = r#"[{"time_unix_nano":1700000001000000000,"start_time_unix_nano":1700000000000000000,"value":0.5,"attributes":{}}]"#;
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("name", DataType::Utf8, false),
+            Field::new("description", DataType::Utf8, true),
+            Field::new("unit", DataType::Utf8, true),
+            Field::new("start_time_unix_nano", DataType::UInt64, true),
+            Field::new("time_unix_nano", DataType::UInt64, false),
+            Field::new("attributes_json", DataType::Utf8, true),
+            Field::new("resource_json", DataType::Utf8, true),
+            Field::new("scope_json", DataType::Utf8, true),
+            Field::new("metric_type", DataType::Utf8, false),
+            Field::new("data_json", DataType::Utf8, false),
+            Field::new("aggregation_temporality", DataType::Int32, true),
+            Field::new("is_monotonic", DataType::Boolean, true),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["system.cpu.utilization"; n])),
+                Arc::new(StringArray::from(vec![Some("cpu"); n])),
+                Arc::new(StringArray::from(vec![Some("1"); n])),
+                Arc::new(UInt64Array::from(vec![
+                    Some(1_700_000_000_000_000_000u64);
+                    n
+                ])),
+                Arc::new(UInt64Array::from(vec![1_700_000_001_000_000_000u64; n])),
+                Arc::new(StringArray::from(vec![Some("{}"); n])),
+                Arc::new(StringArray::from(resource_jsons.to_vec())),
+                Arc::new(StringArray::from(vec![
+                    Some(r#"{"name":"hostmetrics"}"#);
+                    n
+                ])),
+                Arc::new(StringArray::from(vec!["gauge"; n])),
+                Arc::new(StringArray::from(vec![data_json; n])),
+                Arc::new(Int32Array::from(vec![Some(2); n])),
+                Arc::new(BooleanArray::from(vec![Some(false); n])),
             ],
         )
         .unwrap()
@@ -3004,6 +3161,77 @@ mod tests {
             .downcast_ref::<StringArray>()
             .unwrap();
         assert_eq!(names.value(0), "checkout");
+    }
+
+    #[test]
+    fn metrics_gauge_transform_resource_identity_groups_points_by_resource() {
+        let batch = metrics_v1_batch_multi_resource(&[
+            Some(r#"{"service.name":"checkout"}"#),
+            Some(r#"{"service.name":"checkout"}"#),
+            Some(r#"{"service.name":"billing"}"#),
+        ]);
+        let result = transform_metrics_gauge_v1_to_iceberg(batch, &[]).unwrap();
+        let identities = result
+            .column(result.schema().index_of("resource_identity").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(identities.len(), 3);
+        assert_eq!(
+            identities.value(0),
+            identities.value(1),
+            "first two points share the checkout resource"
+        );
+        assert_ne!(
+            identities.value(0),
+            identities.value(2),
+            "third point has a different resource"
+        );
+        assert_eq!(
+            identities.value(0),
+            resource_identity_from_json(r#"{"service.name":"checkout"}"#).unwrap()
+        );
+    }
+
+    #[test]
+    fn metrics_gauge_transform_null_resource_json_yields_null_resource_identity() {
+        let batch = metrics_v1_batch(None);
+        let result = transform_metrics_gauge_v1_to_iceberg(batch, &[]).unwrap();
+        let identities = result
+            .column(result.schema().index_of("resource_identity").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert!(identities.is_null(0));
+    }
+
+    /// The remaining four metrics representations share `extract_resource_context`
+    /// and the same `resource_identity` population code path as
+    /// `metrics_gauge` (asserted above with the full grouping/null
+    /// behaviour); this checks each one declares the column, nullable, so a
+    /// transform that forgot to add it to its own
+    /// `create_metrics_*_arrow_schema()` fails here instead of only at
+    /// `schema_consistency`.
+    #[test]
+    fn remaining_metrics_transforms_declare_a_nullable_resource_identity_column() {
+        for (name, schema) in [
+            ("metrics_sum", create_metrics_sum_arrow_schema()),
+            ("metrics_histogram", create_metrics_histogram_arrow_schema()),
+            (
+                "metrics_exponential_histogram",
+                create_metrics_exponential_histogram_arrow_schema(),
+            ),
+            ("metrics_summary", create_metrics_summary_arrow_schema()),
+        ] {
+            let field = schema
+                .field_with_name("resource_identity")
+                .unwrap_or_else(|_| panic!("{name}: missing resource_identity column"));
+            assert!(
+                field.is_nullable(),
+                "{name}: resource_identity must be nullable"
+            );
+            assert_eq!(field.data_type(), &DataType::Utf8, "{name}");
+        }
     }
 
     fn make_log_flight_batch_with_attrs(
@@ -3471,9 +3699,12 @@ mod schema_consistency {
     }
 
     #[test]
-    fn profiles_transform_covers_every_non_computed_physical_v1_field() {
+    fn profiles_transform_covers_every_non_computed_physical_v2_field() {
         let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(&SCHEMA_DEFINITIONS.profiles, "physical-v1")
+            .resolve_table_schema(
+                &SCHEMA_DEFINITIONS.profiles,
+                &SCHEMA_DEFINITIONS.metadata.current_profile_version,
+            )
             .unwrap();
         assert_covers_non_computed_fields(
             "profiles",
@@ -3495,14 +3726,18 @@ mod schema_consistency {
                 "profile_attributes",
                 "trace_id",
                 "span_id",
+                "resource_identity",
             ],
         );
     }
 
     #[test]
-    fn metrics_gauge_transform_covers_every_non_computed_physical_v1_field() {
+    fn metrics_gauge_transform_covers_every_non_computed_physical_v2_field() {
         let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_gauge, "physical-v1")
+            .resolve_table_schema(
+                &SCHEMA_DEFINITIONS.metrics_gauge,
+                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
+            )
             .unwrap();
         let schema = create_metrics_gauge_arrow_schema();
         let touched = metrics_arrow_touched_fields(&schema);
@@ -3510,9 +3745,12 @@ mod schema_consistency {
     }
 
     #[test]
-    fn metrics_sum_transform_covers_every_non_computed_physical_v1_field() {
+    fn metrics_sum_transform_covers_every_non_computed_physical_v2_field() {
         let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_sum, "physical-v1")
+            .resolve_table_schema(
+                &SCHEMA_DEFINITIONS.metrics_sum,
+                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
+            )
             .unwrap();
         let schema = create_metrics_sum_arrow_schema();
         let touched = metrics_arrow_touched_fields(&schema);
@@ -3520,9 +3758,12 @@ mod schema_consistency {
     }
 
     #[test]
-    fn metrics_histogram_transform_covers_every_non_computed_physical_v1_field() {
+    fn metrics_histogram_transform_covers_every_non_computed_physical_v2_field() {
         let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_histogram, "physical-v1")
+            .resolve_table_schema(
+                &SCHEMA_DEFINITIONS.metrics_histogram,
+                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
+            )
             .unwrap();
         let schema = create_metrics_histogram_arrow_schema();
         let touched = metrics_arrow_touched_fields(&schema);
@@ -3530,11 +3771,11 @@ mod schema_consistency {
     }
 
     #[test]
-    fn metrics_exponential_histogram_transform_covers_every_non_computed_physical_v1_field() {
+    fn metrics_exponential_histogram_transform_covers_every_non_computed_physical_v2_field() {
         let resolved = SCHEMA_DEFINITIONS
             .resolve_table_schema(
                 &SCHEMA_DEFINITIONS.metrics_exponential_histogram,
-                "physical-v1",
+                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
             )
             .unwrap();
         let schema = create_metrics_exponential_histogram_arrow_schema();
@@ -3543,9 +3784,12 @@ mod schema_consistency {
     }
 
     #[test]
-    fn metrics_summary_transform_covers_every_non_computed_physical_v1_field() {
+    fn metrics_summary_transform_covers_every_non_computed_physical_v2_field() {
         let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_summary, "physical-v1")
+            .resolve_table_schema(
+                &SCHEMA_DEFINITIONS.metrics_summary,
+                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
+            )
             .unwrap();
         let schema = create_metrics_summary_arrow_schema();
         let touched = metrics_arrow_touched_fields(&schema);
@@ -3559,7 +3803,10 @@ mod schema_consistency {
         // without a matching schemas.toml entry -- the scenario this
         // derivation exists to catch.
         let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_gauge, "physical-v1")
+            .resolve_table_schema(
+                &SCHEMA_DEFINITIONS.metrics_gauge,
+                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
+            )
             .unwrap();
         let mut fields: Vec<Field> = create_metrics_gauge_arrow_schema()
             .fields()
