@@ -683,6 +683,8 @@ impl WalProcessor {
             .writer_entries_deferred_by_budget
             .record(budget_deferred_entries as u64, &[]);
 
+        common::wal::dead_letter::reconcile_all(&self.wal_manager, "writer").await;
+
         if pending_entries.is_empty() {
             // Keep the backlog gauge honest on an idle WAL: without this it
             // would stick at the last non-zero reading and read as a false
@@ -1611,6 +1613,54 @@ mod tests {
             .await;
         assert!(displaced.is_none(), "fresh manager holds no WAL under key");
         Arc::new(manager)
+    }
+
+    #[tokio::test]
+    async fn a_drain_cycle_sweeps_an_orphaned_dead_letter_directory() {
+        // #1494: a dead-letter directory with no live WAL behind it anymore
+        // (segments already fully drained and cleaned up) must still be
+        // discovered and swept by the writer's normal drain cycle.
+        let temp_dir = tempdir().unwrap();
+        let base = WalConfig::with_defaults(temp_dir.path().to_path_buf());
+        let manager = Arc::new(WalManager::uniform(base));
+
+        let dead_letter_dir = temp_dir
+            .path()
+            .join("acme")
+            .join("production")
+            .join("metrics")
+            .join("dead-letter");
+        tokio::fs::create_dir_all(&dead_letter_dir).await.unwrap();
+        let bin = dead_letter_dir.join("a.bin");
+        let marker = dead_letter_dir.join("a.rejected.json");
+        tokio::fs::write(&bin, b"payload").await.unwrap();
+        tokio::fs::write(&marker, b"{}").await.unwrap();
+        // No global CONFIG in this test, so the processor falls back to the
+        // 30-day default retention; back-date well past that so the sweep
+        // actually deletes it.
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 24 * 3600);
+        for path in [&bin, &marker] {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_modified(past)
+                .unwrap();
+        }
+
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let object_store = Arc::new(InMemory::new());
+        let mut processor = WalProcessor::new(manager, catalog_manager, object_store);
+
+        // No pending entries anywhere, so drain_pending returns early after
+        // the per-cycle bookkeeping — which is exactly where the dead-letter
+        // sweep must run for this to pass.
+        processor.process_pending_entries().await.unwrap();
+
+        assert!(
+            !bin.exists() && !marker.exists(),
+            "a dead-letter pair past retention must be swept even with no live WAL and nothing pending"
+        );
     }
 
     #[tokio::test]

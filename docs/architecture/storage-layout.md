@@ -748,6 +748,15 @@ its neighbours. See
 [WAL Persistence](../operations/wal-persistence.md#corrupted-entry-records-during-replay)
 for the full recovery behavior and the other `dead-letter/` artifact kinds.
 
+`dead-letter/` is not self-cleaning on its own: both services re-scan every
+WAL's directory each processing pass — including one whose live segments have
+already been fully drained and cleaned up, via
+`WalManager::scan_dead_letter_dirs` rather than the cached WAL set — report
+the true on-disk state on `signaldb.wal.dead_letter_entries`/`_bytes`, and
+delete marker+payload pairs older than `[wal].dead_letter_retention` (default
+30 days). See [WAL Persistence](../operations/wal-persistence.md) for the
+metric's attributes and the sweep's behavior.
+
 ### Concrete Example
 
 The runtime `WalConfig` (`src/common/src/wal/mod.rs`) defaults to `wal_dir = ".wal"`, but the services derive their WAL directory from the `[wal].wal_dir` config value (default `.data/wal`) with a per-service suffix: the acceptor uses `{wal_dir}/acceptor` and the writer `{wal_dir}/writer`, overridable via `ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR`. Both services lay out the same tenant tree under their own service directory; the one shown below sits under the acceptor's, which with the defaults is `.data/wal/acceptor`:

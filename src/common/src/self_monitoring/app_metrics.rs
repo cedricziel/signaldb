@@ -42,6 +42,16 @@ pub struct AppMetrics {
     // found the cache at or over `[wal].max_instances`, labelled by
     // `outcome` (`evicted` | `over_cap`).
     pub wal_instance_cap_hits: Counter<u64>,
+    // Dead-lettered WAL entries/bytes currently on disk under
+    // `<wal_dir>/.../dead-letter/`, by `signaldb.tenant.id`,
+    // `signaldb.dataset.id`, `signal`, `role` (`acceptor` | `writer`), and
+    // `kind` (`rejected` | `unreadable`). Recorded fresh on every retention
+    // sweep (`common::wal::dead_letter::reconcile_and_sweep`), never
+    // adjusted incrementally, so the value is always the true on-disk state
+    // as of the last sweep (#1494: 45k rejected entries sat unreported for a
+    // month because nothing exported this).
+    pub wal_dead_letter_entries: Gauge<u64>,
+    pub wal_dead_letter_bytes: Gauge<u64>,
 
     // Flight metrics
     pub flight_request_duration: Histogram<f64>,
@@ -245,6 +255,22 @@ impl AppMetrics {
                     "WAL creations that found the instance cache at the configured cap",
                 )
                 .with_unit("{creation}")
+                .build(),
+            wal_dead_letter_entries: meter
+                .u64_gauge("signaldb.wal.dead_letter_entries")
+                .with_description(
+                    "Dead-lettered WAL entries currently on disk, by kind (rejected: \
+                     replayable once its cause is fixed; unreadable: no intact payload)",
+                )
+                .with_unit("{entry}")
+                .build(),
+            wal_dead_letter_bytes: meter
+                .u64_gauge("signaldb.wal.dead_letter_bytes")
+                .with_description(
+                    "Bytes occupied by dead-lettered WAL entries currently on disk \
+                     (payload plus marker), by kind",
+                )
+                .with_unit("By")
                 .build(),
             flight_request_duration: meter
                 .f64_histogram("signaldb.flight.request.duration")

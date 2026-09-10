@@ -66,9 +66,10 @@ max_buffer_entries = 1000
 flush_interval = "30s"
 max_buffer_size_bytes = 134217728    # 128 MB
 max_instances = 256                  # soft cap on cached WAL instances; 0 = unbounded
+dead_letter_retention = "30d"        # how long a dead-lettered entry is kept before the sweep deletes it; "0s" disables the sweep
 ```
 
-`wal_dir` is the base directory: the acceptor uses `{wal_dir}/acceptor` and the writer `{wal_dir}/writer` (default `.data/wal/acceptor` / `.data/wal/writer`). The service-specific env overrides `ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR` (read directly by the binaries, not via figment; also available as `--wal-dir`) point at the full service directory and win over `[wal].wal_dir`. Sizing knobs use the double-underscore form: `SIGNALDB__WAL__MAX_SEGMENT_SIZE`, `SIGNALDB__WAL__MAX_BUFFER_ENTRIES`, `SIGNALDB__WAL__FLUSH_INTERVAL`, `SIGNALDB__WAL__MAX_INSTANCES` (as does `SIGNALDB__WAL__WAL_DIR`).
+`wal_dir` is the base directory: the acceptor uses `{wal_dir}/acceptor` and the writer `{wal_dir}/writer` (default `.data/wal/acceptor` / `.data/wal/writer`). The service-specific env overrides `ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR` (read directly by the binaries, not via figment; also available as `--wal-dir`) point at the full service directory and win over `[wal].wal_dir`. Sizing knobs use the double-underscore form: `SIGNALDB__WAL__MAX_SEGMENT_SIZE`, `SIGNALDB__WAL__MAX_BUFFER_ENTRIES`, `SIGNALDB__WAL__FLUSH_INTERVAL`, `SIGNALDB__WAL__MAX_INSTANCES`, `SIGNALDB__WAL__DEAD_LETTER_RETENTION` (as does `SIGNALDB__WAL__WAL_DIR`).
 
 ### Iceberg Schema Catalog
 
@@ -186,7 +187,7 @@ Field/behaviour notes:
 - `allowed_email_domains` gates **JIT creation only**; a pre-existing user
   outside the list can still link via verified email.
 - `group_mappings` need `group_claim`. Mapped memberships (`granted_by =
-  'oidc_mapping'`) coexist with locally-granted ones (effective role = higher);
+'oidc_mapping'`) coexist with locally-granted ones (effective role = higher);
   a lost group revokes only the mapped row; mapping never grants instance-admin;
   a rule naming a nonexistent tenant is skipped with a warning.
 - Startup: invalid `[auth.oidc]` (bad `issuer_url`, missing `client_id`/
@@ -390,7 +391,7 @@ Env: `SIGNALDB__MCP__OAUTH__ENABLED`, `SIGNALDB__MCP__OAUTH__ISSUER_URL`, `SIGNA
 
 ### Public endpoints (connection self-service)
 
-How the deployment is reached from *outside* (load balancer, reverse proxy,
+How the deployment is reached from _outside_ (load balancer, reverse proxy,
 TLS terminator) — distinct from the bind addresses above. Answers
 `GET /api/v1/connection` (any tenant key) and the MCP `connection_info` tool,
 feeds the Explore UI's "Send data" snippets and the first-boot banner. All

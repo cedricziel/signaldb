@@ -1,3 +1,4 @@
+pub mod dead_letter;
 pub mod framing;
 pub mod manager;
 pub mod rlimit;
