@@ -5,7 +5,8 @@
 description = "SignalDB built-in table schemas"
 current_trace_version = "physical-v4"
 current_log_version = "physical-v2"
-current_metric_version = "physical-v1"
+current_metric_version = "physical-v2"
+current_profile_version = "physical-v2"
 logical_schema_version = "otel-2026-08"
 
 # ==============================================================================
@@ -137,6 +138,13 @@ fields = [
 ]
 partition_by = ["timestamp"]
 
+[metrics_gauge.physical-v2]
+description = "resource.identity digest column, stable per distinct resource attribute set (#1340)"
+inherits = "physical-v1"
+field_additions = [
+    { name = "resource_identity", type = "string", required = false },
+]
+
 [metrics_sum.physical-v1]
 description = "Sum metrics schema"
 fields = [
@@ -163,6 +171,13 @@ fields = [
     { name = "hour", type = "int32", required = true, computed = "hour_from_timestamp" },
 ]
 partition_by = ["timestamp"]
+
+[metrics_sum.physical-v2]
+description = "resource.identity digest column, stable per distinct resource attribute set (#1340)"
+inherits = "physical-v1"
+field_additions = [
+    { name = "resource_identity", type = "string", required = false },
+]
 
 [metrics_histogram.physical-v1]
 description = "Histogram metrics schema"
@@ -194,6 +209,13 @@ fields = [
     { name = "hour", type = "int32", required = true, computed = "hour_from_timestamp" },
 ]
 partition_by = ["timestamp"]
+
+[metrics_histogram.physical-v2]
+description = "resource.identity digest column, stable per distinct resource attribute set (#1340)"
+inherits = "physical-v1"
+field_additions = [
+    { name = "resource_identity", type = "string", required = false },
+]
 
 [metrics_exponential_histogram.physical-v1]
 description = "Exponential histogram metrics schema"
@@ -231,6 +253,13 @@ fields = [
 ]
 partition_by = ["timestamp"]
 
+[metrics_exponential_histogram.physical-v2]
+description = "resource.identity digest column, stable per distinct resource attribute set (#1340)"
+inherits = "physical-v1"
+field_additions = [
+    { name = "resource_identity", type = "string", required = false },
+]
+
 [metrics_summary.physical-v1]
 description = "Summary metrics schema"
 fields = [
@@ -257,6 +286,13 @@ fields = [
     { name = "hour", type = "int32", required = true, computed = "hour_from_timestamp" },
 ]
 partition_by = ["timestamp"]
+
+[metrics_summary.physical-v2]
+description = "resource.identity digest column, stable per distinct resource attribute set (#1340)"
+inherits = "physical-v1"
+field_additions = [
+    { name = "resource_identity", type = "string", required = false },
+]
 
 # ==============================================================================
 # PROFILES TABLE SCHEMA
@@ -285,3 +321,10 @@ fields = [
     { name = "hour", type = "int32", required = true, computed = "hour_from_timestamp" },
 ]
 partition_by = ["timestamp"]
+
+[profiles.physical-v2]
+description = "resource.identity digest column, stable per distinct resource attribute set (#1340)"
+inherits = "physical-v1"
+field_additions = [
+    { name = "resource_identity", type = "string", required = false },
+]

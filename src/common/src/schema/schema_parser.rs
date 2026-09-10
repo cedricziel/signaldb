@@ -30,8 +30,14 @@ pub struct SchemaMetadata {
     pub current_trace_version: String,
     pub current_log_version: String,
     pub current_metric_version: String,
+    #[serde(default = "default_profile_version")]
+    pub current_profile_version: String,
     #[serde(default = "default_logical_schema_version")]
     pub logical_schema_version: String,
+}
+
+fn default_profile_version() -> String {
+    "physical-v1".to_string()
 }
 
 fn default_logical_schema_version() -> String {
