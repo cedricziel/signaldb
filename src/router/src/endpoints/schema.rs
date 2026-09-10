@@ -152,7 +152,9 @@ impl From<Resolution<MetricHit>> for MetricResolution {
     }
 }
 
-/// Query parameters for prefix search / batch resolution.
+/// Query parameters for prefix search / batch resolution (attributes and
+/// metrics — see [`EntitySearchParams`] for entities, which do not resolve
+/// an exact key set).
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct SearchParams {
     /// Name prefix (empty lists from the top).
@@ -163,6 +165,18 @@ pub struct SearchParams {
     /// Comma-separated exact keys to resolve in one call (attributes and
     /// metrics only).
     pub keys: Option<String>,
+}
+
+/// Query parameters for entity prefix search. Entities have no `keys=`
+/// batch-resolution parameter: unlike attributes and metrics, there is no
+/// endpoint support for resolving an exact entity-type name set in one call.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct EntitySearchParams {
+    /// Name prefix (empty lists from the top).
+    #[serde(default)]
+    pub prefix: String,
+    /// Maximum hits (default 50, max 200).
+    pub limit: Option<usize>,
 }
 
 // ---- helpers --------------------------------------------------------------
@@ -575,7 +589,7 @@ pub async fn resolve_attribute<S: RouterState>(
     path = "/api/v1/schema/entities",
     tag = "schema",
     operation_id = "schema_search_entities",
-    params(SearchParams),
+    params(EntitySearchParams),
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "Entity types whose name starts with the prefix", body = EntitySearchResponse),
@@ -586,7 +600,7 @@ pub async fn resolve_attribute<S: RouterState>(
 pub async fn search_entities<S: RouterState>(
     State(state): State<S>,
     Extension(ctx): Extension<TenantContext>,
-    Query(params): Query<SearchParams>,
+    Query(params): Query<EntitySearchParams>,
 ) -> Response {
     if let Err(r) = require_read(&ctx) {
         return *r;

@@ -2063,18 +2063,6 @@
               ],
               "minimum": 0
             }
-          },
-          {
-            "name": "keys",
-            "in": "query",
-            "description": "Comma-separated exact keys to resolve in one call (attributes and\nmetrics only).",
-            "required": false,
-            "schema": {
-              "type": [
-                "string",
-                "null"
-              ]
-            }
           }
         ],
         "responses": {
