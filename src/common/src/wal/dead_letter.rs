@@ -23,6 +23,10 @@ use std::time::{Duration, SystemTime};
 use anyhow::Result;
 use opentelemetry::KeyValue;
 
+#[cfg(test)]
+use super::record_batch_to_bytes;
+use super::{Wal, WalOperation, bytes_to_record_batch};
+
 /// Why an entry was retired to the dead-letter directory.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeadLetterKind {
@@ -297,6 +301,147 @@ pub async fn reconcile_and_sweep(
     Ok(result)
 }
 
+/// Outcome of a [`purge`].
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct PurgeResult {
+    pub deleted_entries: usize,
+    pub freed_bytes: u64,
+}
+
+/// Delete every dead-letter entry under `dir` matching `kind` (every entry,
+/// if `None`), regardless of age — the operator-invoked counterpart to
+/// [`sweep_expired_at`]'s age-based deletion, for the `signaldb wal
+/// dead-letter purge` subcommand. `dry_run` reports what would be deleted
+/// without touching disk.
+pub async fn purge(dir: &Path, kind: Option<DeadLetterKind>, dry_run: bool) -> Result<PurgeResult> {
+    let entries = list_entries(dir).await?;
+    let mut deleted_entries = 0usize;
+    let mut freed_bytes = 0u64;
+
+    for entry in entries {
+        if let Some(kind) = kind
+            && entry.kind != kind
+        {
+            continue;
+        }
+        if !dry_run {
+            for path in [&entry.bin_path, &entry.marker_path].into_iter().flatten() {
+                if let Err(e) = tokio::fs::remove_file(path).await
+                    && e.kind() != std::io::ErrorKind::NotFound
+                {
+                    tracing::warn!(
+                        path = %path.display(),
+                        error = %e,
+                        "Failed to delete a purged WAL dead-letter file"
+                    );
+                }
+            }
+        }
+        deleted_entries += 1;
+        freed_bytes += entry.bytes;
+    }
+
+    Ok(PurgeResult {
+        deleted_entries,
+        freed_bytes,
+    })
+}
+
+/// Outcome of a [`replay`] pass.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ReplayResult {
+    /// Payloads successfully re-appended to the live WAL and removed from
+    /// dead-letter.
+    pub replayed: usize,
+    /// Entries left in place: no intact `.bin` payload, or one that failed
+    /// to decode as a record batch.
+    pub failed: usize,
+}
+
+/// Re-append every intact, decodable `.bin` payload under `dir` (filtered by
+/// `kind`, or every entry if `None`) as a fresh entry on `wal`, using
+/// `operation` (mapped from the `--signal` flag via
+/// [`super::WalOperation::from_signal`]) so it lands correctly attributed for
+/// the WAL's own bookkeeping. A successfully re-appended entry's dead-letter
+/// pair is removed, so the existing acceptor retry consumer or writer drain
+/// loop picks it up through the normal path and nothing lingers once it has.
+///
+/// An entry with no `.bin` payload, or one that fails to decode
+/// ([`bytes_to_record_batch`]), is left in place and counted as `failed`
+/// rather than silently dropped: replaying a still-broken payload back into
+/// the live WAL would only recreate the failure that dead-lettered it in the
+/// first place. `dry_run` decodes and counts but neither appends nor deletes.
+pub async fn replay(
+    dir: &Path,
+    wal: &Wal,
+    operation: WalOperation,
+    kind: Option<DeadLetterKind>,
+    dry_run: bool,
+) -> Result<ReplayResult> {
+    let entries = list_entries(dir).await?;
+    let mut result = ReplayResult::default();
+
+    for entry in entries {
+        if let Some(kind) = kind
+            && entry.kind != kind
+        {
+            continue;
+        }
+        let Some(bin_path) = &entry.bin_path else {
+            result.failed += 1;
+            continue;
+        };
+        let bytes = match tokio::fs::read(bin_path).await {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                tracing::warn!(
+                    path = %bin_path.display(),
+                    error = %e,
+                    "Failed to read a dead-letter payload for replay; leaving it in place"
+                );
+                result.failed += 1;
+                continue;
+            }
+        };
+        if let Err(e) = bytes_to_record_batch(&bytes) {
+            tracing::warn!(
+                path = %bin_path.display(),
+                error = %e,
+                "Dead-letter payload does not decode; leaving it in place"
+            );
+            result.failed += 1;
+            continue;
+        }
+        if dry_run {
+            result.replayed += 1;
+            continue;
+        }
+        if let Err(e) = wal.append(operation.clone(), bytes, None).await {
+            tracing::warn!(
+                entry_id = %entry.stem,
+                error = %e,
+                "Failed to re-append a dead-letter payload; leaving it in place"
+            );
+            result.failed += 1;
+            continue;
+        }
+        for path in [&entry.bin_path, &entry.marker_path].into_iter().flatten() {
+            if let Err(e) = tokio::fs::remove_file(path).await
+                && e.kind() != std::io::ErrorKind::NotFound
+            {
+                tracing::warn!(
+                    path = %path.display(),
+                    error = %e,
+                    "Replayed a dead-letter payload but failed to remove it from dead-letter"
+                );
+            }
+        }
+        result.replayed += 1;
+    }
+
+    Ok(result)
+}
+
 /// Sweep and reconcile every dead-letter directory a [`super::manager::WalManager`]
 /// knows about (via [`super::manager::WalManager::scan_dead_letter_dirs`]),
 /// resolving `[wal].dead_letter_retention` off the process-global
@@ -339,8 +484,12 @@ pub async fn reconcile_all(wal_manager: &super::manager::WalManager, role: &str)
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::arrow::array::Int64Array;
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::record_batch::RecordBatch;
     use std::fs;
     use std::fs::OpenOptions;
+    use std::sync::Arc;
     use tempfile::TempDir;
 
     fn set_mtime(path: &Path, age: Duration) {
@@ -460,5 +609,145 @@ mod tests {
         assert_eq!(result.remaining.rejected_entries, 2);
         assert_eq!(result.remaining.unreadable_entries, 1);
         assert_eq!(result.deleted_entries, 0);
+    }
+
+    fn make_batch() -> RecordBatch {
+        let schema = Arc::new(Schema::new(vec![Field::new("v", DataType::Int64, false)]));
+        RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1_i64]))]).unwrap()
+    }
+
+    fn write_rejected_pair_with_payload(dir: &Path, id: &str, payload: &[u8]) {
+        fs::write(dir.join(format!("{id}.bin")), payload).unwrap();
+        fs::write(dir.join(format!("{id}.rejected.json")), b"{}").unwrap();
+    }
+
+    async fn test_wal(base_dir: &Path) -> Wal {
+        let mut config = crate::wal::WalConfig::with_defaults(base_dir.to_path_buf());
+        config.tenant_id = "acme".to_string();
+        config.dataset_id = "production".to_string();
+        // Flush every append immediately so `get_unprocessed_entries` (which
+        // reads segment state, not the in-memory buffer) sees it without a
+        // separate `wal.flush()` call in every test.
+        config.max_buffer_entries = 1;
+        Wal::new(config).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn purge_deletes_only_the_requested_kind() {
+        let dir = TempDir::new().unwrap();
+        write_rejected_pair(dir.path(), "a", Duration::from_secs(1));
+        fs::write(dir.path().join("b.unreadable.json"), b"{}").unwrap();
+
+        let result = purge(dir.path(), Some(DeadLetterKind::Rejected), false)
+            .await
+            .unwrap();
+
+        assert_eq!(result.deleted_entries, 1);
+        assert!(!dir.path().join("a.bin").exists());
+        assert!(!dir.path().join("a.rejected.json").exists());
+        assert!(
+            dir.path().join("b.unreadable.json").exists(),
+            "purge scoped to kind=rejected must not touch an unreadable entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn purge_dry_run_reports_without_deleting_anything() {
+        let dir = TempDir::new().unwrap();
+        write_rejected_pair(dir.path(), "a", Duration::from_secs(1));
+
+        let result = purge(dir.path(), None, true).await.unwrap();
+
+        assert_eq!(result.deleted_entries, 1);
+        assert!(
+            dir.path().join("a.bin").exists(),
+            "dry-run purge must not touch disk"
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_reappends_a_decodable_payload_and_removes_the_pair() {
+        let dead_letter_dir = TempDir::new().unwrap();
+        let payload = record_batch_to_bytes(&make_batch()).unwrap();
+        write_rejected_pair_with_payload(dead_letter_dir.path(), "a", &payload);
+
+        let wal_dir = TempDir::new().unwrap();
+        let wal = test_wal(wal_dir.path()).await;
+
+        let result = replay(
+            dead_letter_dir.path(),
+            &wal,
+            WalOperation::WriteMetrics,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.replayed, 1);
+        assert_eq!(result.failed, 0);
+        assert!(
+            !dead_letter_dir.path().join("a.bin").exists(),
+            "a replayed pair must be removed from dead-letter"
+        );
+        assert!(!dead_letter_dir.path().join("a.rejected.json").exists());
+
+        let pending = wal.get_unprocessed_entries().await.unwrap();
+        assert_eq!(
+            pending.len(),
+            1,
+            "the replayed payload must land as a pending entry on the live WAL"
+        );
+    }
+
+    #[tokio::test]
+    async fn replay_leaves_an_undecodable_payload_in_place() {
+        let dead_letter_dir = TempDir::new().unwrap();
+        write_rejected_pair_with_payload(dead_letter_dir.path(), "a", b"not a record batch");
+
+        let wal_dir = TempDir::new().unwrap();
+        let wal = test_wal(wal_dir.path()).await;
+
+        let result = replay(
+            dead_letter_dir.path(),
+            &wal,
+            WalOperation::WriteMetrics,
+            None,
+            false,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.replayed, 0);
+        assert_eq!(result.failed, 1);
+        assert!(
+            dead_letter_dir.path().join("a.bin").exists(),
+            "an undecodable payload must be left in place, not deleted"
+        );
+        assert!(wal.get_unprocessed_entries().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn replay_dry_run_decodes_and_counts_without_touching_anything() {
+        let dead_letter_dir = TempDir::new().unwrap();
+        let payload = record_batch_to_bytes(&make_batch()).unwrap();
+        write_rejected_pair_with_payload(dead_letter_dir.path(), "a", &payload);
+
+        let wal_dir = TempDir::new().unwrap();
+        let wal = test_wal(wal_dir.path()).await;
+
+        let result = replay(
+            dead_letter_dir.path(),
+            &wal,
+            WalOperation::WriteMetrics,
+            None,
+            true,
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result.replayed, 1);
+        assert!(dead_letter_dir.path().join("a.bin").exists());
+        assert!(wal.get_unprocessed_entries().await.unwrap().is_empty());
     }
 }

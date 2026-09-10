@@ -73,6 +73,21 @@ impl WalOperation {
             WalOperation::Flush => "flush",
         }
     }
+
+    /// The inverse of [`Self::signal`]: the write operation for an ingest
+    /// signal name, for a caller that only has the string (the `wal
+    /// dead-letter replay` subcommand's `--signal` flag). `None` for
+    /// anything that is not a write signal, including `"flush"` — a
+    /// dead-lettered entry is always a write, never a flush marker.
+    pub fn from_signal(signal: &str) -> Option<Self> {
+        match signal {
+            "traces" => Some(WalOperation::WriteTraces),
+            "logs" => Some(WalOperation::WriteLogs),
+            "metrics" => Some(WalOperation::WriteMetrics),
+            "profiles" => Some(WalOperation::WriteProfiles),
+            _ => None,
+        }
+    }
 }
 
 /// WAL segment containing multiple entries
@@ -2188,6 +2203,23 @@ mod tests {
         assert_eq!(WalOperation::WriteMetrics.signal(), "metrics");
         assert_eq!(WalOperation::WriteProfiles.signal(), "profiles");
         assert_eq!(WalOperation::Flush.signal(), "flush");
+    }
+
+    #[test]
+    fn wal_operation_from_signal_round_trips_with_signal() {
+        // The `signaldb wal dead-letter replay` subcommand maps a
+        // `--signal` string back to the operation to re-append with; it must
+        // agree with `signal()` in the other direction.
+        for signal in ["traces", "logs", "metrics", "profiles"] {
+            let op = WalOperation::from_signal(signal)
+                .unwrap_or_else(|| panic!("{signal} must map to an operation"));
+            assert_eq!(op.signal(), signal);
+        }
+        assert!(
+            WalOperation::from_signal("flush").is_none(),
+            "flush is not a signal an entry can be replayed as"
+        );
+        assert!(WalOperation::from_signal("bogus").is_none());
     }
 
     #[tokio::test]
