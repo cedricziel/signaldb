@@ -358,7 +358,7 @@ sum by (signaldb_table, error_type) (increase(compactor_jobs_failed_total[6h]))
 ```
 
 An `error_type` of `conflict` means another actor committed first and the work
-will be retried. Anything else on a table that fails *every* attempt means the
+will be retried. Anything else on a table that fails _every_ attempt means the
 partition is heading for [cooldown](#compaction-backoff) and will stop being
 attempted at all — that is the shape to alert on. Label names are the
 Prometheus rendering of the attributes declared in the SignalDB convention
@@ -389,6 +389,14 @@ renewal calls failing against the catalog, catalog or network latency
 swallowing the `ttl / 3` renewal window, and process pauses (long GC-like
 stalls, suspended containers). A TTL that is simply too short for your job
 durations is the last of these, not the first.
+
+A single renewal miss against a SQLite catalog is not by itself a sign of
+trouble: the renewal retries transient `SQLITE_BUSY`/`SQLITE_LOCKED`
+contention internally and logs at WARN, only escalating to ERROR once
+renewal has been failing continuously past the full lease TTL — which is
+the point a concurrent instance could actually steal the lease (#1495). Grep
+for that ERROR line, not the WARN, when triaging a lease actually lost to
+renewal failure.
 
 #### Lifecycle Task Recovery
 
