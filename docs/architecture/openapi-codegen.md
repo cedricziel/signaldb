@@ -55,7 +55,12 @@ flowchart LR
   `endpoints/ops.rs` (`/api/v1/ops/compact{,/status,/dry-run}`, admin-authenticated,
   proxied to the compactor's Flight `do_action` surface), `endpoints/oauth.rs`
   (the session-authed OAuth consent surface the explore-UI consumes —
-  `GET /oauth/consent/context` and `POST /oauth/authorize/decision`), and
+  `GET /oauth/consent/context` and `POST /oauth/authorize/decision`),
+  `endpoints/session.rs` (the login page's unauthenticated surface —
+  `GET /ui/session/config` and the cookie-only `GET /ui/session`, both
+  declared with an empty security requirement and with their nullable
+  fields marked `required` so the generated clients type them as
+  `T | null` rather than optional), and
   `endpoints/schema.rs` (the schema registry: `/api/v1/schema/registries`
   CRUD + `:validate`, and attribute/entity/metric resolution and prefix search
   under `/api/v1/schema/{attributes,entities,metrics}`; its resolved-definition

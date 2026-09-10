@@ -29,7 +29,7 @@ import {
   type ManageSchemaResponse,
   type MembershipResponse,
 } from "./gen";
-import { ApiError, retryAfterMsFrom } from "./http";
+import { type SdkResult, unwrapSdkResult } from "./http";
 
 /** Ingestion scopes an API key may be granted. */
 export type IngestScope =
@@ -109,29 +109,16 @@ export type ManagedMembership = MembershipResponse;
 /** Logical + physical schema, as returned by the management API. */
 export type ManagedSchema = ManageSchemaResponse;
 
-/** Result envelope produced by the generated SDK (`RequestResult` with the
- * default `fields` response style). */
-interface SdkResult<T> {
-  data?: T;
-  error?: unknown;
-  response?: Response;
+function managementErrorMessage(error: unknown): string | undefined {
+  return (error as { error?: string } | undefined)?.error;
 }
 
-/** Unwrap a generated SDK result, preserving the error contract callers rely
- * on. The SDK does not throw by default: it returns `error` set (and
- * `response` unset on a network/URL error) instead. Re-throw as `ApiError`
- * with the HTTP status so `isAuthError(401)` keeps working. */
-function unwrap<T>(result: SdkResult<T>): T {
-  const { error, response } = result;
-  if (error !== undefined || !response?.ok) {
-    const status = response?.status ?? 0;
-    const message =
-      (error as { error?: string } | undefined)?.error ??
-      `Management request failed (${status})`;
-    throw new ApiError(message, status, retryAfterMsFrom(response));
-  }
-  return result.data as T;
-}
+const unwrap = <T>(result: SdkResult<T>): T =>
+  unwrapSdkResult(
+    result,
+    (status) => `Management request failed (${status})`,
+    managementErrorMessage,
+  );
 
 export const listApiKeys = async (tenant: string): Promise<ManagedApiKey[]> =>
   unwrap(await manageListApiKeys({ path: { tenant_id: tenant } }));

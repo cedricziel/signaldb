@@ -67,7 +67,11 @@ nonce), and — on success — issue the same server-side session and cookie as
 password login, with the same lifetime and revocation semantics. A callback
 whose state does not match a pending login attempt, or whose ID token fails
 any validation, SHALL be rejected without creating a session and without
-revealing which check failed.
+revealing which check failed. Because the callback answers a browser
+navigation, every refusal SHALL be a redirect to the `/login` route carrying
+a short failure code and the original return target, and the login page
+SHALL render the message for that code; the code for a failed validation
+SHALL be one generic value so it reveals nothing about which check failed.
 
 #### Scenario: Successful SSO login issues a standard session
 
@@ -82,14 +86,61 @@ revealing which check failed.
   attempt, or with a code yielding an ID token whose nonce or signature does
   not verify
 - **THEN** no session is created and the user is returned to the login page
-  with a generic failure message
+  with a generic failure message, and retrying SSO from there returns to
+  the original target
+
+### Requirement: SSO login returns to where it started
+
+The SSO start endpoint SHALL accept an optional `redirect` query parameter —
+the same parameter the `/login` route accepts — carry it through the pending
+login attempt, and the callback SHALL send the user there after issuing the
+session. Only a same-origin path is honoured; anything else falls back to
+the login route's default target (`/logs`), under the same rule the `/login`
+route applies, so password and SSO logins land in the same place for the
+same bad input. Any screen that demands a login can therefore hand the user
+to the IdP and get them back on the same URL with its query string intact.
+The MCP OAuth consent screen depends on this: SSO is a full-page navigation,
+and the authorize request lives in that screen's URL.
+
+Landing on the return target SHALL leave the user with the tenant context
+password login produces: a sole membership is selected together with its
+default dataset, and several memberships send the user through the tenant
+selection page and on to the return target once they choose. The callback
+cannot run the login panel's completion handler, so this resolution SHALL
+live in the UI shell and run whenever a session exists but neither the URL
+nor the remembered context names a tenant — which also covers bookmarks and
+stale links. The consent screen is outside the shell and keeps its own
+consent-time tenant choice.
 
 #### Scenario: MCP OAuth consent rides the SSO session
 
-- **WHEN** an MCP client starts the OAuth authorization flow and the user
-  signs in via SSO when prompted
-- **THEN** the consent and tenant-selection flow proceeds exactly as it does
-  for a password-authenticated session
+- **WHEN** an MCP client sends the user to `/oauth/authorize`, they reach the
+  consent screen without a session, and they choose SSO
+- **THEN** the callback returns them to that exact consent URL, authorize
+  parameters intact, holding a `signaldb_session` cookie, and the consent
+  flow continues as the `mcp-oauth` capability specifies for any
+  authenticated user
+
+#### Scenario: Return target cannot leave the origin
+
+- **WHEN** the start endpoint is called with `redirect=https://evil.example/`
+  or `redirect=//evil.example/`
+- **THEN** the login still proceeds and the callback lands on `/logs`, where
+  the `/login` route would also have sent it
+
+#### Scenario: SSO landing carries the tenant context
+
+- **WHEN** a user with exactly one membership completes SSO with
+  `redirect=/traces` on a browser that remembers no tenant
+- **THEN** they end on `/traces` with that tenant and its default dataset in
+  the URL, exactly as after a password login
+
+#### Scenario: Several memberships choose before landing
+
+- **WHEN** a user with several memberships completes SSO with
+  `redirect=/traces` on a browser that remembers no tenant
+- **THEN** they are shown the tenant selection page and, on choosing, land on
+  `/traces` with the chosen tenant and dataset
 
 ### Requirement: Just-in-time provisioning with an allowlist
 
@@ -133,6 +184,16 @@ exactly as at password login.
 - **THEN** the response is the same generic "invalid email or password"
   failure, the verifier is not invoked, and no session is created
 
+#### Scenario: No membership means no session
+
+- **WHEN** an identity completes the provider flow, is provisioned or
+  matched, and ends up with no tenant membership after mapping sync (and is
+  not an instance admin)
+- **THEN** no session is issued, the user is returned to the login page with
+  a message saying an administrator must grant them a tenant — mirroring
+  password login's refusal for a membership-less user — and the user row
+  stays so an admin can grant one
+
 #### Scenario: Disabled user cannot enter via SSO
 
 - **WHEN** a user with a non-null `disabled_at` completes the provider flow
@@ -163,6 +224,14 @@ the instance-admin flag.
 - **THEN** both rows exist with their own source, the user's effective role in
   `acme` is `admin`, removing the local membership leaves the mapped one, and
   losing the group leaves the local one
+
+#### Scenario: Session views count a tenant once
+
+- **WHEN** a user holds a local and a mapped membership in `acme` and nothing
+  else, and `whoami` or the password session endpoint lists their memberships
+- **THEN** `acme` appears once with the effective role, and the login treats
+  the user as having a sole membership rather than sending them to tenant
+  selection
 
 #### Scenario: Lost group revokes only what mapping granted
 
@@ -226,6 +295,12 @@ endpoints or from hardcoded configuration.
   login disabled
 - **THEN** the login page shows only the SSO entry, sourced from the
   login-configuration probe through the generated client
+
+#### Scenario: Consent screen follows the probe
+
+- **WHEN** the MCP OAuth consent screen needs a login
+- **THEN** it renders the same login options the probe produces for the
+  login page
 
 #### Scenario: Probe without OIDC
 

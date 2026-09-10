@@ -1,6 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactElement } from "react";
+import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ApiError, setTenantContext, tenantHeaders } from "../../api/http";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
@@ -9,6 +11,24 @@ import { LoginGate, LoginPanel } from "./LoginPanel";
 afterEach(() => {
   vi.unstubAllGlobals();
 });
+
+// LoginPanel resolves its default SSO redirect from react-router's
+// useLocation(), so every render needs a Router ancestor even when a test
+// passes an explicit `redirect` prop.
+function renderPanel(ui: ReactElement, initialEntries: string[] = ["/"]) {
+  return renderWithClient(
+    <MemoryRouter initialEntries={initialEntries}>{ui}</MemoryRouter>,
+  );
+}
+
+// `/ui/session` (POST, createSession) and `/ui/session/config` (loginConfig)
+// share a URL prefix — anchor the base path so a stub for one doesn't also
+// answer the other (see test/render.tsx's stubFetchRoutes docs).
+const SESSION = /\/ui\/session$/;
+const PASSWORD_ONLY_CONFIG = {
+  match: "/ui/session/config",
+  body: { password_enabled: true, oidc: null },
+};
 
 const acmeMembership = {
   tenant_id: "acme",
@@ -24,8 +44,10 @@ const globexMembership = {
 describe("LoginPanel", () => {
   it("POSTs email and password only and reports the resolved tenant", async () => {
     const fetchFn = stubFetchRoutes([
+      PASSWORD_ONLY_CONFIG,
       {
-        match: "/ui/session",
+        match: SESSION,
+        method: "POST",
         body: {
           tenant: "acme",
           dataset: "prod",
@@ -34,20 +56,24 @@ describe("LoginPanel", () => {
       },
     ]);
     const onSuccess = vi.fn();
-    renderWithClient(<LoginPanel onSuccess={onSuccess} />);
+    renderPanel(
+      <LoginPanel hint="Sign in" redirect="/logs" onSuccess={onSuccess} />,
+    );
 
     expect(screen.queryByLabelText("Login tenant")).not.toBeInTheDocument();
-    await userEvent.type(screen.getByLabelText("Email"), "alice@example.com");
+    await userEvent.type(
+      await screen.findByLabelText("Email"),
+      "alice@example.com",
+    );
     await userEvent.type(screen.getByLabelText("Password"), "secret");
     await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
     await waitFor(() => expect(onSuccess).toHaveBeenCalled());
     expect(onSuccess).toHaveBeenCalledWith({ tenant: "acme", dataset: "prod" });
-    const call = fetchFn.mock.calls.find((c) =>
-      String(c[0]).includes("/ui/session"),
+    const call = fetchFn.mock.calls.find(
+      (c) => String(c[0]).endsWith("/ui/session") && c[1]?.method === "POST",
     );
     const init = call?.[1] as RequestInit;
-    expect(init.method).toBe("POST");
     expect(JSON.parse(String(init.body))).toEqual({
       email: "alice@example.com",
       password: "secret",
@@ -56,8 +82,10 @@ describe("LoginPanel", () => {
 
   it("offers a tenant selector when the account spans multiple tenants", async () => {
     const fetchFn = stubFetchRoutes([
+      PASSWORD_ONLY_CONFIG,
       {
-        match: "/ui/session",
+        match: SESSION,
+        method: "POST",
         body: {
           tenant: null,
           dataset: null,
@@ -75,9 +103,14 @@ describe("LoginPanel", () => {
       },
     ]);
     const onSuccess = vi.fn();
-    renderWithClient(<LoginPanel onSuccess={onSuccess} />);
+    renderPanel(
+      <LoginPanel hint="Sign in" redirect="/logs" onSuccess={onSuccess} />,
+    );
 
-    await userEvent.type(screen.getByLabelText("Email"), "alice@example.com");
+    await userEvent.type(
+      await screen.findByLabelText("Email"),
+      "alice@example.com",
+    );
     await userEvent.type(screen.getByLabelText("Password"), "secret");
     await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
@@ -108,16 +141,23 @@ describe("LoginPanel", () => {
 
   it("shows the server's error message on rejected credentials", async () => {
     stubFetchRoutes([
+      PASSWORD_ONLY_CONFIG,
       {
-        match: "/ui/session",
+        match: SESSION,
+        method: "POST",
         body: { error: "Invalid email or password" },
         status: 401,
       },
     ]);
     const onSuccess = vi.fn();
-    renderWithClient(<LoginPanel onSuccess={onSuccess} />);
+    renderPanel(
+      <LoginPanel hint="Sign in" redirect="/logs" onSuccess={onSuccess} />,
+    );
 
-    await userEvent.type(screen.getByLabelText("Email"), "alice@example.com");
+    await userEvent.type(
+      await screen.findByLabelText("Email"),
+      "alice@example.com",
+    );
     await userEvent.type(screen.getByLabelText("Password"), "bad-password");
     await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
@@ -125,6 +165,33 @@ describe("LoginPanel", () => {
       "Invalid email or password",
     );
     expect(onSuccess).not.toHaveBeenCalled();
+  });
+
+  it("shows a checking hint (not the unavailable fallback) while the probe is pending, then focuses the SSO link once it resolves", async () => {
+    stubFetchRoutes([
+      {
+        match: "/ui/session/config",
+        body: { password_enabled: true, oidc: { name: "Acme SSO" } },
+      },
+    ]);
+    renderPanel(
+      <LoginPanel hint="Sign in" redirect="/logs" onSuccess={vi.fn()} />,
+    );
+
+    // Right after mount the probe is still in flight: no guess at its
+    // answer, and specifically not the "couldn't load" fallback notice.
+    expect(screen.getByText("Checking sign-in options…")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Email")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText(
+        "Couldn't load sign-in options — password sign-in is shown as a fallback.",
+      ),
+    ).not.toBeInTheDocument();
+
+    const link = await screen.findByRole("link", {
+      name: "Continue with Acme SSO",
+    });
+    expect(link).toHaveFocus();
   });
 });
 
@@ -142,8 +209,10 @@ describe("LoginGate", () => {
 
   it("appears on a 401 query failure and retries after login", async () => {
     stubFetchRoutes([
+      PASSWORD_ONLY_CONFIG,
       {
-        match: "/ui/session",
+        match: SESSION,
+        method: "POST",
         body: {
           tenant: "acme",
           dataset: "production",
@@ -160,7 +229,7 @@ describe("LoginGate", () => {
         : Promise.resolve("data");
     });
 
-    renderWithClient(
+    renderPanel(
       <>
         <Probe id="probe" queryFn={queryFn} />
         <LoginGate />
@@ -171,7 +240,10 @@ describe("LoginGate", () => {
     const dialog = await screen.findByRole("dialog", { name: "Sign in" });
     expect(dialog).toBeInTheDocument();
 
-    await userEvent.type(screen.getByLabelText("Email"), "alice@example.com");
+    await userEvent.type(
+      await screen.findByLabelText("Email"),
+      "alice@example.com",
+    );
     await userEvent.type(screen.getByLabelText("Password"), "secret");
     await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
@@ -189,8 +261,10 @@ describe("LoginGate", () => {
 
   it("does not reappear when a pre-login query settles 401 late", async () => {
     stubFetchRoutes([
+      PASSWORD_ONLY_CONFIG,
       {
-        match: "/ui/session",
+        match: SESSION,
+        method: "POST",
         body: {
           tenant: "acme",
           dataset: "production",
@@ -221,7 +295,7 @@ describe("LoginGate", () => {
       return Promise.resolve("slow-data");
     });
 
-    renderWithClient(
+    renderPanel(
       <>
         <Probe id="fast" queryFn={fastFn} />
         <Probe id="slow" queryFn={slowFn} />
@@ -230,7 +304,10 @@ describe("LoginGate", () => {
     );
 
     await screen.findByRole("dialog", { name: "Sign in" });
-    await userEvent.type(screen.getByLabelText("Email"), "alice@example.com");
+    await userEvent.type(
+      await screen.findByLabelText("Email"),
+      "alice@example.com",
+    );
     await userEvent.type(screen.getByLabelText("Password"), "secret");
     await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
@@ -257,8 +334,10 @@ describe("LoginGate", () => {
   it("retries with the logged-in tenant context before React re-renders", async () => {
     setTenantContext({ tenant: "", dataset: "" });
     stubFetchRoutes([
+      PASSWORD_ONLY_CONFIG,
       {
-        match: "/ui/session",
+        match: SESSION,
+        method: "POST",
         body: {
           tenant: "acme",
           dataset: "production",
@@ -281,7 +360,7 @@ describe("LoginGate", () => {
         : Promise.reject(new ApiError("Missing tenant (401)", 401));
     });
 
-    renderWithClient(
+    renderPanel(
       <>
         <Probe id="probe" queryFn={queryFn} />
         <LoginGate />
@@ -289,7 +368,10 @@ describe("LoginGate", () => {
     );
 
     await screen.findByRole("dialog", { name: "Sign in" });
-    await userEvent.type(screen.getByLabelText("Email"), "alice@example.com");
+    await userEvent.type(
+      await screen.findByLabelText("Email"),
+      "alice@example.com",
+    );
     await userEvent.type(screen.getByLabelText("Password"), "secret");
     await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
@@ -305,7 +387,7 @@ describe("LoginGate", () => {
     const queryFn = vi
       .fn()
       .mockRejectedValue(new ApiError("Loki API failed (500)", 500));
-    renderWithClient(
+    renderPanel(
       <>
         <Probe id="probe" queryFn={queryFn} />
         <LoginGate />
@@ -315,5 +397,51 @@ describe("LoginGate", () => {
     expect(
       screen.queryByRole("dialog", { name: "Sign in" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("shows the session-expiry hint and an SSO redirect back to the current page", async () => {
+    stubFetchRoutes([
+      {
+        match: "/ui/session/config",
+        body: { password_enabled: true, oidc: { name: "Acme SSO" } },
+      },
+    ]);
+    const queryFn = vi
+      .fn()
+      .mockRejectedValue(new ApiError("Loki API failed (401)", 401));
+    renderPanel(
+      <>
+        <Probe id="probe" queryFn={queryFn} />
+        <LoginGate />
+      </>,
+      ["/traces?range=15m"],
+    );
+
+    expect(
+      await screen.findByText("Your session has expired. Sign in to continue."),
+    ).toBeInTheDocument();
+    const link = await screen.findByRole("link", {
+      name: "Continue with Acme SSO",
+    });
+    expect(link).toHaveAttribute(
+      "href",
+      "/ui/session/oidc/start?redirect=%2Ftraces%3Frange%3D15m",
+    );
+  });
+
+  it("still shows the password form when the login-configuration probe is unavailable", async () => {
+    stubFetchRoutes([{ match: "/ui/session/config", body: {}, status: 500 }]);
+    const queryFn = vi
+      .fn()
+      .mockRejectedValue(new ApiError("Loki API failed (401)", 401));
+    renderPanel(
+      <>
+        <Probe id="probe" queryFn={queryFn} />
+        <LoginGate />
+      </>,
+    );
+
+    expect(await screen.findByLabelText("Email")).toBeInTheDocument();
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
   });
 });

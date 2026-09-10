@@ -649,46 +649,124 @@ mod tests {
         Ok(())
     }
 
+    /// Creates `table_name` (must be a real table name `ensure_schema_evolved`
+    /// dispatches on: "metrics_gauge", "profiles", etc.) directly at its real
+    /// `physical-v1` shape -- map-typed attribute columns, the shape every
+    /// live pre-#1340 table has -- with no `signaldb.schema.version`
+    /// property, the same way [`create_stale_traces_table`] simulates a
+    /// pre-mechanism traces table.
+    async fn create_v1_table(
+        catalog: &Arc<dyn IcebergCatalog>,
+        schemas_map: &std::collections::HashMap<
+            String,
+            crate::schema::schema_parser::TableSchemaDefinition,
+        >,
+        tenant_slug: &str,
+        dataset_slug: &str,
+        table_name: &str,
+    ) -> anyhow::Result<()> {
+        let schema = SCHEMA_DEFINITIONS
+            .resolve_table_schema(schemas_map, "physical-v1")?
+            .to_iceberg_schema()?;
+
+        let namespace = names::build_namespace(tenant_slug, dataset_slug)?;
+        let _ = catalog.clone().create_namespace(&namespace, None).await;
+        let identifier = names::build_table_identifier(tenant_slug, dataset_slug, table_name);
+        let create = CreateTableBuilder::default()
+            .with_name(table_name.to_string())
+            .with_schema(schema)
+            .with_location(names::build_table_location(
+                tenant_slug,
+                dataset_slug,
+                table_name,
+            ))
+            .create()
+            .map_err(|e| anyhow::anyhow!("create table build: {e}"))?;
+        catalog.clone().create_table(identifier, create).await?;
+        Ok(())
+    }
+
     #[tokio::test]
-    async fn ensure_table_evolves_metrics_and_profiles_tables_too() -> anyhow::Result<()> {
-        // Metrics and profiles are schemas.toml-sourced like traces/logs
-        // (see `ensure_schema_evolved`'s doc comment) -- a table for either
-        // gets its schema version tracked and kept current the same way.
+    async fn ensure_table_evolves_a_stale_v1_metrics_gauge_table() -> anyhow::Result<()> {
         let manager = CatalogManager::new_in_memory().await?;
         let catalog = manager.catalog();
-        let table_manager = IcebergTableManager::new(catalog.clone(), 5);
+        create_v1_table(
+            &catalog,
+            &SCHEMA_DEFINITIONS.metrics_gauge,
+            "evo_tenant3",
+            "evo_dataset3",
+            "metrics_gauge",
+        )
+        .await?;
 
-        for table_name in ["metrics_gauge", "profiles"] {
-            table_manager
-                .ensure_table(
-                    "evo_tenant3",
-                    "evo_dataset3",
-                    table_name,
-                    &MaterializedLabels::default(),
-                )
-                .await?;
-            let table = table_manager
-                .ensure_table(
-                    "evo_tenant3",
-                    "evo_dataset3",
-                    table_name,
-                    &MaterializedLabels::default(),
-                )
-                .await?;
-            let expected = if table_name == "profiles" {
-                &SCHEMA_DEFINITIONS.metadata.current_profile_version
-            } else {
-                &SCHEMA_DEFINITIONS.metadata.current_metric_version
-            };
-            assert_eq!(
-                table
-                    .metadata()
-                    .properties
-                    .get(evolution::SCHEMA_VERSION_PROPERTY),
-                Some(expected),
-                "{table_name}: schema version property not tracked"
-            );
-        }
+        let table_manager = IcebergTableManager::new(catalog.clone(), 5);
+        let table = table_manager
+            .ensure_table(
+                "evo_tenant3",
+                "evo_dataset3",
+                "metrics_gauge",
+                &MaterializedLabels::default(),
+            )
+            .await?;
+
+        let schema = table.current_schema()?;
+        assert!(
+            schema
+                .fields()
+                .iter()
+                .any(|f| f.name == "resource_identity"),
+            "resource_identity should have been added by evolution"
+        );
+        assert_eq!(
+            table
+                .metadata()
+                .properties
+                .get(evolution::SCHEMA_VERSION_PROPERTY),
+            Some(&SCHEMA_DEFINITIONS.metadata.current_metric_version),
+            "schema version property should be stamped to current after evolving"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ensure_table_evolves_a_stale_v1_profiles_table() -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        create_v1_table(
+            &catalog,
+            &SCHEMA_DEFINITIONS.profiles,
+            "evo_tenant4",
+            "evo_dataset4",
+            "profiles",
+        )
+        .await?;
+
+        let table_manager = IcebergTableManager::new(catalog.clone(), 5);
+        let table = table_manager
+            .ensure_table(
+                "evo_tenant4",
+                "evo_dataset4",
+                "profiles",
+                &MaterializedLabels::default(),
+            )
+            .await?;
+
+        let schema = table.current_schema()?;
+        assert!(
+            schema
+                .fields()
+                .iter()
+                .any(|f| f.name == "resource_identity"),
+            "resource_identity should have been added by evolution"
+        );
+        assert_eq!(
+            table
+                .metadata()
+                .properties
+                .get(evolution::SCHEMA_VERSION_PROPERTY),
+            Some(&SCHEMA_DEFINITIONS.metadata.current_profile_version),
+            "schema version property should be stamped to current after evolving"
+        );
         Ok(())
     }
 

@@ -57,6 +57,7 @@ impl Modify for SecurityAddon {
         (name = "ops", description = "Operational control (compaction)"),
         (name = "profiles", description = "Pyroscope-compatible continuous-profiling query (flame graphs, trace correlation)"),
         (name = "oauth", description = "OAuth 2.1 connector consent flow"),
+        (name = "session", description = "Browser session login for the embedded UI"),
         (name = "schema", description = "Schema registry: semantic-convention registries, attribute/entity/metric resolution"),
     ),
     paths(
@@ -94,6 +95,8 @@ impl Modify for SecurityAddon {
         crate::endpoints::management::get_schema,
         crate::endpoints::session::whoami,
         crate::endpoints::session::connection_info,
+        crate::endpoints::session::login_config,
+        crate::endpoints::session::current_session,
         // Tempo-compatible trace query endpoints
         crate::endpoints::tempo::search,
         crate::endpoints::tempo::query_single_trace,
@@ -201,6 +204,12 @@ impl Modify for SecurityAddon {
         crate::endpoints::session::ConnectionMcp,
         crate::endpoints::session::ConnectionScopes,
         crate::endpoints::session::ConnectionOtelEnv,
+        // Login-page probe and session introspection (change: dedicated-login-page)
+        crate::endpoints::session::LoginConfigResponse,
+        crate::endpoints::session::OidcLoginConfig,
+        crate::endpoints::session::CurrentSessionResponse,
+        crate::endpoints::session::SessionUser,
+        crate::endpoints::session::SessionMembership,
         // shared enums
         common::catalog::MembershipRole,
         // Tempo-compatible trace query DTOs
@@ -320,6 +329,90 @@ mod tests {
                 "OpenAPI document is missing operation for {path}"
             );
         }
+    }
+
+    /// `dedicated-login-page` change, section 1: `GET /ui/session/config`
+    /// (the login-configuration probe) and `GET /ui/session` (tenant-less
+    /// session introspection) must both be published, unauthenticated
+    /// (`security: [{}]`, matching what `security(())` emits for
+    /// `oauth_consent_context`), and `LoginConfigResponse.oidc` must be
+    /// schema-nullable (not merely optional) so the generated clients type
+    /// it as `T | null` rather than an omittable field.
+    #[test]
+    fn login_page_endpoints_are_published_unauthenticated_and_oidc_is_nullable() {
+        let spec: serde_json::Value =
+            serde_json::from_str(&openapi_document().to_pretty_json().unwrap()).unwrap();
+
+        let empty_security = serde_json::json!([{}]);
+        for (path, method) in [("/ui/session/config", "get"), ("/ui/session", "get")] {
+            let operation = spec
+                .pointer(&format!("/paths/{}/{method}", path.replace('/', "~1")))
+                .unwrap_or_else(|| panic!("{method} {path}: missing from OpenAPI document"));
+            assert_eq!(
+                operation.get("security"),
+                Some(&empty_security),
+                "{method} {path}: expected an empty security requirement"
+            );
+        }
+
+        // A nullable-but-always-serialized field must appear in both its
+        // schema's `required` array (never omittable) and its own schema
+        // must still admit `null` (a `oneOf` null branch or a `type` array
+        // containing `"null"`) — the generated clients type these as
+        // `T | null`, never `T | undefined`.
+        let schema_field_is_nullable = |schema: &serde_json::Value| -> bool {
+            let oneof_null =
+                schema
+                    .get("oneOf")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|variants| {
+                        variants
+                            .iter()
+                            .any(|v| v.get("type").and_then(|t| t.as_str()) == Some("null"))
+                    });
+            let type_array_null = schema
+                .get("type")
+                .and_then(|v| v.as_array())
+                .is_some_and(|types| types.iter().any(|t| t.as_str() == Some("null")));
+            oneof_null || type_array_null
+        };
+
+        for (schema_name, field) in [
+            ("LoginConfigResponse", "oidc"),
+            ("CurrentSessionResponse", "tenant"),
+            ("CurrentSessionResponse", "dataset"),
+        ] {
+            let field_schema = spec
+                .pointer(&format!(
+                    "/components/schemas/{schema_name}/properties/{field}"
+                ))
+                .unwrap_or_else(|| panic!("{schema_name}.{field} schema present"));
+            assert!(
+                schema_field_is_nullable(field_schema),
+                "{schema_name}.{field} must be nullable: {field_schema}"
+            );
+
+            let required = spec
+                .pointer(&format!("/components/schemas/{schema_name}/required"))
+                .and_then(|v| v.as_array())
+                .unwrap_or_else(|| panic!("{schema_name}.required present"));
+            assert!(
+                required.iter().any(|v| v.as_str() == Some(field)),
+                "{schema_name}.{field} must be required (always serialized, \
+                 never omitted): {required:?}"
+            );
+        }
+
+        let required = spec
+            .pointer("/components/schemas/LoginConfigResponse/required")
+            .and_then(|v| v.as_array())
+            .expect("LoginConfigResponse.required present");
+        assert!(
+            required
+                .iter()
+                .any(|v| v.as_str() == Some("password_enabled")),
+            "LoginConfigResponse.password_enabled must be required: {required:?}"
+        );
     }
 
     /// Route-vs-OpenAPI drift guard (design D4). axum 0.8 does not expose a

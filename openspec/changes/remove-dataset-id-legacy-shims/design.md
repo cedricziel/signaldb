@@ -97,19 +97,36 @@ TABLE api_keys DROP COLUMN dataset_id }`, and the column is removed from
   it around would just be technical debt with an established shims-are-fine
   precedent in this repo, not a real deployment risk to avoid.
 
-**D2 — No data migration or backup step.**
+**D2 — A minimal backfill still runs immediately before the drop; it is not
+a no-op step.**
 
-D2's dual-write (already shipped, running since `multi-dataset-key-
-restriction` merged) guarantees `dataset_ids` is populated for every row
-that also has a non-`NULL` legacy `dataset_id`, and the one-time backfill
-(`backfill_api_key_dataset_ids`) guarantees the same for every row that
-predates the `dataset_ids` column entirely. By the time this change reaches
-a running database, `dataset_ids` is already the authoritative source for
-every row; the legacy column carries no information `dataset_ids` doesn't
-already have. Dropping it loses nothing. `backfill_api_key_dataset_ids`,
-`pending_api_key_dataset_id_backfill`, and
-`apply_api_key_dataset_id_backfill` become dead code (nothing left to
-backfill from) and are deleted along with the column.
+The original version of this decision assumed `dataset_ids` was already
+guaranteed authoritative for every row by the time this change's code ever
+runs, on the theory that `multi-dataset-key-restriction`'s dual-write and
+one-time backfill (`backfill_api_key_dataset_ids`) would already have synced
+every row. That assumption does not hold in general: this repo has no
+discrete release process, and nothing prevents a database from jumping
+straight from a schema that predates `multi-dataset-key-restriction`
+entirely to this change's code in one deployment, skipping any boot of the
+intermediate dual-write code — the exact case a caught-in-review regression
+test (`catalog_init_backfills_dataset_ids_before_dropping_legacy_column_with_no_intermediate_boot`,
+both dialects) now covers. In that case `dataset_ids` was never populated
+for a pre-existing single-dataset-restricted row, and the original
+drop-first ordering would have silently turned it unrestricted — the exact
+security regression the base change went out of its way to rule out.
+
+The fix: after `dataset_ids` is ensured to exist (not before — the backfill
+needs somewhere to write to) and before `dataset_id` is dropped, backfill
+every row where `dataset_id IS NOT NULL AND dataset_ids IS NULL` into
+`dataset_ids`, then drop the column. The backfill's `UPDATE` re-checks
+`dataset_ids IS NULL` at write time (not only at the preceding `SELECT`),
+which is sufficient — without the elaborate compare-and-swap the base
+change's now-deleted `backfill_api_key_dataset_ids` needed — because there
+is no longer a _legacy_ write this code could race against (dual-write to
+`dataset_id` is gone); the only remaining race is a concurrent _legitimate_
+`dataset_ids` write from another service instance already running this
+code, and the `IS NULL` guard alone makes such a write win over a stale
+backfill instead of being clobbered by it.
 
 **D3 — Order of implementation: storage → response DTOs → regen → UI,
 matching the base change's own sequencing.**

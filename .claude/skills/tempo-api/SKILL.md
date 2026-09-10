@@ -93,11 +93,13 @@ use SignalDB as a querier (`src/querier/src/services/tempo.rs`):
 - Tenant: authenticated `TenantContext` extension wins, else `X-Scope-OrgID`
   header (dataset `default`), else `default`/`default`
 - `SearchBlock`: `Unimplemented` (no Tempo block model in SignalDB)
-- Tag endpoints: still the old static three-name set (`service.name`,
-  `name`, `status`) and empty tag values — not yet upgraded to the
-  querier-backed discovery the HTTP API uses (#1073 only touched the HTTP
-  path); a follow-up could route `src/querier/src/services/tempo.rs`
-  through the same `TraceService::get_tags`/`get_tag_values`
+- `SearchTags`/`SearchTagsV2`: route through `TraceService::get_tags`, the
+  same discovery path the HTTP tag-name endpoints use (#1335); `SearchTags`
+  flattens all scopes, `SearchTagsV2` groups by scope and narrows to one
+  when the request's `scope` field is set
+- `SearchTagValues`/`SearchTagValuesV2`: still empty — value enumeration is
+  served by the HTTP API only (via `TraceService::get_tag_values`); a
+  follow-up could route these through the same discovery
 
 ## Admin API Endpoints
 

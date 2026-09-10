@@ -21,7 +21,13 @@ jobs:
           fetch-depth: 0
 
       - name: Check doc freshness
+        env:
+          # Passed via env, never interpolated into the run script: the PR body
+          # is attacker-controlled text and must not be treated as shell code.
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
+          DOC_FRESHNESS_ACK=$(printf '%s' "$PR_BODY" | tr -d '\r' | sed -n 's/^docs-ok:[[:space:]]*//p')
+          export DOC_FRESHNESS_ACK
           if ! ./scripts/check-doc-freshness.sh "origin/${{ github.base_ref }}...HEAD" > report.txt; then
             echo "Doc hygiene check failed:" >&2
             echo >&2
@@ -30,7 +36,8 @@ jobs:
             echo "Lines marked INVALID are frontmatter problems - fix the doc's" >&2
             echo "audience/type/status frontmatter (see .claude/skills/docs/SKILL.md)." >&2
             echo "Other lines are living docs whose declared sources changed in this PR" >&2
-            echo "without a doc update - update them, or add the 'docs-not-needed' label" >&2
-            echo "if no documentation change is genuinely required." >&2
+            echo "without a doc update. Either update the doc, add a 'docs-ok: <path>'" >&2
+            echo "line to the PR description to dismiss a false positive, or add the" >&2
+            echo "'docs-not-needed' label if the PR owes no docs at all." >&2
             exit 1
           fi
