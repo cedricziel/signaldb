@@ -2051,9 +2051,11 @@ impl Lowering<'_> {
             // The physical `body` column is JSON-encoded at ingest (issue
             // #1410): a plain-string body is stored quoted. `eq`/`ne`/`in`
             // stay pushdown-friendly by JSON-encoding the *literal* instead
-            // (see `body_literal_lit`, below); every other operator that
-            // touches `body` decodes the column instead, because none of
-            // them generalise to literal-encoding (issue #1433).
+            // (see `body_eq_candidates`, below); every other operator that
+            // touches `body` decodes the column instead (`Exists` is the
+            // one exception, using raw `is_not_null`, which is equivalent
+            // since the decode UDF preserves nulls), because none of them
+            // generalise to literal-encoding (issue #1433).
             let is_body =
                 matches!(&resolved, Resolved::Column { name, .. } if is_body_column(name));
             let expr = match &resolved {
