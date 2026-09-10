@@ -17,7 +17,7 @@ use datafusion::arrow::datatypes::Schema;
 use datafusion::arrow::error::ArrowError;
 use datafusion::arrow::ipc::CompressionType;
 use datafusion::arrow::ipc::writer::{
-    CompressionContext, DictionaryTracker, IpcDataGenerator, IpcWriteOptions,
+    DictionaryTracker, IpcDataGenerator, IpcWriteContext, IpcWriteOptions,
 };
 use datafusion::arrow::record_batch::RecordBatch;
 use tonic::codec::CompressionEncoding;
@@ -89,7 +89,7 @@ pub fn batches_to_compressed_flight_data(
     let options = flight_ipc_write_options();
     let data_gen = IpcDataGenerator::default();
     let mut dictionary_tracker = DictionaryTracker::new(false);
-    let mut compression_context = CompressionContext::default();
+    let mut compression_context = IpcWriteContext::default();
 
     let schema_bytes =
         data_gen.schema_to_bytes_with_dictionary_tracker(schema, &mut dictionary_tracker, &options);

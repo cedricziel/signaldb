@@ -98,26 +98,28 @@ crossterm = { version = "0.29.0", features = ["event-stream"] }
 tui-tree-widget = "0.24.0"
 
 # DataFusion for workspace members
-datafusion = { version = "54.1.0", default-features = false, features = [
+datafusion = { version = "55.0.0", default-features = false, features = [
     "parquet",
 ] }
 # Direct Arrow and Parquet dependencies
 # ipc_compression enables the lz4/zstd IPC buffer codecs on every build that
 # encodes or decodes Flight/WAL payloads — including per-package builds and
 # the published SDK, which don't inherit the codecs transitively.
-arrow = { version = "58.3.0", features = ["prettyprint", "ipc_compression"] }
-parquet = { version = "58.3.0", features = ["arrow", "async"] }
-arrow-flight = { version = "58.3.0" }
+arrow = { version = "59.3.0", features = ["prettyprint", "ipc_compression"] }
+parquet = { version = "59.3.0", features = ["arrow", "async"] }
+arrow-flight = { version = "59.3.0" }
 object_store = { version = "0.13.2", features = ["aws"] }
 
 # Iceberg table format support (schema, catalog, and write operations)
 #
 # Git pin on upstream `main` because no crates.io release of `iceberg-rust`
 # carries JanKaul/iceberg-rust#391 (declared sort orders) yet; drop the pin
-# for a published version once one does.
-datafusion_iceberg = { git = "https://github.com/JanKaul/iceberg-rust", rev = "ce2d3a1af3ae0e927fe66d9f0b7bd69d7c6618cd" }
-iceberg-rust = { git = "https://github.com/JanKaul/iceberg-rust", rev = "ce2d3a1af3ae0e927fe66d9f0b7bd69d7c6618cd" }
-iceberg-sql-catalog = { git = "https://github.com/JanKaul/iceberg-rust", rev = "ce2d3a1af3ae0e927fe66d9f0b7bd69d7c6618cd" }
+# for a published version once one does. Rev 5820c16a is upstream main as of
+# 2026-09-07, carrying JanKaul/iceberg-rust#392 (DataFusion 55 upgrade) and
+# #394 (Glue fix).
+datafusion_iceberg = { git = "https://github.com/JanKaul/iceberg-rust", rev = "5820c16a2a464ada64a345014dd1c104ed815282" }
+iceberg-rust = { git = "https://github.com/JanKaul/iceberg-rust", rev = "5820c16a2a464ada64a345014dd1c104ed815282" }
+iceberg-sql-catalog = { git = "https://github.com/JanKaul/iceberg-rust", rev = "5820c16a2a464ada64a345014dd1c104ed815282" }
 
 tonic = { version = "0.14.2", features = ["transport", "channel", "gzip", "zstd"] }
 tonic-build = "0.14.2"

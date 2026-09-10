@@ -154,7 +154,7 @@ mod tests {
     /// A `DataSourceExec` over one Parquet file, as a provider would build it:
     /// no reader factory, so footers are read uncached.
     fn parquet_scan(url: ObjectStoreUrl) -> Arc<dyn ExecutionPlan> {
-        let source = Arc::new(ParquetSource::new(TableSchema::new(schema(), vec![])));
+        let source = Arc::new(ParquetSource::new(TableSchema::from(schema())));
         let config = FileScanConfigBuilder::new(url, source)
             .with_file_group(FileGroup::new(vec![PartitionedFile::new("a.parquet", 100)]))
             .build();
