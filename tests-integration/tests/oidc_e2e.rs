@@ -456,6 +456,7 @@ async fn perform_keycloak_login(authorization_url: &str) -> (String, String) {
 }
 
 #[tokio::test]
+#[ignore = "requires a live Keycloak container"]
 async fn sso_login_jit_provisions_user_and_grants_mapped_membership() {
     let keycloak = start_keycloak().await;
     let port = keycloak
