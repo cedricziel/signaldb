@@ -329,7 +329,15 @@ impl MetricsService {
                 &series_cols,
             )?
         } else {
-            self.simple_query(df, bucket, plan.aggregate, plan.agg_param, &group_cols)?
+            self.simple_query(
+                df,
+                bucket,
+                plan.aggregate,
+                plan.agg_param,
+                &group_cols,
+                &series_cols,
+                matches!(plan.grouping, Grouping::Natural),
+            )?
         };
 
         // A second aggregation folds the per-series result, e.g. the outer
@@ -926,7 +934,16 @@ impl MetricsService {
         Ok(vec![batch])
     }
 
-    /// Aggregate `value` per (bucket, metric_name, group) directly.
+    /// Aggregate `value` per (bucket, metric_name, group). `per_series` marks
+    /// a bare selector (or `topk`/`bottomk`/`*_over_time`, `grouping ==
+    /// Natural`): those reduce directly, folding the per-series window as
+    /// `aggregate` intends (the latest sample for a plain selector, the
+    /// whole window for an `*_over_time` reducer). Any other aggregate is a
+    /// cross-series fold (`sum`, `avg`, `count`, `sum by (...)`, …), so it
+    /// first collapses each series to its latest sample in the bucket, then
+    /// applies `aggregate` across those per-series values — Prometheus
+    /// instant-vector semantics (#1499).
+    #[allow(clippy::too_many_arguments)]
     fn simple_query(
         &self,
         df: DataFrame,
@@ -934,14 +951,30 @@ impl MetricsService {
         aggregate: MetricAgg,
         param: Option<f64>,
         group_cols: &[String],
+        series_cols: &[String],
+        per_series: bool,
     ) -> Result<DataFrame, QuerierError> {
-        let mut group_exprs = vec![bucket, col("metric_name")];
-        group_exprs.extend(group_cols.iter().map(|c| col(c.as_str())));
+        let df = if per_series {
+            let mut group_exprs = vec![bucket, col("metric_name")];
+            group_exprs.extend(group_cols.iter().map(|c| col(c.as_str())));
+            let value = aggregate_expr(aggregate, param).alias("value");
+            df.aggregate(group_exprs, vec![value])
+                .map_err(QuerierError::QueryFailed)?
+        } else {
+            let mut series_group = vec![bucket, col("metric_name")];
+            series_group.extend(series_cols.iter().map(|c| col(c.as_str())));
+            let last = aggregate_expr(MetricAgg::Last, None).alias("series_value");
+            let per_series_df = df
+                .aggregate(series_group, vec![last])
+                .map_err(QuerierError::QueryFailed)?;
 
-        let value = aggregate_expr(aggregate, param).alias("value");
-        let df = df
-            .aggregate(group_exprs, vec![value])
-            .map_err(QuerierError::QueryFailed)?;
+            let mut group_exprs = vec![col("bucket"), col("metric_name")];
+            group_exprs.extend(group_cols.iter().map(|c| col(c.as_str())));
+            let value = aggregate_expr_over(aggregate, param, col("series_value")).alias("value");
+            per_series_df
+                .aggregate(group_exprs, vec![value])
+                .map_err(QuerierError::QueryFailed)?
+        };
 
         // Normalize `value` to Float64 (count aggregates to Int64).
         let mut proj = vec![col("bucket"), col("metric_name")];
@@ -2241,8 +2274,15 @@ fn attribute_fragment(key: &str, value: &str) -> String {
 }
 
 fn aggregate_expr(agg: MetricAgg, param: Option<f64>) -> Expr {
+    aggregate_expr_over(agg, param, col("value"))
+}
+
+/// Like [`aggregate_expr`], but reducing an arbitrary input column instead of
+/// the fixed `value` — used to fold a cross-series aggregate over a
+/// differently-named per-series intermediate column (`simple_query`'s
+/// `series_value`) rather than raw `value` rows.
+fn aggregate_expr_over(agg: MetricAgg, param: Option<f64>, value: Expr) -> Expr {
     use datafusion::functions_aggregate::expr_fn::percentile_cont;
-    let value = col("value");
     match agg {
         MetricAgg::Sum => sum(value),
         MetricAgg::Avg => avg(value),
@@ -2744,15 +2784,16 @@ mod tests {
     #[tokio::test]
     async fn sum_by_materialized_label_groups_series() {
         let service = service_with_labeled_data();
-        // prod: api 1+3 and web 5 and the label-less sum-table row is null;
-        // dev: api 10.
+        // Per series latest sample: (api,prod)=3 (last of [1,3]), (api,dev)=10,
+        // (web,prod)=5, (api,null) from the sum table=100. Summed by
+        // namespace: prod = 3+5 = 8, dev = 10, null (no namespace) = 100.
         let out = matrix_by_namespace(&service, "sum by (namespace) (reqs)").await;
         assert_eq!(
             out,
             vec![
                 (None, 100.0),
                 (Some("dev".to_string()), 10.0),
-                (Some("prod".to_string()), 9.0),
+                (Some("prod".to_string()), 8.0),
             ]
         );
     }
@@ -2760,7 +2801,9 @@ mod tests {
     #[tokio::test]
     async fn sum_without_materialized_label_folds_it_away() {
         let service = service_with_labeled_data();
-        // Dropping `namespace` leaves service_name grouping: api 1+3+10+100, web 5.
+        // Dropping `namespace` leaves service_name grouping over the
+        // per-series latest samples: api = 3 (prod) + 10 (dev) + 100 (null) =
+        // 113, web = 5.
         let out = matrix(&service, "sum without (namespace) (reqs)", 1000).await;
         let by = |svc: &str| {
             out.iter()
@@ -2768,7 +2811,7 @@ mod tests {
                 .unwrap()
                 .2
         };
-        assert_eq!(by("api"), 114.0);
+        assert_eq!(by("api"), 113.0);
         assert_eq!(by("web"), 5.0);
     }
 
@@ -2839,9 +2882,30 @@ mod tests {
     #[tokio::test]
     async fn sum_collapses_series() {
         let service = service_with_data();
+        // Per series latest sample: api=3 (last of [1,3]), web=5. Summed
+        // across series: 8, not the raw-sample fold of 1+3+5=9 (#1499).
         let out = matrix(&service, "sum(reqs)", 1000).await;
         assert_eq!(out.len(), 1);
-        assert_eq!(out[0].2, 9.0); // 1+3+5
+        assert_eq!(out[0].2, 8.0);
+    }
+
+    #[tokio::test]
+    async fn count_sum_avg_min_max_of_a_single_multi_sample_series_use_its_latest_value() {
+        let service = service_with_data();
+        // `api` alone has two samples ([1, 3]) in the bucket; every one of
+        // these aggregates must see it as exactly one series with value 3
+        // (its latest sample), never fold the two raw rows together (#1499).
+        let selector = r#"reqs{job="api"}"#;
+        for (op, expected) in [
+            ("count", 1.0),
+            ("sum", 3.0),
+            ("avg", 3.0),
+            ("min", 3.0),
+            ("max", 3.0),
+        ] {
+            let out = matrix(&service, &format!("{op}({selector})"), 1000).await;
+            assert_eq!(out[0].2, expected, "{op}({selector})");
+        }
     }
 
     #[tokio::test]
@@ -2862,24 +2926,28 @@ mod tests {
     #[tokio::test]
     async fn quantile_is_percentile_across_the_bucket() {
         let service = service_with_data();
-        // Values in the bucket are [1, 3, 5]; the 0.5-quantile (median) is 3.
+        // Per series latest sample: api=3, web=5. The 0.5-quantile (median)
+        // of [3, 5] is 4, not the raw-sample median of [1, 3, 5] (3).
         let out = matrix(&service, "quantile(0.5, reqs)", 1000).await;
         assert_eq!(out.len(), 1);
-        assert!((out[0].2 - 3.0).abs() < 1e-9, "got {}", out[0].2);
-        // The 0-quantile is the minimum.
+        assert!((out[0].2 - 4.0).abs() < 1e-9, "got {}", out[0].2);
+        // The 0-quantile is the minimum of the per-series values (3).
         let out = matrix(&service, "quantile(0, reqs)", 1000).await;
-        assert!((out[0].2 - 1.0).abs() < 1e-9, "got {}", out[0].2);
+        assert!((out[0].2 - 3.0).abs() < 1e-9, "got {}", out[0].2);
     }
 
     #[tokio::test]
     async fn sum_by_service() {
         let service = service_with_data();
+        // `job` maps to service_name, already the natural series identity
+        // here, so each group has exactly one member: the aggregate of that
+        // one series is its own latest sample (3), not the raw fold (4).
         let out = matrix(&service, "sum by (job) (reqs)", 1000).await;
         let api = out
             .iter()
             .find(|(_, s, _)| s.as_deref() == Some("api"))
             .unwrap();
-        assert_eq!(api.2, 4.0); // 1+3
+        assert_eq!(api.2, 3.0);
     }
 
     #[tokio::test]
@@ -2894,7 +2962,8 @@ mod tests {
     #[tokio::test]
     async fn count_and_max() {
         let service = service_with_data();
-        assert_eq!(matrix(&service, "count(reqs)", 1000).await[0].2, 3.0);
+        // Two series (api, web), not the three raw sample rows (#1499).
+        assert_eq!(matrix(&service, "count(reqs)", 1000).await[0].2, 2.0);
         assert_eq!(matrix(&service, "max(reqs)", 1000).await[0].2, 5.0);
     }
 
