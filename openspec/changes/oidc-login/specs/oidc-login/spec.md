@@ -92,11 +92,20 @@ login attempt, and the callback SHALL send the user there after issuing the
 session. Only a same-origin path is honoured; anything else falls back to
 the login route's default target (`/logs`), under the same rule the `/login`
 route applies, so password and SSO logins land in the same place for the
-same bad input. Any screen that
-demands a login can therefore hand the user to the IdP and get them back on
-the same URL with its query string intact. The MCP OAuth consent screen
-depends on this: SSO is a full-page navigation, and the authorize request
-lives in that screen's URL.
+same bad input. Any screen that demands a login can therefore hand the user
+to the IdP and get them back on the same URL with its query string intact.
+The MCP OAuth consent screen depends on this: SSO is a full-page navigation,
+and the authorize request lives in that screen's URL.
+
+Landing on the return target SHALL leave the user with the tenant context
+password login produces: a sole membership is selected together with its
+default dataset, and several memberships send the user through the tenant
+selection page and on to the return target once they choose. The callback
+cannot run the login panel's completion handler, so this resolution SHALL
+live in the UI shell and run whenever a session exists but neither the URL
+nor the remembered context names a tenant — which also covers bookmarks and
+stale links. The consent screen is outside the shell and keeps its own
+consent-time tenant choice.
 
 #### Scenario: MCP OAuth consent rides the SSO session
 
@@ -113,6 +122,20 @@ lives in that screen's URL.
   or `redirect=//evil.example/`
 - **THEN** the login still proceeds and the callback lands on `/logs`, where
   the `/login` route would also have sent it
+
+#### Scenario: SSO landing carries the tenant context
+
+- **WHEN** a user with exactly one membership completes SSO with
+  `redirect=/traces` on a browser that remembers no tenant
+- **THEN** they end on `/traces` with that tenant and its default dataset in
+  the URL, exactly as after a password login
+
+#### Scenario: Several memberships choose before landing
+
+- **WHEN** a user with several memberships completes SSO with
+  `redirect=/traces` on a browser that remembers no tenant
+- **THEN** they are shown the tenant selection page and, on choosing, land on
+  `/traces` with the chosen tenant and dataset
 
 ### Requirement: Just-in-time provisioning with an allowlist
 

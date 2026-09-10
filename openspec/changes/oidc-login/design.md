@@ -136,6 +136,20 @@ See proposal.md — Why. What shapes the approach:
    `LoginGate` — the mid-session 401 popup, the third consumer — passes the
    current location, accepting that a full-page SSO navigation discards
    in-flight SPA state, which the expired session already invalidated.
+   **Post-login tenant context.** Password login gets its tenant from the
+   session response (sole membership) or the panel's picker, and `LoginRoute`
+   appends `tenant`/`dataset` to the target; the OIDC callback redirects
+   itself and can run neither. Rather than teach the callback to enrich URLs
+   (it would have to special-case the consent screen, which has its own
+   tenant choice), the `App` shell resolves the context: today it already
+   falls back to the remembered tenant from local storage; it gains the last
+   step for a browser that remembers nothing — read memberships from
+   `whoami`, select a sole membership with its default dataset into the
+   URL, or send several memberships to `/select-tenant?redirect=<target>`,
+   which learns to navigate to `redirect` instead of a fixed `/logs`
+   (tenant-selection delta). This also fixes bookmarks and stale links on a
+   fresh browser, which had the same gap. The consent view is outside the
+   shell and unaffected.
 9. **Testing — three layers, each owning what only it can prove** (the
    enumerated cases live in tasks.md §2 and §4):
    - Unit tests: RP behaviour in `router` against a wiremock IdP; component
