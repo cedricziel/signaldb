@@ -386,7 +386,7 @@ plan, and how to switch the behavior off — see
 ### Table Schemas
 
 `schemas.toml` (compiled into the binary via `include_str!`) is the physical
-schema source of truth for all six built-in table types — traces, logs, and
+schema source of truth for all eight built-in table types — traces, logs, and
 all five metrics representations plus profiles — resolved with versioning
 and inheritance via `SchemaDefinitions`/`ResolvedSchema`
 (`src/common/src/schema/schema_parser.rs`). `src/common/src/iceberg/schemas.rs`'s

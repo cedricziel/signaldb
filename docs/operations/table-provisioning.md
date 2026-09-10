@@ -236,8 +236,12 @@ materialized_labels` is applied when a table is created; `ensure_table`'s
   `schemas.toml`-sourced signal (traces, logs, all five metrics
   representations, and profiles). Every load, not just creation, brings the
   table's schema forward to the current `schemas.toml` version if it's
-  behind, additively — new nullable columns only, never a rewrite of
-  existing data. See
+  behind. New columns are always nullable and historical rows are never
+  rewritten to backfill them; beyond that, a table whose recorded starting
+  version is trusted (found on the version chain) also gets renames and
+  removals applied hop by hop, not just additions — an untrusted starting
+  version (no recorded version, or one not found on the chain) skips
+  straight to current with additions only. See
   [schema evolution](../architecture/storage-layout.md#an-existing-tables-schema-tracks-and-catches-up-to-schematomls-version).
 - **Not every table property is set at creation.** Provisioning applies the
   bloom-filter, column-statistics, compression and metadata-pruning

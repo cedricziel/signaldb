@@ -53,7 +53,7 @@ SignalDB maintains two distinct catalog systems:
 Apache Iceberg provides ACID transactions and structured metadata management:
 
 - **ACID transactions** with commit/rollback for data integrity
-- **Schema versioning** via `schemas.toml` with inheritance, field renames, and computed fields — the physical schema source of truth for all six built-in table types (traces, logs, and all five metrics representations plus profiles), not only traces/logs
+- **Schema versioning** via `schemas.toml` with inheritance, field renames, and computed fields — the physical schema source of truth for all eight built-in table types (traces, logs, and all five metrics representations plus profiles), not only traces/logs
 - **Hour-based partitioning** on `timestamp` for all table types
 - **Declared sort order** per signal table, time-leading (traces `(timestamp, trace_id)`, logs `(timestamp, service_name, severity_text)`, metrics `(timestamp, metric_name, service_name)`, profiles `(timestamp, service_name)`) — declared at creation and added to pre-existing tables on load. Both file producers honor it: ingest sorts each commit group before writing, and compaction sorts by the table's declaration rather than a key list of its own. A file is only claimed as ordered when it attests the order in its own Parquet footer, so mixed populations of sorted and unsorted files stay correct and legacy files converge through compaction; see [Storage Layout](storage-layout.md#declared-sort-order)
 - **Namespace isolation**: Tables namespaced as `[tenant_slug, dataset_slug]`
