@@ -116,6 +116,15 @@ would turn one corrupted record into a permanent crash loop, since the
 same bytes are hit again on every restart (issue #1033). Full detail:
 `docs/operations/wal-persistence.md#corrupted-entry-records-during-replay`.
 
+`dead-letter/` is not self-cleaning: the acceptor retry consumer and writer
+drain loop re-scan every WAL's directory each pass (including one with no
+live segments left, since a fully-drained WAL can still leave an orphaned
+`dead-letter/` behind — `WalManager::scan_dead_letter_dirs`) and report the
+true count on `signaldb.wal.dead_letter_entries`/`_bytes`, then delete
+marker+payload pairs older than `[wal].dead_letter_retention` (default 30d).
+See `docs/operations/wal-persistence.md` for the metric attributes and sweep
+behavior (#1494).
+
 ### WAL Entry Structure
 
 ```rust
