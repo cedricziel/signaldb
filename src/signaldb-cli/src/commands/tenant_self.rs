@@ -869,7 +869,9 @@ mod tests {
             })))
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"user_id":"u1","email":"bob@example.com","role":"member"}"#)
+            .with_body(
+                r#"{"user_id":"u1","email":"bob@example.com","role":"member","granted_by":"local"}"#,
+            )
             .create_async()
             .await;
         let remove = server
