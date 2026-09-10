@@ -167,13 +167,9 @@ impl IcebergTableManager {
     /// Bring `table_name`'s schema forward to its current `schemas.toml`
     /// version via [`evolution::ensure_schema_current`].
     ///
-    /// Scoped to `traces` and `logs` only: those are the only signals whose
-    /// physical schema is actually sourced from `schemas.toml` today.
-    /// Metrics (all five representations) and profiles are hand-written in
-    /// `iceberg::schemas` with no versioned definition to evolve against —
-    /// see `openspec/changes/iceberg-schema-evolution`'s scope correction
-    /// and `unified-table-schema`, which owns migrating them onto
-    /// `schemas.toml`. A no-op for any other table name.
+    /// Covers every `schemas.toml`-sourced signal: traces, logs, all five
+    /// metrics representations, and profiles. A no-op for any other table
+    /// name.
     async fn ensure_schema_evolved(&self, table_name: &str, ident: &Identifier) -> Result<()> {
         let (schemas_map, current_version) = match table_name {
             "traces" => (
@@ -183,6 +179,30 @@ impl IcebergTableManager {
             "logs" => (
                 &SCHEMA_DEFINITIONS.logs,
                 SCHEMA_DEFINITIONS.metadata.current_log_version.as_str(),
+            ),
+            "metrics_gauge" => (
+                &SCHEMA_DEFINITIONS.metrics_gauge,
+                SCHEMA_DEFINITIONS.metadata.current_metric_version.as_str(),
+            ),
+            "metrics_sum" => (
+                &SCHEMA_DEFINITIONS.metrics_sum,
+                SCHEMA_DEFINITIONS.metadata.current_metric_version.as_str(),
+            ),
+            "metrics_histogram" => (
+                &SCHEMA_DEFINITIONS.metrics_histogram,
+                SCHEMA_DEFINITIONS.metadata.current_metric_version.as_str(),
+            ),
+            "metrics_exponential_histogram" => (
+                &SCHEMA_DEFINITIONS.metrics_exponential_histogram,
+                SCHEMA_DEFINITIONS.metadata.current_metric_version.as_str(),
+            ),
+            "metrics_summary" => (
+                &SCHEMA_DEFINITIONS.metrics_summary,
+                SCHEMA_DEFINITIONS.metadata.current_metric_version.as_str(),
+            ),
+            "profiles" => (
+                &SCHEMA_DEFINITIONS.profiles,
+                SCHEMA_DEFINITIONS.metadata.current_profile_version.as_str(),
             ),
             _ => return Ok(()),
         };
@@ -349,6 +369,14 @@ impl IcebergTableManager {
         let current_version = match table_name {
             "traces" => Some(SCHEMA_DEFINITIONS.current_trace_version()),
             "logs" => Some(SCHEMA_DEFINITIONS.metadata.current_log_version.as_str()),
+            "metrics_gauge"
+            | "metrics_sum"
+            | "metrics_histogram"
+            | "metrics_exponential_histogram"
+            | "metrics_summary" => {
+                Some(SCHEMA_DEFINITIONS.metadata.current_metric_version.as_str())
+            }
+            "profiles" => Some(SCHEMA_DEFINITIONS.metadata.current_profile_version.as_str()),
             _ => None,
         };
         if let Some(version) = current_version {
@@ -622,37 +650,45 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn ensure_table_does_not_attempt_evolution_for_metrics_tables() -> anyhow::Result<()> {
-        // Metrics tables are hand-written, not schemas.toml-sourced (see
-        // `ensure_schema_evolved`'s doc comment) -- this must not panic or
-        // error trying to resolve a schemas.toml version for them.
+    async fn ensure_table_evolves_metrics_and_profiles_tables_too() -> anyhow::Result<()> {
+        // Metrics and profiles are schemas.toml-sourced like traces/logs
+        // (see `ensure_schema_evolved`'s doc comment) -- a table for either
+        // gets its schema version tracked and kept current the same way.
         let manager = CatalogManager::new_in_memory().await?;
         let catalog = manager.catalog();
         let table_manager = IcebergTableManager::new(catalog.clone(), 5);
 
-        table_manager
-            .ensure_table(
-                "evo_tenant3",
-                "evo_dataset3",
-                "metrics_gauge",
-                &MaterializedLabels::default(),
-            )
-            .await?;
-        let table = table_manager
-            .ensure_table(
-                "evo_tenant3",
-                "evo_dataset3",
-                "metrics_gauge",
-                &MaterializedLabels::default(),
-            )
-            .await?;
-        assert!(
-            !table
-                .metadata()
-                .properties
-                .contains_key(evolution::SCHEMA_VERSION_PROPERTY),
-            "metrics tables are not versioned by this mechanism yet"
-        );
+        for table_name in ["metrics_gauge", "profiles"] {
+            table_manager
+                .ensure_table(
+                    "evo_tenant3",
+                    "evo_dataset3",
+                    table_name,
+                    &MaterializedLabels::default(),
+                )
+                .await?;
+            let table = table_manager
+                .ensure_table(
+                    "evo_tenant3",
+                    "evo_dataset3",
+                    table_name,
+                    &MaterializedLabels::default(),
+                )
+                .await?;
+            let expected = if table_name == "profiles" {
+                &SCHEMA_DEFINITIONS.metadata.current_profile_version
+            } else {
+                &SCHEMA_DEFINITIONS.metadata.current_metric_version
+            };
+            assert_eq!(
+                table
+                    .metadata()
+                    .properties
+                    .get(evolution::SCHEMA_VERSION_PROPERTY),
+                Some(expected),
+                "{table_name}: schema version property not tracked"
+            );
+        }
         Ok(())
     }
 
