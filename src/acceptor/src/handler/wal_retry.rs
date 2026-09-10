@@ -238,6 +238,8 @@ impl WalRetryConsumer {
         // logs any failures.
         self.wal_manager.cleanup_all_if_due().await;
 
+        common::wal::dead_letter::reconcile_all(&self.wal_manager, "acceptor").await;
+
         Ok(stats)
     }
 
@@ -375,6 +377,51 @@ mod tests {
             .await
             .unwrap();
         Arc::new(InMemoryFlightTransport::new(bootstrap))
+    }
+
+    #[tokio::test]
+    async fn a_retry_pass_sweeps_an_orphaned_dead_letter_directory() {
+        // #1494: a dead-letter directory with no live WAL behind it anymore
+        // (segments already fully drained and cleaned up) must still be
+        // discovered and swept by the retry consumer's normal pass.
+        let temp_dir = TempDir::new().unwrap();
+        let manager = Arc::new(test_manager(temp_dir.path()));
+
+        let dead_letter_dir = temp_dir
+            .path()
+            .join("acme")
+            .join("production")
+            .join("metrics")
+            .join("dead-letter");
+        tokio::fs::create_dir_all(&dead_letter_dir).await.unwrap();
+        let bin = dead_letter_dir.join("a.bin");
+        let marker = dead_letter_dir.join("a.rejected.json");
+        tokio::fs::write(&bin, b"payload").await.unwrap();
+        tokio::fs::write(&marker, b"{}").await.unwrap();
+        // No global CONFIG in this test, so the consumer falls back to the
+        // 30-day default retention; back-date well past that so the sweep
+        // actually deletes it.
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 24 * 3600);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&bin)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&marker)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+
+        let mut consumer = WalRetryConsumer::new(manager.clone(), test_transport().await);
+        consumer.run_once().await.unwrap();
+
+        assert!(
+            !bin.exists() && !marker.exists(),
+            "a dead-letter pair past retention must be swept even with no live WAL"
+        );
     }
 
     async fn append_entry(manager: &WalManager) {
