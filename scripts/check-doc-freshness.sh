@@ -27,8 +27,7 @@ known_docs=$(find docs .claude/skills -name '*.md' -type f 2>/dev/null | sort)
 acked_docs=$(
     printf '%s' "${DOC_FRESHNESS_ACK:-}" |
         tr ',' '\n' |
-        sed 's/^[[:space:]]*//; s/[[:space:]]*$//' |
-        sed '/^$/d'
+        sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d'
 )
 
 if [[ $# -ge 1 && -n "$1" ]]; then
@@ -116,7 +115,7 @@ while IFS= read -r doc; do
             errors=1
         fi
     done <<<"$globs"
-done < <(find docs .claude/skills -name '*.md' -type f 2>/dev/null | sort)
+done <<<"$known_docs"
 
 # --- Acknowledgement validation ----------------------------------------------
 # Every path in DOC_FRESHNESS_ACK must be a real doc; a typo would otherwise
@@ -168,7 +167,7 @@ while IFS= read -r doc; do
         echo "$doc — sources changed: $hits"
         stale=1
     fi
-done < <(find docs .claude/skills -name '*.md' -type f 2>/dev/null | sort)
+done <<<"$known_docs"
 
 [[ $stale -eq 1 || $errors -eq 1 ]] && exit 1
 exit 0
