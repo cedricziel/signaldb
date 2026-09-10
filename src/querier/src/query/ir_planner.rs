@@ -1927,6 +1927,12 @@ impl Lowering<'_> {
             return Ok(ident(c.clone()));
         }
         match self.resolver.resolve("", logical) {
+            // `body` decodes the same way the projection does (issue #1433):
+            // grouping, ordering, and an aggregate operand must agree with
+            // what a `rows` result of the same field shows.
+            Some(Resolved::Column { name, .. }) if is_body_column(&name) => {
+                Ok(body_decode_expr(&name))
+            }
             Some(Resolved::Column { name, .. }) => Ok(ident(name)),
             Some(Resolved::JsonPath { key, .. }) => Ok(self.attr_expr(&key)),
             Some(Resolved::EventAttribute {
@@ -2027,19 +2033,29 @@ impl Lowering<'_> {
     fn lower_leaf(&self, leaf: &Leaf) -> Result<Expr, QuerierError> {
         // An extract-derived or aggregate-output column takes precedence over
         // registry resolution (it is a real DataFrame column now).
-        let (is_json, value_type, field_expr) = if let Some(alias) = self.col_of.get(&leaf.field) {
+        let (is_json, value_type, field_expr, is_body) = if let Some(alias) =
+            self.col_of.get(&leaf.field)
+        {
             let ty = self
                 .derived_types
                 .get(&leaf.field)
                 .cloned()
                 .unwrap_or(ValueType::String);
-            (false, ty, ident(alias.clone()))
+            (false, ty, ident(alias.clone()), false)
         } else {
             let resolved = self.resolver.resolve("", &leaf.field).ok_or_else(|| {
                 QuerierError::InvalidInput(format!("unknown field '{}'", leaf.field))
             })?;
             let is_json = resolved.is_advisory_type();
             let ty = resolved.value_type().clone();
+            // The physical `body` column is JSON-encoded at ingest (issue
+            // #1410): a plain-string body is stored quoted. `eq`/`ne`/`in`
+            // stay pushdown-friendly by JSON-encoding the *literal* instead
+            // (see `body_literal_lit`, below); every other operator that
+            // touches `body` decodes the column instead, because none of
+            // them generalise to literal-encoding (issue #1433).
+            let is_body =
+                matches!(&resolved, Resolved::Column { name, .. } if is_body_column(name));
             let expr = match &resolved {
                 Resolved::Column { name, .. } => ident(name.clone()),
                 Resolved::JsonPath { key, .. } => self.attr_expr(key),
@@ -2052,37 +2068,57 @@ impl Lowering<'_> {
                 Resolved::SpanEvents { events_column } => span_events_expr(events_column),
                 Resolved::PromotedColumn { name, key, .. } => self.promoted_column_expr(name, key),
             };
-            (is_json, ty, expr)
+            (is_json, ty, expr, is_body)
+        };
+        // The decoded form of `field_expr`, used by every operator except
+        // `eq`/`ne`/`in` (which compare against the encoded literal instead,
+        // so Parquet predicate pushdown still applies to the hot path).
+        let decoded_field_expr = || {
+            if is_body {
+                body_decode_expr("body")
+            } else {
+                field_expr.clone()
+            }
         };
 
         let coerce_val = |v: &serde_json::Value, ty: &ValueType| -> Result<Literal, QuerierError> {
             coerce(v, ty).map_err(|e| QuerierError::InvalidInput(e.to_string()))
+        };
+        // `eq`/`ne`/`in`'s literal side: JSON-encoded to match the raw
+        // `body` column when this leaf targets `body`, the coerced value's
+        // ordinary literal form otherwise.
+        let literal_rhs = |literal: &Literal| {
+            if is_body {
+                lit(body_encode(&string_of(literal)))
+            } else {
+                self.value_lit(literal, is_json)
+            }
         };
 
         Ok(match leaf.op {
             ComparisonOp::Exists => field_expr.is_not_null(),
             ComparisonOp::Eq => {
                 let v = self.require_value(leaf)?;
-                field_expr.eq(self.value_lit(&coerce_val(v, &value_type)?, is_json))
+                field_expr.eq(literal_rhs(&coerce_val(v, &value_type)?))
             }
             ComparisonOp::Ne => {
                 let v = self.require_value(leaf)?;
-                field_expr.not_eq(self.value_lit(&coerce_val(v, &value_type)?, is_json))
+                field_expr.not_eq(literal_rhs(&coerce_val(v, &value_type)?))
             }
             ComparisonOp::Gt | ComparisonOp::Gte | ComparisonOp::Lt | ComparisonOp::Lte => {
                 let v = self.require_value(leaf)?;
-                self.ordered(field_expr, leaf.op, v, &value_type, is_json)?
+                self.ordered(decoded_field_expr(), leaf.op, v, &value_type, is_json)?
             }
             ComparisonOp::Contains => {
                 let v = self.require_value(leaf)?;
                 let s = coerce_val(v, &ValueType::String)?;
-                contains(field_expr, self.value_lit(&s, true))
+                contains(decoded_field_expr(), self.value_lit(&s, true))
             }
             ComparisonOp::Regex => {
                 let v = self.require_value(leaf)?;
                 let s = string_of(&coerce_val(v, &ValueType::String)?);
                 compile_regex_guard(&s)?;
-                regexp_like(field_expr, lit(s), None)
+                regexp_like(decoded_field_expr(), lit(s), None)
             }
             ComparisonOp::In => {
                 let arr = leaf
@@ -2092,7 +2128,7 @@ impl Lowering<'_> {
                     .ok_or_else(|| QuerierError::InvalidInput("`in` needs an array".to_string()))?;
                 let list = arr
                     .iter()
-                    .map(|item| Ok(self.value_lit(&coerce_val(item, &value_type)?, is_json)))
+                    .map(|item| Ok(literal_rhs(&coerce_val(item, &value_type)?)))
                     .collect::<Result<Vec<_>, QuerierError>>()?;
                 field_expr.in_list(list, false)
             }
@@ -2107,6 +2143,7 @@ impl Lowering<'_> {
                     })?;
                 let lo = self.value_lit(&coerce_val(&arr[0], &value_type)?, is_json);
                 let hi = self.value_lit(&coerce_val(&arr[1], &value_type)?, is_json);
+                let field_expr = decoded_field_expr();
                 field_expr.clone().gt_eq(lo).and(field_expr.lt_eq(hi))
             }
         })
@@ -2250,12 +2287,33 @@ pub(crate) fn body_decode_expr(physical: &str) -> Expr {
     ScalarUDF::from(BodyDecodeUdf::new()).call(vec![col(physical)])
 }
 
+/// Whether a resolved physical column name is the log `body` column —
+/// the one column ingest JSON-encodes (issue #1410) and every read site
+/// (projection, filter, ordering, grouping, aggregate operand) must
+/// therefore treat specially. The single check backing all of them, so
+/// they cannot drift out of agreement with each other (issue #1433).
+fn is_body_column(physical: &str) -> bool {
+    physical == "body"
+}
+
+/// The inverse of [`body_decode_expr`] applied to a literal, not a column:
+/// JSON-encodes `text` the way ingest encodes a plain-string log body, so an
+/// `eq`/`ne`/`in` predicate can compare the *literal* against the raw,
+/// still-encoded `body` column instead of decoding every row (issue #1433).
+/// Exact for those operators — a decoded column equals `text` exactly when
+/// the raw column equals this encoding of it — and keeps Parquet predicate
+/// pushdown on `body` intact on that hot path. `serde_json::to_string` over
+/// a `&str` cannot fail; the fallback exists only so this stays panic-free.
+fn body_encode(text: &str) -> String {
+    serde_json::to_string(text).unwrap_or_else(|_| text.to_string())
+}
+
 /// The projection expression for a resolved physical column: `body` is
 /// decoded (see [`body_decode_expr`]), everything else projected as-is.
 /// Aliased back to `physical` either way, so the output column name is
 /// unaffected by which branch ran.
 fn body_projection_expr(physical: &str) -> Expr {
-    if physical == "body" {
+    if is_body_column(physical) {
         body_decode_expr(physical).alias(physical)
     } else {
         ident(physical)
@@ -4651,64 +4709,55 @@ mod tests {
         );
     }
 
-    /// D6 (`ir-single-lowering`): the harness found every LogQL line filter
-    /// (`|=`/`!=`/`|~`/`!~`) lowers to a predicate on `body`, which
-    /// `LogicalSchema::core()` used to mark retrieval-only — rejecting every
-    /// one of those documents outright. `body` is filterable for string
-    /// operators now.
-    #[tokio::test]
-    async fn body_is_filterable_for_string_operators() {
-        let svc = IrService::new(logs_ctx());
-        for (op, value) in [
-            ("contains", serde_json::json!("a")),
-            ("regex", serde_json::json!("^a$")),
-            ("eq", serde_json::json!("a")),
-            ("ne", serde_json::json!("a")),
-        ] {
-            let d = doc(serde_json::json!({
-                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
-                "result": "rows",
-                "fields": ["body"],
-                "pipeline": [{ "where": { "field": "body", "op": op, "value": value } }]
-            }));
-            svc.plan(&d, "t", "d", 0)
-                .await
-                .unwrap_or_else(|e| panic!("body {op} should plan: {e}"))
-                .expect("logs table is registered");
-        }
-        let d = doc(serde_json::json!({
-            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
-            "result": "rows",
-            "fields": ["body"],
-            "pipeline": [{ "where": { "field": "body", "op": "exists" } }]
-        }));
-        svc.plan(&d, "t", "d", 0)
-            .await
-            .unwrap_or_else(|e| panic!("body exists should plan: {e}"))
-            .expect("logs table is registered");
+    /// Like `logs_ctx()`, but `body` is seeded through the real ingest
+    /// encoding (`serde_json::to_string`, issue #1410) instead of bare
+    /// single-character strings. Bare strings like `"a"` are not valid JSON
+    /// string encodings of themselves (`serde_json::to_string("a")` is
+    /// `"\"a\""`), so `logs_ctx()`'s fixture cannot distinguish a filter that
+    /// compares against the decoded value from one that compares against the
+    /// raw, still-encoded column — exactly the gap issue #1433 closes.
+    fn logs_body_ctx() -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("body", DataType::Utf8, true),
+            Field::new("service_name", DataType::Utf8, true),
+        ]));
+        let encode = |s: &str| serde_json::to_string(s).unwrap();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![10_i64, 20, 30, 40])),
+                Arc::new(StringArray::from(vec![
+                    Some(encode("a")),
+                    Some(encode("b")),
+                    Some(encode("c")),
+                    Some(encode("d")),
+                ])),
+                Arc::new(StringArray::from(vec!["api", "api", "web", "web"])),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("logs".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
     }
 
-    /// D6 (`ir-single-lowering`), review finding on #1393: `body` gets no
-    /// special-cased operator allowlist — an ordered operator (`gt`) on
-    /// `body` is not rejected, it compares *lexically*, the same as any
-    /// other string field (`Lowering::ordered` only casts to a number when
-    /// the field's resolved `ValueType` is numeric; `body` resolves to
-    /// `ValueType::String`). This is not a numeric-comparison capability
-    /// for `body` — it is the absence of a special case, in either
-    /// direction.
-    #[tokio::test]
-    async fn body_ordered_operators_compare_lexically() {
-        let svc = IrService::new(logs_ctx());
-        let d = doc(serde_json::json!({
-            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
-            "result": "rows",
-            "fields": ["body"],
-            "pipeline": [{ "where": { "field": "body", "op": "gt", "value": "a" } }]
-        }));
+    /// Collect a single-column `body` projection's decoded text values.
+    async fn plan_body_rows(svc: &IrService, doc: &Document) -> Vec<String> {
         let (df, _) = svc
-            .plan(&d, "t", "d", 0)
+            .plan(doc, "t", "d", 0)
             .await
-            .unwrap_or_else(|e| panic!("body gt should plan: {e}"))
+            .unwrap_or_else(|e| panic!("plan failed: {e}"))
             .expect("logs table is registered");
         let batches = df.collect().await.unwrap();
         let mut bodies: Vec<String> = batches
@@ -4724,10 +4773,95 @@ mod tests {
             })
             .collect();
         bodies.sort();
-        // `logs_ctx()`'s body values are "a", "b", "c", "d"; `> "a"` keeps
-        // the three lexically greater than "a".
+        bodies
+    }
+
+    /// D6 (`ir-single-lowering`): the harness found every LogQL line filter
+    /// (`|=`/`!=`/`|~`/`!~`) lowers to a predicate on `body`, which
+    /// `LogicalSchema::core()` used to mark retrieval-only — rejecting every
+    /// one of those documents outright. `body` is filterable for string
+    /// operators now.
+    ///
+    /// #1433: `body` is JSON-encoded at rest (issue #1410), so each of these
+    /// operators must resolve `where body = "<text>"` against the *decoded*
+    /// text a `rows` result of the same field shows — an anchored `regex`
+    /// especially, since the raw column's surrounding quotes would defeat a
+    /// `^...$` anchor even though the substring survives an unanchored
+    /// `contains`.
+    #[tokio::test]
+    async fn body_is_filterable_for_string_operators() {
+        let svc = IrService::new(logs_body_ctx());
+        let where_body = |op: &str, value: serde_json::Value| {
+            doc(serde_json::json!({
+                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "rows",
+                "fields": ["body"],
+                "pipeline": [{ "where": { "field": "body", "op": op, "value": value } }]
+            }))
+        };
+
         assert_eq!(
-            bodies,
+            plan_body_rows(&svc, &where_body("eq", serde_json::json!("a"))).await,
+            vec!["a".to_string()],
+        );
+        assert_eq!(
+            plan_body_rows(&svc, &where_body("ne", serde_json::json!("a"))).await,
+            vec!["b".to_string(), "c".to_string(), "d".to_string()],
+        );
+        assert_eq!(
+            plan_body_rows(&svc, &where_body("contains", serde_json::json!("a"))).await,
+            vec!["a".to_string()],
+        );
+        // Anchored: would fail against the raw, quote-wrapped column even
+        // though an unanchored `contains` happens to still find "a" inside
+        // the quotes.
+        assert_eq!(
+            plan_body_rows(&svc, &where_body("regex", serde_json::json!("^a$"))).await,
+            vec!["a".to_string()],
+        );
+
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["body"],
+            "pipeline": [{ "where": { "field": "body", "op": "exists" } }]
+        }));
+        assert_eq!(
+            plan_body_rows(&svc, &d).await,
+            vec![
+                "a".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+                "d".to_string()
+            ],
+        );
+    }
+
+    /// D6 (`ir-single-lowering`), review finding on #1393: `body` gets no
+    /// special-cased operator allowlist — an ordered operator (`gt`) on
+    /// `body` is not rejected, it compares *lexically*, the same as any
+    /// other string field (`Lowering::ordered` only casts to a number when
+    /// the field's resolved `ValueType` is numeric; `body` resolves to
+    /// `ValueType::String`). This is not a numeric-comparison capability
+    /// for `body` — it is the absence of a special case, in either
+    /// direction.
+    ///
+    /// #1433: ordering must compare the *decoded* text, not the raw,
+    /// JSON-encoded column — the surrounding `"` (0x22) sorts ahead of every
+    /// letter, so comparing the raw bytes would make every row fail `gt`.
+    #[tokio::test]
+    async fn body_ordered_operators_compare_lexically() {
+        let svc = IrService::new(logs_body_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["body"],
+            "pipeline": [{ "where": { "field": "body", "op": "gt", "value": "a" } }]
+        }));
+        // `logs_body_ctx()`'s decoded body values are "a", "b", "c", "d"; `>
+        // "a"` keeps the three lexically greater than "a".
+        assert_eq!(
+            plan_body_rows(&svc, &d).await,
             vec!["b".to_string(), "c".to_string(), "d".to_string()]
         );
     }
@@ -6883,6 +7017,89 @@ mod tests {
         assert_eq!(
             last, 21,
             "last (latest, ts=40) should be row 4's severity_number, not row 1's again"
+        );
+    }
+
+    /// #1433: `first_value(body)`/`last_value(body)` must return the same
+    /// decoded text a `rows` result of `body` shows, not the raw
+    /// JSON-encoded column.
+    #[tokio::test]
+    async fn first_and_last_aggregates_decode_body() {
+        let svc = IrService::new(logs_body_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 5, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [
+                { "aggregate": { "by": [], "aggs": [
+                    { "fn": "first", "of": "body", "as": "first_body" },
+                    { "fn": "last", "of": "body", "as": "last_body" }
+                ] } }
+            ]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("logs table is registered");
+        let batches = df.collect().await.unwrap();
+        let batch = &batches[0];
+        let col = |name: &str| {
+            batch
+                .column_by_name(name)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0)
+                .to_string()
+        };
+        assert_eq!(col("first_body"), "a", "first (earliest, ts=10) decoded");
+        assert_eq!(col("last_body"), "d", "last (latest, ts=40) decoded");
+    }
+
+    /// #1433: grouping by `body` must use the same decoded value the
+    /// projection returns, so a `table` result's group key text matches what
+    /// a `rows` result of the same field shows for the same log.
+    #[tokio::test]
+    async fn group_by_body_decodes_the_group_key() {
+        let svc = IrService::new(logs_body_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 5, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [
+                { "aggregate": { "by": ["body"], "aggs": [
+                    { "fn": "count", "as": "n" }
+                ] } }
+            ]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("logs table is registered");
+        let batches = df.collect().await.unwrap();
+        let mut keys: Vec<String> = batches
+            .iter()
+            .flat_map(|b| {
+                let col = b
+                    .column_by_name("body")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap();
+                (0..b.num_rows()).map(|i| col.value(i).to_string())
+            })
+            .collect();
+        keys.sort();
+        assert_eq!(
+            keys,
+            vec![
+                "a".to_string(),
+                "b".to_string(),
+                "c".to_string(),
+                "d".to_string()
+            ],
+            "group keys are the decoded text, not the raw quoted column"
         );
     }
 
