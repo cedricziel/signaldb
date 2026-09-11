@@ -568,11 +568,11 @@ redirect-based login the page asks `GET /ui/session`, which introspects the
 cookie without a tenant header (see
 [the authentication reference](authentication.md)).
 
-On an embedded deployment a query that fails as unauthenticated mid-session
-still opens the same card as a modal over the page you were on, with the
-hint "Your session has expired"; signing in there (by password, or by SSO
-with the current page as the redirect target) retries the queries in place.
-The OAuth consent screen reuses the card the same way.
+A query that fails as unauthenticated mid-session redirects to `/login`
+with the current page as the `?redirect=` target, rather than popping a
+dialog over it; signing in there (by password, or by SSO) lands back on
+that page. The OAuth consent screen redirects the same way on its own
+unauthenticated check.
 
 Any URL — including the site root (`/`) with `?tenant=&dataset=`
 attached — that doesn't match a known route redirects to `/logs`,
@@ -683,7 +683,7 @@ port, and TLS setting — honoring `[public]` in `signaldb.toml` — rather than
 guessing from the browser's own hostname; a callout above the snippets flags
 when `[public]` is unset and the reported URLs are localhost fallbacks. If
 the request itself fails, the page never falls back to a guessed snippet:
-a `401` hands over to the global sign-in dialog, a `403` shows that the
+a `401` redirects to `/login?redirect=...`, a `403` shows that the
 current tenant does not grant access to connection details (no retry, since
 retrying cannot change that), and any other failure — a `429`, a network
 error — shows an error message with a retry button. A verification section at the bottom shows ingestion status per
