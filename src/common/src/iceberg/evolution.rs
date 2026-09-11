@@ -96,6 +96,44 @@ pub fn resolve_label_columns(current: &Schema, keys: &[String]) -> Vec<(String, 
     resolved
 }
 
+/// [`resolve_label_columns`], but with `keys` sorted into a canonical order
+/// (by key string) first, so two callers resolving the same *set* of keys
+/// against schemas that don't yet carry any of them -- a brand-new table
+/// being built, or no live schema to consult at all -- agree on the same
+/// columns regardless of the order that set happens to be iterated in
+/// (config file order, `Vec` construction order, ...).
+///
+/// This is what makes reordering `[schema.materialized_labels]` -- a no-op
+/// edit under any reasonable reading of that config surface -- unable to
+/// silently reassign an already-colliding key to a different physical
+/// column (#1448). It does not protect a *set* change: a newly added or
+/// removed key can still shift assignments among the keys it collides
+/// with. Guarding against that needs the table's actual committed schema,
+/// which [`resolve_label_columns`] consults directly (via each column's
+/// origin-key `doc`) when a caller already holds one -- prefer calling it
+/// directly over this canonical variant whenever a live schema is
+/// available.
+pub fn resolve_label_columns_canonical(current: &Schema, keys: &[String]) -> Vec<(String, String)> {
+    let mut sorted = keys.to_vec();
+    sorted.sort();
+    resolve_label_columns(current, &sorted)
+}
+
+/// [`resolve_label_columns_canonical`] against an empty schema, for a
+/// caller with no table to consult at all: the writer's Flight ingest hot
+/// path resolves and materializes label columns before a batch is even
+/// written to WAL, deliberately decoupled from any catalog round trip (see
+/// `flight_iceberg.rs`'s module doc) -- so table creation
+/// (`ResolvedSchema::build_iceberg_schema`) and this hot path are the two
+/// canonical-resolution callers that agree with each other as long as the
+/// configured key *set* hasn't changed since the table was created; an
+/// existing table gains a genuinely new key's column only through
+/// [`add_label_columns`], which resolves against that table's real schema.
+pub fn resolve_label_columns_fresh(keys: &[String]) -> Vec<(String, String)> {
+    let empty = Schema::from_struct_type(StructType::new(Vec::new()), 0, None);
+    resolve_label_columns_canonical(&empty, keys)
+}
+
 /// The highest field id used anywhere in the schema tree: top-level
 /// fields plus nested struct fields, list element ids, and map key/value
 /// ids. New columns must continue from this id — nested ids are allocated
@@ -1000,6 +1038,51 @@ mod tests {
         );
 
         Ok(())
+    }
+
+    #[test]
+    fn resolve_label_columns_fresh_is_independent_of_input_order() {
+        // Reordering the configured list (a no-op edit under any reasonable
+        // reading of `[schema.materialized_labels]`) must never reassign an
+        // already-colliding key to a different physical column (#1448
+        // Critical #1).
+        let forward = vec!["http.method".to_string(), "http_method".to_string()];
+        let reversed = vec!["http_method".to_string(), "http.method".to_string()];
+
+        let mut resolved_forward = resolve_label_columns_fresh(&forward);
+        let mut resolved_reversed = resolve_label_columns_fresh(&reversed);
+        resolved_forward.sort();
+        resolved_reversed.sort();
+
+        assert_eq!(resolved_forward, resolved_reversed);
+        assert_eq!(
+            resolved_forward,
+            vec![
+                ("http.method".to_string(), "label_http_method".to_string()),
+                ("http_method".to_string(), "label_http_method_2".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_label_columns_fresh_handles_a_three_way_collision() {
+        // Three distinct keys sanitizing to the same candidate name each get
+        // their own distinct column, assigned in canonical (sorted) order
+        // regardless of input order -- '-' < '.' < '_' in ASCII, so
+        // `http-method` claims the unsuffixed candidate.
+        let keys = vec![
+            "http_method".to_string(),
+            "http.method".to_string(),
+            "http-method".to_string(),
+        ];
+        assert_eq!(
+            resolve_label_columns_fresh(&keys),
+            vec![
+                ("http-method".to_string(), "label_http_method".to_string()),
+                ("http.method".to_string(), "label_http_method_2".to_string()),
+                ("http_method".to_string(), "label_http_method_3".to_string()),
+            ]
+        );
     }
 
     #[tokio::test]

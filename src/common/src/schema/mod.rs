@@ -2,6 +2,7 @@ use crate::config::Configuration;
 use crate::iceberg::{create_object_store_builder_from_config, create_sql_catalog_with_builder};
 use anyhow::Result;
 use iceberg_rust::catalog::Catalog as IcebergCatalog;
+use iceberg_rust::spec::schema::Schema as IcebergSchema;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -135,7 +136,7 @@ pub fn bloom_filter_properties_for_trace_columns() -> Vec<(String, String)> {
 }
 
 /// Assembles every Parquet bloom-filter table property for a table's
-/// columns, dispatching by table type and its materialized labels.
+/// columns, dispatching by table type and its already-built `schema`.
 ///
 /// [`schemas::TableSchema::Logs`] gets a filter over the derived
 /// `attr_tokens` column (for `key=value` containment checks) in addition to
@@ -146,9 +147,9 @@ pub fn bloom_filter_properties_for_trace_columns() -> Vec<(String, String)> {
 /// only the materialized-label filters.
 pub fn bloom_filter_properties_for_table(
     table_schema: &crate::iceberg::schemas::TableSchema,
-    materialized_labels: &[String],
+    schema: &IcebergSchema,
 ) -> Vec<(String, String)> {
-    let mut properties = bloom_filter_properties_for_labels(materialized_labels);
+    let mut properties = bloom_filter_properties_for_labels(schema);
 
     if matches!(table_schema, crate::iceberg::schemas::TableSchema::Logs) {
         properties.push(bloom_filter_property_for_attr_tokens());
@@ -186,32 +187,44 @@ pub fn compression_properties() -> Vec<(String, String)> {
     ]
 }
 
-/// Per-column Parquet bloom-filter table properties for a set of
-/// materialized attribute labels.
+/// Per-column Parquet bloom-filter table properties for `schema`'s
+/// materialized label columns.
 ///
-/// For each label key this yields
+/// For each column carrying a materialized-label `doc` (see
+/// [`crate::iceberg::evolution::origin_key_of`]) this yields
 /// `write.parquet.bloom-filter-enabled.column.label_<key> = "true"`, the
 /// standard Iceberg property the pinned iceberg-rust Parquet writer honors
-/// per column. Column names come from [`materialized_column_name`], so the
-/// properties always target the promoted `label_<key>` columns. Duplicate
-/// labels (after sanitization) collapse to a single property.
+/// per column.
 ///
-/// Shared by table creation and the compactor's attribute-promotion path,
-/// so both set identical properties for a promoted label.
-pub fn bloom_filter_properties_for_labels(labels: &[String]) -> Vec<(String, String)> {
+/// Reads the columns back from `schema` itself rather than independently
+/// re-resolving them from a raw key list: `schema` is built by
+/// [`crate::schema_parser::ResolvedSchema::build_iceberg_schema`], which
+/// seeds its resolution from the table's own base fields (so a label
+/// colliding with a base column is suffixed, not dropped). A caller with
+/// only the key list, not the schema `build_iceberg_schema` actually
+/// produced from it, cannot always reproduce that seeding and would risk
+/// targeting a bloom filter at the wrong column under a base-column
+/// collision (#1448) -- reading the columns back removes that divergence
+/// entirely rather than keeping two resolutions in sync by convention.
+///
+/// Called at table creation only today (the compactor's attribute-promotion
+/// path does not yet set bloom-filter properties for the columns it
+/// evolves, tracked as #731).
+pub fn bloom_filter_properties_for_labels(schema: &IcebergSchema) -> Vec<(String, String)> {
     use iceberg_rust::spec::table_metadata::WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX;
 
-    let mut seen = std::collections::HashSet::new();
-    labels
+    schema
+        .fields()
         .iter()
-        .filter_map(|label| {
-            let column = materialized_column_name(label);
-            seen.insert(column.clone()).then(|| {
-                (
-                    format!("{WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX}{column}"),
-                    "true".to_string(),
-                )
-            })
+        .filter(|field| crate::iceberg::evolution::origin_key_of(field.doc.as_deref()).is_some())
+        .map(|field| {
+            (
+                format!(
+                    "{WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX}{}",
+                    field.name
+                ),
+                "true".to_string(),
+            )
         })
         .collect()
 }
@@ -608,7 +621,10 @@ mod tests {
     fn logs_and_traces_get_trace_columns_but_only_logs_gets_attr_tokens() {
         use crate::iceberg::schemas::TableSchema;
 
-        let logs = bloom_filter_properties_for_table(&TableSchema::Logs, &[]);
+        let logs = bloom_filter_properties_for_table(
+            &TableSchema::Logs,
+            &TableSchema::Logs.schema().unwrap(),
+        );
         for column in BLOOM_FILTER_TRACE_COLUMNS {
             assert!(
                 logs.contains(&(
@@ -624,7 +640,10 @@ mod tests {
             "logs must keep its attr_tokens filter"
         );
 
-        let traces = bloom_filter_properties_for_table(&TableSchema::Traces, &[]);
+        let traces = bloom_filter_properties_for_table(
+            &TableSchema::Traces,
+            &TableSchema::Traces.schema().unwrap(),
+        );
         for column in BLOOM_FILTER_TRACE_COLUMNS {
             assert!(
                 traces.contains(&(
@@ -646,7 +665,13 @@ mod tests {
     fn a_metrics_table_gets_no_bloom_filter_properties() {
         use crate::iceberg::schemas::TableSchema;
 
-        assert!(bloom_filter_properties_for_table(&TableSchema::MetricsGauge, &[]).is_empty());
+        assert!(
+            bloom_filter_properties_for_table(
+                &TableSchema::MetricsGauge,
+                &TableSchema::MetricsGauge.schema().unwrap()
+            )
+            .is_empty()
+        );
     }
 
     /// The writer wrote zstd level 1 while table metadata claimed level 3. Now
@@ -727,6 +752,88 @@ mod tests {
         );
     }
 
+    /// Builds the `Schema` [`bloom_filter_properties_for_labels`] reads back
+    /// from -- a minimal base schema with `labels` appended the same way
+    /// [`crate::schema_parser::ResolvedSchema::build_iceberg_schema`] does,
+    /// so these tests exercise the real doc-tagging, not a hand-rolled
+    /// stand-in for it.
+    fn schema_with_labels(labels: &[String]) -> IcebergSchema {
+        use crate::schema::schema_parser::{ResolvedField, ResolvedSchema};
+
+        let base = ResolvedSchema {
+            version: "test-only".to_string(),
+            description: "fixture".to_string(),
+            fields: vec![ResolvedField {
+                name: "timestamp".to_string(),
+                field_type: "timestamp_ns".to_string(),
+                required: true,
+                computed: None,
+                physical_only: false,
+                field_id: 1,
+            }],
+            partition_by: vec![],
+        };
+        base.to_iceberg_schema_with_labels(labels).unwrap()
+    }
+
+    #[test]
+    fn bloom_filter_properties_target_the_schemas_actual_suffixed_column_under_a_base_collision() {
+        // A label whose candidate name collides with a base column gets
+        // suffixed at schema creation (#1448). The bloom filter must follow
+        // that suffixed column -- reading it back from the schema itself,
+        // rather than independently re-resolving from the raw key list
+        // against an empty (base-blind) schema, is what guarantees this: an
+        // empty-seeded resolution has no way to know the base collision
+        // happened at all, and would target the wrong (unsuffixed) name.
+        use crate::schema::schema_parser::{ResolvedField, ResolvedSchema};
+
+        let base = ResolvedSchema {
+            version: "test-only".to_string(),
+            description: "fixture".to_string(),
+            fields: vec![ResolvedField {
+                name: "label_namespace".to_string(),
+                field_type: "string".to_string(),
+                required: false,
+                computed: None,
+                physical_only: false,
+                field_id: 1,
+            }],
+            partition_by: vec![],
+        };
+        let labels = vec!["namespace".to_string()];
+        let schema = base.to_iceberg_schema_with_labels(&labels).unwrap();
+
+        assert_eq!(
+            bloom_filter_properties_for_labels(&schema),
+            vec![(
+                "write.parquet.bloom-filter-enabled.column.label_namespace_2".to_string(),
+                "true".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn bloom_filter_properties_for_labels_gives_colliding_keys_distinct_properties() {
+        // `http.method` and `http_method` sanitize to the same candidate
+        // column name; both must get their own bloom-filter property, not
+        // just the first (#1448).
+        let labels = vec!["http.method".to_string(), "http_method".to_string()];
+        let properties = bloom_filter_properties_for_labels(&schema_with_labels(&labels));
+        assert_eq!(
+            properties,
+            vec![
+                (
+                    "write.parquet.bloom-filter-enabled.column.label_http_method".to_string(),
+                    "true".to_string()
+                ),
+                (
+                    "write.parquet.bloom-filter-enabled.column.label_http_method_2".to_string(),
+                    "true".to_string()
+                ),
+            ]
+        );
+    }
+
     #[test]
     fn attr_tokens_bloom_property_targets_the_list_leaf() {
         assert_eq!(
@@ -772,23 +879,28 @@ mod tests {
         let labels = vec![
             "namespace".to_string(),
             "http.method".to_string(),
-            // Sanitizes to the same column as `http.method` → collapsed.
+            // Sanitizes to the same candidate name as `http.method` — gets
+            // its own suffixed column and property, not collapsed (#1448).
             "http_method".to_string(),
         ];
         assert_eq!(
-            bloom_filter_properties_for_labels(&labels),
+            bloom_filter_properties_for_labels(&schema_with_labels(&labels)),
             vec![
-                (
-                    "write.parquet.bloom-filter-enabled.column.label_namespace".to_string(),
-                    "true".to_string()
-                ),
                 (
                     "write.parquet.bloom-filter-enabled.column.label_http_method".to_string(),
                     "true".to_string()
                 ),
+                (
+                    "write.parquet.bloom-filter-enabled.column.label_http_method_2".to_string(),
+                    "true".to_string()
+                ),
+                (
+                    "write.parquet.bloom-filter-enabled.column.label_namespace".to_string(),
+                    "true".to_string()
+                ),
             ]
         );
-        assert!(bloom_filter_properties_for_labels(&[]).is_empty());
+        assert!(bloom_filter_properties_for_labels(&schema_with_labels(&[])).is_empty());
     }
 
     #[test]

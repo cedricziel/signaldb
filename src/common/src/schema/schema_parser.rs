@@ -289,9 +289,12 @@ impl ResolvedSchema {
 
     /// Convert to an Iceberg Schema, appending an optional `label_<key>`
     /// column for each materialized attribute label (see
-    /// [`crate::schema::materialized_column_name`]). Duplicate or
-    /// base-column-colliding labels are skipped, and field IDs continue
-    /// after the base columns.
+    /// [`crate::schema::materialized_column_name`]). A label colliding with
+    /// a base column, or with another label's candidate name, is suffixed
+    /// (`_2`, `_3`, ...) rather than skipped or merged -- see
+    /// `common::iceberg::evolution::resolve_label_columns_canonical`. An
+    /// exact-duplicate label still collapses to its first assignment.
+    /// Field IDs continue after the base columns.
     pub fn to_iceberg_schema_with_labels(&self, labels: &[String]) -> Result<Schema> {
         self.build_iceberg_schema(labels, false)
     }
@@ -383,22 +386,40 @@ impl ResolvedSchema {
 
         // Append materialized-label columns after the base fields. They are
         // always optional strings (a row may not carry the attribute).
+        //
+        // Resolved through the same doc-authoritative mechanism
+        // `add_label_columns` uses to evolve an *existing* table (#814),
+        // applied here to the brand-new table this schema becomes: a
+        // `Schema` of just the base fields built so far seeds the
+        // collision-avoidance set, so a label whose candidate name collides
+        // with a base column is suffixed rather than silently dropped, and
+        // `doc` records each column's origin key the same way evolution
+        // does, so `column_for_key` resolves against a freshly created
+        // table exactly as it would against one evolved after the fact.
+        // The canonical (sorted) key order makes the assignment depend only
+        // on the *set* of configured keys, not on the order they appear in
+        // `[schema.materialized_labels]` -- reordering that config, a no-op
+        // edit under any reasonable reading of it, can never reassign an
+        // already-colliding key to a different column (#1448). The write
+        // path shares this same resolution (see
+        // `common::iceberg::evolution::resolve_label_columns_fresh`).
         let mut next_id = next_nested_id;
-        for label in labels {
-            let name = crate::schema::materialized_column_name(label);
-            if fields.iter().any(|f| f.name == name) {
-                continue; // collides with a base column or an earlier label
+        if !labels.is_empty() {
+            let base_schema = Schema::from_struct_type(StructType::new(fields.clone()), 0, None);
+            for (label, name) in
+                crate::iceberg::evolution::resolve_label_columns_canonical(&base_schema, labels)
+            {
+                fields.push(StructField {
+                    id: next_id,
+                    name,
+                    required: false,
+                    field_type: Type::Primitive(PrimitiveType::String),
+                    doc: Some(crate::iceberg::evolution::label_doc(&label)),
+                    initial_default: None,
+                    write_default: None,
+                });
+                next_id += 1;
             }
-            fields.push(StructField {
-                id: next_id,
-                name,
-                required: false,
-                field_type: Type::Primitive(PrimitiveType::String),
-                doc: Some(format!("Materialized attribute label '{label}'")),
-                initial_default: None,
-                write_default: None,
-            });
-            next_id += 1;
         }
 
         // Derived `key=value` token column: an optional List<String> whose
@@ -511,6 +532,142 @@ mod tests {
             .unwrap();
         assert!(!ns.required);
         assert_eq!(ns.field_type, Type::Primitive(PrimitiveType::String));
+    }
+
+    #[test]
+    fn colliding_label_keys_get_distinct_columns_not_dropped() {
+        // `http.method` and `http_method` sanitize to the same candidate
+        // column name; both must be materialized, in distinct columns
+        // (#1448) -- the second key must never be silently dropped.
+        let base = ResolvedSchema {
+            version: "v1".to_string(),
+            description: "test".to_string(),
+            fields: vec![ResolvedField {
+                name: "timestamp".to_string(),
+                field_type: "timestamp_ns".to_string(),
+                required: true,
+                computed: None,
+                physical_only: false,
+                field_id: 1,
+            }],
+            partition_by: vec![],
+        };
+
+        let labels = vec!["http.method".to_string(), "http_method".to_string()];
+        let s = base.to_iceberg_schema_with_labels(&labels).unwrap();
+        let names: Vec<String> = s.fields().iter().map(|f| f.name.clone()).collect();
+        assert!(
+            names.contains(&"label_http_method".to_string()),
+            "expected label_http_method in {names:?}"
+        );
+        assert!(
+            names.contains(&"label_http_method_2".to_string()),
+            "http_method must get its own distinct column, got {names:?}"
+        );
+
+        // The compactor's evolution-path backfill (#814) trusts each
+        // column's `doc` as the authoritative origin-key record, not the
+        // column name -- a table created by this path must stamp it the
+        // same way `add_label_columns` does.
+        let first = s
+            .fields()
+            .iter()
+            .find(|f| f.name == "label_http_method")
+            .unwrap();
+        let second = s
+            .fields()
+            .iter()
+            .find(|f| f.name == "label_http_method_2")
+            .unwrap();
+        assert_eq!(
+            crate::iceberg::evolution::origin_key_of(first.doc.as_deref()),
+            Some("http.method")
+        );
+        assert_eq!(
+            crate::iceberg::evolution::origin_key_of(second.doc.as_deref()),
+            Some("http_method")
+        );
+    }
+
+    #[test]
+    fn three_way_collision_gets_three_distinct_columns() {
+        // Three distinct keys that all sanitize to the same candidate name
+        // each get their own column; none is silently dropped (#1448).
+        let base = ResolvedSchema {
+            version: "v1".to_string(),
+            description: "test".to_string(),
+            fields: vec![ResolvedField {
+                name: "timestamp".to_string(),
+                field_type: "timestamp_ns".to_string(),
+                required: true,
+                computed: None,
+                physical_only: false,
+                field_id: 1,
+            }],
+            partition_by: vec![],
+        };
+
+        let labels = vec![
+            "http_method".to_string(),
+            "http.method".to_string(),
+            "http-method".to_string(),
+        ];
+        let s = base.to_iceberg_schema_with_labels(&labels).unwrap();
+        let names: Vec<String> = s.fields().iter().map(|f| f.name.clone()).collect();
+        for expected in [
+            "label_http_method",
+            "label_http_method_2",
+            "label_http_method_3",
+        ] {
+            assert!(
+                names.contains(&expected.to_string()),
+                "expected {expected} in {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn label_colliding_with_a_base_column_name_is_suffixed_not_dropped() {
+        // A configured label whose sanitized candidate happens to match a
+        // real base column name is vanishingly unlikely in practice (no
+        // built-in schema column is named `label_<anything>`), but must
+        // still be handled by suffixing rather than silently dropping the
+        // label's values -- the same "never drop, always suffix" guarantee
+        // as a label-vs-label collision (#1448 Important #5).
+        let base = ResolvedSchema {
+            version: "v1".to_string(),
+            description: "test".to_string(),
+            fields: vec![ResolvedField {
+                name: "label_namespace".to_string(),
+                field_type: "string".to_string(),
+                required: false,
+                computed: None,
+                physical_only: false,
+                field_id: 1,
+            }],
+            partition_by: vec![],
+        };
+
+        let labels = vec!["namespace".to_string()];
+        let s = base.to_iceberg_schema_with_labels(&labels).unwrap();
+        let names: Vec<String> = s.fields().iter().map(|f| f.name.clone()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "label_namespace".to_string(),
+                "label_namespace_2".to_string()
+            ],
+            "the label must be suffixed past the base column, not dropped: {names:?}"
+        );
+        let promoted = s
+            .fields()
+            .iter()
+            .find(|f| f.name == "label_namespace_2")
+            .unwrap();
+        assert_eq!(
+            crate::iceberg::evolution::origin_key_of(promoted.doc.as_deref()),
+            Some("namespace")
+        );
     }
 
     #[test]
