@@ -157,7 +157,15 @@ fn line_filter_expr(f: &LineFilter) -> Result<Expr, QuerierError> {
             "ip() line filter is not supported yet".to_string(),
         ));
     }
-    let body = col("body");
+    // `body` is JSON-encoded at rest (issue #1410): decode it the same way
+    // `super::ir_planner::lower_leaf` now does for `contains`/`regex` on
+    // `body` (issue #1433), so a plain-string line filter compares against
+    // the actual log text instead of the raw, quote-wrapped column — and so
+    // this fallback path keeps agreeing with the IR-first path a line
+    // filter actually takes in production (`ql_ir::logql_lower::line_filter`
+    // lowers to the identical `Leaf{field:"body", op:Contains}` the IR
+    // planner already decodes).
+    let body = super::ir_planner::body_decode_expr("body");
     Ok(match f.op {
         LineFilterOp::Contains => contains(body, lit(f.value.clone())),
         LineFilterOp::NotContains => not(contains(body, lit(f.value.clone()))),
@@ -663,24 +671,80 @@ mod tests {
         );
     }
 
+    // #1433: a line filter matches the *decoded* `body` text (`body` is
+    // JSON-encoded at rest, issue #1410) — `ir_body_decode(body)`, not the
+    // raw column, mirroring `ir_planner::lower_leaf`'s `contains`/`regex`
+    // handling of `body` so this fallback path agrees with the IR-first one.
     #[test]
     fn line_filters() {
         assert_eq!(
             sql(r#"{service_name="s"} |= "boom""#),
-            r#"service_name = Utf8("s") AND contains(body, Utf8("boom"))"#
+            r#"service_name = Utf8("s") AND contains(ir_body_decode(body), Utf8("boom"))"#
         );
         assert_eq!(
             sql(r#"{service_name="s"} != "x""#),
-            r#"service_name = Utf8("s") AND NOT contains(body, Utf8("x"))"#
+            r#"service_name = Utf8("s") AND NOT contains(ir_body_decode(body), Utf8("x"))"#
         );
         assert_eq!(
             sql(r#"{service_name="s"} |~ "e.*r""#),
-            r#"service_name = Utf8("s") AND regexp_like(body, Utf8("e.*r"))"#
+            r#"service_name = Utf8("s") AND regexp_like(ir_body_decode(body), Utf8("e.*r"))"#
         );
         assert_eq!(
             sql(r#"{service_name="s"} !~ "e.*r""#),
-            r#"service_name = Utf8("s") AND NOT regexp_like(body, Utf8("e.*r"))"#
+            r#"service_name = Utf8("s") AND NOT regexp_like(ir_body_decode(body), Utf8("e.*r"))"#
         );
+    }
+
+    /// #1433 review: a plan-string assertion alone can't catch an
+    /// encode/decode mismatch between `encode_log_body` (used at ingest) and
+    /// `ir_body_decode` (used here) — both sides of a real mismatch would
+    /// still render as `regexp_like(ir_body_decode(body), ...)`. Execute the
+    /// lowered filter over a fixture whose `body` column is JSON-encoded the
+    /// way ingest actually encodes it (`serde_json::to_string`, issue
+    /// #1410), not `differential.rs`'s bare (non-JSON) bodies, and use an
+    /// anchored pattern (`^boom`) so a decode failure changes the row
+    /// count rather than passing by luck the way an unanchored `contains`
+    /// can (the raw column's leading `"` would defeat the anchor but not a
+    /// substring search).
+    #[tokio::test]
+    async fn line_filter_matches_the_decoded_body_over_an_ingest_encoded_fixture() {
+        use datafusion::arrow::array::{RecordBatch, StringArray};
+        use datafusion::arrow::datatypes::{Field, Schema};
+        use datafusion::catalog::MemTable;
+        use datafusion::prelude::SessionContext;
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("service_name", DataType::Utf8, true),
+            Field::new("body", DataType::Utf8, true),
+        ]));
+        let encode = |s: &str| serde_json::to_string(s).unwrap();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["s", "s"])),
+                Arc::new(StringArray::from(vec![
+                    Some(encode("boom today")),
+                    Some(encode("all fine, no boom")),
+                ])),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        ctx.register_table("logs", Arc::new(table)).unwrap();
+        let df = ctx.table("logs").await.unwrap();
+
+        let q = parse_query(r#"{service_name="s"} |~ "^boom""#).expect("parse");
+        let expr = log_query_filter_with_columns(&q, &AttrContext::default())
+            .expect("lower")
+            .expect("some filter");
+        let batches = df.filter(expr).unwrap().collect().await.unwrap();
+        let count: usize = batches.iter().map(|b| b.num_rows()).sum();
+        // Exactly the row whose *decoded* text starts with "boom" — the
+        // other row contains "boom" too, so an unanchored search alone
+        // wouldn't distinguish a working decode from a broken one.
+        assert_eq!(count, 1);
     }
 
     #[test]
@@ -703,7 +767,7 @@ mod tests {
     fn full_query_folds_left_associatively() {
         assert_eq!(
             sql(r#"{service_name="api", env="prod"} |= "error""#),
-            r#"service_name = Utf8("api") AND (contains(log_attributes, Utf8(""env":"prod"")) OR contains(resource_attributes, Utf8(""env":"prod""))) AND contains(body, Utf8("error"))"#
+            r#"service_name = Utf8("api") AND (contains(log_attributes, Utf8(""env":"prod"")) OR contains(resource_attributes, Utf8(""env":"prod""))) AND contains(ir_body_decode(body), Utf8("error"))"#
         );
     }
 
