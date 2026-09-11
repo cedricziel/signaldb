@@ -149,18 +149,25 @@ The Querier registers per-dataset object stores with DataFusion's runtime enviro
 
 ### Catalog Configuration
 
-The Iceberg metadata catalog is a SQLite-backed `SqlCatalog` (from `iceberg-sql-catalog`) named `"signaldb"`. It is configured via:
+The Iceberg metadata catalog is a `SqlCatalog` (from `iceberg-sql-catalog`, built on sqlx's `Any` driver) named `"signaldb"`. It accepts either a SQLite or a PostgreSQL URI, configured via:
 
 ```toml
 [schema]
 catalog_type = "sql"
 catalog_uri = "sqlite::memory:"          # In-memory (default, for dev/testing)
-# catalog_uri = "sqlite:///.data/catalog.db"  # Persistent (recommended for production)
+# catalog_uri = "sqlite:///.data/catalog.db"        # Persistent, single-node
+# catalog_uri = "postgres://user:pass@host/dbname"  # Distributed: shared, CAS-capable catalog
 ```
 
-> **Limitation**: Only SQLite is supported for the Iceberg catalog. PostgreSQL URIs are rejected. This is distinct from the service discovery catalog which supports both SQLite and PostgreSQL.
+PostgreSQL is required, not merely preferred, once writer, querier, and compactor run as separate processes committing against the same catalog: the compare-and-swap that the catalog's commit path relies on (`swap_metadata_location`) needs a database that actually serializes concurrent writers, and a SQLite file on shared/network storage does not guarantee that -- it is a single-node and dev/test option only, not a supported multi-process backend. No extensions or manual schema setup are required on PostgreSQL -- the catalog creates its own `iceberg_tables` and `iceberg_namespace_properties` tables (`create table if not exists`) the first time it connects, the same as it does for SQLite.
 
-Every connection the Iceberg catalog's pool opens gets three pragmas, set in two places:
+That `create table if not exists` runs in the pool's `after_connect` hook on _every_ new pooled connection, not only on the very first one -- and PostgreSQL's `IF NOT EXISTS` is not itself a lock against a concurrent `CREATE TABLE` of the same name (two sessions can both pass the existence check before either commits, then one loses a unique-constraint race on `pg_class`). Against a fresh PostgreSQL catalog, writer, querier, and compactor cold-starting at once each open a first connection and race this DDL, so an occasional "relation already exists" (or similar) failure on a process's very first catalog call is expected and transient there, not a sign of a broken catalog -- but each process's actual recovery path differs, and only two of the three retry automatically in-process:
+
+- **Writer**: `CatalogManager::new` only builds the lazy pool, so a losing race there doesn't fail startup. `start_table_reconciler`'s later passes (`[writer].table_reconcile_interval`, disabled at `0`) retry the same catalog access and converge once the table exists.
+- **Compactor**: retries across its lifecycle cycles the same way.
+- **Querier**: `QuerierFlightService::new_with_catalog_manager` makes its first catalog call (`list_active_tenants`) as part of construction and propagates a failure with `?`, so a losing race here fails querier startup outright -- there is no in-process retry. Recovery is a process restart (the orchestrator's normal restart-on-failure policy) or a manual retry, not a retry loop internal to the querier.
+
+Every connection the Iceberg catalog's pool opens for a SQLite URI gets three pragmas, set in two places (none of these apply to PostgreSQL -- `journal_mode`/`busy_timeout`/`synchronous` are SQLite-only concepts, and PostgreSQL connections get no extra session statements):
 
 | Pragma                 | Set by                                                                        | Why                                                                                                                                                                                                                                                                                      |
 | ---------------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -170,7 +177,7 @@ Every connection the Iceberg catalog's pool opens gets three pragmas, set in two
 
 Together these match what the service discovery catalog (`src/common/src/catalog.rs`) sets. Pragmas cannot be carried on the DSN — sqlx's SQLite URL parser rejects them as query parameters — so they have to be set on the connection; SignalDB reaches them through the catalog's session-statement support ([#386](https://github.com/JanKaul/iceberg-rust/pull/386)). Session statements run _after_ the catalog's own, so SignalDB could override a default if it ever needed to; today it only adds.
 
-The pool connects lazily, so the pragmas are applied on first use rather than at construction. Nothing touches the database in between.
+The pool connects lazily, so the pragmas (and, for PostgreSQL, the first real connection and table creation) are applied on first use rather than at construction. Nothing touches the database in between.
 
 ### Metadata retention
 

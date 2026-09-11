@@ -46,7 +46,7 @@ Write-Ahead Logging ensures data persistence and crash recovery:
 SignalDB maintains two distinct catalog systems:
 
 - **Service Catalog** (`Catalog`): PostgreSQL or SQLite-backed registry for service discovery, tenant management, API keys, and datasets. Used by `ServiceBootstrap` for heartbeat-based registration. At monolith startup, config tenants are synced into it; if no tenants exist at all, a `default` tenant is auto-provisioned and its API key printed once (`common::bootstrap`). The router and monolith also run `Catalog::backfill_default_datasets` at boot, which materializes a `datasets` row for any tenant naming a `default_dataset` without one — a state tenant creation no longer produces, but that older deployments carry, and one that fails authentication closed (#1066). It is a no-op once converged.
-- **Iceberg Catalog** (`CatalogManager`): SQL catalog named `"signaldb"` for Iceberg table metadata (schemas, snapshots, manifests). Only SQLite URIs are accepted (file-backed or in-memory; PostgreSQL is rejected -- see `create_sql_catalog_with_builder` in `src/common/src/iceberg/mod.rs`). Shared across all services via `Arc<dyn IcebergCatalog>`.
+- **Iceberg Catalog** (`CatalogManager`): SQL catalog named `"signaldb"` for Iceberg table metadata (schemas, snapshots, manifests). Accepts SQLite (`sqlite://`, `sqlite:file:`, file-backed or in-memory) or PostgreSQL (`postgres://`, `postgresql://`) URIs -- see `create_sql_catalog_with_builder` in `src/common/src/iceberg/mod.rs`. PostgreSQL is the CAS-capable choice for a distributed deployment where writer, querier, and compactor all commit against the same catalog; SQLite is single-node (a SQLite file on shared storage does not give the same compare-and-swap guarantee). Shared across all services via `Arc<dyn IcebergCatalog>`.
 
 ### 4. Apache Iceberg Table Format
 
@@ -118,7 +118,7 @@ flowchart LR
     Writer -->|"append (v2 schema)"| WWal[("Writer WAL")]
     WWal -->|"WalProcessor (5s loop, backoff on failure)"| Iceberg["Iceberg commit"]
     Iceberg --> Store[("Object store (Parquet)")]
-    Iceberg --> Cat[("Iceberg catalog (SQLite)")]
+    Iceberg --> Cat[("Iceberg catalog (SQLite/PostgreSQL)")]
 ```
 
 Query path:
@@ -127,7 +127,7 @@ Query path:
 flowchart LR
     Client["Tempo API client"] -->|"HTTP :3000"| Router["Router :3000 / :50053"]
     Router -->|"Flight do_get"| Querier["Querier :50054"]
-    Querier -->|"table metadata"| Cat[("Iceberg catalog (SQLite)")]
+    Querier -->|"table metadata"| Cat[("Iceberg catalog (SQLite/PostgreSQL)")]
     Querier -->|"DataFusion scan"| Store[("Object store (Parquet)")]
     Router -->|"JSON (Tempo format)"| Client
 ```
