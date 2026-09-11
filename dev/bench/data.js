@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789013819533,
+  "lastUpdate": 1789100615701,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -6583,6 +6583,334 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 1071290,
             "range": "± 10152",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cedric Ziel",
+            "username": "cedricziel",
+            "email": "mail@cedric-ziel.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "563199f9785f16bb70b29d8861437e6af3deb490",
+          "message": "fix(wal): add signaldb wal dead-letter replay/list/purge (#1528)\n\n* fix(common): do not count a failed dead-letter deletion as reclaimed\n\nCodeRabbit (PR #1525): if remove_file failed on a marker or payload,\nsweep_expired_at still incremented deleted_entries/freed_bytes and\ndropped the entry from remaining -- the gauge and the sweep's own\nINFO log could claim space that was still on disk. purge had the\nsame shape of bug. Both now only count an entry as deleted once\nevery one of its files is actually gone; a partial failure keeps the\nentry in remaining (sweep) or simply does not count it (purge), so a\nlater pass still sees and retries it.\n\nCovered by two new tests that make the dead-letter directory\nread-only so remove_file fails with a permission error rather than\nNotFound, verifying the failure path concretely either way (some CI\ncontainers run as root, where Unix permission bits are bypassed).\n\nClaude-Session: https://claude.ai/code/session_01DvzHNqpusVgyuBBww66W49\n\n* fix(writer): keep dead-letter reconciliation out of forced flushes\n\nCodeRabbit (PR #1525): reconcile_all lived inside drain_pending, but\nforce_commit_pending calls drain_pending in a loop under\nFLUSH_TIMEOUT -- an unrelated dead-letter directory scan on every\nloop iteration could spend a scoped, time-bounded flush's budget on\nwork the caller never asked for. Move the call to\nprocess_pending_entries, after drain_pending returns, alongside the\nother end-of-cycle sweeps (cleanup_all_if_due,\nretire_stale_markers_if_due) that are already scoped there for the\nsame reason. Background drain cycles still reconcile every pass;\nforced flushes stay scoped to what was requested.\n\nClaude-Session: https://claude.ai/code/session_01DvzHNqpusVgyuBBww66W49\n\n* docs(wal): fix dead_letter_retention note and artifact count wording\n\nCodeRabbit (PR #1525): the \"[wal] settings that affect runtime\nbehavior today\" note omitted dead_letter_retention, which\nreconcile_all reads and enforces. The find command under \"dead\nlettered entries\" counts files, not entries -- a rejected pair is a\n.bin plus a .rejected.json marker, and *.corrupt.bin quarantine\nfiles are also swept up -- so it over-counts relative to\nsignaldb.wal.dead_letter_entries. Relabeled it \"dead-letter\nartifacts\" and pointed at the gauge for the true per-entry count.\n\nClaude-Session: https://claude.ai/code/session_01DvzHNqpusVgyuBBww66W49",
+          "timestamp": "2026-09-10T19:50:27Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/563199f9785f16bb70b29d8861437e6af3deb490"
+        },
+        "date": 1789100613169,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 1633563,
+            "range": "± 21716",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 980669,
+            "range": "± 2847",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 545704,
+            "range": "± 1941",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 1313175,
+            "range": "± 8926",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 672124,
+            "range": "± 9118",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 1741522,
+            "range": "± 9839",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 1184073,
+            "range": "± 5669",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.0MB",
+            "value": 1139825,
+            "range": "± 45295",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.4MB",
+            "value": 2096359,
+            "range": "± 41894",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_3.5MB",
+            "value": 10782868,
+            "range": "± 208726",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_37.4MB",
+            "value": 97543592,
+            "range": "± 4228526",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 3387747,
+            "range": "± 52600",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 6888142,
+            "range": "± 108290",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 12795366,
+            "range": "± 212815",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 25089471,
+            "range": "± 494697",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 710652,
+            "range": "± 4161",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 1916042,
+            "range": "± 20223",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 2733907,
+            "range": "± 34792",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 5334182,
+            "range": "± 110731",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/1000",
+            "value": 50554,
+            "range": "± 161",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/1000",
+            "value": 80024,
+            "range": "± 298",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/10000",
+            "value": 447071,
+            "range": "± 2607",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/10000",
+            "value": 894999,
+            "range": "± 4091",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/100000",
+            "value": 13101633,
+            "range": "± 1225980",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/100000",
+            "value": 25753859,
+            "range": "± 428539",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 1133379,
+            "range": "± 17900",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 17393593,
+            "range": "± 337717",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 24683370,
+            "range": "± 817434",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 22763328,
+            "range": "± 527123",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 22704830,
+            "range": "± 136321",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 22464023,
+            "range": "± 84508",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 5399656,
+            "range": "± 168798",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 13048512,
+            "range": "± 54017",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 23122596,
+            "range": "± 589663",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested",
+            "value": 8193220,
+            "range": "± 142252",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested_split_off",
+            "value": 8121113,
+            "range": "± 146548",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/unattested",
+            "value": 7938069,
+            "range": "± 66519",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested",
+            "value": 7072393,
+            "range": "± 42630",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested_split_off",
+            "value": 7209498,
+            "range": "± 40225",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/unattested",
+            "value": 7784779,
+            "range": "± 35762",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested",
+            "value": 12571306,
+            "range": "± 190511",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested_split_off",
+            "value": 15969562,
+            "range": "± 460700",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/unattested",
+            "value": 11879707,
+            "range": "± 212398",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 24453401,
+            "range": "± 1794972",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 5274695,
+            "range": "± 26720",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 63775813,
+            "range": "± 1629541",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 102579984,
+            "range": "± 1591361",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 108700413,
+            "range": "± 2983570",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 810186,
+            "range": "± 37234",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 785630,
+            "range": "± 4300",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 830349,
+            "range": "± 5102",
             "unit": "ns/iter"
           }
         ]
