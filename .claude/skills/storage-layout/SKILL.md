@@ -15,7 +15,7 @@ sources:
 ## Three-Tier Storage Model
 
 ```
-WAL (local disk) -> Iceberg SQL Catalog (SQLite metadata) -> Object Store (Parquet data)
+WAL (local disk) -> Iceberg SQL Catalog (SQLite or PostgreSQL metadata) -> Object Store (Parquet data)
 ```
 
 ## Object Store Layout
@@ -176,7 +176,7 @@ Cleanup runs via `WalManager::cleanup_all_if_due` at a **pass boundary** — end
 
 ## Iceberg Catalog
 
-- SQLite-only `SqlCatalog` named `"signaldb"` (PostgreSQL not supported for Iceberg catalog)
+- `SqlCatalog` named `"signaldb"`, backed by SQLite or PostgreSQL (`create_sql_catalog_with_builder` in `iceberg/mod.rs`); PostgreSQL is the CAS-safe choice for a distributed deployment since a SQLite file on shared storage can't give writer/querier/compactor real compare-and-swap commits
 - Namespace: `[tenant_slug, dataset_slug]`
 - **Resolved dataset invariant**: `ResolvedTenant.datasets` always contains the tenant's `default_dataset`, whether or not a `datasets` row names it (`catalog_manager.rs::ensure_default_dataset`, applied by both the config and database descriptors). Do not re-add this fallback at consumers: compaction planning, retention, orphan cleanup, and table reconciliation all iterate `.datasets` and get it for free (#1066). Every write path materializes the row (`upsert_tenant_with_default_dataset` for tenant create/update, `ensure_dataset` for config sync), so a row-less default is a legacy state that `Catalog::backfill_default_datasets` clears at boot — the invariant covers the window before it runs
 - Tables are provisioned ahead of ingest by the writer's reconciler (`writer/src/reconcile.rs`, startup pass + `[writer] table_reconcile_interval`), which calls `CatalogManager::ensure_dataset_tables` for every registered tenant/dataset. The write path still load-or-creates on demand via the same `ensure_table`, so a dataset converges either way and a failing reconciler degrades to create-on-first-write. A dataset therefore normally holds every enabled signal table (empty, no snapshot) before its first write — see `docs/operations/table-provisioning.md`
