@@ -97,8 +97,8 @@ The writer is configured through the shared SignalDB configuration
 [schema]
 catalog_type = "sql"
 # SQLite or PostgreSQL catalog URIs are supported (create_sql_catalog_with_builder
-# in src/common/src/iceberg/mod.rs); PostgreSQL is the CAS-capable choice once
-# writer, querier, and compactor commit against the same catalog.
+# in src/common/src/iceberg/mod.rs). SQLite is single-node/dev only; PostgreSQL
+# is required once writer, querier, and compactor commit against the same catalog.
 catalog_uri = "sqlite:///.data/catalog.db"
 
 [storage]
