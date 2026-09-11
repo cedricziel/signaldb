@@ -1,6 +1,6 @@
 // Tenant picker shown when a login resolves to several memberships instead
-// of one — extracted from LoginPanel so the login page and the gate/consent
-// screen share it (design decision 2, the shared context step).
+// of one (design decision 2, the shared context step). Rendered by
+// LoginRoute.
 
 import type { SessionMembership } from "../../api/session";
 

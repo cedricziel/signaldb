@@ -1,10 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { loginConfig, type LoginConfigResponse } from "../api/session";
 
-/** Shown by both LoginPanel and LoginRoute in place of the credential
- * controls while `useLoginConfig()` is still loading (`undefined`) — never
- * the "unavailable" fallback, which would misreport a probe that just
- * hasn't answered yet. */
+/** Shown by LoginRoute in place of the credential controls while
+ * `useLoginConfig()` is still loading (`undefined`) — never the
+ * "unavailable" fallback, which would misreport a probe that just hasn't
+ * answered yet. */
 export const CHECKING_LOGIN_OPTIONS_HINT = "Checking sign-in options…";
 
 /** The login-configuration probe, wrapped for the credential step: `undefined`

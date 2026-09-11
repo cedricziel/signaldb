@@ -39,3 +39,10 @@ export function safeRedirectTarget(raw: string | null | undefined): string {
     return DEFAULT_TARGET;
   }
 }
+
+/** The `/login` path to send an unauthenticated visitor to, carrying
+ * `currentPath` (validated through {@link safeRedirectTarget}) as the
+ * `?redirect=` target to land back on once signed in. */
+export function loginRedirectPath(currentPath: string): string {
+  return `/login?redirect=${encodeURIComponent(safeRedirectTarget(currentPath))}`;
+}

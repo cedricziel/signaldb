@@ -1,9 +1,9 @@
 /* Shared auth-surface styles: the credential step (SsoButton, the divider,
    PasswordForm), the tenant step (TenantPicker), and alerts/notices. These
-   are unscoped (not nested under .login-panel) so both the modal
-   (LoginPanel, wrapped in Dialog) and the standalone page (LoginRoute,
-   LoginPage.css) render them identically — the three auth surfaces share
-   one visual family (design decision 1). */
+   are unscoped (not nested under .login-panel) so both the standalone login
+   page (LoginRoute, LoginPage.css) and ConsentView's own Dialog-wrapped
+   panels render them identically — the auth surfaces share one visual
+   family (design decision 1). */
 
 .login-panel {
   display: flex;

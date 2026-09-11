@@ -7,6 +7,7 @@
 // or an error).
 
 import { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router";
 import { isAuthError, toErrorMessage } from "../../api/http";
 import {
   type ConsentContextResponse,
@@ -14,7 +15,7 @@ import {
   submitConsentDecision,
 } from "../../api/consent";
 import { Dialog } from "../../components/Dialog";
-import { LoginPanel } from "../shell/LoginPanel";
+import { loginRedirectPath } from "../../lib/redirectTarget";
 import "../shell/LoginPanel.css";
 import "./consent.css";
 
@@ -67,8 +68,8 @@ export function ConsentView() {
   // The query string is fixed for the page's lifetime; memoize so the effect
   // below doesn't re-run on every render (a fresh object would loop).
   const params = useMemo(() => readParams(window.location.search), []);
+  const navigate = useNavigate();
   const [context, setContext] = useState<ConsentContextResponse | null>(null);
-  const [needsLogin, setNeedsLogin] = useState(false);
   const [selectedTenant, setSelectedTenant] = useState<string | null>(null);
   // D5: an explicit choice, not a checklist that means "everything" when
   // empty. Reset to "all" whenever the selected tenant changes (below) so a
@@ -84,9 +85,7 @@ export function ConsentView() {
   }, [selectedTenant]);
 
   useEffect(() => {
-    // While login is required, wait — the LoginPanel's onSuccess flips
-    // needsLogin back to false, re-running this effect to re-fetch.
-    if (!params || needsLogin) return;
+    if (!params) return;
     let cancelled = false;
     consentContext(params.clientId)
       .then((ctx) => {
@@ -97,7 +96,12 @@ export function ConsentView() {
       .catch((err: unknown) => {
         if (cancelled) return;
         if (isAuthError(err)) {
-          setNeedsLogin(true);
+          navigate(
+            loginRedirectPath(
+              `${window.location.pathname}${window.location.search}`,
+            ),
+            { replace: true },
+          );
         } else {
           setError(toErrorMessage(err));
         }
@@ -105,7 +109,7 @@ export function ConsentView() {
     return () => {
       cancelled = true;
     };
-  }, [params, needsLogin]);
+  }, [params, navigate]);
 
   if (!params) {
     return (
@@ -116,18 +120,6 @@ export function ConsentView() {
           again from your client (Claude or ChatGPT).
         </p>
       </Dialog>
-    );
-  }
-
-  if (needsLogin) {
-    return (
-      <LoginPanel
-        hint="Sign in to authorize this application."
-        onSuccess={() => {
-          // Session established; re-fetch the consent context.
-          setNeedsLogin(false);
-        }}
-      />
     );
   }
 
