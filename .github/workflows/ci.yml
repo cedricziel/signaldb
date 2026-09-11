@@ -178,10 +178,10 @@ jobs:
         with:
           submodules: true
 
-      - name: Install protobuf compiler
+      - name: Install system dependencies
         uses: ./.github/actions/apt-install
         with:
-          packages: protobuf-compiler
+          packages: protobuf-compiler mold clang
 
       - name: Setup Rust toolchain
         uses: actions-rust-lang/setup-rust-toolchain@v2
