@@ -2307,13 +2307,6 @@ pub(crate) fn body_decode_expr(physical: &str) -> Expr {
 /// (projection, filter, ordering, grouping, aggregate operand) must
 /// therefore treat specially. The single check backing all of those sites,
 /// so they cannot drift out of agreement with each other (issue #1433).
-///
-/// One known, tracked exception: `logs.rs`'s LogQL `bytes_over_time`/
-/// `bytes_rate` lowering (`Aggregate::BytesSum`) reads `body` directly
-/// (`character_length(col("body"))`) without going through this check at
-/// all — pre-existing, not a regression from #1433's fix, and left alone
-/// here because it is a distinct bug (`character_length` counts characters,
-/// not bytes; `octet_length` is what a `bytes_*` aggregate should mean).
 fn is_body_column(physical: &str) -> bool {
     physical == "body"
 }

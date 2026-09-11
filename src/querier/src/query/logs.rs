@@ -21,7 +21,7 @@ use datafusion::{
     arrow::compute::{concat_batches, take},
     arrow::datatypes::{DataType, Field, IntervalMonthDayNano, Schema, SchemaRef, TimeUnit},
     functions::datetime::expr_fn::date_bin,
-    functions::unicode::expr_fn::character_length,
+    functions::string::expr_fn::octet_length,
     functions_aggregate::expr_fn::{
         approx_percentile_cont, avg, count, first_value, last_value, max, min, stddev_pop, sum,
         var_pop,
@@ -965,7 +965,7 @@ fn attr_context_of(df: &DataFrame) -> AttrContext {
 fn aggregate_expr(aggregate: &Aggregate) -> Expr {
     match aggregate {
         Aggregate::Count => count(lit(1i64)),
-        Aggregate::BytesSum => sum(character_length(col("body"))),
+        Aggregate::BytesSum => sum(octet_length(super::ir_planner::body_decode_expr("body"))),
         Aggregate::UnwrapSum(label) => sum(unwrap_value(label)),
         Aggregate::UnwrapAvg(label) => avg(unwrap_value(label)),
         Aggregate::UnwrapMin(label) => min(unwrap_value(label)),
@@ -1979,6 +1979,64 @@ mod tests {
         ctx.register_catalog("t", catalog);
 
         LogsService::new(ctx)
+    }
+
+    /// A `t.d.logs` table with a single row whose `body` is JSON-encoded
+    /// the way ingest actually stores it (#1410), built from `decoded_body`
+    /// via the same [`common::flight::conversion::encode_log_body`] ingest
+    /// uses — for the `bytes_over_time` regression below.
+    fn service_with_encoded_body(decoded_body: &str) -> LogsService {
+        let schema = logs_schema();
+        let encoded = common::flight::conversion::encode_log_body(decoded_body);
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![100])),
+                str_col(&[encoded.as_str()]),
+                str_col(&["api"]),
+                str_col(&["error"]),
+                str_col(&["t1"]),
+                str_col(&["s1"]),
+                str_col(&["{}"]),
+                str_col(&["{}"]),
+            ],
+        )
+        .unwrap();
+
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let schema_provider = Arc::new(MemorySchemaProvider::new());
+        schema_provider
+            .register_table("logs".to_string(), Arc::new(table))
+            .unwrap();
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        catalog.register_schema("d", schema_provider).unwrap();
+        ctx.register_catalog("t", catalog);
+        LogsService::new(ctx)
+    }
+
+    /// #1531: `bytes_over_time`/`bytes_rate` lower to `Aggregate::BytesSum`,
+    /// which read the raw (JSON-encoded since #1410) `body` column and
+    /// counted Unicode characters (`character_length`) rather than bytes.
+    /// A body with a multi-byte UTF-8 character (`Å`, `ö`) and a
+    /// JSON-escaped character (`"`, `\n`) exercises both bugs at once: the
+    /// raw column's surrounding quotes/escapes inflate the count, and
+    /// char-counting undercounts the multi-byte runes.
+    #[tokio::test]
+    async fn bytes_over_time_counts_decoded_utf8_bytes() {
+        let decoded_body = "boom \"Ångström\"\n";
+        let service = service_with_encoded_body(decoded_body);
+        let out = matrix(
+            &service,
+            r#"bytes_over_time({service_name="api"}[1000ns])"#,
+            1000,
+        )
+        .await;
+        assert_eq!(
+            out,
+            vec![(decoded_body.len() as f64, Some("api".to_string()))],
+            "bytes_over_time must count decoded UTF-8 bytes, not raw-column chars"
+        );
     }
 
     fn params(query: &str, start: i64, end: i64, direction: Direction) -> LogQueryParams {
