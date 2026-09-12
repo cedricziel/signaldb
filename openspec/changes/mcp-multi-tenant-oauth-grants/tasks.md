@@ -11,10 +11,10 @@
 
 ## 2. Router: consent and authorization
 
-- [ ] 2.1 Write a failing test: consent context (`GET /oauth/consent/context`) lists every tenant the user is a member of as independently selectable, each with its own dataset list
-- [ ] 2.2 Write a failing test: approving with two or more tenants checked issues one authorization code bound to all of them, each with its own dataset restriction
-- [ ] 2.3 Write a failing test: approving with zero tenants checked is rejected, no code issued
-- [ ] 2.4 Update `POST /oauth/authorize/decision` to accept a list of `{tenant_id, dataset_ids | null}` and persist the resulting grant set on the authorization code
+- [x] 2.1 Write a failing test: consent context (`GET /oauth/consent/context`) lists every tenant the user is a member of as independently selectable, each with its own dataset list
+- [x] 2.2 Write a failing test: approving with two or more tenants checked issues one authorization code bound to all of them, each with its own dataset restriction
+- [x] 2.3 Write a failing test: approving with zero tenants checked is rejected, no code issued
+- [x] 2.4 Update `POST /oauth/authorize/decision` to accept a list of `{tenant_id, dataset_ids | null}` and persist the resulting grant set on the authorization code
 - [ ] 2.5 Update the explore-UI consent page (served at root) from a tenant radio list to a multi-select checklist, each checked tenant revealing its own all-datasets/some-datasets sub-choice (design D6)
 
 ## 3. Router: token issuance, refresh, and resolution

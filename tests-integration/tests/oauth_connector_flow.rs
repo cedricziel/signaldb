@@ -96,7 +96,7 @@ async fn full_connector_flow_registers_consents_and_authenticates() {
 
     // 2. Consent decision (authenticated by the session cookie) → auth code.
     let body = format!(
-        r#"{{"client_id":"{client_id}","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","scope":"traces:read","resource":"{RESOURCE}","tenant":"acme","approved":true}}"#
+        r#"{{"client_id":"{client_id}","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","scope":"traces:read","resource":"{RESOURCE}","tenant_grants":[{{"tenant_id":"acme"}}],"approved":true}}"#
     );
     let res = app
         .clone()

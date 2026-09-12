@@ -389,13 +389,38 @@ async fn authorize<S: RouterState>(
     Ok(Redirect::to(&consent_url).into_response())
 }
 
-/// Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user
-/// is authenticated by their session cookie; `tenant` is their chosen grant.
+/// One tenant (and optional dataset restriction) the user grants in a
+/// consent decision (design: mcp-multi-tenant-oauth-grants D2/D6). Mirrors
+/// [`common::catalog::TenantGrant`]'s shape; kept as a router-local request
+/// DTO (rather than reusing that type directly) so it can derive
+/// [`ToSchema`] for the OpenAPI spec.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ConsentTenantGrant {
+    /// The tenant being granted (must be one the user belongs to).
+    tenant_id: String,
+    /// Dataset set to restrict this tenant's grant to (D5/D6). Omitted or
+    /// `null` grants unrestricted access to the tenant. A non-empty array
+    /// restricts the grant to exactly that set; every named dataset must
+    /// belong to `tenant_id`. An explicit empty array is rejected (D1a), as
+    /// is any non-empty selection while
+    /// `[auth].dataset_restriction_rollout_complete` is `false` (stricter
+    /// than the API-key rule — OAuth has no legacy column to fall back to).
+    #[schema(min_items = 1)]
+    #[serde(default)]
+    dataset_ids: Option<Vec<String>>,
+}
+
+/// Consent decision posted by the explore-UI (change: mcp-oauth-dcr;
+/// generalized to a set of tenants by mcp-multi-tenant-oauth-grants D2/D6).
+/// The user is authenticated by their session cookie; `tenant_grants` is
+/// their chosen set of one or more tenants to grant, each with its own
+/// independent dataset restriction.
 ///
-/// The legacy singular `dataset_id` field is not accepted (removed in the
-/// multi-dataset-key-restriction change, D8): a request body carrying it is
-/// rejected rather than silently ignored, since dropping it would grant
-/// unrestricted access when the caller asked for a restricted one.
+/// The legacy singular `tenant`/`dataset_id` fields are not accepted (the
+/// latter removed in the multi-dataset-key-restriction change, D8): a
+/// request body carrying either is rejected rather than silently ignored,
+/// since dropping it would grant unrestricted or differently-scoped access
+/// than the caller asked for.
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ConsentDecision {
@@ -416,22 +441,12 @@ pub struct ConsentDecision {
     /// Requested resource (audience); must match the configured MCP resource.
     #[serde(default)]
     resource: Option<String>,
-    /// The tenant the user grants access to (must be one they belong to).
-    tenant: String,
+    /// The set of tenants the user grants access to (each must be one they
+    /// belong to). Must be non-empty and name each tenant at most once.
+    #[schema(min_items = 1)]
+    tenant_grants: Vec<ConsentTenantGrant>,
     /// Whether the user approved (`true`) or denied (`false`).
     approved: bool,
-    /// Dataset set to restrict the grant to (D5/D6). Omitted or `null`
-    /// grants unrestricted access to the tenant — today's only behavior,
-    /// and `#[serde(default)]` so a decision from a client built before
-    /// this change (which omits the field entirely) keeps working
-    /// unmodified. A non-empty array restricts the grant to exactly that
-    /// set; every named dataset must belong to `tenant`. An explicit empty
-    /// array is rejected (D1a), as is any non-empty selection while
-    /// `[auth].dataset_restriction_rollout_complete` is `false` (stricter
-    /// than the API-key rule — OAuth has no legacy column to fall back to).
-    #[schema(min_items = 1)]
-    #[serde(default)]
-    dataset_ids: Option<Vec<String>>,
 }
 
 /// Result of a consent decision: the URL the browser should navigate to (the
@@ -444,10 +459,11 @@ pub struct ConsentDecisionResponse {
 }
 
 /// Record the human's consent decision and, on approval, mint the single-use
-/// authorization code. Authenticated by the browser session cookie; the code is
-/// bound to the chosen tenant (which the user must be a member of), the granted
-/// read scopes, the client, the redirect URI, the PKCE challenge, and the
-/// resource. Returns the URL the SPA should navigate to.
+/// authorization code. Authenticated by the browser session cookie; the code
+/// is bound to the chosen set of one or more tenants (each of which the user
+/// must be a member of, with its own independent dataset restriction), the
+/// granted read scopes, the client, the redirect URI, the PKCE challenge,
+/// and the resource. Returns the URL the SPA should navigate to.
 #[utoipa::path(
     post,
     path = "/oauth/authorize/decision",
@@ -532,28 +548,28 @@ pub(crate) async fn authorize_decision<S: RouterState>(
         return Ok(Json(ConsentDecisionResponse { redirect: url }).into_response());
     }
 
-    // The user may only grant a tenant they belong to. An instance admin may
-    // grant any tenant, but it must actually exist — otherwise a code would be
-    // minted for a non-existent tenant.
-    let membership = state
-        .catalog()
-        .get_tenant_membership(&user.id, &d.tenant)
-        .await
-        .map_err(|e| OAuthError::server_error(format!("membership lookup failed: {e}")))?;
-    if membership.is_none() {
-        let grantable = user.is_instance_admin
-            && state
-                .catalog()
-                .get_tenant(&d.tenant)
-                .await
-                .map_err(|e| OAuthError::server_error(format!("tenant lookup failed: {e}")))?
-                .is_some();
-        if !grantable {
-            return Err(OAuthError::new(
-                StatusCode::FORBIDDEN,
-                "access_denied",
-                "not a member of the selected tenant",
-            ));
+    // At least one tenant must be selected (task 2.3).
+    if d.tenant_grants.is_empty() {
+        return Err(OAuthError::bad_request(
+            "invalid_request",
+            "at least one tenant must be selected",
+        ));
+    }
+    // Reject a duplicate tenant_id up front (defense in depth — the catalog
+    // layer also rejects this via `validate_tenant_grants`, but a
+    // request-level check gives a cleaner, earlier error).
+    {
+        let mut seen = std::collections::HashSet::with_capacity(d.tenant_grants.len());
+        for grant in &d.tenant_grants {
+            if !seen.insert(grant.tenant_id.as_str()) {
+                return Err(OAuthError::bad_request(
+                    "invalid_request",
+                    format!(
+                        "tenant_grants names tenant '{}' more than once",
+                        grant.tenant_id
+                    ),
+                ));
+            }
         }
     }
 
@@ -587,44 +603,72 @@ pub(crate) async fn authorize_decision<S: RouterState>(
         )
     })?;
 
-    // Dataset-set restriction (D5/D6): validated before any code is minted,
-    // so a rejected decision never persists one. `None`/omitted is always
-    // unrestricted, unaffected by the rollout gate.
-    if let Some(ids) = d.dataset_ids.as_ref() {
-        common::catalog::check_oauth_dataset_restriction_rollout_gate(
-            ids,
-            state.config().auth.dataset_restriction_rollout_complete,
-        )
-        .map_err(|message| OAuthError::bad_request("invalid_request", message))?;
-        common::catalog::validate_dataset_id_set(ids)
-            .map_err(|e| OAuthError::bad_request("invalid_request", e.to_string()))?;
-        if let Some(missing) = state
+    // Validate each selected tenant independently — membership, then its own
+    // dataset-set restriction (D5/D6) — before any code is minted, so a
+    // rejected decision never persists a partial grant. On any entry
+    // failing, the whole decision is rejected.
+    let mut tenant_grants = Vec::with_capacity(d.tenant_grants.len());
+    for grant in &d.tenant_grants {
+        // The user may only grant a tenant they belong to. An instance admin
+        // may grant any tenant, but it must actually exist — otherwise a
+        // code would be minted for a non-existent tenant.
+        let membership = state
             .catalog()
-            .find_dataset_not_in_tenant(&d.tenant, ids)
+            .get_tenant_membership(&user.id, &grant.tenant_id)
             .await
-            .map_err(|e| OAuthError::server_error(format!("dataset lookup failed: {e}")))?
-        {
-            return Err(OAuthError::bad_request(
-                "invalid_request",
-                format!(
-                    "dataset '{missing}' does not exist in tenant '{}'",
-                    d.tenant
-                ),
-            ));
+            .map_err(|e| OAuthError::server_error(format!("membership lookup failed: {e}")))?;
+        if membership.is_none() {
+            let grantable = user.is_instance_admin
+                && state
+                    .catalog()
+                    .get_tenant(&grant.tenant_id)
+                    .await
+                    .map_err(|e| OAuthError::server_error(format!("tenant lookup failed: {e}")))?
+                    .is_some();
+            if !grantable {
+                return Err(OAuthError::new(
+                    StatusCode::FORBIDDEN,
+                    "access_denied",
+                    format!("not a member of tenant '{}'", grant.tenant_id),
+                ));
+            }
         }
+
+        // `None`/omitted `dataset_ids` is always unrestricted, unaffected by
+        // the rollout gate.
+        if let Some(ids) = grant.dataset_ids.as_ref() {
+            common::catalog::check_oauth_dataset_restriction_rollout_gate(
+                ids,
+                state.config().auth.dataset_restriction_rollout_complete,
+            )
+            .map_err(|message| OAuthError::bad_request("invalid_request", message))?;
+            common::catalog::validate_dataset_id_set(ids)
+                .map_err(|e| OAuthError::bad_request("invalid_request", e.to_string()))?;
+            if let Some(missing) = state
+                .catalog()
+                .find_dataset_not_in_tenant(&grant.tenant_id, ids)
+                .await
+                .map_err(|e| OAuthError::server_error(format!("dataset lookup failed: {e}")))?
+            {
+                return Err(OAuthError::bad_request(
+                    "invalid_request",
+                    format!(
+                        "dataset '{missing}' does not exist in tenant '{}'",
+                        grant.tenant_id
+                    ),
+                ));
+            }
+        }
+
+        tenant_grants.push(common::catalog::TenantGrant {
+            tenant_id: grant.tenant_id.clone(),
+            dataset_ids: grant.dataset_ids.clone(),
+        });
     }
 
     let code = generate_oauth_token(TokenKind::AuthorizationCode);
     let ttl = chrono::Duration::from_std(state.config().mcp.oauth.authorization_code_ttl)
         .map_err(|e| OAuthError::server_error(format!("invalid authorization_code_ttl: {e}")))?;
-    // TODO(mcp-multi-tenant-oauth-grants): a single-element grant set,
-    // preserving today's single-tenant decision shape exactly. Accepting a
-    // list of tenants from the consent decision (design D2/D6) is a later
-    // task group in this change.
-    let tenant_grants = vec![common::catalog::TenantGrant {
-        tenant_id: d.tenant.clone(),
-        dataset_ids: d.dataset_ids.clone(),
-    }];
     state
         .catalog()
         .create_authorization_code(
@@ -1406,7 +1450,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .header("cookie", format!("signaldb_session={cookie}"))
                     .body(Body::from(
-                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"chal-1","scope":"traces:read","state":"st","tenant":"acme","approved":true}"#,
+                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"chal-1","scope":"traces:read","state":"st","tenant_grants":[{"tenant_id":"acme"}],"approved":true}"#,
                     ))
                     .unwrap(),
             )
@@ -1443,6 +1487,176 @@ mod tests {
         assert_eq!(grant.client_id, "client-1");
     }
 
+    // ---- mcp-multi-tenant-oauth-grants: consent multi-select (task group 2) ----
+
+    /// Create a user with a live session who is a member of every named
+    /// tenant, each pre-populated with its own datasets.
+    async fn seed_user_session_multi_tenant(
+        catalog: &Catalog,
+        tenants: &[(&str, &[&str])],
+    ) -> String {
+        use common::auth::{generate_session_token, hash_session_token};
+        let user = catalog
+            .create_user("multi@example.com", None, Some("phc"), false)
+            .await
+            .unwrap();
+        for (tenant, datasets) in tenants {
+            catalog
+                .upsert_tenant(tenant, tenant, Some("production"), "database")
+                .await
+                .unwrap();
+            catalog
+                .upsert_tenant_membership(&user.id, tenant, common::catalog::MembershipRole::Member)
+                .await
+                .unwrap();
+            for name in *datasets {
+                catalog.create_dataset(tenant, name).await.unwrap();
+            }
+        }
+        let cookie = generate_session_token();
+        catalog
+            .create_user_session(
+                &user.id,
+                &hash_session_token(&cookie),
+                chrono::Utc::now() + chrono::Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        cookie
+    }
+
+    /// Task 2.1: the consent context lists every tenant the user belongs to
+    /// as independently selectable, each with its own dataset list — not
+    /// just the first one.
+    #[tokio::test]
+    async fn consent_context_lists_every_membership_independently_selectable() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_client(&catalog).await;
+        let cookie = seed_user_session_multi_tenant(
+            &catalog,
+            &[
+                ("acme", &["production", "staging"]),
+                ("globex", &["default"]),
+            ],
+        )
+        .await;
+
+        let res = get_consent_context(&app, &cookie, "client-1").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let doc = body_json(res).await;
+        let tenants = doc["tenants"].as_array().unwrap();
+        assert_eq!(tenants.len(), 2, "{tenants:?}");
+
+        let acme = tenants.iter().find(|t| t["id"] == "acme").unwrap();
+        let acme_datasets: Vec<&str> = acme["datasets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["name"].as_str().unwrap())
+            .collect();
+        assert!(acme_datasets.contains(&"production"), "{acme_datasets:?}");
+        assert!(acme_datasets.contains(&"staging"), "{acme_datasets:?}");
+
+        let globex = tenants.iter().find(|t| t["id"] == "globex").unwrap();
+        let globex_datasets: Vec<&str> = globex["datasets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(globex_datasets, vec!["default"]);
+    }
+
+    /// Task 2.2: approving with two tenants checked issues one authorization
+    /// code bound to both, each with its own independent dataset
+    /// restriction.
+    #[tokio::test]
+    async fn consent_decision_with_two_tenants_issues_one_code_bound_to_both() {
+        let (app, catalog) = app_and_catalog_with_rollout_complete().await;
+        seed_client(&catalog).await;
+        let cookie = seed_user_session_multi_tenant(
+            &catalog,
+            &[
+                ("acme", &["production", "staging"]),
+                ("globex", &["default"]),
+            ],
+        )
+        .await;
+
+        let res = post_decision(
+            &app,
+            &cookie,
+            &format!(
+                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","scope":"traces:read","tenant_grants":[{{"tenant_id":"acme","dataset_ids":["production"]}},{{"tenant_id":"globex"}}],"approved":true}}"#
+            ),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK, "{}", body_json(res).await);
+        let doc = body_json(res).await;
+        let redirect = doc["redirect"].as_str().unwrap();
+        let code = Url::parse(redirect)
+            .unwrap()
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .map(|(_, v)| v.into_owned())
+            .unwrap();
+        let grant = catalog
+            .consume_authorization_code(&hash_oauth_token(&code))
+            .await
+            .unwrap()
+            .expect("code was stored");
+        assert_eq!(grant.tenant_grants.len(), 2, "{:?}", grant.tenant_grants);
+        let acme_grant = grant
+            .tenant_grants
+            .iter()
+            .find(|g| g.tenant_id == "acme")
+            .unwrap();
+        assert_eq!(acme_grant.dataset_ids, Some(vec!["production".to_string()]));
+        let globex_grant = grant
+            .tenant_grants
+            .iter()
+            .find(|g| g.tenant_id == "globex")
+            .unwrap();
+        assert_eq!(globex_grant.dataset_ids, None);
+    }
+
+    /// Task 2.3: approving with zero tenants checked is rejected, no code
+    /// issued.
+    #[tokio::test]
+    async fn consent_decision_with_zero_tenants_is_rejected() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_client(&catalog).await;
+        let cookie = seed_user_session(&catalog, "acme").await;
+
+        let res = post_decision(
+            &app,
+            &cookie,
+            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant_grants":[],"approved":true}"#,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(body_json(res).await["error"], "invalid_request");
+    }
+
+    /// A decision naming the same tenant twice is rejected before any code
+    /// is minted (defense in depth ahead of the catalog's own
+    /// `validate_tenant_grants` check).
+    #[tokio::test]
+    async fn consent_decision_rejects_duplicate_tenant_id() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_client(&catalog).await;
+        let cookie = seed_user_session(&catalog, "acme").await;
+
+        let res = post_decision(
+            &app,
+            &cookie,
+            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant_grants":[{"tenant_id":"acme"},{"tenant_id":"acme"}],"approved":true}"#,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(body_json(res).await["error"], "invalid_request");
+    }
+
     #[tokio::test]
     async fn decision_rejects_tenant_the_user_is_not_a_member_of() {
         let (app, catalog) = app_and_catalog().await;
@@ -1463,7 +1677,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .header("cookie", format!("signaldb_session={cookie}"))
                     .body(Body::from(
-                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"chal-1","tenant":"globex","approved":true}"#,
+                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"chal-1","tenant_grants":[{"tenant_id":"globex"}],"approved":true}"#,
                     ))
                     .unwrap(),
             )
@@ -1483,7 +1697,7 @@ mod tests {
                     .uri("/oauth/authorize/decision")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"chal-1","tenant":"acme","approved":true}"#,
+                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"chal-1","tenant_grants":[{"tenant_id":"acme"}],"approved":true}"#,
                     ))
                     .unwrap(),
             )
@@ -1548,7 +1762,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .header("cookie", format!("signaldb_session={cookie}"))
                     .body(Body::from(
-                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","scope":"openid profile","tenant":"acme","approved":true}"#,
+                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","scope":"openid profile","tenant_grants":[{"tenant_id":"acme"}],"approved":true}"#,
                     ))
                     .unwrap(),
             )
@@ -1599,7 +1813,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .header("cookie", format!("signaldb_session={cookie}"))
                     .body(Body::from(
-                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","scope":"schema:write","tenant":"acme","approved":true}"#,
+                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","scope":"schema:write","tenant_grants":[{"tenant_id":"acme"}],"approved":true}"#,
                     ))
                     .unwrap(),
             )
@@ -1771,7 +1985,7 @@ mod tests {
         let res = post_decision(
             &app,
             &cookie,
-            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant":"acme","approved":true}"#,
+            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant_grants":[{"tenant_id":"acme"}],"approved":true}"#,
         )
         .await;
         assert_eq!(res.status(), StatusCode::OK);
@@ -1800,7 +2014,7 @@ mod tests {
         let res = post_decision(
             &app,
             &cookie,
-            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant":"acme","approved":true,"dataset_ids":[]}"#,
+            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant_grants":[{"tenant_id":"acme","dataset_ids":[]}],"approved":true}"#,
         )
         .await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
@@ -1816,7 +2030,7 @@ mod tests {
             &app,
             &cookie,
             &format!(
-                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","tenant":"acme","approved":true,"dataset_ids":["staging"]}}"#
+                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","tenant_grants":[{{"tenant_id":"acme","dataset_ids":["staging"]}}],"approved":true}}"#
             ),
         )
         .await;
@@ -1834,7 +2048,7 @@ mod tests {
             &app,
             &cookie,
             &format!(
-                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","scope":"traces:read","tenant":"acme","approved":true,"dataset_ids":["production"]}}"#
+                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","scope":"traces:read","tenant_grants":[{{"tenant_id":"acme","dataset_ids":["production"]}}],"approved":true}}"#
             ),
         )
         .await;
@@ -1894,7 +2108,7 @@ mod tests {
             &app,
             &cookie,
             &format!(
-                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","scope":"traces:read","tenant":"acme","approved":true,"dataset_ids":["production"]}}"#
+                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","scope":"traces:read","tenant_grants":[{{"tenant_id":"acme","dataset_ids":["production"]}}],"approved":true}}"#
             ),
         )
         .await;
@@ -1979,7 +2193,7 @@ mod tests {
             &app,
             &cookie,
             &format!(
-                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","tenant":"acme","approved":true,"dataset_ids":["production"]}}"#
+                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","tenant_grants":[{{"tenant_id":"acme","dataset_ids":["production"]}}],"approved":true}}"#
             ),
         )
         .await;
@@ -1996,7 +2210,7 @@ mod tests {
         let res = post_decision(
             &app,
             &cookie,
-            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant":"acme","approved":true}"#,
+            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant_grants":[{"tenant_id":"acme"}],"approved":true}"#,
         )
         .await;
         assert_eq!(
@@ -2013,7 +2227,7 @@ mod tests {
             &gated_app,
             &gated_cookie,
             &format!(
-                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","tenant":"acme","approved":true,"dataset_ids":["production"]}}"#
+                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","tenant_grants":[{{"tenant_id":"acme","dataset_ids":["production"]}}],"approved":true}}"#
             ),
         )
         .await;
@@ -2031,7 +2245,7 @@ mod tests {
         let res = post_decision(
             &app,
             &cookie,
-            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant":"acme","approved":true,"dataset_id":"production"}"#,
+            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant_grants":[{"tenant_id":"acme"}],"approved":true,"dataset_id":"production"}"#,
         )
         .await;
         assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);
