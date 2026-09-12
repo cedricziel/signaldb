@@ -201,6 +201,9 @@ impl AdminClient {
             // takes a single dataset; wrap it in a one-element set to keep
             // phase-2 behavior unchanged until the TUI grows multi-select.
             dataset_ids: dataset_id.map(|d| vec![d]),
+            // The TUI create form has no origin input yet (same deferral as
+            // the single-dataset TODO above); every key created here is
+            // unrestricted by origin until the form grows one.
             allowed_origins: None,
         };
 

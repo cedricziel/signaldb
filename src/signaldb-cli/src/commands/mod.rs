@@ -23,8 +23,8 @@ pub(crate) fn print_json<T: serde::Serialize>(value: &T) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Render an API key's dataset restriction for human display: the
-/// comma-joined set, or `unrestricted` when there is none.
+/// Render an API key's dataset or allowed-origins restriction for human
+/// display: the comma-joined set, or `unrestricted` when there is none.
 pub(crate) fn format_dataset_restriction(ids: Option<&[String]>) -> String {
     match ids {
         Some(ids) if !ids.is_empty() => ids.join(", "),
@@ -32,9 +32,9 @@ pub(crate) fn format_dataset_restriction(ids: Option<&[String]>) -> String {
     }
 }
 
-/// Render `ID  NAME  SCOPES  DATASETS` rows, column-aligned, shared by the
-/// admin and tenant `api-key list` human-readable output.
-pub(crate) fn format_api_key_table(rows: &[(String, String, String, String)]) -> String {
+/// Render `ID  NAME  SCOPES  DATASETS  ORIGINS` rows, column-aligned, shared
+/// by the admin and tenant `api-key list` human-readable output.
+pub(crate) fn format_api_key_table(rows: &[(String, String, String, String, String)]) -> String {
     if rows.is_empty() {
         return "No API keys.".to_string();
     }
@@ -51,27 +51,35 @@ pub(crate) fn format_api_key_table(rows: &[(String, String, String, String)]) ->
             .max()
             .unwrap_or(0),
         rows.iter()
-            .map(|(_, _, v, _)| v.len())
+            .map(|(_, _, v, ..)| v.len())
             .chain(std::iter::once("SCOPES".len()))
+            .max()
+            .unwrap_or(0),
+        rows.iter()
+            .map(|(_, _, _, v, _)| v.len())
+            .chain(std::iter::once("DATASETS".len()))
             .max()
             .unwrap_or(0),
     ];
 
     let mut out = format!(
-        "{:w0$}  {:w1$}  {:w2$}  DATASETS\n",
+        "{:w0$}  {:w1$}  {:w2$}  {:w3$}  ORIGINS\n",
         "ID",
         "NAME",
         "SCOPES",
+        "DATASETS",
         w0 = widths[0],
         w1 = widths[1],
-        w2 = widths[2]
+        w2 = widths[2],
+        w3 = widths[3]
     );
-    for (id, name, scopes, datasets) in rows {
+    for (id, name, scopes, datasets, origins) in rows {
         out.push_str(&format!(
-            "{id:w0$}  {name:w1$}  {scopes:w2$}  {datasets}\n",
+            "{id:w0$}  {name:w1$}  {scopes:w2$}  {datasets:w3$}  {origins}\n",
             w0 = widths[0],
             w1 = widths[1],
-            w2 = widths[2]
+            w2 = widths[2],
+            w3 = widths[3]
         ));
     }
     out.trim_end().to_string()
