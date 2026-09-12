@@ -251,17 +251,57 @@ function classifyFetchError(err: unknown): RetryFailure | null {
   return null;
 }
 
+/** Ceiling (ms) on a single request attempt before `retryingFetch` aborts it
+ * as timed out. Sooner than the backend querier's own 60s timeout, so a hung
+ * call fails with a clear, retryable error instead of leaving the UI loading
+ * forever. */
+export const REQUEST_TIMEOUT_MS = 30_000;
+
+/** An `AbortSignal` that fires (as a `TimeoutError`, so it retries the same
+ * way a transient failure does) after `ms`, or as soon as `signal` aborts —
+ * whichever comes first. Built on `setTimeout` rather than the native
+ * `AbortSignal.timeout`/`AbortSignal.any` so tests can drive it with fake
+ * timers, the same way `abortableSleep` already does. */
+function withRequestTimeout(
+  signal: AbortSignal | null,
+  ms: number,
+): { signal: AbortSignal; clear: () => void } {
+  const controller = new AbortController();
+  if (signal?.aborted) {
+    controller.abort(abortError(signal));
+    return { signal: controller.signal, clear: () => {} };
+  }
+  const timer = setTimeout(() => {
+    controller.abort(
+      new DOMException("The request timed out.", "TimeoutError"),
+    );
+  }, ms);
+  const onAbort = () => controller.abort(abortError(signal!));
+  signal?.addEventListener("abort", onAbort, { once: true });
+  return {
+    signal: controller.signal,
+    clear: () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    },
+  };
+}
+
 /**
  * `fetch` with the shared retry-on-throttle policy. Installed on the
  * generated client (`client.setConfig({ fetch: retryingFetch })`) and used
  * by the remaining raw-fetch callers, so every UI request backs off the same
  * way. Respects the request's `AbortSignal` during waits; the final response
  * (or error) is returned unchanged so callers keep their own status handling.
+ * Each attempt is also bounded by `requestTimeoutMs` — a hung attempt is
+ * aborted and, for an idempotent method, retried like any other transient
+ * failure.
  */
 export async function retryingFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
   policy: RetryPolicy = DEFAULT_RETRY_POLICY,
+  requestTimeoutMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<Response> {
   // The generated client hands over one `Request`; raw callers pass
   // `(url, init)`. A `Request` body is single-use, so a fresh clone is sent
@@ -271,8 +311,13 @@ export async function retryingFetch(
   const request = input instanceof Request ? input : null;
   const signal = init?.signal ?? request?.signal ?? null;
   const method = (init?.method ?? request?.method ?? "GET").toUpperCase();
-  const send = () =>
-    request ? fetch(request.clone()) : fetch(input as string | URL, init);
+  const send = () => {
+    const timeout = withRequestTimeout(signal, requestTimeoutMs);
+    const result = request
+      ? fetch(new Request(request.clone(), { signal: timeout.signal }))
+      : fetch(input as string | URL, { ...init, signal: timeout.signal });
+    return result.finally(timeout.clear);
+  };
   let attempt = 1;
   let waitedMs = 0;
   for (;;) {
