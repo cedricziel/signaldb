@@ -27,9 +27,9 @@
 - [x] 3.6 Write a failing test: `authenticate_oauth_token` resolves a single-tenant grant exactly as before, ignoring any `X-Tenant-ID`
 - [x] 3.7 Write a failing test: `authenticate_oauth_token` on a multi-tenant grant requires `X-Tenant-ID`, rejects a request with none, rejects a tenant outside the grant set (naming it), rejects a tenant that no longer exists in the registry (design D3), and applies the selected tenant's own dataset restriction on a match
 - [x] 3.8 Implement the generalized resolution in `Authenticator::authenticate_oauth_token` (`src/common/src/auth/`); `TenantContext.tenant_id` stays mandatory and concrete — no optionality introduced
-- [ ] 3.9 Write a failing test: `GET /api/v1/whoami` with a single-tenant credential is unchanged (same `tenant` field, plus a new one-element `granted_tenants` array)
-- [ ] 3.10 Write a failing test: `GET /api/v1/whoami` with a multi-tenant credential and no `X-Tenant-ID` is rejected exactly like any other tenant-scoped route; with `X-Tenant-ID` set, it returns that tenant plus the full `granted_tenants` array (distinct from the pre-existing `memberships` field)
-- [ ] 3.11 Implement the `whoami` response change in `src/router/src/endpoints/session.rs`
+- [x] 3.9 Write a failing test: `GET /api/v1/whoami` with a single-tenant credential is unchanged (same `tenant` field, plus a new one-element `granted_tenants` array)
+- [x] 3.10 Write a failing test: `GET /api/v1/whoami` with a multi-tenant credential and no `X-Tenant-ID` is rejected exactly like any other tenant-scoped route; with `X-Tenant-ID` set, it returns that tenant plus the full `granted_tenants` array (distinct from the pre-existing `memberships` field)
+- [x] 3.11 Implement the `whoami` response change in `src/router/src/endpoints/session.rs`
 - [ ] 3.12 Write a failing test: `POST /oauth/introspect` on an active token reports `active: true` plus its full grant set (every tenant and dataset restriction), scopes, audience, and expiry, without requiring `X-Tenant-ID`; on an invalid/expired/revoked token it reports `active: false` and no other detail
 - [ ] 3.13 Implement `POST /oauth/introspect` in `src/router/src/endpoints/oauth.rs`, resolving the token directly against the catalog (not through the resource-API's `auth_middleware`)
 
