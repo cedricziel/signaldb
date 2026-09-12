@@ -98,30 +98,6 @@ pub async fn auth_middleware(
         }
     };
 
-    let required_signal = match request.uri().path() {
-        common::endpoints::PROMETHEUS_REMOTE_WRITE_PATH
-        | common::endpoints::OTLP_HTTP_METRICS_PATH => Some("metrics"),
-        common::endpoints::OTLP_HTTP_LOGS_PATH => Some("logs"),
-        common::endpoints::OTLP_HTTP_TRACES_PATH => Some("traces"),
-        common::endpoints::OTLP_HTTP_PROFILES_PATH => Some("profiles"),
-        _ => None,
-    };
-    if let Some(signal) = required_signal
-        && !tenant_context.can_ingest(signal)
-    {
-        tracing::warn!(
-            tenant_id = %tenant_context.tenant_id,
-            dataset_id = %tenant_context.dataset_id,
-            signal,
-            "API key scope denied ingestion"
-        );
-        return (
-            StatusCode::FORBIDDEN,
-            format!("API key requires scope '{signal}:write'"),
-        )
-            .into_response();
-    }
-
     // Per-key CORS enforcement (D-allowed-origins): a request with no
     // `Origin` header is not a browser request — SDKs, collectors, and
     // server-to-server callers are the vast majority of ingest traffic and
@@ -129,7 +105,12 @@ pub async fn auth_middleware(
     // answers the unauthenticated `OPTIONS` preflight (which grants no
     // authority by itself); the actual request's origin is checked here,
     // once the API key is known, and the `Access-Control-Allow-Origin` the
-    // browser needs to read the response is set only on a match.
+    // browser needs to read the response is set only on a match. This runs
+    // before the scope check below so that a scope-denial response (also
+    // returned early) still carries the CORS headers a browser needs to read
+    // its body — otherwise a valid key from an allowed origin that merely
+    // lacks the required scope would look like an opaque CORS failure
+    // instead of surfacing the real "requires scope" error.
     let origin_header = request.headers().get(header::ORIGIN).cloned();
     if let Some(origin_value) = &origin_header {
         let allowed = origin_value.to_str().is_ok_and(|origin| {
@@ -148,12 +129,39 @@ pub async fn auth_middleware(
         }
     }
 
+    let required_signal = match request.uri().path() {
+        common::endpoints::PROMETHEUS_REMOTE_WRITE_PATH
+        | common::endpoints::OTLP_HTTP_METRICS_PATH => Some("metrics"),
+        common::endpoints::OTLP_HTTP_LOGS_PATH => Some("logs"),
+        common::endpoints::OTLP_HTTP_TRACES_PATH => Some("traces"),
+        common::endpoints::OTLP_HTTP_PROFILES_PATH => Some("profiles"),
+        _ => None,
+    };
+    if let Some(signal) = required_signal
+        && !tenant_context.can_ingest(signal)
+    {
+        tracing::warn!(
+            tenant_id = %tenant_context.tenant_id,
+            dataset_id = %tenant_context.dataset_id,
+            signal,
+            "API key scope denied ingestion"
+        );
+        return with_cors_headers(
+            (
+                StatusCode::FORBIDDEN,
+                format!("API key requires scope '{signal}:write'"),
+            )
+                .into_response(),
+            origin_header,
+        );
+    }
+
     let is_system = common::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id);
 
     // Anti-loop guard: processing the _system tenant's own telemetry must not
     // generate more self-monitoring telemetry (infinite feedback loop). The
     // suppression scope covers everything from the auth event onwards.
-    let mut response = if is_system {
+    let response = if is_system {
         common::self_monitoring::suppress_self_telemetry(async move {
             tracing::debug!(
                 tenant_id = %tenant_context.tenant_id,
@@ -176,6 +184,14 @@ pub async fn auth_middleware(
         next.run(request).await
     };
 
+    with_cors_headers(response, origin_header)
+}
+
+/// Attach `Access-Control-Allow-Origin`/`Vary: Origin` to `response` when the
+/// request carried an already-validated `Origin` header, so both the success
+/// path and an authenticated early-error response (e.g. scope denial) are
+/// equally readable by the browser JS that sent the request.
+fn with_cors_headers(mut response: Response, origin_header: Option<HeaderValue>) -> Response {
     if let Some(origin_value) = origin_header {
         response
             .headers_mut()
@@ -614,6 +630,16 @@ mod tests {
         /// the router (auth-gated `POST /v1/traces`, matching the real
         /// route the enforcement lives on) and the raw key.
         async fn app_with_key(allowed_origins: Option<Vec<String>>) -> (Router, String) {
+            app_with_key_and_scopes(allowed_origins, Some(&["traces:write".to_string()])).await
+        }
+
+        /// Same as [`app_with_key`], but with an explicit scope list — used to
+        /// exercise the interaction between the origin restriction and the
+        /// ingest scope check (a key can be origin-allowed but scope-denied).
+        async fn app_with_key_and_scopes(
+            allowed_origins: Option<Vec<String>>,
+            scopes: Option<&[String]>,
+        ) -> (Router, String) {
             let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
             catalog
                 .upsert_tenant("acme", "Acme Corp", Some("production"), "database")
@@ -629,7 +655,7 @@ mod tests {
                     Some("origin-test"),
                     None,
                     allowed_origins.as_deref(),
-                    Some(&["traces:write".to_string()]),
+                    scopes,
                     None,
                 )
                 .await
@@ -713,6 +739,39 @@ mod tests {
                     .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
                     .is_none(),
                 "a rejected origin must not be granted CORS access"
+            );
+        }
+
+        #[tokio::test]
+        async fn scope_denied_response_from_an_allowed_origin_still_carries_cors_headers() {
+            // A valid key, from an origin it's allowed to be used from, but
+            // scoped for a different signal than the route requires: the
+            // scope check must still deny the request, but the response must
+            // carry the CORS headers the browser needs to read the body —
+            // otherwise the real "requires scope" error is hidden behind an
+            // opaque CORS failure.
+            let (app, raw_key) = app_with_key_and_scopes(
+                Some(vec!["https://allowed.example".to_string()]),
+                Some(&["logs:write".to_string()]),
+            )
+            .await;
+            let res = app
+                .oneshot(request(&raw_key, Some("https://allowed.example")))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::FORBIDDEN);
+            assert_eq!(
+                res.headers()
+                    .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                    .map(|v| v.to_str().unwrap().to_string()),
+                Some("https://allowed.example".to_string()),
+                "a scope-denial response from an allowed origin must still be CORS-readable"
+            );
+            assert_eq!(
+                res.headers()
+                    .get(header::VARY)
+                    .map(|v| v.to_str().unwrap().to_string()),
+                Some("Origin".to_string())
             );
         }
 
