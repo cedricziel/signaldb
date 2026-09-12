@@ -76,6 +76,17 @@ See `proposal.md` for motivation. The current implementation, concretely:
   the Claude.ai/ChatGPT connector credential, not something pasted into
   `signaldb-cli` (which uses API keys); grant discovery is a
   machine-to-machine concern solved by the new introspection endpoint (D4).
+- Making the `tenant_get_schema` MCP tool reachable by a multi-tenant OAuth
+  credential. Unlike every other tenant self-management tool, it takes no
+  `tenant_id`/`tenant` argument at all, and its answer (per-tenant schema
+  configuration) can genuinely differ between granted tenants — so there is
+  no safe tenant to anchor on the way `list_available_table_schemas` (whose
+  answer never varies by tenant) does, and adding a required argument would
+  change the tool's JSON schema for every existing caller, including
+  single-tenant ones. That is a real API-shape decision, not a mechanical
+  wiring fix, and out of scope for this change; it fails closed (a
+  multi-tenant credential gets a clean access-denied error, no cross-tenant
+  leak) until a follow-up change decides how to shape it.
 
 ## Decisions
 
