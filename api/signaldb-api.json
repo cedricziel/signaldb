@@ -4493,6 +4493,16 @@
           "created_at"
         ],
         "properties": {
+          "allowed_origins": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Allowed-origin set the key is restricted to, if any; `null` is\nunrestricted."
+          },
           "created_at": {
             "type": "string",
             "description": "ISO 8601 creation timestamp."
@@ -5139,6 +5149,17 @@
           "scopes"
         ],
         "properties": {
+          "allowed_origins": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Browser origins the key is restricted to for CORS checks. Omitted or\n`null` creates an unrestricted key; a non-empty array restricts it to\nexactly that set. An explicit empty array, or a duplicate entry\nwithin the set, is rejected.",
+            "minItems": 1
+          },
           "dataset_ids": {
             "type": [
               "array",
@@ -5177,6 +5198,16 @@
           "created_at"
         ],
         "properties": {
+          "allowed_origins": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Allowed-origin set the key is restricted to, if any; `null` is\nunrestricted."
+          },
           "created_at": {
             "type": "string",
             "description": "ISO 8601 creation timestamp."
@@ -6176,6 +6207,15 @@
           "created_at"
         ],
         "properties": {
+          "allowed_origins": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
           "created_at": {
             "type": "string"
           },
@@ -6218,6 +6258,16 @@
           "scopes"
         ],
         "properties": {
+          "allowed_origins": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "minItems": 1
+          },
           "dataset_ids": {
             "type": [
               "array",
@@ -6284,6 +6334,15 @@
           "scopes"
         ],
         "properties": {
+          "allowed_origins": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
           "dataset_ids": {
             "type": [
               "array",
@@ -6488,6 +6547,21 @@
         "type": "object",
         "description": "Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.\nAbsent fields are left untouched. `dataset_ids`/`clear_dataset_restriction`\nmirror [`signaldb_api::UpdateApiKeyRequest`] (D1a); the legacy singular\n`dataset_id` field is rejected via `deny_unknown_fields` rather than\nsilently dropped.",
         "properties": {
+          "allowed_origins": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Replacement allowed-origins set (non-empty; an explicit empty array\nis rejected). Omitted/`null` leaves the current restriction\nunchanged. Mutually exclusive with `clear_allowed_origins: true`.",
+            "minItems": 1
+          },
+          "clear_allowed_origins": {
+            "type": "boolean",
+            "description": "Clear an existing allowed-origins restriction back to unrestricted.\nMust not be combined with a non-empty `allowed_origins` in the same\nrequest."
+          },
           "clear_dataset_restriction": {
             "type": "boolean",
             "description": "Clear an existing dataset restriction back to unrestricted. Must not\nbe combined with a non-empty `dataset_ids` in the same request."
@@ -7777,6 +7851,21 @@
         "type": "object",
         "description": "Request body for updating a live API key's scopes and/or dataset restriction.\n\nAbsent fields are left untouched. Revoked keys cannot be updated. The\nlegacy singular `dataset_id` field is not accepted (see\n[`CreateApiKeyRequest`]).",
         "properties": {
+          "allowed_origins": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Replacement allowed-origins set (non-empty; an explicit empty array\nis rejected). Omitted/`null` leaves the current restriction\nunchanged. Mutually exclusive with `clear_allowed_origins: true`.",
+            "minItems": 1
+          },
+          "clear_allowed_origins": {
+            "type": "boolean",
+            "description": "Clear an existing allowed-origins restriction back to unrestricted.\nMust not be combined with a non-empty `allowed_origins` in the same\nrequest."
+          },
           "clear_dataset_restriction": {
             "type": "boolean",
             "description": "Clear an existing dataset restriction back to unrestricted. Must not\nbe combined with a non-empty `dataset_ids` in the same request."

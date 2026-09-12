@@ -446,6 +446,8 @@ pub(crate) struct CreateApiKeyRequest {
     name: Option<String>,
     #[schema(min_items = 1)]
     dataset_ids: Option<Vec<String>>,
+    #[schema(min_items = 1)]
+    allowed_origins: Option<Vec<String>>,
     scopes: Vec<String>,
 }
 
@@ -455,6 +457,7 @@ pub(crate) struct ApiKeyResponse {
     id: String,
     name: Option<String>,
     dataset_ids: Option<Vec<String>>,
+    allowed_origins: Option<Vec<String>>,
     scopes: Option<Vec<String>>,
     revoked: bool,
     created_at: String,
@@ -470,6 +473,7 @@ pub(crate) struct ManageCreatedApiKey {
     key: String,
     name: Option<String>,
     dataset_ids: Option<Vec<String>>,
+    allowed_origins: Option<Vec<String>>,
     scopes: Vec<String>,
 }
 
@@ -501,6 +505,7 @@ pub(crate) async fn list_api_keys<S: RouterState>(
                     id: key.id,
                     name: key.name,
                     dataset_ids: key.dataset_ids,
+                    allowed_origins: key.allowed_origins,
                     scopes: key.scopes,
                     revoked: key.revoked_at.is_some(),
                     created_at: key.created_at.to_rfc3339(),
@@ -559,6 +564,13 @@ pub(crate) async fn create_api_key<S: RouterState>(
     {
         return *response;
     }
+    let allowed_origins =
+        match common::catalog::validate_create_allowed_origins(request.allowed_origins) {
+            Ok(origins) => origins,
+            Err(validation_error) => {
+                return error(StatusCode::BAD_REQUEST, validation_error.to_string());
+            }
+        };
     let secret = format!("sdbk_{}", Uuid::new_v4().simple());
     let key_hash = Authenticator::hash_api_key(&secret);
     match state
@@ -568,7 +580,7 @@ pub(crate) async fn create_api_key<S: RouterState>(
             &key_hash,
             request.name.as_deref(),
             dataset_ids.as_deref(),
-            None,
+            allowed_origins.as_deref(),
             Some(&request.scopes),
             ctx.user_id.as_deref(),
         )
@@ -581,6 +593,7 @@ pub(crate) async fn create_api_key<S: RouterState>(
                 key: secret,
                 name: request.name,
                 dataset_ids,
+                allowed_origins,
                 scopes: request.scopes,
             };
             (StatusCode::CREATED, Json(response)).into_response()
@@ -662,6 +675,16 @@ pub(crate) struct UpdateApiKeyRequest {
     /// be combined with a non-empty `dataset_ids` in the same request.
     #[serde(default)]
     clear_dataset_restriction: bool,
+    /// Replacement allowed-origins set (non-empty; an explicit empty array
+    /// is rejected). Omitted/`null` leaves the current restriction
+    /// unchanged. Mutually exclusive with `clear_allowed_origins: true`.
+    #[schema(min_items = 1)]
+    allowed_origins: Option<Vec<String>>,
+    /// Clear an existing allowed-origins restriction back to unrestricted.
+    /// Must not be combined with a non-empty `allowed_origins` in the same
+    /// request.
+    #[serde(default)]
+    clear_allowed_origins: bool,
 }
 
 #[utoipa::path(
@@ -717,6 +740,15 @@ pub(crate) async fn update_api_key<S: RouterState>(
     {
         return *response;
     }
+    let origin_update = match common::catalog::OriginRestrictionUpdate::from_request(
+        request.allowed_origins,
+        request.clear_allowed_origins,
+    ) {
+        Ok(update) => update,
+        Err(validation_error) => {
+            return error(StatusCode::BAD_REQUEST, validation_error.to_string());
+        }
+    };
     match state.catalog().get_api_key(&key_id).await {
         Ok(Some(record)) if record.tenant_id == tenant_id => {
             if record.revoked_at.is_some() {
@@ -738,7 +770,7 @@ pub(crate) async fn update_api_key<S: RouterState>(
             &key_id,
             request.scopes.as_deref(),
             dataset_update,
-            common::catalog::OriginRestrictionUpdate::Keep,
+            origin_update,
         )
         .await
     {
@@ -759,6 +791,7 @@ pub(crate) async fn update_api_key<S: RouterState>(
                 id: key.id,
                 name: key.name,
                 dataset_ids: key.dataset_ids,
+                allowed_origins: key.allowed_origins,
                 scopes: key.scopes,
                 revoked: key.revoked_at.is_some(),
                 created_at: key.created_at.to_rfc3339(),
@@ -2010,6 +2043,95 @@ mod dataset_restriction_tests {
             Method::PATCH,
             &format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"),
             Some(json!({ "dataset_ids": ["staging"], "clear_dataset_restriction": true })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+
+    #[tokio::test]
+    async fn create_and_update_accept_allowed_origins() {
+        let (app, _catalog) = test_app(true).await;
+
+        let (status, body) = call(
+            &app,
+            MANAGE_KEY,
+            Method::POST,
+            "/api/v1/manage/tenants/acme/api-keys",
+            Some(
+                json!({ "name": "origin-restricted", "scopes": ["traces:read"], "allowed_origins": ["https://example.com"] }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(
+            body["allowed_origins"],
+            serde_json::json!(["https://example.com"])
+        );
+        let key_id = body["id"].as_str().unwrap().to_string();
+
+        // Replace the restriction.
+        let (status, body) = call(
+            &app,
+            MANAGE_KEY,
+            Method::PATCH,
+            &format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"),
+            Some(json!({ "allowed_origins": ["https://other.example"] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(
+            body["allowed_origins"],
+            serde_json::json!(["https://other.example"])
+        );
+
+        // Clear the restriction back to unrestricted.
+        let (status, body) = call(
+            &app,
+            MANAGE_KEY,
+            Method::PATCH,
+            &format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"),
+            Some(json!({ "clear_allowed_origins": true })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["allowed_origins"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn create_and_update_reject_empty_allowed_origins_and_contradictory_clear() {
+        let (app, _catalog) = test_app(true).await;
+
+        let (status, body) = call(
+            &app,
+            MANAGE_KEY,
+            Method::POST,
+            "/api/v1/manage/tenants/acme/api-keys",
+            Some(json!({ "scopes": ["traces:read"], "allowed_origins": [] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+
+        let (status, body) = call(
+            &app,
+            MANAGE_KEY,
+            Method::POST,
+            "/api/v1/manage/tenants/acme/api-keys",
+            Some(
+                json!({ "name": "k", "scopes": ["traces:read"], "allowed_origins": ["https://example.com"] }),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let key_id = body["id"].as_str().unwrap().to_string();
+
+        let (status, body) = call(
+            &app,
+            MANAGE_KEY,
+            Method::PATCH,
+            &format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"),
+            Some(
+                json!({ "allowed_origins": ["https://other.example"], "clear_allowed_origins": true }),
+            ),
         )
         .await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");

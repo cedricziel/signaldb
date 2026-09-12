@@ -201,6 +201,7 @@ impl AdminClient {
             // takes a single dataset; wrap it in a one-element set to keep
             // phase-2 behavior unchanged until the TUI grows multi-select.
             dataset_ids: dataset_id.map(|d| vec![d]),
+            allowed_origins: None,
         };
 
         let response = self

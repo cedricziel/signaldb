@@ -103,6 +103,13 @@ pub struct CreateApiKeyRequest {
     #[schema(min_items = 1)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dataset_ids: Option<Vec<String>>,
+    /// Browser origins the key is restricted to for CORS checks. Omitted or
+    /// `null` creates an unrestricted key; a non-empty array restricts it to
+    /// exactly that set. An explicit empty array, or a duplicate entry
+    /// within the set, is rejected.
+    #[schema(min_items = 1)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_origins: Option<Vec<String>>,
 }
 
 /// Request body for updating a live API key's scopes and/or dataset restriction.
@@ -126,6 +133,17 @@ pub struct UpdateApiKeyRequest {
     /// be combined with a non-empty `dataset_ids` in the same request.
     #[serde(default)]
     pub clear_dataset_restriction: bool,
+    /// Replacement allowed-origins set (non-empty; an explicit empty array
+    /// is rejected). Omitted/`null` leaves the current restriction
+    /// unchanged. Mutually exclusive with `clear_allowed_origins: true`.
+    #[schema(min_items = 1)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_origins: Option<Vec<String>>,
+    /// Clear an existing allowed-origins restriction back to unrestricted.
+    /// Must not be combined with a non-empty `allowed_origins` in the same
+    /// request.
+    #[serde(default)]
+    pub clear_allowed_origins: bool,
 }
 
 /// Response returned when a new API key is created (includes the raw key).
@@ -143,6 +161,10 @@ pub struct CreateApiKeyResponse {
     /// Dataset set the key is restricted to, if any; `null` is unrestricted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dataset_ids: Option<Vec<String>>,
+    /// Allowed-origin set the key is restricted to, if any; `null` is
+    /// unrestricted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_origins: Option<Vec<String>>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
 }
@@ -161,6 +183,10 @@ pub struct ApiKeyResponse {
     /// Dataset set the key is restricted to, if any; `null` is unrestricted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dataset_ids: Option<Vec<String>>,
+    /// Allowed-origin set the key is restricted to, if any; `null` is
+    /// unrestricted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_origins: Option<Vec<String>>,
     /// ISO 8601 creation timestamp.
     pub created_at: String,
     /// ISO 8601 revocation timestamp (if revoked).

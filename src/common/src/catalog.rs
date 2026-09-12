@@ -2494,6 +2494,43 @@ pub enum OriginRestrictionUpdate {
     Set(Vec<String>),
 }
 
+impl OriginRestrictionUpdate {
+    /// Construct the tri-state update from an update request's two
+    /// origin-restriction fields, mirroring
+    /// [`DatasetRestrictionUpdate::from_request`] exactly:
+    ///
+    /// - `allowed_origins: Some(origins)` (non-empty) with
+    ///   `clear_allowed_origins: false` → [`Self::Set`], replacing the
+    ///   restriction.
+    /// - `allowed_origins: None` with `clear_allowed_origins: true` →
+    ///   [`Self::Clear`].
+    /// - Both absent/`false` → [`Self::Keep`], leaving the restriction
+    ///   untouched.
+    /// - An explicit empty array or a duplicate origin is rejected
+    ///   unconditionally (via [`validate_allowed_origins_set`]), regardless
+    ///   of `clear_allowed_origins`.
+    /// - A non-empty `allowed_origins` combined with
+    ///   `clear_allowed_origins: true` is rejected as a contradictory
+    ///   request.
+    pub fn from_request(
+        allowed_origins: Option<Vec<String>>,
+        clear_allowed_origins: bool,
+    ) -> Result<Self, sqlx::Error> {
+        match allowed_origins {
+            Some(origins) if !origins.is_empty() && clear_allowed_origins => Err(sqlx::Error::Protocol(
+                "clear_allowed_origins cannot be combined with a non-empty allowed_origins in the same request"
+                    .to_string(),
+            )),
+            Some(origins) => {
+                validate_allowed_origins_set(&origins)?;
+                Ok(Self::Set(origins))
+            }
+            None if clear_allowed_origins => Ok(Self::Clear),
+            None => Ok(Self::Keep),
+        }
+    }
+}
+
 /// Validate a create request's `allowed_origins` field ahead of
 /// [`Catalog::upsert_scoped_api_key`]: `None` stays `None` (unrestricted),
 /// `Some` is rejected up front when empty or duplicate-containing, via the
@@ -6260,6 +6297,51 @@ mod multi_tenancy_tests {
         );
         // Non-empty ids together with clear:true is a contradictory request.
         assert!(DatasetRestrictionUpdate::from_request(Some(vec!["a".to_string()]), true).is_err());
+    }
+
+    #[test]
+    fn origin_restriction_update_from_request_covers_every_combination() {
+        // Both absent -> Keep.
+        assert_eq!(
+            OriginRestrictionUpdate::from_request(None, false).unwrap(),
+            OriginRestrictionUpdate::Keep
+        );
+        // Non-empty origins, clear false -> Set.
+        assert_eq!(
+            OriginRestrictionUpdate::from_request(
+                Some(vec!["https://a.example".to_string()]),
+                false
+            )
+            .unwrap(),
+            OriginRestrictionUpdate::Set(vec!["https://a.example".to_string()])
+        );
+        // No origins, clear true -> Clear.
+        assert_eq!(
+            OriginRestrictionUpdate::from_request(None, true).unwrap(),
+            OriginRestrictionUpdate::Clear
+        );
+        // Empty origins is rejected unconditionally, clear flag notwithstanding.
+        assert!(OriginRestrictionUpdate::from_request(Some(vec![]), false).is_err());
+        assert!(OriginRestrictionUpdate::from_request(Some(vec![]), true).is_err());
+        // Duplicate origin is rejected, same as the catalog write path.
+        assert!(
+            OriginRestrictionUpdate::from_request(
+                Some(vec![
+                    "https://a.example".to_string(),
+                    "https://a.example".to_string()
+                ]),
+                false
+            )
+            .is_err()
+        );
+        // Non-empty origins together with clear:true is a contradictory request.
+        assert!(
+            OriginRestrictionUpdate::from_request(
+                Some(vec!["https://a.example".to_string()]),
+                true
+            )
+            .is_err()
+        );
     }
 
     #[test]

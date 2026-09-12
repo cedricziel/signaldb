@@ -112,6 +112,7 @@ impl ApiKeyAction {
                         name,
                         scopes,
                         dataset_ids: dataset,
+                        allowed_origins: None,
                     })
                     .send()
                     .await?
@@ -138,6 +139,8 @@ impl ApiKeyAction {
                         scopes: (!scopes.is_empty()).then_some(scopes),
                         dataset_ids: dataset,
                         clear_dataset_restriction: clear_dataset_restriction.then_some(true),
+                        allowed_origins: None,
+                        clear_allowed_origins: None,
                     })
                     .send()
                     .await?

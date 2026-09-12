@@ -2208,6 +2208,7 @@ impl McpServer {
                 name: p.name,
                 scopes: p.scopes,
                 dataset_ids: p.dataset_ids,
+                allowed_origins: None,
             })
             .send()
             .await
@@ -2234,6 +2235,8 @@ impl McpServer {
                 scopes: p.scopes,
                 dataset_ids: p.dataset_ids,
                 clear_dataset_restriction: Some(p.clear_dataset_restriction),
+                allowed_origins: None,
+                clear_allowed_origins: Some(false),
             })
             .send()
             .await
@@ -2569,6 +2572,7 @@ impl McpServer {
                 name: p.name,
                 scopes: p.scopes,
                 dataset_ids: p.dataset_ids,
+                allowed_origins: None,
             })
             .send()
             .await
@@ -2618,6 +2622,8 @@ impl McpServer {
                 scopes: p.scopes,
                 dataset_ids: p.dataset_ids,
                 clear_dataset_restriction: Some(p.clear_dataset_restriction),
+                allowed_origins: None,
+                clear_allowed_origins: Some(false),
             })
             .send()
             .await
