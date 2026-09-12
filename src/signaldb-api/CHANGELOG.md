@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.2.1](https://github.com/cedricziel/signaldb/compare/signaldb-api-v0.2.0...signaldb-api-v0.2.1) (2026-09-12)
+
+
+### Features
+
+* implement multi-dataset restriction for API keys and OAuth grants ([#1475](https://github.com/cedricziel/signaldb/issues/1475)) ([11deba9](https://github.com/cedricziel/signaldb/commit/11deba995c6937324576f87e87284a1580faa624))
+
+
+### Bug Fixes
+
+* **auth:** remove the dataset_id legacy shims from multi-dataset-key-restriction ([#1480](https://github.com/cedricziel/signaldb/issues/1480)) ([e8c85de](https://github.com/cedricziel/signaldb/commit/e8c85dedc0a9a73c5a133b952e858603d78c0c36))
+
 ## [0.2.0](https://github.com/cedricziel/signaldb/compare/signaldb-api-v0.1.1...signaldb-api-v0.2.0) (2026-08-17)
 
 

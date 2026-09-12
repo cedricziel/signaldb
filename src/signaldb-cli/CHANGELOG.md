@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.0](https://github.com/cedricziel/signaldb/compare/signaldb-cli-v0.3.0...signaldb-cli-v0.4.0) (2026-09-12)
+
+
+### Features
+
+* **auth:** OIDC login (relying-party SSO) ([#1485](https://github.com/cedricziel/signaldb/issues/1485)) ([c681bee](https://github.com/cedricziel/signaldb/commit/c681bee369d9a1b636357edf70b6f88f236b96a2))
+* implement multi-dataset restriction for API keys and OAuth grants ([#1475](https://github.com/cedricziel/signaldb/issues/1475)) ([11deba9](https://github.com/cedricziel/signaldb/commit/11deba995c6937324576f87e87284a1580faa624))
+* **router:** serve query discovery from the registry and statistics ([#1312](https://github.com/cedricziel/signaldb/issues/1312)) ([41d2738](https://github.com/cedricziel/signaldb/commit/41d27384df6e90bd9e9731218e084dd27581e20b))
+* **schema-registry:** accept keys= batch resolution on GET /api/v1/schema/metrics ([#1508](https://github.com/cedricziel/signaldb/issues/1508)) ([6facbdc](https://github.com/cedricziel/signaldb/commit/6facbdcd182285bf54c1d2e922724d6bdeb6bae6))
+* self-serve connection details for agents ([public] config, /api/v1/connection, MCP connection_info) ([#1474](https://github.com/cedricziel/signaldb/issues/1474)) ([ad78cd1](https://github.com/cedricziel/signaldb/commit/ad78cd1981282426b65b7dcac50ddc38eeea7f80))
+
+
+### Code Refactoring
+
+* **cli:** quality pass on signaldb-cli TUI (simplify) ([#1328](https://github.com/cedricziel/signaldb/issues/1328)) ([ee11e5f](https://github.com/cedricziel/signaldb/commit/ee11e5ff6c2a5cee658cc84a276e41503049a76c))
+
 ## [0.3.0](https://github.com/cedricziel/signaldb/compare/signaldb-cli-v0.1.3...signaldb-cli-v0.3.0) (2026-08-17)
 
 > **Note:** this release jumps `signaldb-cli` from the `0.1.x` line straight to `0.3.0`. `signaldb-cli` now versions in lockstep with the other core crates (`signaldb-bin`, `acceptor`, `router`, `writer`, `querier`, `compactor`, `common`) through a release-please `linked-versions` group named `signaldb-core`, so it adopted the group's highest version. The jump is pure harmonization — there is no additional feature scope behind the skipped `0.2.x` line.

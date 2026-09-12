@@ -1,6 +1,6 @@
 [package]
 name = "tests-integration"
-version = "0.1.5"
+version = "0.1.6"
 edition.workspace = true
 # Integration tests are one binary (tests/main.rs) plus the two
 # subscriber-capturing tests; see tests/main.rs for the rationale.

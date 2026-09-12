@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.2.1](https://github.com/cedricziel/signaldb/compare/mcp-server-v0.2.0...mcp-server-v0.2.1) (2026-09-12)
+
+
+### Features
+
+* implement multi-dataset restriction for API keys and OAuth grants ([#1475](https://github.com/cedricziel/signaldb/issues/1475)) ([11deba9](https://github.com/cedricziel/signaldb/commit/11deba995c6937324576f87e87284a1580faa624))
+* **mcp:** add dataset/tenant discovery tool and tenant confirmation scoping ([#1439](https://github.com/cedricziel/signaldb/issues/1439)) ([ab10083](https://github.com/cedricziel/signaldb/commit/ab1008366850918f8fcfe17b55576c16193eff7b))
+* **mcp:** let one session span multiple tenants and datasets ([#1441](https://github.com/cedricziel/signaldb/issues/1441)) ([bc9e6c2](https://github.com/cedricziel/signaldb/commit/bc9e6c2c255037be1de9a7c940f9f2ecba0aa750))
+* **querier:** accept bare dotted metric names in PromQL ([#1517](https://github.com/cedricziel/signaldb/issues/1517)) ([889224f](https://github.com/cedricziel/signaldb/commit/889224f6eafd5cab9a6344986ebe56adeb20f5c3))
+* **router:** serve query discovery from the registry and statistics ([#1312](https://github.com/cedricziel/signaldb/issues/1312)) ([41d2738](https://github.com/cedricziel/signaldb/commit/41d27384df6e90bd9e9731218e084dd27581e20b))
+* **schema-registry:** accept keys= batch resolution on GET /api/v1/schema/metrics ([#1508](https://github.com/cedricziel/signaldb/issues/1508)) ([6facbdc](https://github.com/cedricziel/signaldb/commit/6facbdcd182285bf54c1d2e922724d6bdeb6bae6))
+* self-serve connection details for agents ([public] config, /api/v1/connection, MCP connection_info) ([#1474](https://github.com/cedricziel/signaldb/issues/1474)) ([ad78cd1](https://github.com/cedricziel/signaldb/commit/ad78cd1981282426b65b7dcac50ddc38eeea7f80))
+
+
+### Bug Fixes
+
+* **mcp:** box the SDK error a completion lookup returns ([#1373](https://github.com/cedricziel/signaldb/issues/1373)) ([7df1288](https://github.com/cedricziel/signaldb/commit/7df12883a28c4d6af203c376f6efba70ee537820))
+
+
+### Code Refactoring
+
+* quality cleanups across writer, mcp-server, schema-model, and tests-integration ([#1330](https://github.com/cedricziel/signaldb/issues/1330)) ([cee4018](https://github.com/cedricziel/signaldb/commit/cee401872f96e2a6961edc1dd3714fa394a56c31))
+
 ## [0.2.0](https://github.com/cedricziel/signaldb/compare/mcp-server-v0.1.0...mcp-server-v0.2.0) (2026-08-17)
 
 

@@ -1,5 +1,37 @@
 # Changelog
 
+## [0.4.0](https://github.com/cedricziel/signaldb/compare/router-v0.3.0...router-v0.4.0) (2026-09-12)
+
+
+### Features
+
+* **auth:** OIDC login (relying-party SSO) ([#1485](https://github.com/cedricziel/signaldb/issues/1485)) ([c681bee](https://github.com/cedricziel/signaldb/commit/c681bee369d9a1b636357edf70b6f88f236b96a2))
+* **compactor:** keep a bounded value sketch so discovery can suggest values ([#1329](https://github.com/cedricziel/signaldb/issues/1329)) ([dd64a3d](https://github.com/cedricziel/signaldb/commit/dd64a3dd8a8846499ac75bea818ba938c6ca9a87))
+* dedicated login page with a login-configuration probe ([#1484](https://github.com/cedricziel/signaldb/issues/1484)) ([d536466](https://github.com/cedricziel/signaldb/commit/d53646688a580256711f0534ae7ed526c58a769a))
+* implement multi-dataset restriction for API keys and OAuth grants ([#1475](https://github.com/cedricziel/signaldb/issues/1475)) ([11deba9](https://github.com/cedricziel/signaldb/commit/11deba995c6937324576f87e87284a1580faa624))
+* **query-ir:** add a describe stage and metadata envelope for discovery ([#1309](https://github.com/cedricziel/signaldb/issues/1309)) ([b1d521c](https://github.com/cedricziel/signaldb/commit/b1d521c4151efae251e208a0dc11af08f3d6332f))
+* **query:** expose resource.identity through the Query IR ([#1505](https://github.com/cedricziel/signaldb/issues/1505)) ([896c8bc](https://github.com/cedricziel/signaldb/commit/896c8bc99407d1658be99956f6bc73e85be69a9e))
+* **router:** provision dataset tables synchronously on creation ([#1443](https://github.com/cedricziel/signaldb/issues/1443)) ([5e40e55](https://github.com/cedricziel/signaldb/commit/5e40e5534381613f44ad80f7f6ba968df5ac3322))
+* **router:** serve query discovery from the registry and statistics ([#1312](https://github.com/cedricziel/signaldb/issues/1312)) ([41d2738](https://github.com/cedricziel/signaldb/commit/41d27384df6e90bd9e9731218e084dd27581e20b))
+* **schema-registry:** accept keys= batch resolution on GET /api/v1/schema/metrics ([#1508](https://github.com/cedricziel/signaldb/issues/1508)) ([6facbdc](https://github.com/cedricziel/signaldb/commit/6facbdcd182285bf54c1d2e922724d6bdeb6bae6))
+* self-serve connection details for agents ([public] config, /api/v1/connection, MCP connection_info) ([#1474](https://github.com/cedricziel/signaldb/issues/1474)) ([ad78cd1](https://github.com/cedricziel/signaldb/commit/ad78cd1981282426b65b7dcac50ddc38eeea7f80))
+* **storage:** persist resource_identity on traces and logs ([#1497](https://github.com/cedricziel/signaldb/issues/1497)) ([b8a3b47](https://github.com/cedricziel/signaldb/commit/b8a3b47f09edf23eb54a9d4674c4fb9bba5122a7))
+
+
+### Bug Fixes
+
+* **auth:** remove the dataset_id legacy shims from multi-dataset-key-restriction ([#1480](https://github.com/cedricziel/signaldb/issues/1480)) ([e8c85de](https://github.com/cedricziel/signaldb/commit/e8c85dedc0a9a73c5a133b952e858603d78c0c36))
+* **auth:** use SameSite=Lax for the session cookie, not Strict ([#1540](https://github.com/cedricziel/signaldb/issues/1540)) ([f3a9094](https://github.com/cedricziel/signaldb/commit/f3a909474bbe616678c406f3894d3f222ec2b5a9))
+* **mcp:** box the SDK error a completion lookup returns ([#1373](https://github.com/cedricziel/signaldb/issues/1373)) ([7df1288](https://github.com/cedricziel/signaldb/commit/7df12883a28c4d6af203c376f6efba70ee537820))
+* **querier,router:** decode JSON-quoted log bodies on read ([#1432](https://github.com/cedricziel/signaldb/issues/1432)) ([8f22ec8](https://github.com/cedricziel/signaldb/commit/8f22ec8b24e3436c54d9f4289654c555c59765d8))
+* **query-ir:** stop an unknown group-by field from answering silently ([#1301](https://github.com/cedricziel/signaldb/issues/1301)) ([b4f8464](https://github.com/cedricziel/signaldb/commit/b4f8464f71192f80d407f81e8bd837efd8fafd79))
+
+
+### Code Refactoring
+
+* dedupe quality cleanups in compactor, router, and acceptor ([#1326](https://github.com/cedricziel/signaldb/issues/1326)) ([beaeff3](https://github.com/cedricziel/signaldb/commit/beaeff3e405b87405ef722b5158d1af99f51b7b0))
+* make query-ir and tempo-api standalone, and cover the parser crates ([#1369](https://github.com/cedricziel/signaldb/issues/1369)) ([1a4d78f](https://github.com/cedricziel/signaldb/commit/1a4d78f077616a9c4846cb6c02715b147b5ad1c2))
+
 ## [0.3.0](https://github.com/cedricziel/signaldb/compare/router-v0.2.2...router-v0.3.0) (2026-08-17)
 
 
