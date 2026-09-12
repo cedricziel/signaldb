@@ -1,6 +1,6 @@
-// Heading + hint + content, layout-agnostic: the modal (LoginPanel) wraps it
-// in a Dialog, the standalone page wraps it in a <section>. `as="h1"` is the
-// page's single top-level heading; the modal keeps the default h2.
+// Heading + hint + content, layout-agnostic: the standalone login page
+// (LoginRoute) wraps it in a <section>. `as="h1"` is the page's single
+// top-level heading.
 
 import type { ReactNode } from "react";
 

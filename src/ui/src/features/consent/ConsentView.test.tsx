@@ -1,10 +1,10 @@
 import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route, Routes, useSearchParams } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as consentApi from "../../api/consent";
 import { ApiError } from "../../api/http";
-import { renderWithClient, stubFetchRoutes } from "../../test/render";
+import { renderWithClient } from "../../test/render";
 import { ConsentView } from "./ConsentView";
 
 vi.mock("../../api/consent", () => ({
@@ -39,14 +39,24 @@ afterEach(() => {
   vi.clearAllMocks();
 });
 
-// ConsentView renders LoginPanel on demand, which resolves its default SSO
-// redirect from react-router's useLocation() — every render needs a Router
-// ancestor. The entry mirrors the consent URL set in beforeEach so that
-// default matches window.location's own query string.
+/** Renders the redirect target `ConsentView` navigates to on a 401, so tests
+ * can assert on it without a real browser navigation. */
+function LoginProbe() {
+  const [params] = useSearchParams();
+  return <div data-testid="login-redirect">{params.get("redirect")}</div>;
+}
+
+// ConsentView navigates to `/login` on a 401 — declaring both routes here
+// mirrors routes.tsx's own top-level `/oauth/consent` and `/login`. The
+// entry mirrors the consent URL set in beforeEach so the redirect target
+// ConsentView reads off `window.location` matches.
 function renderConsent() {
   return renderWithClient(
     <MemoryRouter initialEntries={[`/oauth/consent?${QUERY}`]}>
-      <ConsentView />
+      <Routes>
+        <Route path="/oauth/consent" element={<ConsentView />} />
+        <Route path="/login" element={<LoginProbe />} />
+      </Routes>
     </MemoryRouter>,
   );
 }
@@ -185,27 +195,14 @@ describe("ConsentView", () => {
     ).toBeInTheDocument();
   });
 
-  it("shows the consent hint and an SSO redirect back to this consent URL when a session is required", async () => {
+  it("navigates to /login with a redirect back to this consent URL when a session is required", async () => {
     vi.mocked(consentApi.consentContext).mockRejectedValueOnce(
       new ApiError("unauthenticated", 401),
     );
-    stubFetchRoutes([
-      {
-        match: "/ui/session/config",
-        body: { password_enabled: true, oidc: { name: "Acme SSO" } },
-      },
-    ]);
     renderConsent();
 
-    expect(
-      await screen.findByText("Sign in to authorize this application."),
-    ).toBeInTheDocument();
-    const link = await screen.findByRole("link", {
-      name: "Continue with Acme SSO",
-    });
-    expect(link).toHaveAttribute(
-      "href",
-      `/ui/session/oidc/start?redirect=${encodeURIComponent(`/oauth/consent?${QUERY}`)}`,
+    expect(await screen.findByTestId("login-redirect")).toHaveTextContent(
+      `/oauth/consent?${QUERY}`,
     );
   });
 });

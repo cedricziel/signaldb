@@ -1,6 +1,5 @@
-// Email/password sign-in form, POSTing to /ui/session. Extracted from
-// LoginPanel so the login page and the modal gate/consent screen render the
-// identical form through LoginMethods.
+// Email/password sign-in form, POSTing to /ui/session. Rendered by
+// LoginRoute, through LoginMethods.
 
 import { useState } from "react";
 import { toErrorMessage } from "../../api/http";

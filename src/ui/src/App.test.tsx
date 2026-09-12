@@ -514,6 +514,34 @@ describe("App", () => {
   // one doesn't also answer the other (see LoginRoute.test.tsx).
   const SESSION = /\/ui\/session$/;
 
+  describe("401 redirect", () => {
+    it("navigates to /login with a redirect back to the current page on a 401 query failure", async () => {
+      stubFetchRoutes([
+        {
+          match: "query_range",
+          body: { error: "unauthenticated" },
+          status: 401,
+        },
+        { match: "/labels?", body: emptyLabels },
+      ]);
+      renderApp("/logs?range=15m");
+      await waitFor(() => expect(window.location.pathname).toBe("/login"));
+      expect(window.location.search).toBe(
+        `?redirect=${encodeURIComponent("/logs?range=15m")}`,
+      );
+    });
+
+    it("does not navigate to /login on a non-auth query failure", async () => {
+      stubFetchRoutes([
+        { match: "query_range", body: { error: "boom" }, status: 500 },
+        { match: "/labels?", body: emptyLabels },
+      ]);
+      renderApp("/logs");
+      expect(await screen.findByRole("alert")).toHaveTextContent(/500/);
+      expect(window.location.pathname).toBe("/logs");
+    });
+  });
+
   describe("post-SSO tenant resolution", () => {
     it("resolves a sole membership from the session, staying on the landing path", async () => {
       stubFetchRoutes([

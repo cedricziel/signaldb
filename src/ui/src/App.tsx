@@ -1,36 +1,38 @@
 import { useEffect, useRef } from "react";
+import { useQueryClient } from "@tanstack/react-query";
 import { Outlet, useLocation, useNavigate } from "react-router";
 import {
+  isAuthError,
   loadPersistedTenantContext,
   persistTenantContext,
   setTenantContext,
 } from "./api/http";
-import { LoginGate } from "./features/shell/LoginPanel";
 import { ThrottleBanner } from "./features/shell/ThrottleBanner";
 import { TopBar } from "./features/shell/TopBar";
-import { safeRedirectTarget } from "./lib/redirectTarget";
+import { loginRedirectPath, safeRedirectTarget } from "./lib/redirectTarget";
 import { useExploreState } from "./lib/urlState";
 import { useCurrentSession } from "./lib/useWhoami";
 
 /**
- * The persistent shell (top bar + login gate) around whichever route is
- * active — the explore view for a signal, or the management panel. Renders
- * state/update via outlet context so route children share the one
+ * The persistent shell (top bar + 401-to-`/login` redirect) around whichever
+ * route is active — the explore view for a signal, or the management panel.
+ * Renders state/update via outlet context so route children share the one
  * URL-backed ExploreState instead of re-deriving it.
  */
 export function App() {
   const [state, update] = useExploreState();
   const navigate = useNavigate();
   const location = useLocation();
+  const queryClient = useQueryClient();
 
   // The tenant/dataset context lives in the URL (`?tenant=&dataset=`), but
   // plain links (user menu → Schema, /manage, deep links inside the schema
   // hub, …) drop the search string, and a bookmark or new tab starts with
   // none at all. A session-authenticated request without `X-Tenant-ID` is a
-  // 401, which the login gate would misread as "logged out". So the last
-  // non-empty context is sticky — within this tab via a ref, across tabs via
-  // localStorage — it keeps feeding the API clients and is written back into
-  // the URL so subsequent links carry it.
+  // 401, which the redirect effect below would misread as "logged out". So
+  // the last non-empty context is sticky — within this tab via a ref, across
+  // tabs via localStorage — it keeps feeding the API clients and is written
+  // back into the URL so subsequent links carry it.
   const remembered = useRef(
     state.tenant
       ? { tenant: state.tenant, dataset: state.dataset }
@@ -86,6 +88,29 @@ export function App() {
     update,
   ]);
 
+  // A 401 anywhere in the app (session expiry, a request that outran the
+  // cookie) sends the visitor to the dedicated login page rather than
+  // popping a dialog over the current one — `LoginRoute` lands them back
+  // here via `?redirect=` once signed in.
+  useEffect(
+    () =>
+      queryClient.getQueryCache().subscribe((event) => {
+        if (
+          event.type === "updated" &&
+          event.action.type === "error" &&
+          isAuthError(event.action.error)
+        ) {
+          navigate(
+            loginRedirectPath(
+              `${location.pathname}${location.search}${location.hash}`,
+            ),
+            { replace: true },
+          );
+        }
+      }),
+    [queryClient, location.pathname, location.search, location.hash, navigate],
+  );
+
   return (
     <div className="app-frame">
       <TopBar state={effective} update={update} />
@@ -93,9 +118,6 @@ export function App() {
       <main className="app-main">
         <Outlet context={{ state: effective, update }} />
       </main>
-      <LoginGate
-        onLoggedIn={({ tenant, dataset }) => update({ tenant, dataset })}
-      />
     </div>
   );
 }
