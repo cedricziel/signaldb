@@ -164,6 +164,7 @@ async fn serve_router() -> String {
             &Authenticator::hash_api_key(WRITE_KEY),
             Some("schema-write"),
             None,
+            None,
             Some(&["schema:read".to_string(), "schema:write".to_string()]),
             None,
         )

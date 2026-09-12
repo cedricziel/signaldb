@@ -1159,8 +1159,10 @@ fn default_frontend_service_name() -> String {
 /// `api_key` is delivered to the browser and is therefore world-readable to
 /// anyone who can load the UI. Use an **ingest-only** key scoped to
 /// `tenant_id`, never an admin key. The browser posts cross-origin to the
-/// acceptor, so its origin must be listed in `allowed_origins` (or leave that
-/// empty to allow any origin, acceptable on a trusted homelab network).
+/// acceptor; CORS for that key's origin is controlled per-key via
+/// `allowed_origins` on the API key itself (see
+/// `docs/users/authentication.md#origin-restriction-browsercors-ingestion`),
+/// not by a setting here.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FrontendMonitoringConfig {
     /// Export browser spans to `endpoint`. When false the UI still runs its
@@ -1187,10 +1189,6 @@ pub struct FrontendMonitoringConfig {
     /// `service.name` on exported browser spans.
     #[serde(default = "default_frontend_service_name")]
     pub service_name: String,
-    /// Origins the acceptor accepts browser exports from (CORS). Empty allows
-    /// any origin.
-    #[serde(default)]
-    pub allowed_origins: Vec<String>,
 }
 
 impl Default for FrontendMonitoringConfig {
@@ -1202,7 +1200,6 @@ impl Default for FrontendMonitoringConfig {
             tenant_id: default_self_monitoring_tenant(),
             dataset_id: default_self_monitoring_dataset(),
             service_name: default_frontend_service_name(),
-            allowed_origins: Vec::new(),
         }
     }
 }
@@ -1973,16 +1970,38 @@ impl Configuration {
     }
 
     pub fn load_from_path(path: &std::path::Path) -> Result<Self, Box<figment::Error>> {
-        let mut config: Configuration =
-            Figment::from(Serialized::defaults(Configuration::default()))
-                .merge(Toml::file(path))
-                // Support both single-underscore (legacy) and double-underscore (new) env vars
-                // Single underscore for simple configs: SIGNALDB_DATABASE_DSN
-                .merge(Env::prefixed("SIGNALDB_").split("_"))
-                // Double underscore for fields with underscores: SIGNALDB__COMPACTOR__TICK_INTERVAL
-                .merge(Env::prefixed("SIGNALDB__").split("__"))
-                .extract()
-                .map_err(Box::new)?;
+        let figment = Figment::from(Serialized::defaults(Configuration::default()))
+            .merge(Toml::file(path))
+            // Support both single-underscore (legacy) and double-underscore (new) env vars
+            // Single underscore for simple configs: SIGNALDB_DATABASE_DSN
+            .merge(Env::prefixed("SIGNALDB_").split("_"))
+            // Double underscore for fields with underscores: SIGNALDB__COMPACTOR__TICK_INTERVAL
+            .merge(Env::prefixed("SIGNALDB__").split("__"));
+
+        // `[self_monitoring.frontend].allowed_origins` used to drive the
+        // acceptor's (instance-wide) CORS layer; that layer is now per-API-key
+        // (`allowed_origins` on the key itself). `FrontendMonitoringConfig` no
+        // longer has this field, so Figment would otherwise silently drop it —
+        // and a key with no restriction of its own becomes reachable from any
+        // browser origin, the opposite of what this setting used to guarantee.
+        // Reject startup instead, the same way a legacy `dataset_id` field is
+        // rejected rather than silently ignored.
+        if figment
+            .find_value("self_monitoring.frontend.allowed_origins")
+            .is_ok()
+        {
+            return Err(Box::new(figment::Error::from(
+                "[self_monitoring.frontend].allowed_origins is no longer supported: CORS for \
+                 browser ingest is now enforced per API key, via that key's own \
+                 `allowed_origins` restriction, not by one instance-wide list. Remove this field; \
+                 if you relied on it to restrict which origins the frontend's ingest key could be \
+                 used from, set `allowed_origins` on that key instead (see \
+                 docs/users/authentication.md#origin-restriction-browsercors-ingestion)."
+                    .to_string(),
+            )));
+        }
+
+        let mut config: Configuration = figment.extract().map_err(Box::new)?;
 
         config.ensure_self_monitoring_tenant();
         config
@@ -2539,6 +2558,25 @@ mod tests {
             let error = Configuration::load_from_path(std::path::Path::new("signaldb.toml"))
                 .expect_err("malformed public.otlp_grpc_url must fail startup");
             assert!(error.to_string().contains("otlp_grpc_url"));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn load_from_path_rejects_the_legacy_frontend_allowed_origins_field() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "signaldb.toml",
+                r#"
+                    [self_monitoring.frontend]
+                    enabled = true
+                    allowed_origins = ["http://signaldb.example:3000"]
+                "#,
+            )?;
+            let error = Configuration::load_from_path(std::path::Path::new("signaldb.toml"))
+                .expect_err("the removed self_monitoring.frontend.allowed_origins field must fail startup, not be silently dropped");
+            assert!(error.to_string().contains("self_monitoring.frontend"));
+            assert!(error.to_string().contains("allowed_origins"));
             Ok(())
         });
     }
@@ -3134,7 +3172,6 @@ mod tests {
         assert_eq!(sm.frontend.tenant_id, "_system");
         assert_eq!(sm.frontend.dataset_id, "_monitoring");
         assert_eq!(sm.frontend.service_name, "signaldb-ui");
-        assert!(sm.frontend.allowed_origins.is_empty());
     }
 
     #[test]
@@ -3144,7 +3181,6 @@ mod tests {
             enabled = true
             endpoint = "http://signaldb.example:4318"
             api_key = "sk-ingest-key"
-            allowed_origins = ["http://signaldb.example:3000"]
         "#;
         let sm: SelfMonitoringConfig = toml::from_str(toml).expect("parse");
         assert!(sm.frontend.enabled);
@@ -3153,10 +3189,6 @@ mod tests {
         // Unset fields keep their defaults.
         assert_eq!(sm.frontend.tenant_id, "_system");
         assert_eq!(sm.frontend.service_name, "signaldb-ui");
-        assert_eq!(
-            sm.frontend.allowed_origins,
-            vec!["http://signaldb.example:3000".to_string()]
-        );
     }
 
     #[test]

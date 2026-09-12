@@ -25,6 +25,7 @@ import {
   datasetRestrictionLabel,
   selectedDatasetIds,
 } from "./DatasetPicker";
+import { OriginPicker, allowedOriginsLabel } from "./OriginPicker";
 import "./management.css";
 
 /** `ManagedTables["tables"]`'s element type. */
@@ -82,6 +83,10 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
   const client = useQueryClient();
   const [secret, setSecret] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // Allowed origins are free-form strings, not a fixed checkable set like
+  // datasets, so the picker's add/remove list is real React state rather
+  // than read from FormData on submit (see OriginPicker/ApiKeys.tsx).
+  const [origins, setOrigins] = useState<string[]>([]);
   const keys = useQuery({
     queryKey: ["managed-api-keys", tenant],
     queryFn: () => listApiKeys(tenant),
@@ -111,6 +116,7 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
     mutationFn: (input: {
       name?: string;
       dataset_ids?: string[];
+      allowed_origins?: string[];
       scopes: IngestScope[];
     }) => createApiKey(tenant, input),
     onSuccess: (result) => {
@@ -202,8 +208,8 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
                 <div>
                   <strong>{key.name || "Unnamed key"}</strong>
                   <span>
-                    {datasetRestrictionLabel(key)} ·{" "}
-                    {key.scopes?.join(", ") || "legacy unrestricted"}
+                    {datasetRestrictionLabel(key)} · {allowedOriginsLabel(key)}{" "}
+                    · {key.scopes?.join(", ") || "legacy unrestricted"}
                   </span>
                 </div>
                 {!key.revoked && (
@@ -228,8 +234,10 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
               keyMutation.mutate({
                 name: String(data.get("name") ?? "").trim() || undefined,
                 dataset_ids: datasetIds.length > 0 ? datasetIds : undefined,
+                allowed_origins: origins.length > 0 ? origins : undefined,
                 scopes: scopes.filter((scope) => data.has(scope)),
               });
+              setOrigins([]);
             }}
           >
             <input name="name" placeholder="collector-production" />
@@ -237,6 +245,11 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
               idPrefix="manage-create"
               datasets={who.datasets}
               checked={() => false}
+            />
+            <OriginPicker
+              idPrefix="manage-create"
+              origins={origins}
+              onChange={setOrigins}
             />
             <fieldset>
               <legend>Ingestion scopes</legend>

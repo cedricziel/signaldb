@@ -45,6 +45,11 @@ export type ApiErrorBody = {
  */
 export type ApiKeyResponse = {
     /**
+     * Allowed-origin set the key is restricted to, if any; `null` is
+     * unrestricted.
+     */
+    allowed_origins?: Array<string> | null;
+    /**
      * ISO 8601 creation timestamp.
      */
     created_at: string;
@@ -415,6 +420,13 @@ export type CostMode = 'metadata' | 'sampled_scan' | 'none';
  */
 export type CreateApiKeyRequest = {
     /**
+     * Browser origins the key is restricted to for CORS checks. Omitted or
+     * `null` creates an unrestricted key; a non-empty array restricts it to
+     * exactly that set. An explicit empty array, or a duplicate entry
+     * within the set, is rejected.
+     */
+    allowed_origins?: Array<string> | null;
+    /**
      * Dataset set the key is restricted to. Omitted or `null` creates an
      * unrestricted key; a non-empty array restricts it to exactly that set.
      * An explicit empty array, or a duplicate name within the set, is
@@ -435,6 +447,11 @@ export type CreateApiKeyRequest = {
  * Response returned when a new API key is created (includes the raw key).
  */
 export type CreateApiKeyResponse = {
+    /**
+     * Allowed-origin set the key is restricted to, if any; `null` is
+     * unrestricted.
+     */
+    allowed_origins?: Array<string> | null;
     /**
      * ISO 8601 creation timestamp.
      */
@@ -982,6 +999,7 @@ export type LoginConfigResponse = {
 };
 
 export type ManageApiKeyResponse = {
+    allowed_origins?: Array<string> | null;
     created_at: string;
     dataset_ids?: Array<string> | null;
     id: string;
@@ -1000,6 +1018,7 @@ export type ManageApiKeyResponse = {
  * restricted one.
  */
 export type ManageCreateApiKeyRequest = {
+    allowed_origins?: Array<string> | null;
     dataset_ids?: Array<string> | null;
     name?: string | null;
     scopes: Array<string>;
@@ -1022,6 +1041,7 @@ export type ManageCreateTenantRequest = {
  * absent `name`), preserving the wire format.
  */
 export type ManageCreatedApiKey = {
+    allowed_origins?: Array<string> | null;
     dataset_ids?: Array<string> | null;
     id: string;
     key: string;
@@ -1105,6 +1125,18 @@ export type ManageSchemaResponse = {
  * silently dropped.
  */
 export type ManageUpdateApiKeyRequest = {
+    /**
+     * Replacement allowed-origins set (non-empty; an explicit empty array
+     * is rejected). Omitted/`null` leaves the current restriction
+     * unchanged. Mutually exclusive with `clear_allowed_origins: true`.
+     */
+    allowed_origins?: Array<string> | null;
+    /**
+     * Clear an existing allowed-origins restriction back to unrestricted.
+     * Must not be combined with a non-empty `allowed_origins` in the same
+     * request.
+     */
+    clear_allowed_origins?: boolean;
     /**
      * Clear an existing dataset restriction back to unrestricted. Must not
      * be combined with a non-empty `dataset_ids` in the same request.
@@ -1778,6 +1810,18 @@ export type Trace = {
  * [`CreateApiKeyRequest`]).
  */
 export type UpdateApiKeyRequest = {
+    /**
+     * Replacement allowed-origins set (non-empty; an explicit empty array
+     * is rejected). Omitted/`null` leaves the current restriction
+     * unchanged. Mutually exclusive with `clear_allowed_origins: true`.
+     */
+    allowed_origins?: Array<string> | null;
+    /**
+     * Clear an existing allowed-origins restriction back to unrestricted.
+     * Must not be combined with a non-empty `allowed_origins` in the same
+     * request.
+     */
+    clear_allowed_origins?: boolean;
     /**
      * Clear an existing dataset restriction back to unrestricted. Must not
      * be combined with a non-empty `dataset_ids` in the same request.

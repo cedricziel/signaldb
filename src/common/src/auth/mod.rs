@@ -155,6 +155,11 @@ pub struct TenantContext {
     /// mcp-multi-tenant-oauth-grants D4/D5). `None` for an API key or a
     /// browser session — those credential kinds have no OAuth grant.
     pub oauth_tenant_grants: Option<Vec<crate::catalog::TenantGrant>>,
+    /// Allowed-origin restriction carried by a database-backed API key for
+    /// browser CORS enforcement. `None` (or an empty set) is unrestricted;
+    /// `Some` non-empty names the exact set of `Origin` values the credential
+    /// may be used from — see [`origin_allowed`].
+    pub api_key_allowed_origins: Option<Vec<String>>,
     /// Human user ID when the request was authenticated with a user session.
     pub user_id: Option<String>,
     /// Tenant role when the request was authenticated with a user session.
@@ -186,6 +191,7 @@ impl TenantContext {
             api_key_scopes: None,
             api_key_dataset_ids: None,
             oauth_tenant_grants: None,
+            api_key_allowed_origins: None,
             user_id: None,
             role: None,
             is_instance_admin: false,
@@ -200,9 +206,11 @@ impl TenantContext {
         mut self,
         scopes: Option<Vec<String>>,
         dataset_ids: Option<Vec<String>>,
+        allowed_origins: Option<Vec<String>>,
     ) -> Self {
         self.api_key_scopes = scopes;
         self.api_key_dataset_ids = dataset_ids;
+        self.api_key_allowed_origins = allowed_origins;
         self
     }
 
@@ -342,6 +350,17 @@ pub fn dataset_allowed(restriction: Option<&[String]>, requested: &str) -> bool 
     }
 }
 
+/// Whether `requested` (a browser `Origin` header value) is permitted under
+/// a credential's allowed-origins restriction. `None`, or an empty set, is
+/// unrestricted — every origin is allowed; `Some` non-empty only allows the
+/// exact origins it names.
+pub fn origin_allowed(restriction: Option<&[String]>, requested: &str) -> bool {
+    match restriction {
+        None => true,
+        Some(origins) => origins.is_empty() || origins.iter().any(|o| o == requested),
+    }
+}
+
 /// Error resolving a dataset against a credential's dataset-set restriction
 /// when the request itself supplied no explicit dataset (D4).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -423,6 +442,22 @@ mod dataset_restriction_tests {
     }
 
     #[test]
+    fn origin_allowed_is_unrestricted_when_none_or_empty() {
+        assert!(origin_allowed(None, "https://example.com"));
+        assert!(origin_allowed(Some(&[]), "https://example.com"));
+    }
+
+    #[test]
+    fn origin_allowed_checks_membership() {
+        let restriction = vec![
+            "https://a.example".to_string(),
+            "https://b.example".to_string(),
+        ];
+        assert!(origin_allowed(Some(&restriction), "https://a.example"));
+        assert!(!origin_allowed(Some(&restriction), "https://c.example"));
+    }
+
+    #[test]
     fn resolve_with_explicit_dataset_checks_restriction_regardless_of_size() {
         let restriction = vec!["a".to_string(), "b".to_string()];
         assert_eq!(
@@ -477,7 +512,7 @@ mod scoped_authorization_tests {
             Some("collector".into()),
             TenantSource::Database,
         )
-        .with_api_key_restrictions(scopes, Some(vec!["production".into()]))
+        .with_api_key_restrictions(scopes, Some(vec!["production".into()]), None)
     }
 
     #[test]

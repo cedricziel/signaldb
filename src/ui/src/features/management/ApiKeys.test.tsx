@@ -117,25 +117,27 @@ describe("ApiKeys page", () => {
     // Metadata (the created-date suffix is locale-dependent, so match by prefix)
     expect(
       screen.getByText((content) =>
-        content.startsWith("production · metrics:write, logs:write"),
-      ),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText((content) =>
         content.startsWith(
-          "staging · metrics:write, logs:write, traces:write, profiles:write",
+          "production · Any origin · metrics:write, logs:write",
         ),
       ),
     ).toBeInTheDocument();
     expect(
       screen.getByText((content) =>
-        content.startsWith("unrestricted · legacy unrestricted"),
+        content.startsWith(
+          "staging · Any origin · metrics:write, logs:write, traces:write, profiles:write",
+        ),
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText((content) =>
+        content.startsWith("unrestricted · Any origin · legacy unrestricted"),
       ),
     ).toBeInTheDocument();
     // A management key lists its tenant:manage scope like any other scope.
     expect(
       screen.getByText((content) =>
-        content.startsWith("unrestricted · tenant:manage"),
+        content.startsWith("unrestricted · Any origin · tenant:manage"),
       ),
     ).toBeInTheDocument();
 
@@ -169,7 +171,7 @@ describe("ApiKeys page", () => {
     );
     expect(
       screen.getByText((content) =>
-        content.startsWith("production, staging · metrics:write"),
+        content.startsWith("production, staging · Any origin · metrics:write"),
       ),
     ).toBeInTheDocument();
   });
@@ -503,6 +505,147 @@ describe("ApiKeys page", () => {
     expect(await post.clone().json()).toEqual({
       dataset_ids: ["production", "staging"],
       scopes: ["metrics:write", "logs:write", "traces:write", "profiles:write"],
+    });
+  });
+
+  it("creates a key restricted to a typed allowed origin", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, method: "GET", body: [] },
+      { match: API_KEYS_PATH, method: "POST", body: { key: "sdbk_origin" } },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+
+    await userEvent.type(
+      screen.getByLabelText("Add allowed origin"),
+      "https://a.example{Enter}",
+    );
+    await userEvent.click(screen.getByText("Create API key"));
+
+    await waitFor(() =>
+      expect(findFetchCall(fetchMock, "/api-keys", "POST")).toBeDefined(),
+    );
+    const post = findFetchCall(fetchMock, "/api-keys", "POST")!;
+    expect(await post.clone().json()).toEqual({
+      allowed_origins: ["https://a.example"],
+      scopes: ["metrics:write", "logs:write", "traces:write", "profiles:write"],
+    });
+  });
+
+  it("removes a typed origin before submitting", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, method: "GET", body: [] },
+      { match: API_KEYS_PATH, method: "POST", body: { key: "sdbk_origin" } },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+
+    await userEvent.type(
+      screen.getByLabelText("Add allowed origin"),
+      "https://a.example{Enter}",
+    );
+    await userEvent.type(
+      screen.getByLabelText("Add allowed origin"),
+      "https://b.example{Enter}",
+    );
+    await userEvent.click(screen.getByLabelText("Remove https://a.example"));
+    await userEvent.click(screen.getByText("Create API key"));
+
+    await waitFor(() =>
+      expect(findFetchCall(fetchMock, "/api-keys", "POST")).toBeDefined(),
+    );
+    const post = findFetchCall(fetchMock, "/api-keys", "POST")!;
+    expect(await post.clone().json()).toEqual({
+      allowed_origins: ["https://b.example"],
+      scopes: ["metrics:write", "logs:write", "traces:write", "profiles:write"],
+    });
+  });
+
+  it("updates a live key's allowed origins via PATCH", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, method: "GET", body: API_KEYS },
+      {
+        match: `${API_KEYS_PATH}/key-1`,
+        method: "PATCH",
+        body: {
+          ...API_KEYS[0],
+          allowed_origins: ["https://a.example"],
+        },
+      },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("collector-production")).toBeInTheDocument(),
+    );
+
+    await userEvent.click(screen.getAllByText("Edit scopes")[0]!);
+    const editor = screen.getByRole("form", { name: "Edit scopes" });
+    const { getByLabelText, getByText } = within(editor);
+    await userEvent.type(
+      getByLabelText("Add allowed origin"),
+      "https://a.example{Enter}",
+    );
+    await userEvent.click(getByText("Save scopes"));
+
+    await waitFor(() =>
+      expect(
+        findFetchCall(fetchMock, "/api-keys/key-1", "PATCH"),
+      ).toBeDefined(),
+    );
+    const patch = findFetchCall(fetchMock, "/api-keys/key-1", "PATCH")!;
+    expect(await patch.clone().json()).toEqual({
+      scopes: ["metrics:write", "logs:write"],
+      dataset_ids: ["production"],
+      allowed_origins: ["https://a.example"],
+    });
+  });
+
+  it("clears a live key's allowed-origins restriction only via the explicit clear control", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, method: "GET", body: API_KEYS },
+      {
+        match: `${API_KEYS_PATH}/key-1`,
+        method: "PATCH",
+        body: { ...API_KEYS[0], allowed_origins: null },
+      },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("collector-production")).toBeInTheDocument(),
+    );
+
+    await userEvent.click(screen.getAllByText("Edit scopes")[0]!);
+    const editor = screen.getByRole("form", { name: "Edit scopes" });
+    const { getByLabelText, getByText } = within(editor);
+
+    // Update-mode help text must not claim an empty list means "unrestricted"
+    // — on this form it means "leave the current restriction unchanged".
+    expect(
+      getByText(/leaves the current restriction unchanged/i),
+    ).toBeInTheDocument();
+
+    await userEvent.click(getByLabelText("Remove allowed-origins restriction"));
+    expect(getByLabelText("Add allowed origin")).toBeDisabled();
+    await userEvent.click(getByText("Save scopes"));
+
+    await waitFor(() =>
+      expect(
+        findFetchCall(fetchMock, "/api-keys/key-1", "PATCH"),
+      ).toBeDefined(),
+    );
+    const patch = findFetchCall(fetchMock, "/api-keys/key-1", "PATCH")!;
+    expect(await patch.clone().json()).toEqual({
+      scopes: ["metrics:write", "logs:write"],
+      dataset_ids: ["production"],
+      clear_allowed_origins: true,
     });
   });
 

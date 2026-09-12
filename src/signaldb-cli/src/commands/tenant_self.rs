@@ -240,6 +240,10 @@ pub enum ApiKeyAction {
         /// omit for an unrestricted key
         #[arg(long = "dataset", action = ArgAction::Append, value_name = "DATASET")]
         dataset: Option<Vec<String>>,
+        /// Restrict the key to these browser origins for CORS (repeatable);
+        /// omit for an unrestricted key
+        #[arg(long = "allowed-origin", action = ArgAction::Append, value_name = "ORIGIN")]
+        allowed_origin: Option<Vec<String>>,
         #[command(flatten)]
         connect: ConnectArgs,
     },
@@ -258,6 +262,14 @@ pub enum ApiKeyAction {
         /// cannot be combined with --dataset
         #[arg(long, conflicts_with = "dataset")]
         clear_dataset_restriction: bool,
+        /// Replacement allowed-origins restriction (repeatable); omit to
+        /// leave the current restriction unchanged
+        #[arg(long = "allowed-origin", action = ArgAction::Append, value_name = "ORIGIN")]
+        allowed_origin: Option<Vec<String>>,
+        /// Clear an existing allowed-origins restriction back to
+        /// unrestricted; cannot be combined with --allowed-origin
+        #[arg(long, conflicts_with = "allowed_origin")]
+        clear_allowed_origins: bool,
         #[command(flatten)]
         connect: ConnectArgs,
     },
@@ -272,9 +284,9 @@ pub enum ApiKeyAction {
     },
 }
 
-/// Render `ID  NAME  SCOPES  DATASETS` rows, column-aligned.
+/// Render `ID  NAME  SCOPES  DATASETS  ORIGINS` rows, column-aligned.
 fn format_tenant_api_key_list(keys: &[ManageApiKeyResponse]) -> String {
-    let rows: Vec<(String, String, String, String)> = keys
+    let rows: Vec<(String, String, String, String, String)> = keys
         .iter()
         .map(|k| {
             let name = k.name.clone().unwrap_or_else(|| "-".to_string());
@@ -285,7 +297,8 @@ fn format_tenant_api_key_list(keys: &[ManageApiKeyResponse]) -> String {
                 .map(|s| s.join(", "))
                 .unwrap_or_else(|| "-".to_string());
             let datasets = crate::commands::format_dataset_restriction(k.dataset_ids.as_deref());
-            (k.id.clone(), name, scopes, datasets)
+            let origins = crate::commands::format_dataset_restriction(k.allowed_origins.as_deref());
+            (k.id.clone(), name, scopes, datasets, origins)
         })
         .collect();
     crate::commands::format_api_key_table(&rows)
@@ -315,6 +328,7 @@ impl ApiKeyAction {
                 name,
                 scopes,
                 dataset,
+                allowed_origin,
                 connect,
             } => {
                 let tenant_id = require_tenant_id(&connect)?;
@@ -326,6 +340,7 @@ impl ApiKeyAction {
                         name,
                         scopes,
                         dataset_ids: dataset,
+                        allowed_origins: allowed_origin,
                     })
                     .send()
                     .await;
@@ -336,11 +351,19 @@ impl ApiKeyAction {
                 scopes,
                 dataset,
                 clear_dataset_restriction,
+                allowed_origin,
+                clear_allowed_origins,
                 connect,
             } => {
-                if scopes.is_empty() && dataset.is_none() && !clear_dataset_restriction {
+                if scopes.is_empty()
+                    && dataset.is_none()
+                    && !clear_dataset_restriction
+                    && allowed_origin.is_none()
+                    && !clear_allowed_origins
+                {
                     anyhow::bail!(
-                        "nothing to update: pass --scope, --dataset, and/or --clear-dataset-restriction"
+                        "nothing to update: pass --scope, --dataset, --clear-dataset-restriction, \
+                         --allowed-origin, and/or --clear-allowed-origins"
                     );
                 }
                 let tenant_id = require_tenant_id(&connect)?;
@@ -353,6 +376,8 @@ impl ApiKeyAction {
                         scopes: (!scopes.is_empty()).then_some(scopes),
                         dataset_ids: dataset,
                         clear_dataset_restriction: clear_dataset_restriction.then_some(true),
+                        allowed_origins: allowed_origin,
+                        clear_allowed_origins: clear_allowed_origins.then_some(true),
                     })
                     .send()
                     .await;
@@ -738,6 +763,103 @@ mod tests {
         );
     }
 
+    #[test]
+    fn api_key_create_accepts_repeated_allowed_origin_flag() {
+        let parsed = TestCli::try_parse_from([
+            "tenant",
+            "api-key",
+            "create",
+            "--name",
+            "ci",
+            "--scope",
+            "traces:write",
+            "--allowed-origin",
+            "https://a.example",
+            "--allowed-origin",
+            "https://b.example",
+        ])
+        .expect("parses");
+        let TenantSelfAction::ApiKey {
+            action: ApiKeyAction::Create { allowed_origin, .. },
+        } = parsed.action
+        else {
+            panic!("expected api-key create");
+        };
+        assert_eq!(
+            allowed_origin,
+            Some(vec![
+                "https://a.example".to_string(),
+                "https://b.example".to_string()
+            ])
+        );
+    }
+
+    #[test]
+    fn api_key_update_accepts_repeated_allowed_origin_flag_and_clear_flag() {
+        let parsed = TestCli::try_parse_from([
+            "tenant",
+            "api-key",
+            "update",
+            "k1",
+            "--allowed-origin",
+            "https://a.example",
+            "--allowed-origin",
+            "https://b.example",
+        ])
+        .expect("parses");
+        let TenantSelfAction::ApiKey {
+            action: ApiKeyAction::Update { allowed_origin, .. },
+        } = parsed.action
+        else {
+            panic!("expected api-key update");
+        };
+        assert_eq!(
+            allowed_origin,
+            Some(vec![
+                "https://a.example".to_string(),
+                "https://b.example".to_string()
+            ])
+        );
+
+        let parsed = TestCli::try_parse_from([
+            "tenant",
+            "api-key",
+            "update",
+            "k1",
+            "--allowed-origin",
+            "https://a.example",
+        ])
+        .expect("parses");
+        let TenantSelfAction::ApiKey {
+            action:
+                ApiKeyAction::Update {
+                    clear_allowed_origins,
+                    ..
+                },
+        } = parsed.action
+        else {
+            panic!("expected api-key update");
+        };
+        assert!(!clear_allowed_origins);
+    }
+
+    #[test]
+    fn api_key_update_rejects_allowed_origin_and_clear_allowed_origins_together() {
+        let parsed = TestCli::try_parse_from([
+            "tenant",
+            "api-key",
+            "update",
+            "k1",
+            "--allowed-origin",
+            "https://a.example",
+            "--clear-allowed-origins",
+        ]);
+        assert!(
+            parsed.is_err(),
+            "--allowed-origin and --clear-allowed-origins must conflict at the CLI level"
+        );
+    }
+
     #[tokio::test]
     async fn destructive_verbs_refuse_without_yes_when_not_a_tty() {
         // Under `cargo test`, stdin is not a terminal.
@@ -904,6 +1026,7 @@ mod tests {
             name: Some("ci".into()),
             scopes: vec!["traces:write".into()],
             dataset: None,
+            allowed_origin: None,
             connect: connect(),
         }
         .run()
@@ -914,6 +1037,8 @@ mod tests {
             scopes: vec!["logs:write".into()],
             dataset: None,
             clear_dataset_restriction: false,
+            allowed_origin: None,
+            clear_allowed_origins: false,
             connect: connect(),
         }
         .run()
@@ -1160,6 +1285,8 @@ mod tests {
             scopes: vec![],
             dataset: Some(vec!["production".into(), "staging".into()]),
             clear_dataset_restriction: false,
+            allowed_origin: None,
+            clear_allowed_origins: false,
             connect: connect_acme(&server),
         }
         .run()
@@ -1189,6 +1316,70 @@ mod tests {
             scopes: vec![],
             dataset: None,
             clear_dataset_restriction: true,
+            allowed_origin: None,
+            clear_allowed_origins: false,
+            connect: connect_acme(&server),
+        }
+        .run()
+        .await
+        .expect("update succeeds");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn tenant_api_key_update_sends_allowed_origins() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("PATCH", "/api/v1/manage/tenants/acme/api-keys/k1")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "allowed_origins": ["https://a.example", "https://b.example"]
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"k1","name":"ci","scopes":["traces:write"],"allowed_origins":["https://a.example","https://b.example"],"created_at":"2026-01-01T00:00:00Z","revoked":false}"#,
+            )
+            .create_async()
+            .await;
+
+        ApiKeyAction::Update {
+            key_id: "k1".into(),
+            scopes: vec![],
+            dataset: None,
+            clear_dataset_restriction: false,
+            allowed_origin: Some(vec!["https://a.example".into(), "https://b.example".into()]),
+            clear_allowed_origins: false,
+            connect: connect_acme(&server),
+        }
+        .run()
+        .await
+        .expect("update succeeds");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn tenant_api_key_update_clears_allowed_origins() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("PATCH", "/api/v1/manage/tenants/acme/api-keys/k1")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "clear_allowed_origins": true
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"id":"k1","name":"ci","scopes":["traces:write"],"created_at":"2026-01-01T00:00:00Z","revoked":false}"#,
+            )
+            .create_async()
+            .await;
+
+        ApiKeyAction::Update {
+            key_id: "k1".into(),
+            scopes: vec![],
+            dataset: None,
+            clear_dataset_restriction: false,
+            allowed_origin: None,
+            clear_allowed_origins: true,
             connect: connect_acme(&server),
         }
         .run()
@@ -1205,6 +1396,8 @@ mod tests {
             scopes: vec![],
             dataset: None,
             clear_dataset_restriction: false,
+            allowed_origin: None,
+            clear_allowed_origins: false,
             connect: connect_acme(&server),
         }
         .run()
@@ -1250,6 +1443,22 @@ mod tests {
         let rendered = format_tenant_api_key_list(&keys);
 
         assert!(rendered.contains("production, staging"));
+        assert!(rendered.contains("unrestricted"));
+    }
+
+    #[test]
+    fn format_tenant_api_key_list_shows_allowed_origins_restriction_or_unrestricted() {
+        let keys: Vec<ManageApiKeyResponse> = serde_json::from_str(
+            r#"[
+                {"id":"k1","name":"ci","scopes":["traces:write"],"allowed_origins":["https://a.example","https://b.example"],"created_at":"2026-01-01T00:00:00Z","revoked":false},
+                {"id":"k2","name":"full","scopes":["schema:read"],"allowed_origins":null,"created_at":"2026-01-01T00:00:00Z","revoked":false}
+            ]"#,
+        )
+        .unwrap();
+
+        let rendered = format_tenant_api_key_list(&keys);
+
+        assert!(rendered.contains("https://a.example, https://b.example"));
         assert!(rendered.contains("unrestricted"));
     }
 }

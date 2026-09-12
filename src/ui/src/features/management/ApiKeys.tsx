@@ -22,6 +22,11 @@ import {
   restrictionSet,
   selectedDatasetIds,
 } from "./DatasetPicker";
+import {
+  OriginPicker,
+  allowedOriginsLabel,
+  allowedOriginsSet,
+} from "./OriginPicker";
 import "./ApiKeys.css";
 
 /** Scopes checked in a form, in vocabulary order. */
@@ -81,6 +86,13 @@ export function ApiKeys() {
   // visibly disable the picker, rather than relying on "every box happens
   // to be unchecked" to mean the same thing.
   const [clearRestriction, setClearRestriction] = useState(false);
+  // Allowed-origins are free-form strings, not a fixed checkable set, so the
+  // picker's add/remove list is real React state (both for the create form
+  // and the per-key editor) rather than form-derived like the scope/dataset
+  // checkboxes.
+  const [createOrigins, setCreateOrigins] = useState<string[]>([]);
+  const [editOrigins, setEditOrigins] = useState<string[]>([]);
+  const [clearOriginRestriction, setClearOriginRestriction] = useState(false);
 
   const tenant = who?.tenant.id;
   const keys = useQuery({
@@ -96,6 +108,7 @@ export function ApiKeys() {
     mutationFn: (input: {
       name?: string;
       dataset_ids?: string[];
+      allowed_origins?: string[];
       scopes: ApiKeyScope[];
     }) => createApiKey(tenant!, input),
     onSuccess: (result) => {
@@ -112,15 +125,21 @@ export function ApiKeys() {
       scopes: ApiKeyScope[];
       dataset_ids?: string[];
       clear_dataset_restriction?: boolean;
+      allowed_origins?: string[];
+      clear_allowed_origins?: boolean;
     }) =>
       updateApiKey(tenant!, input.keyId, {
         scopes: input.scopes,
         dataset_ids: input.dataset_ids,
         clear_dataset_restriction: input.clear_dataset_restriction,
+        allowed_origins: input.allowed_origins,
+        clear_allowed_origins: input.clear_allowed_origins,
       }),
     onSuccess: () => {
       setEditingKeyId(null);
       setClearRestriction(false);
+      setClearOriginRestriction(false);
+      setEditOrigins([]);
       setError(null);
       void invalidateKeys();
     },
@@ -157,14 +176,17 @@ export function ApiKeys() {
       return;
     }
     // Omitting every dataset means unrestricted (D1a) — there is nothing to
-    // clear on create, so an empty selection is never ambiguous here.
+    // clear on create, so an empty selection is never ambiguous here. Same
+    // reasoning for allowed_origins.
     const datasetIds = selectedDatasetIds(data);
     createMutation.mutate({
       name: String(data.get("name") ?? "").trim() || undefined,
       dataset_ids: datasetIds.length > 0 ? datasetIds : undefined,
+      allowed_origins: createOrigins.length > 0 ? createOrigins : undefined,
       scopes,
     });
     form.reset();
+    setCreateOrigins([]);
   };
 
   const handleUpdate = (
@@ -178,19 +200,24 @@ export function ApiKeys() {
       setError("Select at least one scope.");
       return;
     }
-    if (clearRestriction) {
-      // The explicit clear signal (D1a): never paired with dataset_ids, and
-      // never implied by an empty selection alone.
-      updateMutation.mutate({ keyId, scopes, clear_dataset_restriction: true });
-      return;
-    }
+    // The dataset and allowed-origins restrictions are independent, each
+    // with its own explicit clear signal (D1a) — never paired with a
+    // non-empty replacement set, and never implied by an empty
+    // picker/list alone.
     const datasetIds = selectedDatasetIds(data);
     updateMutation.mutate({
       keyId,
       scopes,
-      // An empty selection here is never sent as `dataset_ids: []` (D1a) —
-      // it leaves the key's current restriction untouched instead.
-      ...(datasetIds.length > 0 ? { dataset_ids: datasetIds } : {}),
+      ...(clearRestriction
+        ? { clear_dataset_restriction: true }
+        : datasetIds.length > 0
+          ? { dataset_ids: datasetIds }
+          : {}),
+      ...(clearOriginRestriction
+        ? { clear_allowed_origins: true }
+        : editOrigins.length > 0
+          ? { allowed_origins: editOrigins }
+          : {}),
     });
   };
 
@@ -221,6 +248,11 @@ export function ApiKeys() {
             datasets={datasets}
             checked={() => false}
           />
+          <OriginPicker
+            idPrefix="create"
+            origins={createOrigins}
+            onChange={setCreateOrigins}
+          />
           <ScopePicker
             idPrefix="create"
             checked={(scope) => INGEST_SCOPES.includes(scope)}
@@ -244,7 +276,7 @@ export function ApiKeys() {
                   {key.name || "Unnamed key"}
                 </div>
                 <div className="api-key-meta">
-                  {datasetRestrictionLabel(key)} ·{" "}
+                  {datasetRestrictionLabel(key)} · {allowedOriginsLabel(key)} ·{" "}
                   {key.scopes?.length
                     ? key.scopes.join(", ")
                     : "legacy unrestricted"}
@@ -277,6 +309,23 @@ export function ApiKeys() {
                       />
                       Remove dataset restriction
                     </label>
+                    <OriginPicker
+                      idPrefix={`edit-${key.id}`}
+                      origins={editOrigins}
+                      onChange={setEditOrigins}
+                      disabled={clearOriginRestriction}
+                      mode="update"
+                    />
+                    <label className="dataset-clear">
+                      <input
+                        type="checkbox"
+                        checked={clearOriginRestriction}
+                        onChange={(event) =>
+                          setClearOriginRestriction(event.target.checked)
+                        }
+                      />
+                      Remove allowed-origins restriction
+                    </label>
                     <div className="api-key-editor-actions">
                       <button type="submit" disabled={updateMutation.isPending}>
                         Save scopes
@@ -286,6 +335,8 @@ export function ApiKeys() {
                         onClick={() => {
                           setEditingKeyId(null);
                           setClearRestriction(false);
+                          setClearOriginRestriction(false);
+                          setEditOrigins([]);
                         }}
                       >
                         Cancel
@@ -299,8 +350,11 @@ export function ApiKeys() {
                   <button
                     className="api-key-edit"
                     onClick={() => {
-                      setEditingKeyId(editingKeyId === key.id ? null : key.id);
+                      const opening = editingKeyId !== key.id;
+                      setEditingKeyId(opening ? key.id : null);
                       setClearRestriction(false);
+                      setClearOriginRestriction(false);
+                      setEditOrigins(opening ? allowedOriginsSet(key) : []);
                     }}
                   >
                     Edit scopes

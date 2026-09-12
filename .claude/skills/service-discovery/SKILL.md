@@ -87,7 +87,7 @@ CREATE TABLE ingesters (
 ```
 
 The same catalog also holds multi-tenancy tables (`tenants`, `api_keys` with
-per-key `scopes` + `dataset_ids` (a set restriction), patched by
+per-key `scopes` + `dataset_ids`/`allowed_origins` (set restrictions), patched by
 `Catalog::update_api_key_scopes`,
 `datasets`), user-identity tables (`users` — nullable `password_hash` plus
 `oidc_issuer`/`oidc_subject` for SSO identities; `tenant_memberships` — keyed by

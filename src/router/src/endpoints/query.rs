@@ -1331,7 +1331,11 @@ mod tests {
             TenantSource::Database,
         )
         .with_user("u1".into(), MembershipRole::Member, false, None)
-        .with_api_key_restrictions(Some(scopes.into_iter().map(str::to_string).collect()), None)
+        .with_api_key_restrictions(
+            Some(scopes.into_iter().map(str::to_string).collect()),
+            None,
+            None,
+        )
     }
 
     #[test]

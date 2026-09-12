@@ -76,6 +76,7 @@ async fn api_key(catalog: &Catalog, secret: &str, dataset_ids: Option<&[&str]>, 
             &Authenticator::hash_api_key(secret),
             Some(secret),
             dataset_ids.as_deref(),
+            None,
             Some(&scopes),
             None,
         )

@@ -847,6 +847,7 @@ impl Catalog {
                         .await?;
                 }
                 ensure_sqlite_text_column(pool, "api_keys", "dataset_ids").await?;
+                ensure_sqlite_text_column(pool, "api_keys", "allowed_origins").await?;
                 // D1: drop the legacy single-value column left by a
                 // pre-this-change database — but first backfill any row
                 // whose dataset_ids was never synced to it (a row that
@@ -1243,6 +1244,9 @@ impl Catalog {
                     .execute(pool)
                     .await?;
                 query("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS dataset_ids TEXT")
+                    .execute(pool)
+                    .await?;
+                query("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS allowed_origins TEXT")
                     .execute(pool)
                     .await?;
                 // D1: drop the legacy single-value column left by a
@@ -2234,6 +2238,9 @@ pub struct ApiKeyRecord {
     /// Dataset-set restriction (D1): `None` is unrestricted, `Some` is the
     /// exact set.
     pub dataset_ids: Option<Vec<String>>,
+    /// Allowed-origin restriction for browser CORS checks: `None` is
+    /// unrestricted, `Some` is the exact set of allowed `Origin` values.
+    pub allowed_origins: Option<Vec<String>>,
     pub scopes: Option<Vec<String>>,
     pub created_by_user_id: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -2247,6 +2254,8 @@ pub struct ApiKeyAuthRecord {
     pub name: Option<String>,
     /// Dataset-set restriction; see [`ApiKeyRecord::dataset_ids`].
     pub dataset_ids: Option<Vec<String>>,
+    /// Allowed-origin restriction; see [`ApiKeyRecord::allowed_origins`].
+    pub allowed_origins: Option<Vec<String>>,
     /// Explicit scopes, or `None` for a legacy unrestricted key.
     pub scopes: Option<Vec<String>>,
 }
@@ -2468,6 +2477,107 @@ fn decode_tenant_grants_column(json: Option<String>) -> Result<Vec<TenantGrant>,
         )
     })?;
     serde_json::from_str(&json).map_err(|e| sqlx::Error::Decode(Box::new(e)))
+}
+
+/// Tri-state update to a live API key's allowed-origin restriction, mirroring
+/// [`DatasetRestrictionUpdate`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OriginRestrictionUpdate {
+    /// Leave the existing restriction (or lack of one) untouched.
+    Keep,
+    /// Clear any restriction back to unrestricted: `allowed_origins` becomes
+    /// `NULL`.
+    Clear,
+    /// Replace the restriction with exactly this set. Validated the same way
+    /// as the create path (`upsert_scoped_api_key`): an empty or
+    /// duplicate-containing set is rejected.
+    Set(Vec<String>),
+}
+
+impl OriginRestrictionUpdate {
+    /// Construct the tri-state update from an update request's two
+    /// origin-restriction fields, mirroring
+    /// [`DatasetRestrictionUpdate::from_request`] exactly:
+    ///
+    /// - `allowed_origins: Some(origins)` (non-empty) with
+    ///   `clear_allowed_origins: false` → [`Self::Set`], replacing the
+    ///   restriction.
+    /// - `allowed_origins: None` with `clear_allowed_origins: true` →
+    ///   [`Self::Clear`].
+    /// - Both absent/`false` → [`Self::Keep`], leaving the restriction
+    ///   untouched.
+    /// - An explicit empty array or a duplicate origin is rejected
+    ///   unconditionally (via [`validate_allowed_origins_set`]), regardless
+    ///   of `clear_allowed_origins`.
+    /// - A non-empty `allowed_origins` combined with
+    ///   `clear_allowed_origins: true` is rejected as a contradictory
+    ///   request.
+    pub fn from_request(
+        allowed_origins: Option<Vec<String>>,
+        clear_allowed_origins: bool,
+    ) -> Result<Self, sqlx::Error> {
+        match allowed_origins {
+            Some(origins) if !origins.is_empty() && clear_allowed_origins => Err(sqlx::Error::Protocol(
+                "clear_allowed_origins cannot be combined with a non-empty allowed_origins in the same request"
+                    .to_string(),
+            )),
+            Some(origins) => {
+                validate_allowed_origins_set(&origins)?;
+                Ok(Self::Set(origins))
+            }
+            None if clear_allowed_origins => Ok(Self::Clear),
+            None => Ok(Self::Keep),
+        }
+    }
+}
+
+/// Validate a create request's `allowed_origins` field ahead of
+/// [`Catalog::upsert_scoped_api_key`]: `None` stays `None` (unrestricted),
+/// `Some` is rejected up front when empty or duplicate-containing, via the
+/// same [`validate_allowed_origins_set`] the catalog write path itself
+/// applies.
+pub fn validate_create_allowed_origins(
+    allowed_origins: Option<Vec<String>>,
+) -> Result<Option<Vec<String>>, sqlx::Error> {
+    match allowed_origins {
+        Some(origins) => {
+            validate_allowed_origins_set(&origins)?;
+            Ok(Some(origins))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Reject an empty or duplicate-containing allowed-origins set. Shared by
+/// every path that writes an allowed-origins set (the API-key create path
+/// `upsert_scoped_api_key` and the update path `update_api_key_scopes`'s
+/// `OriginRestrictionUpdate::Set` variant), so neither can drift into
+/// checking a different rule. Each origin is treated as an opaque string —
+/// no URL-syntax validation is performed here.
+pub fn validate_allowed_origins_set(origins: &[String]) -> Result<(), sqlx::Error> {
+    if origins.is_empty() {
+        return Err(sqlx::Error::Protocol(
+            "allowed_origins must not be empty; omit the field (or send null) for an unrestricted key"
+                .to_string(),
+        ));
+    }
+    let mut seen = std::collections::HashSet::with_capacity(origins.len());
+    for origin in origins {
+        if !seen.insert(origin.as_str()) {
+            return Err(sqlx::Error::Protocol(format!(
+                "allowed_origins contains duplicate origin '{origin}'"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Validate and JSON-encode an allowed-origins set for the `allowed_origins`
+/// column.
+fn encode_allowed_origins_json(origins: &[String]) -> Result<String, sqlx::Error> {
+    validate_allowed_origins_set(origins)?;
+    serde_json::to_string(origins)
+        .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize allowed_origins: {e}")))
 }
 
 /// Dataset record from database
@@ -3360,24 +3470,27 @@ impl Catalog {
         key_hash: &str,
         name: Option<&str>,
     ) -> Result<String, sqlx::Error> {
-        self.upsert_scoped_api_key(tenant_id, key_hash, name, None, None, None)
+        self.upsert_scoped_api_key(tenant_id, key_hash, name, None, None, None, None)
             .await
     }
 
-    /// Create or return an API key with optional dataset-set and scope
-    /// restrictions.
+    /// Create or return an API key with optional dataset-set, allowed-origin
+    /// and scope restrictions.
     ///
     /// `scopes = None` preserves legacy unrestricted-key behavior. New
     /// user-created keys should always pass an explicit, non-empty scope list.
     /// `dataset_ids = Some(&[])` or a set containing a duplicate name is
     /// rejected (D1a) — omit the argument (or pass `None`) for an
-    /// unrestricted key.
+    /// unrestricted key. `allowed_origins = Some(&[])` or a set containing a
+    /// duplicate name is rejected the same way.
+    #[allow(clippy::too_many_arguments)]
     pub async fn upsert_scoped_api_key(
         &self,
         tenant_id: &str,
         key_hash: &str,
         name: Option<&str>,
         dataset_ids: Option<&[String]>,
+        allowed_origins: Option<&[String]>,
         scopes: Option<&[String]>,
         created_by_user_id: Option<&str>,
     ) -> Result<String, sqlx::Error> {
@@ -3389,6 +3502,9 @@ impl Catalog {
                 sqlx::Error::Protocol(format!("failed to serialize API key scopes: {error}"))
             })?;
         let dataset_ids_json = dataset_ids.map(encode_dataset_ids_json).transpose()?;
+        let allowed_origins_json = allowed_origins
+            .map(encode_allowed_origins_json)
+            .transpose()?;
 
         match self {
             Catalog::Sqlite(pool) => {
@@ -3409,10 +3525,10 @@ impl Catalog {
                 // Insert new key
                 let stmt = r#"
                 INSERT INTO api_keys (
-                    id, key_hash, tenant_id, name, dataset_ids, scopes,
+                    id, key_hash, tenant_id, name, dataset_ids, allowed_origins, scopes,
                     created_by_user_id, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 "#;
                 query(stmt)
                     .bind(&key_id)
@@ -3420,6 +3536,7 @@ impl Catalog {
                     .bind(tenant_id)
                     .bind(name)
                     .bind(&dataset_ids_json)
+                    .bind(&allowed_origins_json)
                     .bind(&scopes_json)
                     .bind(created_by_user_id)
                     .bind(&now)
@@ -3440,10 +3557,10 @@ impl Catalog {
 
                 let stmt = r#"
                 INSERT INTO api_keys (
-                    id, key_hash, tenant_id, name, dataset_ids, scopes,
+                    id, key_hash, tenant_id, name, dataset_ids, allowed_origins, scopes,
                     created_by_user_id
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 "#;
                 query(stmt)
                     .bind(&key_id)
@@ -3451,6 +3568,7 @@ impl Catalog {
                     .bind(tenant_id)
                     .bind(name)
                     .bind(&dataset_ids_json)
+                    .bind(&allowed_origins_json)
                     .bind(&scopes_json)
                     .bind(created_by_user_id)
                     .execute(pool)
@@ -3468,7 +3586,7 @@ impl Catalog {
     ) -> Result<Option<ApiKeyAuthRecord>, sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
-                let row = query("SELECT tenant_id, name, dataset_ids, scopes FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL")
+                let row = query("SELECT tenant_id, name, dataset_ids, allowed_origins, scopes FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL")
                     .bind(key_hash)
                     .fetch_optional(pool)
                     .await?;
@@ -3478,13 +3596,14 @@ impl Catalog {
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
                         dataset_ids: decode_json_vec_opt(r.get("dataset_ids"))?,
+                        allowed_origins: decode_json_vec_opt(r.get("allowed_origins"))?,
                         scopes: decode_json_vec_opt(r.get("scopes"))?,
                     })
                 })
                 .transpose()
             }
             Catalog::Postgres(pool) => {
-                let row = query("SELECT tenant_id, name, dataset_ids, scopes FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL")
+                let row = query("SELECT tenant_id, name, dataset_ids, allowed_origins, scopes FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL")
                     .bind(key_hash)
                     .fetch_optional(pool)
                     .await?;
@@ -3494,6 +3613,7 @@ impl Catalog {
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
                         dataset_ids: decode_json_vec_opt(r.get("dataset_ids"))?,
+                        allowed_origins: decode_json_vec_opt(r.get("allowed_origins"))?,
                         scopes: decode_json_vec_opt(r.get("scopes"))?,
                     })
                 })
@@ -3523,22 +3643,25 @@ impl Catalog {
         Ok(())
     }
 
-    /// Update the scopes and/or dataset-set restriction of a live API key.
+    /// Update the scopes, dataset-set restriction and/or allowed-origin
+    /// restriction of a live API key.
     ///
-    /// `scopes = None` leaves scopes untouched. `dataset_update` is a
-    /// tri-state (D2b): [`DatasetRestrictionUpdate::Keep`] leaves the
-    /// restriction untouched, [`DatasetRestrictionUpdate::Clear`] nulls the
-    /// `dataset_ids` column, and [`DatasetRestrictionUpdate::Set`] replaces
-    /// the restriction (rejecting an empty or duplicate-containing set,
-    /// D1a). Returns `false` when the key does not exist or is revoked
-    /// (revoked keys are immutable). Because the tenant context is rebuilt
-    /// from the key row on every request, the change applies to the next
-    /// request made with the key.
+    /// `scopes = None` leaves scopes untouched. `dataset_update` and
+    /// `origin_update` are each a tri-state (D2b):
+    /// [`DatasetRestrictionUpdate::Keep`]/[`OriginRestrictionUpdate::Keep`]
+    /// leave the restriction untouched, `Clear` nulls the `dataset_ids`/
+    /// `allowed_origins` column, and `Set` replaces the restriction
+    /// (rejecting an empty or duplicate-containing set, D1a). Returns
+    /// `false` when the key does not exist or is revoked (revoked keys are
+    /// immutable). Because the tenant context is rebuilt from the key row on
+    /// every request, the change applies to the next request made with the
+    /// key.
     pub async fn update_api_key_scopes(
         &self,
         key_id: &str,
         scopes: Option<&[String]>,
         dataset_update: DatasetRestrictionUpdate,
+        origin_update: OriginRestrictionUpdate,
     ) -> Result<bool, sqlx::Error> {
         let scopes_json = scopes
             .map(serde_json::to_string)
@@ -3546,66 +3669,84 @@ impl Catalog {
             .map_err(|error| {
                 sqlx::Error::Protocol(format!("failed to serialize API key scopes: {error}"))
             })?;
-        let rows_affected = match (self, dataset_update) {
-            (Catalog::Sqlite(pool), DatasetRestrictionUpdate::Keep) => query(
-                "UPDATE api_keys SET scopes = COALESCE(?, scopes) WHERE id = ? AND revoked_at IS NULL",
-            )
-            .bind(&scopes_json)
-            .bind(key_id)
-            .execute(pool)
-            .await?
-            .rows_affected(),
-            (Catalog::Sqlite(pool), DatasetRestrictionUpdate::Clear) => query(
-                "UPDATE api_keys SET scopes = COALESCE(?, scopes), dataset_ids = NULL \
-                     WHERE id = ? AND revoked_at IS NULL",
-            )
-            .bind(&scopes_json)
-            .bind(key_id)
-            .execute(pool)
-            .await?
-            .rows_affected(),
-            (Catalog::Sqlite(pool), DatasetRestrictionUpdate::Set(ids)) => {
-                let dataset_ids_json = encode_dataset_ids_json(&ids)?;
-                query(
-                    "UPDATE api_keys SET scopes = COALESCE(?, scopes), dataset_ids = ? \
-                         WHERE id = ? AND revoked_at IS NULL",
-                )
-                .bind(&scopes_json)
-                .bind(&dataset_ids_json)
-                .bind(key_id)
-                .execute(pool)
-                .await?
-                .rows_affected()
+        let dataset_ids_bind = match &dataset_update {
+            DatasetRestrictionUpdate::Set(ids) => Some(encode_dataset_ids_json(ids)?),
+            DatasetRestrictionUpdate::Keep | DatasetRestrictionUpdate::Clear => None,
+        };
+        let allowed_origins_bind = match &origin_update {
+            OriginRestrictionUpdate::Set(origins) => Some(encode_allowed_origins_json(origins)?),
+            OriginRestrictionUpdate::Keep | OriginRestrictionUpdate::Clear => None,
+        };
+
+        let rows_affected = match self {
+            Catalog::Sqlite(pool) => {
+                let mut set_clauses = vec!["scopes = COALESCE(?, scopes)".to_string()];
+                match dataset_update {
+                    DatasetRestrictionUpdate::Keep => {}
+                    DatasetRestrictionUpdate::Clear => {
+                        set_clauses.push("dataset_ids = NULL".to_string())
+                    }
+                    DatasetRestrictionUpdate::Set(_) => {
+                        set_clauses.push("dataset_ids = ?".to_string())
+                    }
+                }
+                match origin_update {
+                    OriginRestrictionUpdate::Keep => {}
+                    OriginRestrictionUpdate::Clear => {
+                        set_clauses.push("allowed_origins = NULL".to_string())
+                    }
+                    OriginRestrictionUpdate::Set(_) => {
+                        set_clauses.push("allowed_origins = ?".to_string())
+                    }
+                }
+                let sql = format!(
+                    "UPDATE api_keys SET {} WHERE id = ? AND revoked_at IS NULL",
+                    set_clauses.join(", ")
+                );
+                let mut q = query(&sql).bind(&scopes_json);
+                if let Some(json) = &dataset_ids_bind {
+                    q = q.bind(json);
+                }
+                if let Some(json) = &allowed_origins_bind {
+                    q = q.bind(json);
+                }
+                q.bind(key_id).execute(pool).await?.rows_affected()
             }
-            (Catalog::Postgres(pool), DatasetRestrictionUpdate::Keep) => query(
-                "UPDATE api_keys SET scopes = COALESCE($1, scopes) WHERE id = $2 AND revoked_at IS NULL",
-            )
-            .bind(&scopes_json)
-            .bind(key_id)
-            .execute(pool)
-            .await?
-            .rows_affected(),
-            (Catalog::Postgres(pool), DatasetRestrictionUpdate::Clear) => query(
-                "UPDATE api_keys SET scopes = COALESCE($1, scopes), dataset_ids = NULL \
-                     WHERE id = $2 AND revoked_at IS NULL",
-            )
-            .bind(&scopes_json)
-            .bind(key_id)
-            .execute(pool)
-            .await?
-            .rows_affected(),
-            (Catalog::Postgres(pool), DatasetRestrictionUpdate::Set(ids)) => {
-                let dataset_ids_json = encode_dataset_ids_json(&ids)?;
-                query(
-                    "UPDATE api_keys SET scopes = COALESCE($1, scopes), dataset_ids = $2 \
-                         WHERE id = $3 AND revoked_at IS NULL",
-                )
-                .bind(&scopes_json)
-                .bind(&dataset_ids_json)
-                .bind(key_id)
-                .execute(pool)
-                .await?
-                .rows_affected()
+            Catalog::Postgres(pool) => {
+                let mut set_clauses = vec!["scopes = COALESCE($1, scopes)".to_string()];
+                let mut param_idx = 2;
+                match dataset_update {
+                    DatasetRestrictionUpdate::Keep => {}
+                    DatasetRestrictionUpdate::Clear => {
+                        set_clauses.push("dataset_ids = NULL".to_string())
+                    }
+                    DatasetRestrictionUpdate::Set(_) => {
+                        set_clauses.push(format!("dataset_ids = ${param_idx}"));
+                        param_idx += 1;
+                    }
+                }
+                match origin_update {
+                    OriginRestrictionUpdate::Keep => {}
+                    OriginRestrictionUpdate::Clear => {
+                        set_clauses.push("allowed_origins = NULL".to_string())
+                    }
+                    OriginRestrictionUpdate::Set(_) => {
+                        set_clauses.push(format!("allowed_origins = ${param_idx}"));
+                        param_idx += 1;
+                    }
+                }
+                let sql = format!(
+                    "UPDATE api_keys SET {} WHERE id = ${param_idx} AND revoked_at IS NULL",
+                    set_clauses.join(", ")
+                );
+                let mut q = query(&sql).bind(&scopes_json);
+                if let Some(json) = &dataset_ids_bind {
+                    q = q.bind(json);
+                }
+                if let Some(json) = &allowed_origins_bind {
+                    q = q.bind(json);
+                }
+                q.bind(key_id).execute(pool).await?.rows_affected()
             }
         };
         Ok(rows_affected > 0)
@@ -3917,7 +4058,7 @@ impl Catalog {
         match self {
             Catalog::Sqlite(pool) => {
                 let rows = query(
-                    "SELECT id, tenant_id, name, dataset_ids, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE tenant_id = ? ORDER BY created_at DESC",
+                    "SELECT id, tenant_id, name, dataset_ids, allowed_origins, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE tenant_id = ? ORDER BY created_at DESC",
                 )
                 .bind(tenant_id)
                 .fetch_all(pool)
@@ -3931,6 +4072,7 @@ impl Catalog {
                             tenant_id: r.get("tenant_id"),
                             name: r.get("name"),
                             dataset_ids: decode_json_vec_opt(r.get("dataset_ids"))?,
+                            allowed_origins: decode_json_vec_opt(r.get("allowed_origins"))?,
                             scopes: decode_json_vec_opt(r.get("scopes"))?,
                             created_by_user_id: r.get("created_by_user_id"),
                             created_at: parse_rfc3339(r.get("created_at"))?,
@@ -3941,7 +4083,7 @@ impl Catalog {
             }
             Catalog::Postgres(pool) => {
                 let rows = query(
-                    "SELECT id, tenant_id, name, dataset_ids, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE tenant_id = $1 ORDER BY created_at DESC",
+                    "SELECT id, tenant_id, name, dataset_ids, allowed_origins, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE tenant_id = $1 ORDER BY created_at DESC",
                 )
                 .bind(tenant_id)
                 .fetch_all(pool)
@@ -3954,6 +4096,7 @@ impl Catalog {
                             tenant_id: r.get("tenant_id"),
                             name: r.get("name"),
                             dataset_ids: decode_json_vec_opt(r.get("dataset_ids"))?,
+                            allowed_origins: decode_json_vec_opt(r.get("allowed_origins"))?,
                             scopes: decode_json_vec_opt(r.get("scopes"))?,
                             created_by_user_id: r.get("created_by_user_id"),
                             created_at: r.get("created_at"),
@@ -3970,7 +4113,7 @@ impl Catalog {
         match self {
             Catalog::Sqlite(pool) => {
                 let row = query(
-                    "SELECT id, tenant_id, name, dataset_ids, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE id = ?",
+                    "SELECT id, tenant_id, name, dataset_ids, allowed_origins, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE id = ?",
                 )
                 .bind(key_id)
                 .fetch_optional(pool)
@@ -3983,6 +4126,7 @@ impl Catalog {
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
                         dataset_ids: decode_json_vec_opt(r.get("dataset_ids"))?,
+                        allowed_origins: decode_json_vec_opt(r.get("allowed_origins"))?,
                         scopes: decode_json_vec_opt(r.get("scopes"))?,
                         created_by_user_id: r.get("created_by_user_id"),
                         created_at: parse_rfc3339(r.get("created_at"))?,
@@ -3993,7 +4137,7 @@ impl Catalog {
             }
             Catalog::Postgres(pool) => {
                 let row = query(
-                    "SELECT id, tenant_id, name, dataset_ids, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE id = $1",
+                    "SELECT id, tenant_id, name, dataset_ids, allowed_origins, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE id = $1",
                 )
                 .bind(key_id)
                 .fetch_optional(pool)
@@ -4005,6 +4149,7 @@ impl Catalog {
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
                         dataset_ids: decode_json_vec_opt(r.get("dataset_ids"))?,
+                        allowed_origins: decode_json_vec_opt(r.get("allowed_origins"))?,
                         scopes: decode_json_vec_opt(r.get("scopes"))?,
                         created_by_user_id: r.get("created_by_user_id"),
                         created_at: r.get("created_at"),
@@ -6155,6 +6300,51 @@ mod multi_tenancy_tests {
     }
 
     #[test]
+    fn origin_restriction_update_from_request_covers_every_combination() {
+        // Both absent -> Keep.
+        assert_eq!(
+            OriginRestrictionUpdate::from_request(None, false).unwrap(),
+            OriginRestrictionUpdate::Keep
+        );
+        // Non-empty origins, clear false -> Set.
+        assert_eq!(
+            OriginRestrictionUpdate::from_request(
+                Some(vec!["https://a.example".to_string()]),
+                false
+            )
+            .unwrap(),
+            OriginRestrictionUpdate::Set(vec!["https://a.example".to_string()])
+        );
+        // No origins, clear true -> Clear.
+        assert_eq!(
+            OriginRestrictionUpdate::from_request(None, true).unwrap(),
+            OriginRestrictionUpdate::Clear
+        );
+        // Empty origins is rejected unconditionally, clear flag notwithstanding.
+        assert!(OriginRestrictionUpdate::from_request(Some(vec![]), false).is_err());
+        assert!(OriginRestrictionUpdate::from_request(Some(vec![]), true).is_err());
+        // Duplicate origin is rejected, same as the catalog write path.
+        assert!(
+            OriginRestrictionUpdate::from_request(
+                Some(vec![
+                    "https://a.example".to_string(),
+                    "https://a.example".to_string()
+                ]),
+                false
+            )
+            .is_err()
+        );
+        // Non-empty origins together with clear:true is a contradictory request.
+        assert!(
+            OriginRestrictionUpdate::from_request(
+                Some(vec!["https://a.example".to_string()]),
+                true
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
     fn validate_create_dataset_ids_rejects_empty_and_duplicate_but_passes_through_none_and_valid_sets()
      {
         assert_eq!(validate_create_dataset_ids(None).unwrap(), None);
@@ -6475,6 +6665,7 @@ mod multi_tenancy_tests {
                 &key_hash,
                 Some("metrics"),
                 Some(&["production".to_string()]),
+                None,
                 Some(&scopes),
                 Some("user-1"),
             )
@@ -6505,6 +6696,7 @@ mod multi_tenancy_tests {
                 &key_hash,
                 Some("live"),
                 None,
+                None,
                 Some(&["schema:read".to_string()]),
                 None,
             )
@@ -6517,6 +6709,7 @@ mod multi_tenancy_tests {
                 &key_id,
                 Some(&["schema:read".to_string(), "schema:write".to_string()]),
                 DatasetRestrictionUpdate::Keep,
+                OriginRestrictionUpdate::Keep,
             )
             .await
             .unwrap();
@@ -6534,6 +6727,7 @@ mod multi_tenancy_tests {
                 &key_id,
                 None,
                 DatasetRestrictionUpdate::Set(vec!["production".to_string()]),
+                OriginRestrictionUpdate::Keep,
             )
             .await
             .unwrap();
@@ -6548,7 +6742,12 @@ mod multi_tenancy_tests {
         // Nothing to change is a no-op success.
         assert!(
             catalog
-                .update_api_key_scopes(&key_id, None, DatasetRestrictionUpdate::Keep)
+                .update_api_key_scopes(
+                    &key_id,
+                    None,
+                    DatasetRestrictionUpdate::Keep,
+                    OriginRestrictionUpdate::Keep
+                )
                 .await
                 .unwrap()
         );
@@ -6568,6 +6767,7 @@ mod multi_tenancy_tests {
                 &key_hash,
                 None,
                 None,
+                None,
                 Some(&["traces:write".to_string()]),
                 None,
             )
@@ -6580,6 +6780,7 @@ mod multi_tenancy_tests {
                 &key_id,
                 Some(&["logs:write".to_string()]),
                 DatasetRestrictionUpdate::Keep,
+                OriginRestrictionUpdate::Keep,
             )
             .await
             .unwrap();
@@ -6592,6 +6793,7 @@ mod multi_tenancy_tests {
                 "no-such-key",
                 Some(&["logs:write".to_string()]),
                 DatasetRestrictionUpdate::Keep,
+                OriginRestrictionUpdate::Keep,
             )
             .await
             .unwrap();
@@ -6613,6 +6815,7 @@ mod multi_tenancy_tests {
                 &key_hash,
                 Some("multi"),
                 Some(&ids),
+                None,
                 Some(&["traces:read".to_string()]),
                 None,
             )
@@ -6641,6 +6844,7 @@ mod multi_tenancy_tests {
                 Some(&[]),
                 None,
                 None,
+                None,
             )
             .await;
         assert!(result.is_err(), "an empty dataset_ids set must be rejected");
@@ -6659,6 +6863,7 @@ mod multi_tenancy_tests {
                 &hash_api_key("dup-dataset-secret"),
                 None,
                 Some(&["production".to_string(), "production".to_string()]),
+                None,
                 None,
                 None,
             )
@@ -6682,6 +6887,7 @@ mod multi_tenancy_tests {
                 &hash_api_key("keep-secret"),
                 None,
                 Some(&["a".to_string()]),
+                None,
                 Some(&["traces:read".to_string()]),
                 None,
             )
@@ -6690,7 +6896,12 @@ mod multi_tenancy_tests {
 
         assert!(
             catalog
-                .update_api_key_scopes(&key_id, None, DatasetRestrictionUpdate::Keep)
+                .update_api_key_scopes(
+                    &key_id,
+                    None,
+                    DatasetRestrictionUpdate::Keep,
+                    OriginRestrictionUpdate::Keep
+                )
                 .await
                 .unwrap()
         );
@@ -6712,6 +6923,7 @@ mod multi_tenancy_tests {
                 &hash_api_key("clear-secret"),
                 None,
                 Some(&["a".to_string()]),
+                None,
                 Some(&["traces:read".to_string()]),
                 None,
             )
@@ -6720,7 +6932,12 @@ mod multi_tenancy_tests {
 
         assert!(
             catalog
-                .update_api_key_scopes(&key_id, None, DatasetRestrictionUpdate::Clear)
+                .update_api_key_scopes(
+                    &key_id,
+                    None,
+                    DatasetRestrictionUpdate::Clear,
+                    OriginRestrictionUpdate::Keep
+                )
                 .await
                 .unwrap()
         );
@@ -6742,6 +6959,7 @@ mod multi_tenancy_tests {
                 &hash_api_key("set-secret"),
                 None,
                 None,
+                None,
                 Some(&["traces:read".to_string()]),
                 None,
             )
@@ -6754,6 +6972,7 @@ mod multi_tenancy_tests {
                     &key_id,
                     None,
                     DatasetRestrictionUpdate::Set(vec!["a".to_string()]),
+                    OriginRestrictionUpdate::Keep,
                 )
                 .await
                 .unwrap()
@@ -6770,6 +6989,7 @@ mod multi_tenancy_tests {
                     &key_id,
                     None,
                     DatasetRestrictionUpdate::Set(vec!["a".to_string(), "b".to_string()]),
+                    OriginRestrictionUpdate::Keep,
                 )
                 .await
                 .unwrap()
@@ -6795,6 +7015,7 @@ mod multi_tenancy_tests {
                 &hash_api_key("set-invalid-secret"),
                 None,
                 None,
+                None,
                 Some(&["traces:read".to_string()]),
                 None,
             )
@@ -6802,7 +7023,12 @@ mod multi_tenancy_tests {
             .unwrap();
 
         let empty = catalog
-            .update_api_key_scopes(&key_id, None, DatasetRestrictionUpdate::Set(vec![]))
+            .update_api_key_scopes(
+                &key_id,
+                None,
+                DatasetRestrictionUpdate::Set(vec![]),
+                OriginRestrictionUpdate::Keep,
+            )
             .await;
         assert!(empty.is_err(), "an empty Set must be rejected");
 
@@ -6811,11 +7037,79 @@ mod multi_tenancy_tests {
                 &key_id,
                 None,
                 DatasetRestrictionUpdate::Set(vec!["a".to_string(), "a".to_string()]),
+                OriginRestrictionUpdate::Keep,
             )
             .await;
         assert!(
             duplicate.is_err(),
             "a duplicate-containing Set must be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_with_allowed_origins_round_trips_then_clears() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_hash = hash_api_key("origin-secret");
+        let origins = vec!["https://example.com".to_string()];
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &key_hash,
+                Some("origin-restricted"),
+                None,
+                Some(&origins),
+                Some(&["traces:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let auth = catalog.validate_api_key(&key_hash).await.unwrap().unwrap();
+        assert_eq!(auth.allowed_origins, Some(origins.clone()));
+
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.allowed_origins, Some(origins));
+
+        assert!(
+            catalog
+                .update_api_key_scopes(
+                    &key_id,
+                    None,
+                    DatasetRestrictionUpdate::Keep,
+                    OriginRestrictionUpdate::Clear,
+                )
+                .await
+                .unwrap()
+        );
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.allowed_origins, None);
+    }
+
+    #[tokio::test]
+    async fn create_with_empty_allowed_origins_is_rejected() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let result = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &hash_api_key("empty-origin-secret"),
+                None,
+                None,
+                Some(&[]),
+                None,
+                None,
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "an empty allowed_origins set must be rejected"
         );
     }
 
@@ -7283,6 +7577,7 @@ mod postgres_dataset_ids_tests {
                 "pg-multi-hash",
                 Some("multi"),
                 Some(&ids),
+                None,
                 Some(&["traces:read".to_string()]),
                 None,
             )
@@ -7294,7 +7589,12 @@ mod postgres_dataset_ids_tests {
 
         assert!(
             catalog
-                .update_api_key_scopes(&key_id, None, DatasetRestrictionUpdate::Clear)
+                .update_api_key_scopes(
+                    &key_id,
+                    None,
+                    DatasetRestrictionUpdate::Clear,
+                    OriginRestrictionUpdate::Keep
+                )
                 .await
                 .unwrap()
         );

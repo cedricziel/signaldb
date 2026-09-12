@@ -189,16 +189,41 @@ service:
       exporters: [otlphttp/signaldb]
 ```
 
+## Browser (CORS) ingestion
+
+The OTLP/HTTP endpoints can be called directly from client-side JavaScript
+(e.g. a browser-based RUM/telemetry SDK exporting straight to SignalDB, no
+collector in between). Cross-origin requests are always allowed through
+preflight (`OPTIONS`) — a preflight carries no `Authorization` header, so
+the acceptor can't know which key will be used and grants no authority at
+that stage. The real check happens on the actual request, once the API key
+is resolved:
+
+- A key with no origin restriction configured behaves exactly as today —
+  any origin may use it from a browser.
+- A key restricted to a set of origins (see
+  [Authentication](authentication.md#origin-restriction-browsercors-ingestion))
+  only succeeds from an `Origin` in that set; a mismatched origin gets
+  `403 Forbidden` and no `Access-Control-Allow-Origin` header, so the
+  browser reports it as a CORS failure.
+- Non-browser requests (no `Origin` header — SDKs, Collectors,
+  server-to-server calls) are entirely unaffected by this restriction
+  either way.
+
+Configure the restriction on the key itself; there is no separate
+acceptor-wide CORS setting for ingest.
+
 ## Troubleshooting
 
-| Symptom                                                     | Cause                                                                 | Fix                                                                                                              |
-| ----------------------------------------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
-| `UNAUTHENTICATED: Missing authorization metadata`           | No `authorization` metadata on the request                            | Add `authorization: Bearer <key>` to exporter headers                                                            |
-| `UNAUTHENTICATED: Missing x-tenant-id metadata`             | No tenant header                                                      | Add `x-tenant-id`                                                                                                |
-| `UNAUTHENTICATED`                                           | API key is wrong or revoked                                           | Check the key with your operator, see [Authentication](authentication.md)                                        |
-| `PERMISSION_DENIED`                                         | Key does not belong to the tenant/dataset you named                   | Use a key issued for that tenant                                                                                 |
-| `RESOURCE_EXHAUSTED`                                        | Per-tenant ingest rate limit hit                                      | Back off and retry; ask your operator about tenant limits                                                        |
-| `RESOURCE_EXHAUSTED` mentioning `quota_exceeded`            | Tenant is at or over its storage quota (`max_storage_bytes`)          | Retrying will not help until data is deleted, retention shortens, or the quota is raised — talk to your operator |
-| `429 Too Many Requests` on an OTLP/HTTP endpoint            | HTTP analog of the two `RESOURCE_EXHAUSTED` cases above               | Back off and retry (rate limit), or talk to your operator (quota)                                                |
-| `400 Bad Request` on an OTLP/HTTP endpoint with a JSON body | Payload is not valid protojson (e.g. base64 trace IDs instead of hex) | Use a protojson-compliant encoder; trace/span IDs must be hex strings                                            |
-| `413 Payload Too Large`                                     | Decoded body exceeds `[acceptor].max_request_body_bytes`              | Split the batch, or raise the limit (also raises gRPC's `max_decoding_message_size`)                             |
+| Symptom                                                     | Cause                                                                 | Fix                                                                                                                                                                       |
+| ----------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `UNAUTHENTICATED: Missing authorization metadata`           | No `authorization` metadata on the request                            | Add `authorization: Bearer <key>` to exporter headers                                                                                                                     |
+| `UNAUTHENTICATED: Missing x-tenant-id metadata`             | No tenant header                                                      | Add `x-tenant-id`                                                                                                                                                         |
+| `UNAUTHENTICATED`                                           | API key is wrong or revoked                                           | Check the key with your operator, see [Authentication](authentication.md)                                                                                                 |
+| `PERMISSION_DENIED`                                         | Key does not belong to the tenant/dataset you named                   | Use a key issued for that tenant                                                                                                                                          |
+| `RESOURCE_EXHAUSTED`                                        | Per-tenant ingest rate limit hit                                      | Back off and retry; ask your operator about tenant limits                                                                                                                 |
+| `RESOURCE_EXHAUSTED` mentioning `quota_exceeded`            | Tenant is at or over its storage quota (`max_storage_bytes`)          | Retrying will not help until data is deleted, retention shortens, or the quota is raised — talk to your operator                                                          |
+| `429 Too Many Requests` on an OTLP/HTTP endpoint            | HTTP analog of the two `RESOURCE_EXHAUSTED` cases above               | Back off and retry (rate limit), or talk to your operator (quota)                                                                                                         |
+| `400 Bad Request` on an OTLP/HTTP endpoint with a JSON body | Payload is not valid protojson (e.g. base64 trace IDs instead of hex) | Use a protojson-compliant encoder; trace/span IDs must be hex strings                                                                                                     |
+| `413 Payload Too Large`                                     | Decoded body exceeds `[acceptor].max_request_body_bytes`              | Split the batch, or raise the limit (also raises gRPC's `max_decoding_message_size`)                                                                                      |
+| CORS error in the browser console on an OTLP/HTTP request   | The key's `allowed_origins` doesn't include the page's origin         | Add the origin to the key (see [Authentication](authentication.md#origin-restriction-browsercors-ingestion)), or omit `allowed_origins` if the key should be unrestricted |

@@ -163,6 +163,83 @@ describe("management API", () => {
     });
   });
 
+  it("creates a key restricted to allowed origins", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(
+        {
+          id: "key-3",
+          key: "sdbk_origin",
+          allowed_origins: ["https://a.example"],
+          scopes: ["metrics:write"],
+        },
+        201,
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createApiKey("acme", {
+      allowed_origins: ["https://a.example"],
+      scopes: ["metrics:write"],
+    });
+
+    expect(result.key).toBe("sdbk_origin");
+    const req = fetchMock.mock.calls[0]?.[0] as Request;
+    expect(await req.clone().json()).toEqual({
+      allowed_origins: ["https://a.example"],
+      scopes: ["metrics:write"],
+    });
+  });
+
+  it("updates a live key's allowed origins via PATCH", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        id: "key-1",
+        name: "collector",
+        allowed_origins: ["https://a.example"],
+        scopes: ["schema:read"],
+        revoked: false,
+        created_at: "2026-08-01T00:00:00Z",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await updateApiKey("acme", "key-1", {
+      scopes: ["schema:read"],
+      allowed_origins: ["https://a.example"],
+    });
+
+    const req = fetchMock.mock.calls[0]?.[0] as Request;
+    expect(await req.clone().json()).toEqual({
+      scopes: ["schema:read"],
+      allowed_origins: ["https://a.example"],
+    });
+  });
+
+  it("clears a live key's allowed-origins restriction via clear_allowed_origins", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        id: "key-1",
+        name: "collector",
+        allowed_origins: null,
+        scopes: ["schema:read"],
+        revoked: false,
+        created_at: "2026-08-01T00:00:00Z",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await updateApiKey("acme", "key-1", {
+      scopes: ["schema:read"],
+      clear_allowed_origins: true,
+    });
+
+    const req = fetchMock.mock.calls[0]?.[0] as Request;
+    expect(await req.clone().json()).toEqual({
+      scopes: ["schema:read"],
+      clear_allowed_origins: true,
+    });
+  });
+
   it("rejects with an ApiError carrying the HTTP status", async () => {
     // A Response body can be read only once; this test makes two calls, so
     // mint a fresh Response per call rather than sharing one instance.
@@ -355,17 +432,15 @@ describe("management API", () => {
   });
 
   it("provisions a tenant's enabled signal tables", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(
-        jsonResponse(
-          {
-            message: "Default tables created for tenant 'acme'",
-            tenant_id: "acme",
-          },
-          201,
-        ),
-      );
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(
+        {
+          message: "Default tables created for tenant 'acme'",
+          tenant_id: "acme",
+        },
+        201,
+      ),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await provisionTables("acme");

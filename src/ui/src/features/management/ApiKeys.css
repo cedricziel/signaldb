@@ -88,7 +88,8 @@
   font-size: 11px;
 }
 
-.dataset-picker {
+.dataset-picker,
+.origin-picker {
   display: grid;
   gap: 6px;
   padding: 10px;
@@ -97,7 +98,8 @@
   margin: 0;
 }
 
-.dataset-picker legend {
+.dataset-picker legend,
+.origin-picker legend {
   font-size: 12px;
   font-weight: 600;
   padding: 0 4px;
@@ -120,6 +122,51 @@
   gap: 6px;
   font-size: 12px;
   color: var(--dim);
+}
+
+.origin-picker-help {
+  color: var(--dim);
+  font-size: 11px;
+  margin: 0;
+}
+
+.origin-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.origin-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 6px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font: 11px var(--mono);
+  background: var(--surface2);
+}
+
+.origin-chip button {
+  border: none;
+  background: none;
+  color: var(--dim);
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.origin-chip button:hover {
+  color: var(--err);
+}
+
+.origin-add {
+  display: flex;
+  gap: 8px;
+}
+
+.origin-add input {
+  flex: 1;
 }
 
 .api-key-main {

@@ -789,6 +789,7 @@ mod tests {
                     &Authenticator::hash_api_key(key),
                     Some(key),
                     None,
+                    None,
                     Some(&scopes),
                     None,
                 )

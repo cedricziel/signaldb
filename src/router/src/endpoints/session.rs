@@ -2277,6 +2277,7 @@ mod tests {
                 Some(&["production".to_string()]),
                 None,
                 None,
+                None,
             )
             .await
             .unwrap();
@@ -2325,6 +2326,7 @@ mod tests {
                 &common::auth::Authenticator::hash_api_key("staging-only-key"),
                 Some("staging-only"),
                 Some(&["staging".to_string()]),
+                None,
                 None,
                 None,
             )

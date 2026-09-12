@@ -151,6 +151,16 @@ pub mod types {
     ///    "id"
     ///  ],
     ///  "properties": {
+    ///    "allowed_origins": {
+    ///      "description": "Allowed-origin set the key is restricted to, if any; `null` is\nunrestricted.",
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
     ///    "created_at": {
     ///      "description": "ISO 8601 creation timestamp.",
     ///      "type": "string"
@@ -199,6 +209,10 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ApiKeyResponse {
+        /**Allowed-origin set the key is restricted to, if any; `null` is
+        unrestricted.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub allowed_origins: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///ISO 8601 creation timestamp.
         pub created_at: ::std::string::String,
         ///Dataset set the key is restricted to, if any; `null` is unrestricted.
@@ -1490,6 +1504,17 @@ pub mod types {
     ///    "scopes"
     ///  ],
     ///  "properties": {
+    ///    "allowed_origins": {
+    ///      "description": "Browser origins the key is restricted to for CORS checks. Omitted or\n`null` creates an unrestricted key; a non-empty array restricts it to\nexactly that set. An explicit empty array, or a duplicate entry\nwithin the set, is rejected.",
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      },
+    ///      "minItems": 1
+    ///    },
     ///    "dataset_ids": {
     ///      "description": "Dataset set the key is restricted to. Omitted or `null` creates an\nunrestricted key; a non-empty array restricts it to exactly that set.\nAn explicit empty array, or a duplicate name within the set, is\nrejected.",
     ///      "type": [
@@ -1523,6 +1548,12 @@ pub mod types {
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     #[serde(deny_unknown_fields)]
     pub struct CreateApiKeyRequest {
+        /**Browser origins the key is restricted to for CORS checks. Omitted or
+        `null` creates an unrestricted key; a non-empty array restricts it to
+        exactly that set. An explicit empty array, or a duplicate entry
+        within the set, is rejected.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub allowed_origins: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         /**Dataset set the key is restricted to. Omitted or `null` creates an
         unrestricted key; a non-empty array restricts it to exactly that set.
         An explicit empty array, or a duplicate name within the set, is
@@ -1555,6 +1586,16 @@ pub mod types {
     ///    "scopes"
     ///  ],
     ///  "properties": {
+    ///    "allowed_origins": {
+    ///      "description": "Allowed-origin set the key is restricted to, if any; `null` is\nunrestricted.",
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
     ///    "created_at": {
     ///      "description": "ISO 8601 creation timestamp.",
     ///      "type": "string"
@@ -1597,6 +1638,10 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct CreateApiKeyResponse {
+        /**Allowed-origin set the key is restricted to, if any; `null` is
+        unrestricted.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub allowed_origins: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///ISO 8601 creation timestamp.
         pub created_at: ::std::string::String,
         ///Dataset set the key is restricted to, if any; `null` is unrestricted.
@@ -3643,6 +3688,15 @@ pub mod types {
     ///    "revoked"
     ///  ],
     ///  "properties": {
+    ///    "allowed_origins": {
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
     ///    "created_at": {
     ///      "type": "string"
     ///    },
@@ -3682,6 +3736,8 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ManageApiKeyResponse {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub allowed_origins: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         pub created_at: ::std::string::String,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
@@ -3715,6 +3771,16 @@ pub mod types {
     ///    "scopes"
     ///  ],
     ///  "properties": {
+    ///    "allowed_origins": {
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      },
+    ///      "minItems": 1
+    ///    },
     ///    "dataset_ids": {
     ///      "type": [
     ///        "array",
@@ -3745,6 +3811,8 @@ pub mod types {
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     #[serde(deny_unknown_fields)]
     pub struct ManageCreateApiKeyRequest {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub allowed_origins: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -3840,6 +3908,15 @@ pub mod types {
     ///    "scopes"
     ///  ],
     ///  "properties": {
+    ///    "allowed_origins": {
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
     ///    "dataset_ids": {
     ///      "type": [
     ///        "array",
@@ -3873,6 +3950,8 @@ pub mod types {
     /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ManageCreatedApiKey {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub allowed_origins: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         pub id: ::std::string::String,
@@ -4207,6 +4286,21 @@ pub mod types {
     ///  "description": "Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.\nAbsent fields are left untouched. `dataset_ids`/`clear_dataset_restriction`\nmirror [`signaldb_api::UpdateApiKeyRequest`] (D1a); the legacy singular\n`dataset_id` field is rejected via `deny_unknown_fields` rather than\nsilently dropped.",
     ///  "type": "object",
     ///  "properties": {
+    ///    "allowed_origins": {
+    ///      "description": "Replacement allowed-origins set (non-empty; an explicit empty array\nis rejected). Omitted/`null` leaves the current restriction\nunchanged. Mutually exclusive with `clear_allowed_origins: true`.",
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      },
+    ///      "minItems": 1
+    ///    },
+    ///    "clear_allowed_origins": {
+    ///      "description": "Clear an existing allowed-origins restriction back to unrestricted.\nMust not be combined with a non-empty `allowed_origins` in the same\nrequest.",
+    ///      "type": "boolean"
+    ///    },
     ///    "clear_dataset_restriction": {
     ///      "description": "Clear an existing dataset restriction back to unrestricted. Must not\nbe combined with a non-empty `dataset_ids` in the same request.",
     ///      "type": "boolean"
@@ -4240,6 +4334,16 @@ pub mod types {
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     #[serde(deny_unknown_fields)]
     pub struct ManageUpdateApiKeyRequest {
+        /**Replacement allowed-origins set (non-empty; an explicit empty array
+        is rejected). Omitted/`null` leaves the current restriction
+        unchanged. Mutually exclusive with `clear_allowed_origins: true`.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub allowed_origins: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+        /**Clear an existing allowed-origins restriction back to unrestricted.
+        Must not be combined with a non-empty `allowed_origins` in the same
+        request.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub clear_allowed_origins: ::std::option::Option<bool>,
         /**Clear an existing dataset restriction back to unrestricted. Must not
         be combined with a non-empty `dataset_ids` in the same request.*/
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -4256,6 +4360,8 @@ pub mod types {
     impl ::std::default::Default for ManageUpdateApiKeyRequest {
         fn default() -> Self {
             Self {
+                allowed_origins: Default::default(),
+                clear_allowed_origins: Default::default(),
                 clear_dataset_restriction: Default::default(),
                 dataset_ids: Default::default(),
                 scopes: Default::default(),
@@ -7046,6 +7152,21 @@ pub mod types {
     ///  "description": "Request body for updating a live API key's scopes and/or dataset restriction.\n\nAbsent fields are left untouched. Revoked keys cannot be updated. The\nlegacy singular `dataset_id` field is not accepted (see\n[`CreateApiKeyRequest`]).",
     ///  "type": "object",
     ///  "properties": {
+    ///    "allowed_origins": {
+    ///      "description": "Replacement allowed-origins set (non-empty; an explicit empty array\nis rejected). Omitted/`null` leaves the current restriction\nunchanged. Mutually exclusive with `clear_allowed_origins: true`.",
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      },
+    ///      "minItems": 1
+    ///    },
+    ///    "clear_allowed_origins": {
+    ///      "description": "Clear an existing allowed-origins restriction back to unrestricted.\nMust not be combined with a non-empty `allowed_origins` in the same\nrequest.",
+    ///      "type": "boolean"
+    ///    },
     ///    "clear_dataset_restriction": {
     ///      "description": "Clear an existing dataset restriction back to unrestricted. Must not\nbe combined with a non-empty `dataset_ids` in the same request.",
     ///      "type": "boolean"
@@ -7079,6 +7200,16 @@ pub mod types {
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     #[serde(deny_unknown_fields)]
     pub struct UpdateApiKeyRequest {
+        /**Replacement allowed-origins set (non-empty; an explicit empty array
+        is rejected). Omitted/`null` leaves the current restriction
+        unchanged. Mutually exclusive with `clear_allowed_origins: true`.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub allowed_origins: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+        /**Clear an existing allowed-origins restriction back to unrestricted.
+        Must not be combined with a non-empty `allowed_origins` in the same
+        request.*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub clear_allowed_origins: ::std::option::Option<bool>,
         /**Clear an existing dataset restriction back to unrestricted. Must not
         be combined with a non-empty `dataset_ids` in the same request.*/
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
@@ -7095,6 +7226,8 @@ pub mod types {
     impl ::std::default::Default for UpdateApiKeyRequest {
         fn default() -> Self {
             Self {
+                allowed_origins: Default::default(),
+                clear_allowed_origins: Default::default(),
                 clear_dataset_restriction: Default::default(),
                 dataset_ids: Default::default(),
                 scopes: Default::default(),
@@ -7662,6 +7795,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct ApiKeyResponse {
+            allowed_origins: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
             created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
             dataset_ids: ::std::result::Result<
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
@@ -7684,6 +7821,7 @@ pub mod types {
         impl ::std::default::Default for ApiKeyResponse {
             fn default() -> Self {
                 Self {
+                    allowed_origins: Ok(Default::default()),
                     created_at: Err("no value supplied for created_at".to_string()),
                     dataset_ids: Ok(Default::default()),
                     id: Err("no value supplied for id".to_string()),
@@ -7694,6 +7832,18 @@ pub mod types {
             }
         }
         impl ApiKeyResponse {
+            pub fn allowed_origins<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.allowed_origins = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for allowed_origins: {e}")
+                });
+                self
+            }
             pub fn created_at<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::string::String>,
@@ -7765,6 +7915,7 @@ pub mod types {
                 value: ApiKeyResponse,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    allowed_origins: value.allowed_origins?,
                     created_at: value.created_at?,
                     dataset_ids: value.dataset_ids?,
                     id: value.id?,
@@ -7777,6 +7928,7 @@ pub mod types {
         impl ::std::convert::From<super::ApiKeyResponse> for ApiKeyResponse {
             fn from(value: super::ApiKeyResponse) -> Self {
                 Self {
+                    allowed_origins: Ok(value.allowed_origins),
                     created_at: Ok(value.created_at),
                     dataset_ids: Ok(value.dataset_ids),
                     id: Ok(value.id),
@@ -9637,6 +9789,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct CreateApiKeyRequest {
+            allowed_origins: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
             dataset_ids: ::std::result::Result<
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
@@ -9653,6 +9809,7 @@ pub mod types {
         impl ::std::default::Default for CreateApiKeyRequest {
             fn default() -> Self {
                 Self {
+                    allowed_origins: Ok(Default::default()),
                     dataset_ids: Ok(Default::default()),
                     name: Ok(Default::default()),
                     scopes: Err("no value supplied for scopes".to_string()),
@@ -9660,6 +9817,18 @@ pub mod types {
             }
         }
         impl CreateApiKeyRequest {
+            pub fn allowed_origins<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.allowed_origins = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for allowed_origins: {e}")
+                });
+                self
+            }
             pub fn dataset_ids<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<
@@ -9699,6 +9868,7 @@ pub mod types {
                 value: CreateApiKeyRequest,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    allowed_origins: value.allowed_origins?,
                     dataset_ids: value.dataset_ids?,
                     name: value.name?,
                     scopes: value.scopes?,
@@ -9708,6 +9878,7 @@ pub mod types {
         impl ::std::convert::From<super::CreateApiKeyRequest> for CreateApiKeyRequest {
             fn from(value: super::CreateApiKeyRequest) -> Self {
                 Self {
+                    allowed_origins: Ok(value.allowed_origins),
                     dataset_ids: Ok(value.dataset_ids),
                     name: Ok(value.name),
                     scopes: Ok(value.scopes),
@@ -9716,6 +9887,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct CreateApiKeyResponse {
+            allowed_origins: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
             created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
             dataset_ids: ::std::result::Result<
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
@@ -9735,6 +9910,7 @@ pub mod types {
         impl ::std::default::Default for CreateApiKeyResponse {
             fn default() -> Self {
                 Self {
+                    allowed_origins: Ok(Default::default()),
                     created_at: Err("no value supplied for created_at".to_string()),
                     dataset_ids: Ok(Default::default()),
                     id: Err("no value supplied for id".to_string()),
@@ -9745,6 +9921,18 @@ pub mod types {
             }
         }
         impl CreateApiKeyResponse {
+            pub fn allowed_origins<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.allowed_origins = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for allowed_origins: {e}")
+                });
+                self
+            }
             pub fn created_at<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::string::String>,
@@ -9814,6 +10002,7 @@ pub mod types {
                 value: CreateApiKeyResponse,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    allowed_origins: value.allowed_origins?,
                     created_at: value.created_at?,
                     dataset_ids: value.dataset_ids?,
                     id: value.id?,
@@ -9826,6 +10015,7 @@ pub mod types {
         impl ::std::convert::From<super::CreateApiKeyResponse> for CreateApiKeyResponse {
             fn from(value: super::CreateApiKeyResponse) -> Self {
                 Self {
+                    allowed_origins: Ok(value.allowed_origins),
                     created_at: Ok(value.created_at),
                     dataset_ids: Ok(value.dataset_ids),
                     id: Ok(value.id),
@@ -12456,6 +12646,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct ManageApiKeyResponse {
+            allowed_origins: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
             created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
             dataset_ids: ::std::result::Result<
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
@@ -12475,6 +12669,7 @@ pub mod types {
         impl ::std::default::Default for ManageApiKeyResponse {
             fn default() -> Self {
                 Self {
+                    allowed_origins: Ok(Default::default()),
                     created_at: Err("no value supplied for created_at".to_string()),
                     dataset_ids: Ok(Default::default()),
                     id: Err("no value supplied for id".to_string()),
@@ -12485,6 +12680,18 @@ pub mod types {
             }
         }
         impl ManageApiKeyResponse {
+            pub fn allowed_origins<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.allowed_origins = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for allowed_origins: {e}")
+                });
+                self
+            }
             pub fn created_at<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::string::String>,
@@ -12556,6 +12763,7 @@ pub mod types {
                 value: ManageApiKeyResponse,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    allowed_origins: value.allowed_origins?,
                     created_at: value.created_at?,
                     dataset_ids: value.dataset_ids?,
                     id: value.id?,
@@ -12568,6 +12776,7 @@ pub mod types {
         impl ::std::convert::From<super::ManageApiKeyResponse> for ManageApiKeyResponse {
             fn from(value: super::ManageApiKeyResponse) -> Self {
                 Self {
+                    allowed_origins: Ok(value.allowed_origins),
                     created_at: Ok(value.created_at),
                     dataset_ids: Ok(value.dataset_ids),
                     id: Ok(value.id),
@@ -12579,6 +12788,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct ManageCreateApiKeyRequest {
+            allowed_origins: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
             dataset_ids: ::std::result::Result<
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
@@ -12595,6 +12808,7 @@ pub mod types {
         impl ::std::default::Default for ManageCreateApiKeyRequest {
             fn default() -> Self {
                 Self {
+                    allowed_origins: Ok(Default::default()),
                     dataset_ids: Ok(Default::default()),
                     name: Ok(Default::default()),
                     scopes: Err("no value supplied for scopes".to_string()),
@@ -12602,6 +12816,18 @@ pub mod types {
             }
         }
         impl ManageCreateApiKeyRequest {
+            pub fn allowed_origins<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.allowed_origins = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for allowed_origins: {e}")
+                });
+                self
+            }
             pub fn dataset_ids<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<
@@ -12641,6 +12867,7 @@ pub mod types {
                 value: ManageCreateApiKeyRequest,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    allowed_origins: value.allowed_origins?,
                     dataset_ids: value.dataset_ids?,
                     name: value.name?,
                     scopes: value.scopes?,
@@ -12650,6 +12877,7 @@ pub mod types {
         impl ::std::convert::From<super::ManageCreateApiKeyRequest> for ManageCreateApiKeyRequest {
             fn from(value: super::ManageCreateApiKeyRequest) -> Self {
                 Self {
+                    allowed_origins: Ok(value.allowed_origins),
                     dataset_ids: Ok(value.dataset_ids),
                     name: Ok(value.name),
                     scopes: Ok(value.scopes),
@@ -12767,6 +12995,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct ManageCreatedApiKey {
+            allowed_origins: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
             dataset_ids: ::std::result::Result<
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
@@ -12785,6 +13017,7 @@ pub mod types {
         impl ::std::default::Default for ManageCreatedApiKey {
             fn default() -> Self {
                 Self {
+                    allowed_origins: Ok(Default::default()),
                     dataset_ids: Ok(Default::default()),
                     id: Err("no value supplied for id".to_string()),
                     key: Err("no value supplied for key".to_string()),
@@ -12794,6 +13027,18 @@ pub mod types {
             }
         }
         impl ManageCreatedApiKey {
+            pub fn allowed_origins<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.allowed_origins = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for allowed_origins: {e}")
+                });
+                self
+            }
             pub fn dataset_ids<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<
@@ -12853,6 +13098,7 @@ pub mod types {
                 value: ManageCreatedApiKey,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    allowed_origins: value.allowed_origins?,
                     dataset_ids: value.dataset_ids?,
                     id: value.id?,
                     key: value.key?,
@@ -12864,6 +13110,7 @@ pub mod types {
         impl ::std::convert::From<super::ManageCreatedApiKey> for ManageCreatedApiKey {
             fn from(value: super::ManageCreatedApiKey) -> Self {
                 Self {
+                    allowed_origins: Ok(value.allowed_origins),
                     dataset_ids: Ok(value.dataset_ids),
                     id: Ok(value.id),
                     key: Ok(value.key),
@@ -13423,6 +13670,12 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct ManageUpdateApiKeyRequest {
+            allowed_origins: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
+            clear_allowed_origins:
+                ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
             clear_dataset_restriction:
                 ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
             dataset_ids: ::std::result::Result<
@@ -13437,6 +13690,8 @@ pub mod types {
         impl ::std::default::Default for ManageUpdateApiKeyRequest {
             fn default() -> Self {
                 Self {
+                    allowed_origins: Ok(Default::default()),
+                    clear_allowed_origins: Ok(Default::default()),
                     clear_dataset_restriction: Ok(Default::default()),
                     dataset_ids: Ok(Default::default()),
                     scopes: Ok(Default::default()),
@@ -13444,6 +13699,28 @@ pub mod types {
             }
         }
         impl ManageUpdateApiKeyRequest {
+            pub fn allowed_origins<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.allowed_origins = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for allowed_origins: {e}")
+                });
+                self
+            }
+            pub fn clear_allowed_origins<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<bool>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.clear_allowed_origins = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for clear_allowed_origins: {e}")
+                });
+                self
+            }
             pub fn clear_dataset_restriction<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::option::Option<bool>>,
@@ -13485,6 +13762,8 @@ pub mod types {
                 value: ManageUpdateApiKeyRequest,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    allowed_origins: value.allowed_origins?,
+                    clear_allowed_origins: value.clear_allowed_origins?,
                     clear_dataset_restriction: value.clear_dataset_restriction?,
                     dataset_ids: value.dataset_ids?,
                     scopes: value.scopes?,
@@ -13494,6 +13773,8 @@ pub mod types {
         impl ::std::convert::From<super::ManageUpdateApiKeyRequest> for ManageUpdateApiKeyRequest {
             fn from(value: super::ManageUpdateApiKeyRequest) -> Self {
                 Self {
+                    allowed_origins: Ok(value.allowed_origins),
+                    clear_allowed_origins: Ok(value.clear_allowed_origins),
                     clear_dataset_restriction: Ok(value.clear_dataset_restriction),
                     dataset_ids: Ok(value.dataset_ids),
                     scopes: Ok(value.scopes),
@@ -17455,6 +17736,12 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct UpdateApiKeyRequest {
+            allowed_origins: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
+            clear_allowed_origins:
+                ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
             clear_dataset_restriction:
                 ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
             dataset_ids: ::std::result::Result<
@@ -17469,6 +17756,8 @@ pub mod types {
         impl ::std::default::Default for UpdateApiKeyRequest {
             fn default() -> Self {
                 Self {
+                    allowed_origins: Ok(Default::default()),
+                    clear_allowed_origins: Ok(Default::default()),
                     clear_dataset_restriction: Ok(Default::default()),
                     dataset_ids: Ok(Default::default()),
                     scopes: Ok(Default::default()),
@@ -17476,6 +17765,28 @@ pub mod types {
             }
         }
         impl UpdateApiKeyRequest {
+            pub fn allowed_origins<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.allowed_origins = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for allowed_origins: {e}")
+                });
+                self
+            }
+            pub fn clear_allowed_origins<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<bool>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.clear_allowed_origins = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for clear_allowed_origins: {e}")
+                });
+                self
+            }
             pub fn clear_dataset_restriction<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::option::Option<bool>>,
@@ -17517,6 +17828,8 @@ pub mod types {
                 value: UpdateApiKeyRequest,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    allowed_origins: value.allowed_origins?,
+                    clear_allowed_origins: value.clear_allowed_origins?,
                     clear_dataset_restriction: value.clear_dataset_restriction?,
                     dataset_ids: value.dataset_ids?,
                     scopes: value.scopes?,
@@ -17526,6 +17839,8 @@ pub mod types {
         impl ::std::convert::From<super::UpdateApiKeyRequest> for UpdateApiKeyRequest {
             fn from(value: super::UpdateApiKeyRequest) -> Self {
                 Self {
+                    allowed_origins: Ok(value.allowed_origins),
+                    clear_allowed_origins: Ok(value.clear_allowed_origins),
                     clear_dataset_restriction: Ok(value.clear_dataset_restriction),
                     dataset_ids: Ok(value.dataset_ids),
                     scopes: Ok(value.scopes),

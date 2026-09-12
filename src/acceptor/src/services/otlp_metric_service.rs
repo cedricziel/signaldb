@@ -249,6 +249,7 @@ mod tests {
             api_key_scopes: None,
             api_key_dataset_ids: None,
             oauth_tenant_grants: None,
+            api_key_allowed_origins: None,
             user_id: None,
             role: None,
             is_instance_admin: false,

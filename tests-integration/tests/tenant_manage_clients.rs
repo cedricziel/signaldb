@@ -52,6 +52,7 @@ async fn scoped_key(catalog: &Catalog, secret: &str, scopes: &[&str]) {
             &Authenticator::hash_api_key(secret),
             Some(secret),
             None,
+            None,
             Some(&scopes),
             None,
         )

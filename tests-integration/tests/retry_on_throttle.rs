@@ -77,6 +77,7 @@ async fn serve_throttling_router() -> String {
             &Authenticator::hash_api_key(KEY),
             Some("throttle"),
             None,
+            None,
             Some(&["schema:read".to_string()]),
             None,
         )

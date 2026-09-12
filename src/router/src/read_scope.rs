@@ -54,7 +54,7 @@ mod tests {
             TenantSource::Database,
         )
         .with_user("u1".into(), MembershipRole::Member, false, None)
-        .with_api_key_restrictions(scopes, None)
+        .with_api_key_restrictions(scopes, None, None)
     }
 
     /// Build a one-route app gated by `signal`, injecting `ctx` into extensions

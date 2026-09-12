@@ -77,7 +77,7 @@ match is exhaustive so the compiler forces it.
 
 The same catalog database also holds the multi-tenancy tables (`tenants`,
 `api_keys` — including each key's explicit `scopes` list and optional
-`dataset_ids` set restriction, updatable in place via
+`dataset_ids`/`allowed_origins` set restrictions, updatable in place via
 `Catalog::update_api_key_scopes` — `datasets`), the user-identity tables (`users`
 — whose `password_hash` is now nullable, with `oidc_issuer`/`oidc_subject` for
 SSO-linked identities; `tenant_memberships` — keyed by `(user_id, tenant_id,

@@ -153,14 +153,57 @@ describe("ManagementPanel API key creation form", () => {
     );
     expect(
       screen.getByText((content) =>
-        content.startsWith("production · metrics:write"),
+        content.startsWith("production · Any origin · metrics:write"),
       ),
     ).toBeInTheDocument();
     expect(
       screen.getByText((content) =>
-        content.startsWith("unrestricted · metrics:write"),
+        content.startsWith("unrestricted · Any origin · metrics:write"),
       ),
     ).toBeInTheDocument();
+  });
+
+  it("offers an allowed-origins picker and creates a key restricted to the typed origin", async () => {
+    const fetchMock = stubFetchRoutes([
+      {
+        match: "/api/v1/manage/tenants/acme/api-keys",
+        method: "GET",
+        body: [],
+      },
+      {
+        match: "/api/v1/manage/tenants/acme/api-keys",
+        method: "POST",
+        body: { key: "sdbk_origin" },
+      },
+      { match: "/api/v1/manage/tenants/acme/memberships", body: [] },
+      { match: TABLES_PATH, body: { tenant_id: "acme", tables: [] } },
+    ]);
+
+    renderPanel();
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("Add allowed origin")).toBeInTheDocument(),
+    );
+    await userEvent.type(
+      screen.getByLabelText("Add allowed origin"),
+      "https://a.example{Enter}",
+    );
+    await userEvent.click(screen.getByText("Create API key"));
+
+    await waitFor(() => {
+      const post = fetchMock.mock.calls
+        .map((call) => call[0])
+        .filter((req): req is Request => req instanceof Request)
+        .find((req) => req.url.includes("/api-keys") && req.method === "POST");
+      expect(post).toBeDefined();
+    });
+    const post = fetchMock.mock.calls
+      .map((call) => call[0])
+      .filter((req): req is Request => req instanceof Request)
+      .find((req) => req.url.includes("/api-keys") && req.method === "POST")!;
+    expect(await post.clone().json()).toMatchObject({
+      allowed_origins: ["https://a.example"],
+    });
   });
 });
 
