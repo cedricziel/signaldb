@@ -644,6 +644,9 @@ instance administrators only, **New tenant**. Destructive actions (delete a
 dataset, revoke a key, remove a member) swap the button for an inline
 confirmation first; Escape or Cancel backs out. All of it consumes the
 generated client (`src/ui/src/api/management.ts`), never raw `fetch`.
+The tenant's default dataset carries a **Default** badge instead of a delete
+button — it can't be deleted — rather than silently omitting the button with
+no explanation.
 
 ### Tenant selection (`/select-tenant`)
 
