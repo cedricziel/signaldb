@@ -55,7 +55,7 @@ the headers, for browsers using the [embedded explore UI](explore-ui.md):
 - `POST /ui/session` (public) takes
   `{"email", "password", "tenant"?, "dataset"?}` as JSON. It verifies the
   password, creates a 12-hour server-side session, and sets an `HttpOnly`,
-  `Secure`, `SameSite=Strict` cookie containing only an opaque random
+  `Secure`, `SameSite=Lax` cookie containing only an opaque random
   token. The response lists the user's tenant memberships (with display
   names and roles). `tenant` is optional: a sole membership is
   auto-selected; with several, the response's `tenant` is null and the

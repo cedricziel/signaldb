@@ -49,7 +49,7 @@ machine credential for ingestion.
 
 All request handling downstream of authentication consumes `TenantContext`
 and does not care how it was produced. Users are therefore introduced as a
-*second way to produce a `TenantContext`* — the entire data plane (acceptor,
+_second way to produce a `TenantContext`_ — the entire data plane (acceptor,
 writer, querier, WAL, Iceberg layout, rate limiting) is untouched.
 
 ### Data model (service catalog)
@@ -88,10 +88,29 @@ depending on backend-specific collation behavior.
   credential lives in the browser. The token is still a bearer credential,
   so the session contract bounds its blast radius: sessions carry a bounded
   absolute lifetime (`expires_at`) plus an idle timeout; the cookie is set
-  `HttpOnly; Secure; SameSite=Strict` (the current UI cookie already ships
-  `HttpOnly` and `SameSite=Strict`); a fresh token is issued on every login
+  `HttpOnly; Secure; SameSite=Lax` (the current UI cookie already ships
+  `HttpOnly` and `SameSite=Lax`); a fresh token is issued on every login
   rather than reusing an existing one; and CSRF is mitigated by
-  `SameSite=Strict` combined with origin checks on state-changing requests.
+  `SameSite=Lax` combined with origin checks on state-changing requests.
+  `Lax`, not `Strict`, because the session cookie is set at the end of an
+  OIDC/OAuth redirect chain (IdP -> callback), and a `Strict` cookie set
+  during that cross-site navigation is not reliably sent on the browser's
+  very next same-origin request. `SameSite=Lax` still withholds the cookie
+  from cross-site `POST`/`PUT`/`DELETE`/`PATCH` requests — the methods that
+  actually mutate state under normal REST/HTTP semantics — so CSRF
+  protection holds for any endpoint that correctly requires a non-`GET`
+  method for its mutation. The attribute's exemption is narrower: a
+  cross-site top-level `GET` navigation still carries the cookie. That is
+  safe only as long as `GET` handlers stay read-only; at least one router
+  route breaks that assumption today — `GET /ui/session/oidc/callback`
+  (the OIDC redirect target itself) JIT-provisions users, grants tenant
+  memberships, and creates sessions, all from a `GET` request. This is the
+  standard OAuth 2.0 authorization-code callback shape (RFC 6749 mandates a
+  GET redirect from the IdP) and that endpoint already defends itself with
+  its own state/nonce/PKCE checks independent of cookie `SameSite`, but it
+  means the "GET never mutates" caveat above does not hold everywhere in
+  this codebase, and any future GET handler that mutates state without
+  equivalent protection would sit outside `SameSite=Lax`'s CSRF coverage.
   The improvement over the raw-key cookie is bounded lifetime and real
   server-side revocation — not immunity to cookie theft.
 - **Disabled users are cut off immediately.** A non-null `disabled_at`
@@ -113,11 +132,11 @@ depending on backend-specific collation behavior.
 
 Per-tenant roles start minimal:
 
-| Role     | Intent                                            |
-| -------- | ------------------------------------------------- |
-| `admin`  | Manage the tenant: datasets, API keys, members    |
-| `member` | Read and write data, use self-service API         |
-| `viewer` | Read-only queries                                 |
+| Role     | Intent                                         |
+| -------- | ---------------------------------------------- |
+| `admin`  | Manage the tenant: datasets, API keys, members |
+| `member` | Read and write data, use self-service API      |
+| `viewer` | Read-only queries                              |
 
 ## Phasing
 
