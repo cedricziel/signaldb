@@ -14,11 +14,14 @@ pub const SESSION_COOKIE: &str = "signaldb_session";
 /// Build the `Set-Cookie` header value for a freshly issued session token.
 /// The single construction site for the cookie every login path (password,
 /// OIDC SSO — change: oidc-login) sets, so they stay byte-for-byte
-/// identical: `HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=43200`
+/// identical: `HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=43200`
 /// (12 hours, matching [`crate::catalog::Catalog::create_user_session`]'s
-/// TTL).
+/// TTL). `SameSite=Lax`, not `Strict`, because this cookie is set at the end
+/// of an OIDC redirect chain (IdP -> callback): a `Strict` cookie set during
+/// that cross-site navigation is not reliably sent on the browser's very
+/// next same-origin request.
 pub fn session_cookie_header(token: &str) -> String {
-    format!("{SESSION_COOKIE}={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=43200")
+    format!("{SESSION_COOKIE}={token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=43200")
 }
 
 /// Extract an opaque server-side session token from the session cookie.
@@ -66,7 +69,7 @@ mod tests {
         assert!(header.starts_with("signaldb_session=sdbs_abc123;"));
         assert!(header.contains("HttpOnly"));
         assert!(header.contains("Secure"));
-        assert!(header.contains("SameSite=Strict"));
+        assert!(header.contains("SameSite=Lax"));
         assert!(header.contains("Path=/"));
         assert!(header.contains("Max-Age=43200"));
     }
