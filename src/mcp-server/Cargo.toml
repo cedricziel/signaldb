@@ -21,13 +21,18 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 dashmap.workspace = true
+# `POST /oauth/introspect` (change: mcp-multi-tenant-oauth-grants) is
+# deliberately excluded from the generated OpenAPI spec (matching
+# `/oauth/token`/`/oauth/register`'s existing precedent), so it is not on
+# `signaldb_sdk::Client`; this is the one direct HTTP call this crate makes
+# outside the SDK.
+reqwest.workspace = true
+# `discover_datasets`/`server_info` fan out one request per granted tenant
+# for a multi-tenant OAuth credential; `join_all` runs them concurrently.
+futures.workspace = true
 
 [dev-dependencies]
-# Only tests construct raw responses; production reaches SignalDB solely
-# through signaldb-sdk (client-surface-parity).
-reqwest.workspace = true
 tower.workspace = true
-futures.workspace = true
 opentelemetry.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["trace", "testing"] }
 tracing-opentelemetry.workspace = true

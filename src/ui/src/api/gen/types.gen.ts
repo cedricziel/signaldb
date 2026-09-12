@@ -290,13 +290,17 @@ export type ConsentDataset = {
 };
 
 /**
- * Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user
- * is authenticated by their session cookie; `tenant` is their chosen grant.
+ * Consent decision posted by the explore-UI (change: mcp-oauth-dcr;
+ * generalized to a set of tenants by mcp-multi-tenant-oauth-grants D2/D6).
+ * The user is authenticated by their session cookie; `tenant_grants` is
+ * their chosen set of one or more tenants to grant, each with its own
+ * independent dataset restriction.
  *
- * The legacy singular `dataset_id` field is not accepted (removed in the
- * multi-dataset-key-restriction change, D8): a request body carrying it is
- * rejected rather than silently ignored, since dropping it would grant
- * unrestricted access when the caller asked for a restricted one.
+ * The legacy singular `tenant`/`dataset_id` fields are not accepted (the
+ * latter removed in the multi-dataset-key-restriction change, D8): a
+ * request body carrying either is rejected rather than silently ignored,
+ * since dropping it would grant unrestricted or differently-scoped access
+ * than the caller asked for.
  */
 export type ConsentDecision = {
     /**
@@ -312,18 +316,6 @@ export type ConsentDecision = {
      */
     code_challenge: string;
     code_challenge_method?: string | null;
-    /**
-     * Dataset set to restrict the grant to (D5/D6). Omitted or `null`
-     * grants unrestricted access to the tenant — today's only behavior,
-     * and `#[serde(default)]` so a decision from a client built before
-     * this change (which omits the field entirely) keeps working
-     * unmodified. A non-empty array restricts the grant to exactly that
-     * set; every named dataset must belong to `tenant`. An explicit empty
-     * array is rejected (D1a), as is any non-empty selection while
-     * `[auth].dataset_restriction_rollout_complete` is `false` (stricter
-     * than the API-key rule — OAuth has no legacy column to fall back to).
-     */
-    dataset_ids?: Array<string> | null;
     /**
      * The redirect URI to return to (must be registered for the client).
      */
@@ -341,9 +333,10 @@ export type ConsentDecision = {
      */
     state?: string | null;
     /**
-     * The tenant the user grants access to (must be one they belong to).
+     * The set of tenants the user grants access to (each must be one they
+     * belong to). Must be non-empty and name each tenant at most once.
      */
-    tenant: string;
+    tenant_grants: Array<ConsentTenantGrant>;
 };
 
 /**
@@ -375,6 +368,30 @@ export type ConsentTenant = {
      * The user's role in the tenant.
      */
     role: MembershipRole;
+};
+
+/**
+ * One tenant (and optional dataset restriction) the user grants in a
+ * consent decision (design: mcp-multi-tenant-oauth-grants D2/D6). Mirrors
+ * [`common::catalog::TenantGrant`]'s shape; kept as a router-local request
+ * DTO (rather than reusing that type directly) so it can derive
+ * [`ToSchema`] for the OpenAPI spec.
+ */
+export type ConsentTenantGrant = {
+    /**
+     * Dataset set to restrict this tenant's grant to (D5/D6). Omitted or
+     * `null` grants unrestricted access to the tenant. A non-empty array
+     * restricts the grant to exactly that set; every named dataset must
+     * belong to `tenant_id`. An explicit empty array is rejected (D1a), as
+     * is any non-empty selection while
+     * `[auth].dataset_restriction_rollout_complete` is `false` (stricter
+     * than the API-key rule — OAuth has no legacy column to fall back to).
+     */
+    dataset_ids?: Array<string> | null;
+    /**
+     * The tenant being granted (must be one the user belongs to).
+     */
+    tenant_id: string;
 };
 
 /**
@@ -840,6 +857,18 @@ export type FlamegraphResult = {
      * was aggregated over only the first 1,000 of them.
      */
     truncated: boolean;
+};
+
+/**
+ * One tenant a credential's grant reaches, with its own dataset-set
+ * restriction — the `whoami`/`/oauth/introspect` output shape (change:
+ * mcp-multi-tenant-oauth-grants D4/D5). Mirrors
+ * [`common::catalog::TenantGrant`]; kept as a router-local response DTO so
+ * it can derive [`utoipa::ToSchema`].
+ */
+export type GrantedTenant = {
+    dataset_ids?: Array<string> | null;
+    tenant_id: string;
 };
 
 /**
@@ -1849,6 +1878,10 @@ export type WhoamiIdentityResponse = {
      * means unrestricted. See [`WhoamiResponse::dataset_ids`].
      */
     dataset_ids?: Array<string> | null;
+    /**
+     * See [`WhoamiResponse::granted_tenants`].
+     */
+    granted_tenants: Array<GrantedTenant>;
     tenant: WhoamiTenant;
     /**
      * Stable authenticated user ID. Empty for API key credentials.

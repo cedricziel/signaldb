@@ -6,6 +6,8 @@ import "./client";
 import {
   type ConsentContextResponse,
   type ConsentDecision,
+  type ConsentTenant,
+  type ConsentTenantGrant,
   oauthConsentContext,
   oauthConsentDecision,
 } from "./gen";
@@ -42,4 +44,9 @@ export async function submitConsentDecision(
   return result.redirect;
 }
 
-export type { ConsentContextResponse, ConsentDecision };
+export type {
+  ConsentContextResponse,
+  ConsentDecision,
+  ConsentTenant,
+  ConsentTenantGrant,
+};

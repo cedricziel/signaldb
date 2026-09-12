@@ -65,6 +65,24 @@ fn required_tenant_id_header(headers: &HeaderMap) -> Result<String, AuthError> {
     validate_tenant_id(tenant_id_raw)
 }
 
+/// Extract and validate the optional `X-Tenant-ID` header (change:
+/// mcp-multi-tenant-oauth-grants D4). Unlike [`required_tenant_id_header`],
+/// its absence is not an error — an OAuth bearer's tenant selector is only
+/// required when the token's own grant set names more than one tenant, a
+/// fact [`Authenticator::authenticate_oauth_token`] checks against the token
+/// record itself, not this header-parsing layer.
+fn optional_tenant_id_header(headers: &HeaderMap) -> Result<Option<String>, AuthError> {
+    match headers.get("x-tenant-id") {
+        None => Ok(None),
+        Some(value) => {
+            let id = value
+                .to_str()
+                .map_err(|_| AuthError::bad_request("Invalid X-Tenant-ID header"))?;
+            Ok(Some(validate_tenant_id(id)?))
+        }
+    }
+}
+
 fn extract_auth_headers(
     headers: &HeaderMap,
 ) -> Result<(RequestCredentials, String, Option<String>), AuthError> {
@@ -85,13 +103,19 @@ fn extract_auth_headers(
     // Shared by all bearer kinds.
     let dataset_id = dataset_id_header(headers)?;
 
-    // An OAuth access token carries its own tenant, so X-Tenant-ID is neither
-    // required nor consulted — an OAuth session cannot be pointed at a tenant
-    // it was not granted. The tenant field is unused for this credential kind.
+    // An OAuth access token carries its own tenant(s). X-Tenant-ID is read
+    // (but never required here) as a selector among a multi-tenant grant's
+    // tenants (change: mcp-multi-tenant-oauth-grants D4) — an OAuth session
+    // still cannot be pointed at a tenant it was not granted, since
+    // `Authenticator::authenticate_oauth_token` re-validates the selector
+    // against the token's own stored grant set. An empty string here means
+    // "no selector present", the same sentinel a single-tenant grant used
+    // before this header was read at all.
     if bearer.starts_with(super::oauth::ACCESS_TOKEN_PREFIX) {
+        let tenant_selector = optional_tenant_id_header(headers)?.unwrap_or_default();
         return Ok((
             RequestCredentials::OAuthToken(bearer),
-            String::new(),
+            tenant_selector,
             dataset_id,
         ));
     }
@@ -161,10 +185,19 @@ pub async fn auth_middleware(
         }
         RequestCredentials::OAuthToken(token) => {
             // Tenant and scopes come from the token; audience is bound to the
-            // configured MCP resource.
+            // configured MCP resource. `tenant_id` is empty when the request
+            // carried no `X-Tenant-ID` (see `extract_auth_headers`'s OAuth
+            // branch); the authenticator re-validates any selector present
+            // against the token's own stored grant set (D4).
             let resource = authenticator.mcp_resource().map(str::to_owned);
+            let tenant_selector = (!tenant_id.is_empty()).then_some(tenant_id.as_str());
             authenticator
-                .authenticate_oauth_token(&token, dataset_id.as_deref(), resource.as_deref())
+                .authenticate_oauth_token(
+                    &token,
+                    tenant_selector,
+                    dataset_id.as_deref(),
+                    resource.as_deref(),
+                )
                 .await
         }
     };
@@ -772,9 +805,11 @@ mod tests {
                 &hash_oauth_token(&token),
                 "client-1",
                 &user.id,
-                "acme",
+                &[crate::catalog::TenantGrant {
+                    tenant_id: "acme".to_string(),
+                    dataset_ids: None,
+                }],
                 &["traces:read".to_string()],
-                None,
                 None,
                 Utc::now() + Duration::hours(1),
             )
@@ -828,6 +863,127 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(body, "acme");
+    }
+
+    /// Task 3.4-3.5: a multi-tenant OAuth grant's `X-Tenant-ID` header
+    /// reaches `Authenticator::authenticate_oauth_token` instead of being
+    /// silently dropped — proven at the middleware level (not just a direct
+    /// `extract_auth_headers` unit test), since the point is that the header
+    /// survives all the way to the authenticator (design:
+    /// mcp-multi-tenant-oauth-grants D4).
+    #[tokio::test]
+    async fn oauth_bearer_with_multi_tenant_grant_uses_the_tenant_header_as_a_selector() {
+        use crate::auth::oauth::{TokenKind, generate_oauth_token, hash_oauth_token};
+        use crate::catalog::MembershipRole;
+        use axum::{Router, body::Body, http::Request, middleware, routing::get};
+        use chrono::{Duration, Utc};
+        use tower::ServiceExt;
+
+        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "production").await.unwrap();
+        catalog
+            .upsert_tenant("globex", "Globex", Some("default"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("globex", "default").await.unwrap();
+        let user = catalog
+            .create_user("agent@example.com", None, Some("phc"), false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Member)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "globex", MembershipRole::Member)
+            .await
+            .unwrap();
+        let token = generate_oauth_token(TokenKind::Access);
+        catalog
+            .create_access_token(
+                &hash_oauth_token(&token),
+                "client-1",
+                &user.id,
+                &[
+                    crate::catalog::TenantGrant {
+                        tenant_id: "acme".to_string(),
+                        dataset_ids: None,
+                    },
+                    crate::catalog::TenantGrant {
+                        tenant_id: "globex".to_string(),
+                        dataset_ids: None,
+                    },
+                ],
+                &["traces:read".to_string()],
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        let authenticator = Arc::new(Authenticator::new(AuthConfig::default(), catalog));
+
+        async fn handler(tenant_ctx: TenantContextExtractor) -> String {
+            tenant_ctx.0.tenant_id
+        }
+        let auth = authenticator.clone();
+        let app = Router::new()
+            .route("/test", get(handler))
+            .layer(middleware::from_fn(move |req, next| {
+                auth_middleware(auth.clone(), req, next)
+            }));
+
+        // No X-Tenant-ID: a multi-tenant grant has no default, so this is
+        // rejected rather than silently resolved against either tenant.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(res.status(), StatusCode::OK);
+
+        // X-Tenant-ID: globex selects the globex tenant — proving the header
+        // reached the authenticator rather than being discarded.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("x-tenant-id", "globex")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body, "globex");
+
+        // X-Tenant-ID naming a tenant outside the grant set is rejected.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("x-tenant-id", "initech")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 
     #[test]

@@ -356,6 +356,237 @@ async fn migrate_tenant_memberships_granted_by_postgres(pool: &PgPool) -> Result
     Ok(())
 }
 
+/// The three OAuth grant tables generalized to a `tenant_grants` set
+/// (change: mcp-multi-tenant-oauth-grants, design D2). Structurally
+/// distinct (different primary keys and a handful of table-specific
+/// columns), so each gets its own rebuild/backfill call, but they share the
+/// same migration shape.
+const OAUTH_GRANT_TABLES: [&str; 3] = [
+    "oauth_authorization_codes",
+    "oauth_access_tokens",
+    "oauth_refresh_tokens",
+];
+
+/// Rebuild one OAuth grant table to drop `NOT NULL` from its legacy
+/// `tenant_id` column, if a pre-migration install still has it (SQLite has
+/// no `ALTER COLUMN ... DROP NOT NULL`; see `rebuild_users_table_sqlite`
+/// for the same technique applied to `users.password_hash`). A no-op
+/// against an already-migrated or freshly-created table, whose `tenant_id`
+/// is nullable from the start.
+///
+/// Unlike `users`, none of these three tables is ever an FK *parent* — no
+/// other table references `oauth_authorization_codes`, `oauth_access_tokens`,
+/// or `oauth_refresh_tokens` — so dropping one mid-rebuild cannot cascade
+/// into unrelated rows, and foreign-key enforcement does not need to be
+/// suspended around the rebuild (verified by
+/// `oauth_grant_table_rebuild_preserves_tenant_and_user_foreign_keys` below).
+async fn rebuild_oauth_grant_table_sqlite_if_tenant_id_required(
+    pool: &SqlitePool,
+    table: &str,
+) -> Result<(), sqlx::Error> {
+    let columns = query(&format!("PRAGMA table_info({table})"))
+        .fetch_all(pool)
+        .await?;
+    let tenant_id_not_null = columns
+        .iter()
+        .find(|r| r.get::<String, _>("name") == "tenant_id")
+        .map(|r| r.get::<i64, _>("notnull") != 0)
+        .unwrap_or(false);
+    if !tenant_id_not_null {
+        return Ok(());
+    }
+
+    // Table-specific `CREATE TABLE`/column-list pairs, `tenant_id` already
+    // nullable and `tenant_grants` already present (added by
+    // `ensure_sqlite_text_column` before this call runs).
+    let (create_new_sql, columns_csv): (&str, &str) = match table {
+        "oauth_authorization_codes" => (
+            r#"
+            CREATE TABLE oauth_authorization_codes_new (
+                code_hash TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                tenant_id TEXT,
+                scopes TEXT NOT NULL,
+                dataset_ids TEXT,
+                tenant_grants TEXT,
+                redirect_uri TEXT NOT NULL,
+                code_challenge TEXT NOT NULL,
+                resource TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+            )"#,
+            "code_hash, client_id, user_id, tenant_id, scopes, dataset_ids, tenant_grants, \
+             redirect_uri, code_challenge, resource, created_at, expires_at",
+        ),
+        "oauth_access_tokens" => (
+            r#"
+            CREATE TABLE oauth_access_tokens_new (
+                id TEXT PRIMARY KEY,
+                token_hash TEXT NOT NULL UNIQUE,
+                client_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                tenant_id TEXT,
+                scopes TEXT NOT NULL,
+                dataset_ids TEXT,
+                tenant_grants TEXT,
+                resource TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+            )"#,
+            "id, token_hash, client_id, user_id, tenant_id, scopes, dataset_ids, tenant_grants, \
+             resource, created_at, expires_at",
+        ),
+        _ => (
+            r#"
+            CREATE TABLE oauth_refresh_tokens_new (
+                id TEXT PRIMARY KEY,
+                token_hash TEXT NOT NULL UNIQUE,
+                client_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                tenant_id TEXT,
+                scopes TEXT NOT NULL,
+                dataset_ids TEXT,
+                tenant_grants TEXT,
+                resource TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+            )"#,
+            "id, token_hash, client_id, user_id, tenant_id, scopes, dataset_ids, tenant_grants, \
+             resource, created_at, expires_at",
+        ),
+    };
+    let new_table = format!("{table}_new");
+
+    let mut tx = pool.begin().await?;
+    query(&format!("DROP TABLE IF EXISTS {new_table}"))
+        .execute(&mut *tx)
+        .await?;
+    query(create_new_sql).execute(&mut *tx).await?;
+    query(&format!(
+        "INSERT INTO {new_table} ({columns_csv}) SELECT {columns_csv} FROM {table}"
+    ))
+    .execute(&mut *tx)
+    .await?;
+    query(&format!("DROP TABLE {table}"))
+        .execute(&mut *tx)
+        .await?;
+    query(&format!("ALTER TABLE {new_table} RENAME TO {table}"))
+        .execute(&mut *tx)
+        .await?;
+    // `DROP TABLE` drops any index defined on it; the access/refresh token
+    // tables each carry one on `token_hash` besides the inline `UNIQUE`.
+    if table == "oauth_access_tokens" {
+        query("CREATE INDEX IF NOT EXISTS idx_oauth_access_tokens_hash ON oauth_access_tokens(token_hash)")
+            .execute(&mut *tx)
+            .await?;
+    } else if table == "oauth_refresh_tokens" {
+        query("CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_hash ON oauth_refresh_tokens(token_hash)")
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Primary-key column name for one of the [`OAUTH_GRANT_TABLES`] — the
+/// three tables don't share a PK name (`code_hash` vs. `id`), so the
+/// Postgres backfill (which has no SQLite-style implicit `rowid` to key its
+/// per-row `UPDATE` on) needs to know it.
+fn oauth_grant_table_pk_column(table: &str) -> &'static str {
+    if table == "oauth_authorization_codes" {
+        "code_hash"
+    } else {
+        "id"
+    }
+}
+
+/// Backfill `tenant_grants` on SQLite for every row that predates it: a
+/// single-element grant built from that row's legacy `tenant_id`/
+/// `dataset_ids`. Guarded by `tenant_grants IS NULL` on both the `SELECT`
+/// and the `UPDATE` (not just the `SELECT`) so a concurrent write from
+/// another already-migrated instance — which always populates
+/// `tenant_grants` and leaves `tenant_id` `NULL` — can't be clobbered if it
+/// lands between the two (same technique the `api_keys.dataset_ids`
+/// backfill above uses). Rows with `tenant_id IS NULL` are skipped: they
+/// were created by this change's own code, which always writes
+/// `tenant_grants` at insert time.
+async fn backfill_oauth_grant_tenant_grants_sqlite(
+    pool: &SqlitePool,
+    table: &str,
+) -> Result<(), sqlx::Error> {
+    let pending = query(&format!(
+        "SELECT rowid AS backfill_rowid, tenant_id, dataset_ids FROM {table} \
+         WHERE tenant_id IS NOT NULL AND tenant_grants IS NULL"
+    ))
+    .fetch_all(pool)
+    .await?;
+    for row in pending {
+        let rowid: i64 = row.get("backfill_rowid");
+        let tenant_id: String = row.get("tenant_id");
+        let dataset_ids: Option<String> = row.get("dataset_ids");
+        let dataset_ids = dataset_ids.map(decode_json_vec).transpose()?;
+        let grants_json = serde_json::to_string(&[TenantGrant {
+            tenant_id,
+            dataset_ids,
+        }])
+        .map_err(|e| {
+            sqlx::Error::Protocol(format!("failed to serialize tenant_grants backfill: {e}"))
+        })?;
+        query(&format!(
+            "UPDATE {table} SET tenant_grants = ? WHERE rowid = ? AND tenant_grants IS NULL"
+        ))
+        .bind(&grants_json)
+        .bind(rowid)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Postgres equivalent of [`backfill_oauth_grant_tenant_grants_sqlite`],
+/// keyed by each table's own primary key
+/// ([`oauth_grant_table_pk_column`]) rather than an implicit `rowid`.
+async fn backfill_oauth_grant_tenant_grants_postgres(
+    pool: &PgPool,
+    table: &str,
+) -> Result<(), sqlx::Error> {
+    let pk = oauth_grant_table_pk_column(table);
+    let pending = query(&format!(
+        "SELECT {pk} AS backfill_pk, tenant_id, dataset_ids FROM {table} \
+         WHERE tenant_id IS NOT NULL AND tenant_grants IS NULL"
+    ))
+    .fetch_all(pool)
+    .await?;
+    for row in pending {
+        let pk_value: String = row.get("backfill_pk");
+        let tenant_id: String = row.get("tenant_id");
+        let dataset_ids: Option<String> = row.get("dataset_ids");
+        let dataset_ids = dataset_ids.map(decode_json_vec).transpose()?;
+        let grants_json = serde_json::to_string(&[TenantGrant {
+            tenant_id,
+            dataset_ids,
+        }])
+        .map_err(|e| {
+            sqlx::Error::Protocol(format!("failed to serialize tenant_grants backfill: {e}"))
+        })?;
+        query(&format!(
+            "UPDATE {table} SET tenant_grants = $1 WHERE {pk} = $2 AND tenant_grants IS NULL"
+        ))
+        .bind(&grants_json)
+        .bind(&pk_value)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
 /// Maximum connections handed out for an on-disk SQLite catalog pool.
 ///
 /// SQLite allows exactly one writer at a time regardless of pool size, so a
@@ -870,9 +1101,10 @@ impl Catalog {
                     code_hash TEXT PRIMARY KEY,
                     client_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
-                    tenant_id TEXT NOT NULL,
+                    tenant_id TEXT,
                     scopes TEXT NOT NULL,
                     dataset_ids TEXT,
+                    tenant_grants TEXT,
                     redirect_uri TEXT NOT NULL,
                     code_challenge TEXT NOT NULL,
                     resource TEXT,
@@ -891,9 +1123,10 @@ impl Catalog {
                     token_hash TEXT NOT NULL UNIQUE,
                     client_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
-                    tenant_id TEXT NOT NULL,
+                    tenant_id TEXT,
                     scopes TEXT NOT NULL,
                     dataset_ids TEXT,
+                    tenant_grants TEXT,
                     resource TEXT,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     expires_at TEXT NOT NULL,
@@ -910,9 +1143,10 @@ impl Catalog {
                     token_hash TEXT NOT NULL UNIQUE,
                     client_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
-                    tenant_id TEXT NOT NULL,
+                    tenant_id TEXT,
                     scopes TEXT NOT NULL,
                     dataset_ids TEXT,
+                    tenant_grants TEXT,
                     resource TEXT,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     expires_at TEXT NOT NULL,
@@ -932,14 +1166,21 @@ impl Catalog {
                 )
                 .execute(pool)
                 .await?;
-                // Idempotent guard for a table created before `dataset_ids`
-                // existed (SQLite has no native `ADD COLUMN IF NOT EXISTS`).
-                for table in [
-                    "oauth_authorization_codes",
-                    "oauth_access_tokens",
-                    "oauth_refresh_tokens",
-                ] {
+                // Idempotent guard for a table created before `dataset_ids`/
+                // `tenant_grants` existed (SQLite has no native `ADD COLUMN
+                // IF NOT EXISTS`).
+                for table in OAUTH_GRANT_TABLES {
                     ensure_sqlite_text_column(pool, table, "dataset_ids").await?;
+                    ensure_sqlite_text_column(pool, table, "tenant_grants").await?;
+                }
+                // Change: mcp-multi-tenant-oauth-grants (D2). Drop `NOT
+                // NULL` from a pre-migration install's `tenant_id` column
+                // (SQLite has no `ALTER COLUMN ... DROP NOT NULL`, so this
+                // rebuilds each table when needed) and backfill
+                // `tenant_grants` for every row that still lacks it.
+                for table in OAUTH_GRANT_TABLES {
+                    rebuild_oauth_grant_table_sqlite_if_tenant_id_required(pool, table).await?;
+                    backfill_oauth_grant_tenant_grants_sqlite(pool, table).await?;
                 }
             }
             Catalog::Postgres(pool) => {
@@ -1246,9 +1487,10 @@ impl Catalog {
                     code_hash TEXT PRIMARY KEY,
                     client_id TEXT NOT NULL,
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    tenant_id TEXT REFERENCES tenants(id) ON DELETE CASCADE,
                     scopes TEXT NOT NULL,
                     dataset_ids TEXT,
+                    tenant_grants TEXT,
                     redirect_uri TEXT NOT NULL,
                     code_challenge TEXT NOT NULL,
                     resource TEXT,
@@ -1265,9 +1507,10 @@ impl Catalog {
                     token_hash TEXT NOT NULL UNIQUE,
                     client_id TEXT NOT NULL,
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    tenant_id TEXT REFERENCES tenants(id) ON DELETE CASCADE,
                     scopes TEXT NOT NULL,
                     dataset_ids TEXT,
+                    tenant_grants TEXT,
                     resource TEXT,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     expires_at TIMESTAMPTZ NOT NULL
@@ -1282,9 +1525,10 @@ impl Catalog {
                     token_hash TEXT NOT NULL UNIQUE,
                     client_id TEXT NOT NULL,
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    tenant_id TEXT REFERENCES tenants(id) ON DELETE CASCADE,
                     scopes TEXT NOT NULL,
                     dataset_ids TEXT,
+                    tenant_grants TEXT,
                     resource TEXT,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     expires_at TIMESTAMPTZ NOT NULL
@@ -1302,16 +1546,26 @@ impl Catalog {
                 )
                 .execute(pool)
                 .await?;
-                for table in [
-                    "oauth_authorization_codes",
-                    "oauth_access_tokens",
-                    "oauth_refresh_tokens",
-                ] {
+                for table in OAUTH_GRANT_TABLES {
                     query(&format!(
                         "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS dataset_ids TEXT"
                     ))
                     .execute(pool)
                     .await?;
+                    query(&format!(
+                        "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS tenant_grants TEXT"
+                    ))
+                    .execute(pool)
+                    .await?;
+                    // Change: mcp-multi-tenant-oauth-grants (D2). Native and
+                    // idempotent on Postgres, unlike the SQLite rebuild this
+                    // needs below.
+                    query(&format!(
+                        "ALTER TABLE {table} ALTER COLUMN tenant_id DROP NOT NULL"
+                    ))
+                    .execute(pool)
+                    .await?;
+                    backfill_oauth_grant_tenant_grants_postgres(pool, table).await?;
                 }
             }
         }
@@ -2149,6 +2403,73 @@ fn encode_dataset_ids_json(ids: &[String]) -> Result<String, sqlx::Error> {
         .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize dataset_ids: {e}")))
 }
 
+/// One tenant an OAuth grant (authorization code, access token, or refresh
+/// token) reaches, with its own optional dataset-set restriction (change:
+/// mcp-multi-tenant-oauth-grants, design D2). A grant's `tenant_grants`
+/// column stores a JSON array of these — one element for the common
+/// single-tenant case, more than one once a user consents to several
+/// tenants at once.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TenantGrant {
+    pub tenant_id: String,
+    /// Dataset-set restriction within `tenant_id`; see
+    /// [`ApiKeyRecord::dataset_ids`]. `None` is unrestricted.
+    pub dataset_ids: Option<Vec<String>>,
+}
+
+/// Reject an empty grant set, a grant set naming the same tenant more than
+/// once, or a grant whose own `dataset_ids` is empty or duplicate-containing
+/// (the same [`validate_dataset_id_set`] rule a single tenant's
+/// `dataset_ids` was already held to). `tenant_grants` has no DB-level FK or
+/// `NOT NULL` (D2 — a live deployment's pre-migration rows have none yet),
+/// so all three rules are enforced here, in application code, for every row
+/// this change's code writes. Rejecting a duplicate tenant keeps
+/// set-membership resolution (design D4) unambiguous — two entries for the
+/// same tenant would otherwise leave "the" dataset restriction for it
+/// undefined.
+pub fn validate_tenant_grants(grants: &[TenantGrant]) -> Result<(), sqlx::Error> {
+    if grants.is_empty() {
+        return Err(sqlx::Error::Protocol(
+            "tenant_grants must not be empty".to_string(),
+        ));
+    }
+    let mut seen = std::collections::HashSet::with_capacity(grants.len());
+    for grant in grants {
+        if !seen.insert(grant.tenant_id.as_str()) {
+            return Err(sqlx::Error::Protocol(format!(
+                "tenant_grants names tenant '{}' more than once",
+                grant.tenant_id
+            )));
+        }
+        if let Some(ids) = &grant.dataset_ids {
+            validate_dataset_id_set(ids)?;
+        }
+    }
+    Ok(())
+}
+
+/// Validate and JSON-encode a grant set for the `tenant_grants` column
+/// (D2).
+fn encode_tenant_grants_json(grants: &[TenantGrant]) -> Result<String, sqlx::Error> {
+    validate_tenant_grants(grants)?;
+    serde_json::to_string(grants)
+        .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize tenant_grants: {e}")))
+}
+
+/// Decode a `tenant_grants` column value. `None` (the column is nullable)
+/// only occurs for a row that predates this change's backfill; every row
+/// [`Catalog::init`] has migrated, and every row this change's code
+/// inserts, always has it populated, so `None` here is treated as a
+/// migration-ordering bug rather than silently defaulted.
+fn decode_tenant_grants_column(json: Option<String>) -> Result<Vec<TenantGrant>, sqlx::Error> {
+    let json = json.ok_or_else(|| {
+        sqlx::Error::Protocol(
+            "tenant_grants column is NULL; row predates the tenant_grants backfill".to_string(),
+        )
+    })?;
+    serde_json::from_str(&json).map_err(|e| sqlx::Error::Decode(Box::new(e)))
+}
+
 /// Dataset record from database
 #[derive(Debug, Clone)]
 pub struct DatasetRecord {
@@ -2325,11 +2646,14 @@ pub struct OAuthClientRecord {
 pub struct OAuthAuthorizationCode {
     pub client_id: String,
     pub user_id: String,
-    pub tenant_id: String,
+    /// The set of tenants (each with its own optional dataset restriction)
+    /// this code's eventual token will reach (change:
+    /// mcp-multi-tenant-oauth-grants, design D2). Always non-empty. The
+    /// legacy single `tenant_id`/`dataset_ids` columns are never written or
+    /// read by this struct any more — see the column comments in
+    /// [`Catalog::init`].
+    pub tenant_grants: Vec<TenantGrant>,
     pub scopes: Vec<String>,
-    /// Dataset-set restriction chosen at consent (D1/D6). `None` is
-    /// unrestricted.
-    pub dataset_ids: Option<Vec<String>>,
     pub redirect_uri: String,
     pub code_challenge: String,
     pub resource: Option<String>,
@@ -2338,18 +2662,16 @@ pub struct OAuthAuthorizationCode {
 }
 
 /// An opaque OAuth token grant (access or refresh), stored and looked up by
-/// hash. Carries the tenant, scopes, and audience the token was minted for.
+/// hash. Carries the tenant set, scopes, and audience the token was minted
+/// for.
 #[derive(Debug, Clone)]
 pub struct OAuthTokenRecord {
     pub id: String,
     pub client_id: String,
     pub user_id: String,
-    pub tenant_id: String,
+    /// See [`OAuthAuthorizationCode::tenant_grants`]. Always non-empty.
+    pub tenant_grants: Vec<TenantGrant>,
     pub scopes: Vec<String>,
-    /// Dataset-set restriction (D1/D6). `None` is unrestricted. There is no
-    /// legacy column here — OAuth never had dataset restriction before this
-    /// column existed, unlike `api_keys`' `dataset_id`.
-    pub dataset_ids: Option<Vec<String>>,
     pub resource: Option<String>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
@@ -4712,19 +5034,54 @@ impl Catalog {
         }
     }
 
+    /// Find the first tenant named in `tenant_grants` that no longer exists
+    /// in the tenant registry, or `None` if every one resolves. Mirrors
+    /// [`Catalog::find_dataset_not_in_tenant`]'s shape for the
+    /// tenant-existence check `tenant_grants` needs at write time, since the
+    /// column carries no DB-level FK (design: mcp-multi-tenant-oauth-grants,
+    /// D2/D3).
+    pub async fn find_tenant_grant_not_in_registry(
+        &self,
+        tenant_grants: &[TenantGrant],
+    ) -> Result<Option<String>, sqlx::Error> {
+        for grant in tenant_grants {
+            if self.get_tenant(&grant.tenant_id).await?.is_none() {
+                return Ok(Some(grant.tenant_id.clone()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Validate a grant set against the tenant registry and JSON-encode it
+    /// for the `tenant_grants` column: non-empty (D2) and every named
+    /// tenant must currently exist (D3).
+    async fn encode_and_validate_tenant_grants(
+        &self,
+        tenant_grants: &[TenantGrant],
+    ) -> Result<String, sqlx::Error> {
+        if let Some(missing) = self
+            .find_tenant_grant_not_in_registry(tenant_grants)
+            .await?
+        {
+            return Err(sqlx::Error::Protocol(format!(
+                "tenant_grants names unknown tenant '{missing}'"
+            )));
+        }
+        encode_tenant_grants_json(tenant_grants)
+    }
+
     /// Store a single-use authorization code, keyed by its hash.
     ///
-    /// `dataset_ids = Some(&[])` or a set containing a duplicate name is
-    /// rejected (D1a), same as an API key's.
+    /// `tenant_grants` must be non-empty and name only tenants that
+    /// currently exist, or this is rejected (D2/D3).
     #[allow(clippy::too_many_arguments)]
     pub async fn create_authorization_code(
         &self,
         code_hash: &str,
         client_id: &str,
         user_id: &str,
-        tenant_id: &str,
+        tenant_grants: &[TenantGrant],
         scopes: &[String],
-        dataset_ids: Option<&[String]>,
         redirect_uri: &str,
         code_challenge: &str,
         resource: Option<&str>,
@@ -4732,19 +5089,20 @@ impl Catalog {
     ) -> Result<(), sqlx::Error> {
         let scopes_json = serde_json::to_string(scopes)
             .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize scopes: {e}")))?;
-        let dataset_ids_json = dataset_ids.map(encode_dataset_ids_json).transpose()?;
+        let tenant_grants_json = self
+            .encode_and_validate_tenant_grants(tenant_grants)
+            .await?;
         let now = Utc::now();
         match self {
             Catalog::Sqlite(pool) => {
                 query(
-                    "INSERT INTO oauth_authorization_codes (code_hash, client_id, user_id, tenant_id, scopes, dataset_ids, redirect_uri, code_challenge, resource, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO oauth_authorization_codes (code_hash, client_id, user_id, tenant_grants, scopes, redirect_uri, code_challenge, resource, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(code_hash)
                 .bind(client_id)
                 .bind(user_id)
-                .bind(tenant_id)
+                .bind(&tenant_grants_json)
                 .bind(&scopes_json)
-                .bind(&dataset_ids_json)
                 .bind(redirect_uri)
                 .bind(code_challenge)
                 .bind(resource)
@@ -4755,14 +5113,13 @@ impl Catalog {
             }
             Catalog::Postgres(pool) => {
                 query(
-                    "INSERT INTO oauth_authorization_codes (code_hash, client_id, user_id, tenant_id, scopes, dataset_ids, redirect_uri, code_challenge, resource, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)",
+                    "INSERT INTO oauth_authorization_codes (code_hash, client_id, user_id, tenant_grants, scopes, redirect_uri, code_challenge, resource, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
                 )
                 .bind(code_hash)
                 .bind(client_id)
                 .bind(user_id)
-                .bind(tenant_id)
+                .bind(&tenant_grants_json)
                 .bind(&scopes_json)
-                .bind(&dataset_ids_json)
                 .bind(redirect_uri)
                 .bind(code_challenge)
                 .bind(resource)
@@ -4783,7 +5140,7 @@ impl Catalog {
         &self,
         code_hash: &str,
     ) -> Result<Option<OAuthAuthorizationCode>, sqlx::Error> {
-        let cols = "client_id, user_id, tenant_id, scopes, dataset_ids, redirect_uri, code_challenge, resource, created_at, expires_at";
+        let cols = "client_id, user_id, tenant_grants, scopes, redirect_uri, code_challenge, resource, created_at, expires_at";
         let record = match self {
             Catalog::Sqlite(pool) => {
                 let row = query(&format!(
@@ -4797,9 +5154,8 @@ impl Catalog {
                     Some(r) => OAuthAuthorizationCode {
                         client_id: r.get("client_id"),
                         user_id: r.get("user_id"),
-                        tenant_id: r.get("tenant_id"),
+                        tenant_grants: decode_tenant_grants_column(r.get("tenant_grants"))?,
                         scopes: decode_json_vec(r.get("scopes"))?,
-                        dataset_ids: decode_json_vec_opt(r.get("dataset_ids"))?,
                         redirect_uri: r.get("redirect_uri"),
                         code_challenge: r.get("code_challenge"),
                         resource: r.get("resource"),
@@ -4820,9 +5176,8 @@ impl Catalog {
                     Some(r) => OAuthAuthorizationCode {
                         client_id: r.get("client_id"),
                         user_id: r.get("user_id"),
-                        tenant_id: r.get("tenant_id"),
+                        tenant_grants: decode_tenant_grants_column(r.get("tenant_grants"))?,
                         scopes: decode_json_vec(r.get("scopes"))?,
-                        dataset_ids: decode_json_vec_opt(r.get("dataset_ids"))?,
                         redirect_uri: r.get("redirect_uri"),
                         code_challenge: r.get("code_challenge"),
                         resource: r.get("resource"),
@@ -4840,17 +5195,16 @@ impl Catalog {
 
     /// Store an opaque access token, keyed by its hash, and return the grant.
     ///
-    /// `dataset_ids = Some(&[])` or a set containing a duplicate name is
-    /// rejected (D1a).
+    /// `tenant_grants` must be non-empty and name only tenants that
+    /// currently exist, or this is rejected (D2/D3).
     #[allow(clippy::too_many_arguments)]
     pub async fn create_access_token(
         &self,
         token_hash: &str,
         client_id: &str,
         user_id: &str,
-        tenant_id: &str,
+        tenant_grants: &[TenantGrant],
         scopes: &[String],
-        dataset_ids: Option<&[String]>,
         resource: Option<&str>,
         expires_at: DateTime<Utc>,
     ) -> Result<OAuthTokenRecord, sqlx::Error> {
@@ -4859,28 +5213,27 @@ impl Catalog {
             token_hash,
             client_id,
             user_id,
-            tenant_id,
+            tenant_grants,
             scopes,
-            dataset_ids,
             resource,
             expires_at,
+            true,
         )
         .await
     }
 
     /// Store an opaque refresh token, keyed by its hash, and return the grant.
     ///
-    /// `dataset_ids = Some(&[])` or a set containing a duplicate name is
-    /// rejected (D1a).
+    /// `tenant_grants` must be non-empty and name only tenants that
+    /// currently exist, or this is rejected (D2/D3).
     #[allow(clippy::too_many_arguments)]
     pub async fn create_refresh_token(
         &self,
         token_hash: &str,
         client_id: &str,
         user_id: &str,
-        tenant_id: &str,
+        tenant_grants: &[TenantGrant],
         scopes: &[String],
-        dataset_ids: Option<&[String]>,
         resource: Option<&str>,
         expires_at: DateTime<Utc>,
     ) -> Result<OAuthTokenRecord, sqlx::Error> {
@@ -4889,16 +5242,89 @@ impl Catalog {
             token_hash,
             client_id,
             user_id,
-            tenant_id,
+            tenant_grants,
             scopes,
-            dataset_ids,
             resource,
             expires_at,
+            true,
         )
         .await
     }
 
-    /// Shared INSERT for the structurally-identical access/refresh token tables.
+    /// Store an opaque access token from an already-trusted grant set (e.g.
+    /// refreshing an existing token), skipping the tenant-registry
+    /// existence check (D3) — the grant's entries were already validated
+    /// when first created, so a refresh doesn't pay a DB round trip per
+    /// entry to re-confirm it, and a tenant deleted since then doesn't
+    /// fail the whole refresh over one now-stale entry (that entry simply
+    /// fails to resolve later, same as it already would without a
+    /// refresh in between). Shape validation (non-empty, no duplicate
+    /// `tenant_id`, well-formed `dataset_ids`) still always runs.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_access_token_trusted(
+        &self,
+        token_hash: &str,
+        client_id: &str,
+        user_id: &str,
+        tenant_grants: &[TenantGrant],
+        scopes: &[String],
+        resource: Option<&str>,
+        expires_at: DateTime<Utc>,
+    ) -> Result<OAuthTokenRecord, sqlx::Error> {
+        self.insert_oauth_token(
+            "oauth_access_tokens",
+            token_hash,
+            client_id,
+            user_id,
+            tenant_grants,
+            scopes,
+            resource,
+            expires_at,
+            false,
+        )
+        .await
+    }
+
+    /// Store an opaque refresh token from an already-trusted grant set (the
+    /// rotated replacement for a presented refresh token) — see
+    /// [`Catalog::create_access_token_trusted`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_refresh_token_trusted(
+        &self,
+        token_hash: &str,
+        client_id: &str,
+        user_id: &str,
+        tenant_grants: &[TenantGrant],
+        scopes: &[String],
+        resource: Option<&str>,
+        expires_at: DateTime<Utc>,
+    ) -> Result<OAuthTokenRecord, sqlx::Error> {
+        self.insert_oauth_token(
+            "oauth_refresh_tokens",
+            token_hash,
+            client_id,
+            user_id,
+            tenant_grants,
+            scopes,
+            resource,
+            expires_at,
+            false,
+        )
+        .await
+    }
+
+    /// Shared INSERT for the structurally-identical access/refresh token
+    /// tables. `check_registry` runs the async tenant-existence check
+    /// (D3) — skipped when `tenant_grants` is known-trusted (already
+    /// validated when the grant was first created, e.g. refreshing an
+    /// existing token), so a refresh doesn't pay a DB round trip per
+    /// grant entry to re-confirm something a prior write already
+    /// confirmed, and so a tenant deleted after the original grant
+    /// doesn't fail the *whole* refresh over one now-stale entry — that
+    /// entry simply fails to resolve later (D3), exactly as it already
+    /// would without a refresh in between. Shape validation (non-empty,
+    /// no duplicate `tenant_id`, well-formed `dataset_ids`) always runs
+    /// regardless, via [`encode_tenant_grants_json`].
     #[allow(clippy::too_many_arguments)]
     async fn insert_oauth_token(
         &self,
@@ -4906,29 +5332,33 @@ impl Catalog {
         token_hash: &str,
         client_id: &str,
         user_id: &str,
-        tenant_id: &str,
+        tenant_grants: &[TenantGrant],
         scopes: &[String],
-        dataset_ids: Option<&[String]>,
         resource: Option<&str>,
         expires_at: DateTime<Utc>,
+        check_registry: bool,
     ) -> Result<OAuthTokenRecord, sqlx::Error> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now();
         let scopes_json = serde_json::to_string(scopes)
             .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize scopes: {e}")))?;
-        let dataset_ids_json = dataset_ids.map(encode_dataset_ids_json).transpose()?;
+        let tenant_grants_json = if check_registry {
+            self.encode_and_validate_tenant_grants(tenant_grants)
+                .await?
+        } else {
+            encode_tenant_grants_json(tenant_grants)?
+        };
         match self {
             Catalog::Sqlite(pool) => {
                 query(&format!(
-                    "INSERT INTO {table} (id, token_hash, client_id, user_id, tenant_id, scopes, dataset_ids, resource, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    "INSERT INTO {table} (id, token_hash, client_id, user_id, tenant_grants, scopes, resource, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 ))
                 .bind(&id)
                 .bind(token_hash)
                 .bind(client_id)
                 .bind(user_id)
-                .bind(tenant_id)
+                .bind(&tenant_grants_json)
                 .bind(&scopes_json)
-                .bind(&dataset_ids_json)
                 .bind(resource)
                 .bind(now.to_rfc3339())
                 .bind(expires_at.to_rfc3339())
@@ -4937,15 +5367,14 @@ impl Catalog {
             }
             Catalog::Postgres(pool) => {
                 query(&format!(
-                    "INSERT INTO {table} (id, token_hash, client_id, user_id, tenant_id, scopes, dataset_ids, resource, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)"
+                    "INSERT INTO {table} (id, token_hash, client_id, user_id, tenant_grants, scopes, resource, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
                 ))
                 .bind(&id)
                 .bind(token_hash)
                 .bind(client_id)
                 .bind(user_id)
-                .bind(tenant_id)
+                .bind(&tenant_grants_json)
                 .bind(&scopes_json)
-                .bind(&dataset_ids_json)
                 .bind(resource)
                 .bind(now)
                 .bind(expires_at)
@@ -4957,9 +5386,8 @@ impl Catalog {
             id,
             client_id: client_id.to_string(),
             user_id: user_id.to_string(),
-            tenant_id: tenant_id.to_string(),
+            tenant_grants: tenant_grants.to_vec(),
             scopes: scopes.to_vec(),
-            dataset_ids: dataset_ids.map(<[String]>::to_vec),
             resource: resource.map(str::to_owned),
             created_at: now,
             expires_at,
@@ -4990,7 +5418,8 @@ impl Catalog {
         table: &str,
         token_hash: &str,
     ) -> Result<Option<OAuthTokenRecord>, sqlx::Error> {
-        let cols = "id, client_id, user_id, tenant_id, scopes, dataset_ids, resource, created_at, expires_at";
+        let cols =
+            "id, client_id, user_id, tenant_grants, scopes, resource, created_at, expires_at";
         match self {
             Catalog::Sqlite(pool) => {
                 let row = query(&format!(
@@ -5005,9 +5434,8 @@ impl Catalog {
                         id: r.get("id"),
                         client_id: r.get("client_id"),
                         user_id: r.get("user_id"),
-                        tenant_id: r.get("tenant_id"),
+                        tenant_grants: decode_tenant_grants_column(r.get("tenant_grants"))?,
                         scopes: decode_json_vec(r.get("scopes"))?,
-                        dataset_ids: decode_json_vec_opt(r.get("dataset_ids"))?,
                         resource: r.get("resource"),
                         created_at: parse_rfc3339(r.get("created_at"))?,
                         expires_at: parse_rfc3339(r.get("expires_at"))?,
@@ -5027,9 +5455,8 @@ impl Catalog {
                         id: r.get("id"),
                         client_id: r.get("client_id"),
                         user_id: r.get("user_id"),
-                        tenant_id: r.get("tenant_id"),
+                        tenant_grants: decode_tenant_grants_column(r.get("tenant_grants"))?,
                         scopes: decode_json_vec(r.get("scopes"))?,
-                        dataset_ids: decode_json_vec_opt(r.get("dataset_ids"))?,
                         resource: r.get("resource"),
                         created_at: r.get("created_at"),
                         expires_at: r.get("expires_at"),
@@ -7069,6 +7496,246 @@ mod postgres_dataset_ids_tests {
             "a key that was already unrestricted must stay unrestricted"
         );
     }
+
+    /// Seed the pre-`mcp-multi-tenant-oauth-grants` schema directly on a raw
+    /// Postgres pool: `tenant_id NOT NULL`, `dataset_ids` present, no
+    /// `tenant_grants` column at all. Mirrors
+    /// `oauth_storage_tests::seed_pre_migration_oauth_tables` (SQLite).
+    async fn seed_pre_migration_oauth_tables_postgres(pool: &PgPool) {
+        query(
+            r#"CREATE TABLE tenants (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                default_dataset TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                source TEXT NOT NULL CHECK(source IN ('config', 'database'))
+            )"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE users (
+                id TEXT PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE,
+                display_name TEXT,
+                password_hash TEXT,
+                is_instance_admin BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE oauth_authorization_codes (
+                code_hash TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                scopes TEXT NOT NULL,
+                dataset_ids TEXT,
+                redirect_uri TEXT NOT NULL,
+                code_challenge TEXT NOT NULL,
+                resource TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                expires_at TIMESTAMPTZ NOT NULL
+            )"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE oauth_access_tokens (
+                id TEXT PRIMARY KEY,
+                token_hash TEXT NOT NULL UNIQUE,
+                client_id TEXT NOT NULL,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                scopes TEXT NOT NULL,
+                dataset_ids TEXT,
+                resource TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                expires_at TIMESTAMPTZ NOT NULL
+            )"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE oauth_refresh_tokens (
+                id TEXT PRIMARY KEY,
+                token_hash TEXT NOT NULL UNIQUE,
+                client_id TEXT NOT NULL,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                scopes TEXT NOT NULL,
+                dataset_ids TEXT,
+                resource TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                expires_at TIMESTAMPTZ NOT NULL
+            )"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        query("INSERT INTO tenants (id, name, source) VALUES ('acme', 'Acme', 'database')")
+            .execute(pool)
+            .await
+            .unwrap();
+        query("INSERT INTO users (id, email) VALUES ('user-1', 'agent@example.com')")
+            .execute(pool)
+            .await
+            .unwrap();
+        query(
+            "INSERT INTO oauth_authorization_codes \
+             (code_hash, client_id, user_id, tenant_id, scopes, dataset_ids, redirect_uri, code_challenge, resource, created_at, expires_at) \
+             VALUES \
+             ('code-1', 'client-1', 'user-1', 'acme', '[\"traces:read\"]', NULL, 'https://claude.ai/cb', 'challenge', NULL, '2024-01-01T00:00:00Z', '2999-01-01T00:00:00Z')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            "INSERT INTO oauth_access_tokens \
+             (id, token_hash, client_id, user_id, tenant_id, scopes, dataset_ids, resource, created_at, expires_at) \
+             VALUES \
+             ('at-1', 'at-hash-1', 'client-1', 'user-1', 'acme', '[\"traces:read\"]', '[\"production\"]', NULL, '2024-01-01T00:00:00Z', '2999-01-01T00:00:00Z')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            "INSERT INTO oauth_refresh_tokens \
+             (id, token_hash, client_id, user_id, tenant_id, scopes, dataset_ids, resource, created_at, expires_at) \
+             VALUES \
+             ('rt-1', 'rt-hash-1', 'client-1', 'user-1', 'acme', '[\"traces:read\"]', NULL, NULL, '2024-01-01T00:00:00Z', '2999-01-01T00:00:00Z')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Postgres counterpart of
+    /// `oauth_storage_tests::catalog_init_adds_tenant_grants_column_to_populated_oauth_tables`
+    /// (task 1.1): `Catalog::init()` adds a nullable `tenant_grants` column
+    /// via `ADD COLUMN IF NOT EXISTS`, even against populated tables.
+    #[tokio::test]
+    async fn postgres_catalog_init_adds_tenant_grants_column_to_populated_oauth_tables() {
+        let (pool, _container) = raw_postgres_pool().await;
+        seed_pre_migration_oauth_tables_postgres(&pool).await;
+
+        let catalog = Catalog::Postgres(pool);
+        catalog.init().await.unwrap();
+        let Catalog::Postgres(pool) = &catalog else {
+            panic!("expected a Postgres catalog");
+        };
+
+        for table in OAUTH_GRANT_TABLES {
+            let column = query(
+                "SELECT is_nullable FROM information_schema.columns \
+                 WHERE table_name = $1 AND column_name = 'tenant_grants'",
+            )
+            .bind(table)
+            .fetch_optional(pool)
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("{table} must gain a tenant_grants column"));
+            assert_eq!(
+                column.get::<String, _>("is_nullable"),
+                "YES",
+                "{table}.tenant_grants must be nullable"
+            );
+        }
+
+        // A second boot against the already-migrated pool is a no-op.
+        catalog.init().await.unwrap();
+    }
+
+    /// Postgres counterpart of
+    /// `oauth_storage_tests::catalog_init_drops_tenant_id_not_null_and_preserves_row_data_on_upgrade`
+    /// (task 1.4): `ALTER COLUMN tenant_id DROP NOT NULL` is native and
+    /// idempotent on Postgres, and every pre-existing row's data survives.
+    #[tokio::test]
+    async fn postgres_catalog_init_drops_tenant_id_not_null_and_preserves_row_data() {
+        let (pool, _container) = raw_postgres_pool().await;
+        seed_pre_migration_oauth_tables_postgres(&pool).await;
+
+        let catalog = Catalog::Postgres(pool);
+        catalog.init().await.unwrap();
+        let Catalog::Postgres(pool) = &catalog else {
+            panic!("expected a Postgres catalog");
+        };
+
+        for table in OAUTH_GRANT_TABLES {
+            let column = query(
+                "SELECT is_nullable FROM information_schema.columns \
+                 WHERE table_name = $1 AND column_name = 'tenant_id'",
+            )
+            .bind(table)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                column.get::<String, _>("is_nullable"),
+                "YES",
+                "{table}.tenant_id must lose its NOT NULL constraint"
+            );
+        }
+
+        let code_row = query(
+            "SELECT client_id, tenant_id FROM oauth_authorization_codes WHERE code_hash = 'code-1'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(code_row.get::<String, _>("client_id"), "client-1");
+        assert_eq!(code_row.get::<String, _>("tenant_id"), "acme");
+
+        // A second boot against the already-migrated pool is a no-op.
+        catalog.init().await.unwrap();
+    }
+
+    /// Postgres counterpart of
+    /// `oauth_storage_tests::catalog_init_backfills_tenant_grants_from_legacy_columns`
+    /// (task 1.5/1.6).
+    #[tokio::test]
+    async fn postgres_catalog_init_backfills_tenant_grants_from_legacy_columns() {
+        let (pool, _container) = raw_postgres_pool().await;
+        seed_pre_migration_oauth_tables_postgres(&pool).await;
+
+        let catalog = Catalog::Postgres(pool);
+        catalog.init().await.unwrap();
+
+        let access = catalog
+            .get_valid_access_token("at-hash-1")
+            .await
+            .unwrap()
+            .expect("pre-migration access token survives migration");
+        assert_eq!(
+            access.tenant_grants,
+            vec![TenantGrant {
+                tenant_id: "acme".to_string(),
+                dataset_ids: Some(vec!["production".to_string()]),
+            }]
+        );
+
+        let refresh = catalog
+            .get_valid_refresh_token("rt-hash-1")
+            .await
+            .unwrap()
+            .expect("pre-migration refresh token survives migration");
+        assert_eq!(
+            refresh.tenant_grants,
+            vec![TenantGrant {
+                tenant_id: "acme".to_string(),
+                dataset_ids: None,
+            }]
+        );
+    }
 }
 
 #[cfg(test)]
@@ -8327,6 +8994,440 @@ mod oauth_storage_tests {
         (catalog, user.id, "acme".to_string())
     }
 
+    /// A single-tenant, unrestricted grant set — the common case.
+    fn single_grant(tenant_id: &str) -> Vec<TenantGrant> {
+        vec![TenantGrant {
+            tenant_id: tenant_id.to_string(),
+            dataset_ids: None,
+        }]
+    }
+
+    /// A single-tenant grant restricted to `dataset_ids`.
+    fn single_grant_with_datasets(tenant_id: &str, dataset_ids: &[String]) -> Vec<TenantGrant> {
+        vec![TenantGrant {
+            tenant_id: tenant_id.to_string(),
+            dataset_ids: Some(dataset_ids.to_vec()),
+        }]
+    }
+
+    /// Seed the pre-`mcp-multi-tenant-oauth-grants` schema directly on a raw
+    /// pool, bypassing `Catalog::init()` (which would migrate immediately):
+    /// `tenant_id NOT NULL`, `dataset_ids` present, no `tenant_grants`
+    /// column at all. One row per OAuth grant table, referencing `tenant_id`
+    /// and `user_id`, with `dataset_ids` on the access-token row so the
+    /// backfill test has something non-trivial to carry forward.
+    async fn seed_pre_migration_oauth_tables(pool: &SqlitePool) {
+        query(
+            r#"CREATE TABLE tenants (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                default_dataset TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                source TEXT NOT NULL CHECK(source IN ('config', 'database'))
+            )"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE users (
+                id TEXT PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE,
+                display_name TEXT,
+                password_hash TEXT,
+                is_instance_admin INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE oauth_authorization_codes (
+                code_hash TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                scopes TEXT NOT NULL,
+                dataset_ids TEXT,
+                redirect_uri TEXT NOT NULL,
+                code_challenge TEXT NOT NULL,
+                resource TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+            )"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE oauth_access_tokens (
+                id TEXT PRIMARY KEY,
+                token_hash TEXT NOT NULL UNIQUE,
+                client_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                scopes TEXT NOT NULL,
+                dataset_ids TEXT,
+                resource TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+            )"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE oauth_refresh_tokens (
+                id TEXT PRIMARY KEY,
+                token_hash TEXT NOT NULL UNIQUE,
+                client_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                scopes TEXT NOT NULL,
+                dataset_ids TEXT,
+                resource TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+            )"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        query("INSERT INTO tenants (id, name, source) VALUES ('acme', 'Acme', 'database')")
+            .execute(pool)
+            .await
+            .unwrap();
+        query("INSERT INTO users (id, email) VALUES ('user-1', 'agent@example.com')")
+            .execute(pool)
+            .await
+            .unwrap();
+        query(
+            "INSERT INTO oauth_authorization_codes \
+             (code_hash, client_id, user_id, tenant_id, scopes, dataset_ids, redirect_uri, code_challenge, resource, created_at, expires_at) \
+             VALUES \
+             ('code-1', 'client-1', 'user-1', 'acme', '[\"traces:read\"]', NULL, 'https://claude.ai/cb', 'challenge', NULL, '2024-01-01T00:00:00Z', '2999-01-01T00:00:00Z')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            "INSERT INTO oauth_access_tokens \
+             (id, token_hash, client_id, user_id, tenant_id, scopes, dataset_ids, resource, created_at, expires_at) \
+             VALUES \
+             ('at-1', 'at-hash-1', 'client-1', 'user-1', 'acme', '[\"traces:read\"]', '[\"production\"]', NULL, '2024-01-01T00:00:00Z', '2999-01-01T00:00:00Z')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            "INSERT INTO oauth_refresh_tokens \
+             (id, token_hash, client_id, user_id, tenant_id, scopes, dataset_ids, resource, created_at, expires_at) \
+             VALUES \
+             ('rt-1', 'rt-hash-1', 'client-1', 'user-1', 'acme', '[\"traces:read\"]', NULL, NULL, '2024-01-01T00:00:00Z', '2999-01-01T00:00:00Z')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Task 1.1: `Catalog::init()` adds a nullable `tenant_grants` column to
+    /// all three OAuth grant tables via a plain `ADD COLUMN`, even when a
+    /// table already has rows (SQLite has no native `ADD COLUMN IF NOT
+    /// EXISTS`, hence `ensure_sqlite_text_column`).
+    #[tokio::test]
+    async fn catalog_init_adds_tenant_grants_column_to_populated_oauth_tables() {
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        seed_pre_migration_oauth_tables(&pool).await;
+
+        let catalog = Catalog::Sqlite(pool);
+        catalog.init().await.unwrap();
+
+        let Catalog::Sqlite(pool) = &catalog else {
+            panic!("expected a SQLite catalog");
+        };
+        for table in OAUTH_GRANT_TABLES {
+            let columns = query(&format!("PRAGMA table_info({table})"))
+                .fetch_all(pool)
+                .await
+                .unwrap();
+            let tenant_grants = columns
+                .iter()
+                .find(|r| r.get::<String, _>("name") == "tenant_grants")
+                .unwrap_or_else(|| panic!("{table} must gain a tenant_grants column"));
+            assert_eq!(
+                tenant_grants.get::<i64, _>("notnull"),
+                0,
+                "{table}.tenant_grants must be nullable"
+            );
+        }
+
+        // A second boot against the already-migrated pool is a no-op.
+        catalog.init().await.unwrap();
+    }
+
+    /// Task 1.3: `tenant_id` is nullable on all three OAuth grant tables —
+    /// on a fresh catalog (never touched the pre-migration schema at all),
+    /// a row can be inserted with `tenant_id = NULL`.
+    #[tokio::test]
+    async fn oauth_tables_accept_a_row_with_tenant_id_null() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let Catalog::Sqlite(pool) = &catalog else {
+            panic!("expected a SQLite catalog");
+        };
+        catalog
+            .create_user("agent@example.com", None, Some("phc"), false)
+            .await
+            .unwrap();
+
+        query(
+            "INSERT INTO oauth_authorization_codes \
+             (code_hash, client_id, user_id, tenant_id, scopes, redirect_uri, code_challenge, expires_at, tenant_grants) \
+             VALUES ('code-null-tenant', 'client-1', (SELECT id FROM users LIMIT 1), NULL, '[]', 'https://claude.ai/cb', 'challenge', '2999-01-01T00:00:00Z', '[]')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            "INSERT INTO oauth_access_tokens \
+             (id, token_hash, client_id, user_id, tenant_id, scopes, expires_at, tenant_grants) \
+             VALUES ('at-null-tenant', 'at-hash-null', 'client-1', (SELECT id FROM users LIMIT 1), NULL, '[]', '2999-01-01T00:00:00Z', '[]')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            "INSERT INTO oauth_refresh_tokens \
+             (id, token_hash, client_id, user_id, tenant_id, scopes, expires_at, tenant_grants) \
+             VALUES ('rt-null-tenant', 'rt-hash-null', 'client-1', (SELECT id FROM users LIMIT 1), NULL, '[]', '2999-01-01T00:00:00Z', '[]')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Companion to the above on an *upgraded* database: a pre-migration
+    /// install still has `tenant_id NOT NULL`, so `Catalog::init()` must
+    /// rebuild each table (SQLite has no `ALTER COLUMN ... DROP NOT NULL`)
+    /// to make it nullable, while every pre-existing row's other columns
+    /// (including the legacy `tenant_id` value itself) survive untouched.
+    #[tokio::test]
+    async fn catalog_init_drops_tenant_id_not_null_and_preserves_row_data_on_upgrade() {
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        seed_pre_migration_oauth_tables(&pool).await;
+
+        let catalog = Catalog::Sqlite(pool);
+        catalog.init().await.unwrap();
+
+        let Catalog::Sqlite(pool) = &catalog else {
+            panic!("expected a SQLite catalog");
+        };
+        for table in OAUTH_GRANT_TABLES {
+            let columns = query(&format!("PRAGMA table_info({table})"))
+                .fetch_all(pool)
+                .await
+                .unwrap();
+            let tenant_id = columns
+                .iter()
+                .find(|r| r.get::<String, _>("name") == "tenant_id")
+                .unwrap();
+            assert_eq!(
+                tenant_id.get::<i64, _>("notnull"),
+                0,
+                "{table}.tenant_id must lose its NOT NULL constraint"
+            );
+        }
+
+        let code_row = query("SELECT client_id, user_id, tenant_id, scopes, redirect_uri, code_challenge, created_at, expires_at FROM oauth_authorization_codes WHERE code_hash = 'code-1'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(code_row.get::<String, _>("client_id"), "client-1");
+        assert_eq!(code_row.get::<String, _>("user_id"), "user-1");
+        assert_eq!(code_row.get::<String, _>("tenant_id"), "acme");
+        assert_eq!(code_row.get::<String, _>("scopes"), "[\"traces:read\"]");
+        assert_eq!(
+            code_row.get::<String, _>("redirect_uri"),
+            "https://claude.ai/cb"
+        );
+        assert_eq!(code_row.get::<String, _>("code_challenge"), "challenge");
+        assert_eq!(
+            code_row.get::<String, _>("created_at"),
+            "2024-01-01T00:00:00Z"
+        );
+
+        let access_row = query(
+            "SELECT tenant_id, dataset_ids FROM oauth_access_tokens WHERE token_hash = 'at-hash-1'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(access_row.get::<String, _>("tenant_id"), "acme");
+        assert_eq!(
+            access_row.get::<String, _>("dataset_ids"),
+            "[\"production\"]"
+        );
+
+        let refresh_row =
+            query("SELECT tenant_id FROM oauth_refresh_tokens WHERE token_hash = 'rt-hash-1'")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(refresh_row.get::<String, _>("tenant_id"), "acme");
+
+        // A second boot against the already-migrated (rebuilt) pool is a no-op.
+        catalog.init().await.unwrap();
+    }
+
+    /// Task 1.5/1.6: the backfill populates `tenant_grants` for every
+    /// pre-existing row from its legacy `tenant_id`/`dataset_ids` — a
+    /// single-element array, carrying the dataset restriction across when
+    /// present (the access-token row) and `None` when absent (the
+    /// authorization-code and refresh-token rows).
+    #[tokio::test]
+    async fn catalog_init_backfills_tenant_grants_from_legacy_columns() {
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        seed_pre_migration_oauth_tables(&pool).await;
+
+        let catalog = Catalog::Sqlite(pool);
+        catalog.init().await.unwrap();
+
+        let code = catalog
+            .consume_authorization_code("code-1")
+            .await
+            .unwrap()
+            .expect("pre-migration code survives migration");
+        assert_eq!(code.tenant_grants, single_grant("acme"));
+
+        let access = catalog
+            .get_valid_access_token("at-hash-1")
+            .await
+            .unwrap()
+            .expect("pre-migration access token survives migration");
+        assert_eq!(
+            access.tenant_grants,
+            single_grant_with_datasets("acme", &["production".to_string()])
+        );
+
+        let refresh = catalog
+            .get_valid_refresh_token("rt-hash-1")
+            .await
+            .unwrap()
+            .expect("pre-migration refresh token survives migration");
+        assert_eq!(refresh.tenant_grants, single_grant("acme"));
+    }
+
+    /// The rebuild technique `catalog_init_drops_tenant_id_not_null_and_preserves_row_data_on_upgrade`
+    /// exercises is the same create-new/copy-rows/drop-old/rename shape
+    /// `rebuild_users_table_sqlite` uses for `users`, but unlike `users`,
+    /// none of the three OAuth grant tables is ever an FK *parent*, so the
+    /// rebuild does not need to suspend foreign-key enforcement the way
+    /// `rebuild_users_table_sqlite` does. This is verified empirically
+    /// (rather than assumed): after a rebuild, the `tenant_id`/`user_id`
+    /// foreign keys to `tenants`/`users` still hold — a valid tenant/user
+    /// round-trips, and an unknown one is rejected by the database itself.
+    #[tokio::test]
+    async fn oauth_grant_table_rebuild_preserves_tenant_and_user_foreign_keys() {
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        seed_pre_migration_oauth_tables(&pool).await;
+
+        let catalog = Catalog::Sqlite(pool);
+        catalog.init().await.unwrap();
+        let Catalog::Sqlite(pool) = &catalog else {
+            panic!("expected a SQLite catalog");
+        };
+
+        // A valid tenant/user still round-trips through the rebuilt table.
+        query(
+            "INSERT INTO oauth_access_tokens \
+             (id, token_hash, client_id, user_id, tenant_id, expires_at, tenant_grants, scopes) \
+             VALUES ('at-fk-ok', 'at-hash-fk-ok', 'client-1', 'user-1', 'acme', '2999-01-01T00:00:00Z', '[]', '[]')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        // An unknown user is still rejected by the FK the rebuild preserved.
+        let violated_user = query(
+            "INSERT INTO oauth_access_tokens \
+             (id, token_hash, client_id, user_id, expires_at, tenant_grants, scopes) \
+             VALUES ('at-fk-bad', 'at-hash-fk-bad', 'client-1', 'no-such-user', '2999-01-01T00:00:00Z', '[]', '[]')",
+        )
+        .execute(pool)
+        .await;
+        assert!(
+            violated_user.is_err(),
+            "the user_id foreign key must still be enforced after the rebuild"
+        );
+
+        // An unknown tenant is likewise still rejected.
+        let violated_tenant = query(
+            "INSERT INTO oauth_access_tokens \
+             (id, token_hash, client_id, user_id, tenant_id, expires_at, tenant_grants, scopes) \
+             VALUES ('at-fk-bad-tenant', 'at-hash-fk-bad-tenant', 'client-1', 'user-1', 'no-such-tenant', '2999-01-01T00:00:00Z', '[]', '[]')",
+        )
+        .execute(pool)
+        .await;
+        assert!(
+            violated_tenant.is_err(),
+            "the tenant_id foreign key must still be enforced after the rebuild"
+        );
+    }
+
+    /// `DROP TABLE` (part of the rebuild) drops any index defined on the
+    /// table too; the rebuild must recreate `idx_oauth_access_tokens_hash`/
+    /// `idx_oauth_refresh_tokens_hash` rather than silently losing them.
+    #[tokio::test]
+    async fn oauth_grant_table_rebuild_preserves_token_hash_indexes() {
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        seed_pre_migration_oauth_tables(&pool).await;
+
+        let catalog = Catalog::Sqlite(pool);
+        catalog.init().await.unwrap();
+        let Catalog::Sqlite(pool) = &catalog else {
+            panic!("expected a SQLite catalog");
+        };
+
+        for (table, index) in [
+            ("oauth_access_tokens", "idx_oauth_access_tokens_hash"),
+            ("oauth_refresh_tokens", "idx_oauth_refresh_tokens_hash"),
+        ] {
+            let found = query(
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ? AND tbl_name = ?",
+            )
+            .bind(index)
+            .bind(table)
+            .fetch_optional(pool)
+            .await
+            .unwrap();
+            assert!(found.is_some(), "{index} must survive the {table} rebuild");
+        }
+    }
+
     #[tokio::test]
     async fn oauth_client_round_trips_and_unknown_is_none() {
         let (catalog, _user, _tenant) = catalog_with_principal().await;
@@ -8356,14 +9457,14 @@ mod oauth_storage_tests {
     async fn authorization_code_is_single_use() {
         let (catalog, user, tenant) = catalog_with_principal().await;
         let scopes = vec!["traces:read".to_string()];
+        let grants = single_grant(&tenant);
         catalog
             .create_authorization_code(
                 "code-hash-1",
                 "client-1",
                 &user,
-                &tenant,
+                &grants,
                 &scopes,
-                None,
                 "https://claude.ai/cb",
                 "challenge-abc",
                 Some("https://mcp.example.com/mcp"),
@@ -8377,7 +9478,7 @@ mod oauth_storage_tests {
             .await
             .unwrap()
             .expect("first consume returns the grant");
-        assert_eq!(first.tenant_id, tenant);
+        assert_eq!(first.tenant_grants, grants);
         assert_eq!(first.scopes, scopes);
         assert_eq!(first.code_challenge, "challenge-abc");
         assert_eq!(
@@ -8403,9 +9504,8 @@ mod oauth_storage_tests {
                 "code-hash-old",
                 "client-1",
                 &user,
-                &tenant,
+                &single_grant(&tenant),
                 &["traces:read".to_string()],
-                None,
                 "https://claude.ai/cb",
                 "challenge",
                 None,
@@ -8426,14 +9526,14 @@ mod oauth_storage_tests {
     async fn access_token_valid_lookup_then_revoke() {
         let (catalog, user, tenant) = catalog_with_principal().await;
         let scopes = vec!["traces:read".to_string(), "logs:read".to_string()];
+        let grants = single_grant(&tenant);
         catalog
             .create_access_token(
                 "at-hash-1",
                 "client-1",
                 &user,
-                &tenant,
+                &grants,
                 &scopes,
-                None,
                 Some("https://mcp.example.com/mcp"),
                 Utc::now() + Duration::hours(1),
             )
@@ -8445,7 +9545,7 @@ mod oauth_storage_tests {
             .await
             .unwrap()
             .expect("valid token is found");
-        assert_eq!(found.tenant_id, tenant);
+        assert_eq!(found.tenant_grants, grants);
         assert_eq!(found.scopes, scopes);
 
         catalog.revoke_access_token("at-hash-1").await.unwrap();
@@ -8466,9 +9566,8 @@ mod oauth_storage_tests {
                 "at-hash-old",
                 "client-1",
                 &user,
-                &tenant,
+                &single_grant(&tenant),
                 &["traces:read".to_string()],
-                None,
                 None,
                 Utc::now() - Duration::seconds(1),
             )
@@ -8491,9 +9590,8 @@ mod oauth_storage_tests {
                 "rt-hash-1",
                 "client-1",
                 &user,
-                &tenant,
+                &single_grant(&tenant),
                 &["traces:read".to_string()],
-                None,
                 Some("https://mcp.example.com/mcp"),
                 Utc::now() + Duration::days(30),
             )
@@ -8517,19 +9615,19 @@ mod oauth_storage_tests {
     }
 
     #[tokio::test]
-    async fn oauth_grants_round_trip_dataset_ids() {
+    async fn oauth_grants_round_trip_tenant_grants_with_dataset_ids() {
         let (catalog, user, tenant) = catalog_with_principal().await;
         let scopes = vec!["traces:read".to_string()];
         let ids = vec!["a".to_string(), "b".to_string()];
+        let grants = single_grant_with_datasets(&tenant, &ids);
 
         catalog
             .create_authorization_code(
                 "code-with-datasets",
                 "client-1",
                 &user,
-                &tenant,
+                &grants,
                 &scopes,
-                Some(&ids),
                 "https://claude.ai/cb",
                 "challenge",
                 None,
@@ -8542,104 +9640,307 @@ mod oauth_storage_tests {
             .await
             .unwrap()
             .expect("code exists");
-        assert_eq!(code.dataset_ids, Some(ids.clone()));
+        assert_eq!(code.tenant_grants, grants);
 
         let access = catalog
             .create_access_token(
                 "at-with-datasets",
                 "client-1",
                 &user,
-                &tenant,
+                &grants,
                 &scopes,
-                Some(&ids),
                 None,
                 Utc::now() + Duration::hours(1),
             )
             .await
             .unwrap();
-        assert_eq!(access.dataset_ids, Some(ids.clone()));
+        assert_eq!(access.tenant_grants, grants);
         let fetched = catalog
             .get_valid_access_token("at-with-datasets")
             .await
             .unwrap()
             .expect("access token exists");
-        assert_eq!(fetched.dataset_ids, Some(ids.clone()));
+        assert_eq!(fetched.tenant_grants, grants);
 
         let refresh = catalog
             .create_refresh_token(
                 "rt-with-datasets",
                 "client-1",
                 &user,
-                &tenant,
+                &grants,
                 &scopes,
-                Some(&ids),
                 None,
                 Utc::now() + Duration::days(30),
             )
             .await
             .unwrap();
-        assert_eq!(refresh.dataset_ids, Some(ids.clone()));
+        assert_eq!(refresh.tenant_grants, grants);
         let fetched = catalog
             .get_valid_refresh_token("rt-with-datasets")
             .await
             .unwrap()
             .expect("refresh token exists");
-        assert_eq!(fetched.dataset_ids, Some(ids));
+        assert_eq!(fetched.tenant_grants, grants);
+    }
+
+    /// A grant naming two tenants at once (the actual new capability this
+    /// change adds) round-trips with each tenant's own, independent dataset
+    /// restriction.
+    #[tokio::test]
+    async fn multi_tenant_grant_round_trips_with_per_tenant_dataset_restrictions() {
+        let (catalog, user, tenant_a) = catalog_with_principal().await;
+        catalog
+            .upsert_tenant("beta", "Beta", Some("default"), "database")
+            .await
+            .unwrap();
+        let grants = vec![
+            TenantGrant {
+                tenant_id: tenant_a.clone(),
+                dataset_ids: Some(vec!["production".to_string()]),
+            },
+            TenantGrant {
+                tenant_id: "beta".to_string(),
+                dataset_ids: None,
+            },
+        ];
+        let scopes = vec!["traces:read".to_string()];
+
+        let access = catalog
+            .create_access_token(
+                "at-multi-tenant",
+                "client-1",
+                &user,
+                &grants,
+                &scopes,
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(access.tenant_grants, grants);
+
+        let fetched = catalog
+            .get_valid_access_token("at-multi-tenant")
+            .await
+            .unwrap()
+            .expect("multi-tenant access token exists");
+        assert_eq!(fetched.tenant_grants, grants);
     }
 
     #[tokio::test]
-    async fn create_access_token_rejects_empty_and_duplicate_dataset_ids() {
+    async fn create_access_token_rejects_empty_tenant_grants_and_empty_or_duplicate_dataset_ids() {
         let (catalog, user, tenant) = catalog_with_principal().await;
         let scopes = vec!["traces:read".to_string()];
 
-        let empty = catalog
+        let no_grants = catalog
+            .create_access_token(
+                "at-no-grants",
+                "client-1",
+                &user,
+                &[],
+                &scopes,
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await;
+        assert!(no_grants.is_err());
+
+        let empty_dataset_ids = catalog
             .create_access_token(
                 "at-empty",
                 "client-1",
                 &user,
-                &tenant,
+                &single_grant_with_datasets(&tenant, &[]),
                 &scopes,
-                Some(&[]),
                 None,
                 Utc::now() + Duration::hours(1),
             )
             .await;
-        assert!(empty.is_err());
+        assert!(empty_dataset_ids.is_err());
 
-        let duplicate = catalog
+        let duplicate_dataset_ids = catalog
             .create_access_token(
                 "at-dup",
                 "client-1",
                 &user,
-                &tenant,
+                &single_grant_with_datasets(&tenant, &["a".to_string(), "a".to_string()]),
                 &scopes,
-                Some(&["a".to_string(), "a".to_string()]),
                 None,
                 Utc::now() + Duration::hours(1),
             )
             .await;
-        assert!(duplicate.is_err());
+        assert!(duplicate_dataset_ids.is_err());
     }
 
-    /// D6: a refresh reads `dataset_ids` from the presented
+    /// D3: a grant naming a tenant that doesn't exist in the registry is
+    /// rejected at write time, since `tenant_grants` carries no DB-level FK
+    /// to enforce this for free.
+    #[tokio::test]
+    async fn create_access_token_rejects_unknown_tenant() {
+        let (catalog, user, _tenant) = catalog_with_principal().await;
+        let result = catalog
+            .create_access_token(
+                "at-unknown-tenant",
+                "client-1",
+                &user,
+                &single_grant("no-such-tenant"),
+                &["traces:read".to_string()],
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    /// `get_valid_access_token` surfaces a decode failure as `Err`, not as
+    /// "no such token" — this is the distinction `POST /oauth/introspect`
+    /// (CodeRabbit finding on mcp-multi-tenant-oauth-grants) depends on to
+    /// report a store failure as a server error rather than `active:
+    /// false`, which would otherwise make a transient catalog outage look
+    /// like every live token was revoked.
+    #[tokio::test]
+    async fn get_valid_access_token_errors_rather_than_returns_none_on_a_corrupt_row() {
+        let (catalog, user, tenant) = catalog_with_principal().await;
+        catalog
+            .create_access_token(
+                "at-corrupt-row",
+                "client-1",
+                &user,
+                &single_grant(&tenant),
+                &["traces:read".to_string()],
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        // Simulate corruption (or a row that predates the tenant_grants
+        // backfill) directly, bypassing every write path this change's own
+        // code uses — none of which can produce a NULL tenant_grants.
+        let Catalog::Sqlite(pool) = &catalog else {
+            panic!("test catalog is always SQLite");
+        };
+        query("UPDATE oauth_access_tokens SET tenant_grants = NULL WHERE token_hash = ?")
+            .bind("at-corrupt-row")
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let result = catalog.get_valid_access_token("at-corrupt-row").await;
+        assert!(
+            result.is_err(),
+            "a corrupt row must surface as an error, not Ok(None)"
+        );
+    }
+
+    /// `create_access_token_trusted`/`create_refresh_token_trusted` skip the
+    /// tenant-registry existence check (D3) — a token can be refreshed even
+    /// if one of its originally-granted tenants was deleted in the
+    /// meantime, so the *other* tenants in a multi-tenant grant keep
+    /// refreshing normally instead of the whole refresh failing over one
+    /// stale entry.
+    #[tokio::test]
+    async fn create_token_trusted_accepts_a_grant_naming_a_deleted_tenant() {
+        let (catalog, user, _tenant) = catalog_with_principal().await;
+        let grants = single_grant("no-such-tenant");
+
+        let access = catalog
+            .create_access_token_trusted(
+                "at-trusted-deleted-tenant",
+                "client-1",
+                &user,
+                &grants,
+                &["traces:read".to_string()],
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await
+            .expect("trusted access-token creation skips the registry check");
+        assert_eq!(access.tenant_grants, grants);
+
+        let refresh = catalog
+            .create_refresh_token_trusted(
+                "rt-trusted-deleted-tenant",
+                "client-1",
+                &user,
+                &grants,
+                &["traces:read".to_string()],
+                None,
+                Utc::now() + Duration::days(1),
+            )
+            .await
+            .expect("trusted refresh-token creation skips the registry check");
+        assert_eq!(refresh.tenant_grants, grants);
+    }
+
+    /// The trusted path still enforces shape validation — it only skips the
+    /// async registry-existence check, not the free, in-memory checks.
+    #[tokio::test]
+    async fn create_token_trusted_still_rejects_an_empty_grant_set() {
+        let (catalog, user, _tenant) = catalog_with_principal().await;
+        let result = catalog
+            .create_access_token_trusted(
+                "at-trusted-empty",
+                "client-1",
+                &user,
+                &[],
+                &["traces:read".to_string()],
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    /// A grant set naming the same tenant twice (even with different
+    /// `dataset_ids` per entry) is rejected: task-group-3's set-membership
+    /// checks (design D4) assume each tenant appears at most once, and a
+    /// duplicate would make "the" dataset restriction for that tenant
+    /// ambiguous.
+    #[tokio::test]
+    async fn create_access_token_rejects_duplicate_tenant_id_across_grants() {
+        let (catalog, user, tenant) = catalog_with_principal().await;
+        let grants = vec![
+            TenantGrant {
+                tenant_id: tenant.clone(),
+                dataset_ids: Some(vec!["production".to_string()]),
+            },
+            TenantGrant {
+                tenant_id: tenant,
+                dataset_ids: None,
+            },
+        ];
+        let result = catalog
+            .create_access_token(
+                "at-duplicate-tenant",
+                "client-1",
+                &user,
+                &grants,
+                &["traces:read".to_string()],
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    /// D6: a refresh reads `tenant_grants` from the presented
     /// `oauth_refresh_tokens` row being redeemed, not from any access
     /// token. The original access token is revoked (gone) before the
     /// "refresh" happens, so a wrong implementation that tries to read it
     /// would fail loudly rather than coincidentally pass.
     #[tokio::test]
-    async fn refresh_reads_dataset_ids_from_refresh_token_row_not_access_token() {
+    async fn refresh_reads_tenant_grants_from_refresh_token_row_not_access_token() {
         let (catalog, user, tenant) = catalog_with_principal().await;
         let scopes = vec!["traces:read".to_string()];
-        let ids = vec!["production".to_string()];
+        let grants = single_grant_with_datasets(&tenant, &["production".to_string()]);
 
         catalog
             .create_access_token(
                 "at-original",
                 "client-1",
                 &user,
-                &tenant,
+                &grants,
                 &scopes,
-                Some(&ids),
                 None,
                 Utc::now() + chrono::Duration::hours(1),
             )
@@ -8650,9 +9951,8 @@ mod oauth_storage_tests {
                 "rt-original",
                 "client-1",
                 &user,
-                &tenant,
+                &grants,
                 &scopes,
-                Some(&ids),
                 None,
                 Utc::now() + Duration::days(30),
             )
@@ -8669,13 +9969,13 @@ mod oauth_storage_tests {
                 .is_none()
         );
 
-        // Refresh: read dataset_ids from the presented refresh token row...
+        // Refresh: read tenant_grants from the presented refresh token row...
         let presented = catalog
             .get_valid_refresh_token("rt-original")
             .await
             .unwrap()
             .expect("refresh token is valid");
-        assert_eq!(presented.dataset_ids, Some(ids.clone()));
+        assert_eq!(presented.tenant_grants, grants);
 
         // ...and propagate it onto BOTH the new access token and the new
         // replacement refresh token the refresh grant mints.
@@ -8684,9 +9984,8 @@ mod oauth_storage_tests {
                 "at-refreshed",
                 "client-1",
                 &user,
-                &tenant,
+                &presented.tenant_grants,
                 &presented.scopes,
-                presented.dataset_ids.as_deref(),
                 None,
                 Utc::now() + chrono::Duration::hours(1),
             )
@@ -8697,17 +9996,16 @@ mod oauth_storage_tests {
                 "rt-refreshed",
                 "client-1",
                 &user,
-                &tenant,
+                &presented.tenant_grants,
                 &presented.scopes,
-                presented.dataset_ids.as_deref(),
                 None,
                 Utc::now() + Duration::days(30),
             )
             .await
             .unwrap();
 
-        assert_eq!(new_access.dataset_ids, Some(ids.clone()));
-        assert_eq!(new_refresh.dataset_ids, Some(ids));
+        assert_eq!(new_access.tenant_grants, grants);
+        assert_eq!(new_refresh.tenant_grants, grants);
     }
 
     #[tokio::test]
@@ -8715,17 +10013,18 @@ mod oauth_storage_tests {
         let (catalog, user, tenant) = catalog_with_principal().await;
         let past = Utc::now() - Duration::hours(1);
         let future = Utc::now() + Duration::hours(1);
+        let grants = single_grant(&tenant);
         // One expired + one live token in each token table, and one expired code.
         catalog
-            .create_access_token("at-old", "c", &user, &tenant, &[], None, None, past)
+            .create_access_token("at-old", "c", &user, &grants, &[], None, past)
             .await
             .unwrap();
         catalog
-            .create_access_token("at-live", "c", &user, &tenant, &[], None, None, future)
+            .create_access_token("at-live", "c", &user, &grants, &[], None, future)
             .await
             .unwrap();
         catalog
-            .create_refresh_token("rt-old", "c", &user, &tenant, &[], None, None, past)
+            .create_refresh_token("rt-old", "c", &user, &grants, &[], None, past)
             .await
             .unwrap();
         catalog
@@ -8733,9 +10032,8 @@ mod oauth_storage_tests {
                 "code-old",
                 "c",
                 &user,
-                &tenant,
+                &grants,
                 &[],
-                None,
                 "https://c/cb",
                 "chal",
                 None,

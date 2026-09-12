@@ -26,9 +26,12 @@ async fn whoami(headers: HeaderMap) -> Response {
         "user_id": "",
         "tenant": {"id": "acme", "slug": "acme", "name": "Acme"},
         "dataset": "production",
+        "granted_tenants": [{"tenant_id": "acme"}],
     });
     if bearer == format!("Bearer {RESTRICTED_KEY}") {
         body["dataset_ids"] = serde_json::json!(["production"]);
+        body["granted_tenants"] =
+            serde_json::json!([{"tenant_id": "acme", "dataset_ids": ["production"]}]);
     }
     axum::Json(body).into_response()
 }

@@ -31,7 +31,10 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use progenitor_client::OperationInfo;
+// Re-exported so a caller outside the generated client (an operation with no
+// SDK method, e.g. an unlisted endpoint) can still run its own request
+// through `execute` and get the shared retry-on-throttle policy.
+pub use progenitor_client::OperationInfo;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use reqwest::{Method, StatusCode};
 

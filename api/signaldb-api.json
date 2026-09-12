@@ -3211,7 +3211,7 @@
         "tags": [
           "oauth"
         ],
-        "summary": "Record the human's consent decision and, on approval, mint the single-use\nauthorization code. Authenticated by the browser session cookie; the code is\nbound to the chosen tenant (which the user must be a member of), the granted\nread scopes, the client, the redirect URI, the PKCE challenge, and the\nresource. Returns the URL the SPA should navigate to.",
+        "summary": "Record the human's consent decision and, on approval, mint the single-use\nauthorization code. Authenticated by the browser session cookie; the code\nis bound to the chosen set of one or more tenants (each of which the user\nmust be a member of, with its own independent dataset restriction), the\ngranted read scopes, the client, the redirect URI, the PKCE challenge,\nand the resource. Returns the URL the SPA should navigate to.",
         "operationId": "oauth_consent_decision",
         "requestBody": {
           "content": {
@@ -4997,12 +4997,12 @@
       },
       "ConsentDecision": {
         "type": "object",
-        "description": "Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user\nis authenticated by their session cookie; `tenant` is their chosen grant.\n\nThe legacy singular `dataset_id` field is not accepted (removed in the\nmulti-dataset-key-restriction change, D8): a request body carrying it is\nrejected rather than silently ignored, since dropping it would grant\nunrestricted access when the caller asked for a restricted one.",
+        "description": "Consent decision posted by the explore-UI (change: mcp-oauth-dcr;\ngeneralized to a set of tenants by mcp-multi-tenant-oauth-grants D2/D6).\nThe user is authenticated by their session cookie; `tenant_grants` is\ntheir chosen set of one or more tenants to grant, each with its own\nindependent dataset restriction.\n\nThe legacy singular `tenant`/`dataset_id` fields are not accepted (the\nlatter removed in the multi-dataset-key-restriction change, D8): a\nrequest body carrying either is rejected rather than silently ignored,\nsince dropping it would grant unrestricted or differently-scoped access\nthan the caller asked for.",
         "required": [
           "client_id",
           "redirect_uri",
           "code_challenge",
-          "tenant",
+          "tenant_grants",
           "approved"
         ],
         "properties": {
@@ -5023,17 +5023,6 @@
               "string",
               "null"
             ]
-          },
-          "dataset_ids": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "Dataset set to restrict the grant to (D5/D6). Omitted or `null`\ngrants unrestricted access to the tenant — today's only behavior,\nand `#[serde(default)]` so a decision from a client built before\nthis change (which omits the field entirely) keeps working\nunmodified. A non-empty array restricts the grant to exactly that\nset; every named dataset must belong to `tenant`. An explicit empty\narray is rejected (D1a), as is any non-empty selection while\n`[auth].dataset_restriction_rollout_complete` is `false` (stricter\nthan the API-key rule — OAuth has no legacy column to fall back to).",
-            "minItems": 1
           },
           "redirect_uri": {
             "type": "string",
@@ -5060,9 +5049,13 @@
             ],
             "description": "Opaque `state` to echo back to the client."
           },
-          "tenant": {
-            "type": "string",
-            "description": "The tenant the user grants access to (must be one they belong to)."
+          "tenant_grants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ConsentTenantGrant"
+            },
+            "description": "The set of tenants the user grants access to (each must be one they\nbelong to). Must be non-empty and name each tenant at most once.",
+            "minItems": 1
           }
         },
         "additionalProperties": false
@@ -5103,6 +5096,30 @@
           "role": {
             "$ref": "#/components/schemas/MembershipRole",
             "description": "The user's role in the tenant."
+          }
+        }
+      },
+      "ConsentTenantGrant": {
+        "type": "object",
+        "description": "One tenant (and optional dataset restriction) the user grants in a\nconsent decision (design: mcp-multi-tenant-oauth-grants D2/D6). Mirrors\n[`common::catalog::TenantGrant`]'s shape; kept as a router-local request\nDTO (rather than reusing that type directly) so it can derive\n[`ToSchema`] for the OpenAPI spec.",
+        "required": [
+          "tenant_id"
+        ],
+        "properties": {
+          "dataset_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            },
+            "description": "Dataset set to restrict this tenant's grant to (D5/D6). Omitted or\n`null` grants unrestricted access to the tenant. A non-empty array\nrestricts the grant to exactly that set; every named dataset must\nbelong to `tenant_id`. An explicit empty array is rejected (D1a), as\nis any non-empty selection while\n`[auth].dataset_restriction_rollout_complete` is `false` (stricter\nthan the API-key rule — OAuth has no legacy column to fall back to).",
+            "minItems": 1
+          },
+          "tenant_id": {
+            "type": "string",
+            "description": "The tenant being granted (must be one the user belongs to)."
           }
         }
       },
@@ -5895,6 +5912,27 @@
           "truncated": {
             "type": "boolean",
             "description": "`true` when more than `FLAMEGRAPH_PROFILE_CAP` (1,000) profile rows\nmatched — a row-count cap, not a byte-size one — and the flamegraph\nwas aggregated over only the first 1,000 of them."
+          }
+        }
+      },
+      "GrantedTenant": {
+        "type": "object",
+        "description": "One tenant a credential's grant reaches, with its own dataset-set\nrestriction — the `whoami`/`/oauth/introspect` output shape (change:\nmcp-multi-tenant-oauth-grants D4/D5). Mirrors\n[`common::catalog::TenantGrant`]; kept as a router-local response DTO so\nit can derive [`utoipa::ToSchema`].",
+        "required": [
+          "tenant_id"
+        ],
+        "properties": {
+          "dataset_ids": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "tenant_id": {
+            "type": "string"
           }
         }
       },
@@ -7907,7 +7945,8 @@
         "required": [
           "tenant",
           "dataset",
-          "user_id"
+          "user_id",
+          "granted_tenants"
         ],
         "properties": {
           "dataset": {
@@ -7922,6 +7961,13 @@
               "type": "string"
             },
             "description": "The credential's own dataset-set restriction, if any; `null`/absent\nmeans unrestricted. See [`WhoamiResponse::dataset_ids`]."
+          },
+          "granted_tenants": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GrantedTenant"
+            },
+            "description": "See [`WhoamiResponse::granted_tenants`]."
           },
           "tenant": {
             "$ref": "#/components/schemas/WhoamiTenant"

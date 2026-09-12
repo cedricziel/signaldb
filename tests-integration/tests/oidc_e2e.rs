@@ -584,7 +584,7 @@ async fn sso_login_jit_provisions_user_and_grants_mapped_membership() {
         "code_challenge": MCP_PKCE_CHALLENGE,
         "scope": "traces:read",
         "resource": MCP_RESOURCE,
-        "tenant": MAPPED_TENANT,
+        "tenant_grants": [{ "tenant_id": MAPPED_TENANT }],
         "approved": true,
     })
     .to_string();

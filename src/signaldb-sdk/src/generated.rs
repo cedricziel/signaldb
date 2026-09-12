@@ -1144,26 +1144,30 @@ pub mod types {
             Default::default()
         }
     }
-    /**Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user
-    is authenticated by their session cookie; `tenant` is their chosen grant.
+    /**Consent decision posted by the explore-UI (change: mcp-oauth-dcr;
+    generalized to a set of tenants by mcp-multi-tenant-oauth-grants D2/D6).
+    The user is authenticated by their session cookie; `tenant_grants` is
+    their chosen set of one or more tenants to grant, each with its own
+    independent dataset restriction.
 
-    The legacy singular `dataset_id` field is not accepted (removed in the
-    multi-dataset-key-restriction change, D8): a request body carrying it is
-    rejected rather than silently ignored, since dropping it would grant
-    unrestricted access when the caller asked for a restricted one.*/
+    The legacy singular `tenant`/`dataset_id` fields are not accepted (the
+    latter removed in the multi-dataset-key-restriction change, D8): a
+    request body carrying either is rejected rather than silently ignored,
+    since dropping it would grant unrestricted or differently-scoped access
+    than the caller asked for.*/
     ///
     /// <details><summary>JSON schema</summary>
     ///
     /// ```json
     ///{
-    ///  "description": "Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user\nis authenticated by their session cookie; `tenant` is their chosen grant.\n\nThe legacy singular `dataset_id` field is not accepted (removed in the\nmulti-dataset-key-restriction change, D8): a request body carrying it is\nrejected rather than silently ignored, since dropping it would grant\nunrestricted access when the caller asked for a restricted one.",
+    ///  "description": "Consent decision posted by the explore-UI (change: mcp-oauth-dcr;\ngeneralized to a set of tenants by mcp-multi-tenant-oauth-grants D2/D6).\nThe user is authenticated by their session cookie; `tenant_grants` is\ntheir chosen set of one or more tenants to grant, each with its own\nindependent dataset restriction.\n\nThe legacy singular `tenant`/`dataset_id` fields are not accepted (the\nlatter removed in the multi-dataset-key-restriction change, D8): a\nrequest body carrying either is rejected rather than silently ignored,\nsince dropping it would grant unrestricted or differently-scoped access\nthan the caller asked for.",
     ///  "type": "object",
     ///  "required": [
     ///    "approved",
     ///    "client_id",
     ///    "code_challenge",
     ///    "redirect_uri",
-    ///    "tenant"
+    ///    "tenant_grants"
     ///  ],
     ///  "properties": {
     ///    "approved": {
@@ -1183,17 +1187,6 @@ pub mod types {
     ///        "string",
     ///        "null"
     ///      ]
-    ///    },
-    ///    "dataset_ids": {
-    ///      "description": "Dataset set to restrict the grant to (D5/D6). Omitted or `null`\ngrants unrestricted access to the tenant — today's only behavior,\nand `#[serde(default)]` so a decision from a client built before\nthis change (which omits the field entirely) keeps working\nunmodified. A non-empty array restricts the grant to exactly that\nset; every named dataset must belong to `tenant`. An explicit empty\narray is rejected (D1a), as is any non-empty selection while\n`[auth].dataset_restriction_rollout_complete` is `false` (stricter\nthan the API-key rule — OAuth has no legacy column to fall back to).",
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      },
-    ///      "minItems": 1
     ///    },
     ///    "redirect_uri": {
     ///      "description": "The redirect URI to return to (must be registered for the client).",
@@ -1220,9 +1213,13 @@ pub mod types {
     ///        "null"
     ///      ]
     ///    },
-    ///    "tenant": {
-    ///      "description": "The tenant the user grants access to (must be one they belong to).",
-    ///      "type": "string"
+    ///    "tenant_grants": {
+    ///      "description": "The set of tenants the user grants access to (each must be one they\nbelong to). Must be non-empty and name each tenant at most once.",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/ConsentTenantGrant"
+    ///      },
+    ///      "minItems": 1
     ///    }
     ///  },
     ///  "additionalProperties": false
@@ -1240,17 +1237,6 @@ pub mod types {
         pub code_challenge: ::std::string::String,
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub code_challenge_method: ::std::option::Option<::std::string::String>,
-        /**Dataset set to restrict the grant to (D5/D6). Omitted or `null`
-        grants unrestricted access to the tenant — today's only behavior,
-        and `#[serde(default)]` so a decision from a client built before
-        this change (which omits the field entirely) keeps working
-        unmodified. A non-empty array restricts the grant to exactly that
-        set; every named dataset must belong to `tenant`. An explicit empty
-        array is rejected (D1a), as is any non-empty selection while
-        `[auth].dataset_restriction_rollout_complete` is `false` (stricter
-        than the API-key rule — OAuth has no legacy column to fall back to).*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
-        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///The redirect URI to return to (must be registered for the client).
         pub redirect_uri: ::std::string::String,
         ///Requested resource (audience); must match the configured MCP resource.
@@ -1262,8 +1248,9 @@ pub mod types {
         ///Opaque `state` to echo back to the client.
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub state: ::std::option::Option<::std::string::String>,
-        ///The tenant the user grants access to (must be one they belong to).
-        pub tenant: ::std::string::String,
+        /**The set of tenants the user grants access to (each must be one they
+        belong to). Must be non-empty and name each tenant at most once.*/
+        pub tenant_grants: ::std::vec::Vec<ConsentTenantGrant>,
     }
     impl ConsentDecision {
         pub fn builder() -> builder::ConsentDecision {
@@ -1345,6 +1332,60 @@ pub mod types {
     }
     impl ConsentTenant {
         pub fn builder() -> builder::ConsentTenant {
+            Default::default()
+        }
+    }
+    /**One tenant (and optional dataset restriction) the user grants in a
+    consent decision (design: mcp-multi-tenant-oauth-grants D2/D6). Mirrors
+    [`common::catalog::TenantGrant`]'s shape; kept as a router-local request
+    DTO (rather than reusing that type directly) so it can derive
+    [`ToSchema`] for the OpenAPI spec.*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One tenant (and optional dataset restriction) the user grants in a\nconsent decision (design: mcp-multi-tenant-oauth-grants D2/D6). Mirrors\n[`common::catalog::TenantGrant`]'s shape; kept as a router-local request\nDTO (rather than reusing that type directly) so it can derive\n[`ToSchema`] for the OpenAPI spec.",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "tenant_id"
+    ///  ],
+    ///  "properties": {
+    ///    "dataset_ids": {
+    ///      "description": "Dataset set to restrict this tenant's grant to (D5/D6). Omitted or\n`null` grants unrestricted access to the tenant. A non-empty array\nrestricts the grant to exactly that set; every named dataset must\nbelong to `tenant_id`. An explicit empty array is rejected (D1a), as\nis any non-empty selection while\n`[auth].dataset_restriction_rollout_complete` is `false` (stricter\nthan the API-key rule — OAuth has no legacy column to fall back to).",
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      },
+    ///      "minItems": 1
+    ///    },
+    ///    "tenant_id": {
+    ///      "description": "The tenant being granted (must be one the user belongs to).",
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ConsentTenantGrant {
+        /**Dataset set to restrict this tenant's grant to (D5/D6). Omitted or
+        `null` grants unrestricted access to the tenant. A non-empty array
+        restricts the grant to exactly that set; every named dataset must
+        belong to `tenant_id`. An explicit empty array is rejected (D1a), as
+        is any non-empty selection while
+        `[auth].dataset_restriction_rollout_complete` is `false` (stricter
+        than the API-key rule — OAuth has no legacy column to fall back to).*/
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+        ///The tenant being granted (must be one the user belongs to).
+        pub tenant_id: ::std::string::String,
+    }
+    impl ConsentTenantGrant {
+        pub fn builder() -> builder::ConsentTenantGrant {
             Default::default()
         }
     }
@@ -2957,6 +2998,49 @@ pub mod types {
     }
     impl FlamegraphResult {
         pub fn builder() -> builder::FlamegraphResult {
+            Default::default()
+        }
+    }
+    /**One tenant a credential's grant reaches, with its own dataset-set
+    restriction — the `whoami`/`/oauth/introspect` output shape (change:
+    mcp-multi-tenant-oauth-grants D4/D5). Mirrors
+    [`common::catalog::TenantGrant`]; kept as a router-local response DTO so
+    it can derive [`utoipa::ToSchema`].*/
+    ///
+    /// <details><summary>JSON schema</summary>
+    ///
+    /// ```json
+    ///{
+    ///  "description": "One tenant a credential's grant reaches, with its own dataset-set\nrestriction — the `whoami`/`/oauth/introspect` output shape (change:\nmcp-multi-tenant-oauth-grants D4/D5). Mirrors\n[`common::catalog::TenantGrant`]; kept as a router-local response DTO so\nit can derive [`utoipa::ToSchema`].",
+    ///  "type": "object",
+    ///  "required": [
+    ///    "tenant_id"
+    ///  ],
+    ///  "properties": {
+    ///    "dataset_ids": {
+    ///      "type": [
+    ///        "array",
+    ///        "null"
+    ///      ],
+    ///      "items": {
+    ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "tenant_id": {
+    ///      "type": "string"
+    ///    }
+    ///  }
+    ///}
+    /// ```
+    /// </details>
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct GrantedTenant {
+        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+        pub tenant_id: ::std::string::String,
+    }
+    impl GrantedTenant {
+        pub fn builder() -> builder::GrantedTenant {
             Default::default()
         }
     }
@@ -7346,6 +7430,7 @@ pub mod types {
     ///  "type": "object",
     ///  "required": [
     ///    "dataset",
+    ///    "granted_tenants",
     ///    "tenant",
     ///    "user_id"
     ///  ],
@@ -7361,6 +7446,13 @@ pub mod types {
     ///      ],
     ///      "items": {
     ///        "type": "string"
+    ///      }
+    ///    },
+    ///    "granted_tenants": {
+    ///      "description": "See [`WhoamiResponse::granted_tenants`].",
+    ///      "type": "array",
+    ///      "items": {
+    ///        "$ref": "#/components/schemas/GrantedTenant"
     ///      }
     ///    },
     ///    "tenant": {
@@ -7381,6 +7473,8 @@ pub mod types {
         means unrestricted. See [`WhoamiResponse::dataset_ids`].*/
         #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+        ///See [`WhoamiResponse::granted_tenants`].
+        pub granted_tenants: ::std::vec::Vec<GrantedTenant>,
         pub tenant: WhoamiTenant,
         ///Stable authenticated user ID. Empty for API key credentials.
         pub user_id: ::std::string::String,
@@ -9213,10 +9307,6 @@ pub mod types {
                 ::std::option::Option<::std::string::String>,
                 ::std::string::String,
             >,
-            dataset_ids: ::std::result::Result<
-                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
-                ::std::string::String,
-            >,
             redirect_uri: ::std::result::Result<::std::string::String, ::std::string::String>,
             resource: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
@@ -9230,7 +9320,10 @@ pub mod types {
                 ::std::option::Option<::std::string::String>,
                 ::std::string::String,
             >,
-            tenant: ::std::result::Result<::std::string::String, ::std::string::String>,
+            tenant_grants: ::std::result::Result<
+                ::std::vec::Vec<super::ConsentTenantGrant>,
+                ::std::string::String,
+            >,
         }
         impl ::std::default::Default for ConsentDecision {
             fn default() -> Self {
@@ -9239,12 +9332,11 @@ pub mod types {
                     client_id: Err("no value supplied for client_id".to_string()),
                     code_challenge: Err("no value supplied for code_challenge".to_string()),
                     code_challenge_method: Ok(Default::default()),
-                    dataset_ids: Ok(Default::default()),
                     redirect_uri: Err("no value supplied for redirect_uri".to_string()),
                     resource: Ok(Default::default()),
                     scope: Ok(Default::default()),
                     state: Ok(Default::default()),
-                    tenant: Err("no value supplied for tenant".to_string()),
+                    tenant_grants: Err("no value supplied for tenant_grants".to_string()),
                 }
             }
         }
@@ -9289,18 +9381,6 @@ pub mod types {
                 });
                 self
             }
-            pub fn dataset_ids<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<
-                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
-                    >,
-                T::Error: ::std::fmt::Display,
-            {
-                self.dataset_ids = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
-                self
-            }
             pub fn redirect_uri<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::string::String>,
@@ -9341,14 +9421,14 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for state: {e}"));
                 self
             }
-            pub fn tenant<T>(mut self, value: T) -> Self
+            pub fn tenant_grants<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::string::String>,
+                T: ::std::convert::TryInto<::std::vec::Vec<super::ConsentTenantGrant>>,
                 T::Error: ::std::fmt::Display,
             {
-                self.tenant = value
+                self.tenant_grants = value
                     .try_into()
-                    .map_err(|e| format!("error converting supplied value for tenant: {e}"));
+                    .map_err(|e| format!("error converting supplied value for tenant_grants: {e}"));
                 self
             }
         }
@@ -9362,12 +9442,11 @@ pub mod types {
                     client_id: value.client_id?,
                     code_challenge: value.code_challenge?,
                     code_challenge_method: value.code_challenge_method?,
-                    dataset_ids: value.dataset_ids?,
                     redirect_uri: value.redirect_uri?,
                     resource: value.resource?,
                     scope: value.scope?,
                     state: value.state?,
-                    tenant: value.tenant?,
+                    tenant_grants: value.tenant_grants?,
                 })
             }
         }
@@ -9378,12 +9457,11 @@ pub mod types {
                     client_id: Ok(value.client_id),
                     code_challenge: Ok(value.code_challenge),
                     code_challenge_method: Ok(value.code_challenge_method),
-                    dataset_ids: Ok(value.dataset_ids),
                     redirect_uri: Ok(value.redirect_uri),
                     resource: Ok(value.resource),
                     scope: Ok(value.scope),
                     state: Ok(value.state),
-                    tenant: Ok(value.tenant),
+                    tenant_grants: Ok(value.tenant_grants),
                 }
             }
         }
@@ -9495,6 +9573,65 @@ pub mod types {
                     datasets: Ok(value.datasets),
                     id: Ok(value.id),
                     role: Ok(value.role),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ConsentTenantGrant {
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
+            tenant_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ConsentTenantGrant {
+            fn default() -> Self {
+                Self {
+                    dataset_ids: Ok(Default::default()),
+                    tenant_id: Err("no value supplied for tenant_id".to_string()),
+                }
+            }
+        }
+        impl ConsentTenantGrant {
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_ids = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
+                self
+            }
+            pub fn tenant_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tenant_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tenant_id: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ConsentTenantGrant> for super::ConsentTenantGrant {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ConsentTenantGrant,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    dataset_ids: value.dataset_ids?,
+                    tenant_id: value.tenant_id?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ConsentTenantGrant> for ConsentTenantGrant {
+            fn from(value: super::ConsentTenantGrant) -> Self {
+                Self {
+                    dataset_ids: Ok(value.dataset_ids),
+                    tenant_id: Ok(value.tenant_id),
                 }
             }
         }
@@ -11670,6 +11807,65 @@ pub mod types {
                     names: Ok(value.names),
                     total: Ok(value.total),
                     truncated: Ok(value.truncated),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct GrantedTenant {
+            dataset_ids: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
+            tenant_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for GrantedTenant {
+            fn default() -> Self {
+                Self {
+                    dataset_ids: Ok(Default::default()),
+                    tenant_id: Err("no value supplied for tenant_id".to_string()),
+                }
+            }
+        }
+        impl GrantedTenant {
+            pub fn dataset_ids<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset_ids = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
+                self
+            }
+            pub fn tenant_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tenant_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tenant_id: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<GrantedTenant> for super::GrantedTenant {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: GrantedTenant,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    dataset_ids: value.dataset_ids?,
+                    tenant_id: value.tenant_id?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::GrantedTenant> for GrantedTenant {
+            fn from(value: super::GrantedTenant) -> Self {
+                Self {
+                    dataset_ids: Ok(value.dataset_ids),
+                    tenant_id: Ok(value.tenant_id),
                 }
             }
         }
@@ -17723,6 +17919,8 @@ pub mod types {
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
             >,
+            granted_tenants:
+                ::std::result::Result<::std::vec::Vec<super::GrantedTenant>, ::std::string::String>,
             tenant: ::std::result::Result<super::WhoamiTenant, ::std::string::String>,
             user_id: ::std::result::Result<::std::string::String, ::std::string::String>,
         }
@@ -17731,6 +17929,7 @@ pub mod types {
                 Self {
                     dataset: Err("no value supplied for dataset".to_string()),
                     dataset_ids: Ok(Default::default()),
+                    granted_tenants: Err("no value supplied for granted_tenants".to_string()),
                     tenant: Err("no value supplied for tenant".to_string()),
                     user_id: Err("no value supplied for user_id".to_string()),
                 }
@@ -17757,6 +17956,16 @@ pub mod types {
                 self.dataset_ids = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
+                self
+            }
+            pub fn granted_tenants<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::GrantedTenant>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.granted_tenants = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for granted_tenants: {e}")
+                });
                 self
             }
             pub fn tenant<T>(mut self, value: T) -> Self
@@ -17788,6 +17997,7 @@ pub mod types {
                 Ok(Self {
                     dataset: value.dataset?,
                     dataset_ids: value.dataset_ids?,
+                    granted_tenants: value.granted_tenants?,
                     tenant: value.tenant?,
                     user_id: value.user_id?,
                 })
@@ -17798,6 +18008,7 @@ pub mod types {
                 Self {
                     dataset: Ok(value.dataset),
                     dataset_ids: Ok(value.dataset_ids),
+                    granted_tenants: Ok(value.granted_tenants),
                     tenant: Ok(value.tenant),
                     user_id: Ok(value.user_id),
                 }
@@ -18792,10 +19003,11 @@ impl Client {
         builder::LogqlQueryRange::new(self)
     }
     /**Record the human's consent decision and, on approval, mint the single-use
-    authorization code. Authenticated by the browser session cookie; the code is
-    bound to the chosen tenant (which the user must be a member of), the granted
-    read scopes, the client, the redirect URI, the PKCE challenge, and the
-    resource. Returns the URL the SPA should navigate to
+    authorization code. Authenticated by the browser session cookie; the code
+    is bound to the chosen set of one or more tenants (each of which the user
+    must be a member of, with its own independent dataset restriction), the
+    granted read scopes, the client, the redirect URI, the PKCE challenge,
+    and the resource. Returns the URL the SPA should navigate to
 
     Sends a `POST` request to `/oauth/authorize/decision`
 

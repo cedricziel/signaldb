@@ -87,6 +87,7 @@ pub fn router<S: RouterState>() -> Router<S> {
         .route("/oauth/consent/context", get(consent_context::<S>))
         .route("/oauth/authorize/decision", post(authorize_decision::<S>))
         .route("/oauth/token", post(token::<S>))
+        .route("/oauth/introspect", post(introspect::<S>))
 }
 
 /// The signal read scopes a consent may grant, as a `Vec` for convenience.
@@ -389,13 +390,38 @@ async fn authorize<S: RouterState>(
     Ok(Redirect::to(&consent_url).into_response())
 }
 
-/// Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user
-/// is authenticated by their session cookie; `tenant` is their chosen grant.
+/// One tenant (and optional dataset restriction) the user grants in a
+/// consent decision (design: mcp-multi-tenant-oauth-grants D2/D6). Mirrors
+/// [`common::catalog::TenantGrant`]'s shape; kept as a router-local request
+/// DTO (rather than reusing that type directly) so it can derive
+/// [`ToSchema`] for the OpenAPI spec.
+#[derive(Debug, Deserialize, ToSchema)]
+pub struct ConsentTenantGrant {
+    /// The tenant being granted (must be one the user belongs to).
+    tenant_id: String,
+    /// Dataset set to restrict this tenant's grant to (D5/D6). Omitted or
+    /// `null` grants unrestricted access to the tenant. A non-empty array
+    /// restricts the grant to exactly that set; every named dataset must
+    /// belong to `tenant_id`. An explicit empty array is rejected (D1a), as
+    /// is any non-empty selection while
+    /// `[auth].dataset_restriction_rollout_complete` is `false` (stricter
+    /// than the API-key rule — OAuth has no legacy column to fall back to).
+    #[schema(min_items = 1)]
+    #[serde(default)]
+    dataset_ids: Option<Vec<String>>,
+}
+
+/// Consent decision posted by the explore-UI (change: mcp-oauth-dcr;
+/// generalized to a set of tenants by mcp-multi-tenant-oauth-grants D2/D6).
+/// The user is authenticated by their session cookie; `tenant_grants` is
+/// their chosen set of one or more tenants to grant, each with its own
+/// independent dataset restriction.
 ///
-/// The legacy singular `dataset_id` field is not accepted (removed in the
-/// multi-dataset-key-restriction change, D8): a request body carrying it is
-/// rejected rather than silently ignored, since dropping it would grant
-/// unrestricted access when the caller asked for a restricted one.
+/// The legacy singular `tenant`/`dataset_id` fields are not accepted (the
+/// latter removed in the multi-dataset-key-restriction change, D8): a
+/// request body carrying either is rejected rather than silently ignored,
+/// since dropping it would grant unrestricted or differently-scoped access
+/// than the caller asked for.
 #[derive(Debug, Deserialize, ToSchema)]
 #[serde(deny_unknown_fields)]
 pub struct ConsentDecision {
@@ -416,22 +442,12 @@ pub struct ConsentDecision {
     /// Requested resource (audience); must match the configured MCP resource.
     #[serde(default)]
     resource: Option<String>,
-    /// The tenant the user grants access to (must be one they belong to).
-    tenant: String,
+    /// The set of tenants the user grants access to (each must be one they
+    /// belong to). Must be non-empty and name each tenant at most once.
+    #[schema(min_items = 1)]
+    tenant_grants: Vec<ConsentTenantGrant>,
     /// Whether the user approved (`true`) or denied (`false`).
     approved: bool,
-    /// Dataset set to restrict the grant to (D5/D6). Omitted or `null`
-    /// grants unrestricted access to the tenant — today's only behavior,
-    /// and `#[serde(default)]` so a decision from a client built before
-    /// this change (which omits the field entirely) keeps working
-    /// unmodified. A non-empty array restricts the grant to exactly that
-    /// set; every named dataset must belong to `tenant`. An explicit empty
-    /// array is rejected (D1a), as is any non-empty selection while
-    /// `[auth].dataset_restriction_rollout_complete` is `false` (stricter
-    /// than the API-key rule — OAuth has no legacy column to fall back to).
-    #[schema(min_items = 1)]
-    #[serde(default)]
-    dataset_ids: Option<Vec<String>>,
 }
 
 /// Result of a consent decision: the URL the browser should navigate to (the
@@ -444,10 +460,11 @@ pub struct ConsentDecisionResponse {
 }
 
 /// Record the human's consent decision and, on approval, mint the single-use
-/// authorization code. Authenticated by the browser session cookie; the code is
-/// bound to the chosen tenant (which the user must be a member of), the granted
-/// read scopes, the client, the redirect URI, the PKCE challenge, and the
-/// resource. Returns the URL the SPA should navigate to.
+/// authorization code. Authenticated by the browser session cookie; the code
+/// is bound to the chosen set of one or more tenants (each of which the user
+/// must be a member of, with its own independent dataset restriction), the
+/// granted read scopes, the client, the redirect URI, the PKCE challenge,
+/// and the resource. Returns the URL the SPA should navigate to.
 #[utoipa::path(
     post,
     path = "/oauth/authorize/decision",
@@ -532,28 +549,28 @@ pub(crate) async fn authorize_decision<S: RouterState>(
         return Ok(Json(ConsentDecisionResponse { redirect: url }).into_response());
     }
 
-    // The user may only grant a tenant they belong to. An instance admin may
-    // grant any tenant, but it must actually exist — otherwise a code would be
-    // minted for a non-existent tenant.
-    let membership = state
-        .catalog()
-        .get_tenant_membership(&user.id, &d.tenant)
-        .await
-        .map_err(|e| OAuthError::server_error(format!("membership lookup failed: {e}")))?;
-    if membership.is_none() {
-        let grantable = user.is_instance_admin
-            && state
-                .catalog()
-                .get_tenant(&d.tenant)
-                .await
-                .map_err(|e| OAuthError::server_error(format!("tenant lookup failed: {e}")))?
-                .is_some();
-        if !grantable {
-            return Err(OAuthError::new(
-                StatusCode::FORBIDDEN,
-                "access_denied",
-                "not a member of the selected tenant",
-            ));
+    // At least one tenant must be selected (task 2.3).
+    if d.tenant_grants.is_empty() {
+        return Err(OAuthError::bad_request(
+            "invalid_request",
+            "at least one tenant must be selected",
+        ));
+    }
+    // Reject a duplicate tenant_id up front (defense in depth — the catalog
+    // layer also rejects this via `validate_tenant_grants`, but a
+    // request-level check gives a cleaner, earlier error).
+    {
+        let mut seen = std::collections::HashSet::with_capacity(d.tenant_grants.len());
+        for grant in &d.tenant_grants {
+            if !seen.insert(grant.tenant_id.as_str()) {
+                return Err(OAuthError::bad_request(
+                    "invalid_request",
+                    format!(
+                        "tenant_grants names tenant '{}' more than once",
+                        grant.tenant_id
+                    ),
+                ));
+            }
         }
     }
 
@@ -587,31 +604,67 @@ pub(crate) async fn authorize_decision<S: RouterState>(
         )
     })?;
 
-    // Dataset-set restriction (D5/D6): validated before any code is minted,
-    // so a rejected decision never persists one. `None`/omitted is always
-    // unrestricted, unaffected by the rollout gate.
-    if let Some(ids) = d.dataset_ids.as_ref() {
-        common::catalog::check_oauth_dataset_restriction_rollout_gate(
-            ids,
-            state.config().auth.dataset_restriction_rollout_complete,
-        )
-        .map_err(|message| OAuthError::bad_request("invalid_request", message))?;
-        common::catalog::validate_dataset_id_set(ids)
-            .map_err(|e| OAuthError::bad_request("invalid_request", e.to_string()))?;
-        if let Some(missing) = state
+    // Validate each selected tenant independently — membership, then its own
+    // dataset-set restriction (D5/D6) — before any code is minted, so a
+    // rejected decision never persists a partial grant. On any entry
+    // failing, the whole decision is rejected.
+    let mut tenant_grants = Vec::with_capacity(d.tenant_grants.len());
+    for grant in &d.tenant_grants {
+        // The user may only grant a tenant they belong to. An instance admin
+        // may grant any tenant, but it must actually exist — otherwise a
+        // code would be minted for a non-existent tenant.
+        let membership = state
             .catalog()
-            .find_dataset_not_in_tenant(&d.tenant, ids)
+            .get_tenant_membership(&user.id, &grant.tenant_id)
             .await
-            .map_err(|e| OAuthError::server_error(format!("dataset lookup failed: {e}")))?
-        {
-            return Err(OAuthError::bad_request(
-                "invalid_request",
-                format!(
-                    "dataset '{missing}' does not exist in tenant '{}'",
-                    d.tenant
-                ),
-            ));
+            .map_err(|e| OAuthError::server_error(format!("membership lookup failed: {e}")))?;
+        if membership.is_none() {
+            let grantable = user.is_instance_admin
+                && state
+                    .catalog()
+                    .get_tenant(&grant.tenant_id)
+                    .await
+                    .map_err(|e| OAuthError::server_error(format!("tenant lookup failed: {e}")))?
+                    .is_some();
+            if !grantable {
+                return Err(OAuthError::new(
+                    StatusCode::FORBIDDEN,
+                    "access_denied",
+                    format!("not a member of tenant '{}'", grant.tenant_id),
+                ));
+            }
         }
+
+        // `None`/omitted `dataset_ids` is always unrestricted, unaffected by
+        // the rollout gate.
+        if let Some(ids) = grant.dataset_ids.as_ref() {
+            common::catalog::check_oauth_dataset_restriction_rollout_gate(
+                ids,
+                state.config().auth.dataset_restriction_rollout_complete,
+            )
+            .map_err(|message| OAuthError::bad_request("invalid_request", message))?;
+            common::catalog::validate_dataset_id_set(ids)
+                .map_err(|e| OAuthError::bad_request("invalid_request", e.to_string()))?;
+            if let Some(missing) = state
+                .catalog()
+                .find_dataset_not_in_tenant(&grant.tenant_id, ids)
+                .await
+                .map_err(|e| OAuthError::server_error(format!("dataset lookup failed: {e}")))?
+            {
+                return Err(OAuthError::bad_request(
+                    "invalid_request",
+                    format!(
+                        "dataset '{missing}' does not exist in tenant '{}'",
+                        grant.tenant_id
+                    ),
+                ));
+            }
+        }
+
+        tenant_grants.push(common::catalog::TenantGrant {
+            tenant_id: grant.tenant_id.clone(),
+            dataset_ids: grant.dataset_ids.clone(),
+        });
     }
 
     let code = generate_oauth_token(TokenKind::AuthorizationCode);
@@ -623,9 +676,8 @@ pub(crate) async fn authorize_decision<S: RouterState>(
             &hash_oauth_token(&code),
             &d.client_id,
             &user.id,
-            &d.tenant,
+            &tenant_grants,
             &scopes,
-            d.dataset_ids.as_deref(),
             &d.redirect_uri,
             &d.code_challenge,
             resource.as_deref(),
@@ -897,10 +949,10 @@ async fn token_authorization_code<S: RouterState>(
         state,
         &grant.client_id,
         &grant.user_id,
-        &grant.tenant_id,
+        &grant.tenant_grants,
         &grant.scopes,
-        grant.dataset_ids.as_deref(),
         grant.resource.as_deref(),
+        false,
     )
     .await
 }
@@ -944,31 +996,35 @@ async fn token_refresh<S: RouterState>(
         .await
         .map_err(|e| OAuthError::server_error(format!("failed to revoke refresh token: {e}")))?;
 
-    // D6: the replacement pair carries the dataset restriction read off the
+    // D6: the replacement pair carries the grant set read off the
     // *presented* refresh-token row, not any access token (which may already
     // be expired or otherwise unavailable by the time a refresh happens).
     issue_tokens(
         state,
         &grant.client_id,
         &grant.user_id,
-        &grant.tenant_id,
+        &grant.tenant_grants,
         &grant.scopes,
-        grant.dataset_ids.as_deref(),
         grant.resource.as_deref(),
+        true,
     )
     .await
 }
 
 /// Mint an access token and a refresh token for a grant and render the
-/// token response.
+/// token response. `trusted_grants` selects whether the tenant-registry
+/// existence check (D3) runs: `false` for a fresh consent decision (user
+/// input, needs validating), `true` for a refresh (the grant is read off
+/// an already-validated catalog row, not user input — see
+/// [`common::catalog::Catalog::create_access_token_trusted`]'s doc comment).
 async fn issue_tokens<S: RouterState>(
     state: &S,
     client_id: &str,
     user_id: &str,
-    tenant_id: &str,
+    tenant_grants: &[common::catalog::TenantGrant],
     scopes: &[String],
-    dataset_ids: Option<&[String]>,
     resource: Option<&str>,
+    trusted_grants: bool,
 ) -> Result<Response, OAuthError> {
     let oauth = &state.config().mcp.oauth;
     let now = chrono::Utc::now();
@@ -976,37 +1032,69 @@ async fn issue_tokens<S: RouterState>(
         .map_err(|e| OAuthError::server_error(format!("invalid access_token_ttl: {e}")))?;
 
     let access_raw = generate_oauth_token(TokenKind::Access);
-    state
-        .catalog()
-        .create_access_token(
-            &hash_oauth_token(&access_raw),
-            client_id,
-            user_id,
-            tenant_id,
-            scopes,
-            dataset_ids,
-            resource,
-            now + access_ttl,
-        )
-        .await
+    let access_hash = hash_oauth_token(&access_raw);
+    let access_result = if trusted_grants {
+        state
+            .catalog()
+            .create_access_token_trusted(
+                &access_hash,
+                client_id,
+                user_id,
+                tenant_grants,
+                scopes,
+                resource,
+                now + access_ttl,
+            )
+            .await
+    } else {
+        state
+            .catalog()
+            .create_access_token(
+                &access_hash,
+                client_id,
+                user_id,
+                tenant_grants,
+                scopes,
+                resource,
+                now + access_ttl,
+            )
+            .await
+    };
+    access_result
         .map_err(|e| OAuthError::server_error(format!("failed to store access token: {e}")))?;
 
     let refresh_ttl = chrono::Duration::from_std(oauth.refresh_token_ttl)
         .map_err(|e| OAuthError::server_error(format!("invalid refresh_token_ttl: {e}")))?;
     let refresh_raw = generate_oauth_token(TokenKind::Refresh);
-    state
-        .catalog()
-        .create_refresh_token(
-            &hash_oauth_token(&refresh_raw),
-            client_id,
-            user_id,
-            tenant_id,
-            scopes,
-            dataset_ids,
-            resource,
-            now + refresh_ttl,
-        )
-        .await
+    let refresh_hash = hash_oauth_token(&refresh_raw);
+    let refresh_result = if trusted_grants {
+        state
+            .catalog()
+            .create_refresh_token_trusted(
+                &refresh_hash,
+                client_id,
+                user_id,
+                tenant_grants,
+                scopes,
+                resource,
+                now + refresh_ttl,
+            )
+            .await
+    } else {
+        state
+            .catalog()
+            .create_refresh_token(
+                &refresh_hash,
+                client_id,
+                user_id,
+                tenant_grants,
+                scopes,
+                resource,
+                now + refresh_ttl,
+            )
+            .await
+    };
+    refresh_result
         .map_err(|e| OAuthError::server_error(format!("failed to store refresh token: {e}")))?;
 
     Ok(no_store(TokenResponse {
@@ -1016,6 +1104,113 @@ async fn issue_tokens<S: RouterState>(
         refresh_token: Some(refresh_raw),
         scope: scopes.join(" "),
     }))
+}
+
+/// Token introspection request (RFC 7662 §2.1, form-encoded).
+#[derive(Debug, Deserialize)]
+struct IntrospectRequest {
+    token: String,
+}
+
+/// Token introspection response (RFC 7662 §2.2). Every field beyond
+/// `active` is omitted when the token is inactive — an inactive response
+/// discloses nothing about why (expired, revoked, or never valid).
+#[derive(Debug, Serialize)]
+struct IntrospectResponse {
+    active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_id: Option<String>,
+    /// This deliberately named `tenants`, not `granted_tenants` — there is
+    /// no `memberships`-shaped field on this response to be confused with
+    /// (design D5), unlike `whoami`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tenants: Option<Vec<crate::endpoints::session::GrantedTenant>>,
+    /// Space-delimited (RFC 7662 convention), like the token endpoint's own
+    /// `scope`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    aud: Option<String>,
+    /// Unix timestamp (RFC 7662 §2.2's `exp`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exp: Option<i64>,
+}
+
+impl IntrospectResponse {
+    fn inactive() -> Self {
+        Self {
+            active: false,
+            user_id: None,
+            tenants: None,
+            scope: None,
+            aud: None,
+            exp: None,
+        }
+    }
+}
+
+/// `POST /oauth/introspect` (RFC 7662-shaped, design:
+/// mcp-multi-tenant-oauth-grants D4): reports whether a bearer token is
+/// active and, if so, its full tenant grant set, scopes, audience, and
+/// expiry — the way to learn "what can this token reach" before any one
+/// tenant has been selected. Resolves the token directly against the
+/// catalog rather than through the resource-API's `auth_middleware`/
+/// `authenticate_oauth_token`, since that path always requires resolving to
+/// exactly one tenant. Public clients don't authenticate `/oauth/token` in
+/// this deployment either, so this endpoint follows the same precedent:
+/// presenting the valid bearer token itself is the only credential needed
+/// (the caller already possesses it).
+///
+/// Not yet part of the generated OpenAPI spec (like `/oauth/register` and
+/// `/oauth/token` above, this is an RFC-standard endpoint outside
+/// SignalDB's own documented surface) — task 4.1 of this change adds it.
+async fn introspect<S: RouterState>(
+    State(state): State<S>,
+    Form(req): Form<IntrospectRequest>,
+) -> Response {
+    // A catalog error (store unavailable) is not the same thing as "this
+    // token is invalid" — conflating the two would make MCP authentication
+    // treat every live token as revoked during a transient outage instead
+    // of retrying. RFC 7662 expects a server error here; `active: false` is
+    // reserved for a lookup that actually completed and found nothing.
+    let record = match state
+        .catalog()
+        .get_valid_access_token(&hash_oauth_token(&req.token))
+        .await
+    {
+        Ok(record) => record,
+        Err(error) => {
+            tracing::error!(error = %error, "oauth introspect: token lookup failed");
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CACHE_CONTROL, "no-store")],
+                Json(serde_json::json!({ "error": "server_error" })),
+            )
+                .into_response();
+        }
+    };
+
+    let body = match record {
+        Some(record) => IntrospectResponse {
+            active: true,
+            user_id: Some(record.user_id),
+            tenants: Some(
+                record
+                    .tenant_grants
+                    .into_iter()
+                    .map(|g| crate::endpoints::session::GrantedTenant {
+                        tenant_id: g.tenant_id,
+                        dataset_ids: g.dataset_ids,
+                    })
+                    .collect(),
+            ),
+            scope: Some(record.scopes.join(" ")),
+            aud: record.resource,
+            exp: Some(record.expires_at.timestamp()),
+        },
+        None => IntrospectResponse::inactive(),
+    };
+    ([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
 }
 
 #[cfg(test)]
@@ -1088,9 +1283,11 @@ mod tests {
                 &hash_oauth_token(code),
                 "client-1",
                 &user.id,
-                "acme",
+                &[common::catalog::TenantGrant {
+                    tenant_id: "acme".to_string(),
+                    dataset_ids: None,
+                }],
                 &["traces:read".to_string()],
-                None,
                 "https://claude.ai/cb",
                 PKCE_CHALLENGE,
                 Some("https://signaldb.example.com/mcp"),
@@ -1402,7 +1599,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .header("cookie", format!("signaldb_session={cookie}"))
                     .body(Body::from(
-                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"chal-1","scope":"traces:read","state":"st","tenant":"acme","approved":true}"#,
+                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"chal-1","scope":"traces:read","state":"st","tenant_grants":[{"tenant_id":"acme"}],"approved":true}"#,
                     ))
                     .unwrap(),
             )
@@ -1427,10 +1624,187 @@ mod tests {
             .await
             .unwrap()
             .expect("code was stored");
-        assert_eq!(grant.tenant_id, "acme");
+        assert_eq!(
+            grant.tenant_grants,
+            vec![common::catalog::TenantGrant {
+                tenant_id: "acme".to_string(),
+                dataset_ids: None,
+            }]
+        );
         assert_eq!(grant.scopes, vec!["traces:read".to_string()]);
         assert_eq!(grant.code_challenge, "chal-1");
         assert_eq!(grant.client_id, "client-1");
+    }
+
+    // ---- mcp-multi-tenant-oauth-grants: consent multi-select (task group 2) ----
+
+    /// Create a user with a live session who is a member of every named
+    /// tenant, each pre-populated with its own datasets.
+    async fn seed_user_session_multi_tenant(
+        catalog: &Catalog,
+        tenants: &[(&str, &[&str])],
+    ) -> String {
+        use common::auth::{generate_session_token, hash_session_token};
+        let user = catalog
+            .create_user("multi@example.com", None, Some("phc"), false)
+            .await
+            .unwrap();
+        for (tenant, datasets) in tenants {
+            catalog
+                .upsert_tenant(tenant, tenant, Some("production"), "database")
+                .await
+                .unwrap();
+            catalog
+                .upsert_tenant_membership(&user.id, tenant, common::catalog::MembershipRole::Member)
+                .await
+                .unwrap();
+            for name in *datasets {
+                catalog.create_dataset(tenant, name).await.unwrap();
+            }
+        }
+        let cookie = generate_session_token();
+        catalog
+            .create_user_session(
+                &user.id,
+                &hash_session_token(&cookie),
+                chrono::Utc::now() + chrono::Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        cookie
+    }
+
+    /// Task 2.1: the consent context lists every tenant the user belongs to
+    /// as independently selectable, each with its own dataset list — not
+    /// just the first one.
+    #[tokio::test]
+    async fn consent_context_lists_every_membership_independently_selectable() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_client(&catalog).await;
+        let cookie = seed_user_session_multi_tenant(
+            &catalog,
+            &[
+                ("acme", &["production", "staging"]),
+                ("globex", &["default"]),
+            ],
+        )
+        .await;
+
+        let res = get_consent_context(&app, &cookie, "client-1").await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let doc = body_json(res).await;
+        let tenants = doc["tenants"].as_array().unwrap();
+        assert_eq!(tenants.len(), 2, "{tenants:?}");
+
+        let acme = tenants.iter().find(|t| t["id"] == "acme").unwrap();
+        let acme_datasets: Vec<&str> = acme["datasets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["name"].as_str().unwrap())
+            .collect();
+        assert!(acme_datasets.contains(&"production"), "{acme_datasets:?}");
+        assert!(acme_datasets.contains(&"staging"), "{acme_datasets:?}");
+
+        let globex = tenants.iter().find(|t| t["id"] == "globex").unwrap();
+        let globex_datasets: Vec<&str> = globex["datasets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(globex_datasets, vec!["default"]);
+    }
+
+    /// Task 2.2: approving with two tenants checked issues one authorization
+    /// code bound to both, each with its own independent dataset
+    /// restriction.
+    #[tokio::test]
+    async fn consent_decision_with_two_tenants_issues_one_code_bound_to_both() {
+        let (app, catalog) = app_and_catalog_with_rollout_complete().await;
+        seed_client(&catalog).await;
+        let cookie = seed_user_session_multi_tenant(
+            &catalog,
+            &[
+                ("acme", &["production", "staging"]),
+                ("globex", &["default"]),
+            ],
+        )
+        .await;
+
+        let res = post_decision(
+            &app,
+            &cookie,
+            &format!(
+                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","scope":"traces:read","tenant_grants":[{{"tenant_id":"acme","dataset_ids":["production"]}},{{"tenant_id":"globex"}}],"approved":true}}"#
+            ),
+        )
+        .await;
+        let status = res.status();
+        let doc = body_json(res).await;
+        assert_eq!(status, StatusCode::OK, "{doc}");
+        let redirect = doc["redirect"].as_str().unwrap();
+        let code = Url::parse(redirect)
+            .unwrap()
+            .query_pairs()
+            .find(|(k, _)| k == "code")
+            .map(|(_, v)| v.into_owned())
+            .unwrap();
+        let grant = catalog
+            .consume_authorization_code(&hash_oauth_token(&code))
+            .await
+            .unwrap()
+            .expect("code was stored");
+        assert_eq!(grant.tenant_grants.len(), 2, "{:?}", grant.tenant_grants);
+        let acme_grant = grant
+            .tenant_grants
+            .iter()
+            .find(|g| g.tenant_id == "acme")
+            .unwrap();
+        assert_eq!(acme_grant.dataset_ids, Some(vec!["production".to_string()]));
+        let globex_grant = grant
+            .tenant_grants
+            .iter()
+            .find(|g| g.tenant_id == "globex")
+            .unwrap();
+        assert_eq!(globex_grant.dataset_ids, None);
+    }
+
+    /// Task 2.3: approving with zero tenants checked is rejected, no code
+    /// issued.
+    #[tokio::test]
+    async fn consent_decision_with_zero_tenants_is_rejected() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_client(&catalog).await;
+        let cookie = seed_user_session(&catalog, "acme").await;
+
+        let res = post_decision(
+            &app,
+            &cookie,
+            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant_grants":[],"approved":true}"#,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(body_json(res).await["error"], "invalid_request");
+    }
+
+    /// A decision naming the same tenant twice is rejected before any code
+    /// is minted (defense in depth ahead of the catalog's own
+    /// `validate_tenant_grants` check).
+    #[tokio::test]
+    async fn consent_decision_rejects_duplicate_tenant_id() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_client(&catalog).await;
+        let cookie = seed_user_session(&catalog, "acme").await;
+
+        let res = post_decision(
+            &app,
+            &cookie,
+            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant_grants":[{"tenant_id":"acme"},{"tenant_id":"acme"}],"approved":true}"#,
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(body_json(res).await["error"], "invalid_request");
     }
 
     #[tokio::test]
@@ -1453,7 +1827,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .header("cookie", format!("signaldb_session={cookie}"))
                     .body(Body::from(
-                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"chal-1","tenant":"globex","approved":true}"#,
+                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"chal-1","tenant_grants":[{"tenant_id":"globex"}],"approved":true}"#,
                     ))
                     .unwrap(),
             )
@@ -1473,7 +1847,7 @@ mod tests {
                     .uri("/oauth/authorize/decision")
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"chal-1","tenant":"acme","approved":true}"#,
+                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"chal-1","tenant_grants":[{"tenant_id":"acme"}],"approved":true}"#,
                     ))
                     .unwrap(),
             )
@@ -1538,7 +1912,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .header("cookie", format!("signaldb_session={cookie}"))
                     .body(Body::from(
-                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","scope":"openid profile","tenant":"acme","approved":true}"#,
+                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","scope":"openid profile","tenant_grants":[{"tenant_id":"acme"}],"approved":true}"#,
                     ))
                     .unwrap(),
             )
@@ -1589,7 +1963,7 @@ mod tests {
                     .header("content-type", "application/json")
                     .header("cookie", format!("signaldb_session={cookie}"))
                     .body(Body::from(
-                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","scope":"schema:write","tenant":"acme","approved":true}"#,
+                        r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","scope":"schema:write","tenant_grants":[{"tenant_id":"acme"}],"approved":true}"#,
                     ))
                     .unwrap(),
             )
@@ -1652,6 +2026,302 @@ mod tests {
         .await;
         assert_eq!(replay.status(), StatusCode::BAD_REQUEST);
         assert_eq!(body_json(replay).await["error"], "invalid_grant");
+    }
+
+    // ---- mcp-multi-tenant-oauth-grants: token issuance/refresh carry the
+    // full grant set (task group 3.1-3.3) ----
+
+    /// Seed a user, two tenants (each with its own dataset), a client, and
+    /// an authorization code bound to a two-tenant grant set with different
+    /// dataset restrictions per tenant.
+    async fn seed_multi_tenant_authorization_code(catalog: &Catalog, code: &str) -> String {
+        use common::auth::oauth::hash_oauth_token;
+        let user = catalog
+            .create_user("agent@example.com", None, Some("phc"), false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "production").await.unwrap();
+        catalog
+            .upsert_tenant("globex", "Globex", Some("default"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("globex", "default").await.unwrap();
+        catalog
+            .register_oauth_client(
+                "client-1",
+                Some("Claude"),
+                &["https://claude.ai/cb".to_string()],
+                None,
+                None,
+                "none",
+            )
+            .await
+            .unwrap();
+        catalog
+            .create_authorization_code(
+                &hash_oauth_token(code),
+                "client-1",
+                &user.id,
+                &[
+                    common::catalog::TenantGrant {
+                        tenant_id: "acme".to_string(),
+                        dataset_ids: Some(vec!["production".to_string()]),
+                    },
+                    common::catalog::TenantGrant {
+                        tenant_id: "globex".to_string(),
+                        dataset_ids: None,
+                    },
+                ],
+                &["traces:read".to_string()],
+                "https://claude.ai/cb",
+                PKCE_CHALLENGE,
+                Some("https://signaldb.example.com/mcp"),
+                chrono::Utc::now() + chrono::Duration::minutes(1),
+            )
+            .await
+            .unwrap();
+        code.to_string()
+    }
+
+    fn expected_multi_tenant_grant() -> Vec<common::catalog::TenantGrant> {
+        vec![
+            common::catalog::TenantGrant {
+                tenant_id: "acme".to_string(),
+                dataset_ids: Some(vec!["production".to_string()]),
+            },
+            common::catalog::TenantGrant {
+                tenant_id: "globex".to_string(),
+                dataset_ids: None,
+            },
+        ]
+    }
+
+    /// Task 3.1: exchanging a multi-tenant authorization code yields an
+    /// access token and refresh token bound to the full grant set.
+    #[tokio::test]
+    async fn token_exchange_of_multi_tenant_code_yields_full_grant_set() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_multi_tenant_authorization_code(&catalog, "raw-code-multi").await;
+        let res = post_token(
+            &app,
+            format!(
+                "grant_type=authorization_code&code=raw-code-multi&code_verifier={PKCE_VERIFIER}\
+                 &redirect_uri=https%3A%2F%2Fclaude.ai%2Fcb&client_id=client-1"
+            ),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let tokens = body_json(res).await;
+        let access = catalog
+            .get_valid_access_token(&hash_oauth_token(tokens["access_token"].as_str().unwrap()))
+            .await
+            .unwrap()
+            .expect("access token stored");
+        let refresh = catalog
+            .get_valid_refresh_token(&hash_oauth_token(tokens["refresh_token"].as_str().unwrap()))
+            .await
+            .unwrap()
+            .expect("refresh token stored");
+        assert_eq!(access.tenant_grants, expected_multi_tenant_grant());
+        assert_eq!(refresh.tenant_grants, expected_multi_tenant_grant());
+    }
+
+    /// Task 3.2: refreshing a multi-tenant token yields a new access token
+    /// with the same grant set, scopes, and audience.
+    #[tokio::test]
+    async fn refresh_of_multi_tenant_token_yields_same_grant_set() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_multi_tenant_authorization_code(&catalog, "raw-code-multi-refresh").await;
+        let tokens = body_json(
+            post_token(
+                &app,
+                format!(
+                    "grant_type=authorization_code&code=raw-code-multi-refresh&code_verifier={PKCE_VERIFIER}\
+                     &redirect_uri=https%3A%2F%2Fclaude.ai%2Fcb&client_id=client-1"
+                ),
+            )
+            .await,
+        )
+        .await;
+        let refresh_raw = tokens["refresh_token"].as_str().unwrap().to_string();
+
+        let res = post_token(
+            &app,
+            format!("grant_type=refresh_token&refresh_token={refresh_raw}&client_id=client-1"),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let new_tokens = body_json(res).await;
+        let new_access = catalog
+            .get_valid_access_token(&hash_oauth_token(
+                new_tokens["access_token"].as_str().unwrap(),
+            ))
+            .await
+            .unwrap()
+            .expect("new access token stored");
+        let new_refresh = catalog
+            .get_valid_refresh_token(&hash_oauth_token(
+                new_tokens["refresh_token"].as_str().unwrap(),
+            ))
+            .await
+            .unwrap()
+            .expect("new refresh token stored");
+        assert_eq!(new_access.tenant_grants, expected_multi_tenant_grant());
+        assert_eq!(new_refresh.tenant_grants, expected_multi_tenant_grant());
+    }
+
+    /// Refreshing a multi-tenant token survives one of its granted tenants
+    /// being deleted in the meantime — the refresh succeeds and still
+    /// carries both original grant entries (D3: the deleted one simply
+    /// fails to *resolve* later, which is `authenticate_oauth_token`'s job,
+    /// not the refresh endpoint's). Regression test for the redundant
+    /// registry re-validation the refresh path used to run, which would
+    /// have failed the whole refresh over the one stale entry.
+    #[tokio::test]
+    async fn refresh_of_multi_tenant_token_survives_a_deleted_tenant() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_multi_tenant_authorization_code(&catalog, "raw-code-multi-survives-delete").await;
+        let tokens = body_json(
+            post_token(
+                &app,
+                format!(
+                    "grant_type=authorization_code&code=raw-code-multi-survives-delete&code_verifier={PKCE_VERIFIER}\
+                     &redirect_uri=https%3A%2F%2Fclaude.ai%2Fcb&client_id=client-1"
+                ),
+            )
+            .await,
+        )
+        .await;
+        let refresh_raw = tokens["refresh_token"].as_str().unwrap().to_string();
+
+        assert!(catalog.delete_tenant("acme").await.unwrap());
+
+        let res = post_token(
+            &app,
+            format!("grant_type=refresh_token&refresh_token={refresh_raw}&client_id=client-1"),
+        )
+        .await;
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "refresh must succeed even though one granted tenant no longer exists"
+        );
+        let new_tokens = body_json(res).await;
+        let new_access = catalog
+            .get_valid_access_token(&hash_oauth_token(
+                new_tokens["access_token"].as_str().unwrap(),
+            ))
+            .await
+            .unwrap()
+            .expect("new access token stored");
+        assert_eq!(
+            new_access.tenant_grants,
+            expected_multi_tenant_grant(),
+            "both original grant entries carry over unchanged; acme's own \
+             entry just won't resolve later"
+        );
+    }
+
+    // ---- mcp-multi-tenant-oauth-grants: POST /oauth/introspect (task 3.12-3.13) ----
+
+    async fn post_introspect(app: &axum::Router, token: &str) -> axum::response::Response {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/introspect")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(format!(
+                        "token={}",
+                        url::form_urlencoded::byte_serialize(token.as_bytes()).collect::<String>()
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    /// Task 3.12: introspecting an active multi-tenant token reports
+    /// `active: true` and the full `tenants` array, without requiring
+    /// `X-Tenant-ID` anywhere in the request.
+    #[tokio::test]
+    async fn introspect_active_multi_tenant_token_reports_full_grant() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_multi_tenant_authorization_code(&catalog, "raw-code-introspect").await;
+        let tokens = body_json(
+            post_token(
+                &app,
+                format!(
+                    "grant_type=authorization_code&code=raw-code-introspect&code_verifier={PKCE_VERIFIER}\
+                     &redirect_uri=https%3A%2F%2Fclaude.ai%2Fcb&client_id=client-1"
+                ),
+            )
+            .await,
+        )
+        .await;
+        let access_raw = tokens["access_token"].as_str().unwrap().to_string();
+
+        let res = post_introspect(&app, &access_raw).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let doc = body_json(res).await;
+        assert_eq!(doc["active"], true);
+        assert!(doc["user_id"].as_str().is_some_and(|s| !s.is_empty()));
+        let tenants = doc["tenants"].as_array().unwrap();
+        assert_eq!(tenants.len(), 2, "{tenants:?}");
+        assert!(
+            tenants.iter().any(|t| t["tenant_id"] == "acme"
+                && t["dataset_ids"] == serde_json::json!(["production"])),
+            "{tenants:?}"
+        );
+        assert!(
+            tenants
+                .iter()
+                .any(|t| t["tenant_id"] == "globex" && t["dataset_ids"].is_null()),
+            "{tenants:?}"
+        );
+        assert_eq!(doc["scope"], "traces:read");
+        assert_eq!(doc["aud"], "https://signaldb.example.com/mcp");
+        assert!(doc["exp"].as_i64().is_some());
+    }
+
+    /// Task 3.12: introspecting an expired/revoked/garbage token reports
+    /// `active: false` and no other detail.
+    #[tokio::test]
+    async fn introspect_inactive_token_reports_nothing_else() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_multi_tenant_authorization_code(&catalog, "raw-code-introspect-revoked").await;
+        let tokens = body_json(
+            post_token(
+                &app,
+                format!(
+                    "grant_type=authorization_code&code=raw-code-introspect-revoked&code_verifier={PKCE_VERIFIER}\
+                     &redirect_uri=https%3A%2F%2Fclaude.ai%2Fcb&client_id=client-1"
+                ),
+            )
+            .await,
+        )
+        .await;
+        let access_raw = tokens["access_token"].as_str().unwrap().to_string();
+        catalog
+            .revoke_access_token(&hash_oauth_token(&access_raw))
+            .await
+            .unwrap();
+
+        for token in [access_raw.as_str(), "sdb_at_totally-unknown"] {
+            let res = post_introspect(&app, token).await;
+            assert_eq!(res.status(), StatusCode::OK);
+            let doc = body_json(res).await;
+            assert_eq!(doc["active"], false, "{doc}");
+            assert_eq!(
+                doc.as_object().unwrap().len(),
+                1,
+                "an inactive token must report nothing beyond `active`: {doc}"
+            );
+        }
     }
 
     // ---- multi-dataset-key-restriction phase 3: OAuth consent + tokens ----
@@ -1761,7 +2431,7 @@ mod tests {
         let res = post_decision(
             &app,
             &cookie,
-            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant":"acme","approved":true}"#,
+            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant_grants":[{"tenant_id":"acme"}],"approved":true}"#,
         )
         .await;
         assert_eq!(res.status(), StatusCode::OK);
@@ -1778,7 +2448,7 @@ mod tests {
             .await
             .unwrap()
             .expect("code was stored");
-        assert_eq!(grant.dataset_ids, None);
+        assert_eq!(grant.tenant_grants[0].dataset_ids, None);
     }
 
     #[tokio::test]
@@ -1790,7 +2460,7 @@ mod tests {
         let res = post_decision(
             &app,
             &cookie,
-            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant":"acme","approved":true,"dataset_ids":[]}"#,
+            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant_grants":[{"tenant_id":"acme","dataset_ids":[]}],"approved":true}"#,
         )
         .await;
         assert_eq!(res.status(), StatusCode::BAD_REQUEST);
@@ -1806,7 +2476,7 @@ mod tests {
             &app,
             &cookie,
             &format!(
-                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","tenant":"acme","approved":true,"dataset_ids":["staging"]}}"#
+                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","tenant_grants":[{{"tenant_id":"acme","dataset_ids":["staging"]}}],"approved":true}}"#
             ),
         )
         .await;
@@ -1824,7 +2494,7 @@ mod tests {
             &app,
             &cookie,
             &format!(
-                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","scope":"traces:read","tenant":"acme","approved":true,"dataset_ids":["production"]}}"#
+                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","scope":"traces:read","tenant_grants":[{{"tenant_id":"acme","dataset_ids":["production"]}}],"approved":true}}"#
             ),
         )
         .await;
@@ -1858,8 +2528,14 @@ mod tests {
             .await
             .unwrap()
             .expect("refresh token stored");
-        assert_eq!(access.dataset_ids, Some(vec!["production".to_string()]));
-        assert_eq!(refresh.dataset_ids, Some(vec!["production".to_string()]));
+        assert_eq!(
+            access.tenant_grants[0].dataset_ids,
+            Some(vec!["production".to_string()])
+        );
+        assert_eq!(
+            refresh.tenant_grants[0].dataset_ids,
+            Some(vec!["production".to_string()])
+        );
     }
 
     /// D6: a refresh must read `dataset_ids` from the presented
@@ -1878,7 +2554,7 @@ mod tests {
             &app,
             &cookie,
             &format!(
-                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","scope":"traces:read","tenant":"acme","approved":true,"dataset_ids":["production"]}}"#
+                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","scope":"traces:read","tenant_grants":[{{"tenant_id":"acme","dataset_ids":["production"]}}],"approved":true}}"#
             ),
         )
         .await;
@@ -1936,9 +2612,12 @@ mod tests {
             .await
             .unwrap()
             .expect("new refresh token stored");
-        assert_eq!(new_access.dataset_ids, Some(vec!["production".to_string()]));
         assert_eq!(
-            new_refresh.dataset_ids,
+            new_access.tenant_grants[0].dataset_ids,
+            Some(vec!["production".to_string()])
+        );
+        assert_eq!(
+            new_refresh.tenant_grants[0].dataset_ids,
             Some(vec!["production".to_string()]),
             "the new refresh token must carry the restriction too, not only the access token"
         );
@@ -1960,7 +2639,7 @@ mod tests {
             &app,
             &cookie,
             &format!(
-                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","tenant":"acme","approved":true,"dataset_ids":["production"]}}"#
+                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","tenant_grants":[{{"tenant_id":"acme","dataset_ids":["production"]}}],"approved":true}}"#
             ),
         )
         .await;
@@ -1977,7 +2656,7 @@ mod tests {
         let res = post_decision(
             &app,
             &cookie,
-            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant":"acme","approved":true}"#,
+            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant_grants":[{"tenant_id":"acme"}],"approved":true}"#,
         )
         .await;
         assert_eq!(
@@ -1994,7 +2673,7 @@ mod tests {
             &gated_app,
             &gated_cookie,
             &format!(
-                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","tenant":"acme","approved":true,"dataset_ids":["production"]}}"#
+                r#"{{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"{PKCE_CHALLENGE}","tenant_grants":[{{"tenant_id":"acme","dataset_ids":["production"]}}],"approved":true}}"#
             ),
         )
         .await;
@@ -2012,7 +2691,7 @@ mod tests {
         let res = post_decision(
             &app,
             &cookie,
-            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant":"acme","approved":true,"dataset_id":"production"}"#,
+            r#"{"client_id":"client-1","redirect_uri":"https://claude.ai/cb","code_challenge":"c","tenant_grants":[{"tenant_id":"acme"}],"approved":true,"dataset_id":"production"}"#,
         )
         .await;
         assert_eq!(res.status(), StatusCode::UNPROCESSABLE_ENTITY);

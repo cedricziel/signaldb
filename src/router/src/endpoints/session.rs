@@ -616,6 +616,47 @@ pub struct WhoamiResponse {
     /// read this rather than assuming every listed dataset is reachable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dataset_ids: Option<Vec<String>>,
+    /// Every tenant this specific credential's grant reaches (change:
+    /// mcp-multi-tenant-oauth-grants D5) — a one-element array equal to
+    /// `tenant`/`dataset_ids` for a single-tenant credential (API key or
+    /// single-tenant OAuth grant), or every tenant in the grant for a
+    /// multi-tenant OAuth credential. Distinct from `memberships`, which
+    /// lists every tenant the *human user* belongs to regardless of what
+    /// this credential was scoped to.
+    pub granted_tenants: Vec<GrantedTenant>,
+}
+
+/// One tenant a credential's grant reaches, with its own dataset-set
+/// restriction — the `whoami`/`/oauth/introspect` output shape (change:
+/// mcp-multi-tenant-oauth-grants D4/D5). Mirrors
+/// [`common::catalog::TenantGrant`]; kept as a router-local response DTO so
+/// it can derive [`utoipa::ToSchema`].
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct GrantedTenant {
+    pub tenant_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dataset_ids: Option<Vec<String>>,
+}
+
+/// Build the `granted_tenants` list for a resolved [`TenantContext`]: the
+/// token's own complete grant set for an OAuth credential, or a synthesized
+/// one-element list from the context's own tenant/restriction for any other
+/// credential kind (API key, browser session) — so the field is present and
+/// consistently shaped for every credential type, not just OAuth (D5).
+fn granted_tenants(ctx: &TenantContext) -> Vec<GrantedTenant> {
+    match &ctx.oauth_tenant_grants {
+        Some(grants) => grants
+            .iter()
+            .map(|g| GrantedTenant {
+                tenant_id: g.tenant_id.clone(),
+                dataset_ids: g.dataset_ids.clone(),
+            })
+            .collect(),
+        None => vec![GrantedTenant {
+            tenant_id: ctx.tenant_id.clone(),
+            dataset_ids: ctx.api_key_dataset_ids.clone(),
+        }],
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -643,6 +684,8 @@ pub struct WhoamiIdentityResponse {
     /// means unrestricted. See [`WhoamiResponse::dataset_ids`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub dataset_ids: Option<Vec<String>>,
+    /// See [`WhoamiResponse::granted_tenants`].
+    pub granted_tenants: Vec<GrantedTenant>,
 }
 
 /// D10: narrow `datasets`/`default_dataset` to a dataset-restricted
@@ -818,6 +861,7 @@ pub async fn whoami<S: RouterState>(
             datasets,
             default_dataset,
             dataset_ids: ctx.api_key_dataset_ids.clone(),
+            granted_tenants: granted_tenants(&ctx),
         };
         return Json(response).into_response();
     }
@@ -868,6 +912,7 @@ pub async fn whoami<S: RouterState>(
         datasets,
         default_dataset,
         dataset_ids: ctx.api_key_dataset_ids.clone(),
+        granted_tenants: granted_tenants(&ctx),
     };
     Json(response).into_response()
 }
@@ -2067,6 +2112,128 @@ mod tests {
         assert_eq!(datasets[1]["is_default"], false);
         // No cross-tenant data leaks into the response.
         assert!(!body.to_string().contains("globex"));
+    }
+
+    /// Task 3.9: a single-tenant credential's `whoami` response is
+    /// unchanged except for a new one-element `granted_tenants` array
+    /// (design: mcp-multi-tenant-oauth-grants D5).
+    #[tokio::test]
+    async fn whoami_single_tenant_credential_includes_one_element_granted_tenants() {
+        let app = test_app().await;
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", "Bearer acme-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(
+            body["granted_tenants"],
+            serde_json::json!([{"tenant_id": "acme"}])
+        );
+    }
+
+    /// Task 3.10: a multi-tenant OAuth credential with no `X-Tenant-ID` is
+    /// rejected exactly like any other tenant-scoped route — enforced by
+    /// the generic auth middleware before `whoami`'s own handler body ever
+    /// runs, so `whoami` needs no special-casing of its own here.
+    #[tokio::test]
+    async fn whoami_multi_tenant_oauth_credential_with_no_selector_is_rejected() {
+        let (app, token) = multi_tenant_oauth_app().await;
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(request).await.unwrap();
+        assert_ne!(res.status(), StatusCode::OK);
+    }
+
+    /// Task 3.10: a multi-tenant OAuth credential with a valid selector
+    /// returns that tenant in both `tenant` and as one entry of
+    /// `granted_tenants`, with every other granted tenant also listed.
+    #[tokio::test]
+    async fn whoami_multi_tenant_oauth_credential_with_selector_lists_every_granted_tenant() {
+        let (app, token) = multi_tenant_oauth_app().await;
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", format!("Bearer {token}"))
+            .header("x-tenant-id", "globex")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["tenant"]["id"], "globex");
+        let granted = body["granted_tenants"].as_array().unwrap();
+        assert_eq!(granted.len(), 2, "{granted:?}");
+        assert!(
+            granted
+                .iter()
+                .any(|g| g["tenant_id"] == "acme" && g["dataset_ids"].is_null()),
+            "{granted:?}"
+        );
+        assert!(
+            granted
+                .iter()
+                .any(|g| g["tenant_id"] == "globex" && g["dataset_ids"].is_null()),
+            "{granted:?}"
+        );
+    }
+
+    /// A user member of two database tenants (`acme`, `globex`) with one
+    /// OAuth access token whose grant set covers both.
+    async fn multi_tenant_oauth_app() -> (axum::Router, String) {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "production").await.unwrap();
+        catalog
+            .upsert_tenant("globex", "Globex", Some("default"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("globex", "default").await.unwrap();
+        let user = catalog
+            .create_user("agent@example.com", None, Some("phc"), false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Member)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "globex", MembershipRole::Member)
+            .await
+            .unwrap();
+        let token =
+            common::auth::oauth::generate_oauth_token(common::auth::oauth::TokenKind::Access);
+        catalog
+            .create_access_token(
+                &common::auth::oauth::hash_oauth_token(&token),
+                "client-1",
+                &user.id,
+                &[
+                    common::catalog::TenantGrant {
+                        tenant_id: "acme".to_string(),
+                        dataset_ids: None,
+                    },
+                    common::catalog::TenantGrant {
+                        tenant_id: "globex".to_string(),
+                        dataset_ids: None,
+                    },
+                ],
+                &["traces:read".to_string()],
+                None,
+                chrono::Utc::now() + chrono::Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        let app = create_router(RouterAppState::new(catalog, Configuration::default()));
+        (app, token)
     }
 
     #[tokio::test]

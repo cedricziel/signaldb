@@ -27,6 +27,7 @@ mod writer;
 mod dataset_restriction_e2e;
 mod flight_message_limits;
 mod logql_queries;
+mod mcp_multi_tenant_oauth_flow;
 mod oauth_connector_flow;
 mod ops_endpoints;
 mod prometheus_remote_write_test;

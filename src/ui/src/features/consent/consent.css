@@ -192,6 +192,13 @@
   margin-left: 14px;
 }
 
+/* A checked tenant's own dataset picker (D6), nested under its row in the
+   multi-select tenant checklist. */
+.consent-tenant-datasets {
+  margin-top: 8px;
+  margin-left: 14px;
+}
+
 /* --- actions -------------------------------------------------------------- */
 
 .consent-actions {

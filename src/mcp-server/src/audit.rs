@@ -63,13 +63,40 @@ pub struct CallerTenant(pub String);
 
 /// The credential's own dataset-set restriction, inserted into the request
 /// extensions by the auth middleware alongside [`CallerTenant`] (from the
-/// same `whoami()` call, `WhoamiIdentityResponse::dataset_ids`). `None`
-/// means the credential is unrestricted. Tools that list datasets/tables
-/// (`discover_datasets`, `tenant_list_tables`) read this to filter out any
-/// dataset the caller's credential cannot reach, per design D10 —
-/// unlisted datasets must not be visible even by name.
+/// same `whoami()` call, `WhoamiIdentityResponse::dataset_ids`) — only for a
+/// single-tenant credential (API key or single-tenant OAuth grant); never
+/// present alongside [`CallerTenants`]. `None` means the credential is
+/// unrestricted. Tools that list datasets/tables read this indirectly
+/// through `server::dataset_restriction_for`, which also handles the
+/// multi-tenant case (a restriction per granted tenant, from
+/// [`CallerTenants`]'s own entries) that this type alone cannot represent,
+/// per design D10 — unlisted datasets must not be visible even by name.
 #[derive(Clone, Debug, Default)]
 pub struct CallerDatasetIds(pub Option<Vec<String>>);
+
+/// One tenant an OAuth credential's grant reaches, with its own optional
+/// dataset-set restriction. Mirrors `common::catalog::TenantGrant` /
+/// the router's `GrantedTenant` response DTO; kept as a local type since this
+/// crate does not use `common::catalog` (it holds no credential, catalog, or
+/// storage access of its own — see the boundary comment on its `common`
+/// dependency in `Cargo.toml`) and has no dependency on the router at all
+/// (change: mcp-multi-tenant-oauth-grants D4).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GrantedTenant {
+    pub tenant_id: String,
+    #[serde(default)]
+    pub dataset_ids: Option<Vec<String>>,
+}
+
+/// The full tenant grant set for an OAuth credential whose grant covers more
+/// than one tenant, inserted into the request extensions by the auth
+/// middleware in place of (not alongside) [`CallerTenant`]/[`CallerDatasetIds`]
+/// — the absence of those two extensions is exactly how downstream code
+/// (`check_tenant_scope`, `scoped_router_client`, `discover_datasets`,
+/// `server_info`) tells a single-tenant credential from a multi-tenant one
+/// (design D4). Never present for an API key or a single-tenant OAuth grant.
+#[derive(Clone, Debug)]
+pub struct CallerTenants(pub Vec<GrantedTenant>);
 
 /// The distinct error a call receives when its session is at the concurrency
 /// bound and no permit frees up within [`PERMIT_WAIT`].
@@ -223,6 +250,42 @@ pub struct AuditContext {
 }
 
 impl AuditContext {
+    /// The tool call's own tenant-selector argument, if any. Tools differ on
+    /// the argument's name: query/discovery tools use `tenant` (a
+    /// confirmation for a single-tenant credential, a real selector for a
+    /// multi-tenant one — see `resolve_tenant_id`), while the tenant
+    /// self-management tools (`tenant_list_datasets`, `tenant_create_api_key`,
+    /// etc.) use `tenant_id`. Checked in that order so a tool that happened
+    /// to have both would prefer `tenant` — none do today.
+    fn tool_tenant_argument(request: &CallToolRequestParams) -> Option<String> {
+        request
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("tenant").or_else(|| args.get("tenant_id")))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+    }
+
+    /// Resolve the tenant an audited call is attributed to: the credential's
+    /// own resolved tenant when known (`caller_tenant`, from `CallerTenant`,
+    /// or `header_tenant`, the inbound `X-Tenant-ID` for an API key); for a
+    /// multi-tenant OAuth credential (no single known tenant — `CallerTenant`
+    /// is absent and `is_multi_tenant` is set instead, see `CallerTenants`),
+    /// the tool's own `tenant` argument, already validated against the
+    /// grant by `check_tenant_scope` by the time a call is audited (task
+    /// 5.9); `"unknown"` failing all of the above.
+    fn resolve_tenant_id(
+        caller_tenant: Option<String>,
+        header_tenant: Option<String>,
+        is_multi_tenant: bool,
+        tool_tenant_argument: Option<String>,
+    ) -> String {
+        caller_tenant
+            .or(header_tenant)
+            .or_else(|| is_multi_tenant.then_some(tool_tenant_argument).flatten())
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+
     /// Capture tool, tenant, dataset, and session from the request and its
     /// HTTP `Parts` (absent on stdio). The dataset is the tool's explicit
     /// `dataset` argument when given, else the caller's `X-Dataset-ID`.
@@ -234,13 +297,22 @@ impl AuditContext {
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_owned)
         };
-        let tenant_id = context
+        let caller_tenant = context
             .extensions
             .get::<CallerTenant>()
             .map(|t| t.0.clone())
-            .or_else(|| parts.and_then(|p| p.extensions.get::<CallerTenant>().map(|t| t.0.clone())))
-            .or_else(|| header("x-tenant-id"))
-            .unwrap_or_else(|| "unknown".to_string());
+            .or_else(|| {
+                parts.and_then(|p| p.extensions.get::<CallerTenant>().map(|t| t.0.clone()))
+            });
+        let is_multi_tenant = context.extensions.get::<CallerTenants>().is_some()
+            || parts.is_some_and(|p| p.extensions.get::<CallerTenants>().is_some());
+        let tool_tenant_argument = Self::tool_tenant_argument(request);
+        let tenant_id = Self::resolve_tenant_id(
+            caller_tenant,
+            header("x-tenant-id"),
+            is_multi_tenant,
+            tool_tenant_argument,
+        );
         let dataset = request
             .arguments
             .as_ref()
@@ -317,6 +389,81 @@ mod tests {
 
     fn ok_result() -> Result<CallToolResponse, ErrorData> {
         Ok(CallToolResult::success(vec![ContentBlock::text("{}")]).into())
+    }
+
+    #[test]
+    fn resolve_tenant_id_prefers_the_known_caller_tenant() {
+        // Single-tenant credential (API key or single-tenant OAuth grant):
+        // unchanged, ignores any tool tenant argument.
+        assert_eq!(
+            AuditContext::resolve_tenant_id(
+                Some("acme".to_string()),
+                None,
+                false,
+                Some("globex".to_string())
+            ),
+            "acme"
+        );
+    }
+
+    #[test]
+    fn resolve_tenant_id_uses_the_tool_argument_for_a_multi_tenant_credential() {
+        // No `CallerTenant` (multi-tenant OAuth grant, task 5.9): names
+        // whichever tenant this specific call selected.
+        assert_eq!(
+            AuditContext::resolve_tenant_id(None, None, true, Some("globex".to_string())),
+            "globex"
+        );
+    }
+
+    #[test]
+    fn resolve_tenant_id_ignores_the_tool_argument_when_not_multi_tenant() {
+        // No `CallerTenant` and not a multi-tenant credential: falls back to
+        // "unknown" rather than trusting an arbitrary tool argument.
+        assert_eq!(
+            AuditContext::resolve_tenant_id(None, None, false, Some("globex".to_string())),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn resolve_tenant_id_falls_back_to_unknown() {
+        assert_eq!(
+            AuditContext::resolve_tenant_id(None, None, false, None),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn tool_tenant_argument_reads_the_tenant_field_for_query_tools() {
+        let mut args = rmcp::model::JsonObject::new();
+        args.insert("tenant".to_string(), serde_json::json!("acme"));
+        let request = CallToolRequestParams::new("search_traces").with_arguments(args);
+        assert_eq!(
+            AuditContext::tool_tenant_argument(&request),
+            Some("acme".to_string())
+        );
+    }
+
+    /// Regression test: the tenant self-management tools (`tenant_list_datasets`,
+    /// `tenant_create_api_key`, etc.) name their tenant-selector argument
+    /// `tenant_id`, not `tenant`. Before this fix, a multi-tenant credential
+    /// calling one of these tools was always audited under `"unknown"`.
+    #[test]
+    fn tool_tenant_argument_reads_the_tenant_id_field_for_tenant_management_tools() {
+        let mut args = rmcp::model::JsonObject::new();
+        args.insert("tenant_id".to_string(), serde_json::json!("globex"));
+        let request = CallToolRequestParams::new("tenant_list_datasets").with_arguments(args);
+        assert_eq!(
+            AuditContext::tool_tenant_argument(&request),
+            Some("globex".to_string())
+        );
+    }
+
+    #[test]
+    fn tool_tenant_argument_is_none_without_either_field() {
+        let request = CallToolRequestParams::new("server_info");
+        assert_eq!(AuditContext::tool_tenant_argument(&request), None);
     }
 
     #[test]

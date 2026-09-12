@@ -364,17 +364,18 @@ async fn issue_oauth_tokens(
         .unwrap()
         .to_string();
 
-    let mut decision = json!({
+    let mut grant = json!({ "tenant_id": TENANT });
+    if let Some(ids) = dataset_ids {
+        grant["dataset_ids"] = json!(ids);
+    }
+    let decision = json!({
         "client_id": client_id,
         "redirect_uri": "https://claude.ai/cb",
         "code_challenge": PKCE_CHALLENGE,
         "scope": "traces:read",
-        "tenant": TENANT,
+        "tenant_grants": [grant],
         "approved": true,
     });
-    if let Some(ids) = dataset_ids {
-        decision["dataset_ids"] = json!(ids);
-    }
     let res = app
         .clone()
         .oneshot(

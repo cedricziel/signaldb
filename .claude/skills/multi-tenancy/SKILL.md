@@ -65,15 +65,32 @@ user plus memberships — `200` with an empty list for no memberships — and
 ### OAuth 2.1 access tokens (MCP connectors)
 
 A third credential type, for Claude.ai / ChatGPT connectors (change:
-mcp-oauth-dcr; router serves the authorization server, see `docs/users/mcp.md`).
-An `Authorization: Bearer` whose value starts with `sdb_at_` is an **opaque
-OAuth access token**: `auth_middleware` routes it to
+mcp-oauth-dcr, generalized to multi-tenant grants by
+mcp-multi-tenant-oauth-grants; router serves the authorization server, see
+`docs/users/mcp.md`). An `Authorization: Bearer` whose value starts with
+`sdb_at_` is an **opaque OAuth access token**: `auth_middleware` routes it to
 `Authenticator::authenticate_oauth_token`, which looks the token up in the
-catalog and resolves `(user, tenant, scopes)` **from the token record** — not
-from `X-Tenant-ID`, which is ignored for this credential (an OAuth session
-cannot be pointed at a tenant it wasn't granted). Tokens are audience-bound to
-the configured `mcp.oauth.resource_url` (a token for another resource is
-rejected). Tenant is fixed at consent time; one connector per tenant.
+catalog and resolves `(user, tenant, scopes)` from the token's stored
+`tenant_grants` (`common::catalog::TenantGrant`, one or more
+`{tenant_id, dataset_ids}` entries chosen at consent). Tokens are
+audience-bound to the configured `mcp.oauth.resource_url` (a token for another
+resource is rejected).
+
+Resolution depends on the grant's size: a **single-tenant** grant behaves
+exactly as before this change — `X-Tenant-ID` is ignored, the token's one
+tenant always resolves. A **multi-tenant** grant requires an explicit
+`X-Tenant-ID` selector on every request (including `whoami`, no exception);
+a request with none, or naming a tenant outside the grant, is rejected —
+resolving on a match uses that entry's own `dataset_ids`, never another
+entry's. `POST /oauth/introspect` (RFC 7662, `src/router/src/endpoints/oauth.rs`)
+reports a token's full grant set without resolving or requiring any one
+tenant — outside the resource-API's `auth_middleware` entirely, since that
+pipeline always resolves to exactly one concrete tenant or rejects. The MCP
+server (`src/mcp-server/src/lib.rs`) calls introspect (not `whoami`) for every
+OAuth credential to learn the grant set upfront; a multi-tenant session binds
+by credential rather than a fixed tenant, and the MCP tool surface's `tenant`
+argument becomes the real per-call selector instead of a pure confirmation
+(see `docs/users/mcp.md`).
 
 ### OIDC / SSO login (human sessions, change: oidc-login)
 
