@@ -583,7 +583,7 @@ tenant-less page.
 ![The post-login tenant selector listing each membership with its name and role](../assets/screenshots/login-tenant-selector.png)
 
 Signing in calls `POST /ui/session`, which validates the credentials and
-sets an `HttpOnly`, `Secure`, `SameSite=Strict` cookie containing an opaque
+sets an `HttpOnly`, `Secure`, `SameSite=Lax` cookie containing an opaque
 random token. The password and tenant API keys never live in the cookie,
 page JavaScript, `localStorage`, or URLs. Sessions expire after 12 hours;
 `DELETE /ui/session` revokes the server-side session and clears the cookie.

@@ -424,7 +424,7 @@ pub async fn delete_session<S: RouterState>(
         StatusCode::NO_CONTENT,
         [(
             header::SET_COOKIE,
-            format!("{SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"),
+            format!("{SESSION_COOKIE}=; HttpOnly; SameSite=Lax; Path=/; Max-Age=0"),
         )],
     )
         .into_response()
@@ -1317,7 +1317,7 @@ mod tests {
         assert!(set_cookie.starts_with("signaldb_session="));
         assert!(set_cookie.contains("HttpOnly"));
         assert!(set_cookie.contains("Secure"));
-        assert!(set_cookie.contains("SameSite=Strict"));
+        assert!(set_cookie.contains("SameSite=Lax"));
         assert!(set_cookie.contains("Path=/"));
         let value = cookie_pair(&res);
         let value = value.strip_prefix("signaldb_session=").unwrap();
@@ -2302,6 +2302,7 @@ mod tests {
         assert!(set_cookie.starts_with("signaldb_session=;"));
         assert!(set_cookie.contains("Max-Age=0"));
         assert!(set_cookie.contains("HttpOnly"));
+        assert!(set_cookie.contains("SameSite=Lax"));
 
         let request = Request::builder()
             .uri("/tempo/api/echo")
