@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/cedricziel/signaldb/compare/querier-v0.4.0...querier-v0.4.1) (2026-09-12)
+
+
+### chore
+
+* **querier:** Synchronize signaldb-core versions
+
 ## [0.4.0](https://github.com/cedricziel/signaldb/compare/querier-v0.3.0...querier-v0.4.0) (2026-09-12)
 
 

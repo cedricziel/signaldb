@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.2](https://github.com/cedricziel/signaldb/compare/signaldb-sdk-v0.2.1...signaldb-sdk-v0.2.2) (2026-09-12)
+
+
+### Features
+
+* multi-tenant MCP OAuth grants ([#1541](https://github.com/cedricziel/signaldb/issues/1541)) ([c5b49b0](https://github.com/cedricziel/signaldb/commit/c5b49b018f749a72b639366a18223081cecef7cc))
+* per-API-key allowed origins for browser (CORS) ingestion ([#1548](https://github.com/cedricziel/signaldb/issues/1548)) ([6e966dd](https://github.com/cedricziel/signaldb/commit/6e966ddaf2740e3648583223828c6af715b6d331))
+
 ## [0.2.1](https://github.com/cedricziel/signaldb/compare/signaldb-sdk-v0.2.0...signaldb-sdk-v0.2.1) (2026-09-12)
 
 
