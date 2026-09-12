@@ -236,31 +236,37 @@ function TraceSearch({ state, update }: Props) {
           ) : latencyHeatmap.isError ? (
             <QueryError what="latency" error={latencyHeatmap.error} />
           ) : null
-        ) : volume.data && volumeView === "histogram" ? (
-          <SignalHistogram
-            series={volume.data}
-            order={STATUS_ORDER}
-            colors={STATUS_COLORS}
-            rangeMs={resolvedForStep}
-            stepMs={(durationToSeconds(step) ?? 60) * 1000}
-            scale={state.scale}
-            unit="spans"
-            label="Span volume over time by status"
-            onScaleChange={(scale) => update({ scale })}
-            step={state.step}
-            stepOptions={stepOptionsForRange(resolvedForStep)}
-            onStepChange={(step) => update({ step })}
-          />
-        ) : volume.data && volumeView === "area" ? (
-          <TraceVolumeAreaChart
-            series={volume.data}
-            order={STATUS_ORDER}
-            colors={STATUS_COLORS}
-            rangeMs={resolvedForStep}
-            stepMs={(durationToSeconds(step) ?? 60) * 1000}
-            unit="spans"
-            label="Span volume"
-          />
+        ) : volume.data ? (
+          volumeView === "histogram" ? (
+            <SignalHistogram
+              series={volume.data}
+              order={STATUS_ORDER}
+              colors={STATUS_COLORS}
+              rangeMs={resolvedForStep}
+              stepMs={(durationToSeconds(step) ?? 60) * 1000}
+              scale={state.scale}
+              unit="spans"
+              label="Span volume over time by status"
+              onScaleChange={(scale) => update({ scale })}
+              step={state.step}
+              stepOptions={stepOptionsForRange(resolvedForStep)}
+              onStepChange={(step) => update({ step })}
+            />
+          ) : (
+            <TraceVolumeAreaChart
+              series={volume.data}
+              order={STATUS_ORDER}
+              colors={STATUS_COLORS}
+              rangeMs={resolvedForStep}
+              stepMs={(durationToSeconds(step) ?? 60) * 1000}
+              unit="spans"
+              label="Span volume"
+            />
+          )
+        ) : volume.isPending ? (
+          <div className="trace-heatmap-empty">Loading…</div>
+        ) : volume.isError ? (
+          <QueryError what="span volume" error={volume.error} />
         ) : null}
       </div>
       {chips.length > 0 && (
