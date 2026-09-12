@@ -9792,6 +9792,46 @@ mod oauth_storage_tests {
         assert!(result.is_err());
     }
 
+    /// `get_valid_access_token` surfaces a decode failure as `Err`, not as
+    /// "no such token" — this is the distinction `POST /oauth/introspect`
+    /// (CodeRabbit finding on mcp-multi-tenant-oauth-grants) depends on to
+    /// report a store failure as a server error rather than `active:
+    /// false`, which would otherwise make a transient catalog outage look
+    /// like every live token was revoked.
+    #[tokio::test]
+    async fn get_valid_access_token_errors_rather_than_returns_none_on_a_corrupt_row() {
+        let (catalog, user, tenant) = catalog_with_principal().await;
+        catalog
+            .create_access_token(
+                "at-corrupt-row",
+                "client-1",
+                &user,
+                &single_grant(&tenant),
+                &["traces:read".to_string()],
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        // Simulate corruption (or a row that predates the tenant_grants
+        // backfill) directly, bypassing every write path this change's own
+        // code uses — none of which can produce a NULL tenant_grants.
+        let Catalog::Sqlite(pool) = &catalog else {
+            panic!("test catalog is always SQLite");
+        };
+        query("UPDATE oauth_access_tokens SET tenant_grants = NULL WHERE token_hash = ?")
+            .bind("at-corrupt-row")
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let result = catalog.get_valid_access_token("at-corrupt-row").await;
+        assert!(
+            result.is_err(),
+            "a corrupt row must surface as an error, not Ok(None)"
+        );
+    }
+
     /// `create_access_token_trusted`/`create_refresh_token_trusted` skip the
     /// tenant-registry existence check (D3) — a token can be refreshed even
     /// if one of its originally-granted tenants was deleted in the

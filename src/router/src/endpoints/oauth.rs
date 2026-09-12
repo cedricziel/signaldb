@@ -1168,6 +1168,11 @@ async fn introspect<S: RouterState>(
     State(state): State<S>,
     Form(req): Form<IntrospectRequest>,
 ) -> Response {
+    // A catalog error (store unavailable) is not the same thing as "this
+    // token is invalid" — conflating the two would make MCP authentication
+    // treat every live token as revoked during a transient outage instead
+    // of retrying. RFC 7662 expects a server error here; `active: false` is
+    // reserved for a lookup that actually completed and found nothing.
     let record = match state
         .catalog()
         .get_valid_access_token(&hash_oauth_token(&req.token))
@@ -1176,7 +1181,12 @@ async fn introspect<S: RouterState>(
         Ok(record) => record,
         Err(error) => {
             tracing::error!(error = %error, "oauth introspect: token lookup failed");
-            None
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                [(header::CACHE_CONTROL, "no-store")],
+                Json(serde_json::json!({ "error": "server_error" })),
+            )
+                .into_response();
         }
     };
 
@@ -1730,8 +1740,9 @@ mod tests {
             ),
         )
         .await;
-        assert_eq!(res.status(), StatusCode::OK, "{}", body_json(res).await);
+        let status = res.status();
         let doc = body_json(res).await;
+        assert_eq!(status, StatusCode::OK, "{doc}");
         let redirect = doc["redirect"].as_str().unwrap();
         let code = Url::parse(redirect)
             .unwrap()
