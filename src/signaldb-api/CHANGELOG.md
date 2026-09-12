@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.2](https://github.com/cedricziel/signaldb/compare/signaldb-api-v0.2.1...signaldb-api-v0.2.2) (2026-09-12)
+
+
+### Features
+
+* per-API-key allowed origins for browser (CORS) ingestion ([#1548](https://github.com/cedricziel/signaldb/issues/1548)) ([6e966dd](https://github.com/cedricziel/signaldb/commit/6e966ddaf2740e3648583223828c6af715b6d331))
+
 ## [0.2.1](https://github.com/cedricziel/signaldb/compare/signaldb-api-v0.2.0...signaldb-api-v0.2.1) (2026-09-12)
 
 

@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.1](https://github.com/cedricziel/signaldb/compare/writer-v0.4.0...writer-v0.4.1) (2026-09-12)
+
+
+### chore
+
+* **writer:** Synchronize signaldb-core versions
+
 ## [0.4.0](https://github.com/cedricziel/signaldb/compare/writer-v0.3.0...writer-v0.4.0) (2026-09-12)
 
 

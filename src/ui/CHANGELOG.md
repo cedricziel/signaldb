@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.2.2](https://github.com/cedricziel/signaldb/compare/signaldb-ui-v0.2.1...signaldb-ui-v0.2.2) (2026-09-12)
+
+
+### Features
+
+* multi-tenant MCP OAuth grants ([#1541](https://github.com/cedricziel/signaldb/issues/1541)) ([c5b49b0](https://github.com/cedricziel/signaldb/commit/c5b49b018f749a72b639366a18223081cecef7cc))
+* per-API-key allowed origins for browser (CORS) ingestion ([#1548](https://github.com/cedricziel/signaldb/issues/1548)) ([6e966dd](https://github.com/cedricziel/signaldb/commit/6e966ddaf2740e3648583223828c6af715b6d331))
+
+
+### Bug Fixes
+
+* **ui:** make the top-bar logo a link back to Explore ([#1542](https://github.com/cedricziel/signaldb/issues/1542)) ([6c5652a](https://github.com/cedricziel/signaldb/commit/6c5652a91fdc15a6b9071a9505c49a156cc72b88))
+* **ui:** stop nanosToMs truncating sub-millisecond durations to zero ([#1545](https://github.com/cedricziel/signaldb/issues/1545)) ([946e1f8](https://github.com/cedricziel/signaldb/commit/946e1f8cb93f298527b2f247c59f591da9fb8514))
+* **ui:** stop the default dataset badge duplicating its own id ([#1546](https://github.com/cedricziel/signaldb/issues/1546)) ([b99d359](https://github.com/cedricziel/signaldb/commit/b99d35950352fcd7c2e572bbc50d3f64ee4d5c91))
+* **ui:** surface query failures and hung requests on Traces and Catalog ([#1544](https://github.com/cedricziel/signaldb/issues/1544)) ([66ed94a](https://github.com/cedricziel/signaldb/commit/66ed94ac93c24bf3ab07343ef95ab868e5adedd2))
+
 ## [0.2.1](https://github.com/cedricziel/signaldb/compare/signaldb-ui-v0.2.0...signaldb-ui-v0.2.1) (2026-09-12)
 
 
