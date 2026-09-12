@@ -149,6 +149,12 @@ pub struct TenantContext {
     /// grant (D1). `None` is unrestricted; `Some` names the exact set the
     /// credential may access — see [`dataset_allowed`].
     pub api_key_dataset_ids: Option<Vec<String>>,
+    /// The resolved OAuth access token's complete grant set (every tenant,
+    /// not just the one this request selected), for callers that need to
+    /// enumerate it (e.g. `whoami`'s `granted_tenants`, change:
+    /// mcp-multi-tenant-oauth-grants D4/D5). `None` for an API key or a
+    /// browser session — those credential kinds have no OAuth grant.
+    pub oauth_tenant_grants: Option<Vec<crate::catalog::TenantGrant>>,
     /// Human user ID when the request was authenticated with a user session.
     pub user_id: Option<String>,
     /// Tenant role when the request was authenticated with a user session.
@@ -179,6 +185,7 @@ impl TenantContext {
             api_key_name,
             api_key_scopes: None,
             api_key_dataset_ids: None,
+            oauth_tenant_grants: None,
             user_id: None,
             role: None,
             is_instance_admin: false,
@@ -196,6 +203,14 @@ impl TenantContext {
     ) -> Self {
         self.api_key_scopes = scopes;
         self.api_key_dataset_ids = dataset_ids;
+        self
+    }
+
+    /// Attach an OAuth access token's complete grant set (change:
+    /// mcp-multi-tenant-oauth-grants D4/D5). Set for every OAuth-resolved
+    /// context, single-tenant or multi-tenant alike.
+    pub fn with_oauth_tenant_grants(mut self, grants: Vec<crate::catalog::TenantGrant>) -> Self {
+        self.oauth_tenant_grants = Some(grants);
         self
     }
 

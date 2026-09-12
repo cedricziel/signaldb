@@ -213,18 +213,28 @@ impl Authenticator {
         }
     }
 
-    /// Authenticate an opaque OAuth 2.1 access token (change: mcp-oauth-dcr).
+    /// Authenticate an opaque OAuth 2.1 access token (change: mcp-oauth-dcr;
+    /// generalized to a multi-tenant grant set by
+    /// mcp-multi-tenant-oauth-grants D4).
     ///
-    /// The tenant and scopes come from the **token record**, never from an
-    /// `X-Tenant-ID` header or a tool argument — an OAuth session cannot be
-    /// pointed at a tenant it was not granted. `expected_resource` is this
-    /// deployment's configured MCP resource URL; when both it and the token's
-    /// recorded audience are present they must match (RFC 8707), so a token
-    /// minted for another resource is rejected. An expired or revoked token
-    /// is not found and surfaces as unauthorized.
+    /// The reachable tenant(s) and scopes come from the **token record**,
+    /// never from a tool argument — an OAuth session cannot be pointed at a
+    /// tenant it was not granted. `tenant_selector` is the request's
+    /// `X-Tenant-ID` header, if present: for a token whose grant set names
+    /// exactly one tenant it is ignored entirely (that one tenant always
+    /// resolves, with or without a selector); for a token granting more than
+    /// one tenant, a selector is required, must name a tenant in the grant
+    /// set, and that tenant must still exist in the tenant registry — a
+    /// missing selector, one naming a tenant outside the set, or one naming
+    /// a tenant that no longer exists are all rejected. `expected_resource`
+    /// is this deployment's configured MCP resource URL; when both it and
+    /// the token's recorded audience are present they must match (RFC 8707),
+    /// so a token minted for another resource is rejected. An expired or
+    /// revoked token is not found and surfaces as unauthorized.
     pub async fn authenticate_oauth_token(
         &self,
         access_token: &str,
+        tenant_selector: Option<&str>,
         dataset_id: Option<&str>,
         expected_resource: Option<&str>,
     ) -> Result<TenantContext, AuthError> {
@@ -259,38 +269,51 @@ impl Authenticator {
             .ok_or_else(|| AuthError::unauthorized("Access token user not found"))?;
 
         // A grant set is always non-empty (catalog::validate_tenant_grants).
-        // TODO(mcp-multi-tenant-oauth-grants): this takes the grant's first
-        // (and, today, only) tenant, preserving exactly today's
-        // single-tenant behavior. Resolving a selector against the full set
-        // for a multi-tenant grant (design D4: `X-Tenant-ID`
-        // read-and-validate, set-membership, unknown-tenant rejection) is
-        // implemented by a later task group in this change.
-        let primary_grant = record
-            .tenant_grants
-            .first()
-            .ok_or_else(|| AuthError::unauthorized("access token has no tenant grants"))?
-            .clone();
-
-        // Tenant is fixed by the token; the user's role in that tenant still
-        // gates what the token may do.
-        let role = self.resolve_role(&user, &primary_grant.tenant_id).await?;
-
-        // Resolve dataset against the token's restriction (D3/D4), same
-        // order as a database API key.
-        let effective_dataset =
-            super::resolve_dataset_restriction(primary_grant.dataset_ids.as_deref(), dataset_id)
-                .map_err(|err| {
-                    dataset_restriction_error(
-                        err,
-                        "access token",
-                        dataset_id,
-                        &primary_grant.tenant_id,
+        // Select which grant entry this request resolves against (D4): a
+        // single-tenant grant ignores any selector and always resolves its
+        // one tenant; a multi-tenant grant requires a selector naming one of
+        // its tenants.
+        let selected_grant = match record.tenant_grants.as_slice() {
+            [only] => only.clone(),
+            many => {
+                let selector = tenant_selector.ok_or_else(|| {
+                    AuthError::bad_request(
+                        "access token grants more than one tenant; X-Tenant-ID header is required to select one",
                     )
                 })?;
+                many.iter()
+                    .find(|grant| grant.tenant_id == selector)
+                    .cloned()
+                    .ok_or_else(|| {
+                        AuthError::forbidden(format!(
+                            "access token grant does not include tenant '{selector}'"
+                        ))
+                    })?
+            }
+        };
+
+        // The user's role in the selected tenant still gates what the token
+        // may do. A grant entry naming a tenant that no longer exists in the
+        // registry fails to resolve here (no membership row survives a
+        // tenant's deletion) or in `resolve_user_tenant` below (D3).
+        let role = self.resolve_role(&user, &selected_grant.tenant_id).await?;
+
+        // Resolve dataset against the selected grant's own restriction
+        // (D3/D4), same order as a database API key.
+        let effective_dataset =
+            super::resolve_dataset_restriction(selected_grant.dataset_ids.as_deref(), dataset_id)
+                .map_err(|err| {
+                dataset_restriction_error(
+                    err,
+                    "access token",
+                    dataset_id,
+                    &selected_grant.tenant_id,
+                )
+            })?;
 
         let context = self
             .resolve_user_tenant(
-                &primary_grant.tenant_id,
+                &selected_grant.tenant_id,
                 effective_dataset.as_deref(),
                 user.id,
                 role,
@@ -299,8 +322,11 @@ impl Authenticator {
             )
             .await?;
         // The OAuth grant's scopes and dataset restriction are enforced
-        // exactly like a database-backed API key's.
-        Ok(context.with_api_key_restrictions(Some(record.scopes), primary_grant.dataset_ids))
+        // exactly like a database-backed API key's; the full grant set is
+        // also attached for callers that need to enumerate it (D4/D5).
+        Ok(context
+            .with_api_key_restrictions(Some(record.scopes), selected_grant.dataset_ids)
+            .with_oauth_tenant_grants(record.tenant_grants))
     }
 
     /// Resolve an instance administrator from an opaque browser session.
@@ -609,6 +635,235 @@ mod tests {
         (Authenticator::new(AuthConfig::default(), catalog), raw)
     }
 
+    /// An authenticator over two database tenants (`acme`, restricted to its
+    /// `production` dataset; `globex`, unrestricted), a member of both, and
+    /// one access token whose grant set covers both tenants (design:
+    /// mcp-multi-tenant-oauth-grants D4). Returns the authenticator and the
+    /// raw access token.
+    async fn multi_tenant_oauth_authenticator(
+        scopes: &[String],
+        expires_at: chrono::DateTime<Utc>,
+    ) -> (Authenticator, String) {
+        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "production").await.unwrap();
+        catalog.create_dataset("acme", "staging").await.unwrap();
+        catalog
+            .upsert_tenant("globex", "Globex", Some("default"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("globex", "default").await.unwrap();
+        let user = catalog
+            .create_user("agent@example.com", None, Some("phc"), false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Member)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "globex", MembershipRole::Member)
+            .await
+            .unwrap();
+        let raw = generate_oauth_token(TokenKind::Access);
+        catalog
+            .create_access_token(
+                &hash_oauth_token(&raw),
+                "client-1",
+                &user.id,
+                &[
+                    crate::catalog::TenantGrant {
+                        tenant_id: "acme".to_string(),
+                        dataset_ids: Some(vec!["production".to_string()]),
+                    },
+                    crate::catalog::TenantGrant {
+                        tenant_id: "globex".to_string(),
+                        dataset_ids: None,
+                    },
+                ],
+                scopes,
+                None,
+                expires_at,
+            )
+            .await
+            .unwrap();
+        (Authenticator::new(AuthConfig::default(), catalog), raw)
+    }
+
+    /// Task 3.6: a single-tenant grant resolves its one tenant exactly as
+    /// before, ignoring any `X-Tenant-ID` selector — including one naming a
+    /// tenant that isn't even the grant's own tenant.
+    #[tokio::test]
+    async fn oauth_single_tenant_grant_ignores_any_selector() {
+        let scopes = vec!["traces:read".to_string()];
+        let (auth, token) =
+            oauth_authenticator(&scopes, None, Utc::now() + Duration::hours(1)).await;
+
+        let ctx = auth
+            .authenticate_oauth_token(&token, Some("some-other-tenant"), None, None)
+            .await
+            .expect("single-tenant grant ignores an unrelated selector");
+        assert_eq!(ctx.tenant_id, "acme");
+    }
+
+    /// Task 3.7: a multi-tenant grant with no selector is rejected.
+    #[tokio::test]
+    async fn oauth_multi_tenant_grant_with_no_selector_is_rejected() {
+        let scopes = vec!["traces:read".to_string()];
+        let (auth, token) =
+            multi_tenant_oauth_authenticator(&scopes, Utc::now() + Duration::hours(1)).await;
+
+        let err = auth
+            .authenticate_oauth_token(&token, None, None, None)
+            .await
+            .expect_err("a multi-tenant grant with no selector must be rejected");
+        assert_eq!(err.status_code, 400);
+    }
+
+    /// Task 3.7: a multi-tenant grant with a selector outside the grant set
+    /// is rejected, naming the offending tenant.
+    #[tokio::test]
+    async fn oauth_multi_tenant_grant_with_selector_outside_set_is_rejected() {
+        let scopes = vec!["traces:read".to_string()];
+        let (auth, token) =
+            multi_tenant_oauth_authenticator(&scopes, Utc::now() + Duration::hours(1)).await;
+
+        let err = auth
+            .authenticate_oauth_token(&token, Some("initech"), None, None)
+            .await
+            .expect_err("a selector outside the grant set must be rejected");
+        assert_eq!(err.status_code, 403);
+        assert!(err.message.contains("initech"), "{}", err.message);
+    }
+
+    /// Task 3.7: a multi-tenant grant with a selector naming a tenant that
+    /// no longer exists in the registry fails to resolve, the same as one
+    /// naming a tenant outside the grant set (D3).
+    #[tokio::test]
+    async fn oauth_multi_tenant_grant_with_selector_naming_deleted_tenant_fails_to_resolve() {
+        let scopes = vec!["traces:read".to_string()];
+        let (auth, token) =
+            multi_tenant_oauth_authenticator(&scopes, Utc::now() + Duration::hours(1)).await;
+
+        auth.catalog.delete_tenant("acme").await.unwrap();
+
+        let err = auth
+            .authenticate_oauth_token(&token, Some("acme"), None, None)
+            .await
+            .expect_err("a selector naming a deleted tenant must fail to resolve");
+        assert_eq!(err.status_code, 403);
+
+        // The other tenant in the same grant is unaffected.
+        let ctx = auth
+            .authenticate_oauth_token(&token, Some("globex"), None, None)
+            .await
+            .expect("the surviving tenant in the same grant still resolves");
+        assert_eq!(ctx.tenant_id, "globex");
+    }
+
+    /// Task 3.7: a multi-tenant grant with a valid selector resolves that
+    /// tenant's own dataset restriction, independent of any other tenant's
+    /// restriction in the same grant set — proven with two tenants carrying
+    /// *different* restrictions so a fall-through-to-first bug would be
+    /// caught.
+    #[tokio::test]
+    async fn oauth_multi_tenant_grant_with_valid_selector_resolves_its_own_restriction() {
+        let scopes = vec!["traces:read".to_string()];
+        let (auth, token) =
+            multi_tenant_oauth_authenticator(&scopes, Utc::now() + Duration::hours(1)).await;
+
+        let acme = auth
+            .authenticate_oauth_token(&token, Some("acme"), None, None)
+            .await
+            .expect("acme selector resolves");
+        assert_eq!(acme.tenant_id, "acme");
+        assert_eq!(acme.dataset_id, "production");
+        assert_eq!(
+            acme.api_key_dataset_ids,
+            Some(vec!["production".to_string()])
+        );
+
+        let globex = auth
+            .authenticate_oauth_token(&token, Some("globex"), None, None)
+            .await
+            .expect("globex selector resolves");
+        assert_eq!(globex.tenant_id, "globex");
+        assert_eq!(globex.dataset_id, "default");
+        assert_eq!(globex.api_key_dataset_ids, None);
+
+        // The full grant set is attached regardless of which tenant was
+        // selected (D4/D5), for `whoami`'s `granted_tenants`.
+        let expected_grants = vec![
+            crate::catalog::TenantGrant {
+                tenant_id: "acme".to_string(),
+                dataset_ids: Some(vec!["production".to_string()]),
+            },
+            crate::catalog::TenantGrant {
+                tenant_id: "globex".to_string(),
+                dataset_ids: None,
+            },
+        ];
+        assert_eq!(acme.oauth_tenant_grants, Some(expected_grants.clone()));
+        assert_eq!(globex.oauth_tenant_grants, Some(expected_grants));
+    }
+
+    /// A single-tenant OAuth grant also carries its (one-element) grant set
+    /// in `oauth_tenant_grants` (D4/D5) — not just the multi-tenant case.
+    #[tokio::test]
+    async fn oauth_single_tenant_grant_still_carries_its_grant_set() {
+        let scopes = vec!["traces:read".to_string()];
+        let (auth, token) =
+            oauth_authenticator(&scopes, None, Utc::now() + Duration::hours(1)).await;
+
+        let ctx = auth
+            .authenticate_oauth_token(&token, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            ctx.oauth_tenant_grants,
+            Some(vec![crate::catalog::TenantGrant {
+                tenant_id: "acme".to_string(),
+                dataset_ids: None,
+            }])
+        );
+    }
+
+    /// A database API key or a browser session carries no OAuth grant set.
+    #[tokio::test]
+    async fn non_oauth_credentials_carry_no_oauth_tenant_grants() {
+        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        let auth_config = AuthConfig {
+            tenants: vec![TenantConfig {
+                id: "acme".to_string(),
+                slug: "acme".to_string(),
+                name: "Acme Corp".to_string(),
+                default_dataset: Some("production".to_string()),
+                datasets: vec![DatasetConfig {
+                    id: "production".to_string(),
+                    slug: "production".to_string(),
+                    is_default: true,
+                    storage: None,
+                }],
+                api_keys: vec![ApiKeyConfig {
+                    key: "test-key-123".to_string(),
+                    name: None,
+                }],
+                schema_config: None,
+                limits: None,
+            }],
+            ..Default::default()
+        };
+        let authenticator = Authenticator::new(auth_config, catalog);
+        let ctx = authenticator
+            .authenticate("test-key-123", "acme", None)
+            .await
+            .unwrap();
+        assert_eq!(ctx.oauth_tenant_grants, None);
+    }
+
     /// Task 3.3: when a user holds both a `local` and an `oidc_mapping`
     /// membership row for the same tenant, `authenticate_session` (via
     /// `resolve_role` -> `Catalog::get_tenant_membership`) resolves the
@@ -666,7 +921,7 @@ mod tests {
         .await;
 
         let ctx = auth
-            .authenticate_oauth_token(&token, None, Some("https://signaldb.example.com/mcp"))
+            .authenticate_oauth_token(&token, None, None, Some("https://signaldb.example.com/mcp"))
             .await
             .expect("valid token authenticates");
         // Tenant comes from the token; scopes are enforced like API-key scopes.
@@ -692,13 +947,13 @@ mod tests {
         .await;
 
         let allowed = auth
-            .authenticate_oauth_token(&token, Some("production"), None)
+            .authenticate_oauth_token(&token, None, Some("production"), None)
             .await
             .expect("dataset inside the restriction is allowed");
         assert_eq!(allowed.dataset_id, "production");
 
         let denied = auth
-            .authenticate_oauth_token(&token, Some("staging"), None)
+            .authenticate_oauth_token(&token, None, Some("staging"), None)
             .await
             .expect_err("dataset outside the restriction is denied");
         assert_eq!(denied.status_code, 403);
@@ -712,7 +967,7 @@ mod tests {
 
         for dataset in ["production", "staging"] {
             let ctx = auth
-                .authenticate_oauth_token(&token, Some(dataset), None)
+                .authenticate_oauth_token(&token, None, Some(dataset), None)
                 .await
                 .unwrap_or_else(|e| panic!("unrestricted token must reach '{dataset}': {e:?}"));
             assert_eq!(ctx.dataset_id, dataset);
@@ -732,7 +987,7 @@ mod tests {
         .await;
 
         let err = auth
-            .authenticate_oauth_token(&token, None, None)
+            .authenticate_oauth_token(&token, None, None, None)
             .await
             .expect_err("a multi-element restriction with no explicit dataset must be rejected");
         assert_eq!(err.status_code, 400);
@@ -747,7 +1002,7 @@ mod tests {
         )
         .await;
         let err = auth
-            .authenticate_oauth_token(&token, None, Some("https://other.example.com/mcp"))
+            .authenticate_oauth_token(&token, None, None, Some("https://other.example.com/mcp"))
             .await
             .expect_err("audience mismatch is rejected");
         assert_eq!(err.status_code, 401);
@@ -764,7 +1019,7 @@ mod tests {
         )
         .await;
         let err = auth
-            .authenticate_oauth_token(&token, None, Some("https://signaldb.example.com/mcp"))
+            .authenticate_oauth_token(&token, None, None, Some("https://signaldb.example.com/mcp"))
             .await
             .expect_err("unbound token is rejected where a resource is configured");
         assert_eq!(err.status_code, 401);
@@ -779,7 +1034,7 @@ mod tests {
         )
         .await;
         let err = auth
-            .authenticate_oauth_token(&token, None, Some("https://signaldb.example.com/mcp"))
+            .authenticate_oauth_token(&token, None, None, Some("https://signaldb.example.com/mcp"))
             .await
             .expect_err("expired token is rejected");
         assert_eq!(err.status_code, 401);
@@ -794,7 +1049,7 @@ mod tests {
         )
         .await;
         let err = auth
-            .authenticate_oauth_token("sdb_at_nonexistent", None, None)
+            .authenticate_oauth_token("sdb_at_nonexistent", None, None, None)
             .await
             .expect_err("unknown token is rejected");
         assert_eq!(err.status_code, 401);

@@ -22,11 +22,11 @@
 - [x] 3.1 Write a failing test: exchanging a multi-tenant authorization code yields an access token and refresh token bound to the full grant set
 - [x] 3.2 Write a failing test: refreshing a multi-tenant token yields a new access token with the same grant set, scopes, and audience
 - [x] 3.3 Update token issuance/refresh in `src/router/src/endpoints/oauth.rs` to carry the full grant set forward (already satisfied by 9e530f18's plumbing — both tests above pass unmodified, confirmed rather than assumed)
-- [ ] 3.4 Write a failing test: `extract_auth_headers` (`src/common/src/auth/middleware.rs`) now reads `X-Tenant-ID` for an OAuth bearer instead of discarding it, and passes it through to `authenticate_oauth_token`
-- [ ] 3.5 Implement the `extract_auth_headers` change
-- [ ] 3.6 Write a failing test: `authenticate_oauth_token` resolves a single-tenant grant exactly as before, ignoring any `X-Tenant-ID`
-- [ ] 3.7 Write a failing test: `authenticate_oauth_token` on a multi-tenant grant requires `X-Tenant-ID`, rejects a request with none, rejects a tenant outside the grant set (naming it), rejects a tenant that no longer exists in the registry (design D3), and applies the selected tenant's own dataset restriction on a match
-- [ ] 3.8 Implement the generalized resolution in `Authenticator::authenticate_oauth_token` (`src/common/src/auth/`); `TenantContext.tenant_id` stays mandatory and concrete — no optionality introduced
+- [x] 3.4 Write a failing test: `extract_auth_headers` (`src/common/src/auth/middleware.rs`) now reads `X-Tenant-ID` for an OAuth bearer instead of discarding it, and passes it through to `authenticate_oauth_token`
+- [x] 3.5 Implement the `extract_auth_headers` change
+- [x] 3.6 Write a failing test: `authenticate_oauth_token` resolves a single-tenant grant exactly as before, ignoring any `X-Tenant-ID`
+- [x] 3.7 Write a failing test: `authenticate_oauth_token` on a multi-tenant grant requires `X-Tenant-ID`, rejects a request with none, rejects a tenant outside the grant set (naming it), rejects a tenant that no longer exists in the registry (design D3), and applies the selected tenant's own dataset restriction on a match
+- [x] 3.8 Implement the generalized resolution in `Authenticator::authenticate_oauth_token` (`src/common/src/auth/`); `TenantContext.tenant_id` stays mandatory and concrete — no optionality introduced
 - [ ] 3.9 Write a failing test: `GET /api/v1/whoami` with a single-tenant credential is unchanged (same `tenant` field, plus a new one-element `granted_tenants` array)
 - [ ] 3.10 Write a failing test: `GET /api/v1/whoami` with a multi-tenant credential and no `X-Tenant-ID` is rejected exactly like any other tenant-scoped route; with `X-Tenant-ID` set, it returns that tenant plus the full `granted_tenants` array (distinct from the pre-existing `memberships` field)
 - [ ] 3.11 Implement the `whoami` response change in `src/router/src/endpoints/session.rs`
