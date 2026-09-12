@@ -71,6 +71,27 @@ pub struct CallerTenant(pub String);
 #[derive(Clone, Debug, Default)]
 pub struct CallerDatasetIds(pub Option<Vec<String>>);
 
+/// One tenant an OAuth credential's grant reaches, with its own optional
+/// dataset-set restriction. Mirrors `common::catalog::TenantGrant` /
+/// the router's `GrantedTenant` response DTO; kept as a local type since this
+/// crate depends on neither (change: mcp-multi-tenant-oauth-grants D4).
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct GrantedTenant {
+    pub tenant_id: String,
+    #[serde(default)]
+    pub dataset_ids: Option<Vec<String>>,
+}
+
+/// The full tenant grant set for an OAuth credential whose grant covers more
+/// than one tenant, inserted into the request extensions by the auth
+/// middleware in place of (not alongside) [`CallerTenant`]/[`CallerDatasetIds`]
+/// — the absence of those two extensions is exactly how downstream code
+/// (`check_tenant_scope`, `scoped_router_client`, `discover_datasets`,
+/// `server_info`) tells a single-tenant credential from a multi-tenant one
+/// (design D4). Never present for an API key or a single-tenant OAuth grant.
+#[derive(Clone, Debug)]
+pub struct CallerTenants(pub Vec<GrantedTenant>);
+
 /// The distinct error a call receives when its session is at the concurrency
 /// bound and no permit frees up within [`PERMIT_WAIT`].
 pub fn concurrency_limit_error(limit: usize) -> ErrorData {
@@ -223,6 +244,26 @@ pub struct AuditContext {
 }
 
 impl AuditContext {
+    /// Resolve the tenant an audited call is attributed to: the credential's
+    /// own resolved tenant when known (`caller_tenant`, from `CallerTenant`,
+    /// or `header_tenant`, the inbound `X-Tenant-ID` for an API key); for a
+    /// multi-tenant OAuth credential (no single known tenant — `CallerTenant`
+    /// is absent and `is_multi_tenant` is set instead, see `CallerTenants`),
+    /// the tool's own `tenant` argument, already validated against the
+    /// grant by `check_tenant_scope` by the time a call is audited (task
+    /// 5.9); `"unknown"` failing all of the above.
+    fn resolve_tenant_id(
+        caller_tenant: Option<String>,
+        header_tenant: Option<String>,
+        is_multi_tenant: bool,
+        tool_tenant_argument: Option<String>,
+    ) -> String {
+        caller_tenant
+            .or(header_tenant)
+            .or_else(|| is_multi_tenant.then_some(tool_tenant_argument).flatten())
+            .unwrap_or_else(|| "unknown".to_string())
+    }
+
     /// Capture tool, tenant, dataset, and session from the request and its
     /// HTTP `Parts` (absent on stdio). The dataset is the tool's explicit
     /// `dataset` argument when given, else the caller's `X-Dataset-ID`.
@@ -234,13 +275,27 @@ impl AuditContext {
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_owned)
         };
-        let tenant_id = context
+        let caller_tenant = context
             .extensions
             .get::<CallerTenant>()
             .map(|t| t.0.clone())
-            .or_else(|| parts.and_then(|p| p.extensions.get::<CallerTenant>().map(|t| t.0.clone())))
-            .or_else(|| header("x-tenant-id"))
-            .unwrap_or_else(|| "unknown".to_string());
+            .or_else(|| {
+                parts.and_then(|p| p.extensions.get::<CallerTenant>().map(|t| t.0.clone()))
+            });
+        let is_multi_tenant = context.extensions.get::<CallerTenants>().is_some()
+            || parts.is_some_and(|p| p.extensions.get::<CallerTenants>().is_some());
+        let tool_tenant_argument = request
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("tenant"))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned);
+        let tenant_id = Self::resolve_tenant_id(
+            caller_tenant,
+            header("x-tenant-id"),
+            is_multi_tenant,
+            tool_tenant_argument,
+        );
         let dataset = request
             .arguments
             .as_ref()
@@ -317,6 +372,49 @@ mod tests {
 
     fn ok_result() -> Result<CallToolResponse, ErrorData> {
         Ok(CallToolResult::success(vec![ContentBlock::text("{}")]).into())
+    }
+
+    #[test]
+    fn resolve_tenant_id_prefers_the_known_caller_tenant() {
+        // Single-tenant credential (API key or single-tenant OAuth grant):
+        // unchanged, ignores any tool tenant argument.
+        assert_eq!(
+            AuditContext::resolve_tenant_id(
+                Some("acme".to_string()),
+                None,
+                false,
+                Some("globex".to_string())
+            ),
+            "acme"
+        );
+    }
+
+    #[test]
+    fn resolve_tenant_id_uses_the_tool_argument_for_a_multi_tenant_credential() {
+        // No `CallerTenant` (multi-tenant OAuth grant, task 5.9): names
+        // whichever tenant this specific call selected.
+        assert_eq!(
+            AuditContext::resolve_tenant_id(None, None, true, Some("globex".to_string())),
+            "globex"
+        );
+    }
+
+    #[test]
+    fn resolve_tenant_id_ignores_the_tool_argument_when_not_multi_tenant() {
+        // No `CallerTenant` and not a multi-tenant credential: falls back to
+        // "unknown" rather than trusting an arbitrary tool argument.
+        assert_eq!(
+            AuditContext::resolve_tenant_id(None, None, false, Some("globex".to_string())),
+            "unknown"
+        );
+    }
+
+    #[test]
+    fn resolve_tenant_id_falls_back_to_unknown() {
+        assert_eq!(
+            AuditContext::resolve_tenant_id(None, None, false, None),
+            "unknown"
+        );
     }
 
     #[test]
