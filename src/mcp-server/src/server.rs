@@ -2750,14 +2750,15 @@ impl McpServer {
         // this tenant — `dataset_visible` no-ops both `retain` calls below
         // when the caller is unrestricted.
         let restriction = dataset_restriction_for(&parts, &p.tenant_id);
+        let restriction = restriction.as_deref();
         tables
             .datasets
-            .retain(|dataset| dataset_visible(restriction.as_deref(), &dataset.dataset));
+            .retain(|dataset| dataset_visible(restriction, &dataset.dataset));
         tables.tables.retain(|table| {
             table
                 .dataset
                 .as_deref()
-                .is_none_or(|dataset| dataset_visible(restriction.as_deref(), dataset))
+                .is_none_or(|dataset| dataset_visible(restriction, dataset))
         });
         json_result(&tables)
     }

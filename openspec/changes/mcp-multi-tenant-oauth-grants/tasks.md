@@ -58,8 +58,8 @@
 
 ## 7. Integration testing
 
-- [ ] 7.1 Add an end-to-end test (`tests-integration`) covering the full flow: register a client, consent to two tenants with different dataset restrictions, exchange the code, call a query tool against each granted tenant via the MCP server, and confirm a third tenant is refused
-- [ ] 7.2 Add an end-to-end test: delete one tenant from a two-tenant grant and confirm the other tenant's access is unaffected (regression test for the FK-cascade hazard the JSON-column design (D2) avoids)
+- [x] 7.1 Add an end-to-end test (`tests-integration`) covering the full flow: register a client, consent to two tenants with different dataset restrictions, exchange the code, call a query tool against each granted tenant via the MCP server, and confirm a third tenant is refused
+- [x] 7.2 Add an end-to-end test: delete one tenant from a two-tenant grant and confirm the other tenant's access is unaffected (regression test for the FK-cascade hazard the JSON-column design (D2) avoids)
 
 ## 8. Finishing
 
