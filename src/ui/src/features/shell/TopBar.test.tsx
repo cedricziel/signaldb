@@ -108,6 +108,17 @@ describe("TenantSelector with whoami", () => {
     expect(update).toHaveBeenCalledWith({ tenant: "acme", dataset: "prod" });
   });
 
+  it("links the logo back to Explore, carrying tenant/dataset context", async () => {
+    stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
+    renderTopBar({
+      state: { ...DEFAULT_STATE, tenant: "acme", dataset: "staging" },
+      update: vi.fn(),
+    });
+    expect(
+      await screen.findByRole("link", { name: /signaldb/i }),
+    ).toHaveAttribute("href", "/logs?tenant=acme&dataset=staging");
+  });
+
   it("links to /manage for tenant administrators", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
     renderTopBar({ state: DEFAULT_STATE, update: vi.fn() });
