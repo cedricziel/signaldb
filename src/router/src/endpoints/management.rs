@@ -568,6 +568,7 @@ pub(crate) async fn create_api_key<S: RouterState>(
             &key_hash,
             request.name.as_deref(),
             dataset_ids.as_deref(),
+            None,
             Some(&request.scopes),
             ctx.user_id.as_deref(),
         )
@@ -733,7 +734,12 @@ pub(crate) async fn update_api_key<S: RouterState>(
     }
     match state
         .catalog()
-        .update_api_key_scopes(&key_id, request.scopes.as_deref(), dataset_update)
+        .update_api_key_scopes(
+            &key_id,
+            request.scopes.as_deref(),
+            dataset_update,
+            common::catalog::OriginRestrictionUpdate::Keep,
+        )
         .await
     {
         Ok(true) => {}
@@ -1375,6 +1381,7 @@ mod key_scope_authorization_tests {
                 &Authenticator::hash_api_key(secret),
                 Some(secret),
                 None,
+                None,
                 Some(&scopes),
                 None,
             )
@@ -1793,6 +1800,7 @@ mod dataset_restriction_tests {
                 &Authenticator::hash_api_key(secret),
                 Some(secret),
                 dataset_ids,
+                None,
                 Some(&scopes),
                 None,
             )
@@ -2187,6 +2195,7 @@ mod dataset_provisioning_tests {
                 "acme",
                 &Authenticator::hash_api_key(MANAGE_KEY),
                 Some(MANAGE_KEY),
+                None,
                 None,
                 Some(&[TENANT_MANAGE_SCOPE.to_string()]),
                 None,

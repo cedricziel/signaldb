@@ -1321,6 +1321,7 @@ mod tests {
                 None,
                 Some(&["apps".to_string()]),
                 None,
+                None,
                 Some("user-1"),
             )
             .await
@@ -1382,6 +1383,7 @@ mod tests {
                 &Authenticator::hash_api_key(raw_key),
                 Some("metrics"),
                 Some(&["production".to_string()]),
+                None,
                 Some(&scopes),
                 Some("user-1"),
             )

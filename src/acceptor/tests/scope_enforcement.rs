@@ -106,6 +106,7 @@ async fn setup_scoped_app() -> (axum::Router, TempDir) {
             &key_hash,
             Some("scoped-test-key"),
             None,
+            None,
             Some(&["traces:write".to_string()]),
             None,
         )
@@ -239,6 +240,7 @@ async fn scoped_key_resolves_to_the_expected_tenant_context() {
             TEST_TENANT,
             &key_hash,
             Some("scoped-test-key"),
+            None,
             None,
             Some(&["traces:write".to_string()]),
             None,

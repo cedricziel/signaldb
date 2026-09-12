@@ -605,6 +605,7 @@ pub async fn create_api_key<S: RouterState>(
             &key_hash,
             request.name.as_deref(),
             dataset_ids.as_deref(),
+            None,
             Some(&request.scopes),
             None,
         )
@@ -708,7 +709,12 @@ pub async fn update_api_key<S: RouterState>(
     }
     match state
         .catalog()
-        .update_api_key_scopes(&key_id, request.scopes.as_deref(), dataset_update)
+        .update_api_key_scopes(
+            &key_id,
+            request.scopes.as_deref(),
+            dataset_update,
+            common::catalog::OriginRestrictionUpdate::Keep,
+        )
         .await
     {
         Ok(true) => {}
