@@ -615,6 +615,12 @@ Once signed in, a user menu appears in the top bar showing an avatar
 
 The menu closes on Escape or backdrop click.
 
+The **signaldb** wordmark in the top bar (present on every page, including
+those opened from this menu) is a link back to the Logs view, carrying the
+current tenant/dataset and time range — the way back from a page that
+doesn't keep the signal tab bar itself visible (Instrumentation, API keys,
+Schema, Manage).
+
 ### Management panel (`/manage`)
 
 Tenant-admin-only. A deep-linkable panel (not ad hoc component state, so it
