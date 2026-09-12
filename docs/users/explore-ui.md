@@ -154,7 +154,10 @@ That metadata is maintained by compaction, so a freshly-ingesting deployment
 may not have been analyzed yet. The catalog says so — "not analyzed yet"
 alongside the age of the metadata it used — rather than showing an empty nav,
 which would read as "you have no entities" when the truth is "we have not
-looked yet".
+looked yet". A request that genuinely fails (a missing dataset, an
+authorization error) shows that failure instead of the benign "not analyzed
+yet" note, so a real backend problem is never mistaken for an uncompacted
+deployment.
 
 An entity type whose attribute is present but has no values in the selected
 window renders an explicit empty state naming the attribute and the signals
@@ -432,6 +435,11 @@ query.
 Point at any bucket — anywhere in its column, however short the bar — for its
 timestamp, a per-series breakdown, and the bucket total. Buckets are also
 focusable, so the same detail is reachable with the keyboard.
+
+The traces tab's span-volume chart also offers a latency heatmap alongside
+the histogram and area views, backed by its own query; whichever view is
+selected shows a loading indicator while its query is in flight and an error
+message if it fails, rather than an empty chart with no explanation.
 
 ### Chart tooltips
 
@@ -739,7 +747,10 @@ is pending the panel keeps loading and a thin banner under the
 top bar reads "Some requests are being retried after throttling…"; leaving the
 page or superseding the query cancels the wait. Once the retry budget is
 spent, the panel's error reads `Rate limited — server asked to retry in N s`
-rather than a generic failure.
+rather than a generic failure. A request that hangs rather than failing
+outright is bounded by its own client-side timeout, sooner than the backend's,
+so a stuck panel eventually shows an error instead of loading forever (see
+[client retry](client-retry.md)).
 
 ## Availability
 
