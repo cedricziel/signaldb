@@ -85,6 +85,26 @@ describe("MemberTable", () => {
     expect(screen.getByText("gateway")).toBeInTheDocument();
   });
 
+  it("shows a non-zero duration for a sub-millisecond span", () => {
+    render(
+      <MemberTable
+        members={[
+          {
+            ...member("t1", "s1", "GET /pay", "gateway", "1000", 0),
+            durationNanos: "194000",
+          },
+        ]}
+        error={null}
+        what="spans"
+        identityLabel="Span"
+        emptyMessage="No spans."
+        onOpenTrace={vi.fn()}
+      />,
+    );
+    expect(screen.getByText("194 µs")).toBeInTheDocument();
+    expect(screen.queryByText("0 µs")).not.toBeInTheDocument();
+  });
+
   it("shows each trace's status as a coloured chip: error, ok, unset", () => {
     render(
       <MemberTable

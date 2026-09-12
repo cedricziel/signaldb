@@ -33,8 +33,9 @@ export function msToNanos(ms: number): string {
   return (BigInt(Math.round(ms)) * 1_000_000n).toString();
 }
 
+/** Divides to microseconds before converting to a float so sub-millisecond durations don't truncate to zero. */
 export function nanosToMs(ns: string): number {
-  return Number(BigInt(ns) / 1_000_000n);
+  return Number(BigInt(ns) / 1_000n) / 1000;
 }
 
 /**

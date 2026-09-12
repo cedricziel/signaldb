@@ -40,6 +40,15 @@ describe("nanosecond conversion", () => {
     const ms = 1_753_776_000_123;
     expect(nanosToMs(msToNanos(ms))).toBe(ms);
   });
+
+  it("preserves sub-millisecond durations instead of truncating to zero", () => {
+    expect(nanosToMs("0")).toBe(0);
+    expect(nanosToMs("1")).toBeCloseTo(0.000001);
+    expect(nanosToMs("194000")).toBeCloseTo(0.194);
+    expect(nanosToMs("999999")).toBeCloseTo(0.999999);
+    expect(nanosToMs("1000000")).toBe(1);
+    expect(nanosToMs("5230000000")).toBeCloseTo(5230);
+  });
 });
 
 describe("range URL params", () => {
