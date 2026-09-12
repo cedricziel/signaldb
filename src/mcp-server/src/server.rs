@@ -2015,26 +2015,41 @@ impl McpServer {
         // once per granted tenant instead, each with its own tenant override
         // and its own `dataset_ids` restriction (never a shared/merged one).
         if let Some(grants) = parts.extensions.get::<audit::CallerTenants>().cloned() {
+            // Each tenant is fetched independently and a failure on one
+            // (e.g. a granted tenant deleted since consent, D3) renders as
+            // its own "unavailable" line rather than aborting the whole
+            // listing — an agent must still learn about the tenants that
+            // still work, not lose them because one entry in the grant
+            // went stale.
             let fetches = grants.0.iter().map(|grant| {
                 let client = self.scoped_router_client(&parts, &grant.tenant_id, None);
                 async move {
-                    let tables = client?
-                        .list_tenant_tables()
-                        .tenant_id(&grant.tenant_id)
-                        .send()
-                        .await
-                        .map_err(|e| map_sdk_err(e, "discover_datasets"))?
-                        .into_inner();
-                    Ok::<_, ErrorData>(tenant_datasets_markdown(
-                        &grant.tenant_id,
-                        &grant.tenant_id,
-                        None,
-                        grant.dataset_ids.as_deref(),
-                        &tables.datasets,
-                    ))
+                    let result: Result<_, ErrorData> = async {
+                        Ok(client?
+                            .list_tenant_tables()
+                            .tenant_id(&grant.tenant_id)
+                            .send()
+                            .await
+                            .map_err(|e| map_sdk_err(e, "discover_datasets"))?
+                            .into_inner())
+                    }
+                    .await;
+                    match result {
+                        Ok(tables) => tenant_datasets_markdown(
+                            &grant.tenant_id,
+                            &grant.tenant_id,
+                            None,
+                            grant.dataset_ids.as_deref(),
+                            &tables.datasets,
+                        ),
+                        Err(err) => format!(
+                            "- Tenant: **{}** (`{}`)\n  - (unavailable: {})\n",
+                            grant.tenant_id, grant.tenant_id, err.message
+                        ),
+                    }
                 }
             });
-            let markdown: String = futures::future::try_join_all(fetches).await?.concat();
+            let markdown: String = futures::future::join_all(fetches).await.concat();
             return Ok(capped_text_result(markdown));
         }
 
@@ -4417,6 +4432,84 @@ mod tests {
         assert!(
             text.text.contains("`staging`"),
             "missing globex's own dataset: {}",
+            text.text
+        );
+        router.await.expect("mock router task panicked");
+    }
+
+    /// Regression test (CodeRabbit finding on this PR): one granted tenant
+    /// failing to resolve (e.g. deleted since consent, D3) must not discard
+    /// every other tenant's successful listing — `discover_datasets` is the
+    /// tool an agent is told to call first to learn what's reachable, so it
+    /// must degrade to a per-tenant failure line, not fail the whole call.
+    #[tokio::test]
+    async fn discover_datasets_reports_one_tenant_unavailable_without_losing_the_others() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let router = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.expect("accept tables request");
+                let mut request = [0_u8; 4096];
+                let request_len = socket.read(&mut request).await.expect("read request");
+                let request = std::str::from_utf8(&request[..request_len])
+                    .expect("request is UTF-8")
+                    .to_string();
+                let (status, body) = if request.starts_with("GET /api/v1/tenants/acme/tables") {
+                    (
+                        "403 Forbidden",
+                        r#"{"error":"tenant acme is no longer reachable"}"#,
+                    )
+                } else if request.starts_with("GET /api/v1/tenants/globex/tables") {
+                    (
+                        "200 OK",
+                        r#"{"tenant_id":"globex","tables":[],"datasets":[{"dataset":"staging","tables":[]}]}"#,
+                    )
+                } else {
+                    panic!("unexpected tables request: {request}");
+                };
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .expect("write response headers");
+                socket
+                    .write_all(body.as_bytes())
+                    .await
+                    .expect("write response body");
+            }
+        });
+        let server = McpServer::new(format!("http://{addr}"), std::time::Duration::from_secs(1));
+        let parts = multi_tenant_parts(vec![
+            unrestricted_grant("acme"),
+            unrestricted_grant("globex"),
+        ]);
+
+        let result = server
+            .discover_datasets(Extension(parts))
+            .await
+            .expect("one failing tenant must not fail the whole call");
+
+        let ContentBlock::Text(text) = &result.content[0] else {
+            panic!("discover_datasets returns a text result");
+        };
+        assert!(
+            text.text.contains("`acme`") && text.text.to_lowercase().contains("unavailable"),
+            "acme must be reported as unavailable, not silently dropped: {}",
+            text.text
+        );
+        assert!(
+            text.text.contains("`globex`") && text.text.contains("`staging`"),
+            "globex must still be listed even though acme failed: {}",
             text.text
         );
         router.await.expect("mock router task panicked");
