@@ -250,6 +250,22 @@ pub struct AuditContext {
 }
 
 impl AuditContext {
+    /// The tool call's own tenant-selector argument, if any. Tools differ on
+    /// the argument's name: query/discovery tools use `tenant` (a
+    /// confirmation for a single-tenant credential, a real selector for a
+    /// multi-tenant one — see `resolve_tenant_id`), while the tenant
+    /// self-management tools (`tenant_list_datasets`, `tenant_create_api_key`,
+    /// etc.) use `tenant_id`. Checked in that order so a tool that happened
+    /// to have both would prefer `tenant` — none do today.
+    fn tool_tenant_argument(request: &CallToolRequestParams) -> Option<String> {
+        request
+            .arguments
+            .as_ref()
+            .and_then(|args| args.get("tenant").or_else(|| args.get("tenant_id")))
+            .and_then(|v| v.as_str())
+            .map(str::to_owned)
+    }
+
     /// Resolve the tenant an audited call is attributed to: the credential's
     /// own resolved tenant when known (`caller_tenant`, from `CallerTenant`,
     /// or `header_tenant`, the inbound `X-Tenant-ID` for an API key); for a
@@ -290,12 +306,7 @@ impl AuditContext {
             });
         let is_multi_tenant = context.extensions.get::<CallerTenants>().is_some()
             || parts.is_some_and(|p| p.extensions.get::<CallerTenants>().is_some());
-        let tool_tenant_argument = request
-            .arguments
-            .as_ref()
-            .and_then(|args| args.get("tenant"))
-            .and_then(|v| v.as_str())
-            .map(str::to_owned);
+        let tool_tenant_argument = Self::tool_tenant_argument(request);
         let tenant_id = Self::resolve_tenant_id(
             caller_tenant,
             header("x-tenant-id"),
@@ -421,6 +432,38 @@ mod tests {
             AuditContext::resolve_tenant_id(None, None, false, None),
             "unknown"
         );
+    }
+
+    #[test]
+    fn tool_tenant_argument_reads_the_tenant_field_for_query_tools() {
+        let mut args = rmcp::model::JsonObject::new();
+        args.insert("tenant".to_string(), serde_json::json!("acme"));
+        let request = CallToolRequestParams::new("search_traces").with_arguments(args);
+        assert_eq!(
+            AuditContext::tool_tenant_argument(&request),
+            Some("acme".to_string())
+        );
+    }
+
+    /// Regression test: the tenant self-management tools (`tenant_list_datasets`,
+    /// `tenant_create_api_key`, etc.) name their tenant-selector argument
+    /// `tenant_id`, not `tenant`. Before this fix, a multi-tenant credential
+    /// calling one of these tools was always audited under `"unknown"`.
+    #[test]
+    fn tool_tenant_argument_reads_the_tenant_id_field_for_tenant_management_tools() {
+        let mut args = rmcp::model::JsonObject::new();
+        args.insert("tenant_id".to_string(), serde_json::json!("globex"));
+        let request = CallToolRequestParams::new("tenant_list_datasets").with_arguments(args);
+        assert_eq!(
+            AuditContext::tool_tenant_argument(&request),
+            Some("globex".to_string())
+        );
+    }
+
+    #[test]
+    fn tool_tenant_argument_is_none_without_either_field() {
+        let request = CallToolRequestParams::new("server_info");
+        assert_eq!(AuditContext::tool_tenant_argument(&request), None);
     }
 
     #[test]
