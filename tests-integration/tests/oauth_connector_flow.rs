@@ -199,9 +199,11 @@ async fn revoked_token_stops_working() {
             &hash_oauth_token(&raw),
             "client-1",
             &user.id,
-            "acme",
+            &[common::catalog::TenantGrant {
+                tenant_id: "acme".to_string(),
+                dataset_ids: None,
+            }],
             &["traces:read".to_string()],
-            None,
             Some(RESOURCE),
             chrono::Utc::now() + chrono::Duration::hours(1),
         )
@@ -249,9 +251,11 @@ async fn token_for_another_resource_is_rejected() {
             &hash_oauth_token(&raw),
             "client-1",
             &user.id,
-            "acme",
+            &[common::catalog::TenantGrant {
+                tenant_id: "acme".to_string(),
+                dataset_ids: None,
+            }],
             &["traces:read".to_string()],
-            None,
             Some("https://other.example.com/mcp"),
             chrono::Utc::now() + chrono::Duration::hours(1),
         )

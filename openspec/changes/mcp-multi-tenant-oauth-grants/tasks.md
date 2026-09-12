@@ -1,13 +1,13 @@
 ## 1. Catalog schema
 
-- [ ] 1.1 Write a failing catalog test asserting `oauth_access_tokens`, `oauth_refresh_tokens`, and `oauth_authorization_codes` each gain a nullable `tenant_grants TEXT` column, added via a plain `ADD COLUMN` against a table that already has rows (SQLite and Postgres variants, mirroring the existing dual-backend migration tests in `catalog.rs`)
-- [ ] 1.2 Add nullable `tenant_grants TEXT` (via `ensure_sqlite_text_column`-style `ADD COLUMN`, matching how `dataset_ids`/`scopes` were added — no `NOT NULL`, no default) to all three tables, in both the SQLite and Postgres migration code paths in `src/common/src/catalog.rs`
-- [ ] 1.3 Write a failing test: `tenant_id` on all three tables is nullable, and a row can be inserted with `tenant_id = NULL`
-- [ ] 1.4 Drop `NOT NULL` from `tenant_id` on all three tables: a native `ALTER COLUMN ... DROP NOT NULL` on Postgres; on SQLite, the create-new-table/copy-rows/swap technique this codebase already uses for `users.password_hash` (`rebuild_users_table_sqlite`, `catalog.rs:97-160`) — budget this as real migration work, not a one-line ALTER
-- [ ] 1.5 Write a failing test: a migration/backfill step populates `tenant_grants` for a pre-existing single-tenant row from its `tenant_id`/`dataset_ids`
-- [ ] 1.6 Implement the backfill
-- [ ] 1.7 Extend `OAuthTokenRecord` (and the authorization-code equivalent) to carry `tenant_grants: Vec<TenantGrant { tenant_id, dataset_ids: Option<Vec<String>> }>` instead of a single `tenant_id`/`dataset_ids`; stop writing `tenant_id`/`dataset_ids` on any newly-created row (leave them `NULL`)
-- [ ] 1.8 Update the catalog functions that insert/read/delete authorization codes, access tokens, and refresh tokens to use `tenant_grants` as the sole source of truth, validating each `tenant_id` against the tenant registry at write time (same pattern `dataset_ids` already uses against a tenant's datasets) — no DB-level FK, and enforce "non-empty" at the application layer since the column itself is nullable
+- [x] 1.1 Write a failing catalog test asserting `oauth_access_tokens`, `oauth_refresh_tokens`, and `oauth_authorization_codes` each gain a nullable `tenant_grants TEXT` column, added via a plain `ADD COLUMN` against a table that already has rows (SQLite and Postgres variants, mirroring the existing dual-backend migration tests in `catalog.rs`)
+- [x] 1.2 Add nullable `tenant_grants TEXT` (via `ensure_sqlite_text_column`-style `ADD COLUMN`, matching how `dataset_ids`/`scopes` were added — no `NOT NULL`, no default) to all three tables, in both the SQLite and Postgres migration code paths in `src/common/src/catalog.rs`
+- [x] 1.3 Write a failing test: `tenant_id` on all three tables is nullable, and a row can be inserted with `tenant_id = NULL`
+- [x] 1.4 Drop `NOT NULL` from `tenant_id` on all three tables: a native `ALTER COLUMN ... DROP NOT NULL` on Postgres; on SQLite, the create-new-table/copy-rows/swap technique this codebase already uses for `users.password_hash` (`rebuild_users_table_sqlite`, `catalog.rs:97-160`) — budget this as real migration work, not a one-line ALTER
+- [x] 1.5 Write a failing test: a migration/backfill step populates `tenant_grants` for a pre-existing single-tenant row from its `tenant_id`/`dataset_ids`
+- [x] 1.6 Implement the backfill
+- [x] 1.7 Extend `OAuthTokenRecord` (and the authorization-code equivalent) to carry `tenant_grants: Vec<TenantGrant { tenant_id, dataset_ids: Option<Vec<String>> }>` instead of a single `tenant_id`/`dataset_ids`; stop writing `tenant_id`/`dataset_ids` on any newly-created row (leave them `NULL`)
+- [x] 1.8 Update the catalog functions that insert/read/delete authorization codes, access tokens, and refresh tokens to use `tenant_grants` as the sole source of truth, validating each `tenant_id` against the tenant registry at write time (same pattern `dataset_ids` already uses against a tenant's datasets) — no DB-level FK, and enforce "non-empty" at the application layer since the column itself is nullable
 
 ## 2. Router: consent and authorization
 

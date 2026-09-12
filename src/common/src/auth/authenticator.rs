@@ -258,20 +258,39 @@ impl Authenticator {
             .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?
             .ok_or_else(|| AuthError::unauthorized("Access token user not found"))?;
 
+        // A grant set is always non-empty (catalog::validate_tenant_grants).
+        // TODO(mcp-multi-tenant-oauth-grants): this takes the grant's first
+        // (and, today, only) tenant, preserving exactly today's
+        // single-tenant behavior. Resolving a selector against the full set
+        // for a multi-tenant grant (design D4: `X-Tenant-ID`
+        // read-and-validate, set-membership, unknown-tenant rejection) is
+        // implemented by a later task group in this change.
+        let primary_grant = record
+            .tenant_grants
+            .first()
+            .ok_or_else(|| AuthError::unauthorized("access token has no tenant grants"))?
+            .clone();
+
         // Tenant is fixed by the token; the user's role in that tenant still
         // gates what the token may do.
-        let role = self.resolve_role(&user, &record.tenant_id).await?;
+        let role = self.resolve_role(&user, &primary_grant.tenant_id).await?;
 
         // Resolve dataset against the token's restriction (D3/D4), same
         // order as a database API key.
         let effective_dataset =
-            super::resolve_dataset_restriction(record.dataset_ids.as_deref(), dataset_id).map_err(
-                |err| dataset_restriction_error(err, "access token", dataset_id, &record.tenant_id),
-            )?;
+            super::resolve_dataset_restriction(primary_grant.dataset_ids.as_deref(), dataset_id)
+                .map_err(|err| {
+                    dataset_restriction_error(
+                        err,
+                        "access token",
+                        dataset_id,
+                        &primary_grant.tenant_id,
+                    )
+                })?;
 
         let context = self
             .resolve_user_tenant(
-                &record.tenant_id,
+                &primary_grant.tenant_id,
                 effective_dataset.as_deref(),
                 user.id,
                 role,
@@ -281,7 +300,7 @@ impl Authenticator {
             .await?;
         // The OAuth grant's scopes and dataset restriction are enforced
         // exactly like a database-backed API key's.
-        Ok(context.with_api_key_restrictions(Some(record.scopes), record.dataset_ids))
+        Ok(context.with_api_key_restrictions(Some(record.scopes), primary_grant.dataset_ids))
     }
 
     /// Resolve an instance administrator from an opaque browser session.
@@ -577,9 +596,11 @@ mod tests {
                 &hash_oauth_token(&raw),
                 "client-1",
                 &user.id,
-                "acme",
+                &[crate::catalog::TenantGrant {
+                    tenant_id: "acme".to_string(),
+                    dataset_ids: dataset_ids.map(<[String]>::to_vec),
+                }],
                 scopes,
-                dataset_ids,
                 resource,
                 expires_at,
             )

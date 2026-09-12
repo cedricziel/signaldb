@@ -617,15 +617,22 @@ pub(crate) async fn authorize_decision<S: RouterState>(
     let code = generate_oauth_token(TokenKind::AuthorizationCode);
     let ttl = chrono::Duration::from_std(state.config().mcp.oauth.authorization_code_ttl)
         .map_err(|e| OAuthError::server_error(format!("invalid authorization_code_ttl: {e}")))?;
+    // TODO(mcp-multi-tenant-oauth-grants): a single-element grant set,
+    // preserving today's single-tenant decision shape exactly. Accepting a
+    // list of tenants from the consent decision (design D2/D6) is a later
+    // task group in this change.
+    let tenant_grants = vec![common::catalog::TenantGrant {
+        tenant_id: d.tenant.clone(),
+        dataset_ids: d.dataset_ids.clone(),
+    }];
     state
         .catalog()
         .create_authorization_code(
             &hash_oauth_token(&code),
             &d.client_id,
             &user.id,
-            &d.tenant,
+            &tenant_grants,
             &scopes,
-            d.dataset_ids.as_deref(),
             &d.redirect_uri,
             &d.code_challenge,
             resource.as_deref(),
@@ -897,9 +904,8 @@ async fn token_authorization_code<S: RouterState>(
         state,
         &grant.client_id,
         &grant.user_id,
-        &grant.tenant_id,
+        &grant.tenant_grants,
         &grant.scopes,
-        grant.dataset_ids.as_deref(),
         grant.resource.as_deref(),
     )
     .await
@@ -944,16 +950,15 @@ async fn token_refresh<S: RouterState>(
         .await
         .map_err(|e| OAuthError::server_error(format!("failed to revoke refresh token: {e}")))?;
 
-    // D6: the replacement pair carries the dataset restriction read off the
+    // D6: the replacement pair carries the grant set read off the
     // *presented* refresh-token row, not any access token (which may already
     // be expired or otherwise unavailable by the time a refresh happens).
     issue_tokens(
         state,
         &grant.client_id,
         &grant.user_id,
-        &grant.tenant_id,
+        &grant.tenant_grants,
         &grant.scopes,
-        grant.dataset_ids.as_deref(),
         grant.resource.as_deref(),
     )
     .await
@@ -965,9 +970,8 @@ async fn issue_tokens<S: RouterState>(
     state: &S,
     client_id: &str,
     user_id: &str,
-    tenant_id: &str,
+    tenant_grants: &[common::catalog::TenantGrant],
     scopes: &[String],
-    dataset_ids: Option<&[String]>,
     resource: Option<&str>,
 ) -> Result<Response, OAuthError> {
     let oauth = &state.config().mcp.oauth;
@@ -982,9 +986,8 @@ async fn issue_tokens<S: RouterState>(
             &hash_oauth_token(&access_raw),
             client_id,
             user_id,
-            tenant_id,
+            tenant_grants,
             scopes,
-            dataset_ids,
             resource,
             now + access_ttl,
         )
@@ -1000,9 +1003,8 @@ async fn issue_tokens<S: RouterState>(
             &hash_oauth_token(&refresh_raw),
             client_id,
             user_id,
-            tenant_id,
+            tenant_grants,
             scopes,
-            dataset_ids,
             resource,
             now + refresh_ttl,
         )
@@ -1088,9 +1090,11 @@ mod tests {
                 &hash_oauth_token(code),
                 "client-1",
                 &user.id,
-                "acme",
+                &[common::catalog::TenantGrant {
+                    tenant_id: "acme".to_string(),
+                    dataset_ids: None,
+                }],
                 &["traces:read".to_string()],
-                None,
                 "https://claude.ai/cb",
                 PKCE_CHALLENGE,
                 Some("https://signaldb.example.com/mcp"),
@@ -1427,7 +1431,13 @@ mod tests {
             .await
             .unwrap()
             .expect("code was stored");
-        assert_eq!(grant.tenant_id, "acme");
+        assert_eq!(
+            grant.tenant_grants,
+            vec![common::catalog::TenantGrant {
+                tenant_id: "acme".to_string(),
+                dataset_ids: None,
+            }]
+        );
         assert_eq!(grant.scopes, vec!["traces:read".to_string()]);
         assert_eq!(grant.code_challenge, "chal-1");
         assert_eq!(grant.client_id, "client-1");
@@ -1778,7 +1788,7 @@ mod tests {
             .await
             .unwrap()
             .expect("code was stored");
-        assert_eq!(grant.dataset_ids, None);
+        assert_eq!(grant.tenant_grants[0].dataset_ids, None);
     }
 
     #[tokio::test]
@@ -1858,8 +1868,14 @@ mod tests {
             .await
             .unwrap()
             .expect("refresh token stored");
-        assert_eq!(access.dataset_ids, Some(vec!["production".to_string()]));
-        assert_eq!(refresh.dataset_ids, Some(vec!["production".to_string()]));
+        assert_eq!(
+            access.tenant_grants[0].dataset_ids,
+            Some(vec!["production".to_string()])
+        );
+        assert_eq!(
+            refresh.tenant_grants[0].dataset_ids,
+            Some(vec!["production".to_string()])
+        );
     }
 
     /// D6: a refresh must read `dataset_ids` from the presented
@@ -1936,9 +1952,12 @@ mod tests {
             .await
             .unwrap()
             .expect("new refresh token stored");
-        assert_eq!(new_access.dataset_ids, Some(vec!["production".to_string()]));
         assert_eq!(
-            new_refresh.dataset_ids,
+            new_access.tenant_grants[0].dataset_ids,
+            Some(vec!["production".to_string()])
+        );
+        assert_eq!(
+            new_refresh.tenant_grants[0].dataset_ids,
             Some(vec!["production".to_string()]),
             "the new refresh token must carry the restriction too, not only the access token"
         );

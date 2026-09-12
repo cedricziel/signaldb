@@ -772,9 +772,11 @@ mod tests {
                 &hash_oauth_token(&token),
                 "client-1",
                 &user.id,
-                "acme",
+                &[crate::catalog::TenantGrant {
+                    tenant_id: "acme".to_string(),
+                    dataset_ids: None,
+                }],
                 &["traces:read".to_string()],
-                None,
                 None,
                 Utc::now() + Duration::hours(1),
             )
