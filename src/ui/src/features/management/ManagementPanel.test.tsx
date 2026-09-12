@@ -1,6 +1,6 @@
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { ManagementPanel } from "./ManagementPanel";
 import type { WhoamiResponse } from "../../api/session";
@@ -22,6 +22,32 @@ function renderPanel() {
   return renderWithClient(
     <ManagementPanel who={WHO} onClose={() => {}} onTenantCreated={() => {}} />,
   );
+}
+
+const WHO_WITH_TWO_DATASETS: WhoamiResponse = {
+  ...WHO,
+  datasets: [
+    { id: "default", slug: "default", is_default: true },
+    { id: "apps", slug: "apps", is_default: false },
+  ],
+};
+
+function renderPanelWithTwoDatasets() {
+  return renderWithClient(
+    <ManagementPanel
+      who={WHO_WITH_TWO_DATASETS}
+      onClose={() => {}}
+      onTenantCreated={() => {}}
+    />,
+  );
+}
+
+function stubDatasetsSectionRoutes() {
+  stubFetchRoutes([
+    { match: "/api/v1/manage/tenants/acme/api-keys", body: [] },
+    { match: "/api/v1/manage/tenants/acme/memberships", body: [] },
+    { match: TABLES_PATH, body: { tenant_id: "acme", tables: [] } },
+  ]);
 }
 
 afterEach(() => {
@@ -56,7 +82,11 @@ describe("ManagementPanel API key creation form", () => {
 
   it("offers a dataset multi-select and creates a key restricted to the checked datasets", async () => {
     const fetchMock = stubFetchRoutes([
-      { match: "/api/v1/manage/tenants/acme/api-keys", method: "GET", body: [] },
+      {
+        match: "/api/v1/manage/tenants/acme/api-keys",
+        method: "GET",
+        body: [],
+      },
       {
         match: "/api/v1/manage/tenants/acme/api-keys",
         method: "POST",
@@ -85,9 +115,7 @@ describe("ManagementPanel API key creation form", () => {
     const post = fetchMock.mock.calls
       .map((call) => call[0])
       .filter((req): req is Request => req instanceof Request)
-      .find(
-        (req) => req.url.includes("/api-keys") && req.method === "POST",
-      )!;
+      .find((req) => req.url.includes("/api-keys") && req.method === "POST")!;
     expect(await post.clone().json()).toMatchObject({
       dataset_ids: ["production"],
     });
@@ -373,7 +401,7 @@ describe("ManagementPanel tables section", () => {
     ).not.toBeInTheDocument();
 
     const keyWarning = warnSpy.mock.calls.some((call) =>
-      String(call[0]).includes("unique \"key\""),
+      String(call[0]).includes('unique "key"'),
     );
     expect(keyWarning).toBe(false);
     warnSpy.mockRestore();
@@ -416,5 +444,44 @@ describe("ManagementPanel tables section", () => {
         );
       expect(posted).toBe(true);
     });
+  });
+});
+
+function datasetsList(): HTMLElement {
+  const section = screen
+    .getByRole("heading", { name: "Datasets" })
+    .closest("section")!;
+  return within(section).getByRole("list");
+}
+
+describe("ManagementPanel datasets section", () => {
+  beforeEach(async () => {
+    stubDatasetsSectionRoutes();
+    renderPanelWithTwoDatasets();
+    await waitFor(() =>
+      expect(within(datasetsList()).getByText("apps")).toBeInTheDocument(),
+    );
+  });
+
+  it("does not repeat the dataset id as the default badge's text", () => {
+    expect(within(datasetsList()).getAllByText("default")).toHaveLength(1);
+    expect(within(datasetsList()).getByText("Default")).toBeInTheDocument();
+  });
+
+  it("explains why the default dataset has no delete button", () => {
+    const defaultRow = within(datasetsList())
+      .getByText("Default")
+      .closest("li")!;
+    expect(defaultRow).not.toHaveTextContent("Delete");
+    expect(
+      within(defaultRow).getByText(/can't be deleted/i),
+    ).toBeInTheDocument();
+  });
+
+  it("still shows a working Delete button for a non-default dataset", () => {
+    const appsRow = within(datasetsList()).getByText("apps").closest("li")!;
+    expect(
+      within(appsRow).getByRole("button", { name: "Delete" }),
+    ).toBeInTheDocument();
   });
 });

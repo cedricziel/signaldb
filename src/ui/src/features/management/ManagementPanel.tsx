@@ -155,9 +155,18 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
               <li key={dataset.id}>
                 <div>
                   <code>{dataset.id}</code>
-                  {dataset.is_default && <span>default</span>}
+                  {dataset.is_default && (
+                    <span
+                      className="default-dataset-badge"
+                      title="The default dataset for this tenant; it can't be deleted."
+                    >
+                      Default
+                    </span>
+                  )}
                 </div>
-                {!dataset.is_default && (
+                {dataset.is_default ? (
+                  <span className="default-dataset-note">Can't be deleted</span>
+                ) : (
                   <ConfirmButton
                     label="Delete"
                     prompt={`Delete dataset ${dataset.id}?`}
