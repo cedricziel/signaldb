@@ -46,7 +46,7 @@ function LoginProbe() {
   return <div data-testid="login-redirect">{params.get("redirect")}</div>;
 }
 
-// ConsentView navigates to `/login` on a 401 — declaring both routes here
+// ConsentView navigates to /login on a 401 — declaring both routes here
 // mirrors routes.tsx's own top-level `/oauth/consent` and `/login`. The
 // entry mirrors the consent URL set in beforeEach so the redirect target
 // ConsentView reads off `window.location` matches.
@@ -71,17 +71,28 @@ describe("ConsentView", () => {
     // scope=traces:read only → logs/metrics are not offered
     expect(screen.getByText("Read traces")).toBeInTheDocument();
     expect(screen.queryByText("Read logs")).not.toBeInTheDocument();
-    // Exactly the tenants the context returned are selectable. Anchored so
-    // this doesn't also match the "All datasets in acme" dataset-mode radio.
-    expect(screen.getByRole("radio", { name: /^acme/ })).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: /^globex/ })).toBeInTheDocument();
+    // Exactly the tenants the context returned are selectable, as checkboxes.
+    expect(screen.getByRole("checkbox", { name: /^acme/ })).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: /^globex/ }),
+    ).toBeInTheDocument();
   });
 
-  it("approves with the selected tenant", async () => {
+  it("submit is disabled until at least one tenant is checked", async () => {
     renderConsent();
     await screen.findByRole("heading", { name: /Claude/ });
 
-    await userEvent.click(screen.getByRole("radio", { name: /globex/ }));
+    expect(screen.getByRole("button", { name: "Authorize" })).toBeDisabled();
+
+    await userEvent.click(screen.getByRole("checkbox", { name: /globex/ }));
+    expect(screen.getByRole("button", { name: "Authorize" })).toBeEnabled();
+  });
+
+  it("approves with a single checked tenant as a one-element tenant_grants", async () => {
+    renderConsent();
+    await screen.findByRole("heading", { name: /Claude/ });
+
+    await userEvent.click(screen.getByRole("checkbox", { name: /globex/ }));
     await userEvent.click(screen.getByRole("button", { name: "Authorize" }));
 
     await waitFor(() =>
@@ -90,9 +101,35 @@ describe("ConsentView", () => {
     expect(consentApi.submitConsentDecision).toHaveBeenCalledWith(
       expect.objectContaining({
         client_id: "client-1",
-        tenant: "globex",
         approved: true,
+        tenant_grants: [{ tenant_id: "globex" }],
       }),
+    );
+  });
+
+  it("checking two tenants with different dataset restrictions submits both grants", async () => {
+    renderConsent();
+    await screen.findByRole("heading", { name: /Claude/ });
+
+    await userEvent.click(screen.getByRole("checkbox", { name: /^acme/ }));
+    await userEvent.click(
+      screen.getByRole("radio", { name: /Only these datasets in acme/ }),
+    );
+    await userEvent.click(screen.getByRole("checkbox", { name: "production" }));
+
+    await userEvent.click(screen.getByRole("checkbox", { name: /^globex/ }));
+
+    await userEvent.click(screen.getByRole("button", { name: "Authorize" }));
+
+    await waitFor(() =>
+      expect(consentApi.submitConsentDecision).toHaveBeenCalledWith(
+        expect.objectContaining({
+          tenant_grants: [
+            { tenant_id: "acme", dataset_ids: ["production"] },
+            { tenant_id: "globex" },
+          ],
+        }),
+      ),
     );
   });
 
@@ -109,77 +146,43 @@ describe("ConsentView", () => {
     );
   });
 
-  it("defaults to 'all datasets' and sends no dataset_ids", async () => {
+  it("unchecking a tenant discards its dataset restriction", async () => {
     renderConsent();
     await screen.findByRole("heading", { name: /Claude/ });
 
-    expect(screen.getByRole("radio", { name: /All datasets/ })).toBeChecked();
-    // The checklist only renders in the "only these" state.
+    await userEvent.click(screen.getByRole("checkbox", { name: /^acme/ }));
+    await userEvent.click(
+      screen.getByRole("radio", { name: /Only these datasets in acme/ }),
+    );
+    await userEvent.click(screen.getByRole("checkbox", { name: "production" }));
+
+    // Uncheck acme, then recheck it: its dataset choice should be back to "all".
+    await userEvent.click(screen.getByRole("checkbox", { name: /^acme/ }));
+    await userEvent.click(screen.getByRole("checkbox", { name: /^acme/ }));
+
+    expect(
+      screen.getByRole("radio", { name: /All datasets in acme/ }),
+    ).toBeChecked();
     expect(
       screen.queryByRole("checkbox", { name: "production" }),
     ).not.toBeInTheDocument();
-
-    await userEvent.click(screen.getByRole("button", { name: "Authorize" }));
-
-    await waitFor(() =>
-      expect(consentApi.submitConsentDecision).toHaveBeenCalledWith(
-        expect.not.objectContaining({ dataset_ids: expect.anything() }),
-      ),
-    );
   });
 
-  it("restricts the grant to the checked datasets once 'only these datasets' is chosen", async () => {
+  it("submit stays disabled for a checked tenant in 'only these datasets' mode with nothing checked", async () => {
     renderConsent();
     await screen.findByRole("heading", { name: /Claude/ });
 
+    await userEvent.click(screen.getByRole("checkbox", { name: /^acme/ }));
     await userEvent.click(
-      screen.getByRole("radio", { name: /Only these datasets/ }),
+      screen.getByRole("radio", { name: /Only these datasets in acme/ }),
     );
-    // Nothing checked yet: submit is disabled rather than granting everything.
     expect(screen.getByRole("button", { name: "Authorize" })).toBeDisabled();
 
     await userEvent.click(screen.getByRole("checkbox", { name: "production" }));
     expect(screen.getByRole("button", { name: "Authorize" })).toBeEnabled();
-
-    await userEvent.click(screen.getByRole("button", { name: "Authorize" }));
-
-    await waitFor(() =>
-      expect(consentApi.submitConsentDecision).toHaveBeenCalledWith(
-        expect.objectContaining({
-          tenant: "acme",
-          dataset_ids: ["production"],
-        }),
-      ),
-    );
   });
 
-  it("resets the dataset choice to 'all datasets' when the selected tenant changes", async () => {
-    renderConsent();
-    await screen.findByRole("heading", { name: /Claude/ });
-
-    await userEvent.click(
-      screen.getByRole("radio", { name: /Only these datasets/ }),
-    );
-    await userEvent.click(screen.getByRole("checkbox", { name: "production" }));
-
-    await userEvent.click(screen.getByRole("radio", { name: /globex/ }));
-
-    expect(screen.getByRole("radio", { name: /All datasets/ })).toBeChecked();
-    expect(
-      screen.queryByRole("checkbox", { name: "production" }),
-    ).not.toBeInTheDocument();
-    // The reset tenant's grant is immediately valid again (unrestricted).
-    expect(screen.getByRole("button", { name: "Authorize" })).toBeEnabled();
-
-    await userEvent.click(screen.getByRole("button", { name: "Authorize" }));
-    await waitFor(() =>
-      expect(consentApi.submitConsentDecision).toHaveBeenCalledWith(
-        expect.not.objectContaining({ dataset_ids: expect.anything() }),
-      ),
-    );
-  });
-
-  it("shows the all-vs-restricted dataset choice even for a lone tenant", async () => {
+  it("pre-checks and hides the checkbox for a lone tenant, still offering its dataset choice", async () => {
     vi.mocked(consentApi.consentContext).mockResolvedValueOnce({
       client_name: "Claude",
       tenants: [{ id: "acme", role: "member", datasets: ACME_DATASETS }],
@@ -188,11 +191,22 @@ describe("ConsentView", () => {
     await screen.findByRole("heading", { name: /Claude/ });
 
     expect(
-      screen.getByRole("radio", { name: /All datasets/ }),
+      screen.queryByRole("checkbox", { name: /^acme/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("radio", { name: /All datasets in acme/ }),
     ).toBeInTheDocument();
     expect(
-      screen.getByRole("radio", { name: /Only these datasets/ }),
+      screen.getByRole("radio", { name: /Only these datasets in acme/ }),
     ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Authorize" })).toBeEnabled();
+
+    await userEvent.click(screen.getByRole("button", { name: "Authorize" }));
+    await waitFor(() =>
+      expect(consentApi.submitConsentDecision).toHaveBeenCalledWith(
+        expect.objectContaining({ tenant_grants: [{ tenant_id: "acme" }] }),
+      ),
+    );
   });
 
   it("navigates to /login with a redirect back to this consent URL when a session is required", async () => {

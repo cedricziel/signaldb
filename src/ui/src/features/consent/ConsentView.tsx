@@ -11,6 +11,8 @@ import { useNavigate } from "react-router";
 import { isAuthError, toErrorMessage } from "../../api/http";
 import {
   type ConsentContextResponse,
+  type ConsentTenant,
+  type ConsentTenantGrant,
   consentContext,
   submitConsentDecision,
 } from "../../api/consent";
@@ -64,25 +66,59 @@ function requestedScopes(scope: string | null): string[] {
   return read.length > 0 ? read : DEFAULT_READ_SCOPES;
 }
 
+/** Per-tenant consent state (D6): each tenant is independently checked, with
+ * its own all-datasets/only-these-datasets sub-choice. Keyed by tenant id. */
+interface TenantSelection {
+  checked: boolean;
+  datasetMode: "all" | "only";
+  selectedDatasetIds: string[];
+}
+
+const UNRESTRICTED: TenantSelection = {
+  checked: false,
+  datasetMode: "all",
+  selectedDatasetIds: [],
+};
+
+/** A lone tenant has no checkbox and is implicitly included (kept from the
+ * single-tenant shortcut this component already had); with several tenants,
+ * nothing is pre-checked so "at least one tenant" stays an explicit choice. */
+function initialSelections(
+  tenants: ConsentTenant[],
+): Record<string, TenantSelection> {
+  const soleTenant = tenants.length === 1;
+  return Object.fromEntries(
+    tenants.map((t) => [t.id, { ...UNRESTRICTED, checked: soleTenant }]),
+  );
+}
+
 export function ConsentView() {
   // The query string is fixed for the page's lifetime; memoize so the effect
   // below doesn't re-run on every render (a fresh object would loop).
   const params = useMemo(() => readParams(window.location.search), []);
   const navigate = useNavigate();
   const [context, setContext] = useState<ConsentContextResponse | null>(null);
-  const [selectedTenant, setSelectedTenant] = useState<string | null>(null);
-  // D5: an explicit choice, not a checklist that means "everything" when
-  // empty. Reset to "all" whenever the selected tenant changes (below) so a
-  // restriction chosen for one tenant never silently carries over to another.
-  const [datasetMode, setDatasetMode] = useState<"all" | "only">("all");
-  const [selectedDatasetIds, setSelectedDatasetIds] = useState<string[]>([]);
+  const [selections, setSelections] = useState<Record<string, TenantSelection>>(
+    {},
+  );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  useEffect(() => {
-    setDatasetMode("all");
-    setSelectedDatasetIds([]);
-  }, [selectedTenant]);
+  const setTenantSelection = (
+    tenantId: string,
+    update: Partial<TenantSelection>,
+  ) => {
+    setSelections((prev) => ({
+      ...prev,
+      [tenantId]: { ...(prev[tenantId] ?? UNRESTRICTED), ...update },
+    }));
+  };
+
+  const toggleTenant = (tenantId: string, checked: boolean) => {
+    // Unchecking discards the dataset restriction so re-checking later starts
+    // fresh at "all datasets" rather than silently carrying over.
+    setTenantSelection(tenantId, checked ? { checked } : { ...UNRESTRICTED });
+  };
 
   useEffect(() => {
     if (!params) return;
@@ -91,7 +127,7 @@ export function ConsentView() {
       .then((ctx) => {
         if (cancelled) return;
         setContext(ctx);
-        setSelectedTenant(ctx.tenants[0]?.id ?? null);
+        setSelections(initialSelections(ctx.tenants));
       })
       .catch((err: unknown) => {
         if (cancelled) return;
@@ -139,12 +175,24 @@ export function ConsentView() {
   const clientLabel = context.client_name?.trim() || "An application";
   const scopes = requestedScopes(params.scope);
 
+  const checkedTenants = context.tenants
+    .map((t) => ({ tenant: t, sel: selections[t.id] ?? UNRESTRICTED }))
+    .filter(({ sel }) => sel.checked);
+  // "All datasets" is always a valid submission for a checked tenant; "only
+  // these" needs at least one box checked (D5) — never sent as an empty
+  // array (D1a). At least one tenant must be checked overall.
+  const incompleteRestriction = checkedTenants.some(
+    ({ sel }) =>
+      sel.datasetMode === "only" && sel.selectedDatasetIds.length === 0,
+  );
+  const canSubmit = checkedTenants.length > 0 && !incompleteRestriction;
+
   const decide = (approved: boolean) => {
-    if (approved && !selectedTenant) {
-      setError("Choose a tenant to grant access to.");
+    if (approved && checkedTenants.length === 0) {
+      setError("Choose at least one tenant to grant access to.");
       return;
     }
-    if (approved && datasetMode === "only" && selectedDatasetIds.length === 0) {
+    if (approved && incompleteRestriction) {
       // Redundant with the disabled submit button below (D5) — the server
       // also rejects an empty array (D1a), but this avoids a round trip.
       setError("Choose at least one dataset, or switch to all datasets.");
@@ -152,6 +200,12 @@ export function ConsentView() {
     }
     setBusy(true);
     setError(null);
+    const tenantGrants: ConsentTenantGrant[] = checkedTenants.map(
+      ({ tenant, sel }) =>
+        sel.datasetMode === "only"
+          ? { tenant_id: tenant.id, dataset_ids: sel.selectedDatasetIds }
+          : { tenant_id: tenant.id },
+    );
     submitConsentDecision({
       client_id: params.clientId,
       redirect_uri: params.redirectUri,
@@ -160,9 +214,8 @@ export function ConsentView() {
       scope: params.scope ?? undefined,
       state: params.state ?? undefined,
       resource: params.resource ?? undefined,
-      tenant: selectedTenant ?? "",
+      tenant_grants: tenantGrants,
       approved,
-      ...(datasetMode === "only" ? { dataset_ids: selectedDatasetIds } : {}),
     })
       .then((redirect) => {
         window.location.href = redirect;
@@ -174,12 +227,69 @@ export function ConsentView() {
   };
 
   const single = context.tenants.length === 1 ? context.tenants[0] : null;
-  const currentTenant = context.tenants.find((t) => t.id === selectedTenant);
-  // "All datasets" is always a valid submission; "only these" needs at least
-  // one box checked (D5) — never sent as an empty array (D1a).
-  const canSubmit =
-    context.tenants.length > 0 &&
-    (datasetMode === "all" || selectedDatasetIds.length > 0);
+
+  /** The per-tenant all-datasets/only-these-datasets sub-choice (D6), nested
+   * under a checked tenant's row (or the lone tenant's label). */
+  const datasetPicker = (tenant: ConsentTenant) => {
+    const sel = selections[tenant.id] ?? UNRESTRICTED;
+    return (
+      <div className="consent-field consent-tenant-datasets">
+        <span className="consent-field-label">Access</span>
+        <ul className="consent-dataset-modes">
+          <li>
+            <label>
+              <input
+                type="radio"
+                name={`dataset-mode-${tenant.id}`}
+                checked={sel.datasetMode === "all"}
+                onChange={() =>
+                  setTenantSelection(tenant.id, { datasetMode: "all" })
+                }
+              />
+              <span>All datasets in {tenant.id}</span>
+            </label>
+          </li>
+          <li>
+            <label>
+              <input
+                type="radio"
+                name={`dataset-mode-${tenant.id}`}
+                checked={sel.datasetMode === "only"}
+                onChange={() =>
+                  setTenantSelection(tenant.id, { datasetMode: "only" })
+                }
+              />
+              <span>Only these datasets in {tenant.id}:</span>
+            </label>
+          </li>
+        </ul>
+        {sel.datasetMode === "only" && (
+          <ul className="consent-datasets">
+            {tenant.datasets.map((dataset) => (
+              <li key={dataset.id}>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={sel.selectedDatasetIds.includes(dataset.id)}
+                    onChange={(event) =>
+                      setTenantSelection(tenant.id, {
+                        selectedDatasetIds: event.target.checked
+                          ? [...sel.selectedDatasetIds, dataset.id]
+                          : sel.selectedDatasetIds.filter(
+                              (id) => id !== dataset.id,
+                            ),
+                      })
+                    }
+                  />
+                  <span>{dataset.name}</span>
+                </label>
+              </li>
+            ))}
+          </ul>
+        )}
+      </div>
+    );
+  };
 
   return (
     <Dialog label="Authorize access" className="login-panel consent-panel">
@@ -211,82 +321,37 @@ export function ConsentView() {
             You aren't a member of any tenant, so there's nothing to grant.
           </p>
         ) : single ? (
-          <div className="consent-single">
-            <span className="consent-tenant-name">{single.id}</span>
-            <span className="consent-tenant-meta">{single.role}</span>
-          </div>
+          <>
+            <div className="consent-single">
+              <span className="consent-tenant-name">{single.id}</span>
+              <span className="consent-tenant-meta">{single.role}</span>
+            </div>
+            {datasetPicker(single)}
+          </>
         ) : (
           <ul className="consent-tenants">
-            {context.tenants.map((t) => (
-              <li key={t.id}>
-                <label>
-                  <input
-                    type="radio"
-                    name="tenant"
-                    value={t.id}
-                    checked={selectedTenant === t.id}
-                    onChange={() => setSelectedTenant(t.id)}
-                  />
-                  <span className="consent-tenant-name">{t.id}</span>
-                  <span className="consent-tenant-meta">{t.role}</span>
-                </label>
-              </li>
-            ))}
-          </ul>
-        )}
-      </div>
-
-      {currentTenant && (
-        <div className="consent-field">
-          <span className="consent-field-label">Access</span>
-          <ul className="consent-dataset-modes">
-            <li>
-              <label>
-                <input
-                  type="radio"
-                  name="dataset-mode"
-                  checked={datasetMode === "all"}
-                  onChange={() => setDatasetMode("all")}
-                />
-                <span>All datasets in {currentTenant.id}</span>
-              </label>
-            </li>
-            <li>
-              <label>
-                <input
-                  type="radio"
-                  name="dataset-mode"
-                  checked={datasetMode === "only"}
-                  onChange={() => setDatasetMode("only")}
-                />
-                <span>Only these datasets:</span>
-              </label>
-            </li>
-          </ul>
-          {datasetMode === "only" && (
-            <ul className="consent-datasets">
-              {currentTenant.datasets.map((dataset) => (
-                <li key={dataset.id}>
+            {context.tenants.map((t) => {
+              const checked = selections[t.id]?.checked ?? false;
+              return (
+                <li key={t.id}>
                   <label>
                     <input
                       type="checkbox"
-                      checked={selectedDatasetIds.includes(dataset.id)}
+                      checked={checked}
                       onChange={(event) =>
-                        setSelectedDatasetIds((prev) =>
-                          event.target.checked
-                            ? [...prev, dataset.id]
-                            : prev.filter((id) => id !== dataset.id),
-                        )
+                        toggleTenant(t.id, event.target.checked)
                       }
                     />
-                    <span>{dataset.name}</span>
+                    <span className="consent-tenant-name">{t.id}</span>
+                    <span className="consent-tenant-meta">{t.role}</span>
                   </label>
+                  {checked && datasetPicker(t)}
                 </li>
-              ))}
-            </ul>
-          )}
-        </div>
-      )}
+              );
+            })}
+          </ul>
+        )}
+      </div>
 
       {error && (
         <p className="login-error" role="alert">
@@ -314,7 +379,7 @@ export function ConsentView() {
       </div>
 
       <p className="consent-foot">
-        Read-only access to one tenant. You can revoke it anytime.
+        Read-only access to the tenants you choose. You can revoke it anytime.
       </p>
     </Dialog>
   );

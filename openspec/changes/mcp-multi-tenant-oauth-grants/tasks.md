@@ -15,7 +15,7 @@
 - [x] 2.2 Write a failing test: approving with two or more tenants checked issues one authorization code bound to all of them, each with its own dataset restriction
 - [x] 2.3 Write a failing test: approving with zero tenants checked is rejected, no code issued
 - [x] 2.4 Update `POST /oauth/authorize/decision` to accept a list of `{tenant_id, dataset_ids | null}` and persist the resulting grant set on the authorization code
-- [ ] 2.5 Update the explore-UI consent page (served at root) from a tenant radio list to a multi-select checklist, each checked tenant revealing its own all-datasets/some-datasets sub-choice (design D6)
+- [x] 2.5 Update the explore-UI consent page (served at root) from a tenant radio list to a multi-select checklist, each checked tenant revealing its own all-datasets/some-datasets sub-choice (design D6)
 
 ## 3. Router: token issuance, refresh, and resolution
 
@@ -35,9 +35,9 @@
 
 ## 4. HTTP API surface
 
-- [ ] 4.1 Update the OpenAPI spec for `GET /api/v1/whoami` (new `granted_tenants` field), `POST /oauth/authorize/decision` (list of tenant grants), and the new `POST /oauth/introspect`
-- [ ] 4.2 Regenerate the Rust SDK (`src/signaldb-sdk`) from the updated spec
-- [ ] 4.3 Regenerate the TypeScript client (`src/ui/src/api/gen`) from the updated spec
+- [x] 4.1 Update the OpenAPI spec for `GET /api/v1/whoami` (new `granted_tenants` field) and `POST /oauth/authorize/decision` (list of tenant grants). `POST /oauth/introspect` is deliberately excluded from the generated spec, matching the existing precedent that `/oauth/token` and `/oauth/register` in the same file also carry no `#[utoipa::path]`
+- [x] 4.2 Regenerate the Rust SDK (`src/signaldb-sdk`) from the updated spec
+- [x] 4.3 Regenerate the TypeScript client (`src/ui/src/api/gen`) from the updated spec
 
 ## 5. MCP server
 
