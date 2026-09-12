@@ -135,8 +135,9 @@ Two ways to configure the export target, in precedence order:
    `GET /runtime-config.js` (see `resolveExportConfig` in
    `telemetry/runtimeConfig.ts`), so one image serves every deployment with no
    rebuild. When `api_key` is set it is delivered to the browser and sent as
-   `Authorization: Bearer` on cross-origin exports to the acceptor (whose
-   `[self_monitoring.frontend].allowed_origins` drives the CORS layer). This
+   `Authorization: Bearer` on cross-origin exports to the acceptor (CORS for
+   that key's origin is controlled per-key via `allowed_origins` on the API
+   key itself, not by a setting here). This
    **deliberately** puts an ingest key in the browser — only acceptable on a
    trusted network, and the key **must be ingest-only**, scoped to
    `tenant_id`, never an admin key.
@@ -274,7 +275,6 @@ Set in the SignalDB config file; the router serves it to the browser at
 | `tenant_id`             | `[self_monitoring.frontend]`    | `_system`     | → `X-Tenant-ID` on exports.                                                                                                                                  |
 | `dataset_id`            | `[self_monitoring.frontend]`    | `_monitoring` | → `X-Dataset-ID` on exports.                                                                                                                                 |
 | `service_name`          | `[self_monitoring.frontend]`    | `signaldb-ui` | `service.name` on exported spans/logs.                                                                                                                       |
-| `allowed_origins`       | `[self_monitoring.frontend]`    | _(any)_       | Acceptor CORS allow-list for browser exports; empty allows any origin.                                                                                       |
 | `namespace`             | hardcoded `"signaldb"`          | —             | → `service.namespace`. Always present regardless of `enabled`.                                                                                               |
 | `version`               | `env!("CARGO_PKG_VERSION")`     | —             | The **router's own build version** → `signaldb.server.version` (not `service.version`, which stays the UI bundle's own — see `resource.ts`). Always present. |
 | `deploymentEnvironment` | `[self_monitoring].environment` | `production`  | → `deployment.environment.name`. Always present.                                                                                                             |

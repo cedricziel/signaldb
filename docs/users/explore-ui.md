@@ -805,11 +805,13 @@ enabled = true
 endpoint = "http://signaldb.example:4318"   # reachable from the browser; both /v1/traces and /v1/logs
 api_key = "sk-ingest-only-key"               # world-readable; ingest-only
 # tenant_id / dataset_id default to _system / _monitoring
-# allowed_origins = ["http://signaldb.example:3000"]  # CORS; empty = any
 ```
 
 The `api_key` is delivered to the browser and is visible to anyone who can load
-the UI, so use an **ingest-only** key and only on a trusted network. When the
+the UI, so use an **ingest-only** key and only on a trusted network; CORS for
+its origin is controlled per-key via `allowed_origins` on the API key itself
+(see [Authentication](authentication.md#origin-restriction-browsercors-ingestion)),
+not by a setting here. When the
 UI is internet-facing, point `endpoint` at an OTLP collector that adds
 auth/tenant headers and scrubs PII instead of straight at the acceptor. With
 export unset, propagation still works and dev builds print spans to the

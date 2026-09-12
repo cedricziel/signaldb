@@ -1159,8 +1159,10 @@ fn default_frontend_service_name() -> String {
 /// `api_key` is delivered to the browser and is therefore world-readable to
 /// anyone who can load the UI. Use an **ingest-only** key scoped to
 /// `tenant_id`, never an admin key. The browser posts cross-origin to the
-/// acceptor, so its origin must be listed in `allowed_origins` (or leave that
-/// empty to allow any origin, acceptable on a trusted homelab network).
+/// acceptor; CORS for that key's origin is controlled per-key via
+/// `allowed_origins` on the API key itself (see
+/// `docs/users/authentication.md#origin-restriction-browsercors-ingestion`),
+/// not by a setting here.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FrontendMonitoringConfig {
     /// Export browser spans to `endpoint`. When false the UI still runs its
@@ -1187,10 +1189,6 @@ pub struct FrontendMonitoringConfig {
     /// `service.name` on exported browser spans.
     #[serde(default = "default_frontend_service_name")]
     pub service_name: String,
-    /// Origins the acceptor accepts browser exports from (CORS). Empty allows
-    /// any origin.
-    #[serde(default)]
-    pub allowed_origins: Vec<String>,
 }
 
 impl Default for FrontendMonitoringConfig {
@@ -1202,7 +1200,6 @@ impl Default for FrontendMonitoringConfig {
             tenant_id: default_self_monitoring_tenant(),
             dataset_id: default_self_monitoring_dataset(),
             service_name: default_frontend_service_name(),
-            allowed_origins: Vec::new(),
         }
     }
 }
@@ -3134,7 +3131,6 @@ mod tests {
         assert_eq!(sm.frontend.tenant_id, "_system");
         assert_eq!(sm.frontend.dataset_id, "_monitoring");
         assert_eq!(sm.frontend.service_name, "signaldb-ui");
-        assert!(sm.frontend.allowed_origins.is_empty());
     }
 
     #[test]
@@ -3144,7 +3140,6 @@ mod tests {
             enabled = true
             endpoint = "http://signaldb.example:4318"
             api_key = "sk-ingest-key"
-            allowed_origins = ["http://signaldb.example:3000"]
         "#;
         let sm: SelfMonitoringConfig = toml::from_str(toml).expect("parse");
         assert!(sm.frontend.enabled);
@@ -3153,10 +3148,6 @@ mod tests {
         // Unset fields keep their defaults.
         assert_eq!(sm.frontend.tenant_id, "_system");
         assert_eq!(sm.frontend.service_name, "signaldb-ui");
-        assert_eq!(
-            sm.frontend.allowed_origins,
-            vec!["http://signaldb.example:3000".to_string()]
-        );
     }
 
     #[test]
