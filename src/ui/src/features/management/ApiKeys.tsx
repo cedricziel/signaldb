@@ -314,6 +314,7 @@ export function ApiKeys() {
                       origins={editOrigins}
                       onChange={setEditOrigins}
                       disabled={clearOriginRestriction}
+                      mode="update"
                     />
                     <label className="dataset-clear">
                       <input

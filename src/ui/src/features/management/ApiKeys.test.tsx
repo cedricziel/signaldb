@@ -626,6 +626,12 @@ describe("ApiKeys page", () => {
     const editor = screen.getByRole("form", { name: "Edit scopes" });
     const { getByLabelText, getByText } = within(editor);
 
+    // Update-mode help text must not claim an empty list means "unrestricted"
+    // — on this form it means "leave the current restriction unchanged".
+    expect(
+      getByText(/leaves the current restriction unchanged/i),
+    ).toBeInTheDocument();
+
     await userEvent.click(getByLabelText("Remove allowed-origins restriction"));
     expect(getByLabelText("Add allowed origin")).toBeDisabled();
     await userEvent.click(getByText("Save scopes"));

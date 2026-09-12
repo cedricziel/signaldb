@@ -36,11 +36,17 @@ export function OriginPicker({
   origins,
   onChange,
   disabled,
+  mode = "create",
 }: {
   idPrefix: string;
   origins: string[];
   onChange: (origins: string[]) => void;
   disabled?: boolean;
+  /** Which form this picker is in: changes the help text below, since an
+   * empty list means "unrestricted" on create but "leave the current
+   * restriction unchanged" on update (see the file-level comment). Defaults
+   * to "create". */
+  mode?: "create" | "update";
 }) {
   const [pending, setPending] = useState("");
 
@@ -58,8 +64,9 @@ export function OriginPicker({
     <fieldset className="origin-picker">
       <legend>Allowed origins</legend>
       <p className="origin-picker-help">
-        Restrict browser (CORS) ingest requests to these origins. Leave empty to
-        allow any origin.
+        {mode === "update"
+          ? 'Restrict browser (CORS) ingest requests to these origins. An empty list leaves the current restriction unchanged — check "Remove allowed-origins restriction" below to allow any origin instead.'
+          : "Restrict browser (CORS) ingest requests to these origins. Leave empty to allow any origin."}
       </p>
       {origins.length > 0 && (
         <div className="origin-chips">
