@@ -30,8 +30,8 @@
 - [x] 3.9 Write a failing test: `GET /api/v1/whoami` with a single-tenant credential is unchanged (same `tenant` field, plus a new one-element `granted_tenants` array)
 - [x] 3.10 Write a failing test: `GET /api/v1/whoami` with a multi-tenant credential and no `X-Tenant-ID` is rejected exactly like any other tenant-scoped route; with `X-Tenant-ID` set, it returns that tenant plus the full `granted_tenants` array (distinct from the pre-existing `memberships` field)
 - [x] 3.11 Implement the `whoami` response change in `src/router/src/endpoints/session.rs`
-- [ ] 3.12 Write a failing test: `POST /oauth/introspect` on an active token reports `active: true` plus its full grant set (every tenant and dataset restriction), scopes, audience, and expiry, without requiring `X-Tenant-ID`; on an invalid/expired/revoked token it reports `active: false` and no other detail
-- [ ] 3.13 Implement `POST /oauth/introspect` in `src/router/src/endpoints/oauth.rs`, resolving the token directly against the catalog (not through the resource-API's `auth_middleware`)
+- [x] 3.12 Write a failing test: `POST /oauth/introspect` on an active token reports `active: true` plus its full grant set (every tenant and dataset restriction), scopes, audience, and expiry, without requiring `X-Tenant-ID`; on an invalid/expired/revoked token it reports `active: false` and no other detail
+- [x] 3.13 Implement `POST /oauth/introspect` in `src/router/src/endpoints/oauth.rs`, resolving the token directly against the catalog (not through the resource-API's `auth_middleware`)
 
 ## 4. HTTP API surface
 

@@ -87,6 +87,7 @@ pub fn router<S: RouterState>() -> Router<S> {
         .route("/oauth/consent/context", get(consent_context::<S>))
         .route("/oauth/authorize/decision", post(authorize_decision::<S>))
         .route("/oauth/token", post(token::<S>))
+        .route("/oauth/introspect", post(introspect::<S>))
 }
 
 /// The signal read scopes a consent may grant, as a `Vec` for convenience.
@@ -1064,6 +1065,103 @@ async fn issue_tokens<S: RouterState>(
     }))
 }
 
+/// Token introspection request (RFC 7662 §2.1, form-encoded).
+#[derive(Debug, Deserialize)]
+struct IntrospectRequest {
+    token: String,
+}
+
+/// Token introspection response (RFC 7662 §2.2). Every field beyond
+/// `active` is omitted when the token is inactive — an inactive response
+/// discloses nothing about why (expired, revoked, or never valid).
+#[derive(Debug, Serialize)]
+struct IntrospectResponse {
+    active: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    user_id: Option<String>,
+    /// This deliberately named `tenants`, not `granted_tenants` — there is
+    /// no `memberships`-shaped field on this response to be confused with
+    /// (design D5), unlike `whoami`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tenants: Option<Vec<crate::endpoints::session::GrantedTenant>>,
+    /// Space-delimited (RFC 7662 convention), like the token endpoint's own
+    /// `scope`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    scope: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    aud: Option<String>,
+    /// Unix timestamp (RFC 7662 §2.2's `exp`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    exp: Option<i64>,
+}
+
+impl IntrospectResponse {
+    fn inactive() -> Self {
+        Self {
+            active: false,
+            user_id: None,
+            tenants: None,
+            scope: None,
+            aud: None,
+            exp: None,
+        }
+    }
+}
+
+/// `POST /oauth/introspect` (RFC 7662-shaped, design:
+/// mcp-multi-tenant-oauth-grants D4): reports whether a bearer token is
+/// active and, if so, its full tenant grant set, scopes, audience, and
+/// expiry — the way to learn "what can this token reach" before any one
+/// tenant has been selected. Resolves the token directly against the
+/// catalog rather than through the resource-API's `auth_middleware`/
+/// `authenticate_oauth_token`, since that path always requires resolving to
+/// exactly one tenant. Public clients don't authenticate `/oauth/token` in
+/// this deployment either, so this endpoint follows the same precedent:
+/// presenting the valid bearer token itself is the only credential needed
+/// (the caller already possesses it).
+///
+/// Not yet part of the generated OpenAPI spec (like `/oauth/register` and
+/// `/oauth/token` above, this is an RFC-standard endpoint outside
+/// SignalDB's own documented surface) — task 4.1 of this change adds it.
+async fn introspect<S: RouterState>(
+    State(state): State<S>,
+    Form(req): Form<IntrospectRequest>,
+) -> Response {
+    let record = match state
+        .catalog()
+        .get_valid_access_token(&hash_oauth_token(&req.token))
+        .await
+    {
+        Ok(record) => record,
+        Err(error) => {
+            tracing::error!(error = %error, "oauth introspect: token lookup failed");
+            None
+        }
+    };
+
+    let body = match record {
+        Some(record) => IntrospectResponse {
+            active: true,
+            user_id: Some(record.user_id),
+            tenants: Some(
+                record
+                    .tenant_grants
+                    .into_iter()
+                    .map(|g| crate::endpoints::session::GrantedTenant {
+                        tenant_id: g.tenant_id,
+                        dataset_ids: g.dataset_ids,
+                    })
+                    .collect(),
+            ),
+            scope: Some(record.scopes.join(" ")),
+            aud: record.resource,
+            exp: Some(record.expires_at.timestamp()),
+        },
+        None => IntrospectResponse::inactive(),
+    };
+    ([(header::CACHE_CONTROL, "no-store")], Json(body)).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use super::hash_oauth_token;
@@ -2022,6 +2120,104 @@ mod tests {
             .expect("new refresh token stored");
         assert_eq!(new_access.tenant_grants, expected_multi_tenant_grant());
         assert_eq!(new_refresh.tenant_grants, expected_multi_tenant_grant());
+    }
+
+    // ---- mcp-multi-tenant-oauth-grants: POST /oauth/introspect (task 3.12-3.13) ----
+
+    async fn post_introspect(app: &axum::Router, token: &str) -> axum::response::Response {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/oauth/introspect")
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(format!(
+                        "token={}",
+                        url::form_urlencoded::byte_serialize(token.as_bytes()).collect::<String>()
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    /// Task 3.12: introspecting an active multi-tenant token reports
+    /// `active: true` and the full `tenants` array, without requiring
+    /// `X-Tenant-ID` anywhere in the request.
+    #[tokio::test]
+    async fn introspect_active_multi_tenant_token_reports_full_grant() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_multi_tenant_authorization_code(&catalog, "raw-code-introspect").await;
+        let tokens = body_json(
+            post_token(
+                &app,
+                format!(
+                    "grant_type=authorization_code&code=raw-code-introspect&code_verifier={PKCE_VERIFIER}\
+                     &redirect_uri=https%3A%2F%2Fclaude.ai%2Fcb&client_id=client-1"
+                ),
+            )
+            .await,
+        )
+        .await;
+        let access_raw = tokens["access_token"].as_str().unwrap().to_string();
+
+        let res = post_introspect(&app, &access_raw).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let doc = body_json(res).await;
+        assert_eq!(doc["active"], true);
+        assert!(doc["user_id"].as_str().is_some_and(|s| !s.is_empty()));
+        let tenants = doc["tenants"].as_array().unwrap();
+        assert_eq!(tenants.len(), 2, "{tenants:?}");
+        assert!(
+            tenants.iter().any(|t| t["tenant_id"] == "acme"
+                && t["dataset_ids"] == serde_json::json!(["production"])),
+            "{tenants:?}"
+        );
+        assert!(
+            tenants
+                .iter()
+                .any(|t| t["tenant_id"] == "globex" && t["dataset_ids"].is_null()),
+            "{tenants:?}"
+        );
+        assert_eq!(doc["scope"], "traces:read");
+        assert_eq!(doc["aud"], "https://signaldb.example.com/mcp");
+        assert!(doc["exp"].as_i64().is_some());
+    }
+
+    /// Task 3.12: introspecting an expired/revoked/garbage token reports
+    /// `active: false` and no other detail.
+    #[tokio::test]
+    async fn introspect_inactive_token_reports_nothing_else() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_multi_tenant_authorization_code(&catalog, "raw-code-introspect-revoked").await;
+        let tokens = body_json(
+            post_token(
+                &app,
+                format!(
+                    "grant_type=authorization_code&code=raw-code-introspect-revoked&code_verifier={PKCE_VERIFIER}\
+                     &redirect_uri=https%3A%2F%2Fclaude.ai%2Fcb&client_id=client-1"
+                ),
+            )
+            .await,
+        )
+        .await;
+        let access_raw = tokens["access_token"].as_str().unwrap().to_string();
+        catalog
+            .revoke_access_token(&hash_oauth_token(&access_raw))
+            .await
+            .unwrap();
+
+        for token in [access_raw.as_str(), "sdb_at_totally-unknown"] {
+            let res = post_introspect(&app, token).await;
+            assert_eq!(res.status(), StatusCode::OK);
+            let doc = body_json(res).await;
+            assert_eq!(doc["active"], false, "{doc}");
+            assert_eq!(
+                doc.as_object().unwrap().len(),
+                1,
+                "an inactive token must report nothing beyond `active`: {doc}"
+            );
+        }
     }
 
     // ---- multi-dataset-key-restriction phase 3: OAuth consent + tokens ----
