@@ -1,9 +1,4 @@
-import {
-  fireEvent,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
@@ -130,6 +125,7 @@ beforeEach(() => {
     types: ENTITY_TYPES,
     isPending: false,
     analyzed: false,
+    isError: false,
   });
 });
 
@@ -197,6 +193,33 @@ describe("CatalogView", () => {
     ).toHaveAttribute("aria-pressed", "true");
     expect(within(nav).getByText("Databases")).toBeInTheDocument();
     expect(within(nav).getByText("Hosts")).toBeInTheDocument();
+  });
+
+  it("says entity types aren't analyzed yet when nothing errored", async () => {
+    renderView();
+    const nav = screen.getByRole("complementary", { name: "Entity types" });
+    expect(within(nav).getByText(/Not analyzed yet/)).toBeInTheDocument();
+  });
+
+  it("surfaces a real query failure instead of the benign 'not analyzed' note", async () => {
+    // A 403 (dataset not found for this tenant) must read as a backend
+    // failure, not as "compaction hasn't run yet" — the two collapse to the
+    // same curated fallback otherwise and hide a real problem from the user.
+    useCatalogEntityTypes.mockReturnValue({
+      types: ENTITY_TYPES,
+      isPending: false,
+      analyzed: false,
+      isError: true,
+      error: new Error("Dataset 'default' not found for tenant 'jobradar'"),
+    });
+    renderView();
+    const nav = screen.getByRole("complementary", { name: "Entity types" });
+    expect(
+      within(nav).getByText(
+        /Could not load entity types: Dataset 'default' not found/,
+      ),
+    ).toBeInTheDocument();
+    expect(within(nav).queryByText(/Not analyzed yet/)).not.toBeInTheDocument();
   });
 
   it("switches the selected entity type through the URL state", async () => {

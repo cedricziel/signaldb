@@ -625,7 +625,9 @@ describe("TracesView group list", () => {
     // list below is read after both have merged in, not just whichever
     // landed first.
     await screen.findByText("The matched route.");
-    const list = screen.getByRole("listbox", { name: "Attribute key suggestions" });
+    const list = screen.getByRole("listbox", {
+      name: "Attribute key suggestions",
+    });
     const options = within(list).getAllByRole("option");
     expect(options.map((o) => o.getAttribute("data-key"))).toEqual([
       "http.route",
@@ -1548,6 +1550,52 @@ describe("TracesView span-volume chart", () => {
         value: { fn: "count", as: "count" },
       }),
     });
+  });
+
+  it("shows a loading indicator while the histogram volume query is pending", () => {
+    vi.spyOn(traceVolumeApi, "fetchTraceVolume").mockReturnValue(
+      new Promise(() => {}),
+    );
+    renderView();
+    expect(screen.getByText("Loading…")).toBeInTheDocument();
+  });
+
+  it("shows a query error when the histogram volume query fails", async () => {
+    vi.spyOn(traceVolumeApi, "fetchTraceVolume").mockRejectedValue(
+      new Error("volume failed"),
+    );
+    renderView();
+    expect(
+      await screen.findByText("Could not load span volume: volume failed"),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a loading indicator while the heatmap query is pending", async () => {
+    stubFetchRoutes(routes);
+    renderView();
+    await screen.findByRole("img", { name: /span volume/i });
+    vi.spyOn(traceVolumeApi, "fetchTraceLatencyHeatmap").mockReturnValue(
+      new Promise(() => {}),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Heatmap" }));
+
+    expect(await screen.findByText("Loading…")).toBeInTheDocument();
+  });
+
+  it("shows a query error when the heatmap query fails", async () => {
+    stubFetchRoutes(routes);
+    renderView();
+    await screen.findByRole("img", { name: /span volume/i });
+    vi.spyOn(traceVolumeApi, "fetchTraceLatencyHeatmap").mockRejectedValue(
+      new Error("heatmap failed"),
+    );
+
+    await userEvent.click(screen.getByRole("button", { name: "Heatmap" }));
+
+    expect(
+      await screen.findByText("Could not load latency: heatmap failed"),
+    ).toBeInTheDocument();
   });
 
   it("renders the heatmap when the independent volume query fails", async () => {

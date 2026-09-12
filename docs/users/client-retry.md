@@ -58,6 +58,11 @@ on `503` or a connection reset because the server may have acted on it.
   cannot afford the wait learn at once.
 - At most **4 attempts** per call (the first request plus three retries). The
   last failure is what the caller sees.
+- The web UI also bounds each individual attempt at **30 s** (sooner than the
+  backend querier's own 60 s timeout), so a hung request fails with a clear
+  error instead of leaving the UI loading forever. A timed-out attempt is
+  treated like any other transient failure — retried for idempotent methods,
+  surfaced immediately otherwise.
 
 ## Per surface
 

@@ -33,6 +33,15 @@ export interface CatalogEntityTypes {
   analyzed: boolean;
   /** Oldest `as_of` across the sources that answered, if any reported one. */
   asOf?: string;
+  /**
+   * Whether the registry or field-metadata query itself failed — distinct
+   * from `analyzed: false`, which means "nothing has been compacted yet",
+   * not "the request errored". A caller must render these differently: the
+   * first is a backend failure to surface, the second is a benign, expected
+   * state on a fresh deployment.
+   */
+  isError?: boolean;
+  error?: unknown;
 }
 
 /** The registry hit shape, narrowed to what derivation needs. `identifying`
@@ -88,6 +97,8 @@ export function useCatalogEntityTypes(
   });
 
   const isPending = registry.isPending || fields.isPending;
+  const isError = registry.isError || fields.isError;
+  const error = registry.error ?? fields.error;
   const bySource = fields.data ?? new Map<string, SourceFields>();
   const analyzed = [...bySource.values()].some((f) => f.analyzed);
   const asOf = oldestAsOf(bySource);
@@ -110,6 +121,8 @@ export function useCatalogEntityTypes(
       isPending,
       analyzed: false,
       asOf,
+      isError,
+      error,
     };
   }
 
@@ -126,5 +139,7 @@ export function useCatalogEntityTypes(
     isPending,
     analyzed,
     asOf,
+    isError,
+    error,
   };
 }

@@ -33,10 +33,7 @@ import {
 } from "./entityTypes";
 import { useCatalogEntityTypes } from "./useEntityTypes";
 import { useSparklineColumn } from "./useEntityMetrics";
-import {
-  EntitySparkline,
-  type SparklinePoint,
-} from "./EntitySparkline";
+import { EntitySparkline, type SparklinePoint } from "./EntitySparkline";
 import {
   MobileFiltersToggle,
   MobileSidebarDrawer,
@@ -81,10 +78,8 @@ export function CatalogView({ state, update }: Props) {
   // Called before the detail branch below: an early return above a hook
   // changes the hook count between renders of the same instance, and drilling
   // into a row is exactly that transition.
-  const { types, isPending, analyzed, asOf } = useCatalogEntityTypes(
-    range,
-    rangeKey,
-  );
+  const { types, isPending, analyzed, asOf, isError, error } =
+    useCatalogEntityTypes(range, rangeKey);
   const mobileSidebar = useMobileSidebar();
   const resolved = resolveEntityType(state.catalogEntity, types);
 
@@ -133,6 +128,8 @@ export function CatalogView({ state, update }: Props) {
             rangeKey={rangeKey}
             analyzed={analyzed}
             asOf={asOf}
+            isError={isError}
+            error={error}
             onSelect={(id) => {
               update({ catalogEntity: id });
               mobileSidebar.close();
@@ -162,6 +159,8 @@ function CatalogNav({
   rangeKey,
   analyzed,
   asOf,
+  isError,
+  error,
   onSelect,
 }: {
   types: EntityTypeDef[];
@@ -170,6 +169,8 @@ function CatalogNav({
   rangeKey: string;
   analyzed: boolean;
   asOf?: string;
+  isError?: boolean;
+  error?: unknown;
   onSelect: (id: string) => void;
 }) {
   const results = useQueries({
@@ -204,14 +205,18 @@ function CatalogNav({
           );
         })}
       </div>
-      {/* Absence of an entity type is a claim about the data; absence of
-          metadata is a claim about what we know. Saying so keeps a
-          never-compacted deployment from reading as an empty one. */}
-      <div className="sidebar-note">
-        {analyzed
-          ? asOf && `Field metadata as of ${asOf}`
-          : "Not analyzed yet — entity types appear once compaction has run."}
-      </div>
+      {isError ? (
+        <QueryError what="entity types" error={error} />
+      ) : (
+        // Absence of an entity type is a claim about the data; absence of
+        // metadata is a claim about what we know. Saying so keeps a
+        // never-compacted deployment from reading as an empty one.
+        <div className="sidebar-note">
+          {analyzed
+            ? asOf && `Field metadata as of ${asOf}`
+            : "Not analyzed yet — entity types appear once compaction has run."}
+        </div>
+      )}
     </aside>
   );
 }
@@ -457,9 +462,7 @@ export function EntityTable({
             />
             {/* Named, not decorative: the reader must know which metric the
                 shape belongs to without opening the entity. */}
-            {sparklineLabel && (
-              <th title={sparklineLabel}>{sparklineLabel}</th>
-            )}
+            {sparklineLabel && <th title={sparklineLabel}>{sparklineLabel}</th>}
           </tr>
         </thead>
         <tbody>
