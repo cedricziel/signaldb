@@ -510,10 +510,11 @@ export const logqlQueryRange = <ThrowOnError extends boolean = false>(options: O
 
 /**
  * Record the human's consent decision and, on approval, mint the single-use
- * authorization code. Authenticated by the browser session cookie; the code is
- * bound to the chosen tenant (which the user must be a member of), the granted
- * read scopes, the client, the redirect URI, the PKCE challenge, and the
- * resource. Returns the URL the SPA should navigate to.
+ * authorization code. Authenticated by the browser session cookie; the code
+ * is bound to the chosen set of one or more tenants (each of which the user
+ * must be a member of, with its own independent dataset restriction), the
+ * granted read scopes, the client, the redirect URI, the PKCE challenge,
+ * and the resource. Returns the URL the SPA should navigate to.
  */
 export const oauthConsentDecision = <ThrowOnError extends boolean = false>(options: Options<OauthConsentDecisionData, ThrowOnError>): RequestResult<OauthConsentDecisionResponses, OauthConsentDecisionErrors, ThrowOnError> => (options.client ?? client).post<OauthConsentDecisionResponses, OauthConsentDecisionErrors, ThrowOnError>({
     url: '/oauth/authorize/decision',
