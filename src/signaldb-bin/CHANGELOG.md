@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.4.0](https://github.com/cedricziel/signaldb/compare/signaldb-bin-v0.3.0...signaldb-bin-v0.4.0) (2026-09-12)
+
+
+### Features
+
+* self-serve connection details for agents ([public] config, /api/v1/connection, MCP connection_info) ([#1474](https://github.com/cedricziel/signaldb/issues/1474)) ([ad78cd1](https://github.com/cedricziel/signaldb/commit/ad78cd1981282426b65b7dcac50ddc38eeea7f80))
+
+
+### Bug Fixes
+
+* **acceptor:** accept gzip/zstd OTLP/HTTP bodies and cap request size ([#1383](https://github.com/cedricziel/signaldb/issues/1383)) ([f90b163](https://github.com/cedricziel/signaldb/commit/f90b163185cd903d085351359b338f35d668a423))
+* **wal:** add signaldb wal dead-letter replay/list/purge ([#1526](https://github.com/cedricziel/signaldb/issues/1526)) ([e57dc2d](https://github.com/cedricziel/signaldb/commit/e57dc2df331221133942c0ecc3563dd8ebf5a4fc)), closes [#1494](https://github.com/cedricziel/signaldb/issues/1494)
+* **wal:** cap concurrently active WAL instances against RLIMIT_NOFILE ([#1437](https://github.com/cedricziel/signaldb/issues/1437)) ([2c14e7e](https://github.com/cedricziel/signaldb/commit/2c14e7e203c114572bd786a835802512ac7e1067))
+* **wal:** self-heal entries_pending gauge drift with per-directory attribution ([#1523](https://github.com/cedricziel/signaldb/issues/1523)) ([586889d](https://github.com/cedricziel/signaldb/commit/586889d2f16e3b5eddb2a7f990c8a347e19394c2))
+* **writer:** give each tenant its own WAL instead of one global WAL ([#1299](https://github.com/cedricziel/signaldb/issues/1299)) ([830900e](https://github.com/cedricziel/signaldb/commit/830900ebaddf46dff5ac9eb0748d8fb63e7b35b2))
+
 ## [0.3.0](https://github.com/cedricziel/signaldb/compare/signaldb-bin-v0.1.3...signaldb-bin-v0.3.0) (2026-08-17)
 
 > **Note:** this release jumps `signaldb-bin` from the `0.1.x` line straight to `0.3.0`. `signaldb-bin` now versions in lockstep with the other core crates (`signaldb-cli`, `acceptor`, `router`, `writer`, `querier`, `compactor`, `common`) through a release-please `linked-versions` group named `signaldb-core`, so it adopted the group's highest version. The jump is pure harmonization — there is no additional feature scope behind the skipped `0.2.x` line.
