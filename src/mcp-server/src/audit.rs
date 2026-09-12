@@ -77,7 +77,10 @@ pub struct CallerDatasetIds(pub Option<Vec<String>>);
 /// One tenant an OAuth credential's grant reaches, with its own optional
 /// dataset-set restriction. Mirrors `common::catalog::TenantGrant` /
 /// the router's `GrantedTenant` response DTO; kept as a local type since this
-/// crate depends on neither (change: mcp-multi-tenant-oauth-grants D4).
+/// crate does not use `common::catalog` (it holds no credential, catalog, or
+/// storage access of its own — see the boundary comment on its `common`
+/// dependency in `Cargo.toml`) and has no dependency on the router at all
+/// (change: mcp-multi-tenant-oauth-grants D4).
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct GrantedTenant {
     pub tenant_id: String,
