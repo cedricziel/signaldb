@@ -179,6 +179,47 @@ credential is refused entirely by the management API (`can_manage`/
 `discover_datasets`/`tenant_list_tables`/`whoami` filter their dataset
 listing to the restriction so an unlisted dataset is never named.
 
+**Origin restriction (CORS)**. An API key may additionally be restricted to a
+set of browser origins allowed to use it directly from client-side JS:
+`api_keys.allowed_origins` (JSON-array-in-TEXT, same pattern as `scopes`/
+`dataset_ids`), decoded onto `TenantContext.api_key_allowed_origins:
+Option<Vec<String>>` in `Authenticator::authenticate_from_database`. `None`/
+empty = unrestricted (unchanged default; the vast majority of ingest traffic
+carries no `Origin` header at all and is entirely unaffected). OAuth grants
+carry no such restriction — there's no OAuth-side equivalent yet, so
+`with_api_key_restrictions` always passes `None` for that path.
+
+Enforcement is split across two layers on the acceptor's OTLP/HTTP ingest
+path (`src/acceptor/src/lib.rs`, `src/acceptor/src/middleware/auth.rs`),
+because a CORS preflight (`OPTIONS`) has no `Authorization` header and so
+can't know which key's restriction to check: `otlp_cors_layer()` mounts
+unconditionally (no longer gated by `self_monitoring.frontend.enabled`,
+which is untouched and governs the self-monitoring frontend's own OTLP
+export as a separate concern) and mirrors any preflight `Origin` — a
+preflight grants no authority by itself. The real check happens _after_ auth
+resolves the key, via `common::auth::origin_allowed(restriction,
+requested)`: a request with an `Origin` header is rejected `403` if the
+key's `allowed_origins` is non-empty and doesn't contain it; on success (or
+an unrestricted key) the response reflects `Access-Control-Allow-Origin:
+<origin>` and `Vary: Origin`. `otlp_cors_layer()` explicitly zeroes its own
+`Vary` computation (`.vary(Vec::new())`) so it never doubles up with that
+post-auth header on an actual (non-preflight) response.
+
+Validated the same way as `dataset_ids` (`validate_allowed_origins_set` /
+`validate_create_allowed_origins` in `common::catalog`): an explicit empty
+list is rejected on create, never meaning "unrestricted." Updates use the
+same tri-state shape as dataset restrictions —
+`OriginRestrictionUpdate::{Keep,Clear,Set}` via
+`OriginRestrictionUpdate::from_request(allowed_origins,
+clear_allowed_origins)` — surfaced identically on every API-key surface
+(admin API, management API, CLI `--allowed-origin`/
+`--clear-allowed-origins`, MCP `allowed_origins`/`clear_allowed_origins`,
+and the web UI's `OriginPicker` component). See
+[Sending OTLP data](../../docs/users/sending-otlp.md#browser-cors-ingestion)
+for the client-facing behavior and
+[Authentication](../../docs/users/authentication.md#api-key-scopes) for the
+API shape.
+
 ### Error Codes
 
 - **400**: Malformed auth headers (wrong scheme, invalid tenant/dataset ID)

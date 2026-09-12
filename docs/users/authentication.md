@@ -315,6 +315,32 @@ admin, management, tenant self-service, and the PromQL/LogQL/TraceQL/Query-IR
 query-compat endpoints (SQL is separate, served over Arrow Flight). The CLI
 and MCP server are both built on it and expose no capability it doesn't.
 
+### Origin restriction (browser/CORS ingestion)
+
+A key may also be restricted to a **set** of browser origins allowed to use
+it directly from client-side JavaScript (`--allowed-origin`, repeatable /
+`allowed_origins`). Omitting it leaves the key unrestricted — same as
+today, and a no-op for the vast majority of ingest traffic, since only a
+browser request carries an `Origin` header at all. An explicit empty set is
+rejected the same way an empty `dataset_ids` is: omit the field for
+unrestricted, or use the clear signal below to remove an existing
+restriction.
+
+```bash
+signaldb-cli --admin-key <admin-key> admin api-key create acme \
+  --name "Website widget key" --scope traces:write \
+  --allowed-origin https://example.com --allowed-origin https://app.example.com
+```
+
+Over HTTP, `allowed_origins` sits alongside `scopes`/`dataset_ids` on the
+same create/update bodies; `clear_allowed_origins: true`
+(`--clear-allowed-origins` on the CLI) removes an existing restriction,
+mirroring `clear_dataset_restriction` — sending both `allowed_origins` and
+`clear_allowed_origins: true` together is rejected as contradictory.
+
+See [Sending OTLP data](sending-otlp.md#browser-cors-ingestion) for how this
+restriction is enforced on the wire.
+
 ## Tenant self-service API
 
 With a regular tenant API key (the three headers above), the router
