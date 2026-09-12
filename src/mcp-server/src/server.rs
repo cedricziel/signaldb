@@ -241,6 +241,11 @@ struct CreateApiKeyParams {
     /// is rejected). Omitted or `null` creates an unrestricted key.
     #[serde(default)]
     dataset_ids: Option<Vec<String>>,
+    /// Browser origin set the key is restricted to for CORS on ingest
+    /// requests (non-empty; a bare empty array is rejected). Omitted or
+    /// `null` creates a key unrestricted by origin.
+    #[serde(default)]
+    allowed_origins: Option<Vec<String>>,
 }
 
 /// Parameters for `update_api_key_scopes`.
@@ -263,6 +268,15 @@ struct UpdateApiKeyScopesParams {
     /// be combined with a non-empty `dataset_ids`.
     #[serde(default)]
     clear_dataset_restriction: bool,
+    /// Replacement browser-origin set for CORS on ingest requests (non-empty;
+    /// a bare empty array is rejected). Omit to keep the current restriction.
+    /// Mutually exclusive with `clear_allowed_origins: true`.
+    #[serde(default)]
+    allowed_origins: Option<Vec<String>>,
+    /// Clear an existing allowed-origins restriction back to unrestricted.
+    /// Must not be combined with a non-empty `allowed_origins`.
+    #[serde(default)]
+    clear_allowed_origins: bool,
 }
 
 /// Parameters for `get_profile`.
@@ -1020,17 +1034,26 @@ fn require_nonempty_scopes(scopes: &[String]) -> Result<(), ErrorData> {
     Ok(())
 }
 
-/// Reject an API-key update with none of `scopes`, `dataset_ids`, or
-/// `clear_dataset_restriction` set (platform-admin and tenant-management
-/// variants share this validation).
+/// Reject an API-key update with none of `scopes`, `dataset_ids`,
+/// `clear_dataset_restriction`, `allowed_origins`, or `clear_allowed_origins`
+/// set (platform-admin and tenant-management variants share this
+/// validation).
 fn require_any_update(
     scopes: &Option<Vec<String>>,
     dataset_ids: &Option<Vec<String>>,
     clear_dataset_restriction: bool,
+    allowed_origins: &Option<Vec<String>>,
+    clear_allowed_origins: bool,
 ) -> Result<(), ErrorData> {
-    if scopes.is_none() && dataset_ids.is_none() && !clear_dataset_restriction {
+    if scopes.is_none()
+        && dataset_ids.is_none()
+        && !clear_dataset_restriction
+        && allowed_origins.is_none()
+        && !clear_allowed_origins
+    {
         return Err(ErrorData::invalid_params(
-            "nothing to update: pass `scopes`, `dataset_ids`, and/or `clear_dataset_restriction`",
+            "nothing to update: pass `scopes`, `dataset_ids`, `clear_dataset_restriction`, \
+             `allowed_origins`, and/or `clear_allowed_origins`",
             None,
         ));
     }
@@ -1049,6 +1072,26 @@ fn require_no_contradictory_dataset_update(
     if clear_dataset_restriction && dataset_ids.as_ref().is_some_and(|ids| !ids.is_empty()) {
         return Err(ErrorData::invalid_params(
             "`clear_dataset_restriction: true` cannot be combined with a non-empty `dataset_ids`",
+            None,
+        ));
+    }
+    Ok(())
+}
+
+/// Reject `clear_allowed_origins: true` combined with a non-empty
+/// `allowed_origins` in the same update request, mirroring
+/// [`require_no_contradictory_dataset_update`] exactly.
+fn require_no_contradictory_origin_update(
+    allowed_origins: &Option<Vec<String>>,
+    clear_allowed_origins: bool,
+) -> Result<(), ErrorData> {
+    if clear_allowed_origins
+        && allowed_origins
+            .as_ref()
+            .is_some_and(|origins| !origins.is_empty())
+    {
+        return Err(ErrorData::invalid_params(
+            "`clear_allowed_origins: true` cannot be combined with a non-empty `allowed_origins`",
             None,
         ));
     }
@@ -1213,6 +1256,11 @@ struct TenantCreateApiKeyParams {
     /// is rejected). Omitted or `null` creates an unrestricted key.
     #[serde(default)]
     dataset_ids: Option<Vec<String>>,
+    /// Browser origin set the key is restricted to for CORS on ingest
+    /// requests (non-empty; a bare empty array is rejected). Omitted or
+    /// `null` creates a key unrestricted by origin.
+    #[serde(default)]
+    allowed_origins: Option<Vec<String>>,
 }
 
 /// Parameters for `tenant_revoke_api_key`.
@@ -1247,6 +1295,15 @@ struct TenantUpdateApiKeyParams {
     /// be combined with a non-empty `dataset_ids`.
     #[serde(default)]
     clear_dataset_restriction: bool,
+    /// Replacement browser-origin set for CORS on ingest requests (non-empty;
+    /// a bare empty array is rejected). Omit to keep the current restriction.
+    /// Mutually exclusive with `clear_allowed_origins: true`.
+    #[serde(default)]
+    allowed_origins: Option<Vec<String>>,
+    /// Clear an existing allowed-origins restriction back to unrestricted.
+    /// Must not be combined with a non-empty `allowed_origins`.
+    #[serde(default)]
+    clear_allowed_origins: bool,
 }
 
 /// Tenant membership role, shared by `tenant_upsert_membership`.
@@ -2192,7 +2249,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Create an API key for a tenant carrying exactly the given `scopes` (required, at least one; e.g. traces:write, schema:read) and optionally restricted to a set of datasets via `dataset_ids` (admin API; requires administrative credentials). The raw secret is returned once."
+        description = "Create an API key for a tenant carrying exactly the given `scopes` (required, at least one; e.g. traces:write, schema:read), optionally restricted to a set of datasets via `dataset_ids`, and optionally restricted to a set of browser origins for CORS on ingest requests via `allowed_origins` (admin API; requires administrative credentials). The raw secret is returned once."
     )]
     async fn create_api_key(
         &self,
@@ -2208,7 +2265,7 @@ impl McpServer {
                 name: p.name,
                 scopes: p.scopes,
                 dataset_ids: p.dataset_ids,
-                allowed_origins: None,
+                allowed_origins: p.allowed_origins,
             })
             .send()
             .await
@@ -2217,7 +2274,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Update the scopes and/or dataset restriction of a live API key without rotating its secret (admin API; requires administrative credentials). `dataset_ids` replaces the restriction (non-empty, or omit to leave it unchanged); `clear_dataset_restriction: true` removes it back to unrestricted and must not be combined with a non-empty `dataset_ids`. Revoked keys cannot be updated; the change applies to the key's next request."
+        description = "Update the scopes, dataset restriction, and/or allowed-origins restriction of a live API key without rotating its secret (admin API; requires administrative credentials). `dataset_ids` replaces the dataset restriction (non-empty, or omit to leave it unchanged); `clear_dataset_restriction: true` removes it back to unrestricted and must not be combined with a non-empty `dataset_ids`. `allowed_origins` replaces the browser-origin (CORS) restriction the same way; `clear_allowed_origins: true` removes it and must not be combined with a non-empty `allowed_origins`. Revoked keys cannot be updated; the change applies to the key's next request."
     )]
     async fn update_api_key_scopes(
         &self,
@@ -2225,7 +2282,14 @@ impl McpServer {
         Parameters(p): Parameters<UpdateApiKeyScopesParams>,
     ) -> Result<CallToolResult, ErrorData> {
         require_no_contradictory_dataset_update(&p.dataset_ids, p.clear_dataset_restriction)?;
-        require_any_update(&p.scopes, &p.dataset_ids, p.clear_dataset_restriction)?;
+        require_no_contradictory_origin_update(&p.allowed_origins, p.clear_allowed_origins)?;
+        require_any_update(
+            &p.scopes,
+            &p.dataset_ids,
+            p.clear_dataset_restriction,
+            &p.allowed_origins,
+            p.clear_allowed_origins,
+        )?;
         let client = self.router_client(&parts, None)?;
         let resp = client
             .update_api_key()
@@ -2235,8 +2299,8 @@ impl McpServer {
                 scopes: p.scopes,
                 dataset_ids: p.dataset_ids,
                 clear_dataset_restriction: Some(p.clear_dataset_restriction),
-                allowed_origins: None,
-                clear_allowed_origins: Some(false),
+                allowed_origins: p.allowed_origins,
+                clear_allowed_origins: Some(p.clear_allowed_origins),
             })
             .send()
             .await
@@ -2555,7 +2619,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Create an API key for the caller's own tenant, carrying exactly the given `scopes` (required, at least one) and optionally restricted to a set of datasets via `dataset_ids` (management API; tenant-admin session or an API key carrying `tenant:manage`). The raw secret is returned once."
+        description = "Create an API key for the caller's own tenant, carrying exactly the given `scopes` (required, at least one), optionally restricted to a set of datasets via `dataset_ids`, and optionally restricted to a set of browser origins for CORS on ingest requests via `allowed_origins` (management API; tenant-admin session or an API key carrying `tenant:manage`). The raw secret is returned once."
     )]
     async fn tenant_create_api_key(
         &self,
@@ -2572,7 +2636,7 @@ impl McpServer {
                 name: p.name,
                 scopes: p.scopes,
                 dataset_ids: p.dataset_ids,
-                allowed_origins: None,
+                allowed_origins: p.allowed_origins,
             })
             .send()
             .await
@@ -2603,7 +2667,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Update the scopes and/or dataset restriction of one of the caller's own tenant's API keys, without rotating its secret (management API; tenant-admin session or an API key carrying `tenant:manage`). `dataset_ids` replaces the restriction (non-empty, or omit to leave it unchanged); `clear_dataset_restriction: true` removes it back to unrestricted and must not be combined with a non-empty `dataset_ids`."
+        description = "Update the scopes, dataset restriction, and/or allowed-origins restriction of one of the caller's own tenant's API keys, without rotating its secret (management API; tenant-admin session or an API key carrying `tenant:manage`). `dataset_ids` replaces the dataset restriction (non-empty, or omit to leave it unchanged); `clear_dataset_restriction: true` removes it back to unrestricted and must not be combined with a non-empty `dataset_ids`. `allowed_origins` replaces the browser-origin (CORS) restriction the same way; `clear_allowed_origins: true` removes it and must not be combined with a non-empty `allowed_origins`."
     )]
     async fn tenant_update_api_key(
         &self,
@@ -2612,7 +2676,14 @@ impl McpServer {
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant_id)?;
         require_no_contradictory_dataset_update(&p.dataset_ids, p.clear_dataset_restriction)?;
-        require_any_update(&p.scopes, &p.dataset_ids, p.clear_dataset_restriction)?;
+        require_no_contradictory_origin_update(&p.allowed_origins, p.clear_allowed_origins)?;
+        require_any_update(
+            &p.scopes,
+            &p.dataset_ids,
+            p.clear_dataset_restriction,
+            &p.allowed_origins,
+            p.clear_allowed_origins,
+        )?;
         let client = self.scoped_router_client(&parts, &p.tenant_id, None)?;
         let resp = client
             .manage_update_api_key()
@@ -2622,8 +2693,8 @@ impl McpServer {
                 scopes: p.scopes,
                 dataset_ids: p.dataset_ids,
                 clear_dataset_restriction: Some(p.clear_dataset_restriction),
-                allowed_origins: None,
-                clear_allowed_origins: Some(false),
+                allowed_origins: p.allowed_origins,
+                clear_allowed_origins: Some(p.clear_allowed_origins),
             })
             .send()
             .await
@@ -5031,6 +5102,7 @@ mod tests {
                     name: None,
                     scopes: vec!["traces:read".to_string()],
                     dataset_ids: None,
+                    allowed_origins: None,
                 }),
                 Extension(parts),
             )
@@ -5651,6 +5723,7 @@ mod tests {
                     name: None,
                     scopes: vec!["traces:read".to_string()],
                     dataset_ids: Some(vec!["production".to_string(), "staging".to_string()]),
+                    allowed_origins: None,
                 }),
             )
             .await
@@ -5681,6 +5754,7 @@ mod tests {
                     name: None,
                     scopes: vec!["traces:read".to_string()],
                     dataset_ids: Some(vec!["production".to_string()]),
+                    allowed_origins: None,
                 }),
                 Extension(valid_parts()),
             )
@@ -5711,6 +5785,8 @@ mod tests {
                     scopes: None,
                     dataset_ids: Some(vec!["production".to_string()]),
                     clear_dataset_restriction: false,
+                    allowed_origins: None,
+                    clear_allowed_origins: false,
                 }),
             )
             .await
@@ -5740,6 +5816,8 @@ mod tests {
                     scopes: None,
                     dataset_ids: None,
                     clear_dataset_restriction: true,
+                    allowed_origins: None,
+                    clear_allowed_origins: false,
                 }),
             )
             .await
@@ -5768,6 +5846,8 @@ mod tests {
                     scopes: None,
                     dataset_ids: Some(vec!["staging".to_string()]),
                     clear_dataset_restriction: false,
+                    allowed_origins: None,
+                    clear_allowed_origins: false,
                 }),
                 Extension(valid_parts()),
             )
@@ -5797,6 +5877,8 @@ mod tests {
                     scopes: None,
                     dataset_ids: None,
                     clear_dataset_restriction: true,
+                    allowed_origins: None,
+                    clear_allowed_origins: false,
                 }),
                 Extension(valid_parts()),
             )
@@ -5828,6 +5910,8 @@ mod tests {
                     scopes: None,
                     dataset_ids: Some(vec!["production".to_string()]),
                     clear_dataset_restriction: true,
+                    allowed_origins: None,
+                    clear_allowed_origins: false,
                 }),
             )
             .await
@@ -5856,6 +5940,8 @@ mod tests {
                     scopes: None,
                     dataset_ids: Some(vec!["production".to_string(), "staging".to_string()]),
                     clear_dataset_restriction: true,
+                    allowed_origins: None,
+                    clear_allowed_origins: false,
                 }),
                 Extension(valid_parts()),
             )
@@ -5865,6 +5951,274 @@ mod tests {
         assert!(
             err.message.contains("dataset_ids")
                 && err.message.contains("clear_dataset_restriction"),
+            "got {}",
+            err.message
+        );
+    }
+
+    // ---- API-key tool allowed_origins / clear_allowed_origins ----
+
+    #[tokio::test]
+    async fn create_api_key_forwards_allowed_origins() {
+        let (base_url, router) = mock_capturing_router(
+            "POST /api/v1/admin/tenants/acme/api-keys",
+            201,
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1","key":"secret","scopes":["traces:read"],"allowed_origins":["https://a.example","https://b.example"]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .create_api_key(
+                Extension(valid_parts()),
+                Parameters(CreateApiKeyParams {
+                    tenant_id: "acme".to_string(),
+                    name: None,
+                    scopes: vec!["traces:read".to_string()],
+                    dataset_ids: None,
+                    allowed_origins: Some(vec![
+                        "https://a.example".to_string(),
+                        "https://b.example".to_string(),
+                    ]),
+                }),
+            )
+            .await
+            .expect("create_api_key succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(
+            body["allowed_origins"],
+            serde_json::json!(["https://a.example", "https://b.example"])
+        );
+    }
+
+    #[tokio::test]
+    async fn tenant_create_api_key_forwards_allowed_origins() {
+        let (base_url, router) = mock_capturing_router(
+            "POST /api/v1/manage/tenants/acme/api-keys",
+            201,
+            r#"{"id":"key-1","key":"secret","scopes":["traces:read"],"allowed_origins":["https://a.example"]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .tenant_create_api_key(
+                Parameters(TenantCreateApiKeyParams {
+                    tenant_id: "acme".to_string(),
+                    name: None,
+                    scopes: vec!["traces:read".to_string()],
+                    dataset_ids: None,
+                    allowed_origins: Some(vec!["https://a.example".to_string()]),
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("tenant_create_api_key succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(
+            body["allowed_origins"],
+            serde_json::json!(["https://a.example"])
+        );
+    }
+
+    #[tokio::test]
+    async fn update_api_key_scopes_forwards_allowed_origins_and_clear_flag() {
+        let (base_url, router) = mock_capturing_router(
+            "PATCH /api/v1/admin/tenants/acme/api-keys/key-1",
+            200,
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1"}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .update_api_key_scopes(
+                Extension(valid_parts()),
+                Parameters(UpdateApiKeyScopesParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: None,
+                    clear_dataset_restriction: false,
+                    allowed_origins: Some(vec!["https://a.example".to_string()]),
+                    clear_allowed_origins: false,
+                }),
+            )
+            .await
+            .expect("update_api_key_scopes succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(
+            body["allowed_origins"],
+            serde_json::json!(["https://a.example"])
+        );
+    }
+
+    #[tokio::test]
+    async fn update_api_key_scopes_forwards_clear_allowed_origins() {
+        let (base_url, router) = mock_capturing_router(
+            "PATCH /api/v1/admin/tenants/acme/api-keys/key-1",
+            200,
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1"}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .update_api_key_scopes(
+                Extension(valid_parts()),
+                Parameters(UpdateApiKeyScopesParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: None,
+                    clear_dataset_restriction: false,
+                    allowed_origins: None,
+                    clear_allowed_origins: true,
+                }),
+            )
+            .await
+            .expect("update_api_key_scopes succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(body["clear_allowed_origins"], serde_json::json!(true));
+    }
+
+    #[tokio::test]
+    async fn tenant_update_api_key_forwards_allowed_origins_and_clear_flag() {
+        let (base_url, router) = mock_capturing_router(
+            "PATCH /api/v1/manage/tenants/acme/api-keys/key-1",
+            200,
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1","revoked":false}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .tenant_update_api_key(
+                Parameters(TenantUpdateApiKeyParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: None,
+                    clear_dataset_restriction: false,
+                    allowed_origins: Some(vec!["https://a.example".to_string()]),
+                    clear_allowed_origins: false,
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("tenant_update_api_key succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(
+            body["allowed_origins"],
+            serde_json::json!(["https://a.example"])
+        );
+    }
+
+    #[tokio::test]
+    async fn tenant_update_api_key_forwards_clear_allowed_origins() {
+        let (base_url, router) = mock_capturing_router(
+            "PATCH /api/v1/manage/tenants/acme/api-keys/key-1",
+            200,
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1","revoked":false}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        server
+            .tenant_update_api_key(
+                Parameters(TenantUpdateApiKeyParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: None,
+                    clear_dataset_restriction: false,
+                    allowed_origins: None,
+                    clear_allowed_origins: true,
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("tenant_update_api_key succeeds");
+
+        let request = router.await.expect("mock router task panicked");
+        let body = captured_json_body(&request);
+        assert_eq!(body["clear_allowed_origins"], serde_json::json!(true));
+    }
+
+    /// `clear_allowed_origins: true` together with a non-empty
+    /// `allowed_origins` is contradictory and must be rejected before any
+    /// router request is made — the router base URL is deliberately invalid
+    /// so the test fails loudly if the handler tries to reach it anyway.
+    #[tokio::test]
+    async fn update_api_key_scopes_rejects_contradictory_origin_update_without_calling_router() {
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+
+        let err = server
+            .update_api_key_scopes(
+                Extension(valid_parts()),
+                Parameters(UpdateApiKeyScopesParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: None,
+                    clear_dataset_restriction: false,
+                    allowed_origins: Some(vec!["https://a.example".to_string()]),
+                    clear_allowed_origins: true,
+                }),
+            )
+            .await
+            .expect_err("a contradictory allowed_origins + clear_allowed_origins must be rejected");
+
+        assert!(
+            err.message.contains("allowed_origins")
+                && err.message.contains("clear_allowed_origins"),
+            "got {}",
+            err.message
+        );
+    }
+
+    #[tokio::test]
+    async fn tenant_update_api_key_rejects_contradictory_origin_update_without_calling_router() {
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+
+        let err = server
+            .tenant_update_api_key(
+                Parameters(TenantUpdateApiKeyParams {
+                    tenant_id: "acme".to_string(),
+                    key_id: "key-1".to_string(),
+                    scopes: None,
+                    dataset_ids: None,
+                    clear_dataset_restriction: false,
+                    allowed_origins: Some(vec![
+                        "https://a.example".to_string(),
+                        "https://b.example".to_string(),
+                    ]),
+                    clear_allowed_origins: true,
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect_err("a contradictory allowed_origins + clear_allowed_origins must be rejected");
+
+        assert!(
+            err.message.contains("allowed_origins")
+                && err.message.contains("clear_allowed_origins"),
             "got {}",
             err.message
         );

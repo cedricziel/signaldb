@@ -1,8 +1,9 @@
 //! The MCP admin toolset for API keys shares the scope vocabulary of every
 //! other key-management surface: `create_api_key` takes required `scopes`
-//! plus an optional `dataset_ids` restriction set, `update_api_key_scopes`
-//! patches a live key (including clearing its restriction via
-//! `clear_dataset_restriction`), and `list_api_keys` shows scopes.
+//! plus optional `dataset_ids` and `allowed_origins` restriction sets,
+//! `update_api_key_scopes` patches a live key (including clearing its
+//! restrictions via `clear_dataset_restriction`/`clear_allowed_origins`), and
+//! `list_api_keys` shows scopes.
 
 mod common;
 
@@ -43,6 +44,10 @@ async fn create_api_key_requires_scopes_and_offers_dataset_ids() {
         schema["properties"].get("dataset_ids").is_some(),
         "create_api_key must accept `dataset_ids`: {schema}"
     );
+    assert!(
+        schema["properties"].get("allowed_origins").is_some(),
+        "create_api_key must accept `allowed_origins`: {schema}"
+    );
 
     let update = tools
         .tools
@@ -56,6 +61,8 @@ async fn create_api_key_requires_scopes_and_offers_dataset_ids() {
         "scopes",
         "dataset_ids",
         "clear_dataset_restriction",
+        "allowed_origins",
+        "clear_allowed_origins",
     ] {
         assert!(
             schema["properties"].get(field).is_some(),
