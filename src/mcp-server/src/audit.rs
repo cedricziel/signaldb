@@ -63,11 +63,14 @@ pub struct CallerTenant(pub String);
 
 /// The credential's own dataset-set restriction, inserted into the request
 /// extensions by the auth middleware alongside [`CallerTenant`] (from the
-/// same `whoami()` call, `WhoamiIdentityResponse::dataset_ids`). `None`
-/// means the credential is unrestricted. Tools that list datasets/tables
-/// (`discover_datasets`, `tenant_list_tables`) read this to filter out any
-/// dataset the caller's credential cannot reach, per design D10 —
-/// unlisted datasets must not be visible even by name.
+/// same `whoami()` call, `WhoamiIdentityResponse::dataset_ids`) — only for a
+/// single-tenant credential (API key or single-tenant OAuth grant); never
+/// present alongside [`CallerTenants`]. `None` means the credential is
+/// unrestricted. Tools that list datasets/tables read this indirectly
+/// through `server::dataset_restriction_for`, which also handles the
+/// multi-tenant case (a restriction per granted tenant, from
+/// [`CallerTenants`]'s own entries) that this type alone cannot represent,
+/// per design D10 — unlisted datasets must not be visible even by name.
 #[derive(Clone, Debug, Default)]
 pub struct CallerDatasetIds(pub Option<Vec<String>>);
 

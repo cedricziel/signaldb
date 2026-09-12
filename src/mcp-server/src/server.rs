@@ -964,6 +964,36 @@ fn tenant_datasets_markdown(
     markdown
 }
 
+/// The dataset-set restriction that applies to `tenant` for this call —
+/// design D10, generalized to a multi-tenant OAuth grant
+/// (mcp-multi-tenant-oauth-grants). A single-tenant credential (API key or
+/// single-tenant OAuth grant) carries one restriction for its one tenant
+/// (`audit::CallerDatasetIds`, set by the auth middleware), returned as-is
+/// regardless of `tenant`. A multi-tenant OAuth credential
+/// (`audit::CallerTenants`) carries its own restriction *per granted
+/// tenant* instead — `CallerDatasetIds` is never inserted for this
+/// credential shape (see its own doc comment), so this looks up the grant
+/// entry matching `tenant` and returns that entry's own `dataset_ids`,
+/// mirroring what `discover_datasets` already does per grant rather than
+/// reading a single global value. This only decides what an
+/// already-authorized listing displays — `check_tenant_scope` (called
+/// first by every caller of this) is what actually rejects a `tenant`
+/// outside the grant set, so a tenant absent from `CallerTenants` here is
+/// unreachable in practice, not a way to widen access.
+fn dataset_restriction_for(parts: &Parts, tenant: &str) -> Option<Vec<String>> {
+    if let Some(grants) = parts.extensions.get::<audit::CallerTenants>() {
+        return grants
+            .0
+            .iter()
+            .find(|grant| grant.tenant_id == tenant)
+            .and_then(|grant| grant.dataset_ids.clone());
+    }
+    parts
+        .extensions
+        .get::<audit::CallerDatasetIds>()
+        .and_then(|restriction| restriction.0.clone())
+}
+
 /// Whether `dataset` is visible to a credential carrying `restriction`
 /// (`None` = unrestricted, every dataset visible) — design D10. Local to
 /// this crate rather than reusing `common::auth::dataset_allowed`: this
@@ -2716,22 +2746,18 @@ impl McpServer {
             .await
             .map_err(|e| map_sdk_err(e, "tenant_list_tables"))?
             .into_inner();
-        // D10: hide any dataset outside the caller's own restriction — set
-        // once per request by the auth middleware alongside
-        // `audit::CallerTenant`. `dataset_visible` no-ops both `retain`
-        // calls below when the caller is unrestricted.
-        let restriction = parts
-            .extensions
-            .get::<audit::CallerDatasetIds>()
-            .and_then(|r| r.0.as_deref());
+        // D10: hide any dataset outside the caller's own restriction for
+        // this tenant — `dataset_visible` no-ops both `retain` calls below
+        // when the caller is unrestricted.
+        let restriction = dataset_restriction_for(&parts, &p.tenant_id);
         tables
             .datasets
-            .retain(|dataset| dataset_visible(restriction, &dataset.dataset));
+            .retain(|dataset| dataset_visible(restriction.as_deref(), &dataset.dataset));
         tables.tables.retain(|table| {
             table
                 .dataset
                 .as_deref()
-                .is_none_or(|dataset| dataset_visible(restriction, dataset))
+                .is_none_or(|dataset| dataset_visible(restriction.as_deref(), dataset))
         });
         json_result(&tables)
     }
@@ -4643,6 +4669,77 @@ mod tests {
             tenant_id: tenant_id.to_string(),
             dataset_ids: None,
         }
+    }
+
+    #[test]
+    fn dataset_restriction_for_reads_caller_dataset_ids_for_a_single_tenant_credential() {
+        let mut parts = valid_parts();
+        parts.extensions.insert(audit::CallerDatasetIds(Some(vec![
+            "production".to_string(),
+        ])));
+
+        // The single-tenant path ignores `tenant` entirely — there is only
+        // ever one restriction to report for this credential shape.
+        assert_eq!(
+            dataset_restriction_for(&parts, "acme"),
+            Some(vec!["production".to_string()])
+        );
+        assert_eq!(
+            dataset_restriction_for(&parts, "anything-else"),
+            Some(vec!["production".to_string()])
+        );
+    }
+
+    #[test]
+    fn dataset_restriction_for_is_none_for_an_unrestricted_single_tenant_credential() {
+        let mut parts = valid_parts();
+        parts.extensions.insert(audit::CallerDatasetIds(None));
+        assert_eq!(dataset_restriction_for(&parts, "acme"), None);
+    }
+
+    #[test]
+    fn dataset_restriction_for_is_none_with_neither_extension_present() {
+        // Neither `CallerDatasetIds` nor `CallerTenants` set (should not
+        // happen in production — the auth middleware always inserts one —
+        // but the helper must not panic).
+        assert_eq!(dataset_restriction_for(&valid_parts(), "acme"), None);
+    }
+
+    /// The bug this helper fixes: a multi-tenant OAuth credential's
+    /// restriction must come from the *matching* grant entry, not a single
+    /// global value (`CallerDatasetIds` is never populated for this
+    /// credential shape at all — see its own doc comment).
+    #[test]
+    fn dataset_restriction_for_reads_the_matching_grants_own_restriction_for_a_multi_tenant_credential()
+     {
+        let parts = multi_tenant_parts(vec![
+            audit::GrantedTenant {
+                tenant_id: "acme".to_string(),
+                dataset_ids: Some(vec!["production".to_string()]),
+            },
+            unrestricted_grant("globex"),
+        ]);
+
+        assert_eq!(
+            dataset_restriction_for(&parts, "acme"),
+            Some(vec!["production".to_string()]),
+            "acme's own restriction must apply"
+        );
+        assert_eq!(
+            dataset_restriction_for(&parts, "globex"),
+            None,
+            "globex's own (unrestricted) grant must not inherit acme's restriction"
+        );
+    }
+
+    #[test]
+    fn dataset_restriction_for_is_none_for_a_tenant_absent_from_the_grant_set() {
+        // Not reachable in practice — `check_tenant_scope` rejects this
+        // `tenant` before any caller gets here — but the helper itself must
+        // fail safe (unrestricted reads as "nothing to show", never as
+        // "show everything").
+        let parts = multi_tenant_parts(vec![unrestricted_grant("acme")]);
+        assert_eq!(dataset_restriction_for(&parts, "initech"), None);
     }
 
     #[tokio::test]
