@@ -952,6 +952,7 @@ async fn token_authorization_code<S: RouterState>(
         &grant.tenant_grants,
         &grant.scopes,
         grant.resource.as_deref(),
+        false,
     )
     .await
 }
@@ -1005,12 +1006,17 @@ async fn token_refresh<S: RouterState>(
         &grant.tenant_grants,
         &grant.scopes,
         grant.resource.as_deref(),
+        true,
     )
     .await
 }
 
 /// Mint an access token and a refresh token for a grant and render the
-/// token response.
+/// token response. `trusted_grants` selects whether the tenant-registry
+/// existence check (D3) runs: `false` for a fresh consent decision (user
+/// input, needs validating), `true` for a refresh (the grant is read off
+/// an already-validated catalog row, not user input — see
+/// [`common::catalog::Catalog::create_access_token_trusted`]'s doc comment).
 async fn issue_tokens<S: RouterState>(
     state: &S,
     client_id: &str,
@@ -1018,6 +1024,7 @@ async fn issue_tokens<S: RouterState>(
     tenant_grants: &[common::catalog::TenantGrant],
     scopes: &[String],
     resource: Option<&str>,
+    trusted_grants: bool,
 ) -> Result<Response, OAuthError> {
     let oauth = &state.config().mcp.oauth;
     let now = chrono::Utc::now();
@@ -1025,35 +1032,69 @@ async fn issue_tokens<S: RouterState>(
         .map_err(|e| OAuthError::server_error(format!("invalid access_token_ttl: {e}")))?;
 
     let access_raw = generate_oauth_token(TokenKind::Access);
-    state
-        .catalog()
-        .create_access_token(
-            &hash_oauth_token(&access_raw),
-            client_id,
-            user_id,
-            tenant_grants,
-            scopes,
-            resource,
-            now + access_ttl,
-        )
-        .await
+    let access_hash = hash_oauth_token(&access_raw);
+    let access_result = if trusted_grants {
+        state
+            .catalog()
+            .create_access_token_trusted(
+                &access_hash,
+                client_id,
+                user_id,
+                tenant_grants,
+                scopes,
+                resource,
+                now + access_ttl,
+            )
+            .await
+    } else {
+        state
+            .catalog()
+            .create_access_token(
+                &access_hash,
+                client_id,
+                user_id,
+                tenant_grants,
+                scopes,
+                resource,
+                now + access_ttl,
+            )
+            .await
+    };
+    access_result
         .map_err(|e| OAuthError::server_error(format!("failed to store access token: {e}")))?;
 
     let refresh_ttl = chrono::Duration::from_std(oauth.refresh_token_ttl)
         .map_err(|e| OAuthError::server_error(format!("invalid refresh_token_ttl: {e}")))?;
     let refresh_raw = generate_oauth_token(TokenKind::Refresh);
-    state
-        .catalog()
-        .create_refresh_token(
-            &hash_oauth_token(&refresh_raw),
-            client_id,
-            user_id,
-            tenant_grants,
-            scopes,
-            resource,
-            now + refresh_ttl,
-        )
-        .await
+    let refresh_hash = hash_oauth_token(&refresh_raw);
+    let refresh_result = if trusted_grants {
+        state
+            .catalog()
+            .create_refresh_token_trusted(
+                &refresh_hash,
+                client_id,
+                user_id,
+                tenant_grants,
+                scopes,
+                resource,
+                now + refresh_ttl,
+            )
+            .await
+    } else {
+        state
+            .catalog()
+            .create_refresh_token(
+                &refresh_hash,
+                client_id,
+                user_id,
+                tenant_grants,
+                scopes,
+                resource,
+                now + refresh_ttl,
+            )
+            .await
+    };
+    refresh_result
         .map_err(|e| OAuthError::server_error(format!("failed to store refresh token: {e}")))?;
 
     Ok(no_store(TokenResponse {
@@ -2120,6 +2161,58 @@ mod tests {
             .expect("new refresh token stored");
         assert_eq!(new_access.tenant_grants, expected_multi_tenant_grant());
         assert_eq!(new_refresh.tenant_grants, expected_multi_tenant_grant());
+    }
+
+    /// Refreshing a multi-tenant token survives one of its granted tenants
+    /// being deleted in the meantime — the refresh succeeds and still
+    /// carries both original grant entries (D3: the deleted one simply
+    /// fails to *resolve* later, which is `authenticate_oauth_token`'s job,
+    /// not the refresh endpoint's). Regression test for the redundant
+    /// registry re-validation the refresh path used to run, which would
+    /// have failed the whole refresh over the one stale entry.
+    #[tokio::test]
+    async fn refresh_of_multi_tenant_token_survives_a_deleted_tenant() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_multi_tenant_authorization_code(&catalog, "raw-code-multi-survives-delete").await;
+        let tokens = body_json(
+            post_token(
+                &app,
+                format!(
+                    "grant_type=authorization_code&code=raw-code-multi-survives-delete&code_verifier={PKCE_VERIFIER}\
+                     &redirect_uri=https%3A%2F%2Fclaude.ai%2Fcb&client_id=client-1"
+                ),
+            )
+            .await,
+        )
+        .await;
+        let refresh_raw = tokens["refresh_token"].as_str().unwrap().to_string();
+
+        assert!(catalog.delete_tenant("acme").await.unwrap());
+
+        let res = post_token(
+            &app,
+            format!("grant_type=refresh_token&refresh_token={refresh_raw}&client_id=client-1"),
+        )
+        .await;
+        assert_eq!(
+            res.status(),
+            StatusCode::OK,
+            "refresh must succeed even though one granted tenant no longer exists"
+        );
+        let new_tokens = body_json(res).await;
+        let new_access = catalog
+            .get_valid_access_token(&hash_oauth_token(
+                new_tokens["access_token"].as_str().unwrap(),
+            ))
+            .await
+            .unwrap()
+            .expect("new access token stored");
+        assert_eq!(
+            new_access.tenant_grants,
+            expected_multi_tenant_grant(),
+            "both original grant entries carry over unchanged; acme's own \
+             entry just won't resolve later"
+        );
     }
 
     // ---- mcp-multi-tenant-oauth-grants: POST /oauth/introspect (task 3.12-3.13) ----

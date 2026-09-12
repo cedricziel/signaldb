@@ -5217,6 +5217,7 @@ impl Catalog {
             scopes,
             resource,
             expires_at,
+            true,
         )
         .await
     }
@@ -5245,11 +5246,85 @@ impl Catalog {
             scopes,
             resource,
             expires_at,
+            true,
         )
         .await
     }
 
-    /// Shared INSERT for the structurally-identical access/refresh token tables.
+    /// Store an opaque access token from an already-trusted grant set (e.g.
+    /// refreshing an existing token), skipping the tenant-registry
+    /// existence check (D3) — the grant's entries were already validated
+    /// when first created, so a refresh doesn't pay a DB round trip per
+    /// entry to re-confirm it, and a tenant deleted since then doesn't
+    /// fail the whole refresh over one now-stale entry (that entry simply
+    /// fails to resolve later, same as it already would without a
+    /// refresh in between). Shape validation (non-empty, no duplicate
+    /// `tenant_id`, well-formed `dataset_ids`) still always runs.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_access_token_trusted(
+        &self,
+        token_hash: &str,
+        client_id: &str,
+        user_id: &str,
+        tenant_grants: &[TenantGrant],
+        scopes: &[String],
+        resource: Option<&str>,
+        expires_at: DateTime<Utc>,
+    ) -> Result<OAuthTokenRecord, sqlx::Error> {
+        self.insert_oauth_token(
+            "oauth_access_tokens",
+            token_hash,
+            client_id,
+            user_id,
+            tenant_grants,
+            scopes,
+            resource,
+            expires_at,
+            false,
+        )
+        .await
+    }
+
+    /// Store an opaque refresh token from an already-trusted grant set (the
+    /// rotated replacement for a presented refresh token) — see
+    /// [`Catalog::create_access_token_trusted`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_refresh_token_trusted(
+        &self,
+        token_hash: &str,
+        client_id: &str,
+        user_id: &str,
+        tenant_grants: &[TenantGrant],
+        scopes: &[String],
+        resource: Option<&str>,
+        expires_at: DateTime<Utc>,
+    ) -> Result<OAuthTokenRecord, sqlx::Error> {
+        self.insert_oauth_token(
+            "oauth_refresh_tokens",
+            token_hash,
+            client_id,
+            user_id,
+            tenant_grants,
+            scopes,
+            resource,
+            expires_at,
+            false,
+        )
+        .await
+    }
+
+    /// Shared INSERT for the structurally-identical access/refresh token
+    /// tables. `check_registry` runs the async tenant-existence check
+    /// (D3) — skipped when `tenant_grants` is known-trusted (already
+    /// validated when the grant was first created, e.g. refreshing an
+    /// existing token), so a refresh doesn't pay a DB round trip per
+    /// grant entry to re-confirm something a prior write already
+    /// confirmed, and so a tenant deleted after the original grant
+    /// doesn't fail the *whole* refresh over one now-stale entry — that
+    /// entry simply fails to resolve later (D3), exactly as it already
+    /// would without a refresh in between. Shape validation (non-empty,
+    /// no duplicate `tenant_id`, well-formed `dataset_ids`) always runs
+    /// regardless, via [`encode_tenant_grants_json`].
     #[allow(clippy::too_many_arguments)]
     async fn insert_oauth_token(
         &self,
@@ -5261,14 +5336,18 @@ impl Catalog {
         scopes: &[String],
         resource: Option<&str>,
         expires_at: DateTime<Utc>,
+        check_registry: bool,
     ) -> Result<OAuthTokenRecord, sqlx::Error> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now();
         let scopes_json = serde_json::to_string(scopes)
             .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize scopes: {e}")))?;
-        let tenant_grants_json = self
-            .encode_and_validate_tenant_grants(tenant_grants)
-            .await?;
+        let tenant_grants_json = if check_registry {
+            self.encode_and_validate_tenant_grants(tenant_grants)
+                .await?
+        } else {
+            encode_tenant_grants_json(tenant_grants)?
+        };
         match self {
             Catalog::Sqlite(pool) => {
                 query(&format!(
@@ -9705,6 +9784,65 @@ mod oauth_storage_tests {
                 "client-1",
                 &user,
                 &single_grant("no-such-tenant"),
+                &["traces:read".to_string()],
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    /// `create_access_token_trusted`/`create_refresh_token_trusted` skip the
+    /// tenant-registry existence check (D3) — a token can be refreshed even
+    /// if one of its originally-granted tenants was deleted in the
+    /// meantime, so the *other* tenants in a multi-tenant grant keep
+    /// refreshing normally instead of the whole refresh failing over one
+    /// stale entry.
+    #[tokio::test]
+    async fn create_token_trusted_accepts_a_grant_naming_a_deleted_tenant() {
+        let (catalog, user, _tenant) = catalog_with_principal().await;
+        let grants = single_grant("no-such-tenant");
+
+        let access = catalog
+            .create_access_token_trusted(
+                "at-trusted-deleted-tenant",
+                "client-1",
+                &user,
+                &grants,
+                &["traces:read".to_string()],
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await
+            .expect("trusted access-token creation skips the registry check");
+        assert_eq!(access.tenant_grants, grants);
+
+        let refresh = catalog
+            .create_refresh_token_trusted(
+                "rt-trusted-deleted-tenant",
+                "client-1",
+                &user,
+                &grants,
+                &["traces:read".to_string()],
+                None,
+                Utc::now() + Duration::days(1),
+            )
+            .await
+            .expect("trusted refresh-token creation skips the registry check");
+        assert_eq!(refresh.tenant_grants, grants);
+    }
+
+    /// The trusted path still enforces shape validation — it only skips the
+    /// async registry-existence check, not the free, in-memory checks.
+    #[tokio::test]
+    async fn create_token_trusted_still_rejects_an_empty_grant_set() {
+        let (catalog, user, _tenant) = catalog_with_principal().await;
+        let result = catalog
+            .create_access_token_trusted(
+                "at-trusted-empty",
+                "client-1",
+                &user,
+                &[],
                 &["traces:read".to_string()],
                 None,
                 Utc::now() + Duration::hours(1),
