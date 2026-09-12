@@ -3,7 +3,7 @@ import { useState } from "react";
 import { Link } from "react-router";
 import { DEFAULT_DATASET, DEFAULT_TENANT } from "../../api/http";
 import { whoami } from "../../api/session";
-import type { ExploreState } from "../../lib/urlState";
+import { crossSignalSearch, type ExploreState } from "../../lib/urlState";
 import { UserMenu } from "./UserMenu";
 import "./TopBar.css";
 
@@ -25,7 +25,7 @@ export function TopBar({ state, update }: Props) {
   const canManage = who?.user?.is_instance_admin || role === "admin";
   return (
     <header className="topbar">
-      <span className="topbar-mark">
+      <Link className="topbar-mark" to={`/logs${crossSignalSearch(state)}`}>
         <svg
           width="18"
           height="14"
@@ -42,7 +42,7 @@ export function TopBar({ state, update }: Props) {
           />
         </svg>
         signal<b>db</b>
-      </span>
+      </Link>
       <span className="topbar-sep">/</span>
       <TenantSelector state={state} update={update} />
       <span style={{ flex: 1 }} />
