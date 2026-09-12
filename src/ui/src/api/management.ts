@@ -130,17 +130,24 @@ export const listApiKeys = async (tenant: string): Promise<ManagedApiKey[]> =>
 
 export const createApiKey = async (
   tenant: string,
-  input: { name?: string; dataset_ids?: string[]; scopes: ApiKeyScope[] },
+  input: {
+    name?: string;
+    dataset_ids?: string[];
+    allowed_origins?: string[];
+    scopes: ApiKeyScope[];
+  },
 ): Promise<ManageCreatedApiKey> =>
   unwrap(
     await manageCreateApiKey({ path: { tenant_id: tenant }, body: input }),
   );
 
-/** Change a live key's scopes and/or dataset restriction without rotating
- * its secret; absent fields are left untouched. Revoked keys are rejected.
- * `dataset_ids` replaces the restriction with exactly that set;
- * `clear_dataset_restriction` clears it back to unrestricted — the two are
- * mutually exclusive (D1a), enforced server-side. */
+/** Change a live key's scopes, dataset restriction, and/or allowed-origins
+ * restriction without rotating its secret; absent fields are left
+ * untouched. Revoked keys are rejected. `dataset_ids` replaces the dataset
+ * restriction with exactly that set; `clear_dataset_restriction` clears it
+ * back to unrestricted — the two are mutually exclusive (D1a), enforced
+ * server-side. `allowed_origins`/`clear_allowed_origins` do the same for the
+ * browser-origin (CORS) restriction. */
 export const updateApiKey = async (
   tenant: string,
   keyId: string,
@@ -148,6 +155,8 @@ export const updateApiKey = async (
     scopes?: ApiKeyScope[];
     dataset_ids?: string[];
     clear_dataset_restriction?: boolean;
+    allowed_origins?: string[];
+    clear_allowed_origins?: boolean;
   },
 ): Promise<ManagedApiKey> =>
   unwrap(
