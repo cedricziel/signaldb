@@ -324,8 +324,10 @@ impl Authenticator {
         // The OAuth grant's scopes and dataset restriction are enforced
         // exactly like a database-backed API key's; the full grant set is
         // also attached for callers that need to enumerate it (D4/D5).
+        // OAuth grants carry no allowed-origins restriction (D1's origin
+        // equivalent is a credential-only concept so far).
         Ok(context
-            .with_api_key_restrictions(Some(record.scopes), selected_grant.dataset_ids)
+            .with_api_key_restrictions(Some(record.scopes), selected_grant.dataset_ids, None)
             .with_oauth_tenant_grants(record.tenant_grants))
     }
 
@@ -494,7 +496,11 @@ impl Authenticator {
             api_key.name,
             TenantSource::Database,
         )
-        .with_api_key_restrictions(api_key.scopes, api_key.dataset_ids))
+        .with_api_key_restrictions(
+            api_key.scopes,
+            api_key.dataset_ids,
+            api_key.allowed_origins,
+        ))
     }
 
     /// Resolve a dataset for a config-defined tenant, falling back to the

@@ -4,14 +4,15 @@
 //! authentication headers on HTTP requests.
 
 use axum::{
+    Json,
     extract::Request,
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, header},
     middleware::Next,
     response::{IntoResponse, Response},
 };
 use common::auth::{
-    AuthError, Authenticator, TenantContext, parse_bearer_token, validate_dataset_id,
-    validate_tenant_id,
+    AuthError, Authenticator, TenantContext, origin_allowed, parse_bearer_token,
+    validate_dataset_id, validate_tenant_id,
 };
 use std::sync::Arc;
 
@@ -121,12 +122,38 @@ pub async fn auth_middleware(
             .into_response();
     }
 
+    // Per-key CORS enforcement (D-allowed-origins): a request with no
+    // `Origin` header is not a browser request — SDKs, collectors, and
+    // server-to-server callers are the vast majority of ingest traffic and
+    // are completely unaffected. The outer `otlp_cors_layer` only ever
+    // answers the unauthenticated `OPTIONS` preflight (which grants no
+    // authority by itself); the actual request's origin is checked here,
+    // once the API key is known, and the `Access-Control-Allow-Origin` the
+    // browser needs to read the response is set only on a match.
+    let origin_header = request.headers().get(header::ORIGIN).cloned();
+    if let Some(origin_value) = &origin_header {
+        let allowed = origin_value.to_str().is_ok_and(|origin| {
+            origin_allowed(tenant_context.api_key_allowed_origins.as_deref(), origin)
+        });
+        if !allowed {
+            tracing::warn!(
+                tenant_id = %tenant_context.tenant_id,
+                "origin not allowed for this API key"
+            );
+            return (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({ "error": "origin not allowed for this API key" })),
+            )
+                .into_response();
+        }
+    }
+
     let is_system = common::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id);
 
     // Anti-loop guard: processing the _system tenant's own telemetry must not
     // generate more self-monitoring telemetry (infinite feedback loop). The
     // suppression scope covers everything from the auth event onwards.
-    if is_system {
+    let mut response = if is_system {
         common::self_monitoring::suppress_self_telemetry(async move {
             tracing::debug!(
                 tenant_id = %tenant_context.tenant_id,
@@ -147,7 +174,17 @@ pub async fn auth_middleware(
         );
         request.extensions_mut().insert(tenant_context);
         next.run(request).await
+    };
+
+    if let Some(origin_value) = origin_header {
+        response
+            .headers_mut()
+            .insert(header::ACCESS_CONTROL_ALLOW_ORIGIN, origin_value);
+        response
+            .headers_mut()
+            .append(header::VARY, HeaderValue::from_static("Origin"));
     }
+    response
 }
 
 /// Axum extractor for TenantContext from request extensions
@@ -554,5 +591,146 @@ mod tests {
         let (_, tenant_id, dataset_id) = result.unwrap();
         assert_eq!(tenant_id, "acme");
         assert_eq!(dataset_id, Some("production".to_string()));
+    }
+
+    /// Per-key CORS enforcement: whether the actual (non-preflight) request
+    /// gets an `Access-Control-Allow-Origin` (and `Vary: Origin`), a 403 with
+    /// no CORS header, or is unaffected entirely, depending on the
+    /// authenticated key's `allowed_origins` and whether the request even
+    /// carries an `Origin` header. Preflight itself (always permissive,
+    /// regardless of any key) is covered by `otlp_cors_layer`'s own tests in
+    /// `crate::cors_tests`.
+    mod origin_enforcement_tests {
+        use super::*;
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode, header};
+        use axum::routing::post;
+        use axum::{Router, middleware};
+        use common::catalog::Catalog;
+        use tower::ServiceExt;
+
+        /// A database-backed tenant/key pair scoped to ingest traces, with
+        /// `allowed_origins` set as given (`None` is unrestricted). Returns
+        /// the router (auth-gated `POST /v1/traces`, matching the real
+        /// route the enforcement lives on) and the raw key.
+        async fn app_with_key(allowed_origins: Option<Vec<String>>) -> (Router, String) {
+            let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+            catalog
+                .upsert_tenant("acme", "Acme Corp", Some("production"), "database")
+                .await
+                .unwrap();
+            catalog.create_dataset("acme", "production").await.unwrap();
+            let raw_key = "sdbk_test_origin_key".to_string();
+            let key_hash = Authenticator::hash_api_key(&raw_key);
+            catalog
+                .upsert_scoped_api_key(
+                    "acme",
+                    &key_hash,
+                    Some("origin-test"),
+                    None,
+                    allowed_origins.as_deref(),
+                    Some(&["traces:write".to_string()]),
+                    None,
+                )
+                .await
+                .unwrap();
+            let authenticator = Arc::new(Authenticator::new(AuthConfig::default(), catalog));
+
+            async fn handler() -> &'static str {
+                "ok"
+            }
+            let app = Router::new()
+                .route(common::endpoints::OTLP_HTTP_TRACES_PATH, post(handler))
+                .layer(middleware::from_fn(move |req, next| {
+                    let auth = authenticator.clone();
+                    async move { auth_middleware(auth, req, next).await }
+                }));
+            (app, raw_key)
+        }
+
+        fn request(raw_key: &str, origin: Option<&str>) -> Request<Body> {
+            let mut builder = Request::builder()
+                .method("POST")
+                .uri(common::endpoints::OTLP_HTTP_TRACES_PATH)
+                .header("authorization", format!("Bearer {raw_key}"))
+                .header("x-tenant-id", "acme");
+            if let Some(origin) = origin {
+                builder = builder.header(header::ORIGIN, origin);
+            }
+            builder.body(Body::empty()).unwrap()
+        }
+
+        #[tokio::test]
+        async fn unrestricted_key_allows_any_origin_and_reflects_it() {
+            let (app, raw_key) = app_with_key(None).await;
+            let res = app
+                .oneshot(request(&raw_key, Some("https://ui.example")))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK);
+            assert_eq!(
+                res.headers()
+                    .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                    .map(|v| v.to_str().unwrap().to_string()),
+                Some("https://ui.example".to_string())
+            );
+            assert_eq!(
+                res.headers()
+                    .get(header::VARY)
+                    .map(|v| v.to_str().unwrap().to_string()),
+                Some("Origin".to_string())
+            );
+        }
+
+        #[tokio::test]
+        async fn restricted_key_allows_matching_origin() {
+            let (app, raw_key) =
+                app_with_key(Some(vec!["https://allowed.example".to_string()])).await;
+            let res = app
+                .oneshot(request(&raw_key, Some("https://allowed.example")))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::OK);
+            assert_eq!(
+                res.headers()
+                    .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                    .map(|v| v.to_str().unwrap().to_string()),
+                Some("https://allowed.example".to_string())
+            );
+        }
+
+        #[tokio::test]
+        async fn restricted_key_rejects_non_matching_origin_without_cors_header() {
+            let (app, raw_key) =
+                app_with_key(Some(vec!["https://allowed.example".to_string()])).await;
+            let res = app
+                .oneshot(request(&raw_key, Some("https://evil.example")))
+                .await
+                .unwrap();
+            assert_eq!(res.status(), StatusCode::FORBIDDEN);
+            assert!(
+                res.headers()
+                    .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                    .is_none(),
+                "a rejected origin must not be granted CORS access"
+            );
+        }
+
+        #[tokio::test]
+        async fn request_without_origin_header_is_unaffected_by_restriction() {
+            let (app, raw_key) =
+                app_with_key(Some(vec!["https://allowed.example".to_string()])).await;
+            let res = app.oneshot(request(&raw_key, None)).await.unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::OK,
+                "a non-browser request (no Origin header) must be unaffected by the restriction"
+            );
+            assert!(
+                res.headers()
+                    .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                    .is_none()
+            );
+        }
     }
 }

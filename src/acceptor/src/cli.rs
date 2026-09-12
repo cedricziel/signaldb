@@ -155,11 +155,6 @@ pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
         authenticator: http_resources.authenticator,
         rate_limiter: http_resources.rate_limiter,
         storage_usage: http_resources.storage_usage,
-        cors_allowed_origins: config
-            .self_monitoring
-            .frontend
-            .enabled
-            .then(|| config.self_monitoring.frontend.allowed_origins.clone()),
         max_request_body_bytes: config.acceptor.max_request_body_bytes as usize,
     };
     let http_handle = tokio::spawn(async move {

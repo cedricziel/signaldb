@@ -471,7 +471,7 @@ mod tests {
             Some("test".to_string()),
             TenantSource::Config,
         )
-        .with_api_key_restrictions(scopes, None)
+        .with_api_key_restrictions(scopes, None, None)
     }
 
     fn describe(source: &str, stage: serde_json::Value) -> serde_json::Value {

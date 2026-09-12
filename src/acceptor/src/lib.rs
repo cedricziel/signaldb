@@ -389,47 +389,47 @@ pub type ProfilesHandlerState = OtlpHttpState<ProfileHandler>;
 
 /// Mount a single OTLP/HTTP export route behind the shared auth middleware
 /// and HTTP self-monitoring metrics.
-/// Build the CORS layer that lets the browser export telemetry cross-origin
-/// to the OTLP/HTTP endpoints.
+/// Build the CORS layer that answers a browser's preflight before auth runs.
 ///
 /// The browser sends `Authorization` + `X-Tenant-ID` / `X-Dataset-ID`, which
 /// make the export a non-simple request; the browser first issues an
-/// unauthenticated `OPTIONS` preflight. This layer sits outermost so it answers
-/// the preflight before the auth middleware can reject it for missing
-/// credentials. An empty origin list allows any origin (trusted-network
-/// homelab default); a non-empty list restricts to those exact origins.
-fn otlp_cors_layer(allowed_origins: &[String]) -> tower_http::cors::CorsLayer {
+/// unauthenticated `OPTIONS` preflight. This layer sits outermost so it
+/// answers that preflight before the auth middleware can reject it for
+/// missing credentials.
+///
+/// Preflight grants no authority by itself — the browser still can't read a
+/// response without a matching `Access-Control-Allow-Origin` on the *actual*
+/// request — so this layer permissively mirrors whatever `Origin` the
+/// preflight carries, for every request, always mounted (not gated on
+/// `self_monitoring.frontend.enabled`). Real per-key origin enforcement, and
+/// the `Access-Control-Allow-Origin`/`Vary` headers on the actual response,
+/// happen post-auth in [`crate::middleware::auth_middleware`] — this layer's
+/// `allow_origin` predicate only ever fires for `OPTIONS`, so it never adds a
+/// CORS header to an actual (non-preflight) response, and can't accidentally
+/// paper over that middleware's 403.
+fn otlp_cors_layer() -> tower_http::cors::CorsLayer {
     use axum::http::{HeaderName, Method, header};
-    use tower_http::cors::{Any, CorsLayer};
+    use tower_http::cors::{AllowOrigin, CorsLayer};
 
-    let cors = CorsLayer::new()
+    CorsLayer::new()
         .allow_methods([Method::POST, Method::OPTIONS])
         .allow_headers([
             header::AUTHORIZATION,
             header::CONTENT_TYPE,
             HeaderName::from_static("x-tenant-id"),
             HeaderName::from_static("x-dataset-id"),
-        ]);
-
-    if allowed_origins.is_empty() {
-        cors.allow_origin(Any)
-    } else {
-        let origins: Vec<axum::http::HeaderValue> = allowed_origins
-            .iter()
-            .filter_map(|o| match o.parse() {
-                Ok(value) => Some(value),
-                Err(e) => {
-                    tracing::warn!(
-                        origin = %o,
-                        error = %e,
-                        "Dropping unparseable entry from self_monitoring.frontend.allowed_origins"
-                    );
-                    None
-                }
-            })
-            .collect();
-        cors.allow_origin(origins)
-    }
+        ])
+        .allow_origin(AllowOrigin::predicate(|_origin, parts| {
+            parts.method == Method::OPTIONS
+        }))
+        // tower_http would otherwise add `Vary: Origin` to every response
+        // (preflight or not) since `allow_origin` varies with the request.
+        // That's this layer's only other footprint on an actual response;
+        // suppressing it keeps the "never touches an actual response"
+        // guarantee (and its own test) literally true — `auth_middleware`
+        // sets `Vary: Origin` itself, once, only when it also sets
+        // `Access-Control-Allow-Origin`.
+        .vary(Vec::<HeaderName>::new())
 }
 
 fn otlp_signal_router<H: Send + Sync + 'static>(
@@ -871,10 +871,6 @@ pub struct HttpAcceptorConfig {
     pub authenticator: Arc<Authenticator>,
     pub rate_limiter: Arc<common::ratelimit::TenantRateLimiter>,
     pub storage_usage: Arc<common::storage_usage::StorageUsageTracker>,
-    /// Origins the browser may export telemetry from (CORS). `None` disables
-    /// cross-origin access entirely; `Some(empty)` allows any origin. Set from
-    /// `[self_monitoring.frontend]` when browser telemetry export is enabled.
-    pub cors_allowed_origins: Option<Vec<String>>,
     /// Maximum decoded request body size, in bytes, for every OTLP/HTTP and
     /// Prometheus remote_write route. From `[acceptor].max_request_body_bytes`,
     /// shared with the gRPC side's `max_decoding_message_size`.
@@ -978,18 +974,10 @@ pub async fn serve_otlp_http(
     let app = with_http_transport_limits(app, config.max_request_body_bytes);
 
     // Browser telemetry export is cross-origin (UI on the router, ingest on
-    // the acceptor), so add CORS outermost when it is enabled — it must answer
-    // the preflight before auth runs.
-    let app = match &config.cors_allowed_origins {
-        Some(origins) => {
-            tracing::info!(
-                allowed_origins = ?origins,
-                "CORS enabled for browser telemetry export"
-            );
-            app.layer(otlp_cors_layer(origins))
-        }
-        None => app,
-    };
+    // the acceptor), so CORS is mounted outermost, unconditionally — it must
+    // answer the preflight before auth runs. It only ever answers OPTIONS;
+    // real per-key origin enforcement lives in the auth middleware.
+    let app = app.layer(otlp_cors_layer());
 
     tracing::info!("OTLP traces endpoint enabled at POST /v1/traces");
     tracing::info!("OTLP logs endpoint enabled at POST /v1/logs");
@@ -1031,16 +1019,18 @@ mod cors_tests {
     use axum::{Router, response::IntoResponse};
     use tower::ServiceExt;
 
-    fn app_with_cors(allowed: &[String]) -> Router {
+    fn app_with_cors() -> Router {
         // A stand-in for the auth-gated /v1/traces route: it 401s without
-        // credentials, exactly like the real endpoint, so the test proves the
-        // CORS layer answers the preflight *before* auth would reject it.
+        // credentials, exactly like the real endpoint, so the tests prove the
+        // CORS layer answers the preflight *before* auth would reject it, and
+        // never decorates an *actual* request's response itself (that's the
+        // auth middleware's job — see `middleware::auth::origin_tests`).
         async fn guarded() -> impl IntoResponse {
             (StatusCode::UNAUTHORIZED, "missing auth")
         }
         Router::new()
             .route("/v1/traces", post(guarded))
-            .layer(otlp_cors_layer(allowed))
+            .layer(otlp_cors_layer())
     }
 
     fn preflight(origin: &str) -> Request<Body> {
@@ -1057,70 +1047,53 @@ mod cors_tests {
             .unwrap()
     }
 
+    /// Preflight grants no authority by itself, so it's answered permissively
+    /// for any origin — including one no API key will ever be restricted to
+    /// — without ever reaching the auth-gated route.
     #[tokio::test]
-    async fn preflight_allowed_for_any_origin_when_unrestricted() {
-        let app = app_with_cors(&[]);
-        let res = app
-            .oneshot(preflight("http://ui.example:3000"))
-            .await
-            .unwrap();
-        // Preflight is answered by the CORS layer, never reaching the 401 route.
-        assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(
-            res.headers()
-                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
-                .map(|v| v.to_str().unwrap().to_string()),
-            Some("*".to_string())
-        );
+    async fn preflight_is_answered_for_any_origin_without_reaching_auth() {
+        for origin in ["http://ui.example:3000", "http://evil.example"] {
+            let res = app_with_cors().oneshot(preflight(origin)).await.unwrap();
+            assert_ne!(
+                res.status(),
+                StatusCode::UNAUTHORIZED,
+                "preflight for {origin} must be answered by CORS, not forwarded to auth"
+            );
+            assert_eq!(
+                res.headers()
+                    .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                    .map(|v| v.to_str().unwrap().to_string()),
+                Some(origin.to_string()),
+                "preflight must mirror whatever origin it carries"
+            );
+        }
     }
 
+    /// An actual (non-preflight) request gets no CORS decoration from this
+    /// layer at all, allowed or not — `Access-Control-Allow-Origin` on the
+    /// real response (or its absence on a rejection) is entirely the auth
+    /// middleware's responsibility, so this layer can never accidentally
+    /// paper over a per-key origin rejection.
     #[tokio::test]
-    async fn preflight_echoes_listed_origin_and_omits_others() {
-        let allowed = vec!["http://ui.example:3000".to_string()];
-
-        let res = app_with_cors(&allowed)
-            .oneshot(preflight("http://ui.example:3000"))
-            .await
+    async fn actual_request_gets_no_cors_header_from_this_layer() {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/traces")
+            .header(header::ORIGIN, "http://ui.example:3000")
+            .body(Body::empty())
             .unwrap();
-        assert_eq!(
-            res.headers()
-                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
-                .map(|v| v.to_str().unwrap().to_string()),
-            Some("http://ui.example:3000".to_string())
-        );
-
-        let res = app_with_cors(&allowed)
-            .oneshot(preflight("http://evil.example"))
-            .await
-            .unwrap();
+        let res = app_with_cors().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
         assert!(
             res.headers()
                 .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
                 .is_none(),
-            "unlisted origin must not be granted CORS access"
+            "the outer CORS layer must never decorate an actual response"
         );
-    }
-
-    /// Finding L3: an unparseable entry in `allowed_origins` must not take
-    /// down CORS for the *valid* entries alongside it — it's dropped (with
-    /// a warning, not exercised by this test) and the rest still work.
-    #[tokio::test]
-    async fn preflight_still_allows_valid_origins_alongside_an_unparseable_one() {
-        let allowed = vec![
-            "not a valid header value\n".to_string(),
-            "http://ui.example:3000".to_string(),
-        ];
-
-        let res = app_with_cors(&allowed)
-            .oneshot(preflight("http://ui.example:3000"))
-            .await
-            .unwrap();
-        assert_eq!(
-            res.headers()
-                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
-                .map(|v| v.to_str().unwrap().to_string()),
-            Some("http://ui.example:3000".to_string()),
-            "the valid origin must still be allowed despite the unparseable entry"
+        assert!(
+            res.headers().get(header::VARY).is_none(),
+            "the outer CORS layer must not add its own Vary header either — \
+             auth_middleware owns Vary: Origin entirely"
         );
     }
 }
@@ -1150,6 +1123,7 @@ mod otlp_http_export_classification_tests {
             api_key_scopes: None,
             api_key_dataset_ids: None,
             oauth_tenant_grants: None,
+            api_key_allowed_origins: None,
             user_id: None,
             role: None,
             is_instance_admin: false,
