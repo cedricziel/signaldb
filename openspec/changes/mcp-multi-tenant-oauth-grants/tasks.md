@@ -53,8 +53,9 @@
 
 ## 6. Documentation
 
-- [ ] 6.1 Update `docs/users/mcp.md` (Claude.ai/ChatGPT connector section): multi-select consent, `tenant` argument as selector for multi-tenant grants, `discover_datasets`/`server_info` behavior
-- [ ] 6.2 Update `docs/users/authentication.md`: OAuth token model now carries a grant set, plus the new introspection endpoint
+- [x] 6.1 Update `docs/users/mcp.md` (Claude.ai/ChatGPT connector section): multi-select consent, `tenant` argument as selector for multi-tenant grants, `discover_datasets`/`server_info` behavior, brief mention of `POST /oauth/introspect`
+- [x] 6.2 Checked `docs/users/authentication.md` against the new behavior: no edit needed — its OAuth mentions (scopes, dataset-restriction rollout) are unchanged by this feature, and the actual grant-set/introspection behavior already lives in `mcp.md` per the docs skill's "one home per fact" rule
+- [x] 6.3 Update `.claude/skills/multi-tenancy/SKILL.md`'s OAuth section: multi-tenant `tenant_grants`, selector resolution, introspection endpoint, MCP server's introspect-based middleware (not originally listed as a task, but a real gap the doc-freshness gate caught — this skill explicitly documented the now-false "one connector per tenant" rule)
 
 ## 7. Integration testing
 

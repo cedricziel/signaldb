@@ -64,18 +64,32 @@ tenant may access (the router validates access and rejects the rest). Large
 results are capped and returned with a `truncated: true` flag telling the
 agent to narrow the query.
 
-Most of these tools also require a `tenant` argument: a confirmation check,
-not a way to switch tenants. It must equal the tenant _this specific call's_
-credential resolves to (`server_info`, `discover_datasets`), and a mismatch
-fails the call with an error naming both tenants, before any request reaches
-the router. Both arguments are required rather than optional because one MCP
+Most of these tools also require a `tenant` argument. For a credential
+authorized for exactly one tenant (an API key, or an OAuth connector granted a
+single tenant — see below), it's a confirmation check, not a way to switch
+tenants: it must equal the tenant _this specific call's_ credential resolves
+to (`server_info`, `discover_datasets`), and a mismatch fails the call with an
+error naming both tenants, before any request reaches the router. For an OAuth
+connector granted **more than one** tenant, `tenant` is a real selector: pass
+the tenant this call should run against, and the server validates it against
+the connector's own granted set before forwarding the call — naming a tenant
+outside that set fails the same way a mismatch does for a single-tenant
+credential. Both arguments are required rather than optional because one MCP
 session (one `mcp-session-id`) can hold credentials for several tenants and
 datasets across its calls — there is no single implicit session-wide default
-left to fall back to. To reach a second tenant within one session, present a
-different credential (`Authorization` bearer token plus `X-Tenant-ID`) on a
-later call rather than opening a second connection; the router
-independently authenticates each call, up to a bounded number of distinct
-identities per session.
+left to fall back to. To reach a second tenant within one session using
+separate API-key credentials, present a different credential (`Authorization`
+bearer token plus `X-Tenant-ID`) on a later call rather than opening a second
+connection; the router independently authenticates each call, up to a bounded
+number of distinct identities per session. A multi-tenant OAuth connector
+reaches its other tenants by simply naming them in `tenant` on later calls —
+no second credential needed, since they all belong to the same grant.
+
+`discover_datasets`/`server_info` reflect this too: for a single-tenant
+credential they report that one tenant, as before; for a multi-tenant OAuth
+connector they enumerate every granted tenant (and, for `discover_datasets`,
+each one's own datasets) so an agent can see the whole reachable set before
+picking a `tenant` for a later call.
 
 ### Operational control
 
@@ -399,25 +413,29 @@ through a sign-in + consent screen. The sign-in step is an ordinary browser
 session, so when the operator has configured SSO you authenticate through your
 identity provider there (or the connector reuses an existing SignalDB session);
 password sign-in works unless the operator disabled it. On the consent screen —
-which proceeds identically either way — you pick **one tenant** and approve the
-read scopes it requested; the token it receives is bound to that tenant. To let
-a connector reach a second tenant, add it a second time and grant the other
-tenant.
+which proceeds identically either way — you **check every tenant** you want
+this connector to reach (a multi-select checklist of the tenants you belong
+to) and approve the read scopes it requested; the token it receives is bound
+to that whole set. One connector is enough for every tenant you need: there is
+no more "add it a second time" workaround, and nothing stops you from checking
+just one tenant if that's all you want.
 
-After choosing a tenant, the consent screen also offers a dataset choice:
+For each tenant you check, the consent screen also offers a dataset choice:
 **all datasets** in that tenant (the default — identical to every connector
 granted before this choice existed) or **only these datasets**, which reveals
-a checklist of the tenant's datasets and requires at least one checked box to
-approve. Picking specific datasets binds the token to exactly that set —
-queries against any other dataset in the tenant are refused, and a query
-naming no dataset at all is rejected rather than silently falling back to the
-tenant default when the set has more than one dataset (a single-dataset
-restriction resolves to that dataset the same way an unrestricted token
-resolves to the tenant default). A refresh preserves whichever restriction the
-original grant had. Restricting a grant to specific datasets is refused,
-naming the `dataset_restriction_rollout_complete` config key, until an
-operator has set `[auth] dataset_restriction_rollout_complete = true` on
-every router node — see [Multi-dataset rollout](authentication.md#multi-dataset-rollout);
+a checklist of that tenant's datasets and requires at least one checked box to
+approve — set independently per tenant, so restricting one tenant's grant
+never affects another's. Picking specific datasets binds that tenant's part of
+the grant to exactly that set — queries against any other dataset in that
+tenant are refused, and a query naming no dataset at all is rejected rather
+than silently falling back to the tenant default when the set has more than
+one dataset (a single-dataset restriction resolves to that dataset the same
+way an unrestricted token resolves to the tenant default). A refresh preserves
+whichever restriction each tenant's original grant had. Restricting a grant to
+specific datasets is refused, naming the `dataset_restriction_rollout_complete`
+config key, until an operator has set
+`[auth] dataset_restriction_rollout_complete = true` on every router node —
+see [Multi-dataset rollout](authentication.md#multi-dataset-rollout);
 choosing "all datasets" is unaffected by this and always available.
 
 The endpoint **must be HTTPS with a valid certificate** — these clients will not
@@ -445,7 +463,12 @@ signaldb mcp \
 ```
 
 Tokens are opaque, catalog-backed, and audience-bound to `resource_url`;
-revoking one is a row delete. The read scopes a token may hold —
+revoking one is a row delete. `POST /oauth/introspect` (RFC 7662) reports
+whether a bearer token is active and, if so, its full granted-tenant set,
+scopes, audience, and expiry — this is how the `signaldb mcp` sidecar learns
+a multi-tenant connector's whole reachable set before any one tenant has been
+selected for a call; it isn't something you call directly as an operator or
+agent. The read scopes a token may hold —
 `traces:read`, `logs:read`, `metrics:read`, `profiles:read`, `schema:read` —
 gate the corresponding query surface (see the
 [multi-tenancy](../architecture/overview.md) model); a request with no `scope`
