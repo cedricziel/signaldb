@@ -42,7 +42,9 @@ async function mockLoginConfig(
 
 /** No session: `consentContext()` 401s, which is how `ConsentView` decides to
  * render the login step (see `features/consent/ConsentView.tsx`). */
-async function mockUnauthenticatedConsent(page: import("@playwright/test").Page) {
+async function mockUnauthenticatedConsent(
+  page: import("@playwright/test").Page,
+) {
   await page.route("**/oauth/consent/context*", (route) =>
     route.fulfill({ status: 401, contentType: "application/json", body: "{}" }),
   );
@@ -53,12 +55,23 @@ test("consent's SSO redirect carries the full consent URL, authorize params incl
 }) => {
   await mockUnauthenticatedConsent(page);
   await mockLoginConfig(page, true);
+  // ConsentView redirects to /login on its own 401 rather than rendering an
+  // inline login step; LoginRoute then probes the session itself.
+  await page.route("**/ui/session", (route) =>
+    route.request().method() === "GET"
+      ? route.fulfill({
+          status: 401,
+          contentType: "application/json",
+          body: "{}",
+        })
+      : route.continue(),
+  );
 
   await page.goto(CONSENT_PATH);
 
-  await expect(
-    page.getByText("Sign in to authorize this application."),
-  ).toBeVisible();
+  await expect(page).toHaveURL(
+    new RegExp(`/login\\?redirect=${encodeURIComponent(CONSENT_PATH)}$`),
+  );
   const ssoLink = page.getByRole("link", { name: `Continue with ${SSO_NAME}` });
   await expect(ssoLink).toBeVisible();
   await expect(ssoLink).toHaveAttribute(
@@ -73,7 +86,11 @@ test("an SSO-only instance (password_enabled: false) hides the password form on 
   await mockLoginConfig(page, false);
   await page.route("**/ui/session", (route) =>
     route.request().method() === "GET"
-      ? route.fulfill({ status: 401, contentType: "application/json", body: "{}" })
+      ? route.fulfill({
+          status: 401,
+          contentType: "application/json",
+          body: "{}",
+        })
       : route.continue(),
   );
 
