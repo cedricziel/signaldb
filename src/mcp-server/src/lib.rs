@@ -610,15 +610,32 @@ async fn introspect_oauth_token(
             tracing::error!(%error, "failed to construct router introspection client");
             Box::new((StatusCode::BAD_GATEWAY, "failed to validate credential").into_response())
         })?;
-    let response = signaldb_sdk::ClientInfo::client(&sdk_client)
+    let request = signaldb_sdk::ClientInfo::client(&sdk_client)
         .post(format!("{}/oauth/introspect", state.router_base_url))
         .form(&[("token", token)])
-        .send()
-        .await
+        .build()
         .map_err(|error| {
-            tracing::warn!(%error, "router introspection request failed");
-            Box::new((StatusCode::BAD_GATEWAY, "credential validation unavailable").into_response())
+            tracing::error!(%error, "failed to build router introspection request");
+            Box::new((StatusCode::BAD_GATEWAY, "failed to validate credential").into_response())
         })?;
+    // Route through the SDK's shared retry-on-throttle policy (`429` is
+    // retried regardless of method; see `signaldb_sdk::retry`) rather than a
+    // raw `.send()` — the same treatment every other POST operation on this
+    // client gets. This call now runs for every OAuth request, so it needs
+    // the same throttle resilience `whoami()` got before it.
+    let response = signaldb_sdk::retry::execute(
+        signaldb_sdk::ClientInfo::client(&sdk_client),
+        signaldb_sdk::ClientInfo::inner(&sdk_client),
+        request,
+        &signaldb_sdk::retry::OperationInfo {
+            operation_id: "oauth_introspect",
+        },
+    )
+    .await
+    .map_err(|error| {
+        tracing::warn!(%error, "router introspection request failed");
+        Box::new((StatusCode::BAD_GATEWAY, "credential validation unavailable").into_response())
+    })?;
     let body: IntrospectResponse = response.json().await.map_err(|error| {
         tracing::warn!(%error, "failed to parse router introspection response");
         Box::new((StatusCode::BAD_GATEWAY, "credential validation unavailable").into_response())
@@ -1568,6 +1585,71 @@ mod tests {
                 .to_lowercase()
                 .contains("x-tenant-id: globex"),
             "expected tenant_override to set x-tenant-id, got request:\n{received_request}"
+        );
+    }
+
+    /// `introspect_oauth_token` runs through the SDK's shared
+    /// retry-on-throttle policy: a `429` (with `Retry-After: 0`, so the test
+    /// stays fast) is retried rather than surfaced immediately, mirroring
+    /// `signaldb-sdk/tests/retry.rs`'s own `throttled_post_is_retried_too`.
+    #[tokio::test]
+    async fn introspect_oauth_token_retries_a_throttled_response() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let handle = tokio::spawn(async move {
+            let mut request_count = 0;
+            for attempt in 1..=2 {
+                let (mut socket, _) = listener.accept().await.expect("accept request");
+                let mut buffer = [0_u8; 4096];
+                let _ = socket.read(&mut buffer).await.expect("read request");
+                request_count += 1;
+                let (status_line, extra_header, body) = if attempt == 1 {
+                    (
+                        "429 Too Many Requests",
+                        "Retry-After: 0\r\n",
+                        r#"{"error":"rate_limited"}"#,
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        "",
+                        r#"{"active":true,"user_id":"user-a","tenants":[{"tenant_id":"acme","dataset_ids":null}]}"#,
+                    )
+                };
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\n{extra_header}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .expect("write response headers");
+                socket.write_all(body.as_bytes()).await.expect("write body");
+            }
+            request_count
+        });
+
+        let state = McpAppState::new(format!("http://{addr}"));
+        let grants = match introspect_oauth_token(&state, "sdb_at_throttled").await {
+            Ok(Some(grants)) => grants,
+            Ok(None) => panic!("router reported the token inactive"),
+            Err(_) => panic!("introspect failed instead of retrying the throttled response"),
+        };
+        assert_eq!(grants.user_id, "user-a");
+        assert_eq!(grants.tenants.len(), 1);
+        assert_eq!(grants.tenants[0].tenant_id, "acme");
+
+        let request_count = handle.await.expect("mock router task panicked");
+        assert_eq!(
+            request_count, 2,
+            "expected the throttled first attempt to be retried exactly once"
         );
     }
 }

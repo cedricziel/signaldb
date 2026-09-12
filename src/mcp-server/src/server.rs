@@ -882,14 +882,38 @@ fn require_confirm(confirm: &str, expected: &str, what: &str) -> Result<(), Erro
     Ok(())
 }
 
-/// Confirms the required `tenant` tool argument matches the tenant the auth
-/// middleware resolved for *this specific request* (`audit::CallerTenant`).
-/// No tool can actually target a different tenant than the one its
-/// credential authenticated as for this call (see `mcp_auth_middleware` in
-/// `lib.rs`) — so this exists purely to fail an agent's wrong assumption
+/// Confirms the required `tenant` tool argument is one this credential may
+/// actually act as for this call. For a single-tenant credential (API key or
+/// single-tenant OAuth grant, `audit::CallerTenant`), this is an equality
+/// check against the tenant the auth middleware resolved. For a multi-tenant
+/// OAuth credential (`audit::CallerTenants`), it is set membership: any
+/// tenant in the credential's own granted set is a valid selection for this
+/// call (see `mcp-server` spec's "multi-tenant OAuth session may select a
+/// different granted tenant per call"). No tool can actually target a tenant
+/// outside what its credential is authorized for (see `mcp_auth_middleware`
+/// in `lib.rs`, and `scoped_router_client`, which forwards this same value to
+/// the router) — so this exists purely to fail an agent's wrong assumption
 /// loudly (e.g. after `discover_datasets`) instead of silently running the
-/// call against the real authenticated tenant.
+/// call against the wrong tenant, or reaching the router at all.
 fn check_tenant_scope(parts: &Parts, expected: &str) -> Result<(), ErrorData> {
+    if let Some(grants) = parts.extensions.get::<audit::CallerTenants>() {
+        return if grants.0.iter().any(|g| g.tenant_id == expected) {
+            Ok(())
+        } else {
+            Err(ErrorData::invalid_params(
+                format!(
+                    "`tenant` (\"{expected}\") is not among the credential's granted tenants ({})",
+                    grants
+                        .0
+                        .iter()
+                        .map(|g| g.tenant_id.as_str())
+                        .collect::<Vec<_>>()
+                        .join(", ")
+                ),
+                None,
+            ))
+        };
+    }
     match parts.extensions.get::<audit::CallerTenant>() {
         Some(actual) if actual.0 == expected => Ok(()),
         Some(actual) => Err(ErrorData::invalid_params(
@@ -901,6 +925,43 @@ fn check_tenant_scope(parts: &Parts, expected: &str) -> Result<(), ErrorData> {
         )),
         None => Ok(()),
     }
+}
+
+/// Render one tenant's `discover_datasets` Markdown block: a tenant line
+/// followed by its (D10-filtered) datasets, each with its provisioned
+/// signal-table count and, when `current_dataset` names it, a `(current)`
+/// marker. Shared by the single- and multi-tenant `discover_datasets` paths
+/// — the latter has no single "current" dataset, so it passes `None`.
+fn tenant_datasets_markdown(
+    tenant_name: &str,
+    tenant_id: &str,
+    current_dataset: Option<&str>,
+    restriction: Option<&[String]>,
+    datasets: &[signaldb_sdk::types::DatasetTables],
+) -> String {
+    let visible_datasets: Vec<_> = datasets
+        .iter()
+        .filter(|dataset| dataset_visible(restriction, &dataset.dataset))
+        .collect();
+    let mut markdown = format!("- Tenant: **{tenant_name}** (`{tenant_id}`)\n");
+    if visible_datasets.is_empty() {
+        markdown.push_str("  - (no datasets provisioned yet)\n");
+    } else {
+        for dataset in visible_datasets {
+            let current = if current_dataset == Some(dataset.dataset.as_str()) {
+                " (current)"
+            } else {
+                ""
+            };
+            let count = dataset.tables.len();
+            markdown.push_str(&format!(
+                "  - Dataset: `{}`{current} — {count} table{}\n",
+                dataset.dataset,
+                if count == 1 { "" } else { "s" },
+            ));
+        }
+    }
+    markdown
 }
 
 /// Whether `dataset` is visible to a credential carrying `restriction`
@@ -1324,9 +1385,40 @@ impl McpServer {
         parts: &Parts,
         dataset_override: Option<&str>,
     ) -> Result<signaldb_sdk::Client, ErrorData> {
+        self.build_router_client(parts, None, dataset_override)
+    }
+
+    /// Build the per-request forwarding client for a tool whose `tenant`
+    /// argument has already been validated against the credential's grant by
+    /// `check_tenant_scope`. Adds an explicit `X-Tenant-ID: tenant` override
+    /// only when the credential's grant spans more than one tenant
+    /// (`CallerTenants` present, so the inbound request carries no tenant
+    /// header at all); a single-tenant credential (API key or single-tenant
+    /// OAuth) needs none — the router resolves it from the credential alone,
+    /// or from the forwarded `X-Tenant-ID` for an API key, exactly as today.
+    fn scoped_router_client(
+        &self,
+        parts: &Parts,
+        tenant: &str,
+        dataset_override: Option<&str>,
+    ) -> Result<signaldb_sdk::Client, ErrorData> {
+        let tenant_override = parts
+            .extensions
+            .get::<audit::CallerTenants>()
+            .map(|_| tenant);
+        self.build_router_client(parts, tenant_override, dataset_override)
+    }
+
+    fn build_router_client(
+        &self,
+        parts: &Parts,
+        tenant_override: Option<&str>,
+        dataset_override: Option<&str>,
+    ) -> Result<signaldb_sdk::Client, ErrorData> {
         sdk_client_for(
             parts,
             &self.router_base_url,
+            tenant_override,
             dataset_override,
             self.router_timeout,
         )
@@ -1334,12 +1426,25 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Report the SignalDB MCP server identity and the authenticated tenant/dataset for this session. Use this to confirm connectivity and which tenant your credential resolves to."
+        description = "Report the SignalDB MCP server identity and the authenticated tenant/dataset for this session. Use this to confirm connectivity and which tenant your credential resolves to. For a multi-tenant OAuth credential, reports every granted tenant instead of a single `tenant`/`dataset` pair — pass one of them as the `tenant` argument to other tools."
     )]
     async fn server_info(
         &self,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        // A multi-tenant OAuth credential has no single tenant to call
+        // `whoami()` as (the router requires a selector; see D4) — the auth
+        // middleware's own introspection already reported the full grant
+        // set, stashed as `CallerTenants`, so report that directly instead
+        // of an arbitrary one tenant.
+        if let Some(grants) = parts.extensions.get::<audit::CallerTenants>() {
+            let info = serde_json::json!({
+                "server": "signaldb-mcp",
+                "version": env!("CARGO_PKG_VERSION"),
+                "tenants": grants.0,
+            });
+            return json_result(&info);
+        }
         let identity = self
             .router_client(&parts, None)?
             .whoami()
@@ -1382,7 +1487,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let client = self.router_client(&parts, Some(&p.dataset))?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
         let mut req = client.search();
         if let Some(v) = p.query {
             req = req.q(v);
@@ -1425,7 +1530,7 @@ impl McpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let client = self.router_client(&parts, Some(&p.dataset))?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
         let mut req = client.query_single_trace().trace_id(p.trace_id);
         if let Some(v) = p.start {
             req = req.start(v);
@@ -1451,7 +1556,7 @@ impl McpServer {
         context: RequestContext<RoleServer>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let client = self.router_client(&parts, Some(&p.dataset))?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
         // The native Query IR's `flamegraph` envelope (profiles source only)
         // does the actual retrieval — this tool is a thin, single-ID wrapper
         // over the same `query_ir` path the generic tool exposes.
@@ -1480,7 +1585,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let client = self.router_client(&parts, Some(&p.dataset))?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
         let mut req = client.pyroscope_profile_types();
         if let Some(v) = p.from {
             req = req.from(v);
@@ -1505,7 +1610,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let client = self.router_client(&parts, Some(&p.dataset))?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
         let mut req = client.pyroscope_render().query(p.query);
         if let Some(v) = p.from {
             req = req.from(v);
@@ -1530,7 +1635,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let client = self.router_client(&parts, Some(&p.dataset))?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
         let mut req = client.pyroscope_render_diff().query(p.query);
         if let Some(v) = p.left_from {
             req = req.left_from(v);
@@ -1561,7 +1666,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let client = self.router_client(&parts, Some(&p.dataset))?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
         let resp = client
             .profiles_by_trace()
             .trace_id(p.trace_id)
@@ -1586,7 +1691,7 @@ impl McpServer {
                 None,
             ));
         }
-        let client = self.router_client(&parts, Some(&p.dataset))?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
         match (p.signal, p.tag, p.scope) {
             (Signal::Traces, Some(tag), Some(scope)) => {
                 let resp = client
@@ -1686,7 +1791,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let client = self.router_client(&parts, Some(&p.dataset))?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
         let resp = client
             .promql_label_values()
             .name("__name__")
@@ -1706,7 +1811,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let client = self.router_client(&parts, Some(&p.dataset))?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
         if p.start.is_some() || p.end.is_some() {
             let mut req = client.promql_query_range().query(p.query);
             if let Some(v) = p.start {
@@ -1746,7 +1851,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let client = self.router_client(&parts, Some(&p.dataset))?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
         if p.start.is_some() || p.end.is_some() {
             let mut req = client.logql_query_range().query(p.query);
             if let Some(v) = p.limit {
@@ -1802,7 +1907,7 @@ impl McpServer {
         let document = describe_document(&p.source, &p.from, &p.to, stage);
         let request: signaldb_sdk::types::QueryIrRequest = serde_json::from_value(document)
             .map_err(|e| ErrorData::internal_error(format!("failed to build query: {e}"), None))?;
-        let client = self.router_client(&parts, Some(&p.dataset))?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
         let resp = client
             .query_ir()
             .body(request)
@@ -1838,7 +1943,7 @@ impl McpServer {
         let document = describe_document(&p.source, &p.from, &p.to, stage);
         let request: signaldb_sdk::types::QueryIrRequest = serde_json::from_value(document)
             .map_err(|e| ErrorData::internal_error(format!("failed to build query: {e}"), None))?;
-        let client = self.router_client(&parts, Some(&p.dataset))?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
         let resp = client
             .query_ir()
             .body(request)
@@ -1858,7 +1963,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let client = self.router_client(&parts, Some(&p.dataset))?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
         let resp = client
             .query_sources()
             .send()
@@ -1868,13 +1973,41 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Discover the tenant and datasets your credential can access, as a nested Markdown list: the authenticated tenant, then its datasets (marking the session's current default) with each dataset's provisioned signal-table count. Call this before passing an explicit `dataset` argument to another tool, or a `tenant` argument to confirm your assumption.",
+        description = "Discover the tenant(s) and datasets your credential can access, as a nested Markdown list: each tenant (marking the session's current default dataset, for a single-tenant credential), then its datasets, with each dataset's provisioned signal-table count. For a multi-tenant OAuth credential this lists every granted tenant, each with its own datasets. Call this before passing an explicit `dataset` argument to another tool, or a `tenant` argument to confirm your assumption.",
         annotations(read_only_hint = true)
     )]
     async fn discover_datasets(
         &self,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        // A multi-tenant OAuth credential has no single tenant `whoami()`
+        // could resolve without a selector (D4) — fan out `list_tenant_tables`
+        // once per granted tenant instead, each with its own tenant override
+        // and its own `dataset_ids` restriction (never a shared/merged one).
+        if let Some(grants) = parts.extensions.get::<audit::CallerTenants>().cloned() {
+            let fetches = grants.0.iter().map(|grant| {
+                let client = self.scoped_router_client(&parts, &grant.tenant_id, None);
+                async move {
+                    let tables = client?
+                        .list_tenant_tables()
+                        .tenant_id(&grant.tenant_id)
+                        .send()
+                        .await
+                        .map_err(|e| map_sdk_err(e, "discover_datasets"))?
+                        .into_inner();
+                    Ok::<_, ErrorData>(tenant_datasets_markdown(
+                        &grant.tenant_id,
+                        &grant.tenant_id,
+                        None,
+                        grant.dataset_ids.as_deref(),
+                        &tables.datasets,
+                    ))
+                }
+            });
+            let markdown: String = futures::future::try_join_all(fetches).await?.concat();
+            return Ok(capped_text_result(markdown));
+        }
+
         let client = self.router_client(&parts, None)?;
         // The tenant id is already known from the auth middleware's own
         // `whoami()` call (stashed as `audit::CallerTenant`), so this
@@ -1915,37 +2048,13 @@ impl McpServer {
             }
         };
 
-        // D10: a dataset-restricted credential must not see the name (or
-        // table count) of a dataset outside its restriction, not even one
-        // that is otherwise provisioned and empty.
-        let restriction = identity.dataset_ids.as_deref();
-        let visible_datasets: Vec<_> = tables
-            .datasets
-            .iter()
-            .filter(|dataset| dataset_visible(restriction, &dataset.dataset))
-            .collect();
-
-        let mut markdown = format!(
-            "- Tenant: **{}** (`{}`)\n",
-            identity.tenant.name, identity.tenant.id
+        let markdown = tenant_datasets_markdown(
+            &identity.tenant.name,
+            &identity.tenant.id,
+            Some(&identity.dataset),
+            identity.dataset_ids.as_deref(),
+            &tables.datasets,
         );
-        if visible_datasets.is_empty() {
-            markdown.push_str("  - (no datasets provisioned yet)\n");
-        } else {
-            for dataset in visible_datasets {
-                let current = if dataset.dataset == identity.dataset {
-                    " (current)"
-                } else {
-                    ""
-                };
-                let count = dataset.tables.len();
-                markdown.push_str(&format!(
-                    "  - Dataset: `{}`{current} — {count} table{}\n",
-                    dataset.dataset,
-                    if count == 1 { "" } else { "s" },
-                ));
-            }
-        }
         Ok(capped_text_result(markdown))
     }
 
@@ -1960,7 +2069,7 @@ impl McpServer {
         check_tenant_scope(&parts, &p.tenant)?;
         let request: signaldb_sdk::types::QueryIrRequest = serde_json::from_value(p.query)
             .map_err(|e| ErrorData::invalid_params(format!("invalid IR document: {e}"), None))?;
-        let client = self.router_client(&parts, Some(&p.dataset))?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
         let resp = client
             .query_ir()
             .body(request)
@@ -2324,7 +2433,8 @@ impl McpServer {
         Parameters(p): Parameters<TenantOnlyParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = self.router_client(&parts, None)?;
+        check_tenant_scope(&parts, &p.tenant_id)?;
+        let client = self.scoped_router_client(&parts, &p.tenant_id, None)?;
         let resp = client
             .manage_list_datasets()
             .tenant_id(&p.tenant_id)
@@ -2342,7 +2452,8 @@ impl McpServer {
         Parameters(p): Parameters<CreateDatasetParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = self.router_client(&parts, None)?;
+        check_tenant_scope(&parts, &p.tenant_id)?;
+        let client = self.scoped_router_client(&parts, &p.tenant_id, None)?;
         let resp = client
             .manage_create_dataset()
             .tenant_id(&p.tenant_id)
@@ -2362,8 +2473,9 @@ impl McpServer {
         Parameters(p): Parameters<TenantDeleteDatasetParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant_id)?;
         require_confirm(&p.confirm, &p.dataset_name, "dataset_name")?;
-        let client = self.router_client(&parts, None)?;
+        let client = self.scoped_router_client(&parts, &p.tenant_id, None)?;
         client
             .manage_delete_dataset()
             .tenant_id(&p.tenant_id)
@@ -2383,7 +2495,8 @@ impl McpServer {
         Parameters(p): Parameters<TenantOnlyParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = self.router_client(&parts, None)?;
+        check_tenant_scope(&parts, &p.tenant_id)?;
+        let client = self.scoped_router_client(&parts, &p.tenant_id, None)?;
         let resp = client
             .manage_list_api_keys()
             .tenant_id(&p.tenant_id)
@@ -2401,8 +2514,9 @@ impl McpServer {
         Parameters(p): Parameters<TenantCreateApiKeyParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant_id)?;
         require_nonempty_scopes(&p.scopes)?;
-        let client = self.router_client(&parts, None)?;
+        let client = self.scoped_router_client(&parts, &p.tenant_id, None)?;
         let resp = client
             .manage_create_api_key()
             .tenant_id(&p.tenant_id)
@@ -2426,8 +2540,9 @@ impl McpServer {
         Parameters(p): Parameters<TenantRevokeApiKeyParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant_id)?;
         require_confirm(&p.confirm, &p.key_id, "key_id")?;
-        let client = self.router_client(&parts, None)?;
+        let client = self.scoped_router_client(&parts, &p.tenant_id, None)?;
         client
             .manage_revoke_api_key()
             .tenant_id(&p.tenant_id)
@@ -2446,9 +2561,10 @@ impl McpServer {
         Parameters(p): Parameters<TenantUpdateApiKeyParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant_id)?;
         require_no_contradictory_dataset_update(&p.dataset_ids, p.clear_dataset_restriction)?;
         require_any_update(&p.scopes, &p.dataset_ids, p.clear_dataset_restriction)?;
-        let client = self.router_client(&parts, None)?;
+        let client = self.scoped_router_client(&parts, &p.tenant_id, None)?;
         let resp = client
             .manage_update_api_key()
             .tenant_id(&p.tenant_id)
@@ -2473,7 +2589,8 @@ impl McpServer {
         Parameters(p): Parameters<TenantOnlyParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = self.router_client(&parts, None)?;
+        check_tenant_scope(&parts, &p.tenant_id)?;
+        let client = self.scoped_router_client(&parts, &p.tenant_id, None)?;
         let resp = client
             .manage_list_memberships()
             .tenant_id(&p.tenant_id)
@@ -2491,12 +2608,13 @@ impl McpServer {
         Parameters(p): Parameters<TenantUpsertMembershipParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant_id)?;
         let role = match p.role {
             TenantMembershipRole::Admin => signaldb_sdk::types::MembershipRole::Admin,
             TenantMembershipRole::Member => signaldb_sdk::types::MembershipRole::Member,
             TenantMembershipRole::Viewer => signaldb_sdk::types::MembershipRole::Viewer,
         };
-        let client = self.router_client(&parts, None)?;
+        let client = self.scoped_router_client(&parts, &p.tenant_id, None)?;
         let resp = client
             .manage_upsert_membership()
             .tenant_id(&p.tenant_id)
@@ -2519,8 +2637,9 @@ impl McpServer {
         Parameters(p): Parameters<TenantRemoveMembershipParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant_id)?;
         require_confirm(&p.confirm, &p.user_id, "user_id")?;
-        let client = self.router_client(&parts, None)?;
+        let client = self.scoped_router_client(&parts, &p.tenant_id, None)?;
         client
             .manage_remove_membership()
             .tenant_id(&p.tenant_id)
@@ -2539,6 +2658,17 @@ impl McpServer {
         &self,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
+        // Unlike every other tool in this management-API family, this one
+        // takes no tenant argument at all — it relies entirely on the
+        // router resolving "the caller's own tenant" from the credential.
+        // That has no answer for a multi-tenant OAuth credential (no
+        // X-Tenant-ID to fall back on, and the per-tenant schema
+        // configuration this reports can genuinely differ between granted
+        // tenants, so no single one of them is a safe default to guess).
+        // Left unfixed: this tool is not yet usable by a multi-tenant OAuth
+        // credential; needs a `tenant_id` argument added, which changes its
+        // schema for every caller (out of scope here — see change
+        // mcp-multi-tenant-oauth-grants task group 5 review notes).
         let client = self.router_client(&parts, None)?;
         let resp = client
             .manage_get_schema()
@@ -2557,7 +2687,8 @@ impl McpServer {
         Parameters(p): Parameters<TenantOnlyParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = self.router_client(&parts, None)?;
+        check_tenant_scope(&parts, &p.tenant_id)?;
+        let client = self.scoped_router_client(&parts, &p.tenant_id, None)?;
         let resp = client
             .get_tenant_self()
             .tenant_id(&p.tenant_id)
@@ -2576,7 +2707,8 @@ impl McpServer {
         Parameters(p): Parameters<TenantOnlyParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = self.router_client(&parts, None)?;
+        check_tenant_scope(&parts, &p.tenant_id)?;
+        let client = self.scoped_router_client(&parts, &p.tenant_id, None)?;
         let mut tables = client
             .list_tenant_tables()
             .tenant_id(&p.tenant_id)
@@ -2612,7 +2744,8 @@ impl McpServer {
         Parameters(p): Parameters<TenantOnlyParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = self.router_client(&parts, None)?;
+        check_tenant_scope(&parts, &p.tenant_id)?;
+        let client = self.scoped_router_client(&parts, &p.tenant_id, None)?;
         let resp = client
             .create_tenant_tables()
             .tenant_id(&p.tenant_id)
@@ -2631,7 +2764,8 @@ impl McpServer {
         Parameters(p): Parameters<TenantOnlyParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = self.router_client(&parts, None)?;
+        check_tenant_scope(&parts, &p.tenant_id)?;
+        let client = self.scoped_router_client(&parts, &p.tenant_id, None)?;
         let resp = client
             .list_tenant_schemas()
             .tenant_id(&p.tenant_id)
@@ -2649,7 +2783,18 @@ impl McpServer {
         &self,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let client = self.router_client(&parts, None)?;
+        // This response never varies by tenant (it lists what SignalDB
+        // itself knows how to provision, not any tenant's configuration),
+        // but the router still requires a resolvable tenant for a
+        // multi-tenant OAuth credential (no `X-Tenant-ID` to fall back on)
+        // — any one of the credential's granted tenants is therefore a safe
+        // anchor, unlike `tenant_get_schema`, whose answer is per-tenant.
+        let anchor_tenant = parts
+            .extensions
+            .get::<audit::CallerTenants>()
+            .and_then(|grants| grants.0.first())
+            .map(|grant| grant.tenant_id.as_str());
+        let client = self.build_router_client(&parts, anchor_tenant, None)?;
         let resp = client
             .list_available_schemas()
             .send()
@@ -2667,7 +2812,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let client = self.router_client(&parts, None)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, None)?;
         let resp = client
             .schema_list_registries()
             .send()
@@ -2685,7 +2830,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let client = self.router_client(&parts, None)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, None)?;
         let resp = client
             .schema_resolve_attribute()
             .key(p.key)
@@ -2704,7 +2849,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let client = self.router_client(&parts, None)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, None)?;
         let resp = client
             .schema_resolve_entity()
             .name(p.name)
@@ -2723,7 +2868,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let client = self.router_client(&parts, None)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, None)?;
         let resp = client
             .schema_resolve_metric()
             .name(p.name)
@@ -2748,7 +2893,7 @@ impl McpServer {
                 None,
             ));
         }
-        let client = self.router_client(&parts, None)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, None)?;
         let prefix = p.prefix.unwrap_or_default();
         // Each kind has its own generated response type, so each arm sends and
         // serializes its own result; the shape is the HTTP response, unchanged.
@@ -2805,7 +2950,7 @@ impl McpServer {
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
         let document = registry_document(p.document)?;
-        let client = self.router_client(&parts, None)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, None)?;
         let resp = client
             .schema_create_registry()
             .body(document)
@@ -2825,7 +2970,7 @@ impl McpServer {
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
         let document = registry_document(p.document)?;
-        let client = self.router_client(&parts, None)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, None)?;
         let resp = client
             .schema_replace_registry()
             .namespace(p.namespace)
@@ -2846,7 +2991,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let client = self.router_client(&parts, None)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, None)?;
         client
             .schema_delete_registry()
             .namespace(&p.namespace)
@@ -2871,7 +3016,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let client = self.router_client(&parts, None)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, None)?;
         let resp = client
             .schema_get_registry()
             .namespace(&p.namespace)
@@ -2893,7 +3038,7 @@ impl McpServer {
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
         let document = registry_document(p.document)?;
-        let client = self.router_client(&parts, None)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, None)?;
         let resp = client
             .schema_validate_registry()
             .body(document)
@@ -3932,7 +4077,7 @@ mod tests {
                     .starts_with("GET /api/v1/whoami "),
                 "server_info must validate through the router whoami endpoint"
             );
-            let body = b"{\"user_id\":\"user-a\",\"tenant\":{\"id\":\"acme\",\"slug\":\"acme\",\"name\":\"Acme\"},\"dataset\":\"production\"}";
+            let body = b"{\"user_id\":\"user-a\",\"tenant\":{\"id\":\"acme\",\"slug\":\"acme\",\"name\":\"Acme\"},\"dataset\":\"production\",\"granted_tenants\":[{\"tenant_id\":\"acme\"}]}";
             socket
                 .write_all(
                     format!(
@@ -3968,6 +4113,44 @@ mod tests {
         router.await.expect("mock router task panicked");
     }
 
+    /// For a multi-tenant OAuth credential, `server_info` reports the full
+    /// granted set rather than an arbitrary single tenant/dataset — and
+    /// makes no router call at all, since the middleware's own introspection
+    /// already supplied everything it needs (task 5.8).
+    #[tokio::test]
+    async fn server_info_reports_the_full_grant_set_for_a_multi_tenant_credential() {
+        // No mock router: a multi-tenant credential's server_info must not
+        // call whoami() (the router would reject it for lacking a selector).
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+        let parts = multi_tenant_parts(vec![
+            unrestricted_grant("acme"),
+            unrestricted_grant("globex"),
+        ]);
+
+        let result = server
+            .server_info(Extension(parts))
+            .await
+            .expect("server_info succeeds for a multi-tenant credential");
+
+        let ContentBlock::Text(text) = &result.content[0] else {
+            panic!("server_info returns a text result");
+        };
+        let info: serde_json::Value =
+            serde_json::from_str(&text.text).expect("server_info returns JSON");
+        assert!(info.get("tenant").is_none(), "got {info}");
+        assert!(info.get("dataset").is_none(), "got {info}");
+        let tenants: Vec<&str> = info["tenants"]
+            .as_array()
+            .expect("tenants array")
+            .iter()
+            .map(|t| t["tenant_id"].as_str().expect("tenant_id"))
+            .collect();
+        assert_eq!(tenants, vec!["acme", "globex"], "got {info}");
+    }
+
     #[tokio::test]
     async fn discover_datasets_lists_the_tenant_and_its_datasets_as_markdown() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -3988,7 +4171,7 @@ mod tests {
                     .starts_with("GET /api/v1/whoami "),
                 "discover_datasets must call whoami first"
             );
-            let body = br#"{"user_id":"user-a","tenant":{"id":"acme","slug":"acme","name":"Acme Corp"},"dataset":"production"}"#;
+            let body = br#"{"user_id":"user-a","tenant":{"id":"acme","slug":"acme","name":"Acme Corp"},"dataset":"production","granted_tenants":[{"tenant_id":"acme"}]}"#;
             socket
                 .write_all(
                     format!(
@@ -4079,7 +4262,7 @@ mod tests {
             let (mut socket, _) = listener.accept().await.expect("accept whoami request");
             let mut request = [0_u8; 4096];
             let _request_len = socket.read(&mut request).await.expect("read request");
-            let body = br#"{"user_id":"","tenant":{"id":"acme","slug":"acme","name":"Acme Corp"},"dataset":"production","dataset_ids":["production"]}"#;
+            let body = br#"{"user_id":"","tenant":{"id":"acme","slug":"acme","name":"Acme Corp"},"dataset":"production","dataset_ids":["production"],"granted_tenants":[{"tenant_id":"acme","dataset_ids":["production"]}]}"#;
             socket
                 .write_all(
                     format!(
@@ -4127,6 +4310,177 @@ mod tests {
         assert!(
             !text.text.contains("staging"),
             "a dataset outside the restriction must not appear, even by name: {}",
+            text.text
+        );
+        router.await.expect("mock router task panicked");
+    }
+
+    /// For a multi-tenant OAuth credential, `discover_datasets` lists one
+    /// top-level entry per granted tenant, each with that tenant's own
+    /// datasets nested beneath it (task 5.7).
+    #[tokio::test]
+    async fn discover_datasets_lists_one_entry_per_granted_tenant_with_its_own_datasets() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let router = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.expect("accept tables request");
+                let mut request = [0_u8; 4096];
+                let request_len = socket.read(&mut request).await.expect("read request");
+                let request = std::str::from_utf8(&request[..request_len])
+                    .expect("request is UTF-8")
+                    .to_string();
+                let body = if request.starts_with("GET /api/v1/tenants/acme/tables") {
+                    r#"{"tenant_id":"acme","tables":[],"datasets":[{"dataset":"production","tables":[{"name":"traces","schema_type":"traces","description":"d"}]}]}"#
+                } else if request.starts_with("GET /api/v1/tenants/globex/tables") {
+                    r#"{"tenant_id":"globex","tables":[],"datasets":[{"dataset":"staging","tables":[]}]}"#
+                } else {
+                    panic!("unexpected tables request: {request}");
+                };
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .expect("write response headers");
+                socket
+                    .write_all(body.as_bytes())
+                    .await
+                    .expect("write response body");
+            }
+        });
+        let server = McpServer::new(format!("http://{addr}"), std::time::Duration::from_secs(1));
+        let parts = multi_tenant_parts(vec![
+            unrestricted_grant("acme"),
+            unrestricted_grant("globex"),
+        ]);
+
+        let result = server
+            .discover_datasets(Extension(parts))
+            .await
+            .expect("discover_datasets succeeds for a multi-tenant credential");
+
+        let ContentBlock::Text(text) = &result.content[0] else {
+            panic!("discover_datasets returns a text result");
+        };
+        assert!(
+            text.text.contains("`acme`"),
+            "missing acme tenant: {}",
+            text.text
+        );
+        assert!(
+            text.text.contains("`globex`"),
+            "missing globex tenant: {}",
+            text.text
+        );
+        assert!(
+            text.text.contains("`production`"),
+            "missing acme's own dataset: {}",
+            text.text
+        );
+        assert!(
+            text.text.contains("`staging`"),
+            "missing globex's own dataset: {}",
+            text.text
+        );
+        router.await.expect("mock router task panicked");
+    }
+
+    /// D10, for the multi-tenant path specifically: each granted tenant's
+    /// own `dataset_ids` restriction is applied to its own datasets, never a
+    /// merged/shared one and never the first tenant's restriction reused for
+    /// every tenant. `acme`'s restriction (`production` only) would hide
+    /// `globex`'s entire dataset list if it leaked across tenants, since
+    /// `globex` provisions no `production` dataset at all — this is exactly
+    /// the bug class the router-layer equivalent test already guards.
+    #[tokio::test]
+    async fn discover_datasets_applies_each_grants_own_distinct_dataset_restriction() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let router = tokio::spawn(async move {
+            for _ in 0..2 {
+                let (mut socket, _) = listener.accept().await.expect("accept tables request");
+                let mut request = [0_u8; 4096];
+                let request_len = socket.read(&mut request).await.expect("read request");
+                let request = std::str::from_utf8(&request[..request_len])
+                    .expect("request is UTF-8")
+                    .to_string();
+                // Both tenants provision a dataset named `staging`, but each
+                // is expected to hide it for its own (different) reason —
+                // proving the restriction applied is tenant-specific, not
+                // shared state that happens to hide the same name twice.
+                let body = if request.starts_with("GET /api/v1/tenants/acme/tables") {
+                    r#"{"tenant_id":"acme","tables":[],"datasets":[{"dataset":"production","tables":[{"name":"traces","schema_type":"traces","description":"d"}]},{"dataset":"staging","tables":[]}]}"#
+                } else if request.starts_with("GET /api/v1/tenants/globex/tables") {
+                    r#"{"tenant_id":"globex","tables":[],"datasets":[{"dataset":"billing","tables":[{"name":"logs","schema_type":"logs","description":"d"}]},{"dataset":"staging","tables":[]}]}"#
+                } else {
+                    panic!("unexpected tables request: {request}");
+                };
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .expect("write response headers");
+                socket
+                    .write_all(body.as_bytes())
+                    .await
+                    .expect("write response body");
+            }
+        });
+        let server = McpServer::new(format!("http://{addr}"), std::time::Duration::from_secs(1));
+        let parts = multi_tenant_parts(vec![
+            audit::GrantedTenant {
+                tenant_id: "acme".to_string(),
+                dataset_ids: Some(vec!["production".to_string()]),
+            },
+            audit::GrantedTenant {
+                tenant_id: "globex".to_string(),
+                dataset_ids: Some(vec!["billing".to_string()]),
+            },
+        ]);
+
+        let result = server
+            .discover_datasets(Extension(parts))
+            .await
+            .expect("discover_datasets succeeds for a multi-tenant credential");
+
+        let ContentBlock::Text(text) = &result.content[0] else {
+            panic!("discover_datasets returns a text result");
+        };
+        assert!(
+            text.text.contains("`production`"),
+            "acme's own permitted dataset must be visible: {}",
+            text.text
+        );
+        assert!(
+            text.text.contains("`billing`"),
+            "globex's own permitted dataset must be visible — a leaked acme \
+             restriction (production only) would incorrectly hide it: {}",
+            text.text
+        );
+        assert!(
+            !text.text.contains("`staging`"),
+            "staging is outside both tenants' own restrictions and must not \
+             appear under either: {}",
             text.text
         );
         router.await.expect("mock router task panicked");
@@ -4273,6 +4627,252 @@ mod tests {
         let sources = text_json(&result);
         assert_eq!(sources["rows"][0][0], "logs");
         router.await.expect("mock router task panicked");
+    }
+
+    /// `Parts` carrying a multi-tenant OAuth credential's grant set (as the
+    /// auth middleware would stash it), for the `check_tenant_scope`/
+    /// `scoped_router_client` set-membership tests below.
+    fn multi_tenant_parts(grants: Vec<audit::GrantedTenant>) -> axum::http::request::Parts {
+        let mut parts = valid_parts();
+        parts.extensions.insert(audit::CallerTenants(grants));
+        parts
+    }
+
+    fn unrestricted_grant(tenant_id: &str) -> audit::GrantedTenant {
+        audit::GrantedTenant {
+            tenant_id: tenant_id.to_string(),
+            dataset_ids: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn check_tenant_scope_rejects_a_tenant_outside_a_multi_tenant_grant() {
+        // No mock router needed: a tenant outside the grant set must be
+        // caught before any request is sent (task 5.3).
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+        let parts = multi_tenant_parts(vec![
+            unrestricted_grant("acme"),
+            unrestricted_grant("globex"),
+        ]);
+
+        let err = server
+            .discover_sources(
+                Parameters(DiscoverSourcesParams {
+                    tenant: "initech".to_string(),
+                    dataset: "production".to_string(),
+                }),
+                Extension(parts),
+            )
+            .await
+            .expect_err("a tenant outside the grant set must be rejected");
+
+        assert!(err.message.contains("initech"), "got {}", err.message);
+    }
+
+    /// Spawn a mock router that accepts `responses.len()` sequential
+    /// connections, each replying with the corresponding body, and returns
+    /// the raw request text received for each — so a test can assert
+    /// per-call headers (e.g. `X-Tenant-ID`) across successive tool calls.
+    async fn mock_json_router_sequence(
+        responses: Vec<(&'static str, &'static str)>,
+    ) -> (String, tokio::task::JoinHandle<Vec<String>>) {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let handle = tokio::spawn(async move {
+            let mut seen = Vec::with_capacity(responses.len());
+            for (expected_prefix, body) in responses {
+                let (mut socket, _) = listener.accept().await.expect("accept request");
+                let mut request = [0_u8; 4096];
+                let request_len = socket.read(&mut request).await.expect("read request");
+                let request = std::str::from_utf8(&request[..request_len])
+                    .expect("request is UTF-8")
+                    .to_string();
+                assert!(
+                    request.starts_with(expected_prefix),
+                    "unexpected request, wanted prefix {expected_prefix:?}: {request}"
+                );
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .expect("write response headers");
+                socket.write_all(body.as_bytes()).await.expect("write body");
+                seen.push(request);
+            }
+            seen
+        });
+        (format!("http://{addr}"), handle)
+    }
+
+    #[tokio::test]
+    async fn multi_tenant_oauth_session_selects_a_different_granted_tenant_per_call() {
+        // A session bound to a multi-tenant OAuth credential may select any
+        // tenant from its own granted set on each call, independently (task
+        // 5.2), and the router receives the exact tenant that call selected
+        // as an explicit `X-Tenant-ID` (task 5.6).
+        let (base_url, router) = mock_json_router_sequence(vec![
+            (
+                "GET /api/v1/query/sources",
+                r#"{"result":"rows","window":{"start_ns":0,"end_ns":1},"rows":[["logs"]]}"#,
+            ),
+            (
+                "GET /api/v1/query/sources",
+                r#"{"result":"rows","window":{"start_ns":0,"end_ns":1},"rows":[["metrics"]]}"#,
+            ),
+        ])
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+        let grants = vec![unrestricted_grant("acme"), unrestricted_grant("globex")];
+
+        let first = server
+            .discover_sources(
+                Parameters(DiscoverSourcesParams {
+                    tenant: "acme".to_string(),
+                    dataset: "production".to_string(),
+                }),
+                Extension(multi_tenant_parts(grants.clone())),
+            )
+            .await
+            .expect("selecting the first granted tenant succeeds");
+        assert_eq!(text_json(&first)["rows"][0][0], "logs");
+
+        let second = server
+            .discover_sources(
+                Parameters(DiscoverSourcesParams {
+                    tenant: "globex".to_string(),
+                    dataset: "production".to_string(),
+                }),
+                Extension(multi_tenant_parts(grants)),
+            )
+            .await
+            .expect("selecting the second granted tenant on a later call also succeeds");
+        assert_eq!(text_json(&second)["rows"][0][0], "metrics");
+
+        let requests = router.await.expect("mock router task panicked");
+        assert!(
+            requests[0].to_lowercase().contains("x-tenant-id: acme"),
+            "{}",
+            requests[0]
+        );
+        assert!(
+            requests[1].to_lowercase().contains("x-tenant-id: globex"),
+            "{}",
+            requests[1]
+        );
+    }
+
+    /// The tenant self-management tools (`tenant_list_datasets`,
+    /// `tenant_create_api_key`, etc.) take a `tenant_id` argument but,
+    /// before this fix, never checked it against the caller's grant or
+    /// forwarded it as `X-Tenant-ID` — for a multi-tenant OAuth credential
+    /// (which carries no `X-Tenant-ID` at all) every one of them was
+    /// unusable regardless of `tenant_id`. `tenant_list_datasets` and
+    /// `tenant_create_api_key` stand in for the whole family.
+    #[tokio::test]
+    async fn tenant_list_datasets_allows_a_granted_tenant_for_a_multi_tenant_credential() {
+        let (base_url, router) = mock_capturing_router(
+            "GET /api/v1/manage/tenants/acme/datasets",
+            200,
+            r#"[{"id":"production","name":"production"}]"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+        let parts = multi_tenant_parts(vec![
+            unrestricted_grant("acme"),
+            unrestricted_grant("globex"),
+        ]);
+
+        let result = server
+            .tenant_list_datasets(
+                Parameters(TenantOnlyParams {
+                    tenant_id: "acme".to_string(),
+                }),
+                Extension(parts),
+            )
+            .await
+            .expect("a granted tenant succeeds for a multi-tenant credential");
+
+        let body = text_json(&result);
+        assert_eq!(body[0]["id"], "production", "got {body}");
+        let request = router.await.expect("mock router task panicked");
+        assert!(
+            request.to_lowercase().contains("x-tenant-id: acme"),
+            "expected the selected tenant forwarded as X-Tenant-ID: {request}"
+        );
+    }
+
+    #[tokio::test]
+    async fn tenant_create_api_key_rejects_a_tenant_outside_a_multi_tenant_grant() {
+        // No mock router needed: the mismatch must be caught before any
+        // request is sent.
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+        let parts = multi_tenant_parts(vec![
+            unrestricted_grant("acme"),
+            unrestricted_grant("globex"),
+        ]);
+
+        let err = server
+            .tenant_create_api_key(
+                Parameters(TenantCreateApiKeyParams {
+                    tenant_id: "initech".to_string(),
+                    name: None,
+                    scopes: vec!["traces:read".to_string()],
+                    dataset_ids: None,
+                }),
+                Extension(parts),
+            )
+            .await
+            .expect_err("a tenant outside the grant set must be rejected");
+
+        assert!(err.message.contains("initech"), "got {}", err.message);
+    }
+
+    /// `list_available_table_schemas` takes no tenant argument at all (its
+    /// answer is tenant-agnostic), but the router still needs a resolvable
+    /// tenant for a multi-tenant OAuth credential — the first granted tenant
+    /// is used as a safe anchor purely for that purpose.
+    #[tokio::test]
+    async fn list_available_table_schemas_uses_the_first_granted_tenant_as_an_anchor() {
+        let (base_url, router) = mock_capturing_router(
+            "GET /api/v1/schemas/available",
+            200,
+            r#"{"schemas":[{"name":"traces","schema_type":"traces","description":"d"}]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+        let parts = multi_tenant_parts(vec![
+            unrestricted_grant("acme"),
+            unrestricted_grant("globex"),
+        ]);
+
+        let result = server
+            .list_available_table_schemas(Extension(parts))
+            .await
+            .expect("succeeds for a multi-tenant credential");
+
+        let body = text_json(&result);
+        assert_eq!(body["schemas"][0]["name"], "traces", "got {body}");
+        let request = router.await.expect("mock router task panicked");
+        assert!(
+            request.to_lowercase().contains("x-tenant-id: acme"),
+            "expected the first granted tenant used as the anchor: {request}"
+        );
     }
 
     #[tokio::test]

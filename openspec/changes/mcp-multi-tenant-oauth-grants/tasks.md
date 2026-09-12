@@ -41,15 +41,15 @@
 
 ## 5. MCP server
 
-- [ ] 5.1 Write a failing test: an OAuth session whose credential grants two tenants is not identity-locked to either at session establishment (design D4)
-- [ ] 5.2 Write a failing test: a multi-tenant OAuth session's later call selecting a different granted tenant than an earlier call succeeds, scoped to the newly selected tenant
-- [ ] 5.3 Write a failing test: a multi-tenant OAuth session's call naming a tenant outside the grant set is rejected before any router call
-- [ ] 5.4 Change `mcp_auth_middleware` (`src/mcp-server/src/lib.rs`) to call the new `POST /oauth/introspect` instead of `whoami()` for an OAuth credential whose grant covers more than one tenant, storing a new, separate `CallerTenants(Vec<TenantGrant>)` extension alongside (not replacing) the existing `CallerTenant`/`CallerDatasetIds` used by every single-tenant credential (API key or single-tenant OAuth), and bind the session to the credential rather than a fixed tenant only in that multi-tenant case
-- [ ] 5.5 Change `check_tenant_scope` (`src/mcp-server/src/server.rs`) to branch on which extension is present: equality against `CallerTenant` (unchanged) for a single-tenant credential, set-membership against `CallerTenants` for a multi-tenant one
-- [ ] 5.6 Change `sdk_client_for`/`router_client` to set `X-Tenant-ID`/`X-Dataset-ID` explicitly from the tool call's own arguments when the credential is OAuth with a multi-tenant grant
-- [ ] 5.7 Write a failing test: `discover_datasets` on a multi-tenant credential returns one top-level entry per granted tenant with that tenant's own datasets nested beneath it
-- [ ] 5.8 Update `discover_datasets` and `server_info` to enumerate the full grant set
-- [ ] 5.9 Update the MCP audit log (`src/mcp-server/src/audit.rs`) so `tenant_id` names the tenant the specific call resolved to (unchanged for single-tenant, now per-call for multi-tenant)
+- [x] 5.1 Write a failing test: an OAuth session whose credential grants two tenants is not identity-locked to either at session establishment (design D4)
+- [x] 5.2 Write a failing test: a multi-tenant OAuth session's later call selecting a different granted tenant than an earlier call succeeds, scoped to the newly selected tenant
+- [x] 5.3 Write a failing test: a multi-tenant OAuth session's call naming a tenant outside the grant set is rejected before any router call
+- [x] 5.4 Change `mcp_auth_middleware` (`src/mcp-server/src/lib.rs`) to call the new `POST /oauth/introspect` instead of `whoami()` for an OAuth credential whose grant covers more than one tenant, storing a new, separate `CallerTenants(Vec<TenantGrant>)` extension alongside (not replacing) the existing `CallerTenant`/`CallerDatasetIds` used by every single-tenant credential (API key or single-tenant OAuth), and bind the session to the credential rather than a fixed tenant only in that multi-tenant case
+- [x] 5.5 Change `check_tenant_scope` (`src/mcp-server/src/server.rs`) to branch on which extension is present: equality against `CallerTenant` (unchanged) for a single-tenant credential, set-membership against `CallerTenants` for a multi-tenant one
+- [x] 5.6 Change `sdk_client_for`/`router_client` to set `X-Tenant-ID`/`X-Dataset-ID` explicitly from the tool call's own arguments when the credential is OAuth with a multi-tenant grant
+- [x] 5.7 Write a failing test: `discover_datasets` on a multi-tenant credential returns one top-level entry per granted tenant with that tenant's own datasets nested beneath it
+- [x] 5.8 Update `discover_datasets` and `server_info` to enumerate the full grant set
+- [x] 5.9 Update the MCP audit log (`src/mcp-server/src/audit.rs`) so `tenant_id` names the tenant the specific call resolved to (unchanged for single-tenant, now per-call for multi-tenant)
 
 ## 6. Documentation
 
