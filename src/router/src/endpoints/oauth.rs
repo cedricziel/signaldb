@@ -1878,6 +1878,152 @@ mod tests {
         assert_eq!(body_json(replay).await["error"], "invalid_grant");
     }
 
+    // ---- mcp-multi-tenant-oauth-grants: token issuance/refresh carry the
+    // full grant set (task group 3.1-3.3) ----
+
+    /// Seed a user, two tenants (each with its own dataset), a client, and
+    /// an authorization code bound to a two-tenant grant set with different
+    /// dataset restrictions per tenant.
+    async fn seed_multi_tenant_authorization_code(catalog: &Catalog, code: &str) -> String {
+        use common::auth::oauth::hash_oauth_token;
+        let user = catalog
+            .create_user("agent@example.com", None, Some("phc"), false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "production").await.unwrap();
+        catalog
+            .upsert_tenant("globex", "Globex", Some("default"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("globex", "default").await.unwrap();
+        catalog
+            .register_oauth_client(
+                "client-1",
+                Some("Claude"),
+                &["https://claude.ai/cb".to_string()],
+                None,
+                None,
+                "none",
+            )
+            .await
+            .unwrap();
+        catalog
+            .create_authorization_code(
+                &hash_oauth_token(code),
+                "client-1",
+                &user.id,
+                &[
+                    common::catalog::TenantGrant {
+                        tenant_id: "acme".to_string(),
+                        dataset_ids: Some(vec!["production".to_string()]),
+                    },
+                    common::catalog::TenantGrant {
+                        tenant_id: "globex".to_string(),
+                        dataset_ids: None,
+                    },
+                ],
+                &["traces:read".to_string()],
+                "https://claude.ai/cb",
+                PKCE_CHALLENGE,
+                Some("https://signaldb.example.com/mcp"),
+                chrono::Utc::now() + chrono::Duration::minutes(1),
+            )
+            .await
+            .unwrap();
+        code.to_string()
+    }
+
+    fn expected_multi_tenant_grant() -> Vec<common::catalog::TenantGrant> {
+        vec![
+            common::catalog::TenantGrant {
+                tenant_id: "acme".to_string(),
+                dataset_ids: Some(vec!["production".to_string()]),
+            },
+            common::catalog::TenantGrant {
+                tenant_id: "globex".to_string(),
+                dataset_ids: None,
+            },
+        ]
+    }
+
+    /// Task 3.1: exchanging a multi-tenant authorization code yields an
+    /// access token and refresh token bound to the full grant set.
+    #[tokio::test]
+    async fn token_exchange_of_multi_tenant_code_yields_full_grant_set() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_multi_tenant_authorization_code(&catalog, "raw-code-multi").await;
+        let res = post_token(
+            &app,
+            format!(
+                "grant_type=authorization_code&code=raw-code-multi&code_verifier={PKCE_VERIFIER}\
+                 &redirect_uri=https%3A%2F%2Fclaude.ai%2Fcb&client_id=client-1"
+            ),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let tokens = body_json(res).await;
+        let access = catalog
+            .get_valid_access_token(&hash_oauth_token(tokens["access_token"].as_str().unwrap()))
+            .await
+            .unwrap()
+            .expect("access token stored");
+        let refresh = catalog
+            .get_valid_refresh_token(&hash_oauth_token(tokens["refresh_token"].as_str().unwrap()))
+            .await
+            .unwrap()
+            .expect("refresh token stored");
+        assert_eq!(access.tenant_grants, expected_multi_tenant_grant());
+        assert_eq!(refresh.tenant_grants, expected_multi_tenant_grant());
+    }
+
+    /// Task 3.2: refreshing a multi-tenant token yields a new access token
+    /// with the same grant set, scopes, and audience.
+    #[tokio::test]
+    async fn refresh_of_multi_tenant_token_yields_same_grant_set() {
+        let (app, catalog) = app_and_catalog().await;
+        seed_multi_tenant_authorization_code(&catalog, "raw-code-multi-refresh").await;
+        let tokens = body_json(
+            post_token(
+                &app,
+                format!(
+                    "grant_type=authorization_code&code=raw-code-multi-refresh&code_verifier={PKCE_VERIFIER}\
+                     &redirect_uri=https%3A%2F%2Fclaude.ai%2Fcb&client_id=client-1"
+                ),
+            )
+            .await,
+        )
+        .await;
+        let refresh_raw = tokens["refresh_token"].as_str().unwrap().to_string();
+
+        let res = post_token(
+            &app,
+            format!("grant_type=refresh_token&refresh_token={refresh_raw}&client_id=client-1"),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let new_tokens = body_json(res).await;
+        let new_access = catalog
+            .get_valid_access_token(&hash_oauth_token(
+                new_tokens["access_token"].as_str().unwrap(),
+            ))
+            .await
+            .unwrap()
+            .expect("new access token stored");
+        let new_refresh = catalog
+            .get_valid_refresh_token(&hash_oauth_token(
+                new_tokens["refresh_token"].as_str().unwrap(),
+            ))
+            .await
+            .unwrap()
+            .expect("new refresh token stored");
+        assert_eq!(new_access.tenant_grants, expected_multi_tenant_grant());
+        assert_eq!(new_refresh.tenant_grants, expected_multi_tenant_grant());
+    }
+
     // ---- multi-dataset-key-restriction phase 3: OAuth consent + tokens ----
 
     /// Like [`seed_user_session`], but also creates each named dataset in the

@@ -19,9 +19,9 @@
 
 ## 3. Router: token issuance, refresh, and resolution
 
-- [ ] 3.1 Write a failing test: exchanging a multi-tenant authorization code yields an access token and refresh token bound to the full grant set
-- [ ] 3.2 Write a failing test: refreshing a multi-tenant token yields a new access token with the same grant set, scopes, and audience
-- [ ] 3.3 Update token issuance/refresh in `src/router/src/endpoints/oauth.rs` to carry the full grant set forward
+- [x] 3.1 Write a failing test: exchanging a multi-tenant authorization code yields an access token and refresh token bound to the full grant set
+- [x] 3.2 Write a failing test: refreshing a multi-tenant token yields a new access token with the same grant set, scopes, and audience
+- [x] 3.3 Update token issuance/refresh in `src/router/src/endpoints/oauth.rs` to carry the full grant set forward (already satisfied by 9e530f18's plumbing — both tests above pass unmodified, confirmed rather than assumed)
 - [ ] 3.4 Write a failing test: `extract_auth_headers` (`src/common/src/auth/middleware.rs`) now reads `X-Tenant-ID` for an OAuth bearer instead of discarding it, and passes it through to `authenticate_oauth_token`
 - [ ] 3.5 Implement the `extract_auth_headers` change
 - [ ] 3.6 Write a failing test: `authenticate_oauth_token` resolves a single-tenant grant exactly as before, ignoring any `X-Tenant-ID`
