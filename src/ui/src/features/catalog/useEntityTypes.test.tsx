@@ -134,6 +134,35 @@ describe("useCatalogEntityTypes", () => {
     expect(result.current.analyzed).toBe(false);
   });
 
+  it("reports a real query failure distinctly from being unanalyzed", async () => {
+    // A 403 (e.g. dataset not found for this tenant) is a backend failure to
+    // surface, not "nothing has been compacted yet" — the two must not
+    // collapse into the same `analyzed: false` shape a caller can't tell
+    // apart.
+    fetchAllSourceFields.mockRejectedValue(new Error("dataset not found"));
+
+    const { result } = render();
+
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+    expect(result.current.isError).toBe(true);
+    expect(result.current.error).toBeInstanceOf(Error);
+    expect(result.current.analyzed).toBe(false);
+  });
+
+  it("reports no error once metadata lands normally", async () => {
+    fetchAllSourceFields.mockResolvedValue(
+      new Map([
+        ["traces", { fields: new Set(["service.name"]), analyzed: true }],
+      ]),
+    );
+
+    const { result } = render();
+
+    await waitFor(() => expect(result.current.isPending).toBe(false));
+    expect(result.current.isError).toBe(false);
+    expect(result.current.error).toBeFalsy();
+  });
+
   it("adds a registry-only entity type that a source carries", async () => {
     searchEntities.mockResolvedValue([
       {
