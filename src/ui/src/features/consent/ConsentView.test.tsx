@@ -115,7 +115,9 @@ describe("ConsentView", () => {
     await userEvent.click(
       screen.getByRole("radio", { name: /Only these datasets in acme/ }),
     );
-    await userEvent.click(screen.getByRole("checkbox", { name: "production" }));
+    await userEvent.click(
+      screen.getByRole("checkbox", { name: "production in acme" }),
+    );
 
     await userEvent.click(screen.getByRole("checkbox", { name: /^globex/ }));
 
@@ -154,7 +156,9 @@ describe("ConsentView", () => {
     await userEvent.click(
       screen.getByRole("radio", { name: /Only these datasets in acme/ }),
     );
-    await userEvent.click(screen.getByRole("checkbox", { name: "production" }));
+    await userEvent.click(
+      screen.getByRole("checkbox", { name: "production in acme" }),
+    );
 
     // Uncheck acme, then recheck it: its dataset choice should be back to "all".
     await userEvent.click(screen.getByRole("checkbox", { name: /^acme/ }));
@@ -164,8 +168,47 @@ describe("ConsentView", () => {
       screen.getByRole("radio", { name: /All datasets in acme/ }),
     ).toBeChecked();
     expect(
-      screen.queryByRole("checkbox", { name: "production" }),
+      screen.queryByRole("checkbox", { name: "production in acme" }),
     ).not.toBeInTheDocument();
+  });
+
+  it("distinguishes identically-named datasets across tenants by accessible name", async () => {
+    // CodeRabbit finding on this PR: two tenants provisioning a
+    // same-named dataset must not produce two checkboxes assistive
+    // technology can't tell apart.
+    vi.mocked(consentApi.consentContext).mockResolvedValue({
+      client_name: "Claude",
+      tenants: [
+        {
+          id: "acme",
+          role: "member",
+          datasets: [{ id: "default", name: "default" }],
+        },
+        {
+          id: "globex",
+          role: "admin",
+          datasets: [{ id: "default", name: "default" }],
+        },
+      ],
+    });
+    renderConsent();
+    await screen.findByRole("heading", { name: /Claude/ });
+
+    await userEvent.click(screen.getByRole("checkbox", { name: /^acme/ }));
+    await userEvent.click(
+      screen.getByRole("radio", { name: /Only these datasets in acme/ }),
+    );
+    await userEvent.click(screen.getByRole("checkbox", { name: /^globex/ }));
+    await userEvent.click(
+      screen.getByRole("radio", { name: /Only these datasets in globex/ }),
+    );
+
+    expect(
+      screen.getByRole("checkbox", { name: "default in acme" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("checkbox", { name: "default in globex" }),
+    ).toBeInTheDocument();
   });
 
   it("submit stays disabled for a checked tenant in 'only these datasets' mode with nothing checked", async () => {
@@ -178,7 +221,9 @@ describe("ConsentView", () => {
     );
     expect(screen.getByRole("button", { name: "Authorize" })).toBeDisabled();
 
-    await userEvent.click(screen.getByRole("checkbox", { name: "production" }));
+    await userEvent.click(
+      screen.getByRole("checkbox", { name: "production in acme" }),
+    );
     expect(screen.getByRole("button", { name: "Authorize" })).toBeEnabled();
   });
 

@@ -271,6 +271,7 @@ export function ConsentView() {
                   <input
                     type="checkbox"
                     checked={sel.selectedDatasetIds.includes(dataset.id)}
+                    aria-label={`${dataset.name} in ${tenant.id}`}
                     onChange={(event) =>
                       setTenantSelection(tenant.id, {
                         selectedDatasetIds: event.target.checked
