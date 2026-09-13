@@ -20,7 +20,7 @@ A tenant admin SHALL be able to link a GitHub App installation (produced by GitH
 
 ### Requirement: State-bound install linking
 
-Before redirecting a tenant admin to GitHub's install flow, SignalDB SHALL generate a single-use, expiring state token bound to that admin's identity and tenant, and SHALL pass it through GitHub's install flow (as the `state` parameter). SignalDB SHALL only accept an installation id presented on the return redirect when it carries a state token that is unexpired, unused, and matches one it issued for that admin and tenant; a bare installation id submitted without a valid matching state token SHALL be rejected. This prevents a tenant admin from linking an installation they did not initiate — e.g. one they learned the id of but that belongs to another organization's install.
+Before redirecting a tenant admin to GitHub's install flow, SignalDB SHALL generate a single-use, expiring state token bound to that admin's identity and tenant, and SHALL pass it through GitHub's install flow (as the `state` parameter). SignalDB SHALL only accept an installation id presented on the return redirect when it carries a state token that is unexpired, unused, and matches one it issued for that admin and tenant; a bare installation id submitted without a valid matching state token SHALL be rejected. This prevents a tenant admin from linking an installation they did not initiate — e.g. one they learned the id of but that belongs to another organization's install. Validating the state token, consuming it, and creating the installation record SHALL happen as a single atomic (or equivalently idempotent) catalog operation, so that two concurrent completions presenting the same state token cannot both succeed, and a state token is never left consumed without a corresponding installation record.
 
 #### Scenario: Missing or mismatched state is rejected
 
@@ -31,6 +31,20 @@ Before redirecting a tenant admin to GitHub's install flow, SignalDB SHALL gener
 
 - **WHEN** a state token that was already consumed by a completed link is presented again
 - **THEN** the request is rejected
+
+#### Scenario: Concurrent completions with the same state token produce one record
+
+- **WHEN** two link-completion requests race each other presenting the same valid, unused state token
+- **THEN** at most one installation record is created, and the losing request is rejected as if the token had already been consumed
+
+### Requirement: Installation ownership verification
+
+The state token proves which SignalDB admin and tenant initiated the flow, but the `installation_id` GitHub returns on the setup-URL redirect is browser-supplied and not otherwise authenticated. To close that gap, SignalDB's GitHub App SHALL enable user authorization during installation (the OAuth-on-install flow), and on the return redirect SignalDB SHALL exchange the callback `code` for a user-to-server GitHub access token, then verify that the callback's `installation_id` appears in that authenticated GitHub user's `GET /user/installations` response before writing any installation record. A failed code exchange, or an `installation_id` absent from that user's installations, SHALL be rejected and SHALL persist nothing. This binds the GitHub side of the link (the installation actually belongs to the authorizing GitHub user) the way the state token binds the SignalDB side (the request actually came from the admin who started the flow); neither check alone is sufficient. This requirement does not change the read-only permission scope in the `Read-only permission scope` requirement below — user authorization establishes identity, not repo access.
+
+#### Scenario: Installation id not owned by the authorizing GitHub user is rejected
+
+- **WHEN** a link-completion request carries a valid, matching state token but names an `installation_id` that does not appear in the authorizing GitHub user's `GET /user/installations` response, or the callback `code`-for-token exchange fails
+- **THEN** the request is rejected and no installation record is created
 
 ### Requirement: Read-only permission scope
 
