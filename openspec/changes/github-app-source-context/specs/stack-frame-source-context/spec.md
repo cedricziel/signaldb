@@ -6,12 +6,17 @@ Resolves a repo/ref/file/line reference from a trace exception frame or profile 
 
 ### Requirement: Bounded snippet lookup
 
-Given a repo, a commit SHA or ref, a file path, and a line number, the system SHALL fetch a bounded window of source lines centered on that line (a fixed maximum line count, not the whole file) from GitHub's Contents API, using a token minted through the tenant's linked installation covering that repo, per `github-app-integration`.
+Given a repo, a commit SHA or ref, a file path, and a line number, the system SHALL retrieve the file's content from GitHub's Contents API (using a token minted through the tenant's linked installation covering that repo, per `github-app-integration`) and SHALL return to the caller only a bounded window of source lines centered on that line (a fixed maximum line count) — never the full retrieved file content. A file that GitHub reports as binary, or whose retrieved size exceeds a fixed cap, SHALL be treated as unavailable rather than sliced.
 
 #### Scenario: Snippet fetched around a line
 
 - **WHEN** a lookup requests file `src/main.rs` at line 42 for a repo covered by the tenant's linked installation
 - **THEN** the response contains a bounded window of lines around line 42, not the entire file
+
+#### Scenario: Binary or oversized file is unavailable
+
+- **WHEN** a lookup names a file that GitHub reports as binary, or whose content exceeds the fixed size cap
+- **THEN** the lookup returns "unavailable" rather than attempting to slice or return non-text content
 
 ### Requirement: Graceful unavailability
 

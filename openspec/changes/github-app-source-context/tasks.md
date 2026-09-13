@@ -1,22 +1,27 @@
 ## 1. Installation catalog storage (common)
 
 - [ ] 1.1 Write a failing `common` test asserting a GitHub installation record (installation id, app account, linked tenant id, linked dataset id (optional), covered repo list, created/updated timestamps) round-trips through the catalog store
-- [ ] 1.2 Implement the catalog table/record and repository methods (create, get-by-tenant, list-by-tenant, delete) to make 1.1 pass; verify with `cargo test -p common`
+- [ ] 1.2 Implement the catalog table/record and repository methods (create, get-by-tenant, list-by-tenant, update-repo-list, delete) to make 1.1 pass; verify with `cargo test -p common`
 - [ ] 1.3 Write a failing test asserting a lookup for a repo not covered by any of tenant A's installations returns "not found" even when tenant B has a covering installation, then implement the tenant-scoped resolution query to make it pass (`cargo test -p common`)
+- [ ] 1.4 Write a failing test asserting a link-flow state token (bound to an admin id, tenant id, expiry) can be created, consumed exactly once, and is rejected on a second consumption attempt or after expiry; implement the state-token store to make it pass (`cargo test -p common`)
 
 ## 2. GitHub App client (common)
 
 - [ ] 2.1 Write a failing test for app-level JWT signing (RS256, correct `iss`/`iat`/`exp` claims from a configured app id and private key) using a test keypair; implement to pass (`cargo test -p common`)
-- [ ] 2.2 Write a failing test for exchanging an app JWT for an installation access token against a mocked GitHub token endpoint (wiremock or equivalent), asserting the token is never written to the catalog; implement the minting client and an in-process, expiry-aware token cache to pass (`cargo test -p common`)
-- [ ] 2.3 Write a failing test for fetching a bounded line-range snippet from a mocked GitHub Contents API response (repo, ref, path, line, window size), covering the "file not found" and "ref not found" error responses mapping to an `Unavailable` result rather than a propagated error; implement the fetch client to pass (`cargo test -p common`)
-- [ ] 2.4 Write a failing test asserting the snippet cache (keyed on installation id, repo, ref, file, line window) serves a second identical lookup without a second call to the mocked GitHub client; implement the cache to pass (`cargo test -p common`)
+- [ ] 2.2 Write a failing test for exchanging an app JWT for an installation access token against a mocked GitHub token endpoint (wiremock or equivalent), asserting the minted token is never written to the catalog; implement the minting client to pass (`cargo test -p common`)
+- [ ] 2.3 Write a failing test asserting two mint calls for the same installation within the first token's cached validity window reuse it (only one call reaches the mocked token endpoint), and a third call after simulated expiry mints a fresh one; implement the in-process, expiry-aware token cache to pass (`cargo test -p common`)
+- [ ] 2.4 Write a failing test for fetching a file's content from a mocked GitHub Contents API response and slicing a bounded line-range snippet from it client-side (repo, ref, path, line, window size), covering "file not found" and "ref not found" mapping to an `Unavailable` result rather than a propagated error; implement the fetch-and-slice client to pass (`cargo test -p common`)
+- [ ] 2.5 Write a failing test asserting a mocked binary-content response and a mocked oversized-content response (over the fixed size cap) both map to `Unavailable` rather than being sliced or returned; implement the check to pass (`cargo test -p common`)
+- [ ] 2.6 Write a failing test asserting the snippet cache (keyed on installation id, repo, ref, file, line window) serves a second identical lookup without a second call to the mocked GitHub client; implement the cache to pass (`cargo test -p common`)
 
 ## 3. Admin/management HTTP API (router)
 
-- [ ] 3.1 Add `POST/GET/DELETE /api/v1/manage/tenants/{id}/github-installations` to the OpenAPI spec (link, list, remove), matching `admin-management-api-contract`'s schema conventions
-- [ ] 3.2 Write a failing `router` integration test asserting a tenant admin can link an installation and see it in the list, and a non-admin request is rejected; implement the handlers against the catalog methods from Task 1 to make it pass (`cargo test -p router`)
-- [ ] 3.3 Write a failing test asserting removing an installation link causes an immediate-subsequent source-context fetch (Task 6) for that installation's repos to report "unavailable"; implement removal semantics to pass (`cargo test -p router`)
-- [ ] 3.4 Write a failing test enforcing the app manifest declares only `contents:read`/`metadata:read` (a config-level assertion, e.g. validating the configured manifest/permissions at startup) and rejects startup if a write-capable permission is present; implement the check to pass (`cargo test -p router` or `-p common`, wherever app config is validated)
+- [ ] 3.1 Add the GitHub-installations endpoints to the OpenAPI spec: a state-token issuance step (returns the state token and the GitHub install-flow URL to redirect the admin to) and `GET/DELETE /api/v1/manage/tenants/{id}/github-installations`, plus the state-bound completion of the link (`POST .../github-installations` accepting the returned state token and installation id), matching `admin-management-api-contract`'s schema conventions
+- [ ] 3.2 Write a failing `router` integration test asserting a tenant admin can request a state token, complete the link with a matching installation id, and see it in the list; and that a non-admin request is rejected; implement the handlers against the catalog methods from Tasks 1.1-1.2 to make it pass (`cargo test -p router`)
+- [ ] 3.3 Write a failing test asserting a link completion with a missing, expired, mismatched-tenant, or already-consumed state token is rejected and creates no installation record; implement against Task 1.4's state-token store to make it pass (`cargo test -p router`)
+- [ ] 3.4 Write a failing test asserting a list request triggers a live repo-list refresh (reflected in the response and persisted) and that a simulated refresh failure falls back to the last-stored repo list rather than failing the request; implement to pass (`cargo test -p router`)
+- [ ] 3.5 Write a failing test asserting removing an installation link causes an immediate-subsequent source-context fetch (Task 6) for that installation's repos to report "unavailable"; implement removal semantics to pass (`cargo test -p router`)
+- [ ] 3.6 Write a failing test enforcing the app manifest declares only `contents:read`/`metadata:read` (a config-level assertion, e.g. validating the configured manifest/permissions at startup) and rejects startup if a write-capable permission is present; implement the check to pass (`cargo test -p router` or `-p common`, wherever app config is validated)
 
 ## 4. Generated clients
 
@@ -25,24 +30,26 @@
 
 ## 5. CLI
 
-- [ ] 5.1 Add `signaldb tenant github-installations link|list|remove` commands consuming the regenerated Rust SDK (no hand-written HTTP calls); write a CLI test exercising link/list/remove against a test server and verify it passes
+- [ ] 5.1 Add `signaldb tenant github-installations link|list|remove` commands consuming the regenerated Rust SDK (no hand-written HTTP calls), where `link` drives the state-token-issue-then-redirect-then-complete flow; write a CLI test exercising link/list/remove against a test server and verify it passes
 
 ## 6. Source-context lookup endpoint
 
-- [ ] 6.1 Write a failing `router` test for a `POST /api/v1/tenants/{id}/source-context` (or equivalent) endpoint that resolves repo+ref+file+line to a snippet using Tasks 1-2, authorized to the caller's own tenant; implement to pass (`cargo test -p router`)
-- [ ] 6.2 Write a failing test asserting a request naming a repo covered only by another tenant's installation returns the same "unavailable" shape as no installation at all; implement to pass (`cargo test -p router`)
-- [ ] 6.3 Add this endpoint to the OpenAPI spec and regenerate the Rust SDK and TypeScript client (repeat Task 4's regeneration for this addition)
+- [ ] 6.1 Add `POST /api/v1/tenants/{id}/source-context` to the OpenAPI spec, noting it is a runtime read available to any authenticated tenant caller and is documented outside the `admin-management-api-contract` capability's admin/management path prefixes
+- [ ] 6.2 Write a failing `router` test for the endpoint resolving repo+ref+file+line to a snippet using Tasks 1-2, authorized to the caller's own tenant; implement to pass (`cargo test -p router`)
+- [ ] 6.3 Write a failing test asserting a request naming a repo covered only by another tenant's installation returns the same "unavailable" shape as no installation at all; implement to pass (`cargo test -p router`)
+- [ ] 6.4 Regenerate the Rust SDK and TypeScript client for this endpoint (repeat Task 4's regeneration for this addition)
 
 ## 7. Explore UI integration
 
 - [ ] 7.1 Add a "view source" affordance to the trace exception detail panel that calls the generated TS client's source-context endpoint only when the exception frame carries a file path and line number, and renders nothing extra when it doesn't; add a UI test covering both cases
 - [ ] 7.2 Add the equivalent affordance to the profile flame-graph frame detail panel where a frame carries file/line data; add a UI test covering both cases
-- [ ] 7.3 Add a tenant-settings UI surface to link (via GitHub's install redirect), list, and remove GitHub installations, consuming the generated TS client; add a UI test covering list and remove
+- [ ] 7.3 Add a tenant-settings UI surface to link (via the state-token-issue-then-GitHub-install-redirect flow), list, and remove GitHub installations, consuming the generated TS client; add a UI test covering list and remove
 
 ## 8. Cross-cutting verification
 
-- [ ] 8.1 Add an integration test in `tests-integration` covering the end-to-end flow: link an installation (against a mocked GitHub API), fetch source context for a covered repo, remove the installation, and verify a subsequent fetch reports unavailable
-- [ ] 8.2 Run `cargo fmt`, `cargo clippy --workspace --all-targets --all-features`, and `cargo machete --with-metadata`; fix any findings
+- [ ] 8.1 Add an integration test in `tests-integration` covering the end-to-end flow: issue a state token, link an installation with it (against a mocked GitHub API), fetch source context for a covered repo, remove the installation, and verify a subsequent fetch reports unavailable
+- [ ] 8.2 Add boundary spans, via the `common::self_monitoring::spans` factories (`skip_all` plus explicit bounded fields), to the new outbound GitHub HTTP client calls and the new router endpoints; verify no bare `#[tracing::instrument]` or `otel.kind` usage was introduced outside `common::self_monitoring`
+- [ ] 8.3 Run `cargo fmt`, `cargo clippy --workspace --all-targets --all-features`, and `cargo machete --with-metadata`; fix any findings
 
 ## 9. Docs
 
