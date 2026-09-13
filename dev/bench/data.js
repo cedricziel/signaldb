@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789187613189,
+  "lastUpdate": 1789273343751,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -7239,6 +7239,334 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 1102436,
             "range": "± 8356",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cedric Ziel",
+            "username": "cedricziel",
+            "email": "mail@cedric-ziel.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "6e966ddaf2740e3648583223828c6af715b6d331",
+          "message": "feat: per-API-key allowed origins for browser (CORS) ingestion (#1548)\n\n* feat(common): add allowed_origins restriction to API key catalog model\n\nAdds a nullable `allowed_origins` column to `api_keys` (SQLite + Postgres,\nmirroring the existing `dataset_ids` column and migration guards) so a\nfuture CORS layer can restrict which browser origins an API key accepts.\n\n- `ApiKeyRecord`/`ApiKeyAuthRecord` gain `allowed_origins: Option<Vec<String>>`.\n- `OriginRestrictionUpdate` (Keep/Clear/Set) mirrors `DatasetRestrictionUpdate`;\n  `update_api_key_scopes` now takes both tri-states and applies them via a\n  dynamic SET-clause builder instead of a combinatorial match.\n- `upsert_scoped_api_key` gains an `allowed_origins` parameter, validated by\n  the new `validate_allowed_origins_set`/`validate_create_allowed_origins`/\n  `encode_allowed_origins_json`, rejecting an empty or duplicate-containing\n  set the same way `dataset_ids` does. No URL-syntax validation is performed.\n\nEvery existing caller within the `common` crate (catalog.rs tests,\nauthenticator.rs tests) is updated to compile against the new signatures.\n\nClaude-Session: https://claude.ai/code/session_01FhURThyfcK7LJkfsVTsnuc\n\n* feat(router): wire allowed_origins into the admin and management API-key surfaces\n\nExtends the admin (`/api/v1/admin/...`) and management\n(`/api/v1/manage/...`) API-key endpoints to accept and return the\n`allowed_origins` restriction added to the catalog layer, replacing the\n`None`/`OriginRestrictionUpdate::Keep` placeholders with real\nrequest-driven values.\n\n- `CreateApiKeyRequest`/`UpdateApiKeyRequest`/`ApiKeyResponse`/\n  `CreateApiKeyResponse` (admin, in signaldb-api) and their management-API\n  equivalents (`CreateApiKeyRequest`/`ApiKeyResponse`/`ManageCreatedApiKey`/\n  `UpdateApiKeyRequest`) gain `allowed_origins: Option<Vec<String>>`, plus a\n  `clear_allowed_origins: bool` on the update DTOs, mirroring the existing\n  `dataset_ids`/`clear_dataset_restriction` fields field-for-field.\n- Added `common::catalog::OriginRestrictionUpdate::from_request`, mirroring\n  `DatasetRestrictionUpdate::from_request` exactly, so both router surfaces\n  share the same tri-state construction and validation rather than\n  duplicating the combination logic.\n- `create_api_key`/`update_api_key` on both surfaces validate\n  `allowed_origins` via `validate_create_allowed_origins`/\n  `OriginRestrictionUpdate::from_request` and pass the real value through to\n  `upsert_scoped_api_key`/`update_api_key_scopes`; `list_api_keys` responses\n  include the field. No rollout gate or membership check applies to\n  origins (unlike `dataset_ids`) since none was requested for this field.\n- Tests: create/read/update/clear/reject-empty coverage added on both\n  admin.rs and management.rs, plus a catalog-level unit test for\n  `OriginRestrictionUpdate::from_request`'s tri-state combinations.\n\nClaude-Session: https://claude.ai/code/session_01FhURThyfcK7LJkfsVTsnuc\n\n* feat(acceptor): enforce per-API-key allowed_origins on OTLP/HTTP ingest\n\nWires the catalog/router allowed_origins restriction into actual CORS\nenforcement on the acceptor's OTLP/HTTP and Prometheus remote_write\nendpoints, replacing the old config-driven, self_monitoring.frontend-gated\nCORS layer.\n\n- `otlp_cors_layer` is now mounted unconditionally (decoupled from\n  `self_monitoring.frontend.enabled`, which keeps governing the frontend's\n  own browser telemetry export separately) and only ever answers the\n  unauthenticated `OPTIONS` preflight, permissively mirroring whatever\n  `Origin` it carries — preflight grants no authority by itself. Its\n  `allow_origin` predicate and an explicit empty `vary()` make sure it never\n  adds any CORS header (`Access-Control-Allow-Origin` or `Vary`) to an\n  actual, non-preflight response; `HttpAcceptorConfig.cors_allowed_origins`\n  is removed as dead configuration.\n- Real enforcement lives in `middleware::auth_middleware`, once the API key\n  is resolved: a request with no `Origin` header (the vast majority of\n  ingest traffic — SDKs, collectors, server-to-server) is unaffected; one\n  with an `Origin` header is checked against the key's\n  `TenantContext::api_key_allowed_origins` via the new\n  `common::auth::origin_allowed` (mirroring `dataset_allowed`) and rejected\n  with 403 and no CORS header on a mismatch, or gets\n  `Access-Control-Allow-Origin: <origin>` + `Vary: Origin` reflected onto\n  the real response on a match (including the unrestricted/`None` case).\n- `TenantContext` gains `api_key_allowed_origins: Option<Vec<String>>`,\n  threaded through `with_api_key_restrictions` from the database-backed API\n  key path; OAuth grants pass `None` (no origin-restriction concept for\n  OAuth yet).\n\nTests: `otlp_cors_layer`'s preflight-permissive / actual-response-inert\nbehavior in `cors_tests`, and the four enforcement scenarios (unrestricted,\nmatching, non-matching, no-Origin-header) in\n`middleware::auth::tests::origin_enforcement_tests`.\n\nClaude-Session: https://claude.ai/code/session_01FhURThyfcK7LJkfsVTsnuc\n\n* feat(cli): add --allowed-origin/--clear-allowed-origins flags to api-key create/update\n\nReplaces the mechanical allowed_origins: None / clear_allowed_origins: None\nplaceholders (from commit 911b309e) with real flags on both API-key\nsurfaces, mirroring --dataset/--clear-dataset-restriction field-for-field:\n\n- `admin api-key create|update` (src/signaldb-cli/src/commands/api_key.rs)\n- `tenant api-key create|update` (src/signaldb-cli/src/commands/tenant_self.rs)\n\nBoth gain a repeatable `--allowed-origin <ORIGIN>` (Option<Vec<String>>,\n`ArgAction::Append`); `update` additionally gains `--clear-allowed-origins`\n(`conflicts_with = \"allowed_origin\"`, same as `--clear-dataset-restriction`).\n`update`'s \"nothing to update\" bail check now also considers the new flags.\n\n`format_api_key_table` gains an ORIGINS column alongside DATASETS in both\n`api-key list` human-readable outputs, reusing `format_dataset_restriction`\n(already generic over any optional string-set restriction) rather than\nduplicating it.\n\nThe TUI's own `AdminClient::create_api_key` (a bespoke interactive-form\naction, not this CLI's flag parser) is left unchanged but documented: it\nalready has a pre-existing TODO deferring multi-dataset support until the\nform grows multi-select, and origin restriction is deferred the same way.\n\nTests: flag-parsing (repeated flag, omitted flag, clear-alone, and the\n--allowed-origin/--clear-allowed-origins conflict) and mockito-backed\nrequest-body assertions (create/patch/clear) added for both surfaces,\nmirroring the existing --dataset test pairs; list-rendering tests extended\nto assert the ORIGINS column.\n\nClaude-Session: https://claude.ai/code/session_01FhURThyfcK7LJkfsVTsnuc\n\n* feat(mcp-server): add allowed_origins/clear_allowed_origins to API-key tools\n\nReplaces the mechanical allowed_origins: None / clear_allowed_origins:\nSome(false) placeholders (from commit 911b309e) with real tool parameters\non all four API-key tools, mirroring dataset_ids/clear_dataset_restriction\nfield-for-field:\n\n- `create_api_key` / `tenant_create_api_key` gain `allowed_origins:\n  Option<Vec<String>>`.\n- `update_api_key_scopes` / `tenant_update_api_key` gain `allowed_origins:\n  Option<Vec<String>>` + `clear_allowed_origins: bool`, validated by a new\n  `require_no_contradictory_origin_update` (mirroring\n  `require_no_contradictory_dataset_update`) and folded into the shared\n  `require_any_update` \"nothing to update\" check.\n- Tool descriptions updated to mention the browser-origin/CORS restriction\n  alongside the dataset one.\n- Tool output already carries `allowed_origins` through unchanged: these\n  tools serialize the whole SDK response object, which gained the field in\n  the earlier router-layer change.\n\nTests: 8 new cases in `server::tests` mirroring the existing dataset_ids\ncoverage (create/update-set/update-clear/contradiction-reject, both admin\nand tenant-scoped surfaces), plus `api_key_tools.rs` schema-introspection\nassertions extended to check `allowed_origins`/`clear_allowed_origins` are\npresent in the `create_api_key`/`update_api_key_scopes` tool schemas.\n\nClaude-Session: https://claude.ai/code/session_01FhURThyfcK7LJkfsVTsnuc\n\n* feat(ui): add allowed-origins restriction to API-key management forms\n\nWires the allowed_origins/clear_allowed_origins fields (already present on\nthe generated TS client since the router-layer change) into both API-key\ncreation surfaces: the tenant self-service page (ApiKeys.tsx, create and\nupdate) and the admin-side ManagementPanel.tsx (create only, matching its\nexisting create+revoke-only scope).\n\n- New OriginPicker.tsx (a direct support file, sibling to DatasetPicker.tsx):\n  a controlled add/remove list of free-form origin strings — unlike\n  datasets, origins aren't an enumerable set, so this is a text input +\n  Enter/Add rather than a checkbox group. Also exports\n  `allowedOriginsSet`/`allowedOriginsLabel`, mirroring\n  `restrictionSet`/`datasetRestrictionLabel`.\n- ApiKeys.tsx create form: OriginPicker wired to `createOrigins` state;\n  omitted when empty (D1a), matching how `dataset_ids` is omitted.\n- ApiKeys.tsx update form: OriginPicker plus a \"Remove allowed-origins\n  restriction\" checkbox mirroring \"Remove dataset restriction\" exactly.\n  `handleUpdate` restructured from two early-return branches into one\n  payload builder so the (pre-existing) dataset restriction and the new\n  origin restriction compose independently in a single submission, instead\n  of the dataset branch's early `return` silently dropping any origin\n  change made in the same edit.\n- ManagementPanel.tsx create form: same OriginPicker wiring, one-way\n  (create only, no update form exists on this surface).\n- Both list views gain an \"origins\" segment (`allowedOriginsLabel`),\n  showing \"Any origin\" when unrestricted.\n- `api/management.ts`: `createApiKey`/`updateApiKey` wrapper input types\n  gain `allowed_origins`/`clear_allowed_origins`, passed through to the\n  already-regenerated SDK client.\n\nTests: `management.test.ts` gains create/update/clear request-body\nassertions for allowed_origins; `ApiKeys.test.tsx` and\n`ManagementPanel.test.tsx` gain equivalent component tests, plus existing\nlist-metadata assertions updated for the new \"Any origin\" segment.\n\nVerification: typecheck, lint, and the full `src/ui` test suite (1216\ntests) all pass. Also exercised both forms end-to-end in a browser against\na live monolith (create with an origin, edit to clear it, confirm the list\nrow updates) on both surfaces.\n\nClaude-Session: https://claude.ai/code/session_01FhURThyfcK7LJkfsVTsnuc\n\n* chore(config): remove dead self_monitoring.frontend.allowed_origins\n\nCORS for the frontend's own OTLP export is no longer gated by this\nfield: the acceptor's CORS layer now enforces browser origins per\nAPI key instead of from one instance-wide list, so this setting had\nbecome a silent no-op. Removed, with its two references in the\nfrontend-instrumentation skill and the Explore UI doc pointing at the\nnew per-key mechanism instead.\n\nClaude-Session: https://claude.ai/code/session_01FhURThyfcK7LJkfsVTsnuc\n\n* docs: document the allowed_origins API-key restriction\n\nCovers the new per-key browser (CORS) origin restriction across the\nplaces that already document scopes and dataset restrictions: the\nauthentication reference (CLI/HTTP examples, clear-vs-set semantics),\nthe OTLP sending guide (preflight vs. post-auth enforcement,\ntroubleshooting entry), the MCP tool reference, and the\nmulti-tenancy/service-discovery/architecture skills that describe the\nAPI-key catalog model and its enforcement.\n\nClaude-Session: https://claude.ai/code/session_01FhURThyfcK7LJkfsVTsnuc\n\n* fix(acceptor): carry CORS headers on scope-denial responses too\n\nA valid API key from an allowed origin that merely lacks the required\ningest scope was returned a 403 with no Access-Control-Allow-Origin/Vary\nheaders, since the scope check ran (and returned) before the per-key\norigin check that sets them. Browser JS saw an opaque CORS failure\ninstead of the actual \"requires scope\" error.\n\nMove the origin check ahead of the scope check, and factor the header\nattachment into a small with_cors_headers() helper so both the\nscope-denial early-return and the success path apply it identically.\n\nFound by CodeRabbit on #1548.\n\nClaude-Session: https://claude.ai/code/session_01FhURThyfcK7LJkfsVTsnuc\n\n* fix(config): reject the legacy self_monitoring.frontend.allowed_origins field\n\nFrontendMonitoringConfig no longer has this field (CORS moved to a\nper-API-key restriction), and Figment doesn't reject unknown fields by\ndefault, so a config that still sets it was silently ignored — an\noperator relying on it to restrict the frontend's ingest key to\nspecific origins would find that key usable from any origin after\nupgrade, with no indication anything changed.\n\nReject startup instead, naming the field, the same way a legacy\ndataset_id field is rejected rather than silently dropped.\n\nFound by CodeRabbit on #1548.\n\nClaude-Session: https://claude.ai/code/session_01FhURThyfcK7LJkfsVTsnuc\n\n* fix(ui): make OriginPicker's help text mode-aware\n\nAn empty origin list means \"unrestricted\" on create but \"leave the\ncurrent restriction unchanged\" on update (clearing it back to\nunrestricted needs the separate \"Remove allowed-origins restriction\"\ncheckbox) — the help text said \"leave empty to allow any origin\" in\nboth forms, which is wrong on update.\n\nAdd a mode prop (\"create\" default, \"update\" for the edit form) and\nrender update-specific guidance.\n\nFound by CodeRabbit on #1548.\n\nClaude-Session: https://claude.ai/code/session_01FhURThyfcK7LJkfsVTsnuc",
+          "timestamp": "2026-09-12T21:48:50Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/6e966ddaf2740e3648583223828c6af715b6d331"
+        },
+        "date": 1789273342304,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 1647982,
+            "range": "± 9992",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 1036566,
+            "range": "± 14438",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 546660,
+            "range": "± 1974",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 1325909,
+            "range": "± 12546",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 681360,
+            "range": "± 2554",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 1748173,
+            "range": "± 13002",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 1184809,
+            "range": "± 11602",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.0MB",
+            "value": 1141214,
+            "range": "± 53335",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.4MB",
+            "value": 2083382,
+            "range": "± 4344",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_3.5MB",
+            "value": 10448605,
+            "range": "± 729953",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_37.4MB",
+            "value": 97828024,
+            "range": "± 2562874",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 3258268,
+            "range": "± 40592",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 6586972,
+            "range": "± 93571",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 12106912,
+            "range": "± 85977",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 23986903,
+            "range": "± 353092",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 708361,
+            "range": "± 4846",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 1893501,
+            "range": "± 38092",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 2687268,
+            "range": "± 43997",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 5256123,
+            "range": "± 167724",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/1000",
+            "value": 48635,
+            "range": "± 136",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/1000",
+            "value": 77843,
+            "range": "± 427",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/10000",
+            "value": 437368,
+            "range": "± 1446",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/10000",
+            "value": 885006,
+            "range": "± 2474",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/100000",
+            "value": 13294907,
+            "range": "± 42943",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/100000",
+            "value": 25422990,
+            "range": "± 103439",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 1135627,
+            "range": "± 11924",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 17247664,
+            "range": "± 198400",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 24790673,
+            "range": "± 553960",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 24282615,
+            "range": "± 882520",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 23842395,
+            "range": "± 73966",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 23661402,
+            "range": "± 71093",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 5557565,
+            "range": "± 26645",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 13591655,
+            "range": "± 64487",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 24275916,
+            "range": "± 98021",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested",
+            "value": 8159718,
+            "range": "± 92820",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested_split_off",
+            "value": 8083079,
+            "range": "± 78302",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/unattested",
+            "value": 7909331,
+            "range": "± 31208",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested",
+            "value": 7045932,
+            "range": "± 29354",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested_split_off",
+            "value": 7178955,
+            "range": "± 29220",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/unattested",
+            "value": 7782033,
+            "range": "± 30703",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested",
+            "value": 12538101,
+            "range": "± 486138",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested_split_off",
+            "value": 15881032,
+            "range": "± 136763",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/unattested",
+            "value": 11815037,
+            "range": "± 135065",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 24241136,
+            "range": "± 1250614",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 5263362,
+            "range": "± 24736",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 63832551,
+            "range": "± 1138116",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 103784469,
+            "range": "± 1155931",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 109243919,
+            "range": "± 1169453",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 790074,
+            "range": "± 28547",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 793390,
+            "range": "± 63866",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 830828,
+            "range": "± 5395",
             "unit": "ns/iter"
           }
         ]
