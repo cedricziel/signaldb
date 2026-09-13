@@ -89,6 +89,27 @@ pub fn logs_search_url(
     Some(url.to_string())
 }
 
+/// Deep link into the UI's trace search view, pre-grouped along `group_by`.
+///
+/// `{base}/traces?tenant={tenant}&dataset={dataset}&groupBy={dims joined by comma}`
+///
+/// `groupBy` is included only when `group_by` is non-empty.
+pub fn trace_group_url(
+    base: Option<&str>,
+    tenant: &str,
+    dataset: &str,
+    group_by: &[String],
+) -> Option<String> {
+    let mut url = Url::parse(base?).ok()?;
+    url.path_segments_mut().ok()?.push("traces");
+    append_search_params(&mut url, tenant, dataset, None);
+    if !group_by.is_empty() {
+        url.query_pairs_mut()
+            .append_pair("groupBy", &group_by.join(","));
+    }
+    Some(url.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -231,6 +252,7 @@ mod tests {
             None
         );
         assert_eq!(logs_search_url(None, "acme", "prod", None), None);
+        assert_eq!(trace_group_url(None, "acme", "prod", &[]), None);
     }
 
     #[test]
@@ -242,5 +264,32 @@ mod tests {
             None
         );
         assert_eq!(logs_search_url(base, "acme", "prod", None), None);
+        assert_eq!(trace_group_url(base, "acme", "prod", &[]), None);
+    }
+
+    #[test]
+    fn trace_group_url_includes_group_by_when_present() {
+        let url = trace_group_url(
+            Some("https://ui.example.com"),
+            "acme",
+            "prod",
+            &["span.name".to_string(), "service.name".to_string()],
+        )
+        .expect("base is set");
+        assert_eq!(
+            url,
+            "https://ui.example.com/traces?tenant=acme&dataset=prod&groupBy=span.name%2Cservice.name"
+        );
+    }
+
+    #[test]
+    fn trace_group_url_omits_group_by_when_empty() {
+        let url = trace_group_url(Some("https://ui.example.com"), "acme", "prod", &[])
+            .expect("base is set");
+        assert_eq!(
+            url,
+            "https://ui.example.com/traces?tenant=acme&dataset=prod"
+        );
+        assert!(!url.contains("groupBy"));
     }
 }
