@@ -21,6 +21,7 @@ clap.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 dashmap.workspace = true
+url.workspace = true
 # `POST /oauth/introspect` (change: mcp-multi-tenant-oauth-grants) is
 # deliberately excluded from the generated OpenAPI spec (matching
 # `/oauth/token`/`/oauth/register`'s existing precedent), so it is not on

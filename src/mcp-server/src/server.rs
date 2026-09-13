@@ -132,6 +132,7 @@ use crate::audit::{
 use crate::docs;
 use crate::prompts;
 use crate::sdk_client_for;
+use crate::ui_links;
 
 /// The SignalDB MCP server handler. One instance is created per session by the
 /// transport's service factory; it holds only the router base URL used to build
@@ -1594,6 +1595,14 @@ impl McpServer {
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
         let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let links = ui_links::as_link(ui_links::traces_search_url(
+            self.ui_base_url.as_deref(),
+            &p.tenant,
+            &p.dataset,
+            p.query.as_deref(),
+            p.start.map(i64::from),
+            p.end.map(i64::from),
+        ));
         let mut req = client.search();
         if let Some(v) = p.query {
             req = req.q(v);
@@ -1623,7 +1632,7 @@ impl McpServer {
             .send()
             .await
             .map_err(|e| map_sdk_err(e, "search_traces"))?;
-        json_result(&resp.into_inner())
+        json_result_ext(&resp.into_inner(), false, links)
     }
 
     #[tool(
@@ -1637,6 +1646,12 @@ impl McpServer {
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
         let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let links = ui_links::as_link(ui_links::trace_url(
+            self.ui_base_url.as_deref(),
+            &p.tenant,
+            &p.dataset,
+            &p.trace_id,
+        ));
         let mut req = client.query_single_trace().trace_id(p.trace_id);
         if let Some(v) = p.start {
             req = req.start(v);
@@ -1649,7 +1664,7 @@ impl McpServer {
         // forwards to the iframe without adding it to the model's context. It
         // is attached only for UI-capable clients so a plain client is not sent
         // the same trace twice.
-        json_result_for_app(&resp.into_inner(), client_supports_ui(&context))
+        json_result_ext(&resp.into_inner(), client_supports_ui(&context), links)
     }
 
     #[tool(
@@ -1958,6 +1973,12 @@ impl McpServer {
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
         let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let links = ui_links::as_link(ui_links::logs_search_url(
+            self.ui_base_url.as_deref(),
+            &p.tenant,
+            &p.dataset,
+            Some(p.query.as_str()),
+        ));
         if p.start.is_some() || p.end.is_some() {
             let mut req = client.logql_query_range().query(p.query);
             if let Some(v) = p.limit {
@@ -1979,7 +2000,7 @@ impl McpServer {
                 .send()
                 .await
                 .map_err(|e| map_sdk_err(e, "search_logs"))?;
-            json_result(&resp.into_inner())
+            json_result_ext(&resp.into_inner(), false, links)
         } else {
             let mut req = client.logql_query().query(p.query);
             if let Some(v) = p.limit {
@@ -1992,7 +2013,7 @@ impl McpServer {
                 .send()
                 .await
                 .map_err(|e| map_sdk_err(e, "search_logs"))?;
-            json_result(&resp.into_inner())
+            json_result_ext(&resp.into_inner(), false, links)
         }
     }
 
@@ -3528,7 +3549,7 @@ fn capped_text_result(text: String) -> CallToolResult {
 /// the tool returns valid JSON marked `truncated` with a narrowing hint instead
 /// of the oversized payload, so clients detect the cap from the flag.
 fn json_result<T: serde::Serialize>(value: &T) -> Result<CallToolResult, ErrorData> {
-    json_result_for_app(value, false)
+    json_result_ext(value, false, None)
 }
 
 /// [`json_result`], additionally attaching the value as `structuredContent`
@@ -3542,9 +3563,35 @@ fn json_result_for_app<T: serde::Serialize>(
     value: &T,
     with_structured: bool,
 ) -> Result<CallToolResult, ErrorData> {
+    json_result_ext(value, with_structured, None)
+}
+
+/// [`json_result_for_app`], additionally merging `links` under the `_links`
+/// key of the serialized result object when `value` serializes to a JSON
+/// object. Only an in-budget result carries `_links`: it is merged in before
+/// the size check, so an oversized result — which returns the `truncated`
+/// notice instead of `value`'s own JSON — never carries it.
+fn json_result_ext<T: serde::Serialize>(
+    value: &T,
+    with_structured: bool,
+    links: Option<serde_json::Value>,
+) -> Result<CallToolResult, ErrorData> {
     let json = serde_json::to_value(value)
         .map_err(|e| ErrorData::internal_error(format!("failed to serialize result: {e}"), None))?;
-    let text = json.to_string();
+    // `_links` is merged into a copy used for the text block only.
+    // `structured_content` — the MCP Apps iframe's input — must stay exactly
+    // what the SDK returned, so a UI-capable client's app never sees a key
+    // that a plain client's context doesn't render as text.
+    let text = match links {
+        Some(links) => {
+            let mut with_links = json.clone();
+            if let Some(object) = with_links.as_object_mut() {
+                object.insert("_links".to_string(), links);
+            }
+            with_links.to_string()
+        }
+        None => json.to_string(),
+    };
     let truncated = text.len() > MAX_TOOL_PAYLOAD_BYTES;
     let mut result = capped_text_result(text);
     if with_structured && !truncated {
@@ -5256,6 +5303,70 @@ mod tests {
         let notice: serde_json::Value =
             serde_json::from_str(&text.text).expect("the notice is valid JSON");
         assert_eq!(notice["truncated"], true);
+    }
+
+    /// `_links` is merged in before the size check, so an oversized result —
+    /// which returns the truncation notice instead of the value's own JSON —
+    /// must not carry it either.
+    #[test]
+    fn oversized_result_never_carries_links() {
+        let bulky = serde_json::json!({ "blob": "x".repeat(MAX_TOOL_PAYLOAD_BYTES + 1) });
+        let links = Some(serde_json::json!({"ui": "https://ui.example.com/traces"}));
+
+        let result = json_result_ext(&bulky, false, links).expect("serializes");
+        let ContentBlock::Text(text) = &result.content[0] else {
+            panic!("the truncation notice is a text block");
+        };
+        let notice: serde_json::Value =
+            serde_json::from_str(&text.text).expect("the notice is valid JSON");
+        assert_eq!(notice["truncated"], true);
+        assert!(
+            notice.get("_links").is_none(),
+            "a truncated result must not carry _links: {notice}"
+        );
+    }
+
+    /// An in-budget result does carry `_links` when given one.
+    #[test]
+    fn in_budget_result_carries_links() {
+        let value = serde_json::json!({ "traces": [] });
+        let links = Some(serde_json::json!({"ui": "https://ui.example.com/traces"}));
+
+        let result = json_result_ext(&value, false, links).expect("serializes");
+        let ContentBlock::Text(text) = &result.content[0] else {
+            panic!("the result is a text block");
+        };
+        let body: serde_json::Value =
+            serde_json::from_str(&text.text).expect("the result is valid JSON");
+        assert_eq!(body["_links"]["ui"], "https://ui.example.com/traces");
+    }
+
+    /// `_links` is a text-block-only affordance: a UI-capable client's app
+    /// reads `structuredContent` directly (see `get_trace`), and must see
+    /// exactly what the SDK returned — never a `_links` key a plain client
+    /// wouldn't get either.
+    #[test]
+    fn structured_content_never_carries_links() {
+        let trace = serde_json::json!({ "traceID": "abc", "durationMs": 24 });
+        let links = Some(serde_json::json!({"ui": "https://ui.example.com/traces/abc"}));
+
+        let result = json_result_ext(&trace, true, links).expect("serializes");
+
+        let structured = result
+            .structured_content
+            .as_ref()
+            .expect("with_structured=true attaches structuredContent");
+        assert!(
+            structured.get("_links").is_none(),
+            "structuredContent must not carry _links: {structured}"
+        );
+
+        let ContentBlock::Text(text) = &result.content[0] else {
+            panic!("the result is a text block");
+        };
+        let body: serde_json::Value =
+            serde_json::from_str(&text.text).expect("the result is valid JSON");
+        assert_eq!(body["_links"]["ui"], "https://ui.example.com/traces/abc");
     }
 
     #[test]

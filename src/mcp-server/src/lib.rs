@@ -24,6 +24,7 @@ pub mod cli;
 pub mod docs;
 pub mod prompts;
 pub mod server;
+pub mod ui_links;
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
