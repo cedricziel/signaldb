@@ -2,6 +2,7 @@
 import { createRequire } from "node:module";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv, type ProxyOptions } from "vite";
+import { VitePWA } from "vite-plugin-pwa";
 import { configDefaults } from "vitest/config";
 import { proxyKey } from "./src/lib/proxyKey";
 
@@ -73,7 +74,65 @@ export default defineConfig(({ mode }) => {
   );
 
   return {
-    plugins: [react()],
+    plugins: [
+      react(),
+      VitePWA({
+        // Silently install and activate new versions, then reload — an
+        // ops dashboard left open for days must never get stuck on a
+        // stale build waiting for a prompt nobody sees. Periodic
+        // re-checks are wired in src/pwa.ts, since a long-lived tab may
+        // never navigate again to trigger the browser's own check.
+        registerType: "autoUpdate",
+        // The install-only PNG icons aren't worth precaching for every
+        // visitor; the browser fetches them itself if/when it installs the
+        // app. Only the favicon (tiny) is added for an offline app shell.
+        includeAssets: ["favicon.svg"],
+        manifest: {
+          name: "SignalDB",
+          short_name: "SignalDB",
+          description:
+            "Observability signal database for metrics, logs, and traces.",
+          theme_color: "#14181e",
+          background_color: "#14181e",
+          display: "standalone",
+          start_url: "/",
+          scope: "/",
+          icons: [
+            {
+              src: "/pwa-192x192.png",
+              sizes: "192x192",
+              type: "image/png",
+            },
+            {
+              src: "/pwa-512x512.png",
+              sizes: "512x512",
+              type: "image/png",
+            },
+            {
+              src: "/pwa-512x512-maskable.png",
+              sizes: "512x512",
+              type: "image/png",
+              purpose: "maskable",
+            },
+          ],
+        },
+        workbox: {
+          // Only the app shell needs to be installable offline; the icons
+          // are fetched by the browser itself when it installs the app
+          // (see includeAssets above for the one exception).
+          globPatterns: ["**/*.{js,css,html}"],
+          // These are the backend's own routes (proxied in dev, same-origin
+          // in prod, see PROXIED_PATHS above); the SW's SPA navigate
+          // fallback must never intercept them with cached app shell. Reuses
+          // proxyKey's pattern — a hand-rolled one here previously matched
+          // `/api` against `/api-keys` too, the exact bug the comment above
+          // PROXIED_PATHS warns about.
+          navigateFallbackDenylist: PROXIED_PATHS.map(
+            (path) => new RegExp(proxyKey(path)),
+          ),
+        },
+      }),
+    ],
     // Served by the router at root in production (SPA fallback).
     base: "/",
     // Surface the dev defaults so the tenant selector can display them, plus
@@ -121,6 +180,11 @@ export default defineConfig(({ mode }) => {
           // beyond "it calls registerInstrumentations with the right args",
           // which a type error already catches.
           "src/telemetry/logs.ts",
+          // Imports the `virtual:pwa-register` module, which only resolves
+          // inside a real Vite/PWA build — not under vitest. The update
+          // logic it wires up is tested directly in
+          // src/lib/pwaUpdate.test.ts.
+          "src/pwa.ts",
         ],
         thresholds: {
           lines: 80,

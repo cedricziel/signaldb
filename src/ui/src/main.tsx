@@ -41,3 +41,8 @@ createRoot(document.getElementById("root")!).render(
     </QueryClientProvider>
   </StrictMode>,
 );
+
+// Deferred and dynamically imported: registration itself already waits for
+// the `load` event, and nothing here wants to compete with first paint or
+// pull workbox-window into the entry chunk.
+void import("./pwa").then((m) => m.initPwaUpdates());

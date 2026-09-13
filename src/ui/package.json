@@ -16,7 +16,8 @@
     "test:e2e": "playwright test",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
-    "generate:api": "openapi-ts"
+    "generate:api": "openapi-ts",
+    "generate:icons": "node scripts/generate-pwa-icons.mjs"
   },
   "dependencies": {
     "@hey-api/client-fetch": "^0.13.1",
@@ -41,6 +42,7 @@
     "react-dom": "^19.2.8",
     "react-router": "^8.3.1",
     "uplot": "^1.6.32",
+    "workbox-window": "^7.4.1",
     "yaml": "^2.9.0",
     "zone.js": "^0.16.2"
   },
@@ -59,9 +61,11 @@
     "@vitest/coverage-v8": "^4.1.10",
     "eslint": "^9.39.5",
     "jsdom": "^30.0.1",
+    "sharp": "^0.35.4",
     "typescript": "~5.9.3",
     "typescript-eslint": "^8.67.0",
     "vite": "^8.2.1",
+    "vite-plugin-pwa": "^1.3.0",
     "vitest": "^4.1.11"
   }
 }

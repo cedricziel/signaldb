@@ -4,7 +4,13 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
+    <meta name="theme-color" content="#14181e" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- iOS Safari ignores the web app manifest for "Add to Home Screen"
+         and reads these instead. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="SignalDB" />
     <title>SignalDB</title>
     <!-- Runtime config served by the router from [self_monitoring.frontend].
          A classic (blocking) script with an absolute path so it runs before
