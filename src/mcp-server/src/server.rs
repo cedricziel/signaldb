@@ -15,6 +15,8 @@
 //! - `get_trace` — single trace by ID
 //! - `get_profile` — single profile's flamegraph by ID (wraps the native
 //!   Query IR `flamegraph` envelope)
+//! - `search_trace_groups` — grouped RED-metrics (rate/errors/duration) view,
+//!   the same aggregate the UI's traces-tab group table builds
 //! - `discover_attributes` — queryable attribute/label names or values,
 //!   signal-aware (`traces` via Tempo tags, `logs` via Loki labels,
 //!   `metrics` via Prometheus labels)
@@ -223,6 +225,74 @@ struct GetTraceParams {
     /// datasets, so there is no implicit session default; see
     /// `discover_datasets`.
     dataset: String,
+}
+
+/// What one `search_trace_groups` group row counts.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(rename_all = "lowercase")]
+enum GroupGrain {
+    /// One row per trace, via a root-span predicate — `count` and the
+    /// duration percentiles describe end-to-end trace duration.
+    #[default]
+    Traces,
+    /// Every matching span, agreeing with span-level volume.
+    Spans,
+}
+
+impl GroupGrain {
+    fn is_traces(self) -> bool {
+        matches!(self, GroupGrain::Traces)
+    }
+}
+
+/// Parameters for `search_trace_groups`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct SearchTraceGroupsParams {
+    /// Dimensions to group by, e.g. `["span.name"]` or `["service.name",
+    /// "span.name"]`. Defaults to `["span.name"]`.
+    #[serde(default = "SearchTraceGroupsParams::default_group_by")]
+    group_by: Vec<String>,
+    /// What one group row counts: `traces` (default) restricts the scan to
+    /// one record per trace via a root-span predicate, so `count` and the
+    /// duration percentiles describe end-to-end trace duration; `spans`
+    /// counts every matching span instead, agreeing with span-level volume.
+    #[serde(default)]
+    grain: GroupGrain,
+    /// Start of the aggregation window, unix seconds. Defaults to one hour
+    /// before now.
+    #[serde(default)]
+    start: Option<i64>,
+    /// End of the aggregation window, unix seconds. Defaults to now.
+    #[serde(default)]
+    end: Option<i64>,
+    /// Maximum number of groups to return. Defaults to 500 (matching the
+    /// UI's group table budget), capped at 500 regardless of the requested
+    /// value. Must be positive.
+    #[serde(default = "SearchTraceGroupsParams::default_limit")]
+    limit: i32,
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset to query. Required: one MCP session may span several
+    /// datasets, so there is no implicit session default; see
+    /// `discover_datasets`. The router validates access; an inaccessible
+    /// dataset returns an access-denied error.
+    dataset: String,
+}
+
+impl SearchTraceGroupsParams {
+    fn default_group_by() -> Vec<String> {
+        vec!["span.name".to_string()]
+    }
+
+    fn default_limit() -> i32 {
+        500
+    }
 }
 
 /// Parameters for `list_api_keys`.
@@ -1665,6 +1735,43 @@ impl McpServer {
         // is attached only for UI-capable clients so a plain client is not sent
         // the same trace twice.
         json_result_ext(&resp.into_inner(), client_supports_ui(&context), links)
+    }
+
+    #[tool(
+        description = "Return the grouped RED-metrics view — count, error count, p50/p95 duration, last-seen — the UI's traces-tab \"group by\" table shows, grouped along `group_by` dimensions (default `[\"span.name\"]`). `grain` selects `\"traces\"` (default, one row per trace) or `\"spans\"` (every matching span). `start`/`end` (unix seconds) default to the last hour. `limit` caps the number of groups returned (default and max 500). There is no free-text query filter yet: this tool covers the default no-filter case; for scoped filtering, or a custom aggregate, use `query_ir` directly."
+    )]
+    async fn search_trace_groups(
+        &self,
+        Parameters(p): Parameters<SearchTraceGroupsParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        if p.limit <= 0 {
+            return Err(ErrorData::invalid_params(
+                format!("`limit` must be positive, got {}", p.limit),
+                None,
+            ));
+        }
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let limit = p.limit.min(500);
+        let links = ui_links::as_link(ui_links::trace_group_url(
+            self.ui_base_url.as_deref(),
+            &p.tenant,
+            &p.dataset,
+            &p.group_by,
+        ));
+        let document = trace_group_document(&p.group_by, p.grain, p.start, p.end, limit);
+        let request: signaldb_sdk::types::QueryIrRequest = serde_json::from_value(document)
+            .map_err(|e| ErrorData::internal_error(format!("failed to build query: {e}"), None))?;
+        let resp = client
+            .query_ir()
+            .body(request)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "search_trace_groups"))?;
+        let groups =
+            trace_groups_from_response(resp.into_inner(), p.group_by.len(), limit as usize);
+        json_result_ext(&groups, false, links)
     }
 
     #[tool(
@@ -3604,17 +3711,30 @@ fn json_result_ext<T: serde::Serialize>(
 /// `profiles` query filtered to one `profile.id`, defaulting to the last 30
 /// days when no `start`/`end` hint is given. Pure and synchronous, so it's
 /// directly unit-testable without a router/session.
+/// Convert optional unix-seconds bounds to the IR's nanosecond range strings,
+/// falling back to `default_from` (a relative `"now-<duration>"` expression)
+/// and `"now"` when a bound is absent. Shared by every tool that builds a
+/// Query IR document from an optional `start`/`end` hint.
+fn range_bounds_ns(
+    start: Option<i64>,
+    end: Option<i64>,
+    default_from: &'static str,
+) -> (String, String) {
+    let range_from = start
+        .map(|secs| secs.saturating_mul(1_000_000_000).to_string())
+        .unwrap_or_else(|| default_from.to_string());
+    let range_to = end
+        .map(|secs| secs.saturating_mul(1_000_000_000).to_string())
+        .unwrap_or_else(|| "now".to_string());
+    (range_from, range_to)
+}
+
 fn profile_flamegraph_document(
     profile_id: &str,
     start: Option<i64>,
     end: Option<i64>,
 ) -> serde_json::Value {
-    let range_from = start
-        .map(|secs| secs.saturating_mul(1_000_000_000).to_string())
-        .unwrap_or_else(|| "now-30d".to_string());
-    let range_to = end
-        .map(|secs| secs.saturating_mul(1_000_000_000).to_string())
-        .unwrap_or_else(|| "now".to_string());
+    let (range_from, range_to) = range_bounds_ns(start, end, "now-30d");
     serde_json::json!({
         "irVersion": 1,
         "from": "profiles",
@@ -3645,6 +3765,117 @@ fn flamegraph_or_not_found(
             None,
         )),
     }
+}
+
+/// Build the Query IR document `search_trace_groups` submits: the same
+/// grouped RED-metrics aggregate the UI's traces-tab group table builds
+/// (`src/ui/src/api/traceGroups.ts`'s `buildGroupDoc`), always sorted by
+/// count descending — this tool has no user-selectable sort. At
+/// `GroupGrain::Traces` a root-span predicate restricts the scan to one
+/// record per trace, so `count` counts traces and the percentiles measure
+/// end-to-end trace duration; `GroupGrain::Spans` counts every matching span
+/// instead. Pure and synchronous, so it's directly unit-testable without a
+/// router/session.
+fn trace_group_document(
+    group_by: &[String],
+    grain: GroupGrain,
+    start: Option<i64>,
+    end: Option<i64>,
+    limit: i32,
+) -> serde_json::Value {
+    let (range_from, range_to) = range_bounds_ns(start, end, "now-1h");
+
+    let mut pipeline = Vec::new();
+    if grain.is_traces() {
+        pipeline.push(serde_json::json!({
+            "where": {
+                "field": "parent_span_id",
+                "op": "eq",
+                "value": "0000000000000000"
+            }
+        }));
+    }
+    pipeline.push(serde_json::json!({
+        "aggregate": {
+            "by": group_by,
+            "aggs": [
+                { "fn": "count", "as": "n" },
+                {
+                    "fn": "count",
+                    "as": "errors",
+                    "where": {
+                        "field": "status.code",
+                        "op": "regex",
+                        "value": "(?i)error"
+                    }
+                },
+                { "fn": "quantile", "of": "duration", "arg": 0.5, "as": "p50" },
+                { "fn": "quantile", "of": "duration", "arg": 0.95, "as": "p95" },
+                { "fn": "max", "of": "start_time_unix_nano", "as": "last" }
+            ]
+        }
+    }));
+    pipeline.push(serde_json::json!({ "order": [{ "of": "n", "dir": "desc" }] }));
+    // One more than requested, so truncation is detectable, mirroring the
+    // UI's `GROUP_BUDGET + 1`.
+    pipeline.push(serde_json::json!({ "limit": limit.saturating_add(1) }));
+
+    serde_json::json!({
+        "irVersion": 1,
+        "from": "traces",
+        "range": { "from": range_from, "to": range_to },
+        "result": "table",
+        "pipeline": pipeline
+    })
+}
+
+/// Decode a `search_trace_groups` Query IR `table` response into the RED
+/// metrics group list, mirroring `groupsFromIrResponse`
+/// (`src/ui/src/api/traceGroups.ts`): each row's cells are read
+/// positionally — the grouping dimensions first, then count/errors/p50/p95/
+/// last in the order `trace_group_document`'s aggregate declared them. A
+/// missing or non-numeric measure cell decodes to `0`; a `null` dimension
+/// cell stays JSON `null`. `truncated` is set from the row count *before*
+/// slicing to `limit`.
+fn trace_groups_from_response(
+    response: signaldb_sdk::types::QueryIrResponse,
+    dimension_count: usize,
+    limit: usize,
+) -> serde_json::Value {
+    fn as_int_or_zero(cell: Option<&serde_json::Value>) -> serde_json::Value {
+        match cell.and_then(|v| v.as_i64().or_else(|| v.as_f64().map(|f| f as i64))) {
+            Some(n) => serde_json::json!(n),
+            None => serde_json::json!(0),
+        }
+    }
+    fn as_ms_or_zero(cell: Option<&serde_json::Value>) -> f64 {
+        cell.and_then(|v| v.as_f64()).unwrap_or(0.0) / 1_000_000.0
+    }
+
+    let rows = response.rows;
+    let truncated = rows.len() > limit;
+    let groups: Vec<serde_json::Value> = rows
+        .into_iter()
+        .take(limit)
+        .map(|cells| {
+            let values: Vec<serde_json::Value> =
+                cells.iter().take(dimension_count).cloned().collect();
+            let last = cells
+                .get(dimension_count + 4)
+                .filter(|v| !v.is_null())
+                .cloned()
+                .unwrap_or_else(|| serde_json::json!(0));
+            serde_json::json!({
+                "values": values,
+                "count": as_int_or_zero(cells.get(dimension_count)),
+                "errors": as_int_or_zero(cells.get(dimension_count + 1)),
+                "p50Ms": as_ms_or_zero(cells.get(dimension_count + 2)),
+                "p95Ms": as_ms_or_zero(cells.get(dimension_count + 3)),
+                "lastNs": last,
+            })
+        })
+        .collect();
+    serde_json::json!({ "groups": groups, "truncated": truncated })
 }
 
 /// Map a downstream router/SDK error onto an actionable MCP tool error, so
@@ -3843,6 +4074,231 @@ mod tests {
         }));
         let err = flamegraph_or_not_found(response).expect_err("no flamegraph means not found");
         assert!(err.message.contains("not found"), "got {}", err.message);
+    }
+
+    // ---- `search_trace_groups` (mirrors `src/ui/src/api/traceGroups.ts`) ----
+
+    #[test]
+    fn trace_group_document_at_traces_grain_scopes_to_root_spans() {
+        let doc = trace_group_document(
+            &["span.name".to_string()],
+            GroupGrain::Traces,
+            None,
+            None,
+            500,
+        );
+        assert_eq!(doc["from"], "traces");
+        assert_eq!(doc["result"], "table");
+        let scope = &doc["pipeline"][0]["where"];
+        assert_eq!(scope["field"], "parent_span_id");
+        assert_eq!(scope["op"], "eq");
+        assert_eq!(scope["value"], "0000000000000000");
+
+        let aggregate = &doc["pipeline"][1]["aggregate"];
+        assert_eq!(aggregate["by"], serde_json::json!(["span.name"]));
+        let aggs = aggregate["aggs"].as_array().expect("aggs is an array");
+        assert_eq!(aggs.len(), 5);
+        assert_eq!(aggs[0]["fn"], "count");
+        assert_eq!(aggs[0]["as"], "n");
+        assert_eq!(aggs[1]["fn"], "count");
+        assert_eq!(aggs[1]["as"], "errors");
+        assert_eq!(aggs[1]["where"]["field"], "status.code");
+        assert_eq!(aggs[1]["where"]["op"], "regex");
+        assert_eq!(aggs[1]["where"]["value"], "(?i)error");
+        assert_eq!(aggs[2]["fn"], "quantile");
+        assert_eq!(aggs[2]["of"], "duration");
+        assert_eq!(aggs[2]["arg"], 0.5);
+        assert_eq!(aggs[2]["as"], "p50");
+        assert_eq!(aggs[3]["fn"], "quantile");
+        assert_eq!(aggs[3]["arg"], 0.95);
+        assert_eq!(aggs[3]["as"], "p95");
+        assert_eq!(aggs[4]["fn"], "max");
+        assert_eq!(aggs[4]["of"], "start_time_unix_nano");
+        assert_eq!(aggs[4]["as"], "last");
+
+        assert_eq!(
+            doc["pipeline"][2]["order"],
+            serde_json::json!([{ "of": "n", "dir": "desc" }])
+        );
+        assert_eq!(doc["pipeline"][3]["limit"], 501);
+    }
+
+    #[test]
+    fn trace_group_document_at_spans_grain_omits_the_root_span_scope() {
+        let doc = trace_group_document(
+            &["span.name".to_string()],
+            GroupGrain::Spans,
+            None,
+            None,
+            500,
+        );
+        // No root-span `where` stage: the aggregate stage comes first.
+        assert!(doc["pipeline"][0].get("aggregate").is_some());
+        assert!(doc["pipeline"][0].get("where").is_none());
+    }
+
+    #[test]
+    fn trace_group_document_reflects_custom_group_by_dimensions() {
+        let dims = vec!["service.name".to_string(), "span.name".to_string()];
+        let doc = trace_group_document(&dims, GroupGrain::Traces, None, None, 500);
+        assert_eq!(
+            doc["pipeline"][1]["aggregate"]["by"],
+            serde_json::json!(["service.name", "span.name"])
+        );
+    }
+
+    #[test]
+    fn trace_group_document_limit_stage_is_limit_plus_one() {
+        let doc = trace_group_document(
+            &["span.name".to_string()],
+            GroupGrain::Traces,
+            None,
+            None,
+            42,
+        );
+        assert_eq!(doc["pipeline"][3]["limit"], 43);
+    }
+
+    #[test]
+    fn trace_group_document_defaults_to_the_last_hour() {
+        let doc = trace_group_document(
+            &["span.name".to_string()],
+            GroupGrain::Traces,
+            None,
+            None,
+            500,
+        );
+        assert_eq!(doc["range"]["from"], "now-1h");
+        assert_eq!(doc["range"]["to"], "now");
+    }
+
+    #[test]
+    fn trace_group_document_converts_start_end_to_nanoseconds() {
+        let doc = trace_group_document(
+            &["span.name".to_string()],
+            GroupGrain::Traces,
+            Some(10),
+            Some(20),
+            500,
+        );
+        assert_eq!(doc["range"]["from"], "10000000000");
+        assert_eq!(doc["range"]["to"], "20000000000");
+    }
+
+    #[test]
+    fn trace_groups_from_response_decodes_dimensions_and_measures() {
+        let response = query_ir_response(serde_json::json!({
+            "result": "table",
+            "window": { "start_ns": 0, "end_ns": 1 },
+            "rows": [
+                ["GET /", 12, 3, 50_000_000, 95_000_000, 1_700_000_000_000_000_000_u64],
+            ]
+        }));
+        let value = trace_groups_from_response(response, 1, 500);
+        assert_eq!(value["groups"][0]["values"], serde_json::json!(["GET /"]));
+        assert_eq!(value["groups"][0]["count"], 12);
+        assert_eq!(value["groups"][0]["errors"], 3);
+        assert_eq!(value["groups"][0]["p50Ms"], 50.0);
+        assert_eq!(value["groups"][0]["p95Ms"], 95.0);
+        assert_eq!(
+            value["groups"][0]["lastNs"],
+            serde_json::json!(1_700_000_000_000_000_000_u64)
+        );
+        assert_eq!(value["truncated"], false);
+    }
+
+    #[test]
+    fn trace_groups_from_response_marks_truncated_and_drops_the_extra_row() {
+        let response = query_ir_response(serde_json::json!({
+            "result": "table",
+            "window": { "start_ns": 0, "end_ns": 1 },
+            "rows": [
+                ["a", 3, 0, 1_000_000, 2_000_000, 1],
+                ["b", 2, 0, 1_000_000, 2_000_000, 2],
+            ]
+        }));
+        let value = trace_groups_from_response(response, 1, 1);
+        let groups = value["groups"].as_array().expect("groups is an array");
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0]["values"], serde_json::json!(["a"]));
+        assert_eq!(value["truncated"], true);
+    }
+
+    #[test]
+    fn trace_groups_from_response_treats_a_missing_measure_cell_as_zero() {
+        let response = query_ir_response(serde_json::json!({
+            "result": "table",
+            "window": { "start_ns": 0, "end_ns": 1 },
+            "rows": [
+                ["a"],
+            ]
+        }));
+        let value = trace_groups_from_response(response, 1, 500);
+        assert_eq!(value["groups"][0]["count"], 0);
+        assert_eq!(value["groups"][0]["errors"], 0);
+        assert_eq!(value["groups"][0]["p50Ms"], 0.0);
+        assert_eq!(value["groups"][0]["p95Ms"], 0.0);
+    }
+
+    #[test]
+    fn trace_groups_from_response_decodes_a_null_dimension_as_json_null() {
+        let response = query_ir_response(serde_json::json!({
+            "result": "table",
+            "window": { "start_ns": 0, "end_ns": 1 },
+            "rows": [
+                [null, 1, 0, 0, 0, 0],
+            ]
+        }));
+        let value = trace_groups_from_response(response, 1, 500);
+        assert_eq!(value["groups"][0]["values"], serde_json::json!([null]));
+    }
+
+    fn search_trace_groups_params(limit: i32) -> SearchTraceGroupsParams {
+        SearchTraceGroupsParams {
+            group_by: vec!["span.name".to_string()],
+            grain: GroupGrain::Traces,
+            start: None,
+            end: None,
+            limit,
+            tenant: "acme".to_string(),
+            dataset: "production".to_string(),
+        }
+    }
+
+    #[tokio::test]
+    // No mock router needed: a non-positive `limit` must be rejected before
+    // any request is sent.
+    async fn search_trace_groups_rejects_a_non_positive_limit() {
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+
+        let err = server
+            .search_trace_groups(
+                Parameters(search_trace_groups_params(0)),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect_err("limit: 0 must be rejected, not silently clamped");
+
+        assert!(err.message.contains("limit"), "got {}", err.message);
+    }
+
+    /// An unrecognized `grain` is rejected by deserialization itself — the
+    /// field is a closed `GroupGrain` enum, not a hand-validated string.
+    #[test]
+    fn search_trace_groups_params_rejects_an_unrecognized_grain() {
+        let err = serde_json::from_value::<SearchTraceGroupsParams>(serde_json::json!({
+            "tenant": "acme",
+            "dataset": "production",
+            "grain": "Spans",
+        }))
+        .expect_err("an unrecognized grain must fail to deserialize");
+        assert!(
+            err.to_string().contains("traces") && err.to_string().contains("spans"),
+            "got {err}"
+        );
     }
 
     // ---- Pyroscope profile tools (change: pyroscope-openapi-parity) ----
@@ -5376,6 +5832,7 @@ mod tests {
             "server_info",
             "search_traces",
             "get_trace",
+            "search_trace_groups",
             "discover_attributes",
             "discover_metrics",
             "discover_fields",
