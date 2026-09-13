@@ -153,6 +153,9 @@ pub struct McpServer {
     /// [`crate::tool_call_deadline`] of `router_timeout`; see
     /// [`Self::with_tool_call_deadline`].
     tool_call_deadline: std::time::Duration,
+    /// Base URL of the SignalDB UI (default: unset); see
+    /// [`Self::with_ui_base_url`].
+    ui_base_url: Option<String>,
 }
 
 /// Parameters for `search_traces`.
@@ -1424,6 +1427,7 @@ impl McpServer {
             )),
             max_concurrent_tool_calls,
             tool_call_deadline: crate::tool_call_deadline(router_timeout),
+            ui_base_url: None,
         }
     }
 
@@ -1433,6 +1437,13 @@ impl McpServer {
     /// full default (`router_timeout + RetryPolicy::default().total_cap`).
     pub fn with_tool_call_deadline(mut self, deadline: std::time::Duration) -> Self {
         self.tool_call_deadline = deadline;
+        self
+    }
+
+    /// Set the base URL of the SignalDB UI (default: unset). When set, tool
+    /// results that map to a UI view carry a `_links.ui` deep link.
+    pub fn with_ui_base_url(mut self, ui_base_url: Option<String>) -> Self {
+        self.ui_base_url = ui_base_url;
         self
     }
 

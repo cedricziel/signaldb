@@ -672,6 +672,7 @@ default_tenant = "default"
 #                                       # A non-loopback bind forwards live bearer
 #                                       # credentials and must sit behind TLS.
 # router_url = "http://localhost:3000"  # router HTTP API to forward to
+# ui_base_url = "https://signaldb.example.com"  # UI origin; unlocks _links.ui on tool results (unset by default)
 # router_timeout = 30                   # seconds per forwarded request
 # max_concurrent_tool_calls = 8         # tool calls in flight per MCP session; an
 #                                       # excess call waits 2s for a permit, then fails

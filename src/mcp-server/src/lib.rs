@@ -140,6 +140,10 @@ const MAX_IDENTITIES_PER_MCP_SESSION: usize = 16;
 pub struct McpAppState {
     /// Base URL of the router HTTP API downstream calls are forwarded to.
     pub router_base_url: String,
+    /// Base URL of the SignalDB UI. When set, tool results that map to a UI
+    /// view carry a `_links.ui` deep link; unset (the default), no such link
+    /// is added.
+    pub ui_base_url: Option<String>,
     /// Overall timeout for each downstream request to the router.
     pub router_timeout: Duration,
     /// The set of distinct identities seen so far on each MCP session (keyed
@@ -163,6 +167,7 @@ impl McpAppState {
     pub fn new(router_base_url: String) -> Self {
         Self {
             router_base_url,
+            ui_base_url: None,
             router_timeout: DEFAULT_ROUTER_TIMEOUT,
             session_bindings: Arc::new(DashMap::new()),
             oauth: None,
@@ -174,6 +179,13 @@ impl McpAppState {
     /// Override the per-session bound on tool calls in flight.
     pub fn with_max_concurrent_tool_calls(mut self, limit: usize) -> Self {
         self.max_concurrent_tool_calls = limit;
+        self
+    }
+
+    /// Set the base URL of the SignalDB UI (default: unset). When set, tool
+    /// results that map to a UI view carry a `_links.ui` deep link.
+    pub fn with_ui_base_url(mut self, ui_base_url: Option<String>) -> Self {
+        self.ui_base_url = ui_base_url;
         self
     }
 
@@ -218,6 +230,7 @@ impl McpAppState {
 pub fn mcp_http_router(state: McpAppState, allowed_hosts: &[String]) -> Router {
     let session_manager = Arc::new(LocalSessionManager::default());
     let base_url = state.router_base_url.clone();
+    let ui_base_url = state.ui_base_url.clone();
     let router_timeout = state.router_timeout;
     let max_concurrent_tool_calls = state.max_concurrent_tool_calls;
     let tool_call_deadline = state.tool_call_deadline;
@@ -240,7 +253,8 @@ pub fn mcp_http_router(state: McpAppState, allowed_hosts: &[String]) -> Router {
                 router_timeout,
                 max_concurrent_tool_calls,
             )
-            .with_tool_call_deadline(tool_call_deadline))
+            .with_tool_call_deadline(tool_call_deadline)
+            .with_ui_base_url(ui_base_url.clone()))
         },
         session_manager,
         config,
