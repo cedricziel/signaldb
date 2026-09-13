@@ -6,21 +6,21 @@ Resolves a repo/ref/file/line reference from a trace exception frame or profile 
 
 ### Requirement: Bounded snippet lookup
 
-Given a repo, a commit SHA or ref, a file path, and a line number, the system SHALL retrieve the file's content from GitHub's Contents API (using a token minted through the tenant's linked installation covering that repo, per `github-app-integration`) and SHALL return to the caller only a bounded window of source lines centered on that line (a fixed maximum line count) — never the full retrieved file content. A file that GitHub reports as binary, or whose retrieved size exceeds a fixed cap, SHALL be treated as unavailable rather than sliced.
+Given a repo, a commit SHA or ref, a file path, and a line number, the system SHALL retrieve the file's content from GitHub's Contents API (using a token minted through the tenant's linked installation covering that repo, per `github-app-integration`) and SHALL return to the caller only a bounded window of source lines centered on that line (a fixed maximum line count) — never the full retrieved file content. The client SHALL base64-decode the returned content and strictly validate the decoded bytes as UTF-8 text. A decode failure, an invalid-UTF-8 result, an `encoding` value the client does not support (including `encoding: "none"`, which GitHub returns with empty content for files over its size threshold), or a decoded size over the fixed cap SHALL be treated as unavailable rather than sliced.
 
 #### Scenario: Snippet fetched around a line
 
 - **WHEN** a lookup requests file `src/main.rs` at line 42 for a repo covered by the tenant's linked installation
 - **THEN** the response contains a bounded window of lines around line 42, not the entire file
 
-#### Scenario: Binary or oversized file is unavailable
+#### Scenario: Undecodable, non-UTF-8, or oversized file is unavailable
 
-- **WHEN** a lookup names a file that GitHub reports as binary, or whose content exceeds the fixed size cap
-- **THEN** the lookup returns "unavailable" rather than attempting to slice or return non-text content
+- **WHEN** a lookup names a file whose content fails base64 decoding, decodes to bytes that are not valid UTF-8, arrives with an unsupported `encoding` (including `"none"` for an oversized file), or whose decoded size exceeds the fixed cap
+- **THEN** the lookup returns "unavailable" rather than attempting to slice or return the content
 
 ### Requirement: Graceful unavailability
 
-When no linked installation covers the requested repo, the ref or file does not exist, or the line number is out of range, the lookup SHALL return a distinguishable "unavailable" result rather than an error that fails the surrounding trace or profile query. The requesting UI SHALL render the frame without a source panel in this case.
+When no linked installation covers the requested repo, the ref or file does not exist, or the line number is out of range, the lookup SHALL return a distinguishable "unavailable" result rather than an error that fails the surrounding trace or profile query. The requesting UI SHALL render the frame without a source panel in this case. Any successful Contents API response whose effective type is not a regular file — a directory listing (a JSON array), a directory entry object, a `symlink` entry that does not itself resolve to file content, or a `submodule` entry — SHALL likewise map to "unavailable," checked before any base64 decoding or slicing is attempted. A `symlink` entry that GitHub has already resolved to file content follows the normal file path and is not special-cased.
 
 #### Scenario: No installation covers the repo
 
@@ -32,14 +32,24 @@ When no linked installation covers the requested repo, the ref or file does not 
 - **WHEN** a lookup names a commit SHA or file path that does not exist in the repo
 - **THEN** the lookup returns "unavailable" rather than a server error
 
+#### Scenario: Non-file response is unavailable
+
+- **WHEN** the requested path resolves to a directory, an unresolved `symlink` entry, or a `submodule` entry rather than a regular file
+- **THEN** the lookup returns "unavailable" without attempting to decode or slice the response
+
 ### Requirement: Response caching
 
-Repeated lookups for the same repo, ref, file, and line window within a bounded cache period SHALL be served without a new GitHub API call, so that repeatedly viewing the same trace or profile does not consume GitHub API rate limit budget proportional to view count.
+Repeated lookups for the same repo, ref, file, and line window within a bounded cache period SHALL be served without a new GitHub API call, so that repeatedly viewing the same trace or profile does not consume GitHub API rate limit budget proportional to view count. The cache SHALL also enforce a fixed capacity and evict least-recently-used entries when that capacity is exceeded, independent of the cache period, so that a deployment fanning out across many distinct repo/ref/file/line-window combinations cannot grow the cache unbounded.
 
 #### Scenario: Second lookup is cached
 
 - **WHEN** the same repo/ref/file/line lookup is requested twice within the cache period
 - **THEN** only the first request calls GitHub; the second is served from cache
+
+#### Scenario: Exceeding capacity evicts rather than growing unbounded
+
+- **WHEN** distinct repo/ref/file/line-window lookups fill the cache to its configured capacity and another distinct lookup is then made
+- **THEN** the least-recently-used entry is evicted to make room, rather than the cache growing past its configured capacity
 
 ### Requirement: Tenant-scoped authorization
 
