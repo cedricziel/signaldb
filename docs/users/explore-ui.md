@@ -769,6 +769,16 @@ Without `SIGNALDB_UI_DIR`, the root serves a placeholder page. Setting the
 variable to a directory without a built UI fails startup on purpose — a
 misconfigured deployment should not silently ship without its UI.
 
+The UI is installable as a PWA — "Add to Home Screen" on mobile, an install
+prompt in desktop Chrome/Edge — giving it its own window and icon instead of
+a browser tab. Only the app shell (JS/CSS/HTML, icons, manifest) is cached
+for offline/instant loading; every query and every telemetry request always
+goes to the network, never the cache, so an installed instance can't show
+stale investigation data. New builds install and activate automatically, and
+the page reloads onto the new version without a prompt — including in a tab
+left open for days, since it re-checks for updates hourly rather than only on
+navigation.
+
 ## Telemetry
 
 The UI is instrumented with OpenTelemetry (browser SDK) across two signal
