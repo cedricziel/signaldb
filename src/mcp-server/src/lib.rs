@@ -21,6 +21,7 @@
 pub mod apps;
 pub mod audit;
 pub mod cli;
+pub mod docs;
 pub mod prompts;
 pub mod server;
 

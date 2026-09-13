@@ -233,11 +233,24 @@ How it works, if you are curious or writing a client:
 Each view is a single self-contained HTML document compiled into the binary.
 It makes no network requests of its own and cannot reach the router: its only
 data is the tool result the client hands it, which keeps it inside the
-strictest sandbox hosts apply (`default-src 'none'`). Because the apps are
-served over `resources/read`, the server advertises the `resources`
-capability; it exposes no data resources, only these UI documents.
+strictest sandbox hosts apply (`default-src 'none'`).
 
 [mcp-apps]: https://modelcontextprotocol.io/extensions/apps/overview
+
+## Skill resources
+
+Alongside the `ui://` apps above, `resources/list`/`resources/read` also
+serve `skill://` documents: longer-form guidance a client fetches on demand,
+kept out of the always-sent `initialize` instructions so those stay short.
+Currently one:
+
+| Resource                    | Covers                                                                                                                                                                                                                                                                                                                                                            |
+| --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `skill://signaldb/query-ir` | When `query_ir` covers more than `search_traces`/`search_logs`/`query_metrics` (a pipeline stage they can't express, or you're already building a document from `discover_sources`/`discover_fields`/`discover_field_values`), plus the full IR document reference — the same content as [the Query IR reference](querying-ir.md), reused rather than duplicated. |
+
+Both `ui://` and `skill://` resources are static and compiled into the
+binary — identical for every client, so `resources/list`/`resources/read`
+answer with a long cache TTL and public scope.
 
 ## Running it
 

@@ -91,6 +91,13 @@
 //! `get_profile` an interactive flamegraph view, via the MCP Apps extension;
 //! see [`crate::apps`].
 //!
+//! Skill resources (`skill://`, `resources/read`, see [`crate::docs`]) are
+//! longer-form guidance a client fetches on demand rather than the tool
+//! descriptions or [`ServerHandler::get_info`] instructions carrying it
+//! upfront — currently just `skill://signaldb/query-ir`, on when the native
+//! `query_ir` tool covers more than `search_traces`/`search_logs`/
+//! `query_metrics`.
+//!
 //! Prompts (`prompts/list` / `prompts/get`, see [`crate::prompts`]) are
 //! static, argument-only templates that seed an investigation using the
 //! tools above — `investigate_trace`, `find_recent_errors`,
@@ -122,6 +129,7 @@ use crate::audit::{
     self, AuditContext, DEFAULT_MAX_CONCURRENT_TOOL_CALLS, Outcome, PERMIT_WAIT,
     concurrency_limit_error, deadline_exceeded_error, with_http_status,
 };
+use crate::docs;
 use crate::prompts;
 use crate::sdk_client_for;
 
@@ -2161,7 +2169,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Execute a native Query IR document (the structured, versioned query surface). Provide `query` as the IR JSON object. Returns the enveloped result scoped to your tenant."
+        description = "Execute a native Query IR document (the structured, versioned query surface). Provide `query` as the IR JSON object. Returns the enveloped result scoped to your tenant. Reach for this over search_traces/search_logs/query_metrics when you need a pipeline stage those dialects can't express (topk/bottomk, extract, a multi-stage aggregate with step) or you're building from discover_sources/discover_fields/discover_field_values; see the `skill://signaldb/query-ir` resource for the full document reference."
     )]
     async fn query_ir(
         &self,
@@ -3305,8 +3313,8 @@ fn client_supports_ui(context: &RequestContext<RoleServer>) -> bool {
 #[tool_handler]
 impl ServerHandler for McpServer {
     fn get_info(&self) -> ServerInfo {
-        // `resources` is advertised because the MCP Apps UI documents are
-        // served over `resources/read`; this server exposes no data resources.
+        // `resources` covers both the MCP Apps UI documents (`ui://`) and the
+        // longer-form skill documents (`skill://`) served over `resources/read`.
         ServerInfo::new(
             ServerCapabilities::builder()
                 .enable_tools()
@@ -3316,15 +3324,17 @@ impl ServerHandler for McpServer {
                 .build(),
         )
         .with_instructions(
-            "Query SignalDB traces, logs, and metrics for the authenticated tenant. \
-             Call `server_info` first to confirm which tenant your credential resolves to. \
-             Clients that negotiate the MCP Apps extension render `get_trace` results as an \
-             interactive waterfall and `get_profile` results as an interactive flamegraph. \
-             `prompts/list` offers ready-made investigation templates. \
-             Before filtering, grouping, or writing a query around an attribute key, entity, or \
-             metric, call `resolve_attribute` / `resolve_entity` / `resolve_metric` (or \
-             `search_schema` by prefix) to learn what the name means in this tenant's schema \
-             registries; the tenant's own conventions take precedence over OpenTelemetry's.",
+            "SignalDB is an observability suite for metrics, logs, traces, and profiles. Start \
+             with `server_info` to confirm your tenant, then `discover_datasets` to see what's \
+             queryable. Query with `search_traces` / `get_trace`, `search_logs`, `query_metrics`, \
+             `get_profile`, or the native `query_ir` (see its own tool description for when it \
+             covers more than the signal-specific tools). Before filtering or grouping by an \
+             attribute, entity, or metric name, check what it means \
+             for this tenant via `resolve_attribute` / `resolve_entity` / `resolve_metric` (or \
+             `search_schema`) — its own schema-registry conventions take precedence over \
+             OpenTelemetry's. `prompts/list` has ready-made investigation templates, and clients \
+             with the MCP Apps extension get `get_trace`/`get_profile` rendered as interactive \
+             waterfalls/flamegraphs.",
         )
     }
 
@@ -3408,22 +3418,28 @@ impl ServerHandler for McpServer {
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, ErrorData> {
-        // Static, compiled-in UI apps — identical for every client, so a long
-        // TTL and public scope are safe. See the `list_tools` comment for why
-        // these fields must be set at all (SEP-2549).
-        Ok(ListResourcesResult::with_all_items(apps::ui_resources())
+        // Static, compiled-in UI apps and skill docs — identical for every
+        // client, so a long TTL and public scope are safe. See the
+        // `list_tools` comment for why these fields must be set at all
+        // (SEP-2549).
+        let mut resources = apps::ui_resources();
+        resources.extend(docs::skill_resources());
+        Ok(ListResourcesResult::with_all_items(resources)
             .with_ttl_ms(STATIC_RESOURCE_CACHE_TTL_MS)
             .with_cache_scope(CacheScope::Public))
     }
 
-    /// Serve a UI app document. The only resources this server holds are the
-    /// compiled-in `ui://` apps — anything else is a not-found.
+    /// Serve a UI app (`ui://`) or skill doc (`skill://`) resource. The
+    /// compiled-in resources in [`apps`] and [`docs`] are the only ones this
+    /// server holds — anything else is a not-found.
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
     ) -> Result<ReadResourceResponse, ErrorData> {
-        match apps::read_ui_resource(&request.uri) {
+        match apps::read_ui_resource(&request.uri)
+            .or_else(|| docs::read_skill_resource(&request.uri))
+        {
             Some(contents) => Ok(ReadResourceResult::new(vec![contents])
                 .with_ttl_ms(STATIC_RESOURCE_CACHE_TTL_MS)
                 .with_cache_scope(CacheScope::Public)
