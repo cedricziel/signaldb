@@ -1616,6 +1616,11 @@ pub struct McpConfig {
     /// it is resolved via service discovery like any other downstream call.
     #[serde(default)]
     pub router_url: Option<String>,
+    /// Base URL of the SignalDB UI (e.g. `https://signaldb.example.com`). When
+    /// set, tool results that map to a UI view carry a `_links.ui` deep link;
+    /// unset, no such link is added.
+    #[serde(default)]
+    pub ui_base_url: Option<String>,
     /// Overall timeout, in seconds, for HTTP requests the MCP server forwards
     /// to the router. Guards MCP tool calls against a hung router.
     /// Env: SIGNALDB__MCP__ROUTER_TIMEOUT
@@ -1716,6 +1721,7 @@ impl Default for McpConfig {
             enabled: false,
             bind_address: Self::default_bind(),
             router_url: None,
+            ui_base_url: None,
             router_timeout: Self::default_router_timeout(),
             max_concurrent_tool_calls: Self::default_max_concurrent_tool_calls(),
             oauth: OAuthConfig::default(),
@@ -2911,6 +2917,26 @@ mod tests {
 
             Ok(())
         });
+    }
+
+    #[test]
+    fn mcp_ui_base_url_defaults_to_none() {
+        let config = McpConfig::default();
+        assert_eq!(config.ui_base_url, None);
+    }
+
+    #[test]
+    fn mcp_ui_base_url_round_trips_through_toml() {
+        let toml = r#"
+            router_url = "http://localhost:3000"
+            ui_base_url = "https://signaldb.example.com"
+        "#;
+        let config: McpConfig =
+            toml::from_str(toml).expect("ui_base_url must parse as a plain string");
+        assert_eq!(
+            config.ui_base_url,
+            Some("https://signaldb.example.com".to_string())
+        );
     }
 
     #[test]

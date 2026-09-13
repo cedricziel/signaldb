@@ -265,6 +265,10 @@ router_timeout = 30                  # seconds per forwarded request (default 30
 max_concurrent_tool_calls = 8        # tool calls in flight per session (default 8)
 ```
 
+`ui_base_url` (also `--ui-base-url` / `SIGNALDB__MCP__UI_BASE_URL`) is also
+accepted but currently unused — a later change will use it to attach deep
+links into the SignalDB UI to tool results.
+
 Each forwarded request is bounded by `router_timeout` (plus a fixed 5s connect
 timeout), so a hung router fails the tool call cleanly instead of hanging the
 agent indefinitely. Raise it if your agents run slow analytical queries.
