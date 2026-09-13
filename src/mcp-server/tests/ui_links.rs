@@ -37,6 +37,14 @@ async fn behaviour(uri: axum::http::Uri) -> Response {
         })
     } else if uri.path().starts_with("/tempo/api/search") {
         serde_json::json!({"metrics": {}, "traces": []})
+    } else if uri.path().starts_with("/api/v1/query") {
+        serde_json::json!({
+            "result": "table",
+            "window": {"start_ns": 0, "end_ns": 1},
+            "rows": [
+                ["GET /", 12, 3, 50_000_000_i64, 95_000_000_i64, 1_700_000_000_000_000_000_i64],
+            ],
+        })
     } else {
         serde_json::json!({"status": "success", "data": {"resultType": "streams", "result": []}})
     };
@@ -250,6 +258,32 @@ async fn search_logs_carries_a_ui_link_when_ui_base_url_is_configured() {
     assert_eq!(
         result["_links"]["ui"],
         "https://ui.example.com/logs?tenant=acme&dataset=production&q=%7Bservice_name%3D%22api%22%7D"
+    );
+}
+
+#[tokio::test]
+async fn search_trace_groups_returns_groups_and_a_ui_link_when_ui_base_url_is_configured() {
+    let mut session = McpSession::open(app_with_ui_base_url(Some(UI_BASE_URL)).await).await;
+
+    let reply = session
+        .call_tool(
+            "search_trace_groups",
+            serde_json::json!({
+                "tenant": "acme",
+                "dataset": "production",
+            }),
+        )
+        .await;
+    let result = tool_result_json(&reply);
+    assert_eq!(result["truncated"], false);
+    assert_eq!(result["groups"][0]["values"], serde_json::json!(["GET /"]));
+    assert_eq!(result["groups"][0]["count"], 12);
+    assert_eq!(result["groups"][0]["errors"], 3);
+    assert_eq!(result["groups"][0]["p50Ms"], 50.0);
+    assert_eq!(result["groups"][0]["p95Ms"], 95.0);
+    assert_eq!(
+        result["_links"]["ui"],
+        "https://ui.example.com/traces?tenant=acme&dataset=production&groupBy=span.name"
     );
 }
 
