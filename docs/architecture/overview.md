@@ -104,6 +104,7 @@ Parquet storage with DataFusion query processing:
 | **signal-producer**   | `src/signal-producer/`       | Binary     | Test data generator (OTLP traces)                                                                                                                                                        |
 | **tests-integration** | `tests-integration/`         | Test crate | Integration test suite                                                                                                                                                                   |
 | **xtask**             | `xtask/`                     | Binary     | Code generation (OpenAPI-derived Rust SDK + TypeScript UI client) and build tasks                                                                                                        |
+| **workspace-hack**    | `workspace-hack/`            | Library    | Managed by `cargo hakari`; pins one unified feature set for shared deps. See `workspace-hack/README.md`                                                                                  |
 
 ### Data Flow Overview
 
