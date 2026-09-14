@@ -1,0 +1,52 @@
+# This file contains settings for `cargo hakari`.
+# See https://docs.rs/cargo-hakari/latest/cargo_hakari/config for a full list of options.
+
+hakari-package = "workspace-hack"
+
+# Format version for hakari's output. Version 4 requires cargo-hakari 0.9.22 or above.
+dep-format-version = "4"
+
+# Setting workspace.resolver = "2" or higher in the root Cargo.toml is HIGHLY recommended.
+# Hakari works much better with the v2 resolver. (The v2 and v3 resolvers are identical from
+# hakari's perspective, so you're welcome to set either.)
+#
+# For more about the new feature resolver, see:
+# https://blog.rust-lang.org/2021/03/25/Rust-1.51.0.html#cargos-new-feature-resolver
+resolver = "2"
+
+# Every triple SignalDB actually builds for: the three CI/release Linux
+# targets (see .cargo/config.toml and .github/workflows/release-please.yml),
+# the macOS CI runner and Apple Silicon dev machines, and the Windows release
+# target. Keeping this list in sync with real targets is what makes the
+# generated workspace-hack deps correct for every build, not just the host
+# platform `cargo hakari generate` happened to run on.
+platforms = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-unknown-linux-musl",
+    "aarch64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+
+# Write out exact versions rather than a semver range. (Defaults to false.)
+# exact-versions = true
+
+# logql-parser, traceql-parser, and query-ir are the leaf crates
+# scripts/check-leaf-purity.sh mechanically guards: none of them may depend on
+# a workspace member, a path dependency, or the DataFusion/Arrow/Iceberg
+# stack, so a query can be parsed or validated without linking the query
+# engine (design D8, docs/contributing/compat-crates.md). logql-parser and
+# traceql-parser are also published to crates.io independently, so a bare
+# path dependency would break `cargo publish` too.
+#
+# ql-ir carries the same "no Arrow, no DataFusion" invariant by design
+# (compat-crates.md: "still no Arrow, no DataFusion, no tenant/catalog
+# access") even though check-leaf-purity.sh doesn't check it mechanically —
+# don't let hakari be the thing that quietly breaks it.
+#
+# workspace-hack is exactly the kind of dependency purity forbids (path-only,
+# and it pulls in datafusion for the rest of the workspace) — keep all four
+# excluded.
+[final-excludes]
+workspace-members = ["logql-parser", "traceql-parser", "query-ir", "ql-ir"]

@@ -21,7 +21,11 @@ prost.workspace = true
 
 tonic.workspace = true
 tonic-prost.workspace = true
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
+[package.metadata.cargo-machete]
+# workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
+ignored = ["workspace-hack"]
 
 [features]
 default = []

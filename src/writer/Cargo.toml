@@ -37,6 +37,7 @@ thiserror.workspace = true
 
 # Optional dependencies for benchmarks
 criterion = { workspace = true, optional = true }
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 [[bench]]
 name = "iceberg_benchmarks"
@@ -59,4 +60,5 @@ tracing-subscriber.workspace = true
 tempfile.workspace = true
 
 [package.metadata.cargo-machete]
-ignored = ["tokio-stream"]
+# workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
+ignored = ["tokio-stream", "workspace-hack"]

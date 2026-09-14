@@ -16,3 +16,8 @@ clap.workspace = true
 # Was a build-dependency of tempo-api; proto generation moved here so the
 # crate has no build script writing into its own package directory.
 tonic-prost-build.workspace = true
+workspace-hack = { version = "0.1", path = "../workspace-hack" }
+
+[package.metadata.cargo-machete]
+# workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
+ignored = ["workspace-hack"]

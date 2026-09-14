@@ -33,6 +33,11 @@ arrow-flight.workspace = true
 tonic.workspace = true
 futures.workspace = true
 thiserror.workspace = true
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
+[package.metadata.cargo-machete]
+# workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
+ignored = ["workspace-hack"]
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }

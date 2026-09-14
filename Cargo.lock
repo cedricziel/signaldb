@@ -34,6 +34,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
+ "workspace-hack",
  "zstd 0.14.0",
 ]
 
@@ -1343,6 +1344,7 @@ dependencies = [
  "url",
  "utoipa",
  "uuid",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -1392,6 +1394,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -4329,6 +4332,7 @@ version = "0.1.3"
 dependencies = [
  "serde",
  "serde_json",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -4481,6 +4485,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "url",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -5765,6 +5770,7 @@ version = "0.1.4"
 dependencies = [
  "serde",
  "serde_json",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -5936,6 +5942,7 @@ dependencies = [
  "serde",
  "serde_json",
  "utoipa",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -5990,6 +5997,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "url",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6655,6 +6663,7 @@ dependencies = [
  "utoipa",
  "uuid",
  "wiremock",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -6853,6 +6862,7 @@ dependencies = [
  "serde_norway",
  "thiserror 2.0.20",
  "utoipa",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -7275,6 +7285,7 @@ dependencies = [
  "rand 0.10.2",
  "tokio",
  "tracing-subscriber",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -7283,6 +7294,7 @@ version = "0.2.1"
 dependencies = [
  "serde",
  "utoipa",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -7305,6 +7317,7 @@ dependencies = [
  "tokio",
  "tonic",
  "tracing",
+ "workspace-hack",
  "writer",
 ]
 
@@ -7330,6 +7343,7 @@ dependencies = [
  "tokio",
  "toml 1.1.6+spec-1.1.0",
  "tui-tree-widget",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -7353,6 +7367,7 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -7953,6 +7968,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "utoipa",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -8117,6 +8133,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "workspace-hack",
  "writer",
 ]
 
@@ -9619,6 +9636,126 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
 
 [[package]]
+name = "workspace-hack"
+version = "0.1.0"
+dependencies = [
+ "arrayvec",
+ "arrow",
+ "arrow-array",
+ "arrow-schema",
+ "async-compression",
+ "axum",
+ "axum-core",
+ "bigdecimal",
+ "bitflags 2.13.1",
+ "blake2",
+ "chrono",
+ "clap",
+ "clap_builder",
+ "compression-codecs",
+ "crc32fast",
+ "datafusion",
+ "datafusion-common",
+ "datafusion-datasource",
+ "datafusion-datasource-arrow",
+ "datafusion-expr",
+ "datafusion-functions",
+ "datafusion-optimizer",
+ "datafusion-physical-expr",
+ "datafusion-physical-optimizer",
+ "deranged",
+ "digest 0.11.3",
+ "either",
+ "errno",
+ "figment",
+ "flate2",
+ "foldhash 0.2.0",
+ "form_urlencoded",
+ "futures-channel",
+ "futures-executor",
+ "futures-io",
+ "futures-task",
+ "futures-util",
+ "generic-array",
+ "getrandom 0.3.4",
+ "getrandom 0.4.3",
+ "hashbrown 0.15.5",
+ "hashbrown 0.17.1",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "indexmap 2.14.0",
+ "itertools 0.14.0",
+ "lazy_static",
+ "libc",
+ "log",
+ "memchr",
+ "miniz_oxide 0.8.9",
+ "mio",
+ "num-bigint 0.4.8",
+ "num-iter",
+ "num-traits",
+ "object 0.37.3",
+ "object_store",
+ "once_cell",
+ "opentelemetry",
+ "opentelemetry-proto",
+ "opentelemetry_sdk",
+ "petgraph",
+ "proc-macro2",
+ "prost",
+ "prost-types",
+ "pyroscope",
+ "quote",
+ "rand 0.8.7",
+ "rand 0.9.5",
+ "regex",
+ "regex-automata",
+ "regex-syntax",
+ "reqwest 0.12.28",
+ "reqwest 0.13.4",
+ "ring",
+ "rmcp",
+ "rustix",
+ "rustls",
+ "rustls-webpki",
+ "semver",
+ "serde",
+ "serde_core",
+ "serde_json",
+ "sha2 0.10.9",
+ "slab",
+ "smallvec",
+ "spin 0.9.9",
+ "sqlparser",
+ "stable_deref_trait",
+ "subtle",
+ "syn 2.0.119",
+ "syn 3.0.5",
+ "sync_wrapper",
+ "thiserror 2.0.20",
+ "tikv-jemalloc-sys",
+ "time",
+ "tokio",
+ "tokio-rustls",
+ "tokio-stream",
+ "tokio-util",
+ "tonic",
+ "tower",
+ "tower-http 0.7.1",
+ "tracing",
+ "tracing-core",
+ "tracing-log",
+ "tracing-subscriber",
+ "twox-hash",
+ "url",
+ "uuid",
+ "winapi",
+ "windows-sys 0.61.2",
+ "zerocopy",
+]
+
+[[package]]
 name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -9653,6 +9790,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "uuid",
+ "workspace-hack",
 ]
 
 [[package]]
@@ -9687,6 +9825,7 @@ dependencies = [
  "serde_json",
  "syn 3.0.5",
  "tonic-prost-build",
+ "workspace-hack",
 ]
 
 [[package]]
