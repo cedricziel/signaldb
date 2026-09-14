@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789273343751,
+  "lastUpdate": 1789360860404,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -7567,6 +7567,334 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 830828,
             "range": "± 5395",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cedric Ziel",
+            "username": "cedricziel",
+            "email": "mail@cedric-ziel.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "b038cdcb1e3dc5e4cf6f117f09d6bdce6afe4622",
+          "message": "docs: propose GitHub App integration for stack-frame source context (#1550)\n\n* docs: propose GitHub App integration for stack-frame source context\n\nAdds an OpenSpec proposal for a read-only SignalDB GitHub App: tenant-scoped\ninstallation linking with on-demand token minting (no persisted long-lived\ncredential), and a bounded, cached source-snippet lookup for trace exception\nand profile frames that already carry a file/line. Write/PR/autonomous-action\nscopes are explicitly deferred to a future proposal.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* docs: reconcile GitHub App proposal with review findings\n\nFixes surfaced by an independent isolated review of PR #1550 before\nimplementation starts:\n\n- Reconcile the spec's \"mint per fetch\" wording with design's token cache\n  (spec previously forbade reuse the design and tasks already implemented).\n- Add a CSRF-style state-token requirement for install linking, closing a\n  confused-deputy gap where a bare installation id could be linked by any\n  tenant admin who learned it, not just the one who ran the install flow.\n- Require installation listing to live-refresh covered repos from GitHub\n  (with cached fallback), matching what design.md already promised.\n- Clarify the source-context endpoint is documented in the main OpenAPI\n  spec, not governed by admin-management-api-contract's admin/manage scope.\n- Correct the snippet-fetch requirement to match GitHub's Contents API\n  (whole-file fetch, client-side slicing) and add binary/oversized handling.\n- Note the boundary-span requirement for the new GitHub client and\n  endpoints in tasks.md so it isn't missed during implementation.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* docs(github-app-integration): bind installation links to the authorizing GitHub user\n\nA valid state token only proves the link request came from the initiating\nadmin and tenant; it never proved the admin controls the installation id\nreturned on GitHub's setup-URL redirect, since that id is browser-supplied.\nAdd an Installation ownership verification requirement that exchanges the\ncallback code for a user-to-server token and checks the installation id\nagainst that user's installations before writing a record, and require\nstate validation, consumption, and record creation to happen atomically so\nconcurrent completions can't both succeed or leave a token consumed without\na matching record.\n\n* docs(stack-frame-source-context): tighten snippet decoding and bound cache growth\n\nGitHub's Contents API has no binary flag to check against, so replace the\n\"reports as binary\" language with base64-decode-then-UTF-8-validate, and\ntreat an unsupported encoding (including \"none\" for oversized files) the\nsame way. Extend graceful unavailability to cover non-file Contents\nresponses (directories, unresolved symlinks, submodules), which previously\nhad no defined behavior. Bound the snippet cache by capacity with LRU\neviction in addition to its TTL, since distinct ref/path/line-window keys\ncould otherwise accumulate for a whole TTL window.\n\n---------\n\nCo-authored-by: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-13T19:20:54Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/b038cdcb1e3dc5e4cf6f117f09d6bdce6afe4622"
+        },
+        "date": 1789360859393,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 2133031,
+            "range": "± 14193",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 1342018,
+            "range": "± 9252",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 724035,
+            "range": "± 5675",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 1653670,
+            "range": "± 12827",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 850723,
+            "range": "± 3741",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 2217609,
+            "range": "± 10301",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 1529405,
+            "range": "± 18766",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.0MB",
+            "value": 1433774,
+            "range": "± 9525",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.4MB",
+            "value": 2646603,
+            "range": "± 132040",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_3.5MB",
+            "value": 13597542,
+            "range": "± 611175",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_37.4MB",
+            "value": 116141837,
+            "range": "± 4667874",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 4104325,
+            "range": "± 21202",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 8456013,
+            "range": "± 64772",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 15653506,
+            "range": "± 157800",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 30598760,
+            "range": "± 210511",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 940303,
+            "range": "± 4956",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 2348577,
+            "range": "± 24693",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 3433579,
+            "range": "± 65415",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 6792260,
+            "range": "± 112459",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/1000",
+            "value": 58676,
+            "range": "± 183",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/1000",
+            "value": 99326,
+            "range": "± 308",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/10000",
+            "value": 497353,
+            "range": "± 2002",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/10000",
+            "value": 1098667,
+            "range": "± 11578",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/100000",
+            "value": 16383176,
+            "range": "± 146007",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/100000",
+            "value": 33176095,
+            "range": "± 165848",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 1389507,
+            "range": "± 17303",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 23299842,
+            "range": "± 333439",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 32262218,
+            "range": "± 824391",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 30671417,
+            "range": "± 479933",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 30563290,
+            "range": "± 428187",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 30485601,
+            "range": "± 586365",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 7458371,
+            "range": "± 155395",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 18173835,
+            "range": "± 437307",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 31248264,
+            "range": "± 681938",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested",
+            "value": 10651727,
+            "range": "± 218938",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested_split_off",
+            "value": 10585678,
+            "range": "± 173971",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/unattested",
+            "value": 10336268,
+            "range": "± 169680",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested",
+            "value": 8971588,
+            "range": "± 103464",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested_split_off",
+            "value": 9087841,
+            "range": "± 115369",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/unattested",
+            "value": 10136284,
+            "range": "± 166986",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested",
+            "value": 17684005,
+            "range": "± 780291",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested_split_off",
+            "value": 21615752,
+            "range": "± 322466",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/unattested",
+            "value": 15672953,
+            "range": "± 279340",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 31825627,
+            "range": "± 2444852",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 7051151,
+            "range": "± 127471",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 84691121,
+            "range": "± 2055633",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 138687324,
+            "range": "± 1703145",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 145801255,
+            "range": "± 1717745",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 1089940,
+            "range": "± 34594",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 1031368,
+            "range": "± 30154",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 1091354,
+            "range": "± 21619",
             "unit": "ns/iter"
           }
         ]
