@@ -310,11 +310,21 @@ jobs:
 
       # workspace-hack (managed by `cargo hakari`) pins one unified feature
       # set for shared deps across every workspace member — see
-      # .config/hakari.toml. This catches a PR that added/changed a
-      # dependency without re-running `cargo hakari generate`, before the
-      # drift it's meant to prevent creeps back in.
+      # .config/hakari.toml. Three checks, because each catches a different
+      # kind of drift a PR could introduce and none subsumes the others
+      # (verified by hand — `cargo hakari verify` alone does not notice a
+      # crate that's missing the `workspace-hack` dependency entirely):
+      #  - `generate --diff`: workspace-hack/Cargo.toml's pinned deps/features
+      #    are stale relative to the rest of the workspace
+      #  - `manage-deps --dry-run`: some member is missing the
+      #    workspace-hack dependency (or an excluded one still has it)
+      #  - `verify`: even with both of the above current, the unified set
+      #    doesn't actually achieve one version/feature-set per dependency
       - name: Verify workspace-hack is up to date
-        run: cargo hakari verify
+        run: |
+          cargo hakari generate --diff
+          cargo hakari manage-deps --dry-run
+          cargo hakari verify
 
       # The compatibility query-language parsers must stay independent of the
       # query engine: their whole value is that "is this query valid?" can be

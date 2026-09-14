@@ -20,5 +20,9 @@ After adding, removing, or changing a dependency anywhere in the workspace:
 ```bash
 cargo hakari generate    # update workspace-hack/Cargo.toml
 cargo hakari manage-deps # add/remove the workspace-hack dependency on members
-cargo hakari verify      # what CI runs — confirms the above is up to date
+cargo hakari verify      # confirms the unified set actually works
 ```
+
+CI runs all three read-only (`generate --diff`, `manage-deps --dry-run`, `verify`)
+— each catches a different kind of drift a PR could introduce, and none of
+them subsumes the others.
