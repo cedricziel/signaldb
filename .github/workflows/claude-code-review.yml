@@ -7,7 +7,10 @@ concurrency:
   cancel-in-progress: true
 jobs:
   review:
-    if: github.event.pull_request.draft == false
+    # Dependabot PRs are single-dependency version bumps with no product code
+    # to review; Dependabot's own status checks and (where configured)
+    # automerge are the intended gate for them, not an AI review pass.
+    if: github.event.pull_request.draft == false && github.event.pull_request.user.login != 'dependabot[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: read
