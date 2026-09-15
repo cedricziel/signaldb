@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.4.1](https://github.com/cedricziel/signaldb/compare/common-v0.4.0...common-v0.4.1) (2026-09-15)
+
+
+### Features
+
+* **mcp:** add optional ui_base_url config for MCP server ([#1551](https://github.com/cedricziel/signaldb/issues/1551)) ([a90c8e0](https://github.com/cedricziel/signaldb/commit/a90c8e0cecbae181bcced4bc301ab619fc2a7352))
+* multi-tenant MCP OAuth grants ([#1541](https://github.com/cedricziel/signaldb/issues/1541)) ([c5b49b0](https://github.com/cedricziel/signaldb/commit/c5b49b018f749a72b639366a18223081cecef7cc))
+* per-API-key allowed origins for browser (CORS) ingestion ([#1548](https://github.com/cedricziel/signaldb/issues/1548)) ([6e966dd](https://github.com/cedricziel/signaldb/commit/6e966ddaf2740e3648583223828c6af715b6d331))
+
 ## [0.4.0](https://github.com/cedricziel/signaldb/compare/common-v0.3.0...common-v0.4.0) (2026-09-12)
 
 
