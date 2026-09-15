@@ -12,57 +12,7 @@ use progenitor_client::{ClientHooks, OperationInfo, RequestBuilderExt, encode_pa
 /// Types used as operation parameters and responses.
 #[allow(clippy::all)]
 pub mod types {
-    /// Error types.
-    pub mod error {
-        /// Error from a `TryFrom` or `FromStr` implementation.
-        pub struct ConversionError(::std::borrow::Cow<'static, str>);
-        impl ::std::error::Error for ConversionError {}
-        impl ::std::fmt::Display for ConversionError {
-            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> Result<(), ::std::fmt::Error> {
-                ::std::fmt::Display::fmt(&self.0, f)
-            }
-        }
-        impl ::std::fmt::Debug for ConversionError {
-            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> Result<(), ::std::fmt::Error> {
-                ::std::fmt::Debug::fmt(&self.0, f)
-            }
-        }
-        impl From<&'static str> for ConversionError {
-            fn from(value: &'static str) -> Self {
-                Self(value.into())
-            }
-        }
-        impl From<String> for ConversionError {
-            fn from(value: String) -> Self {
-                Self(value.into())
-            }
-        }
-    }
     ///Standard API error response.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Standard API error response.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "error",
-    ///    "message"
-    ///  ],
-    ///  "properties": {
-    ///    "error": {
-    ///      "description": "Error category.",
-    ///      "type": "string"
-    ///    },
-    ///    "message": {
-    ///      "description": "Human-readable error description.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ApiError {
         ///Error category.
@@ -81,42 +31,6 @@ pub mod types {
     rejections. Exists as a real (rather than `serde_json::json!`-built)
     type so the OpenAPI document can declare its schema on the `429`
     response of every rate-limited operation.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The JSON envelope every query-surface error responds with: `status` is\nalways `\"error\"`, `errorType` a stable low-cardinality code, `error` a\nhuman-readable message, and `retryAfterMs` present only on rate-limit\nrejections. Exists as a real (rather than `serde_json::json!`-built)\ntype so the OpenAPI document can declare its schema on the `429`\nresponse of every rate-limited operation.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "error",
-    ///    "errorType",
-    ///    "status"
-    ///  ],
-    ///  "properties": {
-    ///    "error": {
-    ///      "type": "string"
-    ///    },
-    ///    "errorType": {
-    ///      "type": "string"
-    ///    },
-    ///    "retryAfterMs": {
-    ///      "description": "Milliseconds until the request would be admitted; present only when\n`errorType` is `\"rate_limited\"`.",
-    ///      "type": [
-    ///        "integer",
-    ///        "null"
-    ///      ],
-    ///      "format": "int64",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "status": {
-    ///      "description": "Always `\"error\"`.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ApiErrorBody {
         pub error: ::std::string::String,
@@ -126,7 +40,6 @@ pub mod types {
         `errorType` is `"rate_limited"`.*/
         #[serde(
             rename = "retryAfterMs",
-            default,
             skip_serializing_if = "::std::option::Option::is_none"
         )]
         pub retry_after_ms: ::std::option::Option<i64>,
@@ -139,95 +52,27 @@ pub mod types {
         }
     }
     ///API key information (without the raw key).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "API key information (without the raw key).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "created_at",
-    ///    "id"
-    ///  ],
-    ///  "properties": {
-    ///    "allowed_origins": {
-    ///      "description": "Allowed-origin set the key is restricted to, if any; `null` is\nunrestricted.",
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "created_at": {
-    ///      "description": "ISO 8601 creation timestamp.",
-    ///      "type": "string"
-    ///    },
-    ///    "dataset_ids": {
-    ///      "description": "Dataset set the key is restricted to, if any; `null` is unrestricted.",
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "id": {
-    ///      "description": "Unique key identifier.",
-    ///      "type": "string"
-    ///    },
-    ///    "name": {
-    ///      "description": "Optional human-readable name.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "revoked_at": {
-    ///      "description": "ISO 8601 revocation timestamp (if revoked).",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "scopes": {
-    ///      "description": "Scopes the key carries; `null` for a legacy unrestricted key.",
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ApiKeyResponse {
         /**Allowed-origin set the key is restricted to, if any; `null` is
         unrestricted.*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub allowed_origins: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///ISO 8601 creation timestamp.
         pub created_at: ::std::string::String,
         ///Dataset set the key is restricted to, if any; `null` is unrestricted.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///Unique key identifier.
         pub id: ::std::string::String,
         ///Optional human-readable name.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
         ///ISO 8601 revocation timestamp (if revoked).
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub revoked_at: ::std::option::Option<::std::string::String>,
         ///Scopes the key carries; `null` for a legacy unrestricted key.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub scopes: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
     }
     impl ApiKeyResponse {
@@ -236,25 +81,6 @@ pub mod types {
         }
     }
     ///`Attribute`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "key",
-    ///    "value"
-    ///  ],
-    ///  "properties": {
-    ///    "key": {
-    ///      "type": "string"
-    ///    },
-    ///    "value": {}
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Attribute {
         pub key: ::std::string::String,
@@ -266,105 +92,25 @@ pub mod types {
         }
     }
     ///A resolved attribute definition (one per `id` in the registry).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A resolved attribute definition (one per `id` in the registry).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "brief",
-    ///    "group_id",
-    ///    "key",
-    ///    "type"
-    ///  ],
-    ///  "properties": {
-    ///    "brief": {
-    ///      "type": "string"
-    ///    },
-    ///    "deprecated": {
-    ///      "oneOf": [
-    ///        {
-    ///          "type": "null"
-    ///        },
-    ///        {
-    ///          "allOf": [
-    ///            {
-    ///              "$ref": "#/components/schemas/DeprecatedInfo"
-    ///            }
-    ///          ]
-    ///        }
-    ///      ]
-    ///    },
-    ///    "enum_members": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/EnumMember"
-    ///      }
-    ///    },
-    ///    "examples": {
-    ///      "type": "array",
-    ///      "items": {}
-    ///    },
-    ///    "group_display_name": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "group_id": {
-    ///      "type": "string"
-    ///    },
-    ///    "key": {
-    ///      "description": "Wire key (`k8s.pod.uid`).",
-    ///      "type": "string"
-    ///    },
-    ///    "note": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "requirement_level": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "stability": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "type": {
-    ///      "description": "Canonical type name (`string`, `int[]`, `template[string]`, `enum`).",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct AttributeDef {
         pub brief: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub deprecated: ::std::option::Option<DeprecatedInfo>,
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub enum_members: ::std::vec::Vec<EnumMember>,
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub examples: ::std::vec::Vec<::serde_json::Value>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub group_display_name: ::std::option::Option<::std::string::String>,
         pub group_id: ::std::string::String,
         ///Wire key (`k8s.pod.uid`).
         pub key: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub note: ::std::option::Option<::std::string::String>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub requirement_level: ::std::option::Option<::std::string::String>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub stability: ::std::option::Option<::std::string::String>,
         ///Canonical type name (`string`, `int[]`, `template[string]`, `enum`).
         #[serde(rename = "type")]
@@ -376,50 +122,10 @@ pub mod types {
         }
     }
     ///A resolved attribute definition tagged with provenance.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A resolved attribute definition tagged with provenance.",
-    ///  "allOf": [
-    ///    {
-    ///      "$ref": "#/components/schemas/AttributeDef"
-    ///    },
-    ///    {
-    ///      "type": "object",
-    ///      "required": [
-    ///        "namespace",
-    ///        "source",
-    ///        "version"
-    ///      ],
-    ///      "properties": {
-    ///        "entity_roles": {
-    ///          "description": "Entities (from any visible registry) in which this key plays a role,\nas `namespace/entity`-qualified roles.",
-    ///          "type": "array",
-    ///          "items": {
-    ///            "$ref": "#/components/schemas/QualifiedEntityRole"
-    ///          }
-    ///        },
-    ///        "namespace": {
-    ///          "type": "string"
-    ///        },
-    ///        "source": {
-    ///          "$ref": "#/components/schemas/RegistrySource"
-    ///        },
-    ///        "version": {
-    ///          "type": "string"
-    ///        }
-    ///      }
-    ///    }
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct AttributeHit {
         pub brief: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub deprecated: ::std::option::Option<DeprecatedInfo>,
         /**Entities (from any visible registry) in which this key plays a role,
         as `namespace/entity`-qualified roles.*/
@@ -429,18 +135,18 @@ pub mod types {
         pub enum_members: ::std::vec::Vec<EnumMember>,
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub examples: ::std::vec::Vec<::serde_json::Value>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub group_display_name: ::std::option::Option<::std::string::String>,
         pub group_id: ::std::string::String,
         ///Wire key (`k8s.pod.uid`).
         pub key: ::std::string::String,
         pub namespace: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub note: ::std::option::Option<::std::string::String>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub requirement_level: ::std::option::Option<::std::string::String>,
         pub source: RegistrySource,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub stability: ::std::option::Option<::std::string::String>,
         ///Canonical type name (`string`, `int[]`, `template[string]`, `enum`).
         #[serde(rename = "type")]
@@ -453,21 +159,6 @@ pub mod types {
         }
     }
     ///The level at which an attribute is attached to an OTel record.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The level at which an attribute is attached to an OTel record.",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "resource",
-    ///    "scope",
-    ///    "record"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -514,14 +205,6 @@ pub mod types {
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for AttributeLevel {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for AttributeLevel {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -532,50 +215,11 @@ pub mod types {
     }
     /**Every definition of one attribute key across the visible registries, in
     precedence order; `primary` is the first.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Every definition of one attribute key across the visible registries, in\nprecedence order; `primary` is the first.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "hits",
-    ///    "key"
-    ///  ],
-    ///  "properties": {
-    ///    "hits": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/AttributeHit"
-    ///      }
-    ///    },
-    ///    "key": {
-    ///      "type": "string"
-    ///    },
-    ///    "primary": {
-    ///      "oneOf": [
-    ///        {
-    ///          "type": "null"
-    ///        },
-    ///        {
-    ///          "allOf": [
-    ///            {
-    ///              "$ref": "#/components/schemas/AttributeHit"
-    ///            }
-    ///          ]
-    ///        }
-    ///      ]
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct AttributeResolution {
         pub hits: ::std::vec::Vec<AttributeHit>,
         pub key: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub primary: ::std::option::Option<AttributeHit>,
     }
     impl AttributeResolution {
@@ -584,33 +228,6 @@ pub mod types {
         }
     }
     ///`AttributeSearchResponse`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "hits"
-    ///  ],
-    ///  "properties": {
-    ///    "hits": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/AttributeHit"
-    ///      }
-    ///    },
-    ///    "resolutions": {
-    ///      "description": "Present when `keys=` was given: one resolution per requested key.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/AttributeResolution"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct AttributeSearchResponse {
         pub hits: ::std::vec::Vec<AttributeHit>,
@@ -624,28 +241,6 @@ pub mod types {
         }
     }
     ///Response body for `GET /schemas/available`.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Response body for `GET /schemas/available`.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "schemas"
-    ///  ],
-    ///  "properties": {
-    ///    "schemas": {
-    ///      "description": "All table schema types SignalDB knows how to provision.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/TableInfo"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct AvailableSchemasResponse {
         ///All table schema types SignalDB knows how to provision.
@@ -657,31 +252,6 @@ pub mod types {
         }
     }
     ///An approximate distinct-value count.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "An approximate distinct-value count.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "at_least",
-    ///    "estimate"
-    ///  ],
-    ///  "properties": {
-    ///    "at_least": {
-    ///      "description": "When true the collector hit its cap: the true count is at least\n`estimate`, not equal to it.",
-    ///      "type": "boolean"
-    ///    },
-    ///    "estimate": {
-    ///      "description": "The estimated number of distinct values.",
-    ///      "type": "integer",
-    ///      "format": "int64"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct CardinalityEstimate {
         /**When true the collector hit its cap: the true count is at least
@@ -698,36 +268,6 @@ pub mod types {
     /**Path prefixes for the Tempo/Loki/Prometheus/Pyroscope compatibility
     dialects, relative to [`ConnectionQuery::api_url`]. External clients only
     — first-party callers use [`ConnectionQuery::query_ir`].*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Path prefixes for the Tempo/Loki/Prometheus/Pyroscope compatibility\ndialects, relative to [`ConnectionQuery::api_url`]. External clients only\n— first-party callers use [`ConnectionQuery::query_ir`].",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "loki",
-    ///    "prometheus",
-    ///    "pyroscope",
-    ///    "tempo"
-    ///  ],
-    ///  "properties": {
-    ///    "loki": {
-    ///      "type": "string"
-    ///    },
-    ///    "prometheus": {
-    ///      "type": "string"
-    ///    },
-    ///    "pyroscope": {
-    ///      "type": "string"
-    ///    },
-    ///    "tempo": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ConnectionCompat {
         pub loki: ::std::string::String,
@@ -742,32 +282,6 @@ pub mod types {
     }
     /**`Authorization`/`X-Tenant-ID`/`X-Dataset-ID` headers to send with the
     filled-in credential placeholder, ready to paste into a client config.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "`Authorization`/`X-Tenant-ID`/`X-Dataset-ID` headers to send with the\nfilled-in credential placeholder, ready to paste into a client config.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "authorization",
-    ///    "x-dataset-id",
-    ///    "x-tenant-id"
-    ///  ],
-    ///  "properties": {
-    ///    "authorization": {
-    ///      "type": "string"
-    ///    },
-    ///    "x-dataset-id": {
-    ///      "type": "string"
-    ///    },
-    ///    "x-tenant-id": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ConnectionHeaders {
         pub authorization: ::std::string::String,
@@ -783,81 +297,12 @@ pub mod types {
     }
     /**`GET /api/v1/connection` response: everything needed to send data to and
     query this deployment from outside, for the caller's own tenant/dataset.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "`GET /api/v1/connection` response: everything needed to send data to and\nquery this deployment from outside, for the caller's own tenant/dataset.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "dataset_id",
-    ///    "headers",
-    ///    "ingest",
-    ///    "notes",
-    ///    "otel_env",
-    ///    "public_endpoints_configured",
-    ///    "query",
-    ///    "required_scopes",
-    ///    "tenant_id"
-    ///  ],
-    ///  "properties": {
-    ///    "dataset_id": {
-    ///      "type": "string"
-    ///    },
-    ///    "headers": {
-    ///      "$ref": "#/components/schemas/ConnectionHeaders"
-    ///    },
-    ///    "ingest": {
-    ///      "$ref": "#/components/schemas/ConnectionIngest"
-    ///    },
-    ///    "mcp": {
-    ///      "oneOf": [
-    ///        {
-    ///          "type": "null"
-    ///        },
-    ///        {
-    ///          "allOf": [
-    ///            {
-    ///              "$ref": "#/components/schemas/ConnectionMcp"
-    ///            }
-    ///          ]
-    ///        }
-    ///      ]
-    ///    },
-    ///    "notes": {
-    ///      "description": "Operator guidance, e.g. that `[public]` is unset and URLs are\nlocalhost fallbacks. Empty when everything is configured.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "otel_env": {
-    ///      "$ref": "#/components/schemas/ConnectionOtelEnv"
-    ///    },
-    ///    "public_endpoints_configured": {
-    ///      "description": "Whether every required `[public]` field (OTLP gRPC/HTTP, API URL) has\nbeen explicitly set. `false` means at least one of those URLs below is\na localhost fallback, unlikely to be reachable from outside this\nmachine — see `notes` for which.",
-    ///      "type": "boolean"
-    ///    },
-    ///    "query": {
-    ///      "$ref": "#/components/schemas/ConnectionQuery"
-    ///    },
-    ///    "required_scopes": {
-    ///      "$ref": "#/components/schemas/ConnectionScopes"
-    ///    },
-    ///    "tenant_id": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ConnectionInfoResponse {
         pub dataset_id: ::std::string::String,
         pub headers: ConnectionHeaders,
         pub ingest: ConnectionIngest,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub mcp: ::std::option::Option<ConnectionMcp>,
         /**Operator guidance, e.g. that `[public]` is unset and URLs are
         localhost fallbacks. Empty when everything is configured.*/
@@ -878,33 +323,6 @@ pub mod types {
         }
     }
     ///Every ingest endpoint this deployment exposes.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Every ingest endpoint this deployment exposes.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "otlp_grpc",
-    ///    "otlp_http",
-    ///    "prometheus_remote_write"
-    ///  ],
-    ///  "properties": {
-    ///    "otlp_grpc": {
-    ///      "$ref": "#/components/schemas/OtlpGrpcEndpoint"
-    ///    },
-    ///    "otlp_http": {
-    ///      "$ref": "#/components/schemas/OtlpHttpEndpoint"
-    ///    },
-    ///    "prometheus_remote_write": {
-    ///      "description": "The Prometheus remote-write ingest URL.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ConnectionIngest {
         pub otlp_grpc: OtlpGrpcEndpoint,
@@ -919,28 +337,6 @@ pub mod types {
     }
     /**The MCP Streamable HTTP endpoint, present only when this deployment has
     one configured (directly or via `[mcp.oauth].resource_url`).*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The MCP Streamable HTTP endpoint, present only when this deployment has\none configured (directly or via `[mcp.oauth].resource_url`).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "transport",
-    ///    "url"
-    ///  ],
-    ///  "properties": {
-    ///    "transport": {
-    ///      "type": "string"
-    ///    },
-    ///    "url": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ConnectionMcp {
         pub transport: ::std::string::String,
@@ -953,32 +349,6 @@ pub mod types {
     }
     /**Ready-to-paste `OTEL_EXPORTER_OTLP_*` environment variables for an
     OTel-instrumented application.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Ready-to-paste `OTEL_EXPORTER_OTLP_*` environment variables for an\nOTel-instrumented application.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "OTEL_EXPORTER_OTLP_ENDPOINT",
-    ///    "OTEL_EXPORTER_OTLP_HEADERS",
-    ///    "OTEL_EXPORTER_OTLP_PROTOCOL"
-    ///  ],
-    ///  "properties": {
-    ///    "OTEL_EXPORTER_OTLP_ENDPOINT": {
-    ///      "type": "string"
-    ///    },
-    ///    "OTEL_EXPORTER_OTLP_HEADERS": {
-    ///      "type": "string"
-    ///    },
-    ///    "OTEL_EXPORTER_OTLP_PROTOCOL": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ConnectionOtelEnv {
         #[serde(rename = "OTEL_EXPORTER_OTLP_ENDPOINT")]
@@ -995,36 +365,6 @@ pub mod types {
     }
     /**The router's query surface: the native Query IR plus the compatibility
     dialects, relative to `api_url`.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The router's query surface: the native Query IR plus the compatibility\ndialects, relative to `api_url`.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "api_url",
-    ///    "compat",
-    ///    "openapi",
-    ///    "query_ir"
-    ///  ],
-    ///  "properties": {
-    ///    "api_url": {
-    ///      "type": "string"
-    ///    },
-    ///    "compat": {
-    ///      "$ref": "#/components/schemas/ConnectionCompat"
-    ///    },
-    ///    "openapi": {
-    ///      "type": "string"
-    ///    },
-    ///    "query_ir": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ConnectionQuery {
         pub api_url: ::std::string::String,
@@ -1038,34 +378,6 @@ pub mod types {
         }
     }
     ///The API-key scopes ingest and query each require.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The API-key scopes ingest and query each require.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "ingest",
-    ///    "query"
-    ///  ],
-    ///  "properties": {
-    ///    "ingest": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "query": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ConnectionScopes {
         pub ingest: ::std::vec::Vec<::std::string::String>,
@@ -1078,39 +390,10 @@ pub mod types {
     }
     /**Context the consent screen renders: the requesting client and the tenants
     the signed-in user may grant.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Context the consent screen renders: the requesting client and the tenants\nthe signed-in user may grant.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "tenants"
-    ///  ],
-    ///  "properties": {
-    ///    "client_name": {
-    ///      "description": "Display name of the requesting client, if it registered one.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "tenants": {
-    ///      "description": "Tenants the user may grant access to.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/ConsentTenant"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ConsentContextResponse {
         ///Display name of the requesting client, if it registered one.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub client_name: ::std::option::Option<::std::string::String>,
         ///Tenants the user may grant access to.
         pub tenants: ::std::vec::Vec<ConsentTenant>,
@@ -1122,30 +405,6 @@ pub mod types {
     }
     /**A dataset within a tenant the consenting user may restrict a grant to
     (D5).*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A dataset within a tenant the consenting user may restrict a grant to\n(D5).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "id",
-    ///    "name"
-    ///  ],
-    ///  "properties": {
-    ///    "id": {
-    ///      "description": "Dataset id.",
-    ///      "type": "string"
-    ///    },
-    ///    "name": {
-    ///      "description": "Dataset name.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ConsentDataset {
         ///Dataset id.
@@ -1169,77 +428,6 @@ pub mod types {
     request body carrying either is rejected rather than silently ignored,
     since dropping it would grant unrestricted or differently-scoped access
     than the caller asked for.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Consent decision posted by the explore-UI (change: mcp-oauth-dcr;\ngeneralized to a set of tenants by mcp-multi-tenant-oauth-grants D2/D6).\nThe user is authenticated by their session cookie; `tenant_grants` is\ntheir chosen set of one or more tenants to grant, each with its own\nindependent dataset restriction.\n\nThe legacy singular `tenant`/`dataset_id` fields are not accepted (the\nlatter removed in the multi-dataset-key-restriction change, D8): a\nrequest body carrying either is rejected rather than silently ignored,\nsince dropping it would grant unrestricted or differently-scoped access\nthan the caller asked for.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "approved",
-    ///    "client_id",
-    ///    "code_challenge",
-    ///    "redirect_uri",
-    ///    "tenant_grants"
-    ///  ],
-    ///  "properties": {
-    ///    "approved": {
-    ///      "description": "Whether the user approved (`true`) or denied (`false`).",
-    ///      "type": "boolean"
-    ///    },
-    ///    "client_id": {
-    ///      "description": "The requesting client's `client_id`.",
-    ///      "type": "string"
-    ///    },
-    ///    "code_challenge": {
-    ///      "description": "The PKCE `code_challenge` from the authorization request.",
-    ///      "type": "string"
-    ///    },
-    ///    "code_challenge_method": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "redirect_uri": {
-    ///      "description": "The redirect URI to return to (must be registered for the client).",
-    ///      "type": "string"
-    ///    },
-    ///    "resource": {
-    ///      "description": "Requested resource (audience); must match the configured MCP resource.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "scope": {
-    ///      "description": "Requested scope (space-delimited); read scopes only are granted.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "state": {
-    ///      "description": "Opaque `state` to echo back to the client.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "tenant_grants": {
-    ///      "description": "The set of tenants the user grants access to (each must be one they\nbelong to). Must be non-empty and name each tenant at most once.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/ConsentTenantGrant"
-    ///      },
-    ///      "minItems": 1
-    ///    }
-    ///  },
-    ///  "additionalProperties": false
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     #[serde(deny_unknown_fields)]
     pub struct ConsentDecision {
@@ -1249,18 +437,18 @@ pub mod types {
         pub client_id: ::std::string::String,
         ///The PKCE `code_challenge` from the authorization request.
         pub code_challenge: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub code_challenge_method: ::std::option::Option<::std::string::String>,
         ///The redirect URI to return to (must be registered for the client).
         pub redirect_uri: ::std::string::String,
         ///Requested resource (audience); must match the configured MCP resource.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub resource: ::std::option::Option<::std::string::String>,
         ///Requested scope (space-delimited); read scopes only are granted.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub scope: ::std::option::Option<::std::string::String>,
         ///Opaque `state` to echo back to the client.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub state: ::std::option::Option<::std::string::String>,
         /**The set of tenants the user grants access to (each must be one they
         belong to). Must be non-empty and name each tenant at most once.*/
@@ -1274,25 +462,6 @@ pub mod types {
     /**Result of a consent decision: the URL the browser should navigate to (the
     client's redirect URI carrying either the authorization `code` or an
     `error`).*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Result of a consent decision: the URL the browser should navigate to (the\nclient's redirect URI carrying either the authorization `code` or an\n`error`).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "redirect"
-    ///  ],
-    ///  "properties": {
-    ///    "redirect": {
-    ///      "description": "The absolute redirect URL to navigate to.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ConsentDecisionResponse {
         ///The absolute redirect URL to navigate to.
@@ -1304,37 +473,6 @@ pub mod types {
         }
     }
     ///A tenant the consenting user may grant a connector access to.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A tenant the consenting user may grant a connector access to.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "datasets",
-    ///    "id",
-    ///    "role"
-    ///  ],
-    ///  "properties": {
-    ///    "datasets": {
-    ///      "description": "Datasets in the tenant, so the consent screen can offer a per-tenant\n\"only these datasets\" checklist (D5).",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/ConsentDataset"
-    ///      }
-    ///    },
-    ///    "id": {
-    ///      "description": "Tenant id.",
-    ///      "type": "string"
-    ///    },
-    ///    "role": {
-    ///      "$ref": "#/components/schemas/MembershipRole"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ConsentTenant {
         /**Datasets in the tenant, so the consent screen can offer a per-tenant
@@ -1354,36 +492,6 @@ pub mod types {
     [`common::catalog::TenantGrant`]'s shape; kept as a router-local request
     DTO (rather than reusing that type directly) so it can derive
     [`ToSchema`] for the OpenAPI spec.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One tenant (and optional dataset restriction) the user grants in a\nconsent decision (design: mcp-multi-tenant-oauth-grants D2/D6). Mirrors\n[`common::catalog::TenantGrant`]'s shape; kept as a router-local request\nDTO (rather than reusing that type directly) so it can derive\n[`ToSchema`] for the OpenAPI spec.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "tenant_id"
-    ///  ],
-    ///  "properties": {
-    ///    "dataset_ids": {
-    ///      "description": "Dataset set to restrict this tenant's grant to (D5/D6). Omitted or\n`null` grants unrestricted access to the tenant. A non-empty array\nrestricts the grant to exactly that set; every named dataset must\nbelong to `tenant_id`. An explicit empty array is rejected (D1a), as\nis any non-empty selection while\n`[auth].dataset_restriction_rollout_complete` is `false` (stricter\nthan the API-key rule — OAuth has no legacy column to fall back to).",
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      },
-    ///      "minItems": 1
-    ///    },
-    ///    "tenant_id": {
-    ///      "description": "The tenant being granted (must be one the user belongs to).",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ConsentTenantGrant {
         /**Dataset set to restrict this tenant's grant to (D5/D6). Omitted or
@@ -1393,7 +501,7 @@ pub mod types {
         is any non-empty selection while
         `[auth].dataset_restriction_rollout_complete` is `false` (stricter
         than the API-key rule — OAuth has no legacy column to fall back to).*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///The tenant being granted (must be one the user belongs to).
         pub tenant_id: ::std::string::String,
@@ -1404,21 +512,6 @@ pub mod types {
         }
     }
     ///Which tier answered a discovery request, and therefore what it cost.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Which tier answered a discovery request, and therefore what it cost.",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "metadata",
-    ///    "sampled_scan",
-    ///    "none"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -1465,14 +558,6 @@ pub mod types {
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for CostMode {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for CostMode {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -1493,58 +578,6 @@ pub mod types {
     rejected with a validation error rather than silently ignored, since
     dropping it would create an unrestricted key when the caller asked for a
     restricted one.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Request body for creating a new API key.\n\n`scopes` is required and non-empty: a key's permissions are always\nexplicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,\n`profiles:write`, `traces:read`, `logs:read`, `metrics:read`,\n`profiles:read`, `schema:read`, `schema:write`.\n\nThe legacy singular `dataset_id` field is not accepted here (removed in\nthe multi-dataset-key-restriction change): a request body carrying it is\nrejected with a validation error rather than silently ignored, since\ndropping it would create an unrestricted key when the caller asked for a\nrestricted one.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "scopes"
-    ///  ],
-    ///  "properties": {
-    ///    "allowed_origins": {
-    ///      "description": "Browser origins the key is restricted to for CORS checks. Omitted or\n`null` creates an unrestricted key; a non-empty array restricts it to\nexactly that set. An explicit empty array, or a duplicate entry\nwithin the set, is rejected.",
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      },
-    ///      "minItems": 1
-    ///    },
-    ///    "dataset_ids": {
-    ///      "description": "Dataset set the key is restricted to. Omitted or `null` creates an\nunrestricted key; a non-empty array restricts it to exactly that set.\nAn explicit empty array, or a duplicate name within the set, is\nrejected.",
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      },
-    ///      "minItems": 1
-    ///    },
-    ///    "name": {
-    ///      "description": "Optional human-readable name for the key.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "scopes": {
-    ///      "description": "Scopes the key carries (required, at least one).",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    }
-    ///  },
-    ///  "additionalProperties": false
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     #[serde(deny_unknown_fields)]
     pub struct CreateApiKeyRequest {
@@ -1552,16 +585,16 @@ pub mod types {
         `null` creates an unrestricted key; a non-empty array restricts it to
         exactly that set. An explicit empty array, or a duplicate entry
         within the set, is rejected.*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub allowed_origins: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         /**Dataset set the key is restricted to. Omitted or `null` creates an
         unrestricted key; a non-empty array restricts it to exactly that set.
         An explicit empty array, or a duplicate name within the set, is
         rejected.*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///Optional human-readable name for the key.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
         ///Scopes the key carries (required, at least one).
         pub scopes: ::std::vec::Vec<::std::string::String>,
@@ -1572,87 +605,23 @@ pub mod types {
         }
     }
     ///Response returned when a new API key is created (includes the raw key).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Response returned when a new API key is created (includes the raw key).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "created_at",
-    ///    "id",
-    ///    "key",
-    ///    "scopes"
-    ///  ],
-    ///  "properties": {
-    ///    "allowed_origins": {
-    ///      "description": "Allowed-origin set the key is restricted to, if any; `null` is\nunrestricted.",
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "created_at": {
-    ///      "description": "ISO 8601 creation timestamp.",
-    ///      "type": "string"
-    ///    },
-    ///    "dataset_ids": {
-    ///      "description": "Dataset set the key is restricted to, if any; `null` is unrestricted.",
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "id": {
-    ///      "description": "Unique key identifier.",
-    ///      "type": "string"
-    ///    },
-    ///    "key": {
-    ///      "description": "The raw API key (only shown once at creation time).",
-    ///      "type": "string"
-    ///    },
-    ///    "name": {
-    ///      "description": "Optional human-readable name.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "scopes": {
-    ///      "description": "Scopes the key carries.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct CreateApiKeyResponse {
         /**Allowed-origin set the key is restricted to, if any; `null` is
         unrestricted.*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub allowed_origins: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///ISO 8601 creation timestamp.
         pub created_at: ::std::string::String,
         ///Dataset set the key is restricted to, if any; `null` is unrestricted.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///Unique key identifier.
         pub id: ::std::string::String,
         ///The raw API key (only shown once at creation time).
         pub key: ::std::string::String,
         ///Optional human-readable name.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
         ///Scopes the key carries.
         pub scopes: ::std::vec::Vec<::std::string::String>,
@@ -1663,25 +632,6 @@ pub mod types {
         }
     }
     ///Request body for creating a new dataset.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Request body for creating a new dataset.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "name"
-    ///  ],
-    ///  "properties": {
-    ///    "name": {
-    ///      "description": "Dataset name.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct CreateDatasetRequest {
         ///Dataset name.
@@ -1693,41 +643,10 @@ pub mod types {
         }
     }
     ///Request body for creating a new tenant.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Request body for creating a new tenant.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "id",
-    ///    "name"
-    ///  ],
-    ///  "properties": {
-    ///    "default_dataset": {
-    ///      "description": "Default dataset name.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "id": {
-    ///      "description": "Unique tenant identifier.",
-    ///      "type": "string"
-    ///    },
-    ///    "name": {
-    ///      "description": "Human-readable tenant name.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct CreateTenantRequest {
         ///Default dataset name.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub default_dataset: ::std::option::Option<::std::string::String>,
         ///Unique tenant identifier.
         pub id: ::std::string::String,
@@ -1740,30 +659,6 @@ pub mod types {
         }
     }
     ///Response body for `POST /tenants/{tenant_id}/tables/create`.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Response body for `POST /tenants/{tenant_id}/tables/create`.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "message",
-    ///    "tenant_id"
-    ///  ],
-    ///  "properties": {
-    ///    "message": {
-    ///      "description": "Human-readable confirmation message.",
-    ///      "type": "string"
-    ///    },
-    ///    "tenant_id": {
-    ///      "description": "The tenant the tables were created for.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct CreateTenantTablesResponse {
         ///Human-readable confirmation message.
@@ -1777,64 +672,20 @@ pub mod types {
         }
     }
     ///Request body for creating a human user with an initial tenant membership.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Request body for creating a human user with an initial tenant membership.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "email",
-    ///    "password",
-    ///    "tenant"
-    ///  ],
-    ///  "properties": {
-    ///    "display_name": {
-    ///      "description": "Optional display name.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "email": {
-    ///      "description": "Login email address.",
-    ///      "type": "string"
-    ///    },
-    ///    "instance_admin": {
-    ///      "description": "Grant instance-administrator status.",
-    ///      "type": "boolean"
-    ///    },
-    ///    "password": {
-    ///      "description": "Password (hashed server-side; must be at least 12 characters).",
-    ///      "type": "string"
-    ///    },
-    ///    "role": {
-    ///      "description": "Initial tenant role: `admin`, `member`, or `viewer`.",
-    ///      "type": "string"
-    ///    },
-    ///    "tenant": {
-    ///      "description": "Tenant to grant the initial membership in.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct CreateUserRequest {
         ///Optional display name.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub display_name: ::std::option::Option<::std::string::String>,
         ///Login email address.
         pub email: ::std::string::String,
         ///Grant instance-administrator status.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub instance_admin: ::std::option::Option<bool>,
         ///Password (hashed server-side; must be at least 12 characters).
         pub password: ::std::string::String,
         ///Initial tenant role: `admin`, `member`, or `viewer`.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub role: ::std::option::Option<::std::string::String>,
         ///Tenant to grant the initial membership in.
         pub tenant: ::std::string::String,
@@ -1846,55 +697,16 @@ pub mod types {
     }
     /**`GET /ui/session`'s response: the signed-in user, the memberships the
     session may enter, and the auto-selected tenant/dataset.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "`GET /ui/session`'s response: the signed-in user, the memberships the\nsession may enter, and the auto-selected tenant/dataset.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "dataset",
-    ///    "memberships",
-    ///    "tenant",
-    ///    "user"
-    ///  ],
-    ///  "properties": {
-    ///    "dataset": {
-    ///      "description": "Always serialized, `null` when no tenant is auto-selected — not an\nomittable field.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "memberships": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/SessionMembership"
-    ///      }
-    ///    },
-    ///    "tenant": {
-    ///      "description": "Always serialized, `null` when no tenant is auto-selected — not an\nomittable field.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "user": {
-    ///      "$ref": "#/components/schemas/SessionUser"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct CurrentSessionResponse {
         /**Always serialized, `null` when no tenant is auto-selected — not an
         omittable field.*/
+        #[serde(deserialize_with = "::std::option::Option::deserialize")]
         pub dataset: ::std::option::Option<::std::string::String>,
         pub memberships: ::std::vec::Vec<SessionMembership>,
         /**Always serialized, `null` when no tenant is auto-selected — not an
         omittable field.*/
+        #[serde(deserialize_with = "::std::option::Option::deserialize")]
         pub tenant: ::std::option::Option<::std::string::String>,
         pub user: SessionUser,
     }
@@ -1904,40 +716,6 @@ pub mod types {
         }
     }
     ///Dataset information returned by the API.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Dataset information returned by the API.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "created_at",
-    ///    "id",
-    ///    "name",
-    ///    "tenant_id"
-    ///  ],
-    ///  "properties": {
-    ///    "created_at": {
-    ///      "description": "ISO 8601 creation timestamp.",
-    ///      "type": "string"
-    ///    },
-    ///    "id": {
-    ///      "description": "Unique dataset identifier.",
-    ///      "type": "string"
-    ///    },
-    ///    "name": {
-    ///      "description": "Dataset name.",
-    ///      "type": "string"
-    ///    },
-    ///    "tenant_id": {
-    ///      "description": "Tenant that owns this dataset.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct DatasetResponse {
         ///ISO 8601 creation timestamp.
@@ -1956,33 +734,6 @@ pub mod types {
     }
     /**The tables provisioned in a single dataset, as part of
     [`ListTablesResponse::datasets`].*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The tables provisioned in a single dataset, as part of\n[`ListTablesResponse::datasets`].",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "dataset",
-    ///    "tables"
-    ///  ],
-    ///  "properties": {
-    ///    "dataset": {
-    ///      "description": "Dataset ID.",
-    ///      "type": "string"
-    ///    },
-    ///    "tables": {
-    ///      "description": "Tables provisioned in this dataset.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/TableInfo"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct DatasetTables {
         ///Dataset ID.
@@ -1996,53 +747,14 @@ pub mod types {
         }
     }
     ///Deprecation info in resolved form.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Deprecation info in resolved form.",
-    ///  "type": "object",
-    ///  "properties": {
-    ///    "note": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "reason": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "renamed_to": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Default)]
     pub struct DeprecatedInfo {
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub note: ::std::option::Option<::std::string::String>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub reason: ::std::option::Option<::std::string::String>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub renamed_to: ::std::option::Option<::std::string::String>,
-    }
-    impl ::std::default::Default for DeprecatedInfo {
-        fn default() -> Self {
-            Self {
-                note: Default::default(),
-                reason: Default::default(),
-                renamed_to: Default::default(),
-            }
-        }
     }
     impl DeprecatedInfo {
         pub fn builder() -> builder::DeprecatedInfo {
@@ -2050,109 +762,28 @@ pub mod types {
         }
     }
     ///One queryable field.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One queryable field.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "filterable",
-    ///    "name",
-    ///    "origin",
-    ///    "type"
-    ///  ],
-    ///  "properties": {
-    ///    "brief": {
-    ///      "description": "The registry's one-line description, when a registry defines it.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "cardinality": {
-    ///      "description": "An approximate distinct-value count, when statistics exist.",
-    ///      "oneOf": [
-    ///        {
-    ///          "type": "null"
-    ///        },
-    ///        {
-    ///          "allOf": [
-    ///            {
-    ///              "$ref": "#/components/schemas/CardinalityEstimate"
-    ///            }
-    ///          ]
-    ///        }
-    ///      ]
-    ///    },
-    ///    "coverage": {
-    ///      "description": "The fraction of the tenant's records carrying it, when statistics\nexist. Absent means unknown — never defaulted to a number that could be\nmistaken for a measurement.",
-    ///      "type": [
-    ///        "number",
-    ///        "null"
-    ///      ],
-    ///      "format": "double"
-    ///    },
-    ///    "deprecated": {
-    ///      "description": "Whether a registry marks it deprecated.",
-    ///      "type": "boolean"
-    ///    },
-    ///    "filterable": {
-    ///      "description": "Whether a predicate may address it (retrieval-only fields are listed,\nnot hidden).",
-    ///      "type": "boolean"
-    ///    },
-    ///    "level": {
-    ///      "description": "The OTel attribute level, when known. Statistics carry no level, so an\nobserved key reports `null` rather than a guess.",
-    ///      "oneOf": [
-    ///        {
-    ///          "type": "null"
-    ///        },
-    ///        {
-    ///          "allOf": [
-    ///            {
-    ///              "$ref": "#/components/schemas/AttributeLevel"
-    ///            }
-    ///          ]
-    ///        }
-    ///      ]
-    ///    },
-    ///    "name": {
-    ///      "description": "The logical, dotted OTel-native name — directly usable in a predicate.",
-    ///      "type": "string"
-    ///    },
-    ///    "origin": {
-    ///      "$ref": "#/components/schemas/FieldOrigin"
-    ///    },
-    ///    "type": {
-    ///      "$ref": "#/components/schemas/LogicalType"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct DiscoveredField {
         ///The registry's one-line description, when a registry defines it.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub brief: ::std::option::Option<::std::string::String>,
         ///An approximate distinct-value count, when statistics exist.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub cardinality: ::std::option::Option<CardinalityEstimate>,
         /**The fraction of the tenant's records carrying it, when statistics
         exist. Absent means unknown — never defaulted to a number that could be
         mistaken for a measurement.*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub coverage: ::std::option::Option<f64>,
         ///Whether a registry marks it deprecated.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub deprecated: ::std::option::Option<bool>,
         /**Whether a predicate may address it (retrieval-only fields are listed,
         not hidden).*/
         pub filterable: bool,
         /**The OTel attribute level, when known. Statistics carry no level, so an
         observed key reports `null` rather than a guess.*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub level: ::std::option::Option<AttributeLevel>,
         ///The logical, dotted OTel-native name — directly usable in a predicate.
         pub name: ::std::string::String,
@@ -2166,30 +797,6 @@ pub mod types {
         }
     }
     ///One signal source available to the tenant.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One signal source available to the tenant.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "available",
-    ///    "name"
-    ///  ],
-    ///  "properties": {
-    ///    "available": {
-    ///      "description": "Whether the tenant can query it. A registered signal with no data is\navailable and empty, never omitted.",
-    ///      "type": "boolean"
-    ///    },
-    ///    "name": {
-    ///      "description": "The name an IR document's `from` names.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct DiscoveredSource {
         /**Whether the tenant can query it. A registered signal with no data is
@@ -2204,40 +811,10 @@ pub mod types {
         }
     }
     ///One suggested value.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One suggested value.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "origin",
-    ///    "value"
-    ///  ],
-    ///  "properties": {
-    ///    "count": {
-    ///      "description": "How often it was observed, when the tier that produced it counts.",
-    ///      "type": [
-    ///        "integer",
-    ///        "null"
-    ///      ],
-    ///      "format": "int64"
-    ///    },
-    ///    "origin": {
-    ///      "$ref": "#/components/schemas/ValueOrigin"
-    ///    },
-    ///    "value": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct DiscoveredValue {
         ///How often it was observed, when the tier that produced it counts.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub count: ::std::option::Option<i64>,
         pub origin: ValueOrigin,
         pub value: ::std::string::String,
@@ -2248,46 +825,6 @@ pub mod types {
         }
     }
     ///What a discovery answer cost and how far it can be trusted.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What a discovery answer cost and how far it can be trusted.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "approximate",
-    ///    "mode",
-    ///    "sampled",
-    ///    "window_scoped"
-    ///  ],
-    ///  "properties": {
-    ///    "approximate": {
-    ///      "description": "Whether the answer is approximate — a bounded sketch of the most\nfrequent values rather than the exact set. A declared value set is\nexact; a statistics- or scan-derived one is not, and saying so is the\ndifference between a suggestion and a claim.",
-    ///      "type": "boolean"
-    ///    },
-    ///    "as_of": {
-    ///      "description": "How recent the statistics behind the answer are (as the catalog stores\nit). `null` means no statistics exist yet.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "mode": {
-    ///      "$ref": "#/components/schemas/CostMode"
-    ///    },
-    ///    "sampled": {
-    ///      "description": "Whether the answer is sampled, and therefore possibly incomplete.",
-    ///      "type": "boolean"
-    ///    },
-    ///    "window_scoped": {
-    ///      "description": "Whether the answer is scoped to the requested time window. Maintained\nstatistics carry no time dimension, so a metadata answer says `false`\nrather than implying the range narrowed it.",
-    ///      "type": "boolean"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct DiscoveryCost {
         /**Whether the answer is approximate — a bounded sketch of the most
@@ -2297,7 +834,7 @@ pub mod types {
         pub approximate: bool,
         /**How recent the statistics behind the answer are (as the catalog stores
         it). `null` means no statistics exist yet.*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub as_of: ::std::option::Option<::std::string::String>,
         pub mode: CostMode,
         ///Whether the answer is sampled, and therefore possibly incomplete.
@@ -2313,38 +850,10 @@ pub mod types {
         }
     }
     ///An attribute referenced by an entity, with its role.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "An attribute referenced by an entity, with its role.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "key",
-    ///    "role"
-    ///  ],
-    ///  "properties": {
-    ///    "key": {
-    ///      "type": "string"
-    ///    },
-    ///    "requirement_level": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "role": {
-    ///      "$ref": "#/components/schemas/Role"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct EntityAttribute {
         pub key: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub requirement_level: ::std::option::Option<::std::string::String>,
         pub role: Role,
     }
@@ -2354,96 +863,22 @@ pub mod types {
         }
     }
     ///A resolved entity type.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A resolved entity type.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "brief",
-    ///    "descriptive",
-    ///    "group_id",
-    ///    "identifying",
-    ///    "name"
-    ///  ],
-    ///  "properties": {
-    ///    "brief": {
-    ///      "type": "string"
-    ///    },
-    ///    "deprecated": {
-    ///      "oneOf": [
-    ///        {
-    ///          "type": "null"
-    ///        },
-    ///        {
-    ///          "allOf": [
-    ///            {
-    ///              "$ref": "#/components/schemas/DeprecatedInfo"
-    ///            }
-    ///          ]
-    ///        }
-    ///      ]
-    ///    },
-    ///    "descriptive": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/EntityAttribute"
-    ///      }
-    ///    },
-    ///    "extends": {
-    ///      "description": "Entity this one extends (bare name), if any.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "group_id": {
-    ///      "type": "string"
-    ///    },
-    ///    "identifying": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/EntityAttribute"
-    ///      }
-    ///    },
-    ///    "name": {
-    ///      "description": "Entity type name (`k8s.pod`).",
-    ///      "type": "string"
-    ///    },
-    ///    "note": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "stability": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct EntityDef {
         pub brief: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub deprecated: ::std::option::Option<DeprecatedInfo>,
         pub descriptive: ::std::vec::Vec<EntityAttribute>,
         ///Entity this one extends (bare name), if any.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub extends: ::std::option::Option<::std::string::String>,
         pub group_id: ::std::string::String,
         pub identifying: ::std::vec::Vec<EntityAttribute>,
         ///Entity type name (`k8s.pod`).
         pub name: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub note: ::std::option::Option<::std::string::String>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub stability: ::std::option::Option<::std::string::String>,
     }
     impl EntityDef {
@@ -2452,64 +887,17 @@ pub mod types {
         }
     }
     ///A resolved entity definition tagged with provenance.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A resolved entity definition tagged with provenance.",
-    ///  "allOf": [
-    ///    {
-    ///      "$ref": "#/components/schemas/EntityDef"
-    ///    },
-    ///    {
-    ///      "type": "object",
-    ///      "required": [
-    ///        "namespace",
-    ///        "source",
-    ///        "version"
-    ///      ],
-    ///      "properties": {
-    ///        "extended_by": {
-    ///          "description": "`namespace/entity` names of entities extending this one.",
-    ///          "type": "array",
-    ///          "items": {
-    ///            "type": "string"
-    ///          }
-    ///        },
-    ///        "metrics": {
-    ///          "description": "Metric names associated with this entity (from every visible registry).",
-    ///          "type": "array",
-    ///          "items": {
-    ///            "type": "string"
-    ///          }
-    ///        },
-    ///        "namespace": {
-    ///          "type": "string"
-    ///        },
-    ///        "source": {
-    ///          "$ref": "#/components/schemas/RegistrySource"
-    ///        },
-    ///        "version": {
-    ///          "type": "string"
-    ///        }
-    ///      }
-    ///    }
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct EntityHit {
         pub brief: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub deprecated: ::std::option::Option<DeprecatedInfo>,
         pub descriptive: ::std::vec::Vec<EntityAttribute>,
         ///`namespace/entity` names of entities extending this one.
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub extended_by: ::std::vec::Vec<::std::string::String>,
         ///Entity this one extends (bare name), if any.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub extends: ::std::option::Option<::std::string::String>,
         pub group_id: ::std::string::String,
         pub identifying: ::std::vec::Vec<EntityAttribute>,
@@ -2519,10 +907,10 @@ pub mod types {
         ///Entity type name (`k8s.pod`).
         pub name: ::std::string::String,
         pub namespace: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub note: ::std::option::Option<::std::string::String>,
         pub source: RegistrySource,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub stability: ::std::option::Option<::std::string::String>,
         pub version: ::std::string::String,
     }
@@ -2532,49 +920,11 @@ pub mod types {
         }
     }
     ///`EntityResolution`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "hits",
-    ///    "key"
-    ///  ],
-    ///  "properties": {
-    ///    "hits": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/EntityHit"
-    ///      }
-    ///    },
-    ///    "key": {
-    ///      "type": "string"
-    ///    },
-    ///    "primary": {
-    ///      "oneOf": [
-    ///        {
-    ///          "type": "null"
-    ///        },
-    ///        {
-    ///          "allOf": [
-    ///            {
-    ///              "$ref": "#/components/schemas/EntityHit"
-    ///            }
-    ///          ]
-    ///        }
-    ///      ]
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct EntityResolution {
         pub hits: ::std::vec::Vec<EntityHit>,
         pub key: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub primary: ::std::option::Option<EntityHit>,
     }
     impl EntityResolution {
@@ -2583,26 +933,6 @@ pub mod types {
         }
     }
     ///`EntitySearchResponse`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "hits"
-    ///  ],
-    ///  "properties": {
-    ///    "hits": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/EntityHit"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct EntitySearchResponse {
         pub hits: ::std::vec::Vec<EntityHit>,
@@ -2613,68 +943,17 @@ pub mod types {
         }
     }
     ///One member of an enum attribute type.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One member of an enum attribute type.",
-    ///  "allOf": [
-    ///    {
-    ///      "type": "object"
-    ///    },
-    ///    {
-    ///      "type": "object",
-    ///      "required": [
-    ///        "id",
-    ///        "value"
-    ///      ],
-    ///      "properties": {
-    ///        "brief": {
-    ///          "type": [
-    ///            "string",
-    ///            "null"
-    ///          ]
-    ///        },
-    ///        "deprecated": {
-    ///          "type": [
-    ///            "object",
-    ///            "null"
-    ///          ]
-    ///        },
-    ///        "id": {
-    ///          "type": "string"
-    ///        },
-    ///        "note": {
-    ///          "type": [
-    ///            "string",
-    ///            "null"
-    ///          ]
-    ///        },
-    ///        "stability": {
-    ///          "type": [
-    ///            "string",
-    ///            "null"
-    ///          ]
-    ///        },
-    ///        "value": {}
-    ///      }
-    ///    }
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct EnumMember {
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub brief: ::std::option::Option<::std::string::String>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub deprecated:
             ::std::option::Option<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
         pub id: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub note: ::std::option::Option<::std::string::String>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub stability: ::std::option::Option<::std::string::String>,
         pub value: ::serde_json::Value,
     }
@@ -2684,21 +963,6 @@ pub mod types {
         }
     }
     ///Which metadata tier a discovered item came from.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Which metadata tier a discovered item came from.",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "declared",
-    ///    "registry",
-    ///    "observed"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -2745,14 +1009,6 @@ pub mod types {
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for FieldOrigin {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for FieldOrigin {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -2762,20 +1018,6 @@ pub mod types {
         }
     }
     ///Whether predicates may address a field.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Whether predicates may address a field.",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "filterable",
-    ///    "retrieval_only"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -2818,14 +1060,6 @@ pub mod types {
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for Filterability {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for Filterability {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -2835,52 +1069,6 @@ pub mod types {
         }
     }
     ///Flamegraph payload in flamebearer encoding.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Flamegraph payload in flamebearer encoding.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "levels",
-    ///    "maxSelf",
-    ///    "names",
-    ///    "numTicks"
-    ///  ],
-    ///  "properties": {
-    ///    "levels": {
-    ///      "description": "One flat array per depth level. `format: \"single\"` uses\n`[offset_delta, total, self, name_index]` quadruples; `\"double\"`\nuses `[off_l, total_l, self_l, off_r, total_r, self_r, name_index]`.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "array",
-    ///        "items": {
-    ///          "type": "integer",
-    ///          "format": "int64"
-    ///        }
-    ///      }
-    ///    },
-    ///    "maxSelf": {
-    ///      "description": "Largest self value of any block, for color scaling.",
-    ///      "type": "integer",
-    ///      "format": "int64"
-    ///    },
-    ///    "names": {
-    ///      "description": "Function name table referenced by block name indices.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "numTicks": {
-    ///      "description": "Total number of ticks (root width).",
-    ///      "type": "integer",
-    ///      "format": "int64"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Flamebearer {
         /**One flat array per depth level. `format: "single"` uses
@@ -2902,49 +1090,6 @@ pub mod types {
         }
     }
     ///Metadata describing how to interpret flamebearer values.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Metadata describing how to interpret flamebearer values.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "format",
-    ///    "name",
-    ///    "sampleRate",
-    ///    "units"
-    ///  ],
-    ///  "properties": {
-    ///    "format": {
-    ///      "description": "`\"single\"` for one profile set, `\"double\"` for a diff.",
-    ///      "type": "string"
-    ///    },
-    ///    "name": {
-    ///      "description": "Display name of the rendered profile/query.",
-    ///      "type": "string"
-    ///    },
-    ///    "sampleRate": {
-    ///      "description": "Sample rate in Hz; 100 is the Pyroscope default for CPU profiles.",
-    ///      "type": "integer",
-    ///      "format": "int32",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "spyName": {
-    ///      "description": "Profiler that produced the data, when known (e.g. \"gospy\").",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "units": {
-    ///      "description": "Value units (e.g. \"samples\", \"objects\", \"bytes\").",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct FlamebearerMetadata {
         ///`"single"` for one profile set, `"double"` for a diff.
@@ -2957,7 +1102,6 @@ pub mod types {
         ///Profiler that produced the data, when known (e.g. "gospy").
         #[serde(
             rename = "spyName",
-            default,
             skip_serializing_if = "::std::option::Option::is_none"
         )]
         pub spy_name: ::std::option::Option<::std::string::String>,
@@ -2974,57 +1118,6 @@ pub mod types {
     IR surface can retrieve an actual profile payload (bounded, aggregated)
     rather than raw `samples_json`/`stacktraces_json`. See `query-ir-core`'s
     "Profile flamegraph retrieval" requirement.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A flamegraph in Pyroscope flamebearer encoding — the same shape and\naggregation `/pyroscope/render` returns, reused here so the native Query\nIR surface can retrieve an actual profile payload (bounded, aggregated)\nrather than raw `samples_json`/`stacktraces_json`. See `query-ir-core`'s\n\"Profile flamegraph retrieval\" requirement.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "levels",
-    ///    "max_self",
-    ///    "names",
-    ///    "total",
-    ///    "truncated"
-    ///  ],
-    ///  "properties": {
-    ///    "levels": {
-    ///      "description": "One entry per depth level; each level is a flat sequence of\n`[offset_delta, total, self, name_index]` quadruples.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "array",
-    ///        "items": {
-    ///          "type": "integer",
-    ///          "format": "int64"
-    ///        }
-    ///      }
-    ///    },
-    ///    "max_self": {
-    ///      "description": "Largest self value of any block, used for color scaling.",
-    ///      "type": "integer",
-    ///      "format": "int64"
-    ///    },
-    ///    "names": {
-    ///      "description": "Function name table referenced by the blocks' name indices.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "total": {
-    ///      "description": "Total value of the root (sum of all samples).",
-    ///      "type": "integer",
-    ///      "format": "int64"
-    ///    },
-    ///    "truncated": {
-    ///      "description": "`true` when more than `FLAMEGRAPH_PROFILE_CAP` (1,000) profile rows\nmatched — a row-count cap, not a byte-size one — and the flamegraph\nwas aggregated over only the first 1,000 of them.",
-    ///      "type": "boolean"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct FlamegraphResult {
         /**One entry per depth level; each level is a flat sequence of
@@ -3051,36 +1144,9 @@ pub mod types {
     mcp-multi-tenant-oauth-grants D4/D5). Mirrors
     [`common::catalog::TenantGrant`]; kept as a router-local response DTO so
     it can derive [`utoipa::ToSchema`].*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One tenant a credential's grant reaches, with its own dataset-set\nrestriction — the `whoami`/`/oauth/introspect` output shape (change:\nmcp-multi-tenant-oauth-grants D4/D5). Mirrors\n[`common::catalog::TenantGrant`]; kept as a router-local response DTO so\nit can derive [`utoipa::ToSchema`].",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "tenant_id"
-    ///  ],
-    ///  "properties": {
-    ///    "dataset_ids": {
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "tenant_id": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct GrantedTenant {
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         pub tenant_id: ::std::string::String,
     }
@@ -3090,29 +1156,6 @@ pub mod types {
         }
     }
     ///Epoch-aligned time axis with a fixed nanosecond step.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Epoch-aligned time axis with a fixed nanosecond step.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "align",
-    ///    "step_ns"
-    ///  ],
-    ///  "properties": {
-    ///    "align": {
-    ///      "type": "string"
-    ///    },
-    ///    "step_ns": {
-    ///      "type": "integer",
-    ///      "format": "int64"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct HeatmapAxisX {
         pub align: ::std::string::String,
@@ -3124,39 +1167,6 @@ pub mod types {
         }
     }
     ///`HeatmapAxisY`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "bounds",
-    ///    "of",
-    ///    "overflow",
-    ///    "type"
-    ///  ],
-    ///  "properties": {
-    ///    "bounds": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "integer",
-    ///        "format": "int64"
-    ///      }
-    ///    },
-    ///    "of": {
-    ///      "type": "string"
-    ///    },
-    ///    "overflow": {
-    ///      "type": "boolean"
-    ///    },
-    ///    "type": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct HeatmapAxisY {
         pub bounds: ::std::vec::Vec<i64>,
@@ -3171,34 +1181,6 @@ pub mod types {
         }
     }
     ///`HeatmapCell`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "count",
-    ///    "duration_bucket",
-    ///    "time_bucket_ns"
-    ///  ],
-    ///  "properties": {
-    ///    "count": {
-    ///      "type": "integer",
-    ///      "format": "int64"
-    ///    },
-    ///    "duration_bucket": {
-    ///      "type": "integer",
-    ///      "format": "int64"
-    ///    },
-    ///    "time_bucket_ns": {
-    ///      "type": "integer",
-    ///      "format": "int64"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct HeatmapCell {
         pub count: i64,
@@ -3212,39 +1194,6 @@ pub mod types {
     }
     /**Complete axes plus one non-zero heatmap cell. Missing declared coordinates
     represent zero, making the Flight payload sparse without hiding the window.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Complete axes plus one non-zero heatmap cell. Missing declared coordinates\nrepresent zero, making the Flight payload sparse without hiding the window.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "cells",
-    ///    "value",
-    ///    "x",
-    ///    "y"
-    ///  ],
-    ///  "properties": {
-    ///    "cells": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/HeatmapCell"
-    ///      }
-    ///    },
-    ///    "value": {
-    ///      "type": "string"
-    ///    },
-    ///    "x": {
-    ///      "$ref": "#/components/schemas/HeatmapAxisX"
-    ///    },
-    ///    "y": {
-    ///      "$ref": "#/components/schemas/HeatmapAxisY"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct HeatmapResult {
         pub cells: ::std::vec::Vec<HeatmapCell>,
@@ -3258,27 +1207,6 @@ pub mod types {
         }
     }
     ///Response body of the label-names / label-values endpoints.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Response body of the label-names / label-values endpoints.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "names"
-    ///  ],
-    ///  "properties": {
-    ///    "names": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct LabelsResponse {
         pub names: ::std::vec::Vec<::std::string::String>,
@@ -3289,28 +1217,6 @@ pub mod types {
         }
     }
     ///Response containing a list of API keys.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Response containing a list of API keys.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "api_keys"
-    ///  ],
-    ///  "properties": {
-    ///    "api_keys": {
-    ///      "description": "List of API key records (without raw keys).",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/ApiKeyResponse"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ListApiKeysResponse {
         ///List of API key records (without raw keys).
@@ -3322,28 +1228,6 @@ pub mod types {
         }
     }
     ///Response containing a list of datasets.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Response containing a list of datasets.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "datasets"
-    ///  ],
-    ///  "properties": {
-    ///    "datasets": {
-    ///      "description": "List of dataset records.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/DatasetResponse"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ListDatasetsResponse {
         ///List of dataset records.
@@ -3355,40 +1239,6 @@ pub mod types {
         }
     }
     ///API response for listing tables
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "API response for listing tables",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "tables",
-    ///    "tenant_id"
-    ///  ],
-    ///  "properties": {
-    ///    "datasets": {
-    ///      "description": "The same tables, grouped by dataset.\n\nDefaulted on deserialization so an older client-recorded response\n(or a hand-written test fixture) that predates this field still\nparses.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/DatasetTables"
-    ///      }
-    ///    },
-    ///    "tables": {
-    ///      "description": "List of tables for the tenant, flat across all of its datasets.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/TableInfo"
-    ///      }
-    ///    },
-    ///    "tenant_id": {
-    ///      "description": "Tenant ID",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ListTablesResponse {
         /**The same tables, grouped by dataset.
@@ -3409,28 +1259,6 @@ pub mod types {
         }
     }
     ///Response containing a list of tenants.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Response containing a list of tenants.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "tenants"
-    ///  ],
-    ///  "properties": {
-    ///    "tenants": {
-    ///      "description": "List of tenant records.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/TenantResponse"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ListTenantsResponse {
         ///List of tenant records.
@@ -3442,22 +1270,6 @@ pub mod types {
         }
     }
     ///The semantic role of a logical field.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The semantic role of a logical field.",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "attribute",
-    ///    "record_metadata",
-    ///    "join_key",
-    ///    "signal_db_defined"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -3508,14 +1320,6 @@ pub mod types {
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for LogicalFieldKind {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for LogicalFieldKind {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -3525,26 +1329,6 @@ pub mod types {
         }
     }
     ///The client-visible type of a logical field.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The client-visible type of a logical field.",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "string",
-    ///    "bool",
-    ///    "int64",
-    ///    "float64",
-    ///    "timestamp_ns",
-    ///    "duration_ns",
-    ///    "bytes",
-    ///    "any_value"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -3611,14 +1395,6 @@ pub mod types {
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for LogicalType {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for LogicalType {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -3629,44 +1405,11 @@ pub mod types {
     }
     /**`GET /ui/session/config`'s response: which credentials the login page
     may offer. `oidc` is `null` until an OIDC provider is configured.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "`GET /ui/session/config`'s response: which credentials the login page\nmay offer. `oidc` is `null` until an OIDC provider is configured.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "oidc",
-    ///    "password_enabled"
-    ///  ],
-    ///  "properties": {
-    ///    "oidc": {
-    ///      "description": "Always serialized, `null` until an OIDC provider is configured — not\nan omittable field.",
-    ///      "oneOf": [
-    ///        {
-    ///          "type": "null"
-    ///        },
-    ///        {
-    ///          "allOf": [
-    ///            {
-    ///              "$ref": "#/components/schemas/OidcLoginConfig"
-    ///            }
-    ///          ]
-    ///        }
-    ///      ]
-    ///    },
-    ///    "password_enabled": {
-    ///      "type": "boolean"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct LoginConfigResponse {
         /**Always serialized, `null` until an OIDC provider is configured — not
         an omittable field.*/
+        #[serde(deserialize_with = "::std::option::Option::deserialize")]
         pub oidc: ::std::option::Option<OidcLoginConfig>,
         pub password_enabled: bool,
     }
@@ -3676,76 +1419,18 @@ pub mod types {
         }
     }
     ///`ManageApiKeyResponse`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "created_at",
-    ///    "id",
-    ///    "revoked"
-    ///  ],
-    ///  "properties": {
-    ///    "allowed_origins": {
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "created_at": {
-    ///      "type": "string"
-    ///    },
-    ///    "dataset_ids": {
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "id": {
-    ///      "type": "string"
-    ///    },
-    ///    "name": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "revoked": {
-    ///      "type": "boolean"
-    ///    },
-    ///    "scopes": {
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ManageApiKeyResponse {
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub allowed_origins: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         pub created_at: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         pub id: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
         pub revoked: bool,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub scopes: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
     }
     impl ManageApiKeyResponse {
@@ -3760,62 +1445,14 @@ pub mod types {
     rejects a request body still sending it, rather than silently dropping
     it and creating an unrestricted key when the caller asked for a
     restricted one.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "`dataset_ids` mirrors [`signaldb_api::CreateApiKeyRequest`] (D1a): omitted\nor `null` creates an unrestricted key, a non-empty array restricts it,\nand an explicit empty array or duplicate name is rejected. The legacy\nsingular `dataset_id` field is not accepted — `deny_unknown_fields`\nrejects a request body still sending it, rather than silently dropping\nit and creating an unrestricted key when the caller asked for a\nrestricted one.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "scopes"
-    ///  ],
-    ///  "properties": {
-    ///    "allowed_origins": {
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      },
-    ///      "minItems": 1
-    ///    },
-    ///    "dataset_ids": {
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      },
-    ///      "minItems": 1
-    ///    },
-    ///    "name": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "scopes": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    }
-    ///  },
-    ///  "additionalProperties": false
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     #[serde(deny_unknown_fields)]
     pub struct ManageCreateApiKeyRequest {
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub allowed_origins: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
         pub scopes: ::std::vec::Vec<::std::string::String>,
     }
@@ -3825,23 +1462,6 @@ pub mod types {
         }
     }
     ///`ManageCreateDatasetRequest`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "name"
-    ///  ],
-    ///  "properties": {
-    ///    "name": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ManageCreateDatasetRequest {
         pub name: ::std::string::String,
@@ -3852,36 +1472,9 @@ pub mod types {
         }
     }
     ///`ManageCreateTenantRequest`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "id",
-    ///    "name"
-    ///  ],
-    ///  "properties": {
-    ///    "default_dataset": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "id": {
-    ///      "type": "string"
-    ///    },
-    ///    "name": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ManageCreateTenantRequest {
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub default_dataset: ::std::option::Option<::std::string::String>,
         pub id: ::std::string::String,
         pub name: ::std::string::String,
@@ -3895,68 +1488,15 @@ pub mod types {
 
     Fields mirror the previous `json!` body exactly (including `null` for
     absent `name`), preserving the wire format.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "201 response body for API key creation via the management API.\n\nFields mirror the previous `json!` body exactly (including `null` for\nabsent `name`), preserving the wire format.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "id",
-    ///    "key",
-    ///    "scopes"
-    ///  ],
-    ///  "properties": {
-    ///    "allowed_origins": {
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "dataset_ids": {
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "id": {
-    ///      "type": "string"
-    ///    },
-    ///    "key": {
-    ///      "type": "string"
-    ///    },
-    ///    "name": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "scopes": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ManageCreatedApiKey {
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub allowed_origins: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         pub id: ::std::string::String,
         pub key: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
         pub scopes: ::std::vec::Vec<::std::string::String>,
     }
@@ -3966,24 +1506,6 @@ pub mod types {
         }
     }
     ///201 response body for tenant creation via the management API.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "201 response body for tenant creation via the management API.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "id"
-    ///  ],
-    ///  "properties": {
-    ///    "id": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ManageCreatedTenant {
         pub id: ::std::string::String,
@@ -3994,27 +1516,6 @@ pub mod types {
         }
     }
     ///`ManageDatasetResponse`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "id",
-    ///    "name"
-    ///  ],
-    ///  "properties": {
-    ///    "id": {
-    ///      "type": "string"
-    ///    },
-    ///    "name": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ManageDatasetResponse {
         pub id: ::std::string::String,
@@ -4026,24 +1527,6 @@ pub mod types {
         }
     }
     ///Error response body for the management API.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Error response body for the management API.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "error"
-    ///  ],
-    ///  "properties": {
-    ///    "error": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ManageError {
         pub error: ::std::string::String,
@@ -4055,51 +1538,6 @@ pub mod types {
     }
     /**One logical (client-visible, OTel-native) field, as registered in
     [`common::schema::logical::LogicalSchema`].*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One logical (client-visible, OTel-native) field, as registered in\n[`common::schema::logical::LogicalSchema`].",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "filterability",
-    ///    "kind",
-    ///    "name",
-    ///    "non_native",
-    ///    "source",
-    ///    "value_type"
-    ///  ],
-    ///  "properties": {
-    ///    "filterability": {
-    ///      "$ref": "#/components/schemas/Filterability"
-    ///    },
-    ///    "kind": {
-    ///      "$ref": "#/components/schemas/LogicalFieldKind"
-    ///    },
-    ///    "level": {
-    ///      "description": "`resource` | `scope` | `record`, absent when the field isn't\nattribute-scoped (a plain `String` here, not `Option<AttributeLevel>`\n— utoipa emits a nullable `$ref` enum as `oneOf: [{type: null}, ref]`,\nwhich the progenitor-generated Rust SDK client can't parse).",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "name": {
-    ///      "type": "string"
-    ///    },
-    ///    "non_native": {
-    ///      "type": "boolean"
-    ///    },
-    ///    "source": {
-    ///      "type": "string"
-    ///    },
-    ///    "value_type": {
-    ///      "$ref": "#/components/schemas/LogicalType"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ManageLogicalField {
         pub filterability: Filterability,
@@ -4108,7 +1546,7 @@ pub mod types {
         attribute-scoped (a plain `String` here, not `Option<AttributeLevel>`
         — utoipa emits a nullable `$ref` enum as `oneOf: [{type: null}, ref]`,
         which the progenitor-generated Rust SDK client can't parse).*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub level: ::std::option::Option<::std::string::String>,
         pub name: ::std::string::String,
         pub non_native: bool,
@@ -4121,45 +1559,9 @@ pub mod types {
         }
     }
     ///One physical (storage) column, as resolved from `schemas.toml`.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One physical (storage) column, as resolved from `schemas.toml`.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "field_type",
-    ///    "name",
-    ///    "physical_only",
-    ///    "required"
-    ///  ],
-    ///  "properties": {
-    ///    "computed": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "field_type": {
-    ///      "type": "string"
-    ///    },
-    ///    "name": {
-    ///      "type": "string"
-    ///    },
-    ///    "physical_only": {
-    ///      "type": "boolean"
-    ///    },
-    ///    "required": {
-    ///      "type": "boolean"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ManagePhysicalField {
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub computed: ::std::option::Option<::std::string::String>,
         pub field_type: ::std::string::String,
         pub name: ::std::string::String,
@@ -4172,50 +1574,6 @@ pub mod types {
         }
     }
     ///One resolved table-schema version for one signal source.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One resolved table-schema version for one signal source.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "description",
-    ///    "fields",
-    ///    "is_current",
-    ///    "partition_by",
-    ///    "source",
-    ///    "version"
-    ///  ],
-    ///  "properties": {
-    ///    "description": {
-    ///      "type": "string"
-    ///    },
-    ///    "fields": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/ManagePhysicalField"
-    ///      }
-    ///    },
-    ///    "is_current": {
-    ///      "type": "boolean"
-    ///    },
-    ///    "partition_by": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "source": {
-    ///      "type": "string"
-    ///    },
-    ///    "version": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ManagePhysicalSchema {
         pub description: ::std::string::String,
@@ -4231,37 +1589,6 @@ pub mod types {
         }
     }
     ///`ManageSchemaResponse`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "logical",
-    ///    "logical_schema_version",
-    ///    "physical"
-    ///  ],
-    ///  "properties": {
-    ///    "logical": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/ManageLogicalField"
-    ///      }
-    ///    },
-    ///    "logical_schema_version": {
-    ///      "type": "string"
-    ///    },
-    ///    "physical": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/ManagePhysicalSchema"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ManageSchemaResponse {
         pub logical: ::std::vec::Vec<ManageLogicalField>,
@@ -4278,95 +1605,31 @@ pub mod types {
     mirror [`signaldb_api::UpdateApiKeyRequest`] (D1a); the legacy singular
     `dataset_id` field is rejected via `deny_unknown_fields` rather than
     silently dropped.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.\nAbsent fields are left untouched. `dataset_ids`/`clear_dataset_restriction`\nmirror [`signaldb_api::UpdateApiKeyRequest`] (D1a); the legacy singular\n`dataset_id` field is rejected via `deny_unknown_fields` rather than\nsilently dropped.",
-    ///  "type": "object",
-    ///  "properties": {
-    ///    "allowed_origins": {
-    ///      "description": "Replacement allowed-origins set (non-empty; an explicit empty array\nis rejected). Omitted/`null` leaves the current restriction\nunchanged. Mutually exclusive with `clear_allowed_origins: true`.",
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      },
-    ///      "minItems": 1
-    ///    },
-    ///    "clear_allowed_origins": {
-    ///      "description": "Clear an existing allowed-origins restriction back to unrestricted.\nMust not be combined with a non-empty `allowed_origins` in the same\nrequest.",
-    ///      "type": "boolean"
-    ///    },
-    ///    "clear_dataset_restriction": {
-    ///      "description": "Clear an existing dataset restriction back to unrestricted. Must not\nbe combined with a non-empty `dataset_ids` in the same request.",
-    ///      "type": "boolean"
-    ///    },
-    ///    "dataset_ids": {
-    ///      "description": "Replacement dataset set (non-empty; an explicit empty array is\nrejected). Omitted/`null` leaves the current restriction unchanged.\nMutually exclusive with `clear_dataset_restriction: true`.",
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      },
-    ///      "minItems": 1
-    ///    },
-    ///    "scopes": {
-    ///      "description": "Replacement scope list (non-empty, drawn from the shared vocabulary).",
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    }
-    ///  },
-    ///  "additionalProperties": false
-    ///}
-    /// ```
-    /// </details>
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Default)]
     #[serde(deny_unknown_fields)]
     pub struct ManageUpdateApiKeyRequest {
         /**Replacement allowed-origins set (non-empty; an explicit empty array
         is rejected). Omitted/`null` leaves the current restriction
         unchanged. Mutually exclusive with `clear_allowed_origins: true`.*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub allowed_origins: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         /**Clear an existing allowed-origins restriction back to unrestricted.
         Must not be combined with a non-empty `allowed_origins` in the same
         request.*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub clear_allowed_origins: ::std::option::Option<bool>,
         /**Clear an existing dataset restriction back to unrestricted. Must not
         be combined with a non-empty `dataset_ids` in the same request.*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub clear_dataset_restriction: ::std::option::Option<bool>,
         /**Replacement dataset set (non-empty; an explicit empty array is
         rejected). Omitted/`null` leaves the current restriction unchanged.
         Mutually exclusive with `clear_dataset_restriction: true`.*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///Replacement scope list (non-empty, drawn from the shared vocabulary).
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub scopes: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
-    }
-    impl ::std::default::Default for ManageUpdateApiKeyRequest {
-        fn default() -> Self {
-            Self {
-                allowed_origins: Default::default(),
-                clear_allowed_origins: Default::default(),
-                clear_dataset_restriction: Default::default(),
-                dataset_ids: Default::default(),
-                scopes: Default::default(),
-            }
-        }
     }
     impl ManageUpdateApiKeyRequest {
         pub fn builder() -> builder::ManageUpdateApiKeyRequest {
@@ -4374,36 +1637,6 @@ pub mod types {
         }
     }
     ///`MembershipResponse`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "email",
-    ///    "granted_by",
-    ///    "role",
-    ///    "user_id"
-    ///  ],
-    ///  "properties": {
-    ///    "email": {
-    ///      "type": "string"
-    ///    },
-    ///    "granted_by": {
-    ///      "description": "`\"local\"` (granted via this API/CLI/MCP) or `\"oidc_mapping\"` (synced\nfrom an OIDC group claim, change: oidc-login). A local and a mapped\nrow can coexist for the same user, yielding two response rows that\ndiffer only by this field — the UI keys on `user_id` + `granted_by`.",
-    ///      "type": "string"
-    ///    },
-    ///    "role": {
-    ///      "$ref": "#/components/schemas/MembershipRole"
-    ///    },
-    ///    "user_id": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct MembershipResponse {
         pub email: ::std::string::String,
@@ -4424,21 +1657,6 @@ pub mod types {
 
     Stored as lowercase TEXT in the `tenant_memberships` table, matching
     the `CHECK(role IN ('admin', 'member', 'viewer'))` constraint.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Role a user holds within a tenant.\n\nStored as lowercase TEXT in the `tenant_memberships` table, matching\nthe `CHECK(role IN ('admin', 'member', 'viewer'))` constraint.",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "admin",
-    ///    "member",
-    ///    "viewer"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -4485,14 +1703,6 @@ pub mod types {
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for MembershipRole {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for MembershipRole {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -4502,21 +1712,6 @@ pub mod types {
         }
     }
     ///What a discovery answer is about.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "What a discovery answer is about.",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "sources",
-    ///    "fields",
-    ///    "values"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -4563,14 +1758,6 @@ pub mod types {
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for MetadataKind {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for MetadataKind {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -4580,58 +1767,6 @@ pub mod types {
         }
     }
     ///The payload of a `metadata` result envelope.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The payload of a `metadata` result envelope.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "cost",
-    ///    "kind",
-    ///    "truncated"
-    ///  ],
-    ///  "properties": {
-    ///    "cost": {
-    ///      "$ref": "#/components/schemas/DiscoveryCost"
-    ///    },
-    ///    "fields": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/DiscoveredField"
-    ///      }
-    ///    },
-    ///    "hint": {
-    ///      "description": "The Query IR request that produced this answer by reading data, or —\nwhen nothing covers the request — the one that would compute it.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "kind": {
-    ///      "$ref": "#/components/schemas/MetadataKind"
-    ///    },
-    ///    "sources": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/DiscoveredSource"
-    ///      }
-    ///    },
-    ///    "truncated": {
-    ///      "description": "Whether a documented limit cut the list short.",
-    ///      "type": "boolean"
-    ///    },
-    ///    "values": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/DiscoveredValue"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct MetadataResult {
         pub cost: DiscoveryCost,
@@ -4639,7 +1774,7 @@ pub mod types {
         pub fields: ::std::vec::Vec<DiscoveredField>,
         /**The Query IR request that produced this answer by reading data, or —
         when nothing covers the request — the one that would compute it.*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub hint: ::std::option::Option<::std::string::String>,
         pub kind: MetadataKind,
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -4655,34 +1790,10 @@ pub mod types {
         }
     }
     ///An attribute declared on a metric.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "An attribute declared on a metric.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "key"
-    ///  ],
-    ///  "properties": {
-    ///    "key": {
-    ///      "type": "string"
-    ///    },
-    ///    "requirement_level": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct MetricAttribute {
         pub key: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub requirement_level: ::std::option::Option<::std::string::String>,
     }
     impl MetricAttribute {
@@ -4691,95 +1802,20 @@ pub mod types {
         }
     }
     ///A resolved metric definition.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A resolved metric definition.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "attributes",
-    ///    "brief",
-    ///    "entity_associations",
-    ///    "group_id",
-    ///    "instrument",
-    ///    "name",
-    ///    "unit"
-    ///  ],
-    ///  "properties": {
-    ///    "attributes": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/MetricAttribute"
-    ///      }
-    ///    },
-    ///    "brief": {
-    ///      "type": "string"
-    ///    },
-    ///    "deprecated": {
-    ///      "oneOf": [
-    ///        {
-    ///          "type": "null"
-    ///        },
-    ///        {
-    ///          "allOf": [
-    ///            {
-    ///              "$ref": "#/components/schemas/DeprecatedInfo"
-    ///            }
-    ///          ]
-    ///        }
-    ///      ]
-    ///    },
-    ///    "entity_associations": {
-    ///      "description": "Entity type names this metric describes.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "group_id": {
-    ///      "type": "string"
-    ///    },
-    ///    "instrument": {
-    ///      "type": "string"
-    ///    },
-    ///    "name": {
-    ///      "type": "string"
-    ///    },
-    ///    "note": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "stability": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "unit": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct MetricDef {
         pub attributes: ::std::vec::Vec<MetricAttribute>,
         pub brief: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub deprecated: ::std::option::Option<DeprecatedInfo>,
         ///Entity type names this metric describes.
         pub entity_associations: ::std::vec::Vec<::std::string::String>,
         pub group_id: ::std::string::String,
         pub instrument: ::std::string::String,
         pub name: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub note: ::std::option::Option<::std::string::String>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub stability: ::std::option::Option<::std::string::String>,
         pub unit: ::std::string::String,
     }
@@ -4789,44 +1825,11 @@ pub mod types {
         }
     }
     ///A resolved metric definition tagged with provenance.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A resolved metric definition tagged with provenance.",
-    ///  "allOf": [
-    ///    {
-    ///      "$ref": "#/components/schemas/MetricDef"
-    ///    },
-    ///    {
-    ///      "type": "object",
-    ///      "required": [
-    ///        "namespace",
-    ///        "source",
-    ///        "version"
-    ///      ],
-    ///      "properties": {
-    ///        "namespace": {
-    ///          "type": "string"
-    ///        },
-    ///        "source": {
-    ///          "$ref": "#/components/schemas/RegistrySource"
-    ///        },
-    ///        "version": {
-    ///          "type": "string"
-    ///        }
-    ///      }
-    ///    }
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct MetricHit {
         pub attributes: ::std::vec::Vec<MetricAttribute>,
         pub brief: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub deprecated: ::std::option::Option<DeprecatedInfo>,
         ///Entity type names this metric describes.
         pub entity_associations: ::std::vec::Vec<::std::string::String>,
@@ -4834,10 +1837,10 @@ pub mod types {
         pub instrument: ::std::string::String,
         pub name: ::std::string::String,
         pub namespace: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub note: ::std::option::Option<::std::string::String>,
         pub source: RegistrySource,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub stability: ::std::option::Option<::std::string::String>,
         pub unit: ::std::string::String,
         pub version: ::std::string::String,
@@ -4848,49 +1851,11 @@ pub mod types {
         }
     }
     ///`MetricResolution`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "hits",
-    ///    "key"
-    ///  ],
-    ///  "properties": {
-    ///    "hits": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/MetricHit"
-    ///      }
-    ///    },
-    ///    "key": {
-    ///      "type": "string"
-    ///    },
-    ///    "primary": {
-    ///      "oneOf": [
-    ///        {
-    ///          "type": "null"
-    ///        },
-    ///        {
-    ///          "allOf": [
-    ///            {
-    ///              "$ref": "#/components/schemas/MetricHit"
-    ///            }
-    ///          ]
-    ///        }
-    ///      ]
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct MetricResolution {
         pub hits: ::std::vec::Vec<MetricHit>,
         pub key: ::std::string::String,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub primary: ::std::option::Option<MetricHit>,
     }
     impl MetricResolution {
@@ -4899,33 +1864,6 @@ pub mod types {
         }
     }
     ///`MetricSearchResponse`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "hits"
-    ///  ],
-    ///  "properties": {
-    ///    "hits": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/MetricHit"
-    ///      }
-    ///    },
-    ///    "resolutions": {
-    ///      "description": "Present when `keys=` was given: one resolution per requested name.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/MetricResolution"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct MetricSearchResponse {
         pub hits: ::std::vec::Vec<MetricHit>,
@@ -4939,25 +1877,6 @@ pub mod types {
         }
     }
     ///A single-sign-on provider offered by the login-configuration probe.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A single-sign-on provider offered by the login-configuration probe.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "name"
-    ///  ],
-    ///  "properties": {
-    ///    "name": {
-    ///      "description": "Display name shown on the \"Continue with {name}\" control.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct OidcLoginConfig {
         ///Display name shown on the "Continue with {name}" control.
@@ -4969,44 +1888,6 @@ pub mod types {
         }
     }
     ///The public OTLP/gRPC ingest endpoint.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The public OTLP/gRPC ingest endpoint.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "authority",
-    ///    "protocol",
-    ///    "signals",
-    ///    "tls",
-    ///    "url"
-    ///  ],
-    ///  "properties": {
-    ///    "authority": {
-    ///      "description": "`host[:port]`, with the port included only when the configured URL\nstates one explicitly.",
-    ///      "type": "string"
-    ///    },
-    ///    "protocol": {
-    ///      "type": "string"
-    ///    },
-    ///    "signals": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "tls": {
-    ///      "type": "boolean"
-    ///    },
-    ///    "url": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct OtlpGrpcEndpoint {
         /**`host[:port]`, with the port included only when the configured URL
@@ -5023,36 +1904,6 @@ pub mod types {
         }
     }
     ///The public OTLP/HTTP ingest endpoint.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The public OTLP/HTTP ingest endpoint.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "paths",
-    ///    "protocol",
-    ///    "tls",
-    ///    "url"
-    ///  ],
-    ///  "properties": {
-    ///    "paths": {
-    ///      "$ref": "#/components/schemas/OtlpHttpPaths"
-    ///    },
-    ///    "protocol": {
-    ///      "type": "string"
-    ///    },
-    ///    "tls": {
-    ///      "type": "boolean"
-    ///    },
-    ///    "url": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct OtlpHttpEndpoint {
         pub paths: OtlpHttpPaths,
@@ -5066,36 +1917,6 @@ pub mod types {
         }
     }
     ///Per-signal paths appended to [`OtlpHttpEndpoint::url`].
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Per-signal paths appended to [`OtlpHttpEndpoint::url`].",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "logs",
-    ///    "metrics",
-    ///    "profiles",
-    ///    "traces"
-    ///  ],
-    ///  "properties": {
-    ///    "logs": {
-    ///      "type": "string"
-    ///    },
-    ///    "metrics": {
-    ///      "type": "string"
-    ///    },
-    ///    "profiles": {
-    ///      "type": "string"
-    ///    },
-    ///    "traces": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct OtlpHttpPaths {
         pub logs: ::std::string::String,
@@ -5110,50 +1931,6 @@ pub mod types {
     }
     /**Summary of a stored profile linked to a trace, without the bulky
     stack/sample payloads.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Summary of a stored profile linked to a trace, without the bulky\nstack/sample payloads.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "durationNano",
-    ///    "profileID",
-    ///    "sampleType",
-    ///    "sampleUnit",
-    ///    "serviceName",
-    ///    "timeUnixNano"
-    ///  ],
-    ///  "properties": {
-    ///    "durationNano": {
-    ///      "type": "string"
-    ///    },
-    ///    "profileID": {
-    ///      "type": "string"
-    ///    },
-    ///    "sampleType": {
-    ///      "type": "string"
-    ///    },
-    ///    "sampleUnit": {
-    ///      "type": "string"
-    ///    },
-    ///    "serviceName": {
-    ///      "type": "string"
-    ///    },
-    ///    "spanID": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "timeUnixNano": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ProfileSummary {
         #[serde(rename = "durationNano")]
@@ -5168,7 +1945,6 @@ pub mod types {
         pub service_name: ::std::string::String,
         #[serde(
             rename = "spanID",
-            default,
             skip_serializing_if = "::std::option::Option::is_none"
         )]
         pub span_id: ::std::option::Option<::std::string::String>,
@@ -5181,43 +1957,6 @@ pub mod types {
         }
     }
     ///One entry of `GET /pyroscope/profile-types`.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One entry of `GET /pyroscope/profile-types`.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "ID",
-    ///    "name",
-    ///    "sampleType",
-    ///    "sampleUnit"
-    ///  ],
-    ///  "properties": {
-    ///    "ID": {
-    ///      "description": "Canonical ID: `{name}:{sample_type}:{sample_unit}`.",
-    ///      "type": "string"
-    ///    },
-    ///    "name": {
-    ///      "type": "string"
-    ///    },
-    ///    "periodType": {
-    ///      "type": "string"
-    ///    },
-    ///    "periodUnit": {
-    ///      "type": "string"
-    ///    },
-    ///    "sampleType": {
-    ///      "type": "string"
-    ///    },
-    ///    "sampleUnit": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ProfileType {
         ///Canonical ID: `{name}:{sample_type}:{sample_unit}`.
@@ -5226,13 +1965,11 @@ pub mod types {
         pub name: ::std::string::String,
         #[serde(
             rename = "periodType",
-            default,
             skip_serializing_if = "::std::option::Option::is_none"
         )]
         pub period_type: ::std::option::Option<::std::string::String>,
         #[serde(
             rename = "periodUnit",
-            default,
             skip_serializing_if = "::std::option::Option::is_none"
         )]
         pub period_unit: ::std::option::Option<::std::string::String>,
@@ -5247,32 +1984,6 @@ pub mod types {
         }
     }
     ///An entity role qualified by the registry that declares it.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "An entity role qualified by the registry that declares it.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "entity",
-    ///    "namespace",
-    ///    "role"
-    ///  ],
-    ///  "properties": {
-    ///    "entity": {
-    ///      "type": "string"
-    ///    },
-    ///    "namespace": {
-    ///      "type": "string"
-    ///    },
-    ///    "role": {
-    ///      "$ref": "#/components/schemas/Role"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct QualifiedEntityRole {
         pub entity: ::std::string::String,
@@ -5289,67 +2000,10 @@ pub mod types {
     The `pipeline` stages are opaque JSON objects at the HTTP boundary — the
     querier validates and lowers them per the versioned IR contract. See the
     `query-ir-core` capability for the full stage/predicate grammar.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A versioned Query IR request document.\n\nThe `pipeline` stages are opaque JSON objects at the HTTP boundary — the\nquerier validates and lowers them per the versioned IR contract. See the\n`query-ir-core` capability for the full stage/predicate grammar.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "from",
-    ///    "irVersion",
-    ///    "range",
-    ///    "result"
-    ///  ],
-    ///  "properties": {
-    ///    "fields": {
-    ///      "description": "Curated projection (logical field names) for `rows`/`table`.",
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "from": {
-    ///      "description": "The registered signal source: `logs`, `traces`, or profile-summary `profiles`.",
-    ///      "examples": [
-    ///        "logs"
-    ///      ],
-    ///      "type": "string"
-    ///    },
-    ///    "irVersion": {
-    ///      "description": "IR document version (the server accepts a bounded range).",
-    ///      "type": "integer",
-    ///      "format": "int64"
-    ///    },
-    ///    "pipeline": {
-    ///      "description": "Ordered transform stages (opaque objects; see the IR spec).",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "object"
-    ///      }
-    ///    },
-    ///    "range": {
-    ///      "$ref": "#/components/schemas/QueryRange"
-    ///    },
-    ///    "result": {
-    ///      "description": "Declared result envelope: `rows`, `series`, `table`, `heatmap`, or\n(for the `profiles` source only) `flamegraph`.",
-    ///      "examples": [
-    ///        "rows"
-    ///      ],
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct QueryIrRequest {
         ///Curated projection (logical field names) for `rows`/`table`.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub fields: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///The registered signal source: `logs`, `traces`, or profile-summary `profiles`.
         pub from: ::std::string::String,
@@ -5374,95 +2028,6 @@ pub mod types {
     are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
     `series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills
     `flamegraph`.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The single canonical response contract. `result` discriminates which fields\nare populated: `rows`/`table` fill `columns` + `rows`; `series` fills\n`series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills\n`flamegraph`.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "result",
-    ///    "window"
-    ///  ],
-    ///  "properties": {
-    ///    "columns": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/ResultColumn"
-    ///      }
-    ///    },
-    ///    "flamegraph": {
-    ///      "description": "Present iff `result == \"flamegraph\"` — `Some` even when zero profiles\nmatched, so an empty match set stays distinguishable from \"this\nresponse has no flamegraph at all\" (i.e. a different envelope).",
-    ///      "oneOf": [
-    ///        {
-    ///          "type": "null"
-    ///        },
-    ///        {
-    ///          "allOf": [
-    ///            {
-    ///              "$ref": "#/components/schemas/FlamegraphResult"
-    ///            }
-    ///          ]
-    ///        }
-    ///      ]
-    ///    },
-    ///    "heatmap": {
-    ///      "$ref": "#/components/schemas/HeatmapResult"
-    ///    },
-    ///    "metadata": {
-    ///      "description": "Present iff `result == \"metadata\"` — what a `describe` document asked\nabout, with the provenance and cost of the answer.",
-    ///      "oneOf": [
-    ///        {
-    ///          "type": "null"
-    ///        },
-    ///        {
-    ///          "allOf": [
-    ///            {
-    ///              "$ref": "#/components/schemas/MetadataResult"
-    ///            }
-    ///          ]
-    ///        }
-    ///      ]
-    ///    },
-    ///    "result": {
-    ///      "description": "The result envelope: `rows`, `series`, `table`, `heatmap`, or `flamegraph`.",
-    ///      "type": "string"
-    ///    },
-    ///    "rows": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "array",
-    ///        "items": {}
-    ///      }
-    ///    },
-    ///    "series": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/ResultSeries"
-    ///      }
-    ///    },
-    ///    "step_ns": {
-    ///      "type": [
-    ///        "integer",
-    ///        "null"
-    ///      ],
-    ///      "format": "int64"
-    ///    },
-    ///    "warnings": {
-    ///      "description": "Non-fatal diagnostics about this query. Empty (and omitted) when the\nserver has nothing to report; a warning never suppresses the result.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/QueryWarning"
-    ///      }
-    ///    },
-    ///    "window": {
-    ///      "$ref": "#/components/schemas/ResolvedWindow"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct QueryIrResponse {
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -5470,13 +2035,13 @@ pub mod types {
         /**Present iff `result == "flamegraph"` — `Some` even when zero profiles
         matched, so an empty match set stays distinguishable from "this
         response has no flamegraph at all" (i.e. a different envelope).*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub flamegraph: ::std::option::Option<FlamegraphResult>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub heatmap: ::std::option::Option<HeatmapResult>,
         /**Present iff `result == "metadata"` — what a `describe` document asked
         about, with the provenance and cost of the answer.*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub metadata: ::std::option::Option<MetadataResult>,
         ///The result envelope: `rows`, `series`, `table`, `heatmap`, or `flamegraph`.
         pub result: ::std::string::String,
@@ -5484,7 +2049,7 @@ pub mod types {
         pub rows: ::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>,
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub series: ::std::vec::Vec<ResultSeries>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub step_ns: ::std::option::Option<i64>,
         /**Non-fatal diagnostics about this query. Empty (and omitted) when the
         server has nothing to report; a warning never suppresses the result.*/
@@ -5501,34 +2066,6 @@ pub mod types {
     a relative anchor (`now-1h`), or a nanosecond integer as a numeric string
     (`"1700000000000000000"`). Kept a `String` so the emitted schema and the
     generated clients match exactly what the endpoint accepts.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The query time range. `from`/`to` are timestamp literal **strings**: RFC3339,\na relative anchor (`now-1h`), or a nanosecond integer as a numeric string\n(`\"1700000000000000000\"`). Kept a `String` so the emitted schema and the\ngenerated clients match exactly what the endpoint accepts.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "from",
-    ///    "to"
-    ///  ],
-    ///  "properties": {
-    ///    "from": {
-    ///      "examples": [
-    ///        "now-1h"
-    ///      ],
-    ///      "type": "string"
-    ///    },
-    ///    "to": {
-    ///      "examples": [
-    ///        "now"
-    ///      ],
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct QueryRange {
         pub from: ::std::string::String,
@@ -5542,47 +2079,6 @@ pub mod types {
     /**A non-fatal diagnostic about a query that still produced a result. A
     warning never changes the result: it explains something the caller
     probably did not intend, so a client can surface it next to the data.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A non-fatal diagnostic about a query that still produced a result. A\nwarning never changes the result: it explains something the caller\nprobably did not intend, so a client can surface it next to the data.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "code",
-    ///    "message"
-    ///  ],
-    ///  "properties": {
-    ///    "code": {
-    ///      "description": "Stable machine-readable identifier — clients branch on this, not on\n`message`. Today `unknown_group_by_field` and\n`no_attribute_statistics`.",
-    ///      "examples": [
-    ///        "unknown_group_by_field"
-    ///      ],
-    ///      "type": "string"
-    ///    },
-    ///    "field": {
-    ///      "description": "The document field the warning is about, when it names one.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "message": {
-    ///      "description": "Human-readable explanation, safe to show verbatim.",
-    ///      "type": "string"
-    ///    },
-    ///    "suggestions": {
-    ///      "description": "Field names close to `field` that the source does declare, best first.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct QueryWarning {
         /**Stable machine-readable identifier — clients branch on this, not on
@@ -5590,7 +2086,7 @@ pub mod types {
         `no_attribute_statistics`.*/
         pub code: ::std::string::String,
         ///The document field the warning is about, when it names one.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub field: ::std::option::Option<::std::string::String>,
         ///Human-readable explanation, safe to show verbatim.
         pub message: ::std::string::String,
@@ -5604,26 +2100,6 @@ pub mod types {
         }
     }
     ///`RegistryListResponse`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "registries"
-    ///  ],
-    ///  "properties": {
-    ///    "registries": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/RegistrySummary"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct RegistryListResponse {
         pub registries: ::std::vec::Vec<RegistrySummary>,
@@ -5634,36 +2110,10 @@ pub mod types {
         }
     }
     ///A registry with its document (the uploaded Weaver-model file, verbatim).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A registry with its document (the uploaded Weaver-model file, verbatim).",
-    ///  "allOf": [
-    ///    {
-    ///      "$ref": "#/components/schemas/RegistrySummary"
-    ///    },
-    ///    {
-    ///      "type": "object",
-    ///      "required": [
-    ///        "document"
-    ///      ],
-    ///      "properties": {
-    ///        "document": {
-    ///          "description": "The registry document in the OpenTelemetry Weaver semantic-convention\nmodel (`name`, `version`, `schema_url`, `dependencies`, `groups`).",
-    ///          "type": "object"
-    ///        }
-    ///      }
-    ///    }
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct RegistryResponse {
         pub attribute_count: u64,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub description: ::std::option::Option<::std::string::String>,
         /**The registry document in the OpenTelemetry Weaver semantic-convention
         model (`name`, `version`, `schema_url`, `dependencies`, `groups`).*/
@@ -5672,10 +2122,10 @@ pub mod types {
         pub metric_count: u64,
         pub namespace: ::std::string::String,
         pub read_only: bool,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub schema_url: ::std::option::Option<::std::string::String>,
         pub source: RegistrySource,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub updated_at: ::std::option::Option<::std::string::String>,
         pub version: ::std::string::String,
     }
@@ -5685,21 +2135,6 @@ pub mod types {
         }
     }
     ///Where a registry comes from.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Where a registry comes from.",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "bundled",
-    ///    "custom",
-    ///    "remote"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -5746,14 +2181,6 @@ pub mod types {
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for RegistrySource {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for RegistrySource {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -5763,82 +2190,19 @@ pub mod types {
         }
     }
     ///Registry list entry.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Registry list entry.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "attribute_count",
-    ///    "entity_count",
-    ///    "metric_count",
-    ///    "namespace",
-    ///    "read_only",
-    ///    "source",
-    ///    "version"
-    ///  ],
-    ///  "properties": {
-    ///    "attribute_count": {
-    ///      "type": "integer",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "description": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "entity_count": {
-    ///      "type": "integer",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "metric_count": {
-    ///      "type": "integer",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "namespace": {
-    ///      "type": "string"
-    ///    },
-    ///    "read_only": {
-    ///      "type": "boolean"
-    ///    },
-    ///    "schema_url": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "source": {
-    ///      "$ref": "#/components/schemas/RegistrySource"
-    ///    },
-    ///    "updated_at": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "version": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct RegistrySummary {
         pub attribute_count: u64,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub description: ::std::option::Option<::std::string::String>,
         pub entity_count: u64,
         pub metric_count: u64,
         pub namespace: ::std::string::String,
         pub read_only: bool,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub schema_url: ::std::option::Option<::std::string::String>,
         pub source: RegistrySource,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub updated_at: ::std::option::Option<::std::string::String>,
         pub version: ::std::string::String,
     }
@@ -5848,65 +2212,12 @@ pub mod types {
         }
     }
     ///Response body of `GET /pyroscope/render` (and the diff variant).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Response body of `GET /pyroscope/render` (and the diff variant).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "flamebearer",
-    ///    "metadata"
-    ///  ],
-    ///  "properties": {
-    ///    "flamebearer": {
-    ///      "$ref": "#/components/schemas/Flamebearer"
-    ///    },
-    ///    "leftTicks": {
-    ///      "description": "Total baseline ticks; present when `format` is `\"double\"`.",
-    ///      "type": [
-    ///        "integer",
-    ///        "null"
-    ///      ],
-    ///      "format": "int64"
-    ///    },
-    ///    "metadata": {
-    ///      "$ref": "#/components/schemas/FlamebearerMetadata"
-    ///    },
-    ///    "rightTicks": {
-    ///      "description": "Total comparison ticks; present when `format` is `\"double\"`.",
-    ///      "type": [
-    ///        "integer",
-    ///        "null"
-    ///      ],
-    ///      "format": "int64"
-    ///    },
-    ///    "timeline": {
-    ///      "oneOf": [
-    ///        {
-    ///          "type": "null"
-    ///        },
-    ///        {
-    ///          "allOf": [
-    ///            {
-    ///              "$ref": "#/components/schemas/Timeline"
-    ///            }
-    ///          ]
-    ///        }
-    ///      ]
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct RenderResponse {
         pub flamebearer: Flamebearer,
         ///Total baseline ticks; present when `format` is `"double"`.
         #[serde(
             rename = "leftTicks",
-            default,
             skip_serializing_if = "::std::option::Option::is_none"
         )]
         pub left_ticks: ::std::option::Option<i64>,
@@ -5914,11 +2225,10 @@ pub mod types {
         ///Total comparison ticks; present when `format` is `"double"`.
         #[serde(
             rename = "rightTicks",
-            default,
             skip_serializing_if = "::std::option::Option::is_none"
         )]
         pub right_ticks: ::std::option::Option<i64>,
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub timeline: ::std::option::Option<Timeline>,
     }
     impl RenderResponse {
@@ -5927,30 +2237,6 @@ pub mod types {
         }
     }
     ///The resolved absolute time window, echoed for reproducibility/replay.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The resolved absolute time window, echoed for reproducibility/replay.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "end_ns",
-    ///    "start_ns"
-    ///  ],
-    ///  "properties": {
-    ///    "end_ns": {
-    ///      "type": "integer",
-    ///      "format": "int64"
-    ///    },
-    ///    "start_ns": {
-    ///      "type": "integer",
-    ///      "format": "int64"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ResolvedWindow {
         pub end_ns: i64,
@@ -5962,28 +2248,6 @@ pub mod types {
         }
     }
     ///A named, typed result column.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A named, typed result column.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "name",
-    ///    "type"
-    ///  ],
-    ///  "properties": {
-    ///    "name": {
-    ///      "type": "string"
-    ///    },
-    ///    "type": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ResultColumn {
         pub name: ::std::string::String,
@@ -5996,37 +2260,6 @@ pub mod types {
         }
     }
     ///One time series in a `series` result.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "One time series in a `series` result.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "labels",
-    ///    "points"
-    ///  ],
-    ///  "properties": {
-    ///    "labels": {
-    ///      "description": "The grouping label set.",
-    ///      "type": "object",
-    ///      "additionalProperties": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "points": {
-    ///      "description": "`[t_ns, value]` points.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "array",
-    ///        "items": {}
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ResultSeries {
         ///The grouping label set.
@@ -6040,20 +2273,6 @@ pub mod types {
         }
     }
     ///Role of an attribute within an entity.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Role of an attribute within an entity.",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "identifying",
-    ///    "descriptive"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -6096,14 +2315,6 @@ pub mod types {
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for Role {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for Role {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -6113,31 +2324,6 @@ pub mod types {
         }
     }
     ///Error body for the schema API.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Error body for the schema API.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "error"
-    ///  ],
-    ///  "properties": {
-    ///    "error": {
-    ///      "type": "string"
-    ///    },
-    ///    "errors": {
-    ///      "description": "Validation errors with document paths (422 only).",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/ValidationError"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct SchemaError {
         pub error: ::std::string::String,
@@ -6152,36 +2338,6 @@ pub mod types {
     }
     /**Result of GET /api/search
     See <https://grafana.com/docs/tempo/latest/api_docs/#example-of-traceql-search>*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Result of GET /api/search\nSee <https://grafana.com/docs/tempo/latest/api_docs/#example-of-traceql-search>",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "metrics",
-    ///    "traces"
-    ///  ],
-    ///  "properties": {
-    ///    "metrics": {
-    ///      "type": "object",
-    ///      "additionalProperties": {
-    ///        "type": "integer",
-    ///        "format": "int32",
-    ///        "minimum": 0.0
-    ///      }
-    ///    },
-    ///    "traces": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/Trace"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct SearchResult {
         pub metrics: ::std::collections::HashMap<::std::string::String, i32>,
@@ -6195,32 +2351,6 @@ pub mod types {
     /**A tenant the signed-in user may select, returned by `POST /ui/session`
     and `GET /ui/session` so the UI can present a picker instead of
     free-text tenant entry.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A tenant the signed-in user may select, returned by `POST /ui/session`\nand `GET /ui/session` so the UI can present a picker instead of\nfree-text tenant entry.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "name",
-    ///    "role",
-    ///    "tenant_id"
-    ///  ],
-    ///  "properties": {
-    ///    "name": {
-    ///      "type": "string"
-    ///    },
-    ///    "role": {
-    ///      "$ref": "#/components/schemas/MembershipRole"
-    ///    },
-    ///    "tenant_id": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct SessionMembership {
         pub name: ::std::string::String,
@@ -6233,41 +2363,9 @@ pub mod types {
         }
     }
     ///The signed-in user, as reported by `GET /ui/session`.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The signed-in user, as reported by `GET /ui/session`.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "email",
-    ///    "id",
-    ///    "is_instance_admin"
-    ///  ],
-    ///  "properties": {
-    ///    "display_name": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "email": {
-    ///      "type": "string"
-    ///    },
-    ///    "id": {
-    ///      "type": "string"
-    ///    },
-    ///    "is_instance_admin": {
-    ///      "type": "boolean"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct SessionUser {
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub display_name: ::std::option::Option<::std::string::String>,
         pub email: ::std::string::String,
         pub id: ::std::string::String,
@@ -6279,72 +2377,6 @@ pub mod types {
         }
     }
     ///`Span`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "attributes",
-    ///    "durationNanos",
-    ///    "spanID",
-    ///    "startTimeUnixNano"
-    ///  ],
-    ///  "properties": {
-    ///    "attributes": {
-    ///      "type": "object",
-    ///      "additionalProperties": {
-    ///        "$ref": "#/components/schemas/Attribute"
-    ///      }
-    ///    },
-    ///    "durationNanos": {
-    ///      "type": "string"
-    ///    },
-    ///    "events": {
-    ///      "description": "Span events (annotations, exceptions). Omitted when empty. Exceptions are\nthe event named `exception`, carrying `exception.message`/`.type`/\n`.stacktrace` in their attributes.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/SpanEvent"
-    ///      }
-    ///    },
-    ///    "name": {
-    ///      "description": "Span name intrinsic (Tempo exposes it as `name` on spanset spans).",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "parentSpanID": {
-    ///      "description": "Parent span id; empty/absent for root spans. Needed by clients that\nreconstruct the span hierarchy (e.g. waterfall views).",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "serviceName": {
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "spanID": {
-    ///      "type": "string"
-    ///    },
-    ///    "startTimeUnixNano": {
-    ///      "type": "string"
-    ///    },
-    ///    "status": {
-    ///      "description": "Span status (`ok`, `error`, `unset`).",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Span {
         pub attributes: ::std::collections::HashMap<::std::string::String, Attribute>,
@@ -6356,19 +2388,17 @@ pub mod types {
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub events: ::std::vec::Vec<SpanEvent>,
         ///Span name intrinsic (Tempo exposes it as `name` on spanset spans).
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
         /**Parent span id; empty/absent for root spans. Needed by clients that
         reconstruct the span hierarchy (e.g. waterfall views).*/
         #[serde(
             rename = "parentSpanID",
-            default,
             skip_serializing_if = "::std::option::Option::is_none"
         )]
         pub parent_span_id: ::std::option::Option<::std::string::String>,
         #[serde(
             rename = "serviceName",
-            default,
             skip_serializing_if = "::std::option::Option::is_none"
         )]
         pub service_name: ::std::option::Option<::std::string::String>,
@@ -6377,7 +2407,7 @@ pub mod types {
         #[serde(rename = "startTimeUnixNano")]
         pub start_time_unix_nano: ::std::string::String,
         ///Span status (`ok`, `error`, `unset`).
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub status: ::std::option::Option<::std::string::String>,
     }
     impl Span {
@@ -6386,34 +2416,6 @@ pub mod types {
         }
     }
     ///A span event in the Tempo API span shape.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A span event in the Tempo API span shape.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "name",
-    ///    "timeUnixNano"
-    ///  ],
-    ///  "properties": {
-    ///    "attributes": {
-    ///      "type": "object",
-    ///      "additionalProperties": {
-    ///        "$ref": "#/components/schemas/Attribute"
-    ///      }
-    ///    },
-    ///    "name": {
-    ///      "type": "string"
-    ///    },
-    ///    "timeUnixNano": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct SpanEvent {
         #[serde(
@@ -6431,32 +2433,6 @@ pub mod types {
         }
     }
     ///`SpanSet`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "matched",
-    ///    "spans"
-    ///  ],
-    ///  "properties": {
-    ///    "matched": {
-    ///      "type": "integer",
-    ///      "format": "int32",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "spans": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/Span"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct SpanSet {
         pub matched: i32,
@@ -6468,39 +2444,6 @@ pub mod types {
         }
     }
     ///API response for table information
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "API response for table information",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "description",
-    ///    "name",
-    ///    "schema_type"
-    ///  ],
-    ///  "properties": {
-    ///    "dataset": {
-    ///      "description": "The dataset this table belongs to.\n\nDefaulted on deserialization so an older client-recorded response\n(or a hand-written test fixture) that predates this field still\nparses.",
-    ///      "type": "string"
-    ///    },
-    ///    "description": {
-    ///      "description": "Table description",
-    ///      "type": "string"
-    ///    },
-    ///    "name": {
-    ///      "description": "Table name",
-    ///      "type": "string"
-    ///    },
-    ///    "schema_type": {
-    ///      "description": "Table schema type",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TableInfo {
         /**The dataset this table belongs to.
@@ -6508,7 +2451,7 @@ pub mod types {
         Defaulted on deserialization so an older client-recorded response
         (or a hand-written test fixture) that predates this field still
         parses.*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset: ::std::option::Option<::std::string::String>,
         ///Table description
         pub description: ::std::string::String,
@@ -6528,21 +2471,6 @@ pub mod types {
     Tempo datasource, which is what actually sends this) uses lowercase
     scope values. Without it, serde only accepts the Rust variant names
     (`Resource`/`Span`/`Intrinsic`) and every real client 400s (#1073).*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "GET /api/search/tags?scope=<resource|span|intrinsic>\n\n`rename_all = \"lowercase\"` matters here: the Tempo API (and Grafana's\nTempo datasource, which is what actually sends this) uses lowercase\nscope values. Without it, serde only accepts the Rust variant names\n(`Resource`/`Span`/`Intrinsic`) and every real client 400s (#1073).",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "resource",
-    ///    "span",
-    ///    "intrinsic"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -6589,14 +2517,6 @@ pub mod types {
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for TagScope {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for TagScope {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -6606,26 +2526,6 @@ pub mod types {
         }
     }
     ///`TagSearchResponse`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "tagNames"
-    ///  ],
-    ///  "properties": {
-    ///    "tagNames": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TagSearchResponse {
         #[serde(rename = "tagNames")]
@@ -6637,26 +2537,6 @@ pub mod types {
         }
     }
     ///`TagValuesResponse`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "tagValues"
-    ///  ],
-    ///  "properties": {
-    ///    "tagValues": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TagValuesResponse {
         #[serde(rename = "tagValues")]
@@ -6668,26 +2548,6 @@ pub mod types {
         }
     }
     ///`TempoApiV2TagSearchResponse`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "scopes"
-    ///  ],
-    ///  "properties": {
-    ///    "scopes": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/tempo_api.v2.TagSearchScope"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TempoApiV2TagSearchResponse {
         pub scopes: ::std::vec::Vec<TempoApiV2TagSearchScope>,
@@ -6698,30 +2558,6 @@ pub mod types {
         }
     }
     ///`TempoApiV2TagSearchScope`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "scope",
-    ///    "tags"
-    ///  ],
-    ///  "properties": {
-    ///    "scope": {
-    ///      "type": "string"
-    ///    },
-    ///    "tags": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TempoApiV2TagSearchScope {
         pub scope: ::std::string::String,
@@ -6737,27 +2573,6 @@ pub mod types {
     Todo: Add types to values
 
     See <https://grafana.com/docs/tempo/latest/api_docs/#search-tag-values-v2>*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "GET /api/v2/search/tag/.service.name/values\n\nTodo: Add types to values\n\nSee <https://grafana.com/docs/tempo/latest/api_docs/#search-tag-values-v2>",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "tagValues"
-    ///  ],
-    ///  "properties": {
-    ///    "tagValues": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/tempo_api.v2.TagWithValue"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TempoApiV2TagValuesResponse {
         #[serde(rename = "tagValues")]
@@ -6769,27 +2584,6 @@ pub mod types {
         }
     }
     ///`TempoApiV2TagWithValue`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "tag",
-    ///    "value"
-    ///  ],
-    ///  "properties": {
-    ///    "tag": {
-    ///      "type": "string"
-    ///    },
-    ///    "value": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TempoApiV2TagWithValue {
         pub tag: ::std::string::String,
@@ -6801,58 +2595,17 @@ pub mod types {
         }
     }
     ///API response for tenant information
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "API response for tenant information",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "enabled",
-    ///    "schema",
-    ///    "tenant_id"
-    ///  ],
-    ///  "properties": {
-    ///    "custom_schemas": {
-    ///      "description": "Custom schema definitions",
-    ///      "type": [
-    ///        "object",
-    ///        "null"
-    ///      ],
-    ///      "additionalProperties": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "enabled": {
-    ///      "description": "Whether tenant is enabled",
-    ///      "type": "boolean"
-    ///    },
-    ///    "schema": {
-    ///      "description": "Tenant-specific schema configuration",
-    ///      "type": [
-    ///        "object",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "tenant_id": {
-    ///      "description": "Tenant ID",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TenantInfo {
         ///Custom schema definitions
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub custom_schemas: ::std::option::Option<
             ::std::collections::HashMap<::std::string::String, ::std::string::String>,
         >,
         ///Whether tenant is enabled
         pub enabled: bool,
         ///Tenant-specific schema configuration
+        #[serde(deserialize_with = "::std::option::Option::deserialize")]
         pub schema:
             ::std::option::Option<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
         ///Tenant ID
@@ -6864,58 +2617,12 @@ pub mod types {
         }
     }
     ///Tenant information returned by the API.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Tenant information returned by the API.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "created_at",
-    ///    "id",
-    ///    "name",
-    ///    "source",
-    ///    "updated_at"
-    ///  ],
-    ///  "properties": {
-    ///    "created_at": {
-    ///      "description": "ISO 8601 creation timestamp.",
-    ///      "type": "string"
-    ///    },
-    ///    "default_dataset": {
-    ///      "description": "Default dataset name.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "id": {
-    ///      "description": "Unique tenant identifier.",
-    ///      "type": "string"
-    ///    },
-    ///    "name": {
-    ///      "description": "Human-readable tenant name.",
-    ///      "type": "string"
-    ///    },
-    ///    "source": {
-    ///      "description": "Source of the tenant record (config or database).",
-    ///      "type": "string"
-    ///    },
-    ///    "updated_at": {
-    ///      "description": "ISO 8601 last-updated timestamp.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TenantResponse {
         ///ISO 8601 creation timestamp.
         pub created_at: ::std::string::String,
         ///Default dataset name.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub default_dataset: ::std::option::Option<::std::string::String>,
         ///Unique tenant identifier.
         pub id: ::std::string::String,
@@ -6938,33 +2645,6 @@ pub mod types {
     tenant list, a different shape) — both are plain Rust structs named
     `ListTenantsResponse`, and utoipa keys OpenAPI schema components by Rust
     type name unless told otherwise.*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "API response for listing tenants\n\nRenamed in the OpenAPI document (`#[schema(as = ...)]`) to avoid\ncolliding with `signaldb_api::ListTenantsResponse` (the admin API's\ntenant list, a different shape) — both are plain Rust structs named\n`ListTenantsResponse`, and utoipa keys OpenAPI schema components by Rust\ntype name unless told otherwise.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "default_tenant",
-    ///    "tenants"
-    ///  ],
-    ///  "properties": {
-    ///    "default_tenant": {
-    ///      "description": "Default tenant ID",
-    ///      "type": "string"
-    ///    },
-    ///    "tenants": {
-    ///      "description": "List of tenants",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/TenantInfo"
-    ///      }
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TenantSelfListResponse {
         ///Default tenant ID
@@ -6978,42 +2658,6 @@ pub mod types {
         }
     }
     ///Optional per-interval sample counts for the render timeline.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Optional per-interval sample counts for the render timeline.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "durationDelta",
-    ///    "samples",
-    ///    "startTime"
-    ///  ],
-    ///  "properties": {
-    ///    "durationDelta": {
-    ///      "description": "Interval width in seconds.",
-    ///      "type": "integer",
-    ///      "format": "int64"
-    ///    },
-    ///    "samples": {
-    ///      "description": "One aggregated value per interval.",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "type": "integer",
-    ///        "format": "int64",
-    ///        "minimum": 0.0
-    ///      }
-    ///    },
-    ///    "startTime": {
-    ///      "description": "Start of the timeline, unix seconds.",
-    ///      "type": "integer",
-    ///      "format": "int64"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Timeline {
         ///Interval width in seconds.
@@ -7062,66 +2706,13 @@ pub mod types {
       ]
     }
     ```*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A trace is a collection of spans that represent a single request\n\nExample:\n```json\n{\n  \"traceID\": \"2f3e0cee77ae5dc9c17ade3689eb2e54\",\n  \"rootServiceName\": \"shop-backend\",\n  \"rootTraceName\": \"update-billing\",\n  \"startTimeUnixNano\": \"1684778327699392724\",\n  \"durationMs\": 557,\n  \"spanSets\": [\n    {\n      \"spans\": [\n        {\n          \"spanID\": \"563d623c76514f8e\",\n          \"startTimeUnixNano\": \"1684778327735077898\",\n          \"durationNanos\": \"446979497\",\n          \"attributes\": {\n            \"status\": {\n              \"key\": \"status\",\n              \"value\": {\n                \"stringValue\": \"error\"\n              }\n            }\n          }\n        }\n      ],\n      \"matched\": 1\n    }\n  ]\n}\n```",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "durationMs",
-    ///    "rootServiceName",
-    ///    "rootTraceName",
-    ///    "spanSets",
-    ///    "startTimeUnixNano",
-    ///    "traceID"
-    ///  ],
-    ///  "properties": {
-    ///    "durationMs": {
-    ///      "type": "integer",
-    ///      "format": "int64",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "profiles": {
-    ///      "description": "Summaries of profiles linked to this trace; present only when the\nclient asked for them via `include_profiles`.",
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/ProfileSummary"
-    ///      }
-    ///    },
-    ///    "rootServiceName": {
-    ///      "type": "string"
-    ///    },
-    ///    "rootTraceName": {
-    ///      "type": "string"
-    ///    },
-    ///    "spanSets": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/SpanSet"
-    ///      }
-    ///    },
-    ///    "startTimeUnixNano": {
-    ///      "type": "string"
-    ///    },
-    ///    "traceID": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Trace {
         #[serde(rename = "durationMs")]
         pub duration_ms: i64,
         /**Summaries of profiles linked to this trace; present only when the
         client asked for them via `include_profiles`.*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub profiles: ::std::option::Option<::std::vec::Vec<ProfileSummary>>,
         #[serde(rename = "rootServiceName")]
         pub root_service_name: ::std::string::String,
@@ -7144,95 +2735,31 @@ pub mod types {
     Absent fields are left untouched. Revoked keys cannot be updated. The
     legacy singular `dataset_id` field is not accepted (see
     [`CreateApiKeyRequest`]).*/
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Request body for updating a live API key's scopes and/or dataset restriction.\n\nAbsent fields are left untouched. Revoked keys cannot be updated. The\nlegacy singular `dataset_id` field is not accepted (see\n[`CreateApiKeyRequest`]).",
-    ///  "type": "object",
-    ///  "properties": {
-    ///    "allowed_origins": {
-    ///      "description": "Replacement allowed-origins set (non-empty; an explicit empty array\nis rejected). Omitted/`null` leaves the current restriction\nunchanged. Mutually exclusive with `clear_allowed_origins: true`.",
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      },
-    ///      "minItems": 1
-    ///    },
-    ///    "clear_allowed_origins": {
-    ///      "description": "Clear an existing allowed-origins restriction back to unrestricted.\nMust not be combined with a non-empty `allowed_origins` in the same\nrequest.",
-    ///      "type": "boolean"
-    ///    },
-    ///    "clear_dataset_restriction": {
-    ///      "description": "Clear an existing dataset restriction back to unrestricted. Must not\nbe combined with a non-empty `dataset_ids` in the same request.",
-    ///      "type": "boolean"
-    ///    },
-    ///    "dataset_ids": {
-    ///      "description": "Replacement dataset set (non-empty; an explicit empty array is\nrejected). Omitted/`null` leaves the current restriction unchanged.\nMutually exclusive with `clear_dataset_restriction: true`.",
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      },
-    ///      "minItems": 1
-    ///    },
-    ///    "scopes": {
-    ///      "description": "New scope list (replaces the current one; must be non-empty).",
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    }
-    ///  },
-    ///  "additionalProperties": false
-    ///}
-    /// ```
-    /// </details>
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Default)]
     #[serde(deny_unknown_fields)]
     pub struct UpdateApiKeyRequest {
         /**Replacement allowed-origins set (non-empty; an explicit empty array
         is rejected). Omitted/`null` leaves the current restriction
         unchanged. Mutually exclusive with `clear_allowed_origins: true`.*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub allowed_origins: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         /**Clear an existing allowed-origins restriction back to unrestricted.
         Must not be combined with a non-empty `allowed_origins` in the same
         request.*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub clear_allowed_origins: ::std::option::Option<bool>,
         /**Clear an existing dataset restriction back to unrestricted. Must not
         be combined with a non-empty `dataset_ids` in the same request.*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub clear_dataset_restriction: ::std::option::Option<bool>,
         /**Replacement dataset set (non-empty; an explicit empty array is
         rejected). Omitted/`null` leaves the current restriction unchanged.
         Mutually exclusive with `clear_dataset_restriction: true`.*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///New scope list (replaces the current one; must be non-empty).
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub scopes: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
-    }
-    impl ::std::default::Default for UpdateApiKeyRequest {
-        fn default() -> Self {
-            Self {
-                allowed_origins: Default::default(),
-                clear_allowed_origins: Default::default(),
-                clear_dataset_restriction: Default::default(),
-                dataset_ids: Default::default(),
-                scopes: Default::default(),
-            }
-        }
     }
     impl UpdateApiKeyRequest {
         pub fn builder() -> builder::UpdateApiKeyRequest {
@@ -7240,48 +2767,14 @@ pub mod types {
         }
     }
     ///Request body for updating an existing tenant.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Request body for updating an existing tenant.",
-    ///  "type": "object",
-    ///  "properties": {
-    ///    "default_dataset": {
-    ///      "description": "Updated default dataset.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "name": {
-    ///      "description": "Updated tenant name.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Default)]
     pub struct UpdateTenantRequest {
         ///Updated default dataset.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub default_dataset: ::std::option::Option<::std::string::String>,
         ///Updated tenant name.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
-    }
-    impl ::std::default::Default for UpdateTenantRequest {
-        fn default() -> Self {
-            Self {
-                default_dataset: Default::default(),
-                name: Default::default(),
-            }
-        }
     }
     impl UpdateTenantRequest {
         pub fn builder() -> builder::UpdateTenantRequest {
@@ -7289,27 +2782,6 @@ pub mod types {
         }
     }
     ///`UpsertMembershipRequest`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "email",
-    ///    "role"
-    ///  ],
-    ///  "properties": {
-    ///    "email": {
-    ///      "type": "string"
-    ///    },
-    ///    "role": {
-    ///      "$ref": "#/components/schemas/MembershipRole"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct UpsertMembershipRequest {
         pub email: ::std::string::String,
@@ -7321,53 +2793,12 @@ pub mod types {
         }
     }
     ///Response returned when a user is created (never includes the password hash).
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Response returned when a user is created (never includes the password hash).",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "created_at",
-    ///    "email",
-    ///    "id",
-    ///    "instance_admin"
-    ///  ],
-    ///  "properties": {
-    ///    "created_at": {
-    ///      "description": "ISO 8601 creation timestamp.",
-    ///      "type": "string"
-    ///    },
-    ///    "display_name": {
-    ///      "description": "Optional display name.",
-    ///      "type": [
-    ///        "string",
-    ///        "null"
-    ///      ]
-    ///    },
-    ///    "email": {
-    ///      "description": "Login email address.",
-    ///      "type": "string"
-    ///    },
-    ///    "id": {
-    ///      "description": "Unique user identifier.",
-    ///      "type": "string"
-    ///    },
-    ///    "instance_admin": {
-    ///      "description": "Whether the user is an instance administrator.",
-    ///      "type": "boolean"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct UserResponse {
         ///ISO 8601 creation timestamp.
         pub created_at: ::std::string::String,
         ///Optional display name.
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub display_name: ::std::option::Option<::std::string::String>,
         ///Login email address.
         pub email: ::std::string::String,
@@ -7382,29 +2813,6 @@ pub mod types {
         }
     }
     ///A validation failure at a location in the document.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "A validation failure at a location in the document.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "message",
-    ///    "path"
-    ///  ],
-    ///  "properties": {
-    ///    "message": {
-    ///      "type": "string"
-    ///    },
-    ///    "path": {
-    ///      "description": "Path into the document (`groups[3].attributes[1].ref`).",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ValidationError {
         pub message: ::std::string::String,
@@ -7417,50 +2825,6 @@ pub mod types {
         }
     }
     ///Outcome of validating a document without storing it.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Outcome of validating a document without storing it.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "attribute_count",
-    ///    "entity_count",
-    ///    "errors",
-    ///    "metric_count",
-    ///    "namespace",
-    ///    "version"
-    ///  ],
-    ///  "properties": {
-    ///    "attribute_count": {
-    ///      "type": "integer",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "entity_count": {
-    ///      "type": "integer",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "errors": {
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/ValidationError"
-    ///      }
-    ///    },
-    ///    "metric_count": {
-    ///      "type": "integer",
-    ///      "minimum": 0.0
-    ///    },
-    ///    "namespace": {
-    ///      "type": "string"
-    ///    },
-    ///    "version": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ValidationReport {
         pub attribute_count: u64,
@@ -7476,21 +2840,6 @@ pub mod types {
         }
     }
     ///Where a suggested value came from.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "Where a suggested value came from.",
-    ///  "type": "string",
-    ///  "enum": [
-    ///    "registry",
-    ///    "statistics",
-    ///    "sampled"
-    ///  ]
-    ///}
-    /// ```
-    /// </details>
     #[derive(
         ::serde::Deserialize,
         ::serde::Serialize,
@@ -7537,14 +2886,6 @@ pub mod types {
             value.parse()
         }
     }
-    impl ::std::convert::TryFrom<&::std::string::String> for ValueOrigin {
-        type Error = self::error::ConversionError;
-        fn try_from(
-            value: &::std::string::String,
-        ) -> ::std::result::Result<Self, self::error::ConversionError> {
-            value.parse()
-        }
-    }
     impl ::std::convert::TryFrom<::std::string::String> for ValueOrigin {
         type Error = self::error::ConversionError;
         fn try_from(
@@ -7554,57 +2895,12 @@ pub mod types {
         }
     }
     ///The non-null identity contract shared by generated clients.
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "description": "The non-null identity contract shared by generated clients.",
-    ///  "type": "object",
-    ///  "required": [
-    ///    "dataset",
-    ///    "granted_tenants",
-    ///    "tenant",
-    ///    "user_id"
-    ///  ],
-    ///  "properties": {
-    ///    "dataset": {
-    ///      "type": "string"
-    ///    },
-    ///    "dataset_ids": {
-    ///      "description": "The credential's own dataset-set restriction, if any; `null`/absent\nmeans unrestricted. See [`WhoamiResponse::dataset_ids`].",
-    ///      "type": [
-    ///        "array",
-    ///        "null"
-    ///      ],
-    ///      "items": {
-    ///        "type": "string"
-    ///      }
-    ///    },
-    ///    "granted_tenants": {
-    ///      "description": "See [`WhoamiResponse::granted_tenants`].",
-    ///      "type": "array",
-    ///      "items": {
-    ///        "$ref": "#/components/schemas/GrantedTenant"
-    ///      }
-    ///    },
-    ///    "tenant": {
-    ///      "$ref": "#/components/schemas/WhoamiTenant"
-    ///    },
-    ///    "user_id": {
-    ///      "description": "Stable authenticated user ID. Empty for API key credentials.",
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct WhoamiIdentityResponse {
         pub dataset: ::std::string::String,
         /**The credential's own dataset-set restriction, if any; `null`/absent
         means unrestricted. See [`WhoamiResponse::dataset_ids`].*/
-        #[serde(default, skip_serializing_if = "::std::option::Option::is_none")]
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         ///See [`WhoamiResponse::granted_tenants`].
         pub granted_tenants: ::std::vec::Vec<GrantedTenant>,
@@ -7618,31 +2914,6 @@ pub mod types {
         }
     }
     ///`WhoamiTenant`
-    ///
-    /// <details><summary>JSON schema</summary>
-    ///
-    /// ```json
-    ///{
-    ///  "type": "object",
-    ///  "required": [
-    ///    "id",
-    ///    "name",
-    ///    "slug"
-    ///  ],
-    ///  "properties": {
-    ///    "id": {
-    ///      "type": "string"
-    ///    },
-    ///    "name": {
-    ///      "type": "string"
-    ///    },
-    ///    "slug": {
-    ///      "type": "string"
-    ///    }
-    ///  }
-    ///}
-    /// ```
-    /// </details>
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct WhoamiTenant {
         pub id: ::std::string::String,
@@ -18395,6 +13666,32 @@ pub mod types {
                     name: Ok(value.name),
                     slug: Ok(value.slug),
                 }
+            }
+        }
+    }
+    /// Error types.
+    pub mod error {
+        /// Error from a `TryFrom` or `FromStr` implementation.
+        pub struct ConversionError(::std::borrow::Cow<'static, str>);
+        impl ::std::error::Error for ConversionError {}
+        impl ::std::fmt::Display for ConversionError {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> Result<(), ::std::fmt::Error> {
+                ::std::fmt::Display::fmt(&self.0, f)
+            }
+        }
+        impl ::std::fmt::Debug for ConversionError {
+            fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> Result<(), ::std::fmt::Error> {
+                ::std::fmt::Debug::fmt(&self.0, f)
+            }
+        }
+        impl From<&'static str> for ConversionError {
+            fn from(value: &'static str) -> Self {
+                Self(value.into())
+            }
+        }
+        impl From<String> for ConversionError {
+            fn from(value: String) -> Self {
+                Self(value.into())
             }
         }
     }
