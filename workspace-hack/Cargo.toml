@@ -120,7 +120,6 @@ reqwest-5ef9efb8ec2df382 = { package = "reqwest", version = "0.12", default-feat
 ring = { version = "0.17", features = ["std"] }
 rmcp = { version = "3", features = ["client", "transport-io", "transport-streamable-http-server"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
-semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
 serde_json = { version = "1", features = ["alloc", "preserve_order", "raw_value"] }
@@ -218,7 +217,6 @@ reqwest-5ef9efb8ec2df382 = { package = "reqwest", version = "0.12", default-feat
 ring = { version = "0.17", features = ["std"] }
 rmcp = { version = "3", features = ["client", "transport-io", "transport-streamable-http-server"] }
 rustls = { version = "0.23", default-features = false, features = ["logging", "ring", "std", "tls12"] }
-semver = { version = "1", features = ["serde"] }
 serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
 serde_json = { version = "1", features = ["alloc", "preserve_order", "raw_value"] }
