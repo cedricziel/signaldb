@@ -64,6 +64,7 @@ testcontainers-modules.workspace = true
 
 # Optional dependencies for benchmarks
 criterion = { workspace = true, optional = true }
+workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [features]
 # Enables the Criterion read-path benchmarks under benches/.
@@ -91,7 +92,8 @@ required-features = ["benchmarks"]
 
 [package.metadata.cargo-machete]
 # These dependencies are used in integration tests under tests/ directory
-ignored = ["acceptor", "anyhow", "arrow-flight", "compactor", "datafusion", "futures", "iceberg-rust", "log", "mcp-server", "opentelemetry-proto", "querier", "router", "signaldb-cli", "tokio", "tokio-stream", "tonic", "writer"]
+# workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
+ignored = ["acceptor", "anyhow", "arrow-flight", "compactor", "datafusion", "futures", "iceberg-rust", "log", "mcp-server", "opentelemetry-proto", "querier", "router", "signaldb-cli", "tokio", "tokio-stream", "tonic", "workspace-hack", "writer"]
 
 [[test]]
 name = "integration"

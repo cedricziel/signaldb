@@ -225,7 +225,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           components: rustfmt, clippy
-          cache: false  # Using Swatinem/rust-cache instead
+          cache: false # Using Swatinem/rust-cache instead
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
@@ -297,7 +297,7 @@ jobs:
       - name: Install audit tools
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-audit,cargo-deny,cargo-machete
+          tool: cargo-audit,cargo-deny,cargo-machete,cargo-hakari
 
       - name: Run security audit
         run: cargo audit
@@ -307,6 +307,24 @@ jobs:
 
       - name: Check for unused dependencies
         run: cargo machete --with-metadata
+
+      # workspace-hack (managed by `cargo hakari`) pins one unified feature
+      # set for shared deps across every workspace member — see
+      # .config/hakari.toml. Three checks, because each catches a different
+      # kind of drift a PR could introduce and none subsumes the others
+      # (verified by hand — `cargo hakari verify` alone does not notice a
+      # crate that's missing the `workspace-hack` dependency entirely):
+      #  - `generate --diff`: workspace-hack/Cargo.toml's pinned deps/features
+      #    are stale relative to the rest of the workspace
+      #  - `manage-deps --dry-run`: some member is missing the
+      #    workspace-hack dependency (or an excluded one still has it)
+      #  - `verify`: even with both of the above current, the unified set
+      #    doesn't actually achieve one version/feature-set per dependency
+      - name: Verify workspace-hack is up to date
+        run: |
+          cargo hakari generate --diff
+          cargo hakari manage-deps --dry-run
+          cargo hakari verify
 
       # The compatibility query-language parsers must stay independent of the
       # query engine: their whole value is that "is this query valid?" can be
@@ -382,7 +400,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: ${{ matrix.rust }}
-          cache: false  # Using Swatinem/rust-cache instead
+          cache: false # Using Swatinem/rust-cache instead
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
@@ -427,7 +445,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           target: x86_64-unknown-linux-musl
-          cache: false  # Using Swatinem/rust-cache instead
+          cache: false # Using Swatinem/rust-cache instead
           # Must stay empty: this action defaults RUSTFLAGS to "-D warnings",
           # and a set RUSTFLAGS replaces (never merges with) the per-target
           # rustflags in .cargo/config.toml. With the default, the mold linker
@@ -492,7 +510,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           target: x86_64-unknown-linux-gnu
-          cache: false  # Using Swatinem/rust-cache instead
+          cache: false # Using Swatinem/rust-cache instead
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
@@ -552,7 +570,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           target: aarch64-unknown-linux-musl
-          cache: false  # Using Swatinem/rust-cache instead
+          cache: false # Using Swatinem/rust-cache instead
           rustflags: "" # see build-musl-amd64
 
       - name: Setup Rust cache
@@ -947,7 +965,7 @@ jobs:
         uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           components: llvm-tools-preview
-          cache: false  # Using Swatinem/rust-cache instead
+          cache: false # Using Swatinem/rust-cache instead
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2

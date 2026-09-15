@@ -26,6 +26,7 @@ axum.workspace = true
 clap.workspace = true
 tokio.workspace = true
 tonic.workspace = true
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 [dev-dependencies]
 cargo-husky.workspace = true
@@ -34,7 +35,8 @@ tempfile.workspace = true
 
 [package.metadata.cargo-machete]
 # cargo-husky is used for git hooks configuration
-ignored = ["cargo-husky"]
+# workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
+ignored = ["cargo-husky", "workspace-hack"]
 
 [features]
 jemalloc = ["dep:tikv-jemallocator"]

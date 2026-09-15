@@ -24,6 +24,7 @@ members = [
     "src/traceql",
     "src/writer",
     "tests-integration",
+    "workspace-hack",
     "xtask",
 ]
 
