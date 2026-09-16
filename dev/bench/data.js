@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1789446944529,
+  "lastUpdate": 1789532226458,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -8223,6 +8223,334 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 1075747,
             "range": "± 19190",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cedric Ziel",
+            "username": "cedricziel",
+            "email": "mail@cedric-ziel.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "4e9c5a4c4a6fc39837302c02ebb4defe52042562",
+          "message": "chore(build): unify workspace dependency features with cargo-hakari (#1570)\n\n* chore(build): unify workspace dependency features with cargo-hakari\n\nThe 56-member workspace has real feature-unification drift across shared\ndeps (rand 0.8/0.9, syn 2/3, hashbrown 0.15/0.17, reqwest 0.12/0.13, plus\ndiffering DataFusion/tokio/serde feature sets per crate), so cargo can\nresolve a different unified feature set depending on which subset of\ncrates a given build/check/test touches, forcing partial recompiles of\nDataFusion/Arrow/tokio between otherwise-unrelated commands.\n\nAdd a workspace-hack crate (managed by `cargo hakari`, config in\n.config/hakari.toml) that every member depends on, pinning one feature\nset for shared deps instead. logql-parser, traceql-parser, query-ir, and\nql-ir are excluded (final-excludes) since they must stay free of the FDAP\nstack and, for the first two, independently publishable — see\nscripts/check-leaf-purity.sh and docs/contributing/compat-crates.md.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* docs: document the workspace-hack crate\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* ci: verify workspace-hack stays in sync\n\ncargo hakari verify catches a PR that added or changed a dependency\nwithout re-running `cargo hakari generate`, before the feature-unification\ndrift it's meant to prevent creeps back in.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* ci: also run hakari generate --diff and manage-deps --dry-run\n\ncargo hakari verify alone doesn't notice a workspace member that's\nmissing the workspace-hack dependency entirely — verified by temporarily\nremoving it from acceptor's Cargo.toml, which `verify` still reported as\n\"works correctly\". manage-deps --dry-run catches that; generate --diff\ncatches stale content in workspace-hack/Cargo.toml. All three are\nread-only and metadata-only.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* chore(build): regenerate workspace-hack after rebase onto main\n\nmain picked up several dependency bumps (rustls, progenitor, toml,\nreqwest, rmcp, uuid) since this branch was cut; semver no longer needs\na unified-feature pin as a result. cargo hakari generate/verify and\ncargo machete confirmed clean.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-15T09:40:17Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/4e9c5a4c4a6fc39837302c02ebb4defe52042562"
+        },
+        "date": 1789532222487,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 969416,
+            "range": "± 18495",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 580950,
+            "range": "± 10672",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 388287,
+            "range": "± 11285",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 748258,
+            "range": "± 53786",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 357591,
+            "range": "± 6063",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 991656,
+            "range": "± 29064",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 641550,
+            "range": "± 23279",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.0MB",
+            "value": 860688,
+            "range": "± 20226",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.4MB",
+            "value": 1542709,
+            "range": "± 34188",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_3.5MB",
+            "value": 7314867,
+            "range": "± 246124",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_37.4MB",
+            "value": 63188837,
+            "range": "± 2147148",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 2406770,
+            "range": "± 46573",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 4861109,
+            "range": "± 155712",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 8785619,
+            "range": "± 494002",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 17172677,
+            "range": "± 486903",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 688869,
+            "range": "± 19957",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 1467946,
+            "range": "± 53074",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 2139862,
+            "range": "± 94619",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 4184185,
+            "range": "± 110217",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/1000",
+            "value": 29930,
+            "range": "± 321",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/1000",
+            "value": 50306,
+            "range": "± 726",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/10000",
+            "value": 262489,
+            "range": "± 10029",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/10000",
+            "value": 576168,
+            "range": "± 4860",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/100000",
+            "value": 3093719,
+            "range": "± 342075",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/100000",
+            "value": 13502442,
+            "range": "± 1676343",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 1018539,
+            "range": "± 9852",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 12466129,
+            "range": "± 1366005",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 12435093,
+            "range": "± 925995",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 11579656,
+            "range": "± 942525",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 12152405,
+            "range": "± 808592",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 12504924,
+            "range": "± 909202",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 3248679,
+            "range": "± 181861",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 7400966,
+            "range": "± 500858",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 11653326,
+            "range": "± 403745",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested",
+            "value": 4303958,
+            "range": "± 298960",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested_split_off",
+            "value": 4419977,
+            "range": "± 1278467",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/unattested",
+            "value": 4212961,
+            "range": "± 422054",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested",
+            "value": 3443683,
+            "range": "± 276578",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested_split_off",
+            "value": 3460991,
+            "range": "± 273015",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/unattested",
+            "value": 3897735,
+            "range": "± 117719",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested",
+            "value": 6344427,
+            "range": "± 510344",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested_split_off",
+            "value": 8377321,
+            "range": "± 803170",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/unattested",
+            "value": 6446660,
+            "range": "± 576047",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 11896302,
+            "range": "± 1358058",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 3074902,
+            "range": "± 202823",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 35574977,
+            "range": "± 2137200",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 56842283,
+            "range": "± 2558664",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 57505556,
+            "range": "± 3042052",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 682382,
+            "range": "± 22917",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 669130,
+            "range": "± 24564",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 693401,
+            "range": "± 34490",
             "unit": "ns/iter"
           }
         ]
