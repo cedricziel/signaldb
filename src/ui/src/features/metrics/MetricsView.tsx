@@ -81,6 +81,10 @@ export function MetricsView({ state, update }: Props) {
     setQueries([reseeded ?? emptyQuery("a")]);
     setRanQuery(reseeded);
     setDraft(state.promql);
+    // A formula referencing a query letter (e.g. `a - b`) that this reseed
+    // just dropped would otherwise survive Back/Forward and silently compile
+    // against whatever letters happen to still exist.
+    setFormula("");
   }, [state.metricQuery, state.promql]);
 
   const rangeKey = rangeScopeKey(state);
