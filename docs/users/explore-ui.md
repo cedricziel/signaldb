@@ -825,9 +825,13 @@ Weaver-format YAML or JSON document with server-side **Validate**
 until validation passes), **Save as new version**, a summary of added,
 changed, and removed definitions against the stored document, and
 **Delete** with confirmation. Bundled registries never expose these
-actions. Unsaved edits prompt before leaving via the editor's own crumb
-links and warn on reload or tab close, but not when leaving via the top
-bar's own links or the browser's Back button.
+actions. Unsaved edits are guarded everywhere: any in-app navigation away
+from a dirty form (the editor's crumb links, the top bar, the signal tabs,
+the user menu, browser Back or Forward) opens an "Unsaved changes" dialog
+with **Stay** and **Leave**, and reload or tab close still gets the
+browser's own warning. The same guard covers the API-key form, the consent
+dialog and the allowed-origins picker, since they register as dirty forms
+too.
 
 ## Throttling and retries
 

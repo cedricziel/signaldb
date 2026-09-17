@@ -1,15 +1,16 @@
-import { act, screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { BrowserRouter } from "react-router";
+import { RouterProvider } from "react-router";
 import { TENANT_CONTEXT_STORAGE_KEY, getTenantContext } from "./api/http";
 import * as catalogApi from "./api/catalog";
+import { WHOAMI_TENANT_ADMIN } from "./features/schema/testFixtures";
 import { markDirty, resetDirtyForms } from "./lib/dirtyForms";
 import {
   getUpdateState,
   resetUpdateState,
   setUpdateAvailable,
 } from "./lib/pwaUpdate";
-import { AppRoutes } from "./routes";
+import { createAppRouter } from "./routes";
 import {
   emptyLabels,
   emptyMatrix,
@@ -38,13 +39,14 @@ vi.mock("./api/traceGroupMembers", async (importOriginal) => {
   };
 });
 
+// The same data router as main.tsx (`createAppRouter`), not a plain
+// `<BrowserRouter>` — the shell's `UnsavedChangesGuard` needs `useBlocker`,
+// which throws under a declarative router. It still drives `window.location`
+// via the DOM history API (jsdom implements it), so every assertion below
+// that reads `window.location` keeps working unchanged.
 function renderApp(path = "/") {
   window.history.replaceState(null, "", path);
-  return renderWithClient(
-    <BrowserRouter>
-      <AppRoutes />
-    </BrowserRouter>,
-  );
+  return renderWithClient(<RouterProvider router={createAppRouter()} />);
 }
 
 afterEach(() => {
@@ -705,11 +707,51 @@ describe("App", () => {
 
       const user = (await import("@testing-library/user-event")).default;
       await user.click(screen.getByRole("tab", { name: "Traces" }));
+      // The dirty form now also blocks the navigation itself
+      // (UnsavedChangesGuard) — leave anyway to reach the point where the
+      // pending-update check runs.
+      await user.click(await screen.findByRole("button", { name: "Leave" }));
       await screen.findByLabelText("Trace ID");
 
       expect(updateSW).not.toHaveBeenCalled();
       expect(getUpdateState().updateSW).toBe(updateSW);
       markDirty("test-form", false);
+    });
+  });
+
+  describe("unsaved changes guard", () => {
+    it("prompts before leaving the registry editor via a top-bar link, discarding the edit only after Leave", async () => {
+      stubFetchRoutes([
+        { match: "query_range", body: emptyStreams },
+        { match: "/labels?", body: emptyLabels },
+        { match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN },
+      ]);
+      renderApp("/schema/conventions/new?tenant=acme&dataset=prod");
+      const user = (await import("@testing-library/user-event")).default;
+
+      const source = await screen.findByLabelText("Registry document");
+      await user.click(source);
+      await user.paste("name: acme");
+
+      const brand = screen.getByRole("link", { name: /signaldb/i });
+      await user.click(brand);
+      const dialog = await screen.findByRole("dialog", {
+        name: "Unsaved changes",
+      });
+      expect(screen.getByLabelText("Registry document")).toBeInTheDocument();
+
+      // Stay: still on the editor, text preserved.
+      await user.click(within(dialog).getByRole("button", { name: "Stay" }));
+      expect(screen.queryByRole("dialog")).toBeNull();
+      expect(screen.getByLabelText("Registry document")).toHaveValue(
+        "name: acme",
+      );
+
+      // Leave: the top-bar link's navigation goes through.
+      await user.click(brand);
+      await user.click(screen.getByRole("button", { name: "Leave" }));
+      await screen.findByText(/No log lines in this range/);
+      expect(window.location.pathname).toBe("/logs");
     });
   });
 });

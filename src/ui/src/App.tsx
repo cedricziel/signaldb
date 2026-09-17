@@ -9,6 +9,7 @@ import {
 } from "./api/http";
 import { ThrottleBanner } from "./features/shell/ThrottleBanner";
 import { TopBar } from "./features/shell/TopBar";
+import { UnsavedChangesGuard } from "./features/shell/UnsavedChangesGuard";
 import { UpdateBanner } from "./features/shell/UpdateBanner";
 import { maybeAutoApplyUpdate } from "./lib/pwaUpdate";
 import { loginRedirectPath, safeRedirectTarget } from "./lib/redirectTarget";
@@ -127,6 +128,7 @@ export function App() {
 
   return (
     <div className="app-frame">
+      <UnsavedChangesGuard />
       <TopBar state={effective} update={update} />
       <UpdateBanner />
       <ThrottleBanner />

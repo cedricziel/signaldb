@@ -1,7 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
 import type { ReactElement, ReactNode } from "react";
-import { Outlet } from "react-router";
+import {
+  createMemoryRouter,
+  Outlet,
+  RouterProvider,
+  type RouteObject,
+} from "react-router";
 import { afterEach, vi } from "vitest";
 import { client as generatedClient } from "../api/gen/client.gen";
 import type { ExploreState } from "../lib/urlState";
@@ -28,6 +33,21 @@ export function clientWrapper() {
   return ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
+}
+
+/**
+ * Renders a route tree through a real data router (`createMemoryRouter` +
+ * `RouterProvider`) — needed wherever a mounted component (directly, or via
+ * `UnsavedChangesGuard`) calls `useBlocker`, which throws under the plain
+ * `<MemoryRouter>` most tests use. Returns the router alongside the render
+ * result so a test can also assert on `router.state.location`.
+ */
+export function renderWithRouter(
+  routes: RouteObject[],
+  initialEntries: string[] = ["/"],
+) {
+  const router = createMemoryRouter(routes, { initialEntries });
+  return { router, ...renderWithClient(<RouterProvider router={router} />) };
 }
 
 /** The shell's outlet context (`state`/`update`, see `App.tsx`) as the
