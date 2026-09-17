@@ -11,8 +11,13 @@ import {
 import type { RenderResponse } from "../../api/pyroscope";
 import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
 import {
+  useRovingFocus,
+  type RovingFocusItemProps,
+} from "../../hooks/useRovingFocus";
+import {
   type FlameFrame,
   type FlameView,
+  type FramePlacement,
   type FunctionTotal,
   ancestorPath,
   collapseSmallFrames,
@@ -20,6 +25,7 @@ import {
   decodeFlamebearer,
   formatPct,
   formatTicks,
+  frameContains,
   frameView,
   OTHER_FRAME_NAME,
   placeFrames,
@@ -88,6 +94,8 @@ interface FlameRowsProps {
   /** The frame the tooltip currently describes, for `aria-describedby`. */
   hovered: FlameFrame | null;
   tipId: string;
+  /** Roving-tabindex props for a frame — one tab stop for the whole pane. */
+  getItemProps: (frame: FlameFrame) => RovingFocusItemProps;
   onHover: (frame: FlameFrame, e: PointerEvent<HTMLElement>) => void;
   onFocus: (frame: FlameFrame, e: FocusEvent<HTMLElement>) => void;
   onLeave: () => void;
@@ -105,13 +113,19 @@ const FlameRows = memo(function FlameRows({
   needle,
   hovered,
   tipId,
+  getItemProps,
   onHover,
   onFocus,
   onLeave,
   onZoom,
 }: FlameRowsProps) {
   return (
-    <div className="flame-rows" onPointerLeave={onLeave}>
+    <div
+      className="flame-rows"
+      role="group"
+      aria-label="Flame graph frames"
+      onPointerLeave={onLeave}
+    >
       {placed.map((row, depth) =>
         row.length === 0 ? null : (
           <div className="flame-row" key={depth}>
@@ -120,6 +134,7 @@ const FlameRows = memo(function FlameRows({
               const color = frameColor(frame);
               const dim =
                 needle !== "" && !frame.name.toLowerCase().includes(needle);
+              const item = getItemProps(frame);
               return (
                 <div
                   key={`${frame.level}-${frame.x}`}
@@ -132,8 +147,14 @@ const FlameRows = memo(function FlameRows({
                     style={isOther ? undefined : FRAME_STYLE.get(color)}
                     aria-label={frame.name}
                     aria-describedby={hovered === frame ? tipId : undefined}
+                    tabIndex={item.tabIndex}
+                    ref={item.ref}
+                    onKeyDown={item.onKeyDown}
                     onPointerMove={(e) => onHover(frame, e)}
-                    onFocus={(e) => onFocus(frame, e)}
+                    onFocus={(e) => {
+                      item.onFocus();
+                      onFocus(frame, e);
+                    }}
                     onBlur={onLeave}
                     onClick={() => onZoom(frame)}
                   >
@@ -150,6 +171,79 @@ const FlameRows = memo(function FlameRows({
     </div>
   );
 });
+
+/** Crumbs collapse to past this many levels deep. */
+const BREADCRUMB_COLLAPSE_DEPTH = 4;
+
+/**
+ * The zoom path, `root › a › b › current`. Deeper than
+ * {@link BREADCRUMB_COLLAPSE_DEPTH} levels, the middle collapses to a single
+ * "…" crumb — `root › … › parent › current` — so a deep zoom path stays
+ * readable instead of clipping inside the toolbar; clicking it reveals the
+ * full path. `.flame-breadcrumb` also allows horizontal scroll as a
+ * fallback, for when even the collapsed form (or a caller with unusually
+ * long frame names) still overflows.
+ */
+function Breadcrumb({
+  zoomStack,
+  onNavigate,
+}: {
+  zoomStack: FlameFrame[];
+  onNavigate: (next: FlameFrame[]) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const crumbs = [
+    { key: "root", label: "root", onClick: () => onNavigate([]) },
+    // zoomStack[0] is always the root frame itself — the "root" crumb above
+    // already covers it, so start one past it.
+    ...zoomStack.slice(1).map((f, i) => ({
+      key: `${f.level}-${f.x}`,
+      label: f.name,
+      onClick: () => onNavigate(zoomStack.slice(0, i + 2)),
+    })),
+  ];
+  const collapsed = !expanded && crumbs.length > BREADCRUMB_COLLAPSE_DEPTH;
+  const shown = collapsed
+    ? [crumbs[0]!, crumbs[crumbs.length - 2]!, crumbs[crumbs.length - 1]!]
+    : crumbs;
+
+  return (
+    <div className="flame-breadcrumb" aria-label="Zoom path">
+      <button
+        type="button"
+        className="flame-crumb"
+        onClick={crumbs[0]!.onClick}
+      >
+        {crumbs[0]!.label}
+      </button>
+      {collapsed && (
+        <span>
+          <span className="flame-crumb-sep">›</span>
+          <button
+            type="button"
+            className="flame-crumb flame-crumb-ellipsis"
+            aria-label="Show full zoom path"
+            onClick={() => setExpanded(true)}
+          >
+            …
+          </button>
+        </span>
+      )}
+      {shown.slice(1).map((crumb) => (
+        <span key={crumb.key}>
+          <span className="flame-crumb-sep">›</span>
+          <button
+            type="button"
+            className="flame-crumb"
+            onClick={crumb.onClick}
+          >
+            {crumb.label}
+          </button>
+        </span>
+      ))}
+    </div>
+  );
+}
 
 interface FlamePaneProps {
   levels: FlameFrame[][];
@@ -225,6 +319,79 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
   const placed = useMemo(
     () => placeFrames(effectiveLevels, view),
     [effectiveLevels, view],
+  );
+
+  // Roving tabindex over every visible frame: one tab stop for the pane,
+  // arrow keys move within a level (left/right) or to a covering
+  // parent/child frame in the level above/below (up/down). Kept alongside
+  // `placed` (not `effectiveLevels`) so it only sees frames actually drawn
+  // in the current zoom.
+  const flatFrames = useMemo(() => {
+    const out: FramePlacement[] = [];
+    for (const row of placed) if (row.length > 0) out.push(...row);
+    return out;
+  }, [placed]);
+  const frameIndex = useMemo(() => {
+    const m = new Map<FlameFrame, number>();
+    flatFrames.forEach((p, i) => m.set(p.frame, i));
+    return m;
+  }, [flatFrames]);
+  // Contiguous [start, end) index ranges of `flatFrames` per drawn level, in
+  // the same order rows render — a frame's siblings on its own level.
+  const levelRanges = useMemo(() => {
+    const ranges: { level: number; start: number; end: number }[] = [];
+    let cursor = 0;
+    for (const row of placed) {
+      if (row.length === 0) continue;
+      ranges.push({
+        level: row[0]!.frame.level,
+        start: cursor,
+        end: cursor + row.length,
+      });
+      cursor += row.length;
+    }
+    return ranges;
+  }, [placed]);
+  const stepWithinLevel = useCallback(
+    (index: number, direction: -1 | 1) => {
+      const range = levelRanges.find((r) => index >= r.start && index < r.end);
+      if (!range) return null;
+      const next = index + direction;
+      return next >= range.start && next < range.end ? next : null;
+    },
+    [levelRanges],
+  );
+  const stepAcrossLevel = useCallback(
+    (index: number, direction: -1 | 1) => {
+      const frame = flatFrames[index]?.frame;
+      if (!frame) return null;
+      const targetLevel = frame.level + direction;
+      const range = levelRanges.find((r) => r.level === targetLevel);
+      if (!range) return null;
+      if (direction === -1) {
+        // Up: the unique parent-level frame whose interval contains this one.
+        for (let i = range.start; i < range.end; i++) {
+          if (frameContains(flatFrames[i]!.frame, frame)) return i;
+        }
+        return null;
+      }
+      // Down: the first (leftmost) child whose interval falls within this
+      // frame's.
+      for (let i = range.start; i < range.end; i++) {
+        const f = flatFrames[i]!.frame;
+        if (f.x >= frame.x && f.x < frame.x + frame.total) return i;
+      }
+      return null;
+    },
+    [flatFrames, levelRanges],
+  );
+  const roving = useRovingFocus(flatFrames.length, {
+    horizontal: stepWithinLevel,
+    vertical: stepAcrossLevel,
+  });
+  const getFrameItemProps = useCallback(
+    (frame: FlameFrame) => roving.itemProps(frameIndex.get(frame) ?? -1),
+    [roving.itemProps, frameIndex],
   );
 
   // Case-insensitive substring match, and the self-time share it covers —
@@ -330,29 +497,7 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
           </span>
         )}
         {viewMode === "flame" && zoomStack.length > 0 && (
-          <div className="flame-breadcrumb" aria-label="Zoom path">
-            <button
-              type="button"
-              className="flame-crumb"
-              onClick={() => setZoomStack([])}
-            >
-              root
-            </button>
-            {/* zoomStack[0] is always the root frame itself — the "root"
-                button above already covers it, so start one past it. */}
-            {zoomStack.slice(1).map((f, i) => (
-              <span key={`${f.level}-${f.x}`}>
-                <span className="flame-crumb-sep">›</span>
-                <button
-                  type="button"
-                  className="flame-crumb"
-                  onClick={() => setZoomStack(zoomStack.slice(0, i + 2))}
-                >
-                  {f.name}
-                </button>
-              </span>
-            ))}
-          </div>
+          <Breadcrumb zoomStack={zoomStack} onNavigate={setZoomStack} />
         )}
       </div>
 
@@ -363,6 +508,7 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
             needle={needle}
             hovered={hovered}
             tipId={tipId}
+            getItemProps={getFrameItemProps}
             onHover={hoverFrame}
             onFocus={focusFrame}
             onLeave={clearHover}
