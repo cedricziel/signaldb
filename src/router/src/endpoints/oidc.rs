@@ -25,8 +25,10 @@ use axum::{
     response::{IntoResponse, Response},
     routing::get,
 };
-use chrono::{Duration as ChronoDuration, Utc};
-use common::auth::{generate_session_token, hash_session_token, session_cookie_header};
+use chrono::Utc;
+use common::auth::{
+    SESSION_TTL, generate_session_token, hash_session_token, session_cookie_header,
+};
 use common::catalog::{MembershipRole, UserRecord};
 use common::config::{OidcConfig, PublicEndpointsConfig};
 use serde::Deserialize;
@@ -383,7 +385,7 @@ pub async fn callback<S: RouterState>(
 
     let token = generate_session_token();
     let token_hash = hash_session_token(&token);
-    let expires_at = Utc::now() + ChronoDuration::hours(12);
+    let expires_at = Utc::now() + SESSION_TTL;
     if let Err(error) = state
         .catalog()
         .create_user_session(&user.id, &token_hash, expires_at)

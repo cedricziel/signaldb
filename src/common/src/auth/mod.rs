@@ -10,13 +10,15 @@ pub mod password;
 pub mod session;
 pub mod validation;
 
-pub use authenticator::Authenticator;
+pub use authenticator::{Authenticator, SESSION_TTL};
 pub use middleware::{TenantContextExtractor, admin_auth_middleware, auth_middleware};
 pub use password::{
     PasswordError, SESSION_TOKEN_PREFIX, generate_session_token, hash_password, hash_session_token,
     verify_password,
 };
-pub use session::{SESSION_COOKIE, session_cookie_header, session_token_from_headers};
+pub use session::{
+    SESSION_COOKIE, renewed_cookie_header, session_cookie_header, session_token_from_headers,
+};
 pub use validation::{
     ValidationError, parse_bearer_token, validate_dataset_id, validate_id, validate_scopes,
     validate_tenant_id,
