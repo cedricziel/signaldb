@@ -116,7 +116,6 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
   // The text as loaded (or last saved); compared against `text` to decide
   // whether there are unsaved edits to guard navigation against.
   const initialTextRef = useRef(text);
-  const [pendingNav, setPendingNav] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<Report | null>(null);
   const [validatedText, setValidatedText] = useState<string | null>(null);
   const [newVersion, setNewVersion] = useState("");
@@ -145,10 +144,10 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
     );
   }, [searchParams, setSearchParams]);
 
-  // A dirty document survives an in-app link click (confirmed inline below)
-  // and warns on tab close/reload; it does not block Save/Replace/Delete's
-  // own `navigate()` calls, which run after the edit is already persisted
-  // (or discarded, for Delete).
+  // A dirty document is guarded against every in-app navigation by the
+  // shell-level `UnsavedChangesGuard` (via `useDirtyForm` above); reload/close
+  // isn't a navigation `useBlocker` can intercept, so it still gets its own
+  // `beforeunload` handler here.
   useEffect(() => {
     if (!isDirty) return;
     const onBeforeUnload = (e: BeforeUnloadEvent) => {
@@ -158,16 +157,6 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
     window.addEventListener("beforeunload", onBeforeUnload);
     return () => window.removeEventListener("beforeunload", onBeforeUnload);
   }, [isDirty]);
-
-  // Guards only this editor's own crumb links (below), each wired up
-  // individually with `onClick={guardedNav(...)}` — there is no data router
-  // here, so no `useBlocker` to intercept the top bar's links or the
-  // browser's Back button; `beforeunload` above still covers reload/close.
-  const guardedNav = (to: string) => (e: React.MouseEvent) => {
-    if (!isDirty) return;
-    e.preventDefault();
-    setPendingNav(to);
-  };
 
   const validation = useMutation({
     mutationFn: async (source: string): Promise<Report> => {
@@ -287,16 +276,11 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
   return (
     <div className="schema-page">
       <p className="schema-crumbs">
-        <Link to={CONVENTIONS} onClick={guardedNav(CONVENTIONS)}>
-          Conventions
-        </Link>{" "}
+        <Link to={CONVENTIONS}>Conventions</Link>{" "}
         ›{" "}
         {stored ? (
           <>
-            <Link
-              to={registryPath(stored.namespace, stored.version)}
-              onClick={guardedNav(registryPath(stored.namespace, stored.version))}
-            >
+            <Link to={registryPath(stored.namespace, stored.version)}>
               {title}
             </Link>{" "}
             › edit
@@ -305,33 +289,6 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
           "new"
         )}
       </p>
-      {pendingNav && (
-        <p
-          className="schema-report"
-          role="alertdialog"
-          aria-label="Unsaved changes"
-        >
-          You have unsaved changes.{" "}
-          <button
-            type="button"
-            className="schema-button btn"
-            onClick={() => {
-              const to = pendingNav;
-              setPendingNav(null);
-              navigate(to);
-            }}
-          >
-            Leave
-          </button>{" "}
-          <button
-            type="button"
-            className="schema-button btn"
-            onClick={() => setPendingNav(null)}
-          >
-            Stay
-          </button>
-        </p>
-      )}
       <h1 className="schema-title">{title}</h1>
       <p className="schema-subtitle">
         A registry in the OpenTelemetry Weaver semantic-convention model (

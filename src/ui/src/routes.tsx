@@ -4,7 +4,14 @@
 // via outlet context so `/logs`, `/traces`, ... and `/manage` all read/write
 // the same tenant, dataset, and range without re-deriving them.
 
-import { Navigate, Route, Routes, useLocation, useParams } from "react-router";
+import {
+  createBrowserRouter,
+  createRoutesFromElements,
+  Navigate,
+  Route,
+  useLocation,
+  useParams,
+} from "react-router";
 import { App } from "./App";
 import { ConsentView } from "./features/consent/ConsentView";
 import { ExploreView } from "./features/explore/ExploreView";
@@ -47,9 +54,15 @@ function ExploreRoute() {
   return <ExploreView state={state} update={update} />;
 }
 
-export function AppRoutes() {
+/**
+ * The route tree as JSX `<Route>` elements — the single source
+ * `createAppRouter` below turns into a data router (via
+ * `createRoutesFromElements`), which is what `useBlocker` needs for the
+ * unsaved-edit guard.
+ */
+export function routeElements() {
   return (
-    <Routes>
+    <>
       <Route path="/oauth/consent" element={<ConsentView />} />
       <Route path="/login" element={<LoginRoute />} />
       <Route path="/" element={<App />}>
@@ -76,6 +89,18 @@ export function AppRoutes() {
         <Route path=":signal" element={<ExploreRoute />} />
         <Route path="*" element={<RedirectToLogs />} />
       </Route>
-    </Routes>
+    </>
   );
+}
+
+/**
+ * A data router over the same tree — the only one that supports
+ * `useBlocker`, which `UnsavedChangesGuard` (App.tsx) needs to intercept
+ * in-app navigation (links, the tab strip, the user menu, browser
+ * Back/Forward) while a form is dirty. Shared by `main.tsx` and any test
+ * that renders the real shell (App.test.tsx), so both stay on the same route
+ * tree and router construction.
+ */
+export function createAppRouter() {
+  return createBrowserRouter(createRoutesFromElements(routeElements()));
 }

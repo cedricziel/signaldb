@@ -532,7 +532,12 @@ describe("RegistryEditor", () => {
     expect(await screen.findByText("List page")).toBeInTheDocument();
   });
 
-  it("blocks in-app navigation while the document is unsaved, allowing it after Leave", async () => {
+  // Blocking in-app navigation while the document is unsaved is now the
+  // shell-level `UnsavedChangesGuard`'s job (see its own test file, and
+  // App.test.tsx for the top-bar integration) — the editor no longer runs
+  // its own confirm, so a crumb click here always navigates straight away
+  // regardless of dirty state.
+  it("does not block its own link clicks locally, even with unsaved edits", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN }]);
     renderEditor("/schema/conventions/new");
     const user = userEvent.setup();
@@ -542,20 +547,6 @@ describe("RegistryEditor", () => {
     await user.paste("name: acme");
 
     await user.click(screen.getByRole("link", { name: "Conventions" }));
-    const guard = await screen.findByRole("alertdialog", {
-      name: "Unsaved changes",
-    });
-    expect(within(guard).getByText(/unsaved changes/i)).toBeInTheDocument();
-    expect(screen.queryByText("List page")).toBeNull();
-
-    // Stay: still on the editor, text preserved.
-    await user.click(within(guard).getByRole("button", { name: "Stay" }));
-    expect(screen.queryByRole("alertdialog")).toBeNull();
-    expect(source).toHaveValue("name: acme");
-
-    // Leave: navigates away.
-    await user.click(screen.getByRole("link", { name: "Conventions" }));
-    await user.click(screen.getByRole("button", { name: "Leave" }));
     expect(await screen.findByText("List page")).toBeInTheDocument();
   });
 
