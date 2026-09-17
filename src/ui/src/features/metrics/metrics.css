@@ -92,6 +92,12 @@
 .qrow-metric,
 .qrow-groupby {
   font-family: var(--mono);
+  /* Grow with typed content up to the row's own width instead of clipping a
+     long metric/group-by name inside a fixed-width box with no ellipsis;
+     `.qrow`'s own `flex-wrap: wrap` lets the row itself wrap once these (and
+     its other children) no longer fit on one line. */
+  flex: 1 1 168px;
+  min-width: 168px;
 }
 
 .qrow-filters {
@@ -261,5 +267,13 @@
   .builder-preview {
     white-space: normal;
     overflow-wrap: anywhere;
+  }
+
+  /* A flex item's default `min-width: auto` floors it at its content's
+     intrinsic width — for a text input, wide enough that `flex: 1` alone
+     can't shrink it to fit a phone screen next to the run button. */
+  .promql-input {
+    min-width: 0;
+    width: 100%;
   }
 }
