@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { act, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetSemanticsCache } from "../../hooks/useSemantics";
@@ -264,6 +264,47 @@ describe("TraceFacets", () => {
     await userEvent.click(statusBtn);
     expect(statusBtn).toHaveAttribute("aria-expanded", "false");
     expect(kindBtn).toHaveAttribute("aria-expanded", "true");
+  });
+
+  describe("live refetching", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("polls an open facet's query on the given interval", async () => {
+      vi.useFakeTimers();
+      const fetchMock = stubFetchRoutes([
+        { match: "/api/v1/query", body: table([]) },
+      ]);
+      renderFacets({
+        filters: [{ field: "status", value: "error" }],
+        refetchInterval: 2_000,
+      });
+      await act(async () => {}); // let the initial fetch settle
+      const afterMount = fetchMock.mock.calls.length;
+      expect(afterMount).toBeGreaterThan(0);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(afterMount);
+    });
+
+    it("does not poll when no refetchInterval is given", async () => {
+      vi.useFakeTimers();
+      const fetchMock = stubFetchRoutes([
+        { match: "/api/v1/query", body: table([]) },
+      ]);
+      renderFacets({ filters: [{ field: "status", value: "error" }] });
+      await act(async () => {});
+      const afterMount = fetchMock.mock.calls.length;
+      expect(afterMount).toBeGreaterThan(0);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(fetchMock.mock.calls.length).toBe(afterMount);
+    });
   });
 
   it("adds an info glyph with the registry tooltip to facets it knows", async () => {

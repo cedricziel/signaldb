@@ -309,6 +309,7 @@ function TraceSearch({ state, update }: Props) {
             filters={filters}
             onAddFilter={addFilter}
             onRemoveFilter={removeFilter}
+            refetchInterval={refetchInterval}
           />
         </MobileSidebarDrawer>
         <div className="traces-main">
