@@ -34,7 +34,7 @@ export function RegistryLookup() {
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
-        <button type="submit" disabled={resolve.isPending}>
+        <button type="submit" className="btn btn-primary" disabled={resolve.isPending}>
           Resolve
         </button>
       </form>

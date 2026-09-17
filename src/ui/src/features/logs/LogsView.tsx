@@ -146,9 +146,12 @@ export function LogsView({ state, update }: Props) {
               }}
             />
             <div className="raw-actions">
-              <button type="submit">Run</button>
+              <button type="submit" className="btn btn-primary">
+                Run
+              </button>
               <button
                 type="button"
+                className="btn"
                 onClick={() => {
                   update({ raw: "" });
                   setEditingRaw(false);

@@ -335,7 +335,9 @@ function TraceSearch({ state, update }: Props) {
                 aria-label="Trace ID"
                 placeholder="Open trace by ID…"
               />
-              <button type="submit">Open</button>
+              <button type="submit" className="btn btn-primary">
+                Open
+              </button>
             </form>
             {state.group === "" && (
               <>
@@ -1106,7 +1108,7 @@ function SpanDetail({
         {span.status === "error" && <em className="tmeta-err"> · error</em>}
       </div>
       <button
-        className="act act-primary"
+        className="act-primary btn btn-primary"
         onClick={() =>
           update(
             {
@@ -1130,7 +1132,7 @@ function SpanDetail({
       {spanProfiles.map((p) => (
         <button
           key={p.profileId}
-          className="act"
+          className="btn"
           onClick={() =>
             update(
               {

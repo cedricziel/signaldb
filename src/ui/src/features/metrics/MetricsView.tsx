@@ -229,6 +229,7 @@ export function MetricsView({ state, update }: Props) {
             </code>
             <button
               type="button"
+              className="btn btn-primary"
               disabled={compiled === ""}
               onClick={runBuilder}
             >
@@ -251,7 +252,9 @@ export function MetricsView({ state, update }: Props) {
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
           />
-          <button type="submit">Run</button>
+          <button type="submit" className="btn btn-primary">
+            Run
+          </button>
         </form>
       )}
 

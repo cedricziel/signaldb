@@ -131,6 +131,7 @@ export function LoginRoute() {
           <p className="login-account">
             <button
               type="button"
+              className="btn"
               disabled={signingOut}
               onClick={() => {
                 setSignOutError(null);

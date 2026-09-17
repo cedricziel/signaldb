@@ -120,7 +120,7 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
                   <div className="logdetail-actions">
                     {traceId !== null && (
                       <button
-                        className="act act-primary"
+                        className="act-primary btn btn-primary"
                         onClick={() => onOpenTrace(traceId)}
                       >
                         View trace {traceId.slice(0, 8)}…
@@ -128,7 +128,7 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
                     )}
                     <CopyValueButton value={row.line} label="log message" />
                     <button
-                      className="act"
+                      className="btn"
                       onClick={() =>
                         navigator.clipboard?.writeText(
                           JSON.stringify(

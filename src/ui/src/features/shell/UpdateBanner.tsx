@@ -30,7 +30,7 @@ export function UpdateBanner() {
       aria-live="polite"
     >
       <span>A new version is ready</span>
-      <button type="button" onClick={() => applyPendingUpdate()}>
+      <button type="button" className="btn" onClick={() => applyPendingUpdate()}>
         Reload
       </button>
     </div>

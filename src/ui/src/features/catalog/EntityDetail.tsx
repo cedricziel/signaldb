@@ -260,7 +260,7 @@ export function EntityDetail({ entity, range, state, update }: Props) {
       <div className="catalog-headline">
         <span className="catalog-title">{title}</span>
         {drillable && (
-          <button className="act" onClick={openTraces}>
+          <button className="btn" onClick={openTraces}>
             View matching traces →
           </button>
         )}

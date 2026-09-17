@@ -377,7 +377,7 @@ export function ConsentView() {
       <div className="consent-actions">
         <button
           type="button"
-          className="consent-deny"
+          className="consent-deny btn"
           disabled={busy}
           onClick={() => decide(false)}
         >
@@ -385,7 +385,7 @@ export function ConsentView() {
         </button>
         <button
           type="button"
-          className="consent-approve"
+          className="consent-approve btn btn-primary"
           disabled={busy || !canSubmit}
           onClick={() => decide(true)}
         >

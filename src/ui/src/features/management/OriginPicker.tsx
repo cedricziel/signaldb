@@ -108,7 +108,12 @@ export function OriginPicker({
             }
           }}
         />
-        <button type="button" onClick={add} disabled={disabled}>
+        <button
+          type="button"
+          className="btn"
+          onClick={add}
+          disabled={disabled}
+        >
           Add
         </button>
       </div>

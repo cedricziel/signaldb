@@ -234,6 +234,69 @@ select:focus-visible {
   border-radius: 3px;
 }
 
+/* ---------- shared buttons (every feature's own toolbar/dialog/form
+   buttons) ---------- */
+
+/* The base look every plain "secondary" button shared already, just
+   restated per feature with small drifts in padding/radius/colour. Compose
+   with a modifier below for a different treatment; a feature's own class
+   stays alongside for whatever layout or hover rule is still its own. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface2);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--dim);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The one call-to-action treatment: every button that used to reach for a
+   solid, soft-tinted or accent-bordered accent look renders this way now. */
+.btn-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+/* No border or background until interaction — a menu item or a quiet
+   inline action, not a boxed control. */
+.btn-ghost {
+  border-color: transparent;
+  background: none;
+}
+
+.btn-ghost:hover:not(:disabled) {
+  border-color: var(--border);
+  background: var(--surface2);
+}
+
+.btn-danger {
+  color: var(--err);
+}
+
+.btn-danger:hover:not(:disabled) {
+  border-color: var(--err);
+  background: color-mix(in srgb, var(--err) 12%, var(--surface2));
+}
+
 .copy-value {
   display: flex;
   /* The button is taller than the text's line-height, so centering it

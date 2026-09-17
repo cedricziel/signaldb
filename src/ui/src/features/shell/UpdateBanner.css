@@ -7,16 +7,3 @@
   border-bottom: 1px solid var(--border);
 }
 
-.update-banner button {
-  padding: 3px 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface2);
-  color: inherit;
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.update-banner button:hover {
-  background: var(--surface3);
-}

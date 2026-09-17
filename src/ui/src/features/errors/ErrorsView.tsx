@@ -444,7 +444,7 @@ export function ErrorsView({ state, update }: Props) {
                                 {o.traceId ? (
                                   <button
                                     type="button"
-                                    className="act"
+                                    className="btn"
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       update(

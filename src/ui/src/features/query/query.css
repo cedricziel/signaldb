@@ -34,17 +34,6 @@
   color: var(--text);
 }
 
-/* Direct children only — FilterChips (a shared component) renders its own
-   `.chip-x`/`.add-filter` buttons inside this toolbar and must keep their own
-   styling, not the toolbar's. */
-.query-ir-builder > button {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 14px;
-  font-size: 12px;
-  color: var(--dim);
-}
-
 .query-ir-result {
   padding: 14px var(--gutter);
   overflow-x: auto;

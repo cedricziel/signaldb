@@ -75,7 +75,7 @@ function TenantRow({
           ) : isError ? (
             <div className="dataset-error" role="alert">
               <p>Failed to load datasets: {toErrorMessage(error)}</p>
-              <button type="button" onClick={() => void refetch()}>
+              <button type="button" className="btn" onClick={() => void refetch()}>
                 Retry
               </button>
             </div>

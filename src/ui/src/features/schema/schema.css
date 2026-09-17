@@ -100,19 +100,8 @@
   cursor: pointer;
 }
 
-.schema-button.primary {
-  border-color: var(--accent);
-  background: var(--accent-soft);
-}
-
-.schema-button.danger {
-  color: var(--err);
-}
-
-.schema-button:disabled {
-  opacity: 0.5;
-  cursor: default;
-}
+/* .btn-primary/.btn-danger (global.css) now supply the accent/danger
+   treatment — was its own soft-accent variant. */
 
 /* --- lookup --- */
 .schema-lookup {
@@ -138,13 +127,6 @@
   border-radius: 5px;
   background: var(--surface2);
   font-family: var(--mono);
-  font-size: 12px;
-}
-
-.schema-lookup-form button {
-  padding: 6px 12px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
   font-size: 12px;
 }
 

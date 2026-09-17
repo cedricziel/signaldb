@@ -168,7 +168,7 @@ export function QueryView({ state, update }: Props) {
           </select>
         </label>
         <FilterChips filters={filters} labels={[]} onChange={setFilters} />
-        <button type="button" onClick={runQuery}>
+        <button type="button" className="btn btn-primary" onClick={runQuery}>
           Run
         </button>
       </div>

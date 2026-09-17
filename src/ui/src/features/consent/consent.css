@@ -211,24 +211,6 @@
   font-size: 13px;
   font-weight: 600;
   border-radius: 7px;
-  cursor: pointer;
-}
-
-.consent-approve {
-  border: 1px solid var(--accent);
-  background: var(--accent);
-  color: var(--on-accent);
-}
-
-.consent-deny {
-  border: 1px solid var(--border);
-  background: var(--surface);
-  color: var(--dim);
-}
-
-.consent-actions button:disabled {
-  opacity: 0.55;
-  cursor: default;
 }
 
 .consent-foot {

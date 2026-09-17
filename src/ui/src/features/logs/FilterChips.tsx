@@ -87,10 +87,14 @@ export function FilterChips({ filters, labels, onChange }: Props) {
             value={value}
             onChange={(e) => setValue(e.target.value)}
           />
-          <button type="submit" disabled={!labelValid}>
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={!labelValid}
+          >
             Add
           </button>
-          <button type="button" onClick={() => setAdding(false)}>
+          <button type="button" className="btn" onClick={() => setAdding(false)}>
             Cancel
           </button>
         </form>

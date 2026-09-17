@@ -40,7 +40,10 @@ export function RegistryList() {
             <Link className="schema-button" to={`${CONVENTIONS}/new?upload=1`}>
               Upload registry
             </Link>
-            <Link className="schema-button primary" to={`${CONVENTIONS}/new`}>
+            <Link
+              className="schema-button btn btn-primary"
+              to={`${CONVENTIONS}/new`}
+            >
               New
             </Link>
           </div>

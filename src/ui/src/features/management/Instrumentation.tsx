@@ -345,6 +345,7 @@ export function Instrumentation({ state }: Props) {
                     </p>
                     <button
                       type="button"
+                      className="btn"
                       onClick={() => void connection.refetch()}
                     >
                       Retry

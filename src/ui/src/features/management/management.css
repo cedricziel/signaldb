@@ -60,16 +60,6 @@
   background: var(--surface2);
 }
 
-/* Excludes OriginPicker's own `.origin-chip` remove ×, which keeps its own
-   borderless styling from ApiKeys.css (loaded app-wide, not just on the API
-   keys page). */
-.manage-panel button:not(.origin-chip button) {
-  padding: 7px 11px;
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-}
-
 .compact-list {
   display: grid;
   gap: 1px;

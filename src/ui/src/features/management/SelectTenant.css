@@ -113,11 +113,6 @@
 
 .dataset-error button {
   flex: none;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 3px 9px;
-  font-size: 12px;
-  color: var(--dim);
 }
 
 .dataset-row {

@@ -295,7 +295,11 @@ function ApiKeysBody({ who }: { who: WhoamiResponse }) {
             idPrefix="create"
             checked={(scope) => INGEST_SCOPES.includes(scope)}
           />
-          <button type="submit" disabled={createMutation.isPending}>
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={createMutation.isPending}
+          >
             Create API key
           </button>
         </form>
@@ -365,11 +369,16 @@ function ApiKeysBody({ who }: { who: WhoamiResponse }) {
                       Remove allowed-origins restriction
                     </label>
                     <div className="api-key-editor-actions">
-                      <button type="submit" disabled={updateMutation.isPending}>
+                      <button
+                        type="submit"
+                        className="btn btn-primary"
+                        disabled={updateMutation.isPending}
+                      >
                         Save scopes
                       </button>
                       <button
                         type="button"
+                        className="btn"
                         onClick={() => {
                           setEditingKeyId(null);
                           setClearRestriction(false);
@@ -386,7 +395,7 @@ function ApiKeysBody({ who }: { who: WhoamiResponse }) {
               {!key.revoked && (
                 <div className="api-key-actions">
                   <button
-                    className="api-key-edit"
+                    className="btn"
                     onClick={() => {
                       const opening = editingKeyId !== key.id;
                       setEditingKeyId(opening ? key.id : null);
@@ -398,7 +407,6 @@ function ApiKeysBody({ who }: { who: WhoamiResponse }) {
                     Edit scopes
                   </button>
                   <ConfirmButton
-                    className="api-key-revoke"
                     label="Revoke"
                     prompt={`Revoke ${key.name || "this key"}?`}
                     disabled={revokeMutation.isPending}
@@ -423,7 +431,7 @@ function ApiKeysBody({ who }: { who: WhoamiResponse }) {
           <div className="secret-modal-footer">
             <CopyValueButton value={secret} label="API key" />
             <button
-              className="secret-modal-done"
+              className="btn btn-primary"
               onClick={() => setSecret(null)}
             >
               Done
