@@ -69,13 +69,24 @@ export function VizTooltip({
   const height =
     measured > 0 ? measured : estimateHeight(rows.length, !!footer);
   const flipX = anchor.x > host.width / 2;
-  const flipY = anchor.y + OFFSET_Y + height > host.height;
+  const overflowsBelow = anchor.y + OFFSET_Y + height > host.height;
+  // Flipping above only helps when the host actually has that room; a short
+  // host (a histogram sitting over a signal tab strip, say) can overflow
+  // both ways, and flipping there would just paint over whatever sits above
+  // the host instead of below it. Clamp to the host's own top edge instead.
+  const hasRoomAbove = anchor.y - OFFSET_Y - height >= 0;
+  const flipY = overflowsBelow && hasRoomAbove;
+  const clampTop = overflowsBelow && !hasRoomAbove;
   const tx = flipX ? `calc(-100% - ${OFFSET_X}px)` : `${OFFSET_X}px`;
-  const ty = flipY ? `calc(-100% - ${OFFSET_Y}px)` : `${OFFSET_Y}px`;
+  const ty = clampTop
+    ? "0px"
+    : flipY
+      ? `calc(-100% - ${OFFSET_Y}px)`
+      : `${OFFSET_Y}px`;
 
   const style: CSSProperties & { "--viz-val-ch"?: string } = {
     left: `${anchor.x}px`,
-    top: `${anchor.y}px`,
+    top: clampTop ? "0px" : `${anchor.y}px`,
     transform: `translate(${tx}, ${ty})`,
   };
   if (valueWidthCh !== undefined) style["--viz-val-ch"] = String(valueWidthCh);
