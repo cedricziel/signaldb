@@ -561,15 +561,20 @@ function GroupList({
     // Resolved fresh on every fetch (as the volume chart does), not hoisted
     // from a render captured before this call — a live refetch of a relative
     // range must slide the window forward with it, not repeat the exact same
-    // one every 15s.
-    queryFn: () =>
-      fetchTraceGroups(
+    // one every 15s. The resolved bounds are carried on the result (rather
+    // than re-resolved by the window-total query below) so a relative
+    // range's shifting "now" can't put the two queries on different windows.
+    queryFn: async () => {
+      const range = resolveRange(timeRange, Date.now());
+      const groups = await fetchTraceGroups(
         dims,
-        resolveRange(timeRange, Date.now()),
+        range,
         filters,
         grain,
         sort as GroupSort,
-      ),
+      );
+      return { ...groups, range };
+    },
     refetchInterval,
   });
 
@@ -580,11 +585,22 @@ function GroupList({
   // it a suspect — confirming it needs the window total under the same
   // scope, fetched only when suspect.
   const suspect = result.data ? looksUnresolved(result.data.groups) : false;
+  const resolvedRange = result.data?.range;
   const windowTotal = useQuery({
-    queryKey: ["trace-window-total", rangeKey, grain, traceql],
-    queryFn: () =>
-      fetchWindowTotal(resolveRange(timeRange, Date.now()), filters, grain),
-    enabled: suspect,
+    // Keyed on the group query's own resolved bounds (not a fresh
+    // `resolveRange` call) so this query only ever runs against the exact
+    // window the group counts came from, and refetches in lockstep whenever
+    // that window moves.
+    queryKey: [
+      "trace-window-total",
+      rangeKey,
+      grain,
+      traceql,
+      resolvedRange?.fromMs,
+      resolvedRange?.toMs,
+    ],
+    queryFn: () => fetchWindowTotal(resolvedRange!, filters, grain),
+    enabled: suspect && resolvedRange !== undefined,
     refetchInterval,
   });
   const unresolved =

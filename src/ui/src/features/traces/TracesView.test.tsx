@@ -766,7 +766,12 @@ describe("TracesView live refetch resolves a fresh window", () => {
     expect(secondRange.toMs - firstRange.toMs).toBeGreaterThan(200_000);
   });
 
-  it("re-resolves the unresolved-window total's window on each refetch", async () => {
+  it("scopes the window total to the exact bounds the group counts came from", async () => {
+    // Each query used to resolve `resolveRange(timeRange, Date.now())`
+    // independently, so a relative range's shifting "now" could put the
+    // group counts and the window total on different windows and corrupt
+    // the #1070 unresolved-dimension comparison. The window-total query must
+    // reuse the bounds the group query itself resolved, not recompute its own.
     fetchTraceGroups.mockResolvedValue({
       groups: [group([null], 1000, 0, 1, 1, "1")],
       truncated: false,
@@ -774,19 +779,27 @@ describe("TracesView live refetch resolves a fresh window", () => {
     fetchWindowTotal.mockResolvedValue(1000);
     const client = renderWithOwnClient();
     await waitFor(() => expect(fetchWindowTotal).toHaveBeenCalled());
-    const [firstRange] = fetchWindowTotal.mock.calls[0]!;
+    const [, firstGroupRange] = fetchTraceGroups.mock.calls[0]!;
+    const [firstTotalRange] = fetchWindowTotal.mock.calls[0]!;
+    expect(firstTotalRange).toEqual(firstGroupRange);
 
+    // Live windows must keep advancing: a refetch of the group query still
+    // re-resolves fresh, and the window-total query must follow it exactly.
     vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5 * 60_000);
-    await client.refetchQueries({ queryKey: ["trace-window-total"] });
+    await client.refetchQueries({ queryKey: ["trace-groups"] });
 
     await waitFor(() =>
       expect(fetchWindowTotal.mock.calls.length).toBeGreaterThan(1),
     );
-    const [secondRange] = fetchWindowTotal.mock.calls.at(-1)!;
+    const [, secondGroupRange] = fetchTraceGroups.mock.calls.at(-1)!;
+    const [secondTotalRange] = fetchWindowTotal.mock.calls.at(-1)!;
+    expect(secondTotalRange).toEqual(secondGroupRange);
     // A tighter bound than "not equal": natural re-renders can jitter the
     // resolved window by a few ms on their own, so the assertion checks the
     // shift tracks the deliberate 5-minute jump in `Date.now()`, not that.
-    expect(secondRange.toMs - firstRange.toMs).toBeGreaterThan(200_000);
+    expect(secondTotalRange.toMs - firstTotalRange.toMs).toBeGreaterThan(
+      200_000,
+    );
   });
 
   it("re-resolves a group's member list window on each refetch", async () => {
