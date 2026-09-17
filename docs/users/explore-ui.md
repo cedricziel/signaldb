@@ -774,9 +774,15 @@ the request itself fails, the page never falls back to a guessed snippet:
 a `401` redirects to `/login?redirect=...`, a `403` shows that the
 current tenant does not grant access to connection details (no retry, since
 retrying cannot change that), and any other failure — a `429`, a network
-error — shows an error message with a retry button. A verification section at the bottom shows ingestion status per
-signal (metrics, logs, traces, profiles) — currently static ("Waiting for
-data"), with real checks planned.
+error — shows an error message with a retry button.
+
+A **Verification** section at the bottom answers whether data is actually
+arriving: one row per signal (traces, logs, metrics, profiles) counts that
+signal's records over the last 15 minutes through the
+[Query IR](querying-ir.md) and reads "Receiving (N in the last 15 min)" or
+"Waiting for data". The rows re-poll every ten seconds while the page is
+open, so a visitor who has just wired up a collector sees the row flip
+without reloading.
 
 ### Schema hub (`/schema`)
 
@@ -847,10 +853,13 @@ prompt in desktop Chrome/Edge — giving it its own window and icon instead of
 a browser tab. Only the app shell (JS/CSS/HTML, icons, manifest) is cached
 for offline/instant loading; every query and every telemetry request always
 goes to the network, never the cache, so an installed instance can't show
-stale investigation data. New builds install and activate automatically, and
-the page reloads onto the new version without a prompt — including in a tab
-left open for days, since it re-checks for updates hourly rather than only on
-navigation.
+stale investigation data. A new build installs in the background — including
+in a tab left open for days, since it re-checks for updates hourly rather than
+only on navigation — and then waits rather than reloading underneath the
+user: a small banner offers **Reload** to switch now, and otherwise the update
+applies itself on the next in-app navigation once no form (a schema
+registry edit, an API-key form, the consent dialog, the origin picker) has
+unsaved input, so a half-typed change is never lost to a deploy.
 
 ## Telemetry
 
