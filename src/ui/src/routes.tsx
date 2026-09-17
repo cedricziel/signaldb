@@ -8,6 +8,7 @@ import {
   createBrowserRouter,
   createRoutesFromElements,
   Navigate,
+  Outlet,
   Route,
   useLocation,
   useParams,
@@ -20,9 +21,25 @@ import { InstrumentationRoute } from "./features/management/InstrumentationRoute
 import { ManagementRoute } from "./features/management/ManagementRoute";
 import { SelectTenantRoute } from "./features/management/SelectTenantRoute";
 import { LoginRoute } from "./features/shell/LoginRoute";
+import { UnsavedChangesGuard } from "./features/shell/UnsavedChangesGuard";
 import { schemaRoutes } from "./features/schema/routes";
 import { useOutletState } from "./lib/outletState";
 import { signalFromParam } from "./lib/urlState";
+
+/**
+ * Pathless root layout above every route, including `/oauth/consent` and
+ * `/login` which sit outside `App`'s explore shell — `UnsavedChangesGuard`
+ * needs to intercept in-app navigation away from *any* dirty form (see
+ * lib/dirtyForms.ts), not only ones nested under the shell.
+ */
+function RootLayout() {
+  return (
+    <>
+      <UnsavedChangesGuard />
+      <Outlet />
+    </>
+  );
+}
 
 /** Redirects to `/logs`, preserving the query string — used for both the
  * bare index route and the unrecognized-path catch-all so a deep link's
@@ -62,7 +79,7 @@ function ExploreRoute() {
  */
 export function routeElements() {
   return (
-    <>
+    <Route element={<RootLayout />}>
       <Route path="/oauth/consent" element={<ConsentView />} />
       <Route path="/login" element={<LoginRoute />} />
       <Route path="/" element={<App />}>
@@ -89,14 +106,14 @@ export function routeElements() {
         <Route path=":signal" element={<ExploreRoute />} />
         <Route path="*" element={<RedirectToLogs />} />
       </Route>
-    </>
+    </Route>
   );
 }
 
 /**
  * A data router over the same tree — the only one that supports
- * `useBlocker`, which `UnsavedChangesGuard` (App.tsx) needs to intercept
- * in-app navigation (links, the tab strip, the user menu, browser
+ * `useBlocker`, which `RootLayout`'s `UnsavedChangesGuard` needs to
+ * intercept in-app navigation (links, the tab strip, the user menu, browser
  * Back/Forward) while a form is dirty. Shared by `main.tsx` and any test
  * that renders the real shell (App.test.tsx), so both stay on the same route
  * tree and router construction.

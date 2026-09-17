@@ -1,10 +1,12 @@
-// Shell-level guard for every registered dirty form (registry editor,
-// API-key form, consent, origin picker — see lib/dirtyForms.ts): mounted once
-// inside the data router (App.tsx), it blocks in-app navigation — top-bar
-// links, the signal tab strip, the user menu, browser Back/Forward — while
-// any form is dirty, prompting to confirm before discarding the edit.
-// `useBlocker` only intercepts router navigation, so reload/close is still
-// each dirty form's own `beforeunload` handler, not this component's job.
+// App-wide guard for every registered dirty form (registry editor, API-key
+// form, consent, origin picker — see lib/dirtyForms.ts): mounted once in the
+// route tree's root layout (routes.tsx), above both the explore shell and
+// the top-level views (`/oauth/consent`, `/login`) that sit outside it, it
+// blocks in-app navigation — top-bar links, the signal tab strip, the user
+// menu, browser Back/Forward — while any form is dirty, prompting to
+// confirm before discarding the edit. `useBlocker` only intercepts router
+// navigation, so reload/close is still each dirty form's own `beforeunload`
+// handler, not this component's job.
 
 import { useCallback, useSyncExternalStore } from "react";
 import { useBlocker } from "react-router";
