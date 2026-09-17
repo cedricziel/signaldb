@@ -137,6 +137,39 @@ describe("--on-accent on --accent (solid-background buttons)", () => {
   });
 });
 
+describe("categorical series colors clear 3:1 against --surface", () => {
+  // The 12-color palette `promSeries.ts` cycles through (`--svc-a`…`--svc-l`)
+  // — a series swatch/line only needs to read as distinct from its
+  // background, not carry text-contrast requirements, so 3:1 (WCAG AA for
+  // non-text UI components) rather than 4.5:1.
+  const seriesTokens = [
+    "svc-a",
+    "svc-b",
+    "svc-c",
+    "svc-d",
+    "svc-e",
+    "svc-f",
+    "svc-g",
+    "svc-h",
+    "svc-i",
+    "svc-j",
+    "svc-k",
+    "svc-l",
+  ] as const;
+
+  for (const [theme, getBlock] of Object.entries(themeBlocks)) {
+    for (const name of seriesTokens) {
+      it(`${theme} theme: --${name} on --surface is >= 3:1`, () => {
+        const cssBlock = getBlock();
+        const color = token(cssBlock, name);
+        const surface = token(cssBlock, "surface");
+
+        expect(contrastRatio(color, surface)).toBeGreaterThanOrEqual(3);
+      });
+    }
+  }
+});
+
 describe("--ok-text meets WCAG AA on --surface", () => {
   for (const [theme, getBlock] of Object.entries(themeBlocks)) {
     it(`${theme} theme: --ok-text on --surface is >= 4.5:1`, () => {
