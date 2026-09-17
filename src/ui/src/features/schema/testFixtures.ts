@@ -1,6 +1,15 @@
 // Shared fixtures for the schema hub tests: whoami variants, a registry
 // list, a small Weaver-format registry document, and resolution responses.
 // Shapes mirror the generated types in `api/gen/types.gen.ts`.
+import { outletContextRoute } from "../../test/render";
+import { DEFAULT_STATE } from "../../lib/urlState";
+
+/** The shell's outlet context (see `App.tsx`), the way `SchemaHub` forwards
+ * it — every schema page under test needs one ancestor route providing this,
+ * since `useSchemaSession`/`useOutletState` throw without it. */
+export function shellOutlet(tenant = "acme", dataset = "") {
+  return outletContextRoute({ ...DEFAULT_STATE, tenant, dataset }, () => {});
+}
 
 export const WHOAMI_INSTANCE_ADMIN = {
   user: {

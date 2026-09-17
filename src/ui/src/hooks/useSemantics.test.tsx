@@ -4,6 +4,7 @@ import { setTenantContext } from "../api/http";
 import { client as generatedClient } from "../api/gen/client.gen";
 import { stubFetchRoutes } from "../test/render";
 import {
+  invalidateSemantics,
   resetSemanticsCache,
   useAttributeSearch,
   useSemantics,
@@ -119,6 +120,23 @@ describe("useSemantics", () => {
     setTenantContext({ tenant: "globex", dataset: "prod" });
     hook.rerender();
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+  });
+
+  it("re-requests a previously-unknown key after invalidateSemantics", async () => {
+    const fetchMock = resolvingFetch();
+    installFetch(fetchMock);
+    const hook = renderHook(() => useSemantics(["app.order.id"]));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(hook.result.current.has("app.order.id")).toBe(false);
+
+    // The registry now knows it (e.g. a registry was just saved) — without
+    // invalidation the key stays pinned to "unknown" for the session.
+    installFetch(resolvingFetch({ "app.order.id": POD_UID }));
+    invalidateSemantics("acme");
+    hook.rerender();
+    await waitFor(() =>
+      expect(hook.result.current.has("app.order.id")).toBe(true),
+    );
   });
 
   it("degrades to no semantics when the endpoint fails, without throwing", async () => {

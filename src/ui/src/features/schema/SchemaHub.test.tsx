@@ -6,6 +6,7 @@ import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { schemaRoutes } from "./routes";
 import {
   REGISTRIES,
+  shellOutlet,
   WHOAMI_INSTANCE_ADMIN,
   WHOAMI_MEMBER,
 } from "./testFixtures";
@@ -21,8 +22,10 @@ function renderHub(path: string) {
   return renderWithClient(
     <BrowserRouter>
       <Routes>
-        {schemaRoutes()}
-        <Route path="/logs" element={<div>Logs page</div>} />
+        <Route element={shellOutlet()}>
+          {schemaRoutes()}
+          <Route path="/logs" element={<div>Logs page</div>} />
+        </Route>
       </Routes>
     </BrowserRouter>,
   );

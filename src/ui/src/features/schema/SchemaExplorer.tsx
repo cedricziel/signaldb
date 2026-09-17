@@ -1,7 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { Navigate } from "react-router";
 import { getSchema, type ManagedSchema } from "../../api/management";
-import { whoami } from "../../api/session";
+import { whoamiQueryError } from "../../components/QueryError";
+import { useOutletState } from "../../lib/outletState";
+import { useWhoami } from "../../lib/useWhoami";
+import { CONVENTIONS } from "./paths";
 import "./SchemaExplorer.css";
 import { toErrorMessage } from "../../api/http";
 
@@ -26,12 +29,16 @@ function qualifiedName(field: LogicalField): string {
 }
 
 export function SchemaExplorer() {
-  const { data: who, isLoading: whoLoading } = useQuery({
-    queryKey: ["whoami"],
-    queryFn: () => whoami(),
-    staleTime: 60_000,
-    retry: false,
-  });
+  // A subscription to the shell's outlet state (rather than the imperative
+  // `getTenantContext`), so a tenant switch re-renders this page — it has no
+  // route params of its own to otherwise pick up a navigation.
+  const { state } = useOutletState();
+  const {
+    data: who,
+    isLoading: whoLoading,
+    isError: whoamiIsError,
+    error: whoamiError,
+  } = useWhoami(state);
 
   const schema = useQuery({
     queryKey: ["schema"],
@@ -41,13 +48,14 @@ export function SchemaExplorer() {
   });
 
   if (whoLoading) return null;
+  if (whoamiIsError) return whoamiQueryError("schema", whoamiError);
   if (!who?.user?.is_instance_admin) {
-    return <Navigate to="/logs" replace />;
+    return <Navigate to={CONVENTIONS} replace />;
   }
 
   return (
     <div className="schema-explorer-page">
-      <h2 className="schema-explorer-title">Storage schema</h2>
+      <h1 className="schema-title">Storage schema</h1>
       <p className="schema-explorer-subtitle">
         The registered logical (query-facing) field model and the resolved
         physical (storage) schema for every signal source.

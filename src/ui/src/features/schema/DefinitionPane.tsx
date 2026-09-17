@@ -11,6 +11,7 @@ import {
 } from "./api";
 import { LATEST, definitionPath, kindLabel } from "./paths";
 import { humanizeGroupId } from "./registryIndex";
+import { useOutletState } from "../../lib/outletState";
 
 type AnyHit = AttributeHit | EntityHit | MetricHit;
 
@@ -27,8 +28,9 @@ interface Props {
  * tooltips do, plus every other visible registry defining the same name.
  */
 export function DefinitionPane({ namespace, version, kind, name }: Props) {
+  const { tenant, dataset } = useOutletState().state;
   const resolution = useQuery({
-    queryKey: ["schema-resolve", kind, name],
+    queryKey: ["schema-resolve", kind, name, tenant, dataset],
     queryFn: async (): Promise<AnyHit[]> => {
       switch (kind) {
         case "attributes":

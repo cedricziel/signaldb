@@ -119,31 +119,63 @@ export function SemanticTooltip({
   );
 }
 
-/** Gap between the trigger and the tooltip; `.sem-tip::before` bridges it. */
+/** Gap between the trigger and the tooltip; bridged by an in-tooltip element
+ * (see `HoverBridge`) so the pointer can cross it without closing the tip. */
 const TIP_GAP = 4;
 /** `.sem-tip` max-width, for deciding whether to right-align. */
 const TIP_MAX_WIDTH = 360;
-/** Height guess before the tooltip has been measured, for vertical flipping. */
+/** Height/width guesses before the tooltip has been measured, for flipping
+ * above the trigger and clamping horizontally. */
 const TIP_HEIGHT_GUESS = 160;
+const TIP_WIDTH_GUESS = 220;
+/** Minimum on-screen margin the tooltip is clamped to on either edge. */
+const TIP_EDGE_MARGIN = 8;
+
+type Placement = "above" | "below";
 
 /**
  * Fixed-position placement for the tooltip: below the trigger, left-aligned
- * with it; right-aligned when it would run past the viewport's right edge,
- * and above the trigger when it would run past the bottom.
+ * with it and right-aligned when it would otherwise run past the viewport's
+ * right edge — either way, `left` is then clamped to stay fully on screen
+ * (a right-aligned tip narrower than its own min-width could otherwise start
+ * left of x=0 on a narrow viewport). Flips above the trigger when it would
+ * run past the bottom.
  */
-function tipStyle(anchor: DOMRect, height: number): CSSProperties {
-  const style: CSSProperties = { position: "fixed" };
-  if (anchor.left + TIP_MAX_WIDTH > window.innerWidth) {
-    style.right = Math.max(0, window.innerWidth - anchor.right);
-  } else {
-    style.left = anchor.left;
-  }
-  if (anchor.bottom + TIP_GAP + height > window.innerHeight) {
+function tipStyle(
+  anchor: DOMRect,
+  height: number,
+  width: number,
+): { style: CSSProperties; placement: Placement } {
+  const preferRight = anchor.left + TIP_MAX_WIDTH > window.innerWidth;
+  const rawLeft = preferRight ? anchor.right - width : anchor.left;
+  const maxLeft = Math.max(TIP_EDGE_MARGIN, window.innerWidth - width - TIP_EDGE_MARGIN);
+  const left = Math.min(Math.max(rawLeft, TIP_EDGE_MARGIN), maxLeft);
+  const placement: Placement =
+    anchor.bottom + TIP_GAP + height > window.innerHeight ? "above" : "below";
+  const style: CSSProperties = { position: "fixed", left };
+  if (placement === "above") {
     style.bottom = window.innerHeight - anchor.top + TIP_GAP;
   } else {
     style.top = anchor.bottom + TIP_GAP;
   }
-  return style;
+  return { style, placement };
+}
+
+/**
+ * Invisible strip covering the gap on the side facing the trigger, so the
+ * pointer can travel from one to the other without the tooltip closing in
+ * between. A real DOM element (not `::before`) because it needs to sit on
+ * whichever side the tooltip was flipped to.
+ */
+function HoverBridge({ placement }: { placement: Placement }) {
+  const style: CSSProperties = {
+    position: "absolute",
+    left: 0,
+    right: 0,
+    height: TIP_GAP + 2,
+    ...(placement === "above" ? { bottom: -(TIP_GAP + 2) } : { top: -(TIP_GAP + 2) }),
+  };
+  return <span aria-hidden="true" style={style} />;
 }
 
 /**
@@ -167,6 +199,7 @@ function SemanticHover({
 }) {
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const [height, setHeight] = useState(TIP_HEIGHT_GUESS);
+  const [width, setWidth] = useState(TIP_WIDTH_GUESS);
   const triggerRef = useRef<HTMLSpanElement>(null);
   const tipRef = useRef<HTMLSpanElement>(null);
   const id = useId();
@@ -190,6 +223,8 @@ function SemanticHover({
   useLayoutEffect(() => {
     const h = tipRef.current?.offsetHeight ?? 0;
     if (h > 0 && h !== height) setHeight(h);
+    const w = tipRef.current?.offsetWidth ?? 0;
+    if (w > 0 && w !== width) setWidth(w);
   });
 
   useEffect(() => {
@@ -198,6 +233,30 @@ function SemanticHover({
     window.addEventListener("scroll", close, true);
     return () => window.removeEventListener("scroll", close, true);
   }, [anchor]);
+
+  useEffect(() => {
+    // Tab reaches the tooltip's own links (it's portaled outside the
+    // trigger's DOM subtree, so plain `onBlur` on the trigger would close it
+    // the moment focus leaves for them). `focusout` bubbles, so one listener
+    // covers focus leaving either the trigger or the tooltip; it only closes
+    // once focus lands somewhere in neither.
+    if (!anchor) return;
+    const onFocusOut = (e: FocusEvent) => {
+      const next = e.relatedTarget;
+      if (
+        next instanceof Node &&
+        (triggerRef.current?.contains(next) || tipRef.current?.contains(next))
+      )
+        return;
+      close();
+    };
+    document.addEventListener("focusout", onFocusOut, true);
+    return () => document.removeEventListener("focusout", onFocusOut, true);
+  }, [anchor]);
+
+  const { style, placement } = anchor
+    ? tipStyle(anchor, height, width)
+    : { style: undefined, placement: "below" as Placement };
 
   return (
     <span
@@ -208,7 +267,6 @@ function SemanticHover({
       onMouseEnter={open}
       onMouseLeave={(e) => leaveTo(e, tipRef.current)}
       onFocus={open}
-      onBlur={close}
     >
       {children}
       {anchor &&
@@ -218,9 +276,11 @@ function SemanticHover({
             id={id}
             ref={tipRef}
             className="sem-tip"
-            style={tipStyle(anchor, height)}
+            data-placement={placement}
+            style={style}
             onMouseLeave={(e) => leaveTo(e, triggerRef.current)}
           >
+            <HoverBridge placement={placement} />
             <SemanticTooltip semantics={semantics} />
           </span>,
           document.body,

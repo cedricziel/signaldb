@@ -1,10 +1,12 @@
-import { render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { MemoryRouter } from "react-router";
 import userEvent from "@testing-library/user-event";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AttributeHit } from "../api/gen";
 import { semanticsFromResolution } from "../lib/semantics";
 import { SemanticInfo, SemanticKey } from "./SemanticKey";
+
+afterEach(() => vi.unstubAllGlobals());
 
 const hit = (over: Partial<AttributeHit> = {}): AttributeHit => ({
   key: "k8s.pod.uid",
@@ -219,6 +221,77 @@ describe("SemanticKey tooltip placement", () => {
     await userEvent.hover(tip);
     expect(screen.getByRole("tooltip")).toBeInTheDocument();
     await userEvent.unhover(tip);
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  });
+
+  it("flips above the trigger near the bottom edge and bridges the gap on that side", async () => {
+    render(<SemanticInfo name="k8s.pod.uid" semantics={semOf([hit()])} />);
+    const glyph = screen.getByLabelText("About k8s.pod.uid");
+    const trigger = glyph.parentElement as HTMLElement;
+    trigger.getBoundingClientRect = () =>
+      ({
+        left: 40,
+        right: 60,
+        top: window.innerHeight - 20,
+        bottom: window.innerHeight - 4,
+        width: 20,
+        height: 16,
+      }) as DOMRect;
+
+    await userEvent.hover(glyph);
+    const tip = await screen.findByRole("tooltip");
+    expect(tip).toHaveAttribute("data-placement", "above");
+    expect(tip.style.bottom).not.toBe("");
+    expect(tip.style.top).toBe("");
+    // The bridge sits on the trigger-facing (bottom) side of the tip, not
+    // the top, which is where it sat when the tip was always below.
+    const bridge = tip.firstElementChild as HTMLElement;
+    expect(bridge).toHaveAttribute("aria-hidden", "true");
+    expect(bridge.style.bottom).not.toBe("");
+    expect(bridge.style.top).toBe("");
+  });
+
+  it("clamps the tooltip's left edge to stay on screen on a narrow viewport", async () => {
+    vi.stubGlobal("innerWidth", 320);
+    render(<SemanticInfo name="k8s.pod.uid" semantics={semOf([hit()])} />);
+    const glyph = screen.getByLabelText("About k8s.pod.uid");
+    const trigger = glyph.parentElement as HTMLElement;
+    // Near the left edge, but right-alignment still kicks in because the
+    // tip's max-width alone exceeds this viewport.
+    trigger.getBoundingClientRect = () =>
+      ({ left: 10, right: 30, top: 100, bottom: 116, width: 20, height: 16 }) as DOMRect;
+
+    await userEvent.hover(glyph);
+    const tip = await screen.findByRole("tooltip");
+    expect(parseFloat(tip.style.left)).toBeGreaterThanOrEqual(8);
+  });
+
+  it("keeps the tooltip open while focus tabs into its links, closing once focus leaves both", async () => {
+    const custom = hit({
+      key: "service.name",
+      namespace: "acme",
+      version: "1.0.0",
+      source: "custom",
+    });
+    const otel = hit({ key: "service.name" });
+    render(
+      <MemoryRouter>
+        <SemanticKey name="service.name" semantics={semOf([custom, otel])} />
+      </MemoryRouter>,
+    );
+    const trigger = screen
+      .getByText("service.name", { selector: ".semkey-name" })
+      .closest(".semkey-head") as HTMLElement;
+    trigger.focus();
+    const tip = await screen.findByRole("tooltip");
+    const link = within(tip).getByRole("link", { name: "acme@1.0.0" });
+
+    await userEvent.tab();
+    expect(link).toHaveFocus();
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+
+    // Focus leaving the tooltip (and the trigger) for anywhere else closes it.
+    fireEvent.focusOut(link, { relatedTarget: document.body });
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   });
 });

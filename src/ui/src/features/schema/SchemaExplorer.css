@@ -12,16 +12,11 @@
   }
 }
 
-.schema-explorer-title {
-  font-size: 18px;
-  font-weight: 600;
-  margin: 0 0 8px;
-}
-
 .schema-explorer-subtitle {
   color: var(--dim);
   font-size: 13px;
   margin-bottom: 24px;
+  overflow-wrap: anywhere;
 }
 
 .schema-explorer-note {
@@ -80,7 +75,9 @@
   list-style: none;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
+  overflow-wrap: anywhere;
 }
 
 .schema-source-card summary::-webkit-details-marker {

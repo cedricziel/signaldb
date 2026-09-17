@@ -3,13 +3,19 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { SchemaExplorer } from "./SchemaExplorer";
+import { shellOutlet } from "./testFixtures";
 
 function renderSchemaExplorer() {
   return renderWithClient(
-    <MemoryRouter initialEntries={["/schema"]}>
+    <MemoryRouter initialEntries={["/schema/storage"]}>
       <Routes>
-        <Route path="/schema" element={<SchemaExplorer />} />
-        <Route path="/logs" element={<div>Logs page</div>} />
+        <Route element={shellOutlet()}>
+          <Route path="/schema/storage" element={<SchemaExplorer />} />
+          <Route
+            path="/schema/conventions"
+            element={<div>Conventions page</div>}
+          />
+        </Route>
       </Routes>
     </MemoryRouter>,
   );
@@ -112,16 +118,26 @@ afterEach(() => {
 });
 
 describe("SchemaExplorer", () => {
-  it("redirects a non-instance-admin to /logs", async () => {
+  it("redirects a non-instance-admin to the sibling Conventions tab", async () => {
     stubFetchRoutes([
       { match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN_ONLY },
     ]);
     renderSchemaExplorer();
 
-    expect(await screen.findByText("Logs page")).toBeInTheDocument();
+    expect(await screen.findByText("Conventions page")).toBeInTheDocument();
   });
 
-  it("renders logical fields grouped by source with their qualified name", async () => {
+  it("shows an inline error on a non-401 whoami failure instead of redirecting to Conventions", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: { error: "boom" }, status: 500 },
+    ]);
+    renderSchemaExplorer();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/500/);
+    expect(screen.queryByText("Conventions page")).not.toBeInTheDocument();
+  });
+
+  it("renders logical fields grouped by source with their qualified name, titled as an h1", async () => {
     stubFetchRoutes([
       { match: "/api/v1/whoami", body: WHOAMI_INSTANCE_ADMIN },
       { match: "/api/v1/manage/schema", body: SCHEMA },
@@ -132,6 +148,9 @@ describe("SchemaExplorer", () => {
     // Level-prefixed field renders qualified, not bare.
     expect(screen.getByText("resource.service.name")).toBeInTheDocument();
     expect(screen.getByText("otel-2026-08")).toBeInTheDocument();
+    expect(
+      screen.getByRole("heading", { level: 1, name: "Storage schema" }),
+    ).toBeInTheDocument();
   });
 
   it("marks the current physical schema version and shows its columns", async () => {

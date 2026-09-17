@@ -9,6 +9,7 @@ import {
 } from "react-router";
 import YAML from "yaml";
 import { ConfirmButton } from "../../components/ConfirmButton";
+import { invalidateSemantics } from "../../hooks/useSemantics";
 import {
   createRegistry,
   deleteRegistry,
@@ -37,10 +38,10 @@ import { toErrorMessage } from "../../api/http";
  */
 export function RegistryEditor() {
   const { ns, version } = useParams<{ ns?: string; version?: string }>();
-  const { isTenantAdmin, isLoading } = useSchemaSession();
+  const { isTenantAdmin, isLoading, tenant, dataset } = useSchemaSession();
   const editing = ns !== undefined && version !== undefined;
   const stored = useQuery({
-    queryKey: ["schema-registry", ns, version],
+    queryKey: ["schema-registry", ns, version, tenant, dataset],
     queryFn: () => getRegistry(ns!, version!),
     enabled: editing && isTenantAdmin,
     staleTime: 60_000,
@@ -100,20 +101,62 @@ const count = (n: number, one: string, many: string) =>
 function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const fileInput = useRef<HTMLInputElement>(null);
   const [text, setText] = useState(() =>
     stored ? YAML.stringify(stored.document) : "",
   );
+  // The text as loaded (or last saved); compared against `text` to decide
+  // whether there are unsaved edits to guard navigation against.
+  const initialTextRef = useRef(text);
+  const [pendingNav, setPendingNav] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<Report | null>(null);
   const [validatedText, setValidatedText] = useState<string | null>(null);
   const [newVersion, setNewVersion] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const isDirty = text !== initialTextRef.current;
 
-  // "Upload registry" from the list opens the file picker on arrival.
+  // "Upload registry" from the list opens the file picker on arrival, once —
+  // the shell rewrites `?tenant=` on the way in, which would otherwise
+  // re-fire this on every resulting `searchParams` change.
+  const uploadFired = useRef(false);
   useEffect(() => {
-    if (searchParams.get("upload")) fileInput.current?.click();
-  }, [searchParams]);
+    if (uploadFired.current || !searchParams.get("upload")) return;
+    uploadFired.current = true;
+    fileInput.current?.click();
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("upload");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [searchParams, setSearchParams]);
+
+  // A dirty document survives an in-app link click (confirmed inline below)
+  // and warns on tab close/reload; it does not block Save/Replace/Delete's
+  // own `navigate()` calls, which run after the edit is already persisted
+  // (or discarded, for Delete).
+  useEffect(() => {
+    if (!isDirty) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [isDirty]);
+
+  // Guards only this editor's own crumb links (below), each wired up
+  // individually with `onClick={guardedNav(...)}` — there is no data router
+  // here, so no `useBlocker` to intercept the top bar's links or the
+  // browser's Back button; `beforeunload` above still covers reload/close.
+  const guardedNav = (to: string) => (e: React.MouseEvent) => {
+    if (!isDirty) return;
+    e.preventDefault();
+    setPendingNav(to);
+  };
 
   const validation = useMutation({
     mutationFn: async (source: string): Promise<Report> => {
@@ -145,10 +188,22 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
     );
   }, [stored, validated]);
 
-  const finish = (namespace: string, version: string) => {
+  // Every mutation that changes or removes a registry (save, replace, save-as,
+  // delete) invalidates the same caches: the list, any stored copy, its
+  // resolved definitions, and the tooltip/combobox semantics cache — leaving
+  // any of these out lets stale data (or a deleted registry) keep rendering.
+  const invalidateSchemaCaches = () => {
     void queryClient.invalidateQueries({ queryKey: ["schema-registries"] });
     void queryClient.invalidateQueries({ queryKey: ["schema-registry"] });
     void queryClient.invalidateQueries({ queryKey: ["schema-resolve"] });
+    invalidateSemantics();
+  };
+
+  const finish = (namespace: string, version: string) => {
+    invalidateSchemaCaches();
+    // The document just saved is the new baseline: no unsaved edits remain,
+    // so the navigation below isn't blocked by the dirty-document guard.
+    initialTextRef.current = text;
     navigate(registryPath(namespace, version));
   };
   const onError = (e: unknown) =>
@@ -190,7 +245,8 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
       await deleteRegistry(stored.namespace, stored.version);
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["schema-registries"] });
+      invalidateSchemaCaches();
+      initialTextRef.current = text;
       navigate(CONVENTIONS);
     },
     onError,
@@ -220,10 +276,16 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
   return (
     <div className="schema-page">
       <p className="schema-crumbs">
-        <Link to={CONVENTIONS}>Conventions</Link> ›{" "}
+        <Link to={CONVENTIONS} onClick={guardedNav(CONVENTIONS)}>
+          Conventions
+        </Link>{" "}
+        ›{" "}
         {stored ? (
           <>
-            <Link to={registryPath(stored.namespace, stored.version)}>
+            <Link
+              to={registryPath(stored.namespace, stored.version)}
+              onClick={guardedNav(registryPath(stored.namespace, stored.version))}
+            >
               {title}
             </Link>{" "}
             › edit
@@ -232,6 +294,33 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
           "new"
         )}
       </p>
+      {pendingNav && (
+        <p
+          className="schema-report"
+          role="alertdialog"
+          aria-label="Unsaved changes"
+        >
+          You have unsaved changes.{" "}
+          <button
+            type="button"
+            className="schema-button"
+            onClick={() => {
+              const to = pendingNav;
+              setPendingNav(null);
+              navigate(to);
+            }}
+          >
+            Leave
+          </button>{" "}
+          <button
+            type="button"
+            className="schema-button"
+            onClick={() => setPendingNav(null)}
+          >
+            Stay
+          </button>
+        </p>
+      )}
       <h1 className="schema-title">{title}</h1>
       <p className="schema-subtitle">
         A registry in the OpenTelemetry Weaver semantic-convention model (
@@ -265,6 +354,7 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
             type="button"
             className="schema-button primary"
             disabled={busy || !validated}
+            title={validated ? undefined : "Validate first"}
             onClick={() => save.mutate()}
           >
             {stored ? "Replace" : "Save"}
@@ -301,7 +391,10 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
           aria-label="Registry document"
           spellCheck={false}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            setError(null);
+          }}
           placeholder={
             "name: acme\nversion: 1.0.0\ngroups:\n  - id: registry.acme\n    type: attribute_group\n    attributes: []"
           }
