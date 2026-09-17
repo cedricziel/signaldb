@@ -102,4 +102,15 @@ describe("TraceVolumeAreaChart roving focus", () => {
     expect(buckets[1]).toHaveFocus();
     expect(buckets[1]).toHaveAttribute("tabindex", "0");
   });
+
+  // Tab should land wherever the pointer last showed detail for, matching
+  // `docs/users/explore-ui.md`'s "the last one you pointed at" — not just
+  // wherever an arrow key left it.
+  it("moves the tab stop to the bucket the pointer moves over", () => {
+    renderChart();
+    const buckets = screen.getAllByTestId("trace-area-bucket");
+    fireEvent.pointerMove(buckets[1]!, { clientX: 200, clientY: 20 });
+    expect(buckets[1]).toHaveAttribute("tabindex", "0");
+    expect(buckets[0]).toHaveAttribute("tabindex", "-1");
+  });
 });

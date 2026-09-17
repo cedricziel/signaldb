@@ -174,6 +174,7 @@ export function TraceVolumeAreaChart({
               }
               onPointerMove={(e) => {
                 setActive(index);
+                roving.setActiveIndex(index);
                 pointer.track(e);
               }}
               onPointerLeave={() => {

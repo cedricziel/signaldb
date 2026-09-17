@@ -236,6 +236,17 @@ describe("SignalHistogram interaction", () => {
       /537 lines/,
     );
   });
+
+  // Tab should land wherever the pointer last showed detail for, matching
+  // `docs/users/explore-ui.md`'s "the last one you pointed at" — not just
+  // wherever an arrow key left it.
+  it("moves the tab stop to the bucket the pointer enters", () => {
+    renderChart(series);
+    const cols = screen.getAllByTestId("svol-col");
+    fireEvent.mouseEnter(cols[1]!);
+    expect(cols[1]).toHaveAttribute("tabindex", "0");
+    expect(cols[0]).toHaveAttribute("tabindex", "-1");
+  });
 });
 
 describe("SignalHistogram scale control", () => {

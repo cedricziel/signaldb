@@ -1,4 +1,10 @@
-import { useCallback, useRef, useState, type KeyboardEvent } from "react";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent,
+} from "react";
 
 export interface RovingFocusItemProps {
   tabIndex: 0 | -1;
@@ -53,6 +59,19 @@ export function useRovingFocus(
   const itemRefs = useRef<(HTMLOrSVGElement | null)[]>([]);
   const { horizontal, vertical } = options;
 
+  // `count` can shrink out from under a stored index (a re-fetch that comes
+  // back with fewer marks): clamp what's rendered here so the group always
+  // keeps exactly one tab stop, and sync the stored value in an effect so a
+  // later `moveFocusTo`/`setActiveIndex` call still starts from where the
+  // group actually landed rather than the stale, out-of-range index.
+  const effectiveIndex = count > 0 ? Math.min(activeIndex, count - 1) : 0;
+
+  useEffect(() => {
+    if (activeIndex !== effectiveIndex) setActiveIndexState(effectiveIndex);
+    // Deliberately keyed on `count` alone: `activeIndex`/`effectiveIndex`
+    // changing as a result of this same effect must not re-trigger it.
+  }, [count]);
+
   const moveFocusTo = useCallback(
     (index: number | null) => {
       if (index === null || index < 0 || index >= count) return;
@@ -71,7 +90,7 @@ export function useRovingFocus(
 
   const itemProps = useCallback(
     (index: number): RovingFocusItemProps => ({
-      tabIndex: index === activeIndex ? 0 : -1,
+      tabIndex: index === effectiveIndex ? 0 : -1,
       ref: (el) => {
         itemRefs.current[index] = el;
       },
@@ -115,8 +134,8 @@ export function useRovingFocus(
         }
       },
     }),
-    [activeIndex, count, horizontal, moveFocusTo, vertical],
+    [effectiveIndex, count, horizontal, moveFocusTo, vertical],
   );
 
-  return { activeIndex, setActiveIndex, itemProps };
+  return { activeIndex: effectiveIndex, setActiveIndex, itemProps };
 }
