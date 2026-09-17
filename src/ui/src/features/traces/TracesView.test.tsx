@@ -1,5 +1,7 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import { DEFAULT_KIND_FILTERS } from "../../lib/traceFilters";
@@ -7,6 +9,7 @@ import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { resetSemanticsCache } from "../../hooks/useSemantics";
 import { spanDetailWidth } from "../../lib/sidebarWidth";
 import { TracesView } from "./TracesView";
+import * as traceDetailApi from "../../api/traceDetail";
 import * as traceGroupsApi from "../../api/traceGroups";
 import type { TraceGroup } from "../../api/traceGroups";
 import * as traceGroupMembersApi from "../../api/traceGroupMembers";
@@ -315,10 +318,12 @@ function traceRoutes(
 function renderView(state: Partial<ExploreState> = {}) {
   const update = vi.fn();
   renderWithClient(
-    <TracesView
-      state={{ ...DEFAULT_STATE, signal: "traces", ...state }}
-      update={update}
-    />,
+    <MemoryRouter>
+      <TracesView
+        state={{ ...DEFAULT_STATE, signal: "traces", ...state }}
+        update={update}
+      />
+    </MemoryRouter>,
   );
   return update;
 }
@@ -746,9 +751,26 @@ describe("TracesView group detail", () => {
       ["span.name", "service.name"],
       ["POST /api/checkout", "gateway"],
       expect.anything(),
-      [],
+      DEFAULT_KIND_FILTERS,
       "traces",
       500,
+    );
+  });
+
+  // #… the group table's default kind selection applies whenever the state
+  // names none (see withDefaultTraceFilters); the drill-in members query
+  // must agree, or it would show a different set of members than the group
+  // row it was opened from.
+  it("applies the default kind filter to the members query when the state names none", async () => {
+    renderView({ group: "POST /api/checkout" });
+    await screen.findByRole("heading", { name: "POST /api/checkout" });
+    expect(fetchTraceGroupMembers).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      DEFAULT_KIND_FILTERS,
+      expect.anything(),
+      expect.anything(),
     );
   });
 
@@ -759,7 +781,7 @@ describe("TracesView group detail", () => {
       ["resource.env"],
       [null],
       expect.anything(),
-      [],
+      DEFAULT_KIND_FILTERS,
       "traces",
       500,
     );
@@ -886,8 +908,8 @@ describe("TracesView detail", () => {
     stubFetchRoutes(traceRoutes(TRACE_BODY));
     renderView({ trace: "t1cafe" });
     const spans = await within(
-      await screen.findByRole("list", { name: "Spans" }),
-    ).findAllByRole("listitem");
+      await screen.findByRole("listbox", { name: "Spans" }),
+    ).findAllByRole("option");
     expect(spans).toHaveLength(2);
     // Error span is preselected, so its attributes show in the detail panel.
     expect(screen.getByText("payment.provider")).toBeInTheDocument();
@@ -898,7 +920,7 @@ describe("TracesView detail", () => {
   it("opens and closes the mobile span-detail drawer", async () => {
     stubFetchRoutes(traceRoutes(TRACE_BODY));
     renderView({ trace: "t1cafe" });
-    await screen.findByRole("list", { name: "Spans" });
+    await screen.findByRole("listbox", { name: "Spans" });
 
     const toggleBtn = screen.getByRole("button", { name: "Details" });
     expect(toggleBtn).toHaveAttribute("aria-expanded", "false");
@@ -919,7 +941,7 @@ describe("TracesView detail", () => {
       traceRoutes(TRACE_BODY, { root: "SERVER", charge: "CLIENT" }),
     );
     renderView({ trace: "t1cafe" });
-    await screen.findByRole("list", { name: "Spans" });
+    await screen.findByRole("listbox", { name: "Spans" });
 
     const legend = await screen.findByLabelText("Span kind legend");
     expect(within(legend).getByText("CLIENT")).toBeInTheDocument();
@@ -966,8 +988,8 @@ describe("TracesView detail", () => {
     ]);
     renderView({ trace: "t1cafe" });
     const spans = await within(
-      await screen.findByRole("list", { name: "Spans" }),
-    ).findAllByRole("listitem");
+      await screen.findByRole("listbox", { name: "Spans" }),
+    ).findAllByRole("option");
     // Wait for the kinds enrichment to land (legend appears with it).
     await screen.findByLabelText("Span kind legend");
 
@@ -1000,7 +1022,7 @@ describe("TracesView detail", () => {
     expect(rootRows[1]).toHaveClass("viz-tip-muted");
     expect(rootRows[2]).toHaveTextContent("version–");
 
-    fireEvent.pointerLeave(screen.getByRole("list", { name: "Spans" }));
+    fireEvent.pointerLeave(screen.getByRole("listbox", { name: "Spans" }));
     expect(screen.queryByRole("tooltip")).toBeNull();
   });
 
@@ -1081,7 +1103,7 @@ describe("TracesView detail", () => {
   it("selects a span on click and shows its details", async () => {
     stubFetchRoutes(traceRoutes(TRACE_BODY));
     renderView({ trace: "t1cafe" });
-    const rows = await screen.findAllByRole("listitem");
+    const rows = await screen.findAllByRole("option");
     await userEvent.click(rows[0]!);
     expect(rows[0]).toHaveAttribute("aria-selected", "true");
     expect(
@@ -1313,18 +1335,29 @@ describe("TracesView detail", () => {
     expect(cssVar()).toBe("640px");
   });
 
-  it("pivots to logs filtered by trace_id", async () => {
+  it("pivots to logs filtered by trace_id, dropping trace-only params", async () => {
     stubFetchRoutes(traceRoutes(TRACE_BODY));
-    const update = renderView({ trace: "t1cafe" });
+    const update = renderView({
+      trace: "t1cafe",
+      search: "stale",
+      group: "stale-group",
+      traceFilters: [{ field: "service.name", value: "gateway" }],
+    });
     await userEvent.click(
       await screen.findByRole("button", { name: "Logs for this trace →" }),
     );
-    expect(update).toHaveBeenCalledWith({
-      signal: "logs",
-      trace: "",
-      raw: "",
-      filters: [{ label: "trace_id", op: "=", value: "t1cafe" }],
-    });
+    expect(update).toHaveBeenCalledWith(
+      {
+        signal: "logs",
+        trace: "",
+        raw: "",
+        search: "",
+        group: "",
+        traceFilters: [],
+        filters: [{ label: "trace_id", op: "=", value: "t1cafe" }],
+      },
+      { push: true },
+    );
   });
 
   it("links to a profile captured during the selected span", async () => {
@@ -1384,12 +1417,19 @@ describe("TracesView detail", () => {
     ).toBeInTheDocument();
     // The raw API error body isn't dumped onto the page.
     expect(screen.queryByText(/errorType/)).toBeNull();
+    // Says where it looked: the selected window and the 30-day wide retry
+    // fetchTraceDetail already performs — not just "the selected window".
+    expect(
+      screen.getByText(
+        /wasn.t found in the selected time window or the last 30 days/i,
+      ),
+    ).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "← traces" }));
     expect(update).toHaveBeenCalledWith({ trace: "" });
   });
 
-  it("surfaces non-404 trace lookup failures verbatim", async () => {
+  it("surfaces non-404 trace lookup failures verbatim, with a way back to search", async () => {
     // 500 is not retried by `retryingFetch` (only 429 and, for GET,
     // 502/503/504 are), so the failure surfaces immediately.
     stubFetchRoutes([
@@ -1399,19 +1439,84 @@ describe("TracesView detail", () => {
         status: 500,
       },
     ]);
-    renderView({ trace: "broken" });
+    const update = renderView({ trace: "broken" });
     expect(await screen.findByRole("alert")).toHaveTextContent(
       /Flight backend unavailable/,
     );
+    await userEvent.click(screen.getByRole("button", { name: "← traces" }));
+    expect(update).toHaveBeenCalledWith({ trace: "" });
+  });
+
+  it("steps back through in-app history instead of always landing on the bare list", async () => {
+    stubFetchRoutes(traceRoutes(TRACE_BODY));
+    const update = vi.fn();
+    // Two entries so the current one isn't the router's initial "default"
+    // entry — the shape a trace opened by push (from a log row, a group,
+    // pasted-id search, ...) leaves behind.
+    renderWithClient(
+      <MemoryRouter
+        initialEntries={["/traces", "/traces/t1cafe"]}
+        initialIndex={1}
+      >
+        <TracesView
+          state={{ ...DEFAULT_STATE, signal: "traces", trace: "t1cafe" }}
+          update={update}
+        />
+      </MemoryRouter>,
+    );
+    await userEvent.click(
+      await screen.findByRole("button", { name: "← traces" }),
+    );
+    // Went back in history rather than issuing a fresh state patch.
+    expect(update).not.toHaveBeenCalledWith(
+      { trace: "" },
+      expect.anything(),
+    );
+    expect(update).not.toHaveBeenCalledWith({ trace: "" });
+  });
+
+  it("includes the time range in the trace-detail cache key so widening it refetches", async () => {
+    const fetchSpy = vi
+      .spyOn(traceDetailApi, "fetchTraceDetail")
+      .mockResolvedValue(null);
+    // A manually-managed client (rather than renderWithClient's, which is
+    // fresh per call) so the same cache spans both renders below — proving
+    // the range change is a new cache key, not just a new mount.
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const tree = (range: ExploreState["range"]) => (
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <TracesView
+            state={{
+              ...DEFAULT_STATE,
+              signal: "traces",
+              trace: "missing",
+              range,
+            }}
+            update={vi.fn()}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    const { rerender } = render(tree({ type: "relative", seconds: 3600 }));
+    await screen.findByRole("heading", { name: "Trace not found" });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    rerender(tree({ type: "relative", seconds: 7200 }));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
   });
 
   it("renders a skeleton while the trace is loading", async () => {
     stubFetchRoutes(traceRoutes(TRACE_BODY));
     const { container } = renderWithClient(
-      <TracesView
-        state={{ ...DEFAULT_STATE, signal: "traces", trace: "t1cafe" }}
-        update={vi.fn()}
-      />,
+      <MemoryRouter>
+        <TracesView
+          state={{ ...DEFAULT_STATE, signal: "traces", trace: "t1cafe" }}
+          update={vi.fn()}
+        />
+      </MemoryRouter>,
     );
     expect(container.querySelector('[aria-busy="true"]')).toBeTruthy();
     expect(container.querySelectorAll(".skeleton-bar").length).toBeGreaterThan(

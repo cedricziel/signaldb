@@ -56,8 +56,47 @@ describe("FilterChips", () => {
     render(<FilterChips filters={[]} labels={[]} onChange={onChange} />);
     await userEvent.click(screen.getByRole("button", { name: "+ filter" }));
     await userEvent.type(screen.getByLabelText("Filter label"), "bad label!");
+    expect(screen.getByRole("button", { name: "Add" })).toBeDisabled();
     await userEvent.click(screen.getByRole("button", { name: "Add" }));
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  it("disables Add and shows a hint for a dotted (invalid) label", async () => {
+    render(<FilterChips filters={[]} labels={[]} onChange={() => {}} />);
+    await userEvent.click(screen.getByRole("button", { name: "+ filter" }));
+    await userEvent.type(screen.getByLabelText("Filter label"), "http.x");
+    expect(screen.getByRole("button", { name: "Add" })).toBeDisabled();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "use letters, digits and _",
+    );
+  });
+
+  it("flattens a dotted suggestion key to the Loki label spelling on pick", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/schema/attributes", body: { hits: [] } },
+    ]);
+    const onChange = vi.fn();
+    render(
+      <FilterChips
+        filters={[]}
+        labels={["service.name"]}
+        onChange={onChange}
+      />,
+    );
+    await userEvent.click(screen.getByRole("button", { name: "+ filter" }));
+    await userEvent.type(screen.getByLabelText("Filter label"), "service.");
+    const list = await screen.findByRole("listbox", {
+      name: "Attribute key suggestions",
+    });
+    await userEvent.click(within(list).getByText("service.name"));
+    expect(screen.getByLabelText("Filter label")).toHaveValue("service_name");
+    expect(screen.getByRole("button", { name: "Add" })).not.toBeDisabled();
+
+    await userEvent.type(screen.getByLabelText("Filter value"), "checkout");
+    await userEvent.click(screen.getByRole("button", { name: "Add" }));
+    expect(onChange).toHaveBeenCalledWith([
+      { label: "service_name", op: "=", value: "checkout" },
+    ]);
   });
 
   it("suggests registry keys with briefs merged with observed labels", async () => {
@@ -112,8 +151,10 @@ describe("FilterChips", () => {
     expect(url.searchParams.get("prefix")).toBe("http.re");
 
     await userEvent.click(options[1]!);
+    // Picking a suggestion flattens the dotted registry key to the Loki
+    // label spelling the compiled selector needs (see FilterChips' onPick).
     expect(screen.getByLabelText("Filter label")).toHaveValue(
-      "http.response.status_code",
+      "http_response_status_code",
     );
     expect(
       screen.queryByRole("listbox", { name: "Attribute key suggestions" }),

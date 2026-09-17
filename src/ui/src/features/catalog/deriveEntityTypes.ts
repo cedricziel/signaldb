@@ -29,6 +29,7 @@
  * tenant's own registry contributes its types on the same terms as the
  * bundled one — while none of the eight curated types regress.
  */
+import { toLokiLabel } from "../../lib/labelSuggestions";
 import {
   ENTITY_TYPES,
   RESOURCE_SOURCES,
@@ -70,9 +71,7 @@ export interface RegistryEntity {
 }
 
 /** Route ids are underscored; registry names are dotted. */
-function idOf(name: string): string {
-  return name.replace(/\./g, "_");
-}
+const idOf = toLokiLabel;
 
 /** "telemetry.sdk" -> "Telemetry sdks" / "telemetry sdk". A registry-only
  * type has no curated label, and its own name is a better fallback than a

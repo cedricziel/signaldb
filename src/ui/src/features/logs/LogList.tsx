@@ -33,6 +33,20 @@ export function traceIdOf(row: LogRow): string | null {
   return null;
 }
 
+/**
+ * A row's identity for expansion/React-key purposes: the virtualizer's
+ * `item.index` shifts under a row's feet in live mode (a newer row
+ * prepends), which used to collapse whatever was expanded. Timestamp plus
+ * the line and any span/trace id is stable across such a shift and cheap to
+ * compute; it does not need to be a true hash, only unique enough among the
+ * rows on screen.
+ */
+export function rowKey(row: LogRow): string {
+  const spanId = row.metadata["span_id"] ?? "";
+  const traceId = traceIdOf(row) ?? "";
+  return `${row.tsNs}|${spanId}|${traceId}|${row.line}`;
+}
+
 export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -53,7 +67,7 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
       <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
         {virtualizer.getVirtualItems().map((item) => {
           const row = rows[item.index]!;
-          const key = `${row.tsNs}-${item.index}`;
+          const key = rowKey(row);
           const level = normalizeLevel(row.labels["level"] ?? "");
           const isOpen = expanded === key;
           const traceId = traceIdOf(row);

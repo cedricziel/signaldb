@@ -198,6 +198,22 @@ describe("MemberTable", () => {
     expect(screen.getByText(/Showing up to 500 spans/)).toBeInTheDocument();
   });
 
+  it("wraps the table in a horizontal scroll container", () => {
+    const { container } = render(
+      <MemberTable
+        members={[member("t1", "s1", "GET /pay", "gateway", "1000", 12)]}
+        error={null}
+        what="spans"
+        identityLabel="Span"
+        emptyMessage="No spans."
+        onOpenTrace={vi.fn()}
+      />,
+    );
+    expect(
+      container.querySelector(".table-scroll > table.trace-table"),
+    ).toBeInTheDocument();
+  });
+
   it("opens the row's trace on click", () => {
     const onOpenTrace = vi.fn();
     render(
