@@ -225,6 +225,14 @@
   color: var(--faint);
 }
 
+.status-icon.receiving {
+  color: var(--ok);
+}
+
+.status-icon.error {
+  color: var(--err);
+}
+
 .status-text {
   margin-left: auto;
   color: var(--dim);

@@ -6,9 +6,26 @@ import {
   type ConnectionInfoResponse,
 } from "../../api/connection";
 import { ApiError, toErrorMessage } from "../../api/http";
+import {
+  fetchIngestStatus,
+  INGEST_STATUS_SIGNALS,
+  type IngestStatusSignal,
+} from "../../api/ingestStatus";
 import { CopyValueButton } from "../../components/CopyValueButton";
 import { SkeletonLines } from "../explore/Skeleton";
 import "./Instrumentation.css";
+
+/** How often an open Instrumentation page re-checks each signal for recent
+ * data — frequent enough that "Receiving" shows up shortly after the first
+ * write lands, without hammering the querier from every idle tab. */
+const INGEST_STATUS_POLL_MS = 10_000;
+
+const SIGNAL_LABELS: Record<IngestStatusSignal, string> = {
+  traces: "Traces",
+  logs: "Logs",
+  metrics: "Metrics",
+  profiles: "Profiles",
+};
 
 /** YAML `tls:` block for a collector-style OTLP exporter, indented to match
  * the surrounding `endpoint:`/`headers:` lines. Omitted entirely for a TLS
@@ -353,26 +370,13 @@ export function Instrumentation({ state }: Props) {
                 <div className="verification">
                   <h3>Verification</h3>
                   <div className="status-list">
-                    <div className="status-item">
-                      <span className="status-icon waiting">·</span>
-                      <span>Traces</span>
-                      <span className="status-text">Waiting for data</span>
-                    </div>
-                    <div className="status-item">
-                      <span className="status-icon waiting">·</span>
-                      <span>Logs</span>
-                      <span className="status-text">Waiting for data</span>
-                    </div>
-                    <div className="status-item">
-                      <span className="status-icon waiting">·</span>
-                      <span>Metrics</span>
-                      <span className="status-text">Waiting for data</span>
-                    </div>
-                    <div className="status-item">
-                      <span className="status-icon waiting">·</span>
-                      <span>Profiles</span>
-                      <span className="status-text">Waiting for data</span>
-                    </div>
+                    {INGEST_STATUS_SIGNALS.map((signal) => (
+                      <VerificationRow
+                        key={signal}
+                        signal={signal}
+                        state={state}
+                      />
+                    ))}
                   </div>
                 </div>
               </>
@@ -380,6 +384,49 @@ export function Instrumentation({ state }: Props) {
           </div>
         </main>
       </div>
+    </div>
+  );
+}
+
+/**
+ * One "is data actually arriving" row: counts `signal` records over the last
+ * 15 minutes (see api/ingestStatus.ts), polling while the page stays open so
+ * a visitor watching after wiring up a collector sees it flip to Receiving
+ * without reloading.
+ */
+function VerificationRow({
+  signal,
+  state,
+}: {
+  signal: IngestStatusSignal;
+  state: Pick<ExploreState, "tenant" | "dataset">;
+}) {
+  const status = useQuery({
+    queryKey: ["ingest-status", signal, state.tenant, state.dataset],
+    queryFn: () => fetchIngestStatus(signal),
+    refetchInterval: INGEST_STATUS_POLL_MS,
+    retry: false,
+  });
+
+  const count = status.data ?? 0;
+  const receiving = !status.isError && count > 0;
+  const iconClass = status.isError
+    ? "error"
+    : receiving
+      ? "receiving"
+      : "waiting";
+
+  return (
+    <div className="status-item">
+      <span className={`status-icon ${iconClass}`}>·</span>
+      <span>{SIGNAL_LABELS[signal]}</span>
+      <span className="status-text">
+        {status.isError
+          ? toErrorMessage(status.error)
+          : receiving
+            ? `Receiving (${count} in the last 15 min)`
+            : "Waiting for data"}
+      </span>
     </div>
   );
 }
