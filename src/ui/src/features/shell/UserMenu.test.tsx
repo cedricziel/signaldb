@@ -6,6 +6,8 @@ import { DEFAULT_STATE } from "../../lib/urlState";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { UserMenu } from "./UserMenu";
 
+const STATE = { ...DEFAULT_STATE, tenant: "acme", dataset: "production" };
+
 function renderUserMenu(props: Parameters<typeof UserMenu>[0]) {
   return renderWithClient(
     <MemoryRouter>
@@ -39,7 +41,7 @@ describe("UserMenu", () => {
         body: { ...WHOAMI, user: undefined },
       },
     ]);
-    renderUserMenu({ state: DEFAULT_STATE });
+    renderUserMenu({ state: STATE });
     // No user menu button should appear
     await waitFor(() => {
       expect(screen.queryByText("JD")).not.toBeInTheDocument();
@@ -48,7 +50,7 @@ describe("UserMenu", () => {
 
   it("shows avatar with initials from display name", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
-    renderUserMenu({ state: DEFAULT_STATE });
+    renderUserMenu({ state: STATE });
     await waitFor(() => {
       expect(screen.getByText("JD")).toBeInTheDocument();
     });
@@ -56,7 +58,7 @@ describe("UserMenu", () => {
 
   it("shows user display name next to avatar", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
-    renderUserMenu({ state: DEFAULT_STATE });
+    renderUserMenu({ state: STATE });
     await waitFor(() => {
       expect(screen.getByText("Jane Doe")).toBeInTheDocument();
     });
@@ -64,7 +66,7 @@ describe("UserMenu", () => {
 
   it("opens popover on click", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
-    renderUserMenu({ state: DEFAULT_STATE });
+    renderUserMenu({ state: STATE });
     const button = await screen.findByRole("button", { name: /jane doe/i });
     await userEvent.click(button);
     await waitFor(() => {
@@ -74,7 +76,7 @@ describe("UserMenu", () => {
 
   it("shows user info in popover", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
-    renderUserMenu({ state: DEFAULT_STATE });
+    renderUserMenu({ state: STATE });
     const button = await screen.findByRole("button", { name: /jane doe/i });
     await userEvent.click(button);
     await waitFor(() => {
@@ -85,7 +87,7 @@ describe("UserMenu", () => {
 
   it("shows theme toggle in menu", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
-    renderUserMenu({ state: DEFAULT_STATE });
+    renderUserMenu({ state: STATE });
     const button = await screen.findByRole("button", { name: /jane doe/i });
     await userEvent.click(button);
     await waitFor(() => {
@@ -95,7 +97,7 @@ describe("UserMenu", () => {
 
   it("shows navigation items with correct links", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
-    renderUserMenu({ state: DEFAULT_STATE });
+    renderUserMenu({ state: STATE });
     const button = await screen.findByRole("button", { name: /jane doe/i });
     await userEvent.click(button);
     await waitFor(() => {
@@ -114,7 +116,7 @@ describe("UserMenu", () => {
 
   it("closes popover on Escape key", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
-    renderUserMenu({ state: DEFAULT_STATE });
+    renderUserMenu({ state: STATE });
     const button = await screen.findByRole("button", { name: /jane doe/i });
     await userEvent.click(button);
     await waitFor(() => {
@@ -128,7 +130,7 @@ describe("UserMenu", () => {
 
   it("closes popover on backdrop click", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
-    renderUserMenu({ state: DEFAULT_STATE });
+    renderUserMenu({ state: STATE });
     const button = await screen.findByRole("button", { name: /jane doe/i });
     await userEvent.click(button);
     await waitFor(() => {
@@ -144,11 +146,87 @@ describe("UserMenu", () => {
 
   it("shows sign out button", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
-    renderUserMenu({ state: DEFAULT_STATE });
+    renderUserMenu({ state: STATE });
     const button = await screen.findByRole("button", { name: /jane doe/i });
     await userEvent.click(button);
     await waitFor(() => {
       expect(screen.getByText("Sign out")).toBeInTheDocument();
     });
+  });
+
+  it("does not issue a whoami request without a tenant in state", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI },
+    ]);
+    renderUserMenu({ state: DEFAULT_STATE });
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(
+      fetchMock.mock.calls.some((call) =>
+        String(call[0]).includes("/api/v1/whoami"),
+      ),
+    ).toBe(false);
+  });
+
+  it("shows an inline alert and keeps the menu open, without reloading, when sign-out fails", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI },
+      {
+        match: "/ui/session",
+        method: "DELETE",
+        body: { error: "boom" },
+        status: 500,
+      },
+    ]);
+    const originalLocation = window.location;
+    const reloadSpy = vi.fn();
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...originalLocation, reload: reloadSpy },
+    });
+    try {
+      renderUserMenu({ state: STATE });
+      const button = await screen.findByRole("button", { name: /jane doe/i });
+      await userEvent.click(button);
+      await userEvent.click(screen.getByText("Sign out"));
+
+      expect(await screen.findByRole("alert")).toHaveTextContent(/500/);
+      expect(screen.getByRole("menu")).toBeInTheDocument();
+      expect(reloadSpy).not.toHaveBeenCalled();
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: originalLocation,
+      });
+    }
+  });
+
+  it("only offers API keys to admins/instance-admins", async () => {
+    stubFetchRoutes([
+      {
+        match: "/api/v1/whoami",
+        body: { ...WHOAMI, memberships: [{ tenant_id: "acme", role: "viewer" }] },
+      },
+    ]);
+    renderUserMenu({ state: STATE });
+    const button = await screen.findByRole("button", { name: /jane doe/i });
+    await userEvent.click(button);
+    await waitFor(() => {
+      expect(screen.getByRole("menu")).toBeInTheDocument();
+    });
+    expect(
+      screen.queryByRole("link", { name: /api keys/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("updates the Appearance label immediately after toggling", async () => {
+    stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI }]);
+    renderUserMenu({ state: STATE });
+    const button = await screen.findByRole("button", { name: /jane doe/i });
+    await userEvent.click(button);
+    const before = screen.getByText("Appearance").closest("button")!;
+    const initialHint = before.textContent;
+    await userEvent.click(before);
+    const after = screen.getByText("Appearance").closest("button")!;
+    expect(after.textContent).not.toBe(initialHint);
   });
 });

@@ -1,16 +1,48 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router";
-import { renderWithClient, stubFetchRoutes } from "../../test/render";
+import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
+import {
+  outletContextRoute,
+  renderWithClient,
+  stubFetchRoutes,
+} from "../../test/render";
 import { ApiKeys } from "./ApiKeys";
 
-function renderApiKeys() {
+/** The same route shape as `renderApiKeys`, but as a bare element so a test
+ * can `rerender` it with a different outlet `state` against the *same*
+ * `QueryClient` — exercising the whoami query key's tenant/dataset scoping
+ * (fix: switching tenants must refetch, not answer from the old tenant's
+ * cached response). */
+function ApiKeysHarness({ state }: { state: ExploreState }) {
+  return (
+    <MemoryRouter initialEntries={["/api-keys"]}>
+      <Routes>
+        <Route element={outletContextRoute(state)}>
+          <Route path="/api-keys" element={<ApiKeys />} />
+          <Route path="/logs" element={<div>Logs page</div>} />
+        </Route>
+      </Routes>
+    </MemoryRouter>
+  );
+}
+
+function renderApiKeys(state: Partial<ExploreState> = {}) {
+  const contextState: ExploreState = {
+    ...DEFAULT_STATE,
+    tenant: "acme",
+    dataset: "production",
+    ...state,
+  };
   return renderWithClient(
     <MemoryRouter initialEntries={["/api-keys"]}>
       <Routes>
-        <Route path="/api-keys" element={<ApiKeys />} />
-        <Route path="/logs" element={<div>Logs page</div>} />
+        <Route element={outletContextRoute(contextState)}>
+          <Route path="/api-keys" element={<ApiKeys />} />
+          <Route path="/logs" element={<div>Logs page</div>} />
+        </Route>
       </Routes>
     </MemoryRouter>,
   );
@@ -99,6 +131,68 @@ describe("ApiKeys page", () => {
       expect(screen.getByText("Logs page")).toBeInTheDocument(),
     );
     expect(screen.queryByText("API keys")).not.toBeInTheDocument();
+  });
+
+  it("shows an inline error on a non-401 whoami failure instead of redirecting to /logs", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: { error: "boom" }, status: 500 },
+    ]);
+    renderApiKeys();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/500/);
+    expect(screen.queryByText("Logs page")).not.toBeInTheDocument();
+  });
+
+  it("refetches whoami under its own key when the outlet tenant changes", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, body: [] },
+      {
+        match: "/api/v1/manage/tenants/globex/api-keys",
+        body: [],
+      },
+    ]);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const stateAcme: ExploreState = {
+      ...DEFAULT_STATE,
+      tenant: "acme",
+      dataset: "production",
+    };
+    const stateGlobex: ExploreState = {
+      ...DEFAULT_STATE,
+      tenant: "globex",
+      dataset: "main",
+    };
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <ApiKeysHarness state={stateAcme} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some((call) =>
+          String(call[0]).includes("/api/v1/whoami"),
+        ),
+      ).toBe(true),
+    );
+    const whoamiCallsForAcme = fetchMock.mock.calls.filter((call) =>
+      String(call[0]).includes("/api/v1/whoami"),
+    ).length;
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <ApiKeysHarness state={stateGlobex} />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      const whoamiCallsAfter = fetchMock.mock.calls.filter((call) =>
+        String(call[0]).includes("/api/v1/whoami"),
+      ).length;
+      expect(whoamiCallsAfter).toBeGreaterThan(whoamiCallsForAcme);
+    });
   });
 
   it("shows existing API keys list", async () => {
@@ -732,6 +826,135 @@ describe("ApiKeys page", () => {
       // At least 2 GET calls: initial load + refetch after revoke
       expect(getCalls.length).toBeGreaterThanOrEqual(2);
     });
+  });
+
+  it("closes an open editor and resets tenant-bound UI state when the outlet tenant changes", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, body: API_KEYS },
+    ]);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const stateAcme: ExploreState = {
+      ...DEFAULT_STATE,
+      tenant: "acme",
+      dataset: "production",
+    };
+    const stateGlobex: ExploreState = {
+      ...DEFAULT_STATE,
+      tenant: "globex",
+      dataset: "main",
+    };
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <ApiKeysHarness state={stateAcme} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("collector-production")).toBeInTheDocument(),
+    );
+    await userEvent.click(screen.getAllByText("Edit scopes")[0]!);
+    expect(
+      screen.getByRole("form", { name: "Edit scopes" }),
+    ).toBeInTheDocument();
+
+    // Pre-warm the new tenant's whoami cache so the switch resolves
+    // synchronously — otherwise the transient `isLoading` render (which
+    // returns null) would itself unmount the editor, masking the bug this
+    // test targets (editingKeyId surviving the switch in component state).
+    client.setQueryData(["whoami", "globex", "main"], WHOAMI_ADMIN);
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <ApiKeysHarness state={stateGlobex} />
+      </QueryClientProvider>,
+    );
+
+    // A stale editor bound to the previous tenant's key must not survive the
+    // switch — it would otherwise let a save land on the wrong tenant.
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("form", { name: "Edit scopes" }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("ignores a late-arriving create-key result from a tenant the user has since left", async () => {
+    let resolvePost!: (value: Response) => void;
+    const postPromise = new Promise<Response>((resolve) => {
+      resolvePost = resolve;
+    });
+    const fetchMock = vi.fn().mockImplementation(async (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      const method = (
+        input instanceof Request ? input.method : (init?.method ?? "GET")
+      ).toUpperCase();
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { "Content-Type": "application/json" },
+        });
+      if (url.includes("/api/v1/whoami")) {
+        return json(WHOAMI_ADMIN);
+      }
+      if (url.includes(API_KEYS_PATH) && method === "GET") {
+        return json([]);
+      }
+      if (url.includes(API_KEYS_PATH) && method === "POST") {
+        return postPromise;
+      }
+      return new Response(JSON.stringify({ error: `no stub for ${url}` }), {
+        status: 404,
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { client: generatedClient } = await import("../../api/gen/client.gen");
+    generatedClient.setConfig({ baseUrl: "http://localhost", fetch: fetchMock });
+
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const stateAcme: ExploreState = {
+      ...DEFAULT_STATE,
+      tenant: "acme",
+      dataset: "production",
+    };
+    const stateGlobex: ExploreState = {
+      ...DEFAULT_STATE,
+      tenant: "globex",
+      dataset: "main",
+    };
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <ApiKeysHarness state={stateAcme} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+    await userEvent.click(screen.getByText("Create API key"));
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <ApiKeysHarness state={stateGlobex} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+
+    resolvePost(
+      new Response(JSON.stringify({ key: "sk-stale-acme-key" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    // The response belongs to the tenant the user has since left, and its
+    // instance is unmounted — it must not resurrect a secret modal here.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByText("Copy this key now")).not.toBeInTheDocument();
   });
 
   it("shows revoked keys dimmed", async () => {

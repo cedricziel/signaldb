@@ -1,5 +1,7 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import { DEFAULT_KIND_FILTERS } from "../../lib/traceFilters";
@@ -7,6 +9,7 @@ import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { resetSemanticsCache } from "../../hooks/useSemantics";
 import { spanDetailWidth } from "../../lib/sidebarWidth";
 import { TracesView } from "./TracesView";
+import * as traceDetailApi from "../../api/traceDetail";
 import * as traceGroupsApi from "../../api/traceGroups";
 import type { TraceGroup } from "../../api/traceGroups";
 import * as traceGroupMembersApi from "../../api/traceGroupMembers";
@@ -315,10 +318,12 @@ function traceRoutes(
 function renderView(state: Partial<ExploreState> = {}) {
   const update = vi.fn();
   renderWithClient(
-    <TracesView
-      state={{ ...DEFAULT_STATE, signal: "traces", ...state }}
-      update={update}
-    />,
+    <MemoryRouter>
+      <TracesView
+        state={{ ...DEFAULT_STATE, signal: "traces", ...state }}
+        update={update}
+      />
+    </MemoryRouter>,
   );
   return update;
 }
@@ -718,6 +723,95 @@ describe("TracesView unresolvable-dimension guard (#1070)", () => {
   });
 });
 
+describe("TracesView live refetch resolves a fresh window", () => {
+  beforeEach(() => {
+    stubFetchRoutes([]);
+  });
+
+  /** Renders with an isolated `QueryClient` (rather than `renderWithClient`)
+   * so a test can force a refetch directly via `client.refetchQueries` —
+   * exactly what a live-tail interval does — without waiting on real timers. */
+  function renderWithOwnClient(state: Partial<ExploreState> = {}) {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <TracesView
+            state={{ ...DEFAULT_STATE, signal: "traces", live: true, ...state }}
+            update={vi.fn()}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    return client;
+  }
+
+  it("re-resolves the group list's window on each refetch instead of reusing the window captured at render", async () => {
+    const client = renderWithOwnClient();
+    await waitFor(() => expect(fetchTraceGroups).toHaveBeenCalled());
+    const [, firstRange] = fetchTraceGroups.mock.calls[0]!;
+
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5 * 60_000);
+    await client.refetchQueries({ queryKey: ["trace-groups"] });
+
+    await waitFor(() =>
+      expect(fetchTraceGroups.mock.calls.length).toBeGreaterThan(1),
+    );
+    const [, secondRange] = fetchTraceGroups.mock.calls.at(-1)!;
+    // A tighter bound than "not equal": natural re-renders can jitter the
+    // resolved window by a few ms on their own, so the assertion checks the
+    // shift tracks the deliberate 5-minute jump in `Date.now()`, not that.
+    expect(secondRange.toMs - firstRange.toMs).toBeGreaterThan(200_000);
+  });
+
+  it("re-resolves the unresolved-window total's window on each refetch", async () => {
+    fetchTraceGroups.mockResolvedValue({
+      groups: [group([null], 1000, 0, 1, 1, "1")],
+      truncated: false,
+    });
+    fetchWindowTotal.mockResolvedValue(1000);
+    const client = renderWithOwnClient();
+    await waitFor(() => expect(fetchWindowTotal).toHaveBeenCalled());
+    const [firstRange] = fetchWindowTotal.mock.calls[0]!;
+
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5 * 60_000);
+    await client.refetchQueries({ queryKey: ["trace-window-total"] });
+
+    await waitFor(() =>
+      expect(fetchWindowTotal.mock.calls.length).toBeGreaterThan(1),
+    );
+    const [secondRange] = fetchWindowTotal.mock.calls.at(-1)!;
+    // A tighter bound than "not equal": natural re-renders can jitter the
+    // resolved window by a few ms on their own, so the assertion checks the
+    // shift tracks the deliberate 5-minute jump in `Date.now()`, not that.
+    expect(secondRange.toMs - firstRange.toMs).toBeGreaterThan(200_000);
+  });
+
+  it("re-resolves a group's member list window on each refetch", async () => {
+    fetchTraceGroupMembers.mockResolvedValue([]);
+    const client = renderWithOwnClient({
+      groupBy: "http.route",
+      group: "GET /health",
+    });
+    await waitFor(() => expect(fetchTraceGroupMembers).toHaveBeenCalled());
+    const [, , firstRange] = fetchTraceGroupMembers.mock.calls[0]!;
+
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5 * 60_000);
+    await client.refetchQueries({ queryKey: ["trace-group-members"] });
+
+    await waitFor(() =>
+      expect(fetchTraceGroupMembers.mock.calls.length).toBeGreaterThan(1),
+    );
+    const [, , secondRange] = fetchTraceGroupMembers.mock.calls.at(-1)!;
+    // A tighter bound than "not equal": natural re-renders can jitter the
+    // resolved window by a few ms on their own, so the assertion checks the
+    // shift tracks the deliberate 5-minute jump in `Date.now()`, not that.
+    expect(secondRange.toMs - firstRange.toMs).toBeGreaterThan(200_000);
+  });
+});
+
 describe("TracesView group detail", () => {
   it("lists the group's members, newest first", async () => {
     fetchTraceGroupMembers.mockResolvedValue([
@@ -746,9 +840,26 @@ describe("TracesView group detail", () => {
       ["span.name", "service.name"],
       ["POST /api/checkout", "gateway"],
       expect.anything(),
-      [],
+      DEFAULT_KIND_FILTERS,
       "traces",
       500,
+    );
+  });
+
+  // #… the group table's default kind selection applies whenever the state
+  // names none (see withDefaultTraceFilters); the drill-in members query
+  // must agree, or it would show a different set of members than the group
+  // row it was opened from.
+  it("applies the default kind filter to the members query when the state names none", async () => {
+    renderView({ group: "POST /api/checkout" });
+    await screen.findByRole("heading", { name: "POST /api/checkout" });
+    expect(fetchTraceGroupMembers).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+      DEFAULT_KIND_FILTERS,
+      expect.anything(),
+      expect.anything(),
     );
   });
 
@@ -759,7 +870,7 @@ describe("TracesView group detail", () => {
       ["resource.env"],
       [null],
       expect.anything(),
-      [],
+      DEFAULT_KIND_FILTERS,
       "traces",
       500,
     );
@@ -886,8 +997,8 @@ describe("TracesView detail", () => {
     stubFetchRoutes(traceRoutes(TRACE_BODY));
     renderView({ trace: "t1cafe" });
     const spans = await within(
-      await screen.findByRole("list", { name: "Spans" }),
-    ).findAllByRole("listitem");
+      await screen.findByRole("group", { name: "Spans" }),
+    ).findAllByRole("button");
     expect(spans).toHaveLength(2);
     // Error span is preselected, so its attributes show in the detail panel.
     expect(screen.getByText("payment.provider")).toBeInTheDocument();
@@ -898,7 +1009,7 @@ describe("TracesView detail", () => {
   it("opens and closes the mobile span-detail drawer", async () => {
     stubFetchRoutes(traceRoutes(TRACE_BODY));
     renderView({ trace: "t1cafe" });
-    await screen.findByRole("list", { name: "Spans" });
+    await screen.findByRole("group", { name: "Spans" });
 
     const toggleBtn = screen.getByRole("button", { name: "Details" });
     expect(toggleBtn).toHaveAttribute("aria-expanded", "false");
@@ -919,7 +1030,7 @@ describe("TracesView detail", () => {
       traceRoutes(TRACE_BODY, { root: "SERVER", charge: "CLIENT" }),
     );
     renderView({ trace: "t1cafe" });
-    await screen.findByRole("list", { name: "Spans" });
+    await screen.findByRole("group", { name: "Spans" });
 
     const legend = await screen.findByLabelText("Span kind legend");
     expect(within(legend).getByText("CLIENT")).toBeInTheDocument();
@@ -966,8 +1077,8 @@ describe("TracesView detail", () => {
     ]);
     renderView({ trace: "t1cafe" });
     const spans = await within(
-      await screen.findByRole("list", { name: "Spans" }),
-    ).findAllByRole("listitem");
+      await screen.findByRole("group", { name: "Spans" }),
+    ).findAllByRole("button");
     // Wait for the kinds enrichment to land (legend appears with it).
     await screen.findByLabelText("Span kind legend");
 
@@ -1000,7 +1111,7 @@ describe("TracesView detail", () => {
     expect(rootRows[1]).toHaveClass("viz-tip-muted");
     expect(rootRows[2]).toHaveTextContent("version–");
 
-    fireEvent.pointerLeave(screen.getByRole("list", { name: "Spans" }));
+    fireEvent.pointerLeave(screen.getByRole("group", { name: "Spans" }));
     expect(screen.queryByRole("tooltip")).toBeNull();
   });
 
@@ -1081,9 +1192,11 @@ describe("TracesView detail", () => {
   it("selects a span on click and shows its details", async () => {
     stubFetchRoutes(traceRoutes(TRACE_BODY));
     renderView({ trace: "t1cafe" });
-    const rows = await screen.findAllByRole("listitem");
+    const rows = await within(
+      await screen.findByRole("group", { name: "Spans" }),
+    ).findAllByRole("button");
     await userEvent.click(rows[0]!);
-    expect(rows[0]).toHaveAttribute("aria-selected", "true");
+    expect(rows[0]).toHaveAttribute("aria-pressed", "true");
     expect(
       screen.getByRole("heading", { name: "POST /api/checkout", level: 4 }),
     ).toBeInTheDocument();
@@ -1313,18 +1426,29 @@ describe("TracesView detail", () => {
     expect(cssVar()).toBe("640px");
   });
 
-  it("pivots to logs filtered by trace_id", async () => {
+  it("pivots to logs filtered by trace_id, dropping trace-only params", async () => {
     stubFetchRoutes(traceRoutes(TRACE_BODY));
-    const update = renderView({ trace: "t1cafe" });
+    const update = renderView({
+      trace: "t1cafe",
+      search: "stale",
+      group: "stale-group",
+      traceFilters: [{ field: "service.name", value: "gateway" }],
+    });
     await userEvent.click(
       await screen.findByRole("button", { name: "Logs for this trace →" }),
     );
-    expect(update).toHaveBeenCalledWith({
-      signal: "logs",
-      trace: "",
-      raw: "",
-      filters: [{ label: "trace_id", op: "=", value: "t1cafe" }],
-    });
+    expect(update).toHaveBeenCalledWith(
+      {
+        signal: "logs",
+        trace: "",
+        raw: "",
+        search: "",
+        group: "",
+        traceFilters: [],
+        filters: [{ label: "trace_id", op: "=", value: "t1cafe" }],
+      },
+      { push: true },
+    );
   });
 
   it("links to a profile captured during the selected span", async () => {
@@ -1384,12 +1508,19 @@ describe("TracesView detail", () => {
     ).toBeInTheDocument();
     // The raw API error body isn't dumped onto the page.
     expect(screen.queryByText(/errorType/)).toBeNull();
+    // Says where it looked: the selected window and the 30-day wide retry
+    // fetchTraceDetail already performs — not just "the selected window".
+    expect(
+      screen.getByText(
+        /wasn.t found in the selected time window or the last 30 days/i,
+      ),
+    ).toBeInTheDocument();
 
     await userEvent.click(screen.getByRole("button", { name: "← traces" }));
     expect(update).toHaveBeenCalledWith({ trace: "" });
   });
 
-  it("surfaces non-404 trace lookup failures verbatim", async () => {
+  it("surfaces non-404 trace lookup failures verbatim, with a way back to search", async () => {
     // 500 is not retried by `retryingFetch` (only 429 and, for GET,
     // 502/503/504 are), so the failure surfaces immediately.
     stubFetchRoutes([
@@ -1399,19 +1530,90 @@ describe("TracesView detail", () => {
         status: 500,
       },
     ]);
-    renderView({ trace: "broken" });
+    const update = renderView({ trace: "broken" });
     expect(await screen.findByRole("alert")).toHaveTextContent(
       /Flight backend unavailable/,
     );
+    await userEvent.click(screen.getByRole("button", { name: "← traces" }));
+    expect(update).toHaveBeenCalledWith({ trace: "" });
+  });
+
+  it("steps back through in-app history instead of always landing on the bare list", async () => {
+    stubFetchRoutes(traceRoutes(TRACE_BODY));
+    const update = vi.fn();
+    // `goBackOr` reads `window.history.state.idx` (a real browser-history
+    // concern — `MemoryRouter` never touches it), so the shape a trace
+    // opened by push leaves behind is simulated here directly: idx 1, one
+    // in-app entry behind the current one.
+    window.history.replaceState({ idx: 1 }, "");
+    try {
+      renderWithClient(
+        <MemoryRouter
+          initialEntries={["/traces", "/traces/t1cafe"]}
+          initialIndex={1}
+        >
+          <TracesView
+            state={{ ...DEFAULT_STATE, signal: "traces", trace: "t1cafe" }}
+            update={update}
+          />
+        </MemoryRouter>,
+      );
+      await userEvent.click(
+        await screen.findByRole("button", { name: "← traces" }),
+      );
+      // Went back in history rather than issuing a fresh state patch.
+      expect(update).not.toHaveBeenCalledWith(
+        { trace: "" },
+        expect.anything(),
+      );
+      expect(update).not.toHaveBeenCalledWith({ trace: "" });
+    } finally {
+      window.history.replaceState(null, "");
+    }
+  });
+
+  it("includes the time range in the trace-detail cache key so widening it refetches", async () => {
+    const fetchSpy = vi
+      .spyOn(traceDetailApi, "fetchTraceDetail")
+      .mockResolvedValue(null);
+    // A manually-managed client (rather than renderWithClient's, which is
+    // fresh per call) so the same cache spans both renders below — proving
+    // the range change is a new cache key, not just a new mount.
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const tree = (range: ExploreState["range"]) => (
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <TracesView
+            state={{
+              ...DEFAULT_STATE,
+              signal: "traces",
+              trace: "missing",
+              range,
+            }}
+            update={vi.fn()}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>
+    );
+    const { rerender } = render(tree({ type: "relative", seconds: 3600 }));
+    await screen.findByRole("heading", { name: "Trace not found" });
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    rerender(tree({ type: "relative", seconds: 7200 }));
+    await waitFor(() => expect(fetchSpy).toHaveBeenCalledTimes(2));
   });
 
   it("renders a skeleton while the trace is loading", async () => {
     stubFetchRoutes(traceRoutes(TRACE_BODY));
     const { container } = renderWithClient(
-      <TracesView
-        state={{ ...DEFAULT_STATE, signal: "traces", trace: "t1cafe" }}
-        update={vi.fn()}
-      />,
+      <MemoryRouter>
+        <TracesView
+          state={{ ...DEFAULT_STATE, signal: "traces", trace: "t1cafe" }}
+          update={vi.fn()}
+        />
+      </MemoryRouter>,
     );
     expect(container.querySelector('[aria-busy="true"]')).toBeTruthy();
     expect(container.querySelectorAll(".skeleton-bar").length).toBeGreaterThan(

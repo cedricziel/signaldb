@@ -1,13 +1,22 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter, Route, Routes, useLocation } from "react-router";
+import {
+  MemoryRouter,
+  Route,
+  Routes,
+  useLocation,
+  useNavigate,
+} from "react-router";
+import * as semantics from "../../hooks/useSemantics";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { RegistryEditor } from "./RegistryEditor";
 import {
   ACME_DOCUMENT,
   ACME_REGISTRY,
   OTEL_REGISTRY,
+  shellOutlet,
   VALIDATION_FAILED,
   VALIDATION_OK,
   WHOAMI_MEMBER,
@@ -15,8 +24,13 @@ import {
 } from "./testFixtures";
 
 function LocationProbe() {
-  const { pathname } = useLocation();
-  return <div data-testid="location">{pathname}</div>;
+  const { pathname, search } = useLocation();
+  return (
+    <>
+      <div data-testid="location">{pathname}</div>
+      <div data-testid="search">{search}</div>
+    </>
+  );
 }
 
 function renderEditor(path: string) {
@@ -24,16 +38,21 @@ function renderEditor(path: string) {
     <MemoryRouter initialEntries={[path]}>
       <LocationProbe />
       <Routes>
-        <Route path="/schema/conventions/new" element={<RegistryEditor />} />
-        <Route
-          path="/schema/conventions/:ns/:version/edit"
-          element={<RegistryEditor />}
-        />
-        <Route
-          path="/schema/conventions/:ns/:version"
-          element={<div>Browser page</div>}
-        />
-        <Route path="/schema/conventions" element={<div>List page</div>} />
+        <Route element={shellOutlet()}>
+          <Route
+            path="/schema/conventions/new"
+            element={<RegistryEditor />}
+          />
+          <Route
+            path="/schema/conventions/:ns/:version/edit"
+            element={<RegistryEditor />}
+          />
+          <Route
+            path="/schema/conventions/:ns/:version"
+            element={<div>Browser page</div>}
+          />
+          <Route path="/schema/conventions" element={<div>List page</div>} />
+        </Route>
       </Routes>
     </MemoryRouter>,
   );
@@ -233,6 +252,62 @@ describe("RegistryEditor", () => {
     );
   });
 
+  it("opens the file picker once for ?upload=1 and strips the param, even if searchParams changes again", async () => {
+    // Simulates the shell rewriting `?tenant=` on top of the route, the way
+    // it does in the real app — a fresh `searchParams` the effect must not
+    // treat as another `?upload=1` arrival.
+    function RewriteSearch() {
+      const navigate = useNavigate();
+      const location = useLocation();
+      return (
+        <button
+          type="button"
+          onClick={() =>
+            navigate(`${location.pathname}?tenant=acme`, { replace: true })
+          }
+        >
+          rewrite
+        </button>
+      );
+    }
+    stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN }]);
+    const clickSpy = vi
+      .spyOn(HTMLInputElement.prototype, "click")
+      .mockImplementation(() => {});
+    renderWithClient(
+      <MemoryRouter initialEntries={["/schema/conventions/new?upload=1"]}>
+        <LocationProbe />
+        <Routes>
+          <Route element={shellOutlet()}>
+            <Route
+              path="/schema/conventions/new"
+              element={
+                <>
+                  <RewriteSearch />
+                  <RegistryEditor />
+                </>
+              }
+            />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+    const user = userEvent.setup();
+
+    await screen.findByLabelText("Registry document");
+    await waitFor(() =>
+      expect(screen.getByTestId("search")).toHaveTextContent(""),
+    );
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+
+    await user.click(screen.getByRole("button", { name: "rewrite" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("search")).toHaveTextContent("?tenant=acme"),
+    );
+    expect(clickSpy).toHaveBeenCalledTimes(1);
+    clickSpy.mockRestore();
+  });
+
   it("edits an existing registry: diff summary, replace, save as new version, delete", async () => {
     const fetchMock = stubFetchRoutes([
       { match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN },
@@ -403,5 +478,165 @@ describe("RegistryEditor", () => {
         ([input]) => input instanceof Request && input.method === "DELETE",
       ),
     ).toBe(true);
+  });
+
+  it("invalidates cached registry/resolution and semantics data on delete, not just the list", async () => {
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    const semanticsSpy = vi.spyOn(semantics, "invalidateSemantics");
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN },
+      { match: "/api/v1/schema/registries/acme/1.0.0", body: ACME_REGISTRY },
+      {
+        match: "/api/v1/schema/registries/acme/1.0.0",
+        method: "DELETE",
+        body: {},
+      },
+    ]);
+    renderEditor("/schema/conventions/acme/1.0.0/edit");
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: "Delete" }));
+    await user.click(screen.getByRole("button", { name: "Confirm" }));
+    await waitFor(() =>
+      expect(screen.getByTestId("location")).toHaveTextContent(
+        /^\/schema\/conventions$/,
+      ),
+    );
+
+    const invalidatedKinds = invalidateSpy.mock.calls.map(
+      ([arg]) => (arg as { queryKey: unknown[] }).queryKey[0],
+    );
+    expect(invalidatedKinds).toEqual(
+      expect.arrayContaining([
+        "schema-registries",
+        "schema-registry",
+        "schema-resolve",
+      ]),
+    );
+    expect(semanticsSpy).toHaveBeenCalled();
+    invalidateSpy.mockRestore();
+    semanticsSpy.mockRestore();
+  });
+
+  it("navigates immediately when the document has no unsaved edits", async () => {
+    stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN }]);
+    renderEditor("/schema/conventions/new");
+    const user = userEvent.setup();
+
+    await screen.findByLabelText("Registry document");
+    await user.click(screen.getByRole("link", { name: "Conventions" }));
+    expect(await screen.findByText("List page")).toBeInTheDocument();
+  });
+
+  it("blocks in-app navigation while the document is unsaved, allowing it after Leave", async () => {
+    stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN }]);
+    renderEditor("/schema/conventions/new");
+    const user = userEvent.setup();
+
+    const source = await screen.findByLabelText("Registry document");
+    await user.click(source);
+    await user.paste("name: acme");
+
+    await user.click(screen.getByRole("link", { name: "Conventions" }));
+    const guard = await screen.findByRole("alertdialog", {
+      name: "Unsaved changes",
+    });
+    expect(within(guard).getByText(/unsaved changes/i)).toBeInTheDocument();
+    expect(screen.queryByText("List page")).toBeNull();
+
+    // Stay: still on the editor, text preserved.
+    await user.click(within(guard).getByRole("button", { name: "Stay" }));
+    expect(screen.queryByRole("alertdialog")).toBeNull();
+    expect(source).toHaveValue("name: acme");
+
+    // Leave: navigates away.
+    await user.click(screen.getByRole("link", { name: "Conventions" }));
+    await user.click(screen.getByRole("button", { name: "Leave" }));
+    expect(await screen.findByText("List page")).toBeInTheDocument();
+  });
+
+  it("resets the editor's own text when the URL moves to a different registry, dropping unsaved edits from the previous one", async () => {
+    // A second writable registry the in-app nav below jumps to — distinct
+    // content so leftover state from editing acme@1.0.0 is unmistakable.
+    const ACME_REGISTRY_V2 = {
+      ...ACME_REGISTRY,
+      version: "2.0.0",
+      document: { ...ACME_DOCUMENT, version: "2.0.0" },
+    };
+    function JumpToV2() {
+      const navigate = useNavigate();
+      return (
+        <button
+          type="button"
+          onClick={() => navigate("/schema/conventions/acme/2.0.0/edit")}
+        >
+          jump to v2
+        </button>
+      );
+    }
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN },
+      { match: "/api/v1/schema/registries/acme/1.0.0", body: ACME_REGISTRY },
+      {
+        match: "/api/v1/schema/registries/acme/2.0.0",
+        body: ACME_REGISTRY_V2,
+      },
+    ]);
+    // A manually-owned `QueryClient`, pre-warmed with v2's data under the
+    // exact key `RegistryEditor` reads (`shellOutlet()`'s default tenant
+    // "acme", dataset "") — so the jump below resolves synchronously, with
+    // no intervening `stored.isPending` "Loading…" render to incidentally
+    // unmount `EditorForm` on its own and mask the bug this test targets.
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    client.setQueryData(
+      ["schema-registry", "acme", "2.0.0", "acme", ""],
+      ACME_REGISTRY_V2,
+    );
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={["/schema/conventions/acme/1.0.0/edit"]}>
+          <Routes>
+            <Route element={shellOutlet()}>
+              <Route
+                path="/schema/conventions/:ns/:version/edit"
+                element={
+                  <>
+                    <JumpToV2 />
+                    <RegistryEditor />
+                  </>
+                }
+              />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    const user = userEvent.setup();
+
+    const source = (await screen.findByLabelText(
+      "Registry document",
+    )) as HTMLTextAreaElement;
+    await waitFor(() => expect(source.value).toContain("version: 1.0.0"));
+
+    // Dirty the editor with text that belongs to no fetched document at all
+    // — if it survives the jump below, the bug (a stale `EditorForm`
+    // instance carrying edits into the new registry's context) reproduced.
+    await user.type(source, "\n# unsaved edit for v1");
+    expect(source.value).toContain("# unsaved edit for v1");
+
+    await user.click(screen.getByRole("button", { name: "jump to v2" }));
+
+    await waitFor(() => {
+      const reloaded = screen.getByLabelText(
+        "Registry document",
+      ) as HTMLTextAreaElement;
+      expect(reloaded.value).toContain("version: 2.0.0");
+    });
+    expect(
+      (screen.getByLabelText("Registry document") as HTMLTextAreaElement)
+        .value,
+    ).not.toContain("# unsaved edit for v1");
   });
 });

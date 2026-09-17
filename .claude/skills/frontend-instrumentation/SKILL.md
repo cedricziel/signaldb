@@ -315,7 +315,11 @@ draws its own tooltip markup is a defect
   `u.cursor.idx` in a `setCursor` hook (see `MetricsChart.rowsForCursorIndex`).
 - Format through `src/ui/src/lib/vizFormat.ts` (`formatTimestamp`,
   `formatTimeBucket`, `formatValue`, `formatRange`, `formatShare`,
-  `compactCount`), not ad-hoc `toFixed`/`Intl` calls.
+  `compactCount`, `formatErrorRate` — a dash for no errors, `<1%` for a
+  non-zero rate that would round to zero, never a red `0%`), not ad-hoc
+  `toFixed`/`Intl` calls. Table timestamps on multi-day ranges go through
+  `formatTimestampForRange` in `src/ui/src/lib/time.ts`, which prepends the
+  date once the window spans more than a day.
 - Data marks that can take focus (bars, cells, segments) get `tabIndex={0}`
   and `aria-describedby` pointing at the tooltip `id` while active; focus sets
   the same "active datum" state as hover. Empty marks show no tooltip.

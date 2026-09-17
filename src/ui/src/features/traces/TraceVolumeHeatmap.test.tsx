@@ -24,6 +24,36 @@ describe("TraceVolumeHeatmap", () => {
     label: "Span latency",
   };
 
+  it("widens the left gutter to fit a longer y-axis label", () => {
+    const { container: shortContainer } = render(
+      <TraceVolumeHeatmap {...props} />,
+    );
+    const shortX = Number(
+      within(shortContainer)
+        .getAllByTestId("trace-volume-heatmap-cell")[0]!
+        .getAttribute("x"),
+    );
+
+    // A much larger overflow bound (100.00 s+) makes for a longer label than
+    // the default fixture's (100 ms+).
+    const { container: longContainer } = render(
+      <TraceVolumeHeatmap
+        {...props}
+        heatmap={{
+          ...props.heatmap,
+          y: { ...props.heatmap.y, bounds: [10_000_000, 123_456_000_000] },
+        }}
+      />,
+    );
+    const longX = Number(
+      within(longContainer)
+        .getAllByTestId("trace-volume-heatmap-cell")[0]!
+        .getAttribute("x"),
+    );
+
+    expect(longX).toBeGreaterThan(shortX);
+  });
+
   it("uses latency buckets as rows and counts as intensity", () => {
     render(<TraceVolumeHeatmap {...props} />);
 

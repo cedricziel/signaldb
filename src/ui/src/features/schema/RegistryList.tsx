@@ -18,9 +18,9 @@ function formatUpdated(value: string | null | undefined): string {
  * custom registry.
  */
 export function RegistryList() {
-  const { isTenantAdmin } = useSchemaSession();
+  const { isTenantAdmin, tenant, dataset } = useSchemaSession();
   const registries = useQuery({
-    queryKey: ["schema-registries"],
+    queryKey: ["schema-registries", tenant, dataset],
     queryFn: listRegistries,
     staleTime: 60_000,
   });

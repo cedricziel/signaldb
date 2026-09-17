@@ -3,6 +3,8 @@
  * off any chart tooltip or axis looks the same everywhere.
  */
 
+import { formatDate } from "./time";
+
 const NUM = new Intl.NumberFormat();
 const FRACTION = new Intl.NumberFormat(undefined, {
   maximumSignificantDigits: 3,
@@ -43,7 +45,7 @@ const pad = (n: number, w = 2) => String(n).padStart(w, "0");
  */
 export function formatTimestamp(ms: number, resolutionMs: number): string {
   const d = new Date(ms);
-  let out = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  let out = `${formatDate(ms)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   if (resolutionMs < 60_000) out += `:${pad(d.getSeconds())}`;
   if (resolutionMs < 1000) out += `.${pad(d.getMilliseconds(), 3)}`;
   return out;
@@ -89,4 +91,24 @@ export function formatRange(
 export function formatShare(part: number, total: number): string {
   if (total <= 0) return "0%";
   return `${((part / total) * 100).toFixed(1)}%`;
+}
+
+/**
+ * A rate meant to flag trouble (an error rate, say) as a whole-percent
+ * string. Unlike {@link formatShare}, a rate that rounds to zero but isn't
+ * exactly zero renders `<1%` rather than a misleadingly clean `0%` — the bug
+ * this exists to fix: a nonzero error count among enough traces (1 in 500,
+ * say) rounded to "0%" while still carrying the "this had errors" red
+ * styling, reading as a contradiction. No measurement at all (`total <= 0`)
+ * and a genuinely clean `0` both render as a dash: neither is "0%", they're
+ * "nothing to measure" and "measured, and it was zero" respectively, and a
+ * dash — not a number — is how this codebase already says "no measurement"
+ * elsewhere (see `EntityRed`'s own doc comment).
+ */
+export function formatErrorRate(part: number, total: number): string {
+  if (total <= 0) return "–";
+  const rate = part / total;
+  if (rate === 0) return "–";
+  if (rate < 0.005) return "<1%";
+  return `${Math.round(rate * 100)}%`;
 }

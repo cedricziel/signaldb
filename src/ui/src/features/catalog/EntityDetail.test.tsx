@@ -147,10 +147,12 @@ describe("EntityDetail", () => {
     const user = userEvent.setup();
     const crumb = screen.getByRole("navigation", { name: "Breadcrumb" });
     await user.click(within(crumb).getByText("catalog"));
-    expect(update).toHaveBeenCalledWith({
-      catalogPrimary: "",
-      catalogSecondary: "",
-    });
+    // A crumb hop is a real navigation, same as drilling in — so Back steps
+    // out of it one level at a time, not a no-op against the drill-in push.
+    expect(update).toHaveBeenCalledWith(
+      { catalogPrimary: "", catalogSecondary: "" },
+      { push: true },
+    );
   });
 
   it("shows the entity's own RED numbers, pinned to its identity values", async () => {
@@ -168,6 +170,64 @@ describe("EntityDetail", () => {
     renderView();
     expect(await screen.findByText("12 ms")).toBeInTheDocument();
     expect(screen.getByText("48 ms")).toBeInTheDocument();
+  });
+
+  // Regression: a null second-identity-dimension pin used to be dropped
+  // entirely, leaving that dimension unconstrained — the KPIs could then
+  // come from a different (gateway, <some other namespace>) entity instead
+  // of the "(not set)" one actually drilled into.
+  it("pins a null identity dimension instead of leaving it unconstrained", async () => {
+    renderView({ catalogPrimary: compositeKey(["gateway", null]) });
+    await waitFor(() => expect(fetchCatalogEntities).toHaveBeenCalled());
+    const call = fetchCatalogEntities.mock.calls.find(
+      (c) => c[0].id === "service",
+    )!;
+    expect(call[3]).toEqual([
+      { field: "service.name", value: "gateway" },
+      { field: "service.namespace", value: null },
+    ]);
+  });
+
+  it("prefixes last-seen with the date on a multi-day range", async () => {
+    fetchCatalogEntities.mockImplementation(async (entityType) => {
+      if (entityType.id === "service") {
+        return {
+          entities: [
+            group(
+              ["gateway", "edge"],
+              1240,
+              5,
+              12,
+              48,
+              "1700000100000000000",
+            ),
+          ],
+          truncated: false,
+        };
+      }
+      return { entities: [], truncated: false };
+    });
+    const update = vi.fn();
+    renderWithClient(
+      <EntityDetail
+        entity={entityType("service")!}
+        range={resolveRange(
+          { type: "relative", seconds: 7 * 86400 },
+          Date.now(),
+        )}
+        state={{
+          ...DEFAULT_STATE,
+          signal: "catalog",
+          catalogEntity: "service",
+          catalogPrimary: compositeKey(["gateway", "edge"]),
+          range: { type: "relative", seconds: 7 * 86400 },
+        }}
+        update={update}
+      />,
+    );
+    expect(
+      await screen.findByText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/),
+    ).toBeInTheDocument();
   });
 
   it("names the signals covering the entity, without sample counts", async () => {
@@ -270,6 +330,26 @@ describe("EntityDetail", () => {
       {
         signal: "traces",
         traceFilters: [{ field: "service.name", value: "gateway" }],
+      },
+      { push: true },
+    );
+  });
+
+  it('the "view matching traces" escape hatch also pins the operation at the breakdown level', async () => {
+    const update = renderView({
+      catalogSecondary: compositeKey(["POST /checkout"]),
+    });
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: /View matching traces/ }),
+    );
+    expect(update).toHaveBeenCalledWith(
+      {
+        signal: "traces",
+        traceFilters: [
+          { field: "service.name", value: "gateway" },
+          { field: "name", value: "POST /checkout" },
+        ],
       },
       { push: true },
     );

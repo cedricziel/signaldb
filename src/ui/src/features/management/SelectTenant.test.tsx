@@ -98,7 +98,7 @@ describe("SelectTenant", () => {
     expect(screen.queryByText(/europe/)).toBeNull();
   });
 
-  it("clicking a dataset navigates to /logs (no redirect param) with updated state", async () => {
+  it("navigates exactly once, to the target with tenant/dataset in its query string", async () => {
     stubFetchRoutes([
       {
         match: "/api/v1/whoami",
@@ -113,11 +113,13 @@ describe("SelectTenant", () => {
     renderSelectTenant(sessionWithMemberships);
     const dataset = await screen.findByText(/staging/);
     await userEvent.click(dataset);
-    expect(mockUpdate).toHaveBeenCalledWith({
-      tenant: "acme",
-      dataset: "staging",
-    });
-    expect(mockNavigate).toHaveBeenCalledWith("/logs");
+    // A single push carrying the pick, not a separate `update()` (history
+    // replace on /select-tenant) racing a `navigate()` push — see the
+    // BLOCKER this regression-tests: batching the two left the rendered
+    // location without the tenant, bouncing the user back here forever.
+    expect(mockNavigate).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith("/logs?tenant=acme&dataset=staging");
+    expect(mockUpdate).not.toHaveBeenCalled();
   });
 
   it("navigates to a validated redirect target after a dataset pick", async () => {
@@ -135,11 +137,14 @@ describe("SelectTenant", () => {
     );
     const dataset = await screen.findByText(/production/);
     await userEvent.click(dataset);
-    expect(mockNavigate).toHaveBeenCalledWith("/traces?range=15m");
+    expect(mockNavigate).toHaveBeenCalledTimes(1);
+    expect(mockNavigate).toHaveBeenCalledWith(
+      "/traces?range=15m&tenant=acme&dataset=production",
+    );
   });
 
   it.each([["//evil.com"], ["https://evil.com"], ["/\\evil.com"]])(
-    "falls back to /logs for the unsafe redirect target %s",
+    "falls back to /logs (with tenant/dataset) for the unsafe redirect target %s",
     async (unsafe) => {
       stubFetchRoutes([
         {
@@ -157,7 +162,9 @@ describe("SelectTenant", () => {
       );
       const dataset = await screen.findByText(/production/);
       await userEvent.click(dataset);
-      expect(mockNavigate).toHaveBeenCalledWith("/logs");
+      expect(mockNavigate).toHaveBeenCalledWith(
+        "/logs?tenant=acme&dataset=production",
+      );
     },
   );
 

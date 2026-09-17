@@ -155,7 +155,31 @@ export function formatTimestamp(ms: number): string {
   return `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}`;
 }
 
+/** `YYYY-MM-DD` for `ms`, local time — the date half shared by every
+ * timestamp formatter that prefixes a time-of-day with its calendar date. */
+export function formatDate(ms: number): string {
+  const d = new Date(ms);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+
 const DAY_MS = 86_400_000;
+
+/**
+ * `formatTimestamp`, prefixed with the date once the *selected window* spans
+ * more than a day — a bare time-of-day (Errors first/last seen, Catalog last
+ * seen, …) loses which day it was over a multi-day range. Keyed off the
+ * window rather than how far `ms` itself is from "now", so every row on the
+ * same page reads consistently regardless of where in the window it falls.
+ */
+export function formatTimestampForRange(
+  ms: number,
+  range: ResolvedRange,
+): string {
+  const spansMoreThanADay = range.toMs - range.fromMs > DAY_MS;
+  if (!spansMoreThanADay) return formatTimestamp(ms);
+  return `${formatDate(ms)} ${formatTimestamp(ms)}`;
+}
 
 /**
  * Build a chart-axis label formatter sized to the window it labels.

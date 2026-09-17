@@ -32,6 +32,12 @@
   margin-bottom: 24px;
 }
 
+.api-keys-create h2,
+.api-keys-list h2 {
+  font-size: 14px;
+  font-weight: 650;
+}
+
 .api-keys-form {
   display: grid;
   gap: 12px;
@@ -199,10 +205,27 @@
   font-size: 12px;
 }
 
+/* ConfirmButton's own Confirm/Cancel (`.confirm-inline button`, global.css)
+   render class-less — style them as the small bordered secondary button used
+   elsewhere in this row. */
+.api-key-actions .confirm-inline button {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 9px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
 .api-keys-list {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
+}
+
+.api-keys-list > ul {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
 }
 
 .api-key-row {
@@ -275,7 +298,7 @@
   margin-top: 16px;
 }
 
-.secret-modal-footer button {
+.secret-modal-done {
   padding: 7px 11px;
   border: 1px solid var(--border);
   border-radius: 5px;

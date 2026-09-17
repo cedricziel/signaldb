@@ -4,7 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LogRow } from "../../api/loki";
 import { resetSemanticsCache } from "../../hooks/useSemantics";
 import { stubFetchRoutes } from "../../test/render";
-import { LogList, traceIdOf } from "./LogList";
+import { LogList, rowKey, traceIdOf } from "./LogList";
 
 afterEach(() => {
   resetSemanticsCache();
@@ -150,6 +150,69 @@ describe("LogList", () => {
   it("shows an empty state", () => {
     render(<LogList rows={[]} onAddFilter={() => {}} onOpenTrace={() => {}} />);
     expect(screen.getByText(/No log lines/)).toBeInTheDocument();
+  });
+
+  it("keeps a row expanded when a newer row is prepended and shifts its index", async () => {
+    const { rerender } = render(
+      <LogList rows={rows} onAddFilter={() => {}} onOpenTrace={() => {}} />,
+    );
+    await userEvent.click(screen.getByText("request handled"));
+    expect(screen.getByText("service_name")).toBeInTheDocument();
+
+    const prepended: LogRow[] = [
+      row({
+        tsNs: "4000000000",
+        tsMs: 4000,
+        line: "new row",
+        labels: { level: "info", service_name: "gateway" },
+      }),
+      ...rows,
+    ];
+    rerender(
+      <LogList
+        rows={prepended}
+        onAddFilter={() => {}}
+        onOpenTrace={() => {}}
+      />,
+    );
+    // "request handled" is now at index 2, not 1 — expansion keyed by index
+    // alone would have collapsed it (or expanded the wrong row).
+    expect(screen.getByText("service_name")).toBeInTheDocument();
+  });
+});
+
+describe("rowKey", () => {
+  it("is stable across an index shift and distinguishes rows without one", () => {
+    const a = row({ tsNs: "1", line: "a" });
+    const b = row({ tsNs: "2", line: "b" });
+    expect(rowKey(a)).not.toBe(rowKey(b));
+    expect(rowKey(a)).toBe(rowKey({ ...a }));
+  });
+
+  it("distinguishes two streams sharing a timestamp and line but no span/trace id", () => {
+    const a = row({
+      tsNs: "1",
+      line: "same line",
+      labels: { host: "web-1", service_name: "checkout" },
+    });
+    const b = row({
+      tsNs: "1",
+      line: "same line",
+      labels: { host: "web-2", service_name: "checkout" },
+    });
+    expect(rowKey(a)).not.toBe(rowKey(b));
+  });
+
+  it("is unaffected by label/metadata insertion order", () => {
+    const a = row({
+      labels: { host: "web-1", service_name: "checkout" },
+      metadata: { a: "1", b: "2" },
+    });
+    const b = row({
+      labels: { service_name: "checkout", host: "web-1" },
+      metadata: { b: "2", a: "1" },
+    });
+    expect(rowKey(a)).toBe(rowKey(b));
   });
 });
 

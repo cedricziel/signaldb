@@ -143,7 +143,11 @@ export function useSemantics(keys: readonly string[]): SemanticsMap {
 
   useEffect(() => {
     request(tenant, keyList ? keyList.split(SEP) : []);
-  }, [tenant, keyList]);
+    // `seen` re-runs this after `invalidateSemantics` drops cached entries
+    // (or any other batch lands) so a freshly-uncached key is re-requested
+    // without needing the key list itself to change; `request` is a no-op
+    // for keys still cached or in flight.
+  }, [tenant, keyList, seen]);
 
   return useMemo(
     () => snapshot(tenant, keyList ? keyList.split(SEP) : []),
@@ -197,7 +201,11 @@ export function useAttributeSearch(prefix: string, limit = 20): AttributeHit[] {
         searchInflight.delete(cacheKey);
       }
     };
-  }, [cacheKey, trimmed, limit]);
+    // `seen` re-runs this after `invalidateSemantics` drops a cached prefix
+    // so it re-requests without needing the prefix itself to change; `if
+    // (!trimmed || searchCache.has(cacheKey) || ...)` above stays the no-op
+    // guard for a prefix that's still cached or in flight.
+  }, [cacheKey, trimmed, limit, seen]);
 
   return useMemo(
     () => (trimmed ? (searchCache.get(cacheKey) ?? NO_HITS) : NO_HITS),
@@ -213,5 +221,26 @@ export function resetSemanticsCache(): void {
   tenants.clear();
   searchCache.clear();
   searchInflight.clear();
+  notify();
+}
+
+/**
+ * Forget cached semantics for `tenant` (defaulting to the active one) so the
+ * next render re-resolves every key instead of replaying stale "unknown"
+ * answers — call after a registry save/replace/delete, the same events that
+ * already invalidate the schema hub's own react-query caches. Also clears
+ * the prefix-search cache for that tenant, since a renamed/removed attribute
+ * can change what the combobox should suggest.
+ */
+export function invalidateSemantics(tenant: string = getTenantContext().tenant): void {
+  const state = tenants.get(tenant);
+  if (state) {
+    if (state.timer !== null) clearTimeout(state.timer);
+    tenants.delete(tenant);
+  }
+  const prefix = `${tenant}${SEP}`;
+  for (const key of searchCache.keys()) {
+    if (key.startsWith(prefix)) searchCache.delete(key);
+  }
   notify();
 }

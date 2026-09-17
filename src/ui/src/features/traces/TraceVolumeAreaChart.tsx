@@ -6,6 +6,7 @@ import {
   type VolumeSeries,
 } from "../explore/SignalHistogram";
 import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
+import { useContainerWidth } from "../../hooks/useContainerWidth";
 import { axisLabelFormatter } from "../../lib/time";
 import {
   compactCount,
@@ -23,7 +24,9 @@ interface Props {
   label: string;
 }
 
-const WIDTH = 720;
+// A fallback for the one frame before the ResizeObserver below reports the
+// container's real pixel width — arbitrary but matches the old fixed value.
+const DEFAULT_WIDTH = 720;
 const HEIGHT = 64;
 const PADDING = { top: 4, right: 8, bottom: 16, left: 42 };
 
@@ -32,8 +35,9 @@ function areaPath(
   key: string,
   preceding: string[],
   max: number,
+  width: number,
 ): string {
-  const plotWidth = WIDTH - PADDING.left - PADDING.right;
+  const plotWidth = width - PADDING.left - PADDING.right;
   const plotHeight = HEIGHT - PADDING.top - PADDING.bottom;
   const x = (index: number) =>
     PADDING.left + (plotWidth * index) / Math.max(1, buckets.length - 1);
@@ -65,6 +69,12 @@ export function TraceVolumeAreaChart({
   const rootRef = useRef<HTMLDivElement>(null);
   const pointer = useVizPointer(rootRef);
   const [active, setActive] = useState<number | null>(null);
+  // The viewBox tracks the container's real pixel width so `preserveAspectRatio="none"`
+  // never has to stretch it — otherwise text (and stroke widths) render
+  // non-uniformly squeezed or stretched whenever the panel isn't exactly
+  // DEFAULT_WIDTH wide (see MetricsChart for the same container-measuring
+  // pattern applied to a canvas chart instead of inline SVG).
+  const width = useContainerWidth(rootRef, DEFAULT_WIDTH);
 
   let buckets = bucketizeSeries(series);
   if (buckets.length > 0) {
@@ -82,7 +92,7 @@ export function TraceVolumeAreaChart({
     buckets[0]!.tMs,
     buckets[buckets.length - 1]!.tMs,
   );
-  const plotWidth = WIDTH - PADDING.left - PADDING.right;
+  const plotWidth = width - PADDING.left - PADDING.right;
   const plotHeight = HEIGHT - PADDING.top - PADDING.bottom;
   const y = (fraction: number) => PADDING.top + plotHeight * (1 - fraction);
   // Each bucket owns the half-step either side of its x position, matching
@@ -91,7 +101,7 @@ export function TraceVolumeAreaChart({
   const hitX = (index: number) =>
     Math.max(PADDING.left, PADDING.left + stepPx * (index - 0.5));
   const hitWidth = (index: number) =>
-    Math.min(WIDTH - PADDING.right, PADDING.left + stepPx * (index + 0.5)) -
+    Math.min(width - PADDING.right, PADDING.left + stepPx * (index + 0.5)) -
     hitX(index);
   const bucketLabel = (bucket: VolumeBucket) =>
     `${formatTimeBucket(bucket.tMs, stepMs)}: ${formatValue(bucket.total, unit)}`;
@@ -108,7 +118,7 @@ export function TraceVolumeAreaChart({
       ref={rootRef}
     >
       <svg
-        viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
+        viewBox={`0 0 ${width} ${HEIGHT}`}
         role="img"
         aria-label={`${label} area chart`}
         preserveAspectRatio="none"
@@ -118,7 +128,7 @@ export function TraceVolumeAreaChart({
             <line
               className="trace-area-grid"
               x1={PADDING.left}
-              x2={WIDTH - PADDING.right}
+              x2={width - PADDING.right}
               y1={y(fraction)}
               y2={y(fraction)}
             />
@@ -135,7 +145,7 @@ export function TraceVolumeAreaChart({
           <path
             key={key}
             className="trace-area-series"
-            d={areaPath(buckets, key, keys.slice(0, index), max)}
+            d={areaPath(buckets, key, keys.slice(0, index), max, width)}
             fill={colors[key]}
             stroke={colors[key]}
           />

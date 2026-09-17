@@ -11,7 +11,7 @@ import { BrandMark } from "../../components/BrandMark";
 import { isAuthError, toErrorMessage } from "../../api/http";
 import { deleteSession } from "../../api/session";
 import { useLoginConfig } from "../../lib/useLoginConfig";
-import { safeRedirectTarget } from "../../lib/redirectTarget";
+import { safeRedirectTarget, withTenantDataset } from "../../lib/redirectTarget";
 import { CHOOSE_TENANT_HINT, useTenantStep } from "../../lib/tenantResolution";
 import { useCurrentSession } from "../../lib/useWhoami";
 import { LoginCard } from "./LoginCard";
@@ -29,18 +29,6 @@ const ERROR_MESSAGES: Record<string, string> = {
   no_membership:
     "Your account has no tenant access yet. Ask a tenant admin to add you, then sign in again.",
 };
-
-/** `target` with the resolved tenant/dataset appended, as a router path. */
-function withTenantDataset(
-  target: string,
-  tenant: string,
-  dataset: string,
-): string {
-  const url = new URL(target, window.location.origin);
-  url.searchParams.set("tenant", tenant);
-  url.searchParams.set("dataset", dataset);
-  return `${url.pathname}${url.search}${url.hash}`;
-}
 
 function LoginPageShell({ children }: { children: ReactNode }) {
   return (

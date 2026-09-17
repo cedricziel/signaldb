@@ -33,6 +33,32 @@ export function traceIdOf(row: LogRow): string | null {
   return null;
 }
 
+/** Cheap canonical form of a labels/metadata record for a key — sorted so
+ * insertion order never changes the result, joined rather than
+ * `JSON.stringify`'d to stay cheap on the typically-small records here. */
+function canonicalEntries(record: Record<string, string>): string {
+  return Object.keys(record)
+    .sort()
+    .map((k) => `${k}=${record[k]}`)
+    .join(",");
+}
+
+/**
+ * A row's identity for expansion/React-key purposes: the virtualizer's
+ * `item.index` shifts under a row's feet in live mode (a newer row
+ * prepends), which used to collapse whatever was expanded. Timestamp plus
+ * the line, any span/trace id, and the row's own labels/metadata is stable
+ * across such a shift and cheap to compute; it does not need to be a true
+ * hash, only unique enough among the rows on screen — two streams sharing a
+ * timestamp and line (e.g. the same log line from two pods) still differ in
+ * at least one label.
+ */
+export function rowKey(row: LogRow): string {
+  const spanId = row.metadata["span_id"] ?? "";
+  const traceId = traceIdOf(row) ?? "";
+  return `${row.tsNs}|${spanId}|${traceId}|${canonicalEntries(row.labels)}|${canonicalEntries(row.metadata)}|${row.line}`;
+}
+
 export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
@@ -53,7 +79,7 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
       <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
         {virtualizer.getVirtualItems().map((item) => {
           const row = rows[item.index]!;
-          const key = `${row.tsNs}-${item.index}`;
+          const key = rowKey(row);
           const level = normalizeLevel(row.labels["level"] ?? "");
           const isOpen = expanded === key;
           const traceId = traceIdOf(row);

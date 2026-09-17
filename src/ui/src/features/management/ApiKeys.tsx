@@ -11,11 +11,14 @@ import {
   updateApiKey,
   type ApiKeyScope,
 } from "../../api/management";
-import { whoami } from "../../api/session";
 import { toErrorMessage } from "../../api/http";
+import type { WhoamiResponse } from "../../api/session";
 import { ConfirmButton } from "../../components/ConfirmButton";
 import { CopyValueButton } from "../../components/CopyValueButton";
 import { Dialog } from "../../components/Dialog";
+import { whoamiQueryError } from "../../components/QueryError";
+import { useOutletState } from "../../lib/outletState";
+import { useWhoami } from "../../lib/useWhoami";
 import {
   DatasetPicker,
   datasetRestrictionLabel,
@@ -70,14 +73,34 @@ function ScopePicker({
 }
 
 export function ApiKeys() {
-  const queryClient = useQueryClient();
-  const { data: who, isLoading } = useQuery({
-    queryKey: ["whoami"],
-    queryFn: () => whoami(),
-    staleTime: 60_000,
-    retry: false,
-  });
+  const { state } = useOutletState();
+  const {
+    data: who,
+    isLoading,
+    isError: whoamiIsError,
+    error: whoamiError,
+    canManage,
+  } = useWhoami(state);
 
+  if (isLoading) return null;
+  if (whoamiIsError) return whoamiQueryError("your account", whoamiError);
+
+  if (!who || !canManage) {
+    return <Navigate to="/logs" replace />;
+  }
+
+  // Keyed on the outlet's own tenant (not `who.tenant.id`, which can briefly
+  // lag it during a switch): every piece of local state below — the secret
+  // dialog, which key is being edited, the clear-restriction checkboxes — is
+  // scoped to one tenant's keys, and none of it means anything once the user
+  // has moved to another. Remounting on tenant change resets it all in one
+  // place, and drops any in-flight mutation whose `onSuccess` would otherwise
+  // land on a screen that has since moved on.
+  return <ApiKeysBody key={state.tenant} who={who} />;
+}
+
+function ApiKeysBody({ who }: { who: WhoamiResponse }) {
+  const queryClient = useQueryClient();
   const [secret, setSecret] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editingKeyId, setEditingKeyId] = useState<string | null>(null);
@@ -153,16 +176,6 @@ export function ApiKeys() {
     },
     onError: (value) => setError(toErrorMessage(value)),
   });
-
-  if (isLoading) return null;
-
-  const role = who?.memberships.find(
-    (membership) => membership.tenant_id === who.tenant.id,
-  )?.role;
-  const canManage = who?.user?.is_instance_admin || role === "admin";
-  if (!who || !canManage) {
-    return <Navigate to="/logs" replace />;
-  }
 
   const datasets = who.datasets;
 
@@ -384,7 +397,12 @@ export function ApiKeys() {
           <code>{secret}</code>
           <div className="secret-modal-footer">
             <CopyValueButton value={secret} label="API key" />
-            <button onClick={() => setSecret(null)}>Done</button>
+            <button
+              className="secret-modal-done"
+              onClick={() => setSecret(null)}
+            >
+              Done
+            </button>
           </div>
         </Dialog>
       )}

@@ -260,6 +260,19 @@ describe("CatalogView", () => {
     expect(within(note).getByText("host.name")).toBeInTheDocument();
   });
 
+  it("prefixes last-seen with the date on a multi-day range", async () => {
+    fetchCatalogEntities.mockResolvedValue({
+      entities: [
+        group(["gateway", "edge"], 1240, 5, 12, 48, "1700000100000000000"),
+      ],
+      truncated: false,
+    });
+    renderView({ range: { type: "relative", seconds: 7 * 86400 } });
+    expect(
+      await screen.findByText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/),
+    ).toBeInTheDocument();
+  });
+
   it("opens a service row's own detail page rather than jumping to Traces", async () => {
     fetchCatalogEntities.mockResolvedValue({
       entities: [
@@ -270,6 +283,24 @@ describe("CatalogView", () => {
     const update = renderView();
     const user = userEvent.setup();
     await user.click(await screen.findByText("gateway"));
+    expect(update).toHaveBeenCalledWith(
+      { catalogPrimary: compositeKey(["gateway", "edge"]) },
+      { push: true },
+    );
+  });
+
+  it("opens a row via keyboard (focus + Enter on its primary identity button)", async () => {
+    fetchCatalogEntities.mockResolvedValue({
+      entities: [
+        group(["gateway", "edge"], 1240, 5, 12, 48, "1700000000000000000"),
+      ],
+      truncated: false,
+    });
+    const update = renderView();
+    const user = userEvent.setup();
+    const cell = await screen.findByRole("button", { name: "gateway" });
+    cell.focus();
+    await user.keyboard("{Enter}");
     expect(update).toHaveBeenCalledWith(
       { catalogPrimary: compositeKey(["gateway", "edge"]) },
       { push: true },

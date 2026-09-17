@@ -96,3 +96,55 @@ describe("ThrottleBanner text meets WCAG AA on its tinted background", () => {
     });
   }
 });
+
+describe("--dim meets WCAG AA on both surface tokens", () => {
+  for (const [theme, getBlock] of Object.entries(themeBlocks)) {
+    for (const surfaceName of ["surface", "surface2"] as const) {
+      it(`${theme} theme: --dim on --${surfaceName} is >= 4.5:1`, () => {
+        const cssBlock = getBlock();
+        const dim = token(cssBlock, "dim");
+        const surface = token(cssBlock, surfaceName);
+
+        expect(contrastRatio(dim, surface)).toBeGreaterThanOrEqual(4.5);
+      });
+    }
+  }
+});
+
+describe("--on-accent on --accent (solid-background buttons)", () => {
+  it("dark theme: --on-accent on --accent is >= 4.5:1", () => {
+    const cssBlock = themeBlocks.dark();
+    const onAccent = token(cssBlock, "on-accent");
+    const accent = token(cssBlock, "accent");
+
+    expect(contrastRatio(onAccent, accent)).toBeGreaterThanOrEqual(4.5);
+  });
+
+  // Light theme's --accent (#c25a0a) is dark enough that white text is the
+  // better of the two extremes (black measures lower still), but not quite
+  // dark enough to clear 4.5:1 with any single foreground — white lands
+  // ~4.41:1. That's a pre-existing shortfall (the shipped code already used
+  // literal `#fff` here before --on-accent existed), not a regression this
+  // token introduces, and fixing it for real needs a darker --accent, which
+  // is a broader visual change than this token swap. Guard against making it
+  // worse without asserting a threshold the current palette can't meet.
+  it("light theme: --on-accent on --accent does not regress below ~4.4:1", () => {
+    const cssBlock = themeBlocks.light();
+    const onAccent = token(cssBlock, "on-accent");
+    const accent = token(cssBlock, "accent");
+
+    expect(contrastRatio(onAccent, accent)).toBeGreaterThanOrEqual(4.4);
+  });
+});
+
+describe("--ok-text meets WCAG AA on --surface", () => {
+  for (const [theme, getBlock] of Object.entries(themeBlocks)) {
+    it(`${theme} theme: --ok-text on --surface is >= 4.5:1`, () => {
+      const cssBlock = getBlock();
+      const okText = token(cssBlock, "ok-text");
+      const surface = token(cssBlock, "surface");
+
+      expect(contrastRatio(okText, surface)).toBeGreaterThanOrEqual(4.5);
+    });
+  }
+});

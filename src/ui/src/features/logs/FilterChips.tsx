@@ -6,6 +6,7 @@ import {
   type FilterOp,
   type LabelFilter,
 } from "../../lib/filters";
+import { toLokiLabel } from "../../lib/labelSuggestions";
 
 interface Props {
   filters: LabelFilter[];
@@ -20,8 +21,10 @@ export function FilterChips({ filters, labels, onChange }: Props) {
   const [op, setOp] = useState<FilterOp>("=");
   const [value, setValue] = useState("");
 
+  const labelValid = isValidLabelName(label);
+
   const submit = () => {
-    if (!isValidLabelName(label)) return;
+    if (!labelValid) return;
     onChange([...filters, { label, op, value }]);
     setLabel("");
     setOp("=");
@@ -56,12 +59,17 @@ export function FilterChips({ filters, labels, onChange }: Props) {
           <AttributeKeyInput
             value={label}
             onChange={setLabel}
-            onPick={setLabel}
+            onPick={(key) => setLabel(toLokiLabel(key))}
             observed={labels}
             ariaLabel="Filter label"
             placeholder="label"
             autoFocus
           />
+          {label !== "" && !labelValid && (
+            <span className="chip-form-hint" role="status">
+              use letters, digits and _
+            </span>
+          )}
           <select
             aria-label="Filter operator"
             value={op}
@@ -79,7 +87,9 @@ export function FilterChips({ filters, labels, onChange }: Props) {
             value={value}
             onChange={(e) => setValue(e.target.value)}
           />
-          <button type="submit">Add</button>
+          <button type="submit" disabled={!labelValid}>
+            Add
+          </button>
           <button type="button" onClick={() => setAdding(false)}>
             Cancel
           </button>

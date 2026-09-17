@@ -56,6 +56,26 @@ it("suggests observed keys, reports a pick, and closes the list", async () => {
   ).not.toBeInTheDocument();
 });
 
+it("closes the suggestion list when the input blurs, without discarding a pick", async () => {
+  const onPick = vi.fn();
+  render(
+    <>
+      <Harness onPick={onPick} />
+      <button>elsewhere</button>
+    </>,
+  );
+  await userEvent.type(screen.getByLabelText("Attribute key"), "le");
+  await screen.findByRole("listbox", { name: "Attribute key suggestions" });
+
+  await userEvent.click(screen.getByRole("button", { name: "elsewhere" }));
+
+  expect(
+    screen.queryByRole("listbox", { name: "Attribute key suggestions" }),
+  ).not.toBeInTheDocument();
+  // The typed text survives — this isn't a pick, just closing the list.
+  expect(screen.getByLabelText("Attribute key")).toHaveValue("le");
+});
+
 it("moves the highlight with the arrow keys and picks it with Enter", async () => {
   const onPick = vi.fn();
   render(<Harness onPick={onPick} />);

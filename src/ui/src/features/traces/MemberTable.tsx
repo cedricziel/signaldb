@@ -105,12 +105,14 @@ export function MemberTable({
 
   if (pending) {
     return (
-      <table className="trace-table" aria-busy="true">
-        <thead>{header}</thead>
-        <tbody>
-          <SkeletonRows rows={8} columns={6} numericFrom={4} />
-        </tbody>
-      </table>
+      <div className="table-scroll">
+        <table className="trace-table" aria-busy="true">
+          <thead>{header}</thead>
+          <tbody>
+            <SkeletonRows rows={8} columns={6} numericFrom={4} />
+          </tbody>
+        </table>
+      </div>
     );
   }
 
@@ -120,35 +122,39 @@ export function MemberTable({
 
   return (
     <>
-      <table className="trace-table">
-        <thead>{header}</thead>
-        <tbody>
-          {rows.map((m) => (
-            <tr
-              key={`${m.traceId}-${m.spanId}`}
-              onClick={() => onOpenTrace(m.traceId)}
-            >
-              <td>
-                <button className="trace-open">{m.spanName}</button>
-              </td>
-              <td>{m.serviceName}</td>
-              <td>
-                {(() => {
-                  const { word } = statusOf(m.statusCode);
-                  return (
-                    <span className={`status-chip status-${word}`}>{word}</span>
-                  );
-                })()}
-              </td>
-              <td>{formatTimestamp(nanosToMs(m.startNs))}</td>
-              <td className="num">
-                {formatDurationMs(nanosToMs(m.durationNanos))}
-              </td>
-              <td className="trace-id">{m.traceId}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+      <div className="table-scroll">
+        <table className="trace-table">
+          <thead>{header}</thead>
+          <tbody>
+            {rows.map((m) => (
+              <tr
+                key={`${m.traceId}-${m.spanId}`}
+                onClick={() => onOpenTrace(m.traceId)}
+              >
+                <td>
+                  <button className="trace-open">{m.spanName}</button>
+                </td>
+                <td>{m.serviceName}</td>
+                <td>
+                  {(() => {
+                    const { word } = statusOf(m.statusCode);
+                    return (
+                      <span className={`status-chip status-${word}`}>
+                        {word}
+                      </span>
+                    );
+                  })()}
+                </td>
+                <td>{formatTimestamp(nanosToMs(m.startNs))}</td>
+                <td className="num">
+                  {formatDurationMs(nanosToMs(m.durationNanos))}
+                </td>
+                <td className="trace-id">{m.traceId}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
       {footnote && <div className="view-note">{footnote}</div>}
     </>
   );

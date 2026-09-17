@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { AttributeHit } from "../api/gen";
-import { mergeLabelSuggestions } from "./labelSuggestions";
+import { mergeLabelSuggestions, toLokiLabel } from "./labelSuggestions";
 
 const hit = (key: string, brief: string): AttributeHit => ({
   key,
@@ -53,5 +53,16 @@ describe("mergeLabelSuggestions", () => {
     expect(
       mergeLabelSuggestions("k.", [], observed).length,
     ).toBeLessThanOrEqual(12);
+  });
+});
+
+describe("toLokiLabel", () => {
+  it("flattens dots to underscores", () => {
+    expect(toLokiLabel("service.name")).toBe("service_name");
+    expect(toLokiLabel("k8s.pod.uid")).toBe("k8s_pod_uid");
+  });
+
+  it("leaves an already-flat label alone", () => {
+    expect(toLokiLabel("level")).toBe("level");
   });
 });

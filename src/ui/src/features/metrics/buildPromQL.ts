@@ -4,7 +4,11 @@
 // selector, an optional range-vector function (rate/*_over_time), and an
 // optional outer space aggregation with grouping.
 
-import { isValidLabelName, type LabelFilter } from "../../lib/filters";
+import {
+  FILTER_OPS,
+  isValidLabelName,
+  type LabelFilter,
+} from "../../lib/filters";
 import { escapeQuotedString } from "../../lib/collections";
 
 export type SpaceAgg = "sum" | "avg" | "min" | "max" | "count";
@@ -62,6 +66,66 @@ export interface MetricQuery {
 
 export function emptyQuery(ref: string): MetricQuery {
   return { ref, metric: "", filters: [] };
+}
+
+function isLabelFilter(value: unknown): value is LabelFilter {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    typeof (value as LabelFilter).label === "string" &&
+    typeof (value as LabelFilter).value === "string" &&
+    FILTER_OPS.includes((value as LabelFilter).op)
+  );
+}
+
+function isRangeFnSpec(value: unknown): value is RangeFnSpec {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    RANGE_FNS.includes((value as RangeFnSpec).fn) &&
+    typeof (value as RangeFnSpec).window === "string"
+  );
+}
+
+function isSpaceAggSpec(value: unknown): value is SpaceAggSpec {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    SPACE_AGGS.includes((value as SpaceAggSpec).op) &&
+    Array.isArray((value as SpaceAggSpec).by) &&
+    (value as SpaceAggSpec).by.every((b) => typeof b === "string")
+  );
+}
+
+/**
+ * Defensive JSON parse for a builder query round-tripped through the URL
+ * (`?mq=` — see lib/urlState.ts's `metricQuery`). Malformed JSON or a value
+ * that isn't shaped like a `MetricQuery` — including its nested `filters`
+ * entries and optional `range`/`agg` — degrades to `null` rather than
+ * throwing, so a corrupted/hand-edited link falls back to an empty builder
+ * instead of crashing `buildPromQL`.
+ */
+export function parseMetricQuery(raw: string): MetricQuery | null {
+  if (raw === "") return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== "object") return null;
+  const q = parsed as MetricQuery;
+  if (
+    typeof q.ref !== "string" ||
+    typeof q.metric !== "string" ||
+    !Array.isArray(q.filters) ||
+    !q.filters.every(isLabelFilter)
+  ) {
+    return null;
+  }
+  if (q.range !== undefined && !isRangeFnSpec(q.range)) return null;
+  if (q.agg !== undefined && !isSpaceAggSpec(q.agg)) return null;
+  return q;
 }
 
 /** `metric{label=~"…", …}` — or bare `metric` when there are no valid filters. */

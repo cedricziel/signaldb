@@ -286,7 +286,7 @@
    rate while the IR has no range stage. */
 .metric-tile-meta {
   font-size: 11px;
-  color: var(--faint);
+  color: var(--dim);
   white-space: nowrap;
 }
 

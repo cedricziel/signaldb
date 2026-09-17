@@ -4,6 +4,7 @@ import { setTenantContext } from "../api/http";
 import { client as generatedClient } from "../api/gen/client.gen";
 import { stubFetchRoutes } from "../test/render";
 import {
+  invalidateSemantics,
   resetSemanticsCache,
   useAttributeSearch,
   useSemantics,
@@ -121,6 +122,23 @@ describe("useSemantics", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
   });
 
+  it("re-requests a previously-unknown key after invalidateSemantics", async () => {
+    const fetchMock = resolvingFetch();
+    installFetch(fetchMock);
+    const hook = renderHook(() => useSemantics(["app.order.id"]));
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    expect(hook.result.current.has("app.order.id")).toBe(false);
+
+    // The registry now knows it (e.g. a registry was just saved) — without
+    // invalidation the key stays pinned to "unknown" for the session.
+    installFetch(resolvingFetch({ "app.order.id": POD_UID }));
+    invalidateSemantics("acme");
+    hook.rerender();
+    await waitFor(() =>
+      expect(hook.result.current.has("app.order.id")).toBe(true),
+    );
+  });
+
   it("degrades to no semantics when the endpoint fails, without throwing", async () => {
     const fetchMock = stubFetchRoutes([
       {
@@ -165,5 +183,25 @@ describe("useAttributeSearch", () => {
     await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
     await new Promise((r) => setTimeout(r, 30));
     expect(result.current).toEqual([]);
+  });
+
+  it("re-requests a previously-empty prefix after invalidateSemantics", async () => {
+    stubFetchRoutes([{ match: "/api/v1/schema/attributes", body: { hits: [] } }]);
+    const hook = renderHook(() => useAttributeSearch("k8s"));
+    await new Promise((r) => setTimeout(r, 30));
+    expect(hook.result.current).toEqual([]);
+
+    // The registry now has a match (e.g. just saved) — without invalidation
+    // dropping the cached empty result, the prefix stays pinned to "no hits"
+    // for the session because the request effect has nothing new to react
+    // to (`cacheKey`/`trimmed`/`limit` are unchanged).
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/schema/attributes", body: { hits: [POD_UID] } },
+    ]);
+    invalidateSemantics("acme");
+    hook.rerender();
+
+    await waitFor(() => expect(hook.result.current).toHaveLength(1));
+    expect(fetchMock).toHaveBeenCalled();
   });
 });

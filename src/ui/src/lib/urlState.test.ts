@@ -3,6 +3,7 @@ import { NOT_SET, compositeKey } from "./traceGroups";
 import {
   buildPath,
   buildSearch,
+  crossSignalSearch,
   DEFAULT_STATE,
   decodeCatalogSegment,
   encodeCatalogSegment,
@@ -97,13 +98,72 @@ describe("buildSearch", () => {
       live: true,
       group: "POST /checkout",
       groupBy: "resource.host.name",
+      // Not `metricQuery` too: only one of `promql`/`metricQuery` is ever
+      // kept (see the dedicated `mq`-precedence tests below), so combining
+      // both here would test a state the app itself never produces.
       promql: "rate(x[5m])",
+      querySource: "traces" as const,
+      queryResult: "series" as const,
+      queryFilters: [{ label: "kind", op: "=" as const, value: "server" }],
+      queryRun: true,
       profileType: "cpu:nanoseconds",
       profileService: "signaldb-router",
       tenant: "acme",
       dataset: "production",
     };
     expect(parseExploreState(buildSearch(state))).toEqual(state);
+  });
+
+  it("round-trips the metrics builder query through ?mq=", () => {
+    const mq = JSON.stringify({ ref: "a", metric: "up", filters: [] });
+    const state = { ...DEFAULT_STATE, metricQuery: mq };
+    const search = buildSearch(state);
+    expect(search).toContain("mq=");
+    expect(parseExploreState(search).metricQuery).toBe(mq);
+  });
+
+  it("keeps only mq when a URL carries both mq and promql, preferring mq", () => {
+    const mq = JSON.stringify({ ref: "a", metric: "up", filters: [] });
+    const state = parseExploreState(`?mq=${encodeURIComponent(mq)}&promql=rate(x[5m])`);
+    expect(state.metricQuery).toBe(mq);
+    expect(state.promql).toBe("");
+  });
+
+  it("serializes only metricQuery when state somehow carries both", () => {
+    const mq = JSON.stringify({ ref: "a", metric: "up", filters: [] });
+    const search = buildSearch({
+      ...DEFAULT_STATE,
+      metricQuery: mq,
+      promql: "rate(x[5m])",
+    });
+    expect(search).toContain("mq=");
+    expect(search).not.toContain("promql=");
+  });
+
+  it("drops the metrics builder query when switching signals", () => {
+    const mq = JSON.stringify({ ref: "a", metric: "up", filters: [] });
+    const search = crossSignalSearch({ ...DEFAULT_STATE, metricQuery: mq });
+    expect(search).not.toContain("mq=");
+  });
+
+  it("round-trips the Query tab's builder state", () => {
+    const state = {
+      ...DEFAULT_STATE,
+      querySource: "traces" as const,
+      queryResult: "table" as const,
+      queryFilters: [{ label: "service_name", op: "=" as const, value: "x" }],
+      queryRun: true,
+    };
+    const search = buildSearch(state);
+    expect(parseExploreState(search)).toEqual(state);
+  });
+
+  it("omits the Query tab params at their defaults", () => {
+    const search = buildSearch(DEFAULT_STATE);
+    expect(search).not.toContain("qsrc");
+    expect(search).not.toContain("qres");
+    expect(search).not.toContain("qf=");
+    expect(search).not.toContain("qrun");
   });
 
   it("omits the groupBy param for the default dimension", () => {

@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { lokiLabels, lokiQueryHistogram, lokiQueryLogs } from "../../api/loki";
 import {
   MobileFiltersToggle,
@@ -13,6 +13,7 @@ import {
   upsertFilter,
   type LabelFilter,
 } from "../../lib/filters";
+import { liveRefetchInterval } from "../../lib/live";
 import {
   durationToSeconds,
   rangeScopeKey,
@@ -20,17 +21,15 @@ import {
   resolveStep,
   stepOptionsForRange,
 } from "../../lib/time";
-import type { ExploreState } from "../../lib/urlState";
+import type { ExploreState, UpdateFn } from "../../lib/urlState";
 import { FieldSidebar } from "./FieldSidebar";
 import { FilterChips } from "./FilterChips";
 import { Histogram } from "./Histogram";
 import { LogList } from "./LogList";
 
-const LIVE_INTERVAL_MS = 2000;
-
 interface Props {
   state: ExploreState;
-  update: (patch: Partial<ExploreState>) => void;
+  update: UpdateFn;
 }
 
 export function LogsView({ state, update }: Props) {
@@ -38,6 +37,13 @@ export function LogsView({ state, update }: Props) {
   const [rawDraft, setRawDraft] = useState("");
   const [searchDraft, setSearchDraft] = useState(state.search);
   const mobileSidebar = useMobileSidebar();
+
+  // Re-clicking the Logs tab (crossSignalSearch drops `q`) or Back/Forward
+  // change `state.search` without this component remounting; the draft must
+  // follow rather than keep showing stale text over now-unfiltered rows.
+  useEffect(() => {
+    setSearchDraft(state.search);
+  }, [state.search]);
 
   const model = {
     filters: state.filters,
@@ -50,7 +56,10 @@ export function LogsView({ state, update }: Props) {
   const rangeKey = rangeScopeKey(state);
   // Relative ranges resolve "now" per fetch so live mode slides forward.
   const range = () => resolveRange(state.range, Date.now());
-  const refetchInterval = state.live ? LIVE_INTERVAL_MS : false;
+  // Tighter than every other signal's default 15s poll — a live log tail
+  // reads as broken if a burst of lines takes noticeably longer than a
+  // glance to show up.
+  const refetchInterval = liveRefetchInterval(state.live, 2_000);
 
   const logs = useQuery({
     queryKey: ["loki-logs", logql, rangeKey, state.limit],
@@ -78,7 +87,7 @@ export function LogsView({ state, update }: Props) {
     update({ filters: upsertFilter(state.filters, f), raw: "" });
 
   const openTrace = (traceId: string) =>
-    update({ signal: "traces", trace: traceId });
+    update({ signal: "traces", trace: traceId }, { push: true });
 
   return (
     <div className="logsview">
@@ -103,7 +112,17 @@ export function LogsView({ state, update }: Props) {
                 placeholder="Search in log lines…"
                 aria-label="Search in log lines"
                 value={searchDraft}
-                onChange={(e) => setSearchDraft(e.target.value)}
+                onChange={(e) => {
+                  const next = e.target.value;
+                  setSearchDraft(next);
+                  // The native "×" clears the box without firing submit;
+                  // an empty draft over a non-empty query would otherwise
+                  // leave stale rows filtered by a query the box no longer
+                  // shows.
+                  if (next === "" && state.search !== "") {
+                    update({ search: "" });
+                  }
+                }}
               />
             </form>
           </>

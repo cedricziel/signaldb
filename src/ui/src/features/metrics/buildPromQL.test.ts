@@ -6,6 +6,7 @@ import {
   buildSelector,
   emptyQuery,
   nextRef,
+  parseMetricQuery,
   type MetricQuery,
 } from "./buildPromQL";
 
@@ -150,5 +151,126 @@ describe("buildFormula", () => {
 
   it("is not runnable while a referenced query is still empty", () => {
     expect(buildFormula([qa, emptyQuery("b")], "a / b")).toBe("");
+  });
+});
+
+describe("parseMetricQuery", () => {
+  it("returns null for empty input", () => {
+    expect(parseMetricQuery("")).toBeNull();
+  });
+
+  it("returns null for malformed JSON", () => {
+    expect(parseMetricQuery("{not json")).toBeNull();
+  });
+
+  it("parses a minimal valid query", () => {
+    expect(
+      parseMetricQuery(
+        JSON.stringify({ ref: "a", metric: "up", filters: [] }),
+      ),
+    ).toEqual({ ref: "a", metric: "up", filters: [] });
+  });
+
+  it("rejects a filters entry that isn't a well-formed LabelFilter", () => {
+    expect(
+      parseMetricQuery(
+        JSON.stringify({
+          ref: "a",
+          metric: "up",
+          filters: [{ label: "service", op: "bogus", value: "x" }],
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseMetricQuery(
+        JSON.stringify({ ref: "a", metric: "up", filters: [{}] }),
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects an agg that isn't shaped like a SpaceAggSpec, rather than crashing buildPromQL", () => {
+    // The exact crashing input from the report: `agg: {}` has neither `op`
+    // nor `by`, and buildPromQL would otherwise throw on `q.agg.by.filter`.
+    const parsed = parseMetricQuery(
+      JSON.stringify({ ref: "a", metric: "up", filters: [], agg: {} }),
+    );
+    expect(parsed).toBeNull();
+  });
+
+  it("accepts a well-formed agg", () => {
+    const parsed = parseMetricQuery(
+      JSON.stringify({
+        ref: "a",
+        metric: "up",
+        filters: [],
+        agg: { op: "sum", by: ["service"] },
+      }),
+    );
+    expect(parsed).toEqual({
+      ref: "a",
+      metric: "up",
+      filters: [],
+      agg: { op: "sum", by: ["service"] },
+    });
+  });
+
+  it("rejects an agg.by entry that isn't a string", () => {
+    expect(
+      parseMetricQuery(
+        JSON.stringify({
+          ref: "a",
+          metric: "up",
+          filters: [],
+          agg: { op: "sum", by: [1] },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("rejects a range that isn't shaped like a RangeFnSpec", () => {
+    expect(
+      parseMetricQuery(
+        JSON.stringify({
+          ref: "a",
+          metric: "up",
+          filters: [],
+          range: { fn: "bogus", window: "5m" },
+        }),
+      ),
+    ).toBeNull();
+    expect(
+      parseMetricQuery(
+        JSON.stringify({ ref: "a", metric: "up", filters: [], range: {} }),
+      ),
+    ).toBeNull();
+  });
+
+  it("accepts a well-formed range", () => {
+    const parsed = parseMetricQuery(
+      JSON.stringify({
+        ref: "a",
+        metric: "up",
+        filters: [],
+        range: { fn: "rate", window: "5m" },
+      }),
+    );
+    expect(parsed).toEqual({
+      ref: "a",
+      metric: "up",
+      filters: [],
+      range: { fn: "rate", window: "5m" },
+    });
+  });
+
+  it("never returns a value buildPromQL crashes on", () => {
+    const inputs = [
+      { ref: "a", metric: "up", filters: [], agg: {} },
+      { ref: "a", metric: "up", filters: [], range: {} },
+      { ref: "a", metric: "up", filters: [{ label: 1 }] },
+    ];
+    for (const input of inputs) {
+      const parsed = parseMetricQuery(JSON.stringify(input));
+      if (parsed) expect(() => buildPromQL(parsed)).not.toThrow();
+    }
   });
 });

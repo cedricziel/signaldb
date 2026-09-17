@@ -37,3 +37,48 @@ export function toggleTheme(): void {
     // localStorage unavailable
   }
 }
+
+// subscribeTheme is called once per chart/panel that tracks the theme (every
+// MetricsChart on a busy dashboard, say); one MutationObserver plus one
+// matchMedia listener shared by all of them, rather than a pair per
+// subscriber, is enough to serve them all. Lazily created on the first
+// subscriber and torn down once the last one unsubscribes.
+let listeners: Set<() => void> | null = null;
+let observer: MutationObserver | null = null;
+let media: MediaQueryList | null = null;
+
+function notifyListeners(): void {
+  listeners?.forEach((cb) => cb());
+}
+
+/**
+ * Calls `cb` whenever the effective theme may have changed: an explicit
+ * `data-theme` toggle (this tab's own {@link toggleTheme}, or a `settings`
+ * page in another tab reaching the same `<html>`) and a system-level
+ * `prefers-color-scheme` flip for a page with no explicit override, either
+ * of which a chart drawn with colours resolved once at mount would
+ * otherwise miss. Returns an unsubscribe function.
+ */
+export function subscribeTheme(cb: () => void): () => void {
+  if (!listeners) {
+    listeners = new Set();
+    observer = new MutationObserver(notifyListeners);
+    observer.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["data-theme"],
+    });
+    media = window.matchMedia("(prefers-color-scheme: dark)");
+    media.addEventListener("change", notifyListeners);
+  }
+  listeners.add(cb);
+  return () => {
+    listeners?.delete(cb);
+    if (listeners && listeners.size === 0) {
+      observer?.disconnect();
+      media?.removeEventListener("change", notifyListeners);
+      listeners = null;
+      observer = null;
+      media = null;
+    }
+  };
+}

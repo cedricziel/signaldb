@@ -4,6 +4,7 @@ import {
   DEFAULT_RANGE,
   durationToSeconds,
   formatRangeLabel,
+  formatTimestampForRange,
   msToNanos,
   nanosToMs,
   parseRangeParam,
@@ -14,6 +15,23 @@ import {
   stepForRange,
   stepOptionsForRange,
 } from "./time";
+
+describe("formatTimestampForRange", () => {
+  // 2024-03-05 14:07:09.250 local time.
+  const ms = new Date(2024, 2, 5, 14, 7, 9, 250).getTime();
+
+  it("stays time-only within a window of a day or less", () => {
+    const range = { fromMs: ms - 3_600_000, toMs: ms };
+    expect(formatTimestampForRange(ms, range)).toBe("14:07:09.250");
+  });
+
+  it("prefixes the date once the window spans more than a day", () => {
+    const range = { fromMs: ms - 7 * 86_400_000, toMs: ms };
+    expect(formatTimestampForRange(ms, range)).toBe(
+      "2024-03-05 14:07:09.250",
+    );
+  });
+});
 
 describe("resolveRange", () => {
   it("resolves a relative range against now", () => {

@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router";
 import { useState, type ReactNode } from "react";
 import { toErrorMessage } from "../../api/http";
 import { whoami, type CurrentSessionResponse } from "../../api/session";
-import { safeRedirectTarget } from "../../lib/redirectTarget";
+import { safeRedirectTarget, withTenantDataset } from "../../lib/redirectTarget";
 import { useOutletState } from "../../lib/outletState";
 import "./SelectTenant.css";
 
@@ -128,7 +128,7 @@ export interface SelectTenantProps {
 export function SelectTenant({ session }: SelectTenantProps) {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const { state, update } = useOutletState();
+  const { state } = useOutletState();
   const [expandedTenants, setExpandedTenants] = useState<string[]>(
     state.tenant ? [state.tenant] : [],
   );
@@ -142,8 +142,19 @@ export function SelectTenant({ session }: SelectTenantProps) {
   };
 
   const handleDatasetClick = (tenantId: string, datasetId: string) => {
-    update({ tenant: tenantId, dataset: datasetId });
-    navigate(safeRedirectTarget(searchParams.get("redirect")));
+    // Navigate exactly once, with the picked tenant/dataset already in the
+    // target's query string — an `update()` (a history.replace on
+    // `/select-tenant`) followed by a `navigate()` push in the same handler
+    // would batch into a single render of the *target* location, dropping
+    // the tenant React just applied and bouncing a fresh multi-tenant user
+    // back here forever.
+    navigate(
+      withTenantDataset(
+        safeRedirectTarget(searchParams.get("redirect")),
+        tenantId,
+        datasetId,
+      ),
+    );
   };
 
   if (session.memberships.length === 0 && session.user.is_instance_admin) {

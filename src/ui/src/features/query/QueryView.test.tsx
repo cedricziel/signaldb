@@ -1,9 +1,11 @@
+import { useState } from "react";
 import { fireEvent, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { renderWithClient } from "../../test/render";
 import { resetApiClient, stubApiFetch } from "../../test/apiClient";
+import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import { QueryView } from "./QueryView";
 
 // uPlot needs a real <canvas> 2D context, which jsdom doesn't implement; the
@@ -22,11 +24,37 @@ afterEach(() => {
   uPlotCtor.mockClear();
 });
 
+/**
+ * Renders `QueryView` the way the real app does: `state`/`update` round-trip
+ * through a stateful wrapper (standing in for the URL) instead of `QueryView`
+ * holding its own state — the Query tab's builder/result/filters/run are now
+ * URL-backed (see lib/urlState.ts). `onUpdate` also records every patch, for
+ * tests asserting on the exact call.
+ */
+function renderView(
+  initial: Partial<ExploreState> = {},
+  onUpdate?: (patch: Partial<ExploreState>) => void,
+) {
+  function Harness() {
+    const [state, setState] = useState<ExploreState>({
+      ...DEFAULT_STATE,
+      signal: "query",
+      ...initial,
+    });
+    const update = (patch: Partial<ExploreState>) => {
+      onUpdate?.(patch);
+      setState((s) => ({ ...s, ...patch }));
+    };
+    return <QueryView state={state} update={update} />;
+  }
+  renderWithClient(<Harness />);
+}
+
 describe("QueryView", () => {
-  // Task 9.2 — the view is chosen from the declared envelope before results.
+  // Task 9.2 — the view is chosen from the declared envelope up front.
   it("selects the view from the declared envelope up front", () => {
     stubApiFetch({});
-    renderWithClient(<QueryView />);
+    renderView();
 
     // Default `rows` → list view, no query run yet.
     expect(screen.getByTestId("ir-view-list")).toBeInTheDocument();
@@ -50,7 +78,7 @@ describe("QueryView", () => {
       columns: [{ name: "service_name", type: "string" }],
       rows: [["checkout"]],
     });
-    renderWithClient(<QueryView />);
+    renderView();
 
     fireEvent.click(screen.getByText("Run"));
 
@@ -80,7 +108,7 @@ describe("QueryView", () => {
       ],
       rows: [["checkout", 1]],
     });
-    renderWithClient(<QueryView />);
+    renderView();
 
     fireEvent.change(screen.getByLabelText("result"), {
       target: { value: "table" },
@@ -113,7 +141,7 @@ describe("QueryView", () => {
         },
       ],
     });
-    renderWithClient(<QueryView />);
+    renderView();
 
     fireEvent.click(screen.getByText("Run"));
 
@@ -128,7 +156,7 @@ describe("QueryView", () => {
       columns: [{ name: "profile_id", type: "string" }],
       rows: [["profile-1"]],
     });
-    renderWithClient(<QueryView />);
+    renderView();
 
     fireEvent.change(screen.getByLabelText("source"), {
       target: { value: "profiles" },
@@ -140,23 +168,110 @@ describe("QueryView", () => {
     await screen.findByText("profile-1");
   });
 
-  it("copies rendered table cells", async () => {
+  it("copies a rendered table cell longer than 40 characters", async () => {
     const writeText = vi.fn();
     vi.stubGlobal("navigator", { clipboard: { writeText } });
+    const longValue = "a".repeat(41);
+    stubApiFetch({
+      result: "rows",
+      window: { start_ns: 0, end_ns: 1 },
+      columns: [{ name: "service_name", type: "string" }],
+      rows: [[longValue]],
+    });
+    renderView();
+
+    fireEvent.click(screen.getByText("Run"));
+    await userEvent.click(
+      await screen.findByRole("button", { name: `Copy cell ${longValue}` }),
+    );
+
+    expect(writeText).toHaveBeenCalledWith(longValue);
+    vi.unstubAllGlobals();
+  });
+
+  it("renders a short cell as plain text with no copy button", async () => {
     stubApiFetch({
       result: "rows",
       window: { start_ns: 0, end_ns: 1 },
       columns: [{ name: "service_name", type: "string" }],
       rows: [["checkout"]],
     });
-    renderWithClient(<QueryView />);
+    renderView();
 
     fireEvent.click(screen.getByText("Run"));
-    await userEvent.click(
-      await screen.findByRole("button", { name: "Copy cell checkout" }),
-    );
+    await screen.findByText("checkout");
+    expect(
+      screen.queryByRole("button", { name: /Copy cell/ }),
+    ).not.toBeInTheDocument();
+  });
 
-    expect(writeText).toHaveBeenCalledWith("checkout");
+  it("formats a *_timestamp column as an absolute date/time, not a raw epoch-nanosecond integer", async () => {
+    stubApiFetch({
+      result: "rows",
+      window: { start_ns: 0, end_ns: 1 },
+      columns: [{ name: "start_timestamp", type: "int64" }],
+      rows: [["1700000000000000000"]],
+    });
+    renderView();
+
+    fireEvent.click(screen.getByText("Run"));
+    expect(await screen.findByText(/^\d{4}-\d{2}-\d{2} /)).toBeInTheDocument();
+    expect(screen.queryByText("1700000000000000000")).not.toBeInTheDocument();
+  });
+
+  it("keeps a 19-digit id column verbatim and copyable rather than reading it as an epoch timestamp", async () => {
+    const id = "1234567890123456789";
+    stubApiFetch({
+      result: "rows",
+      window: { start_ns: 0, end_ns: 1 },
+      columns: [{ name: "request_id", type: "string" }],
+      rows: [[id]],
+    });
+    renderView();
+
+    fireEvent.click(screen.getByText("Run"));
+    expect(await screen.findByText(id)).toBeInTheDocument();
+    expect(screen.queryByText(/^\d{4}-\d{2}-\d{2} /)).not.toBeInTheDocument();
+  });
+
+  it("does not treat a column merely ending in the letters 'time' (e.g. runtime) as a timestamp", async () => {
+    stubApiFetch({
+      result: "rows",
+      window: { start_ns: 0, end_ns: 1 },
+      columns: [{ name: "runtime", type: "int64" }],
+      rows: [["42"]],
+    });
+    renderView();
+
+    fireEvent.click(screen.getByText("Run"));
+    expect(await screen.findByText("42")).toBeInTheDocument();
+  });
+
+  it("formats a column the server's own metadata declares as timestamp_ns, even without a *_timestamp name", async () => {
+    stubApiFetch({
+      result: "rows",
+      window: { start_ns: 0, end_ns: 1 },
+      columns: [{ name: "observed_at", type: "timestamp_ns" }],
+      rows: [["1700000000000000000"]],
+    });
+    renderView();
+
+    fireEvent.click(screen.getByText("Run"));
+    expect(await screen.findByText(/^\d{4}-\d{2}-\d{2} /)).toBeInTheDocument();
+  });
+
+  it("wraps the rows table in a scrollable container", async () => {
+    stubApiFetch({
+      result: "rows",
+      window: { start_ns: 0, end_ns: 1 },
+      columns: [{ name: "service_name", type: "string" }],
+      rows: [["checkout"]],
+    });
+    renderView();
+
+    fireEvent.click(screen.getByText("Run"));
+    const cell = await screen.findByText("checkout");
+    expect(cell.closest(".table-scroll")).not.toBeNull();
   });
 
   it("copies rendered series labels", async () => {
@@ -167,7 +282,7 @@ describe("QueryView", () => {
       window: { start_ns: 0, end_ns: 1 },
       series: [{ labels: { service_name: "checkout" }, points: [] }],
     });
-    renderWithClient(<QueryView />);
+    renderView();
 
     fireEvent.change(screen.getByLabelText("result"), {
       target: { value: "series" },
@@ -180,6 +295,24 @@ describe("QueryView", () => {
     );
 
     expect(writeText).toHaveBeenCalledWith("service_name=checkout");
+    vi.unstubAllGlobals();
+  });
+
+  it("shows the shared empty-state style for a series envelope with no series", async () => {
+    stubApiFetch({
+      result: "series",
+      window: { start_ns: 0, end_ns: 1 },
+      series: [],
+    });
+    renderView();
+
+    fireEvent.change(screen.getByLabelText("result"), {
+      target: { value: "series" },
+    });
+    fireEvent.click(screen.getByText("Run"));
+
+    const note = await screen.findByText("No series");
+    expect(note).toHaveClass("view-note");
   });
 
   it("charts a series envelope through the metrics chart", async () => {
@@ -204,7 +337,7 @@ describe("QueryView", () => {
         },
       ],
     });
-    renderWithClient(<QueryView />);
+    renderView();
 
     fireEvent.change(screen.getByLabelText("result"), {
       target: { value: "series" },
@@ -228,5 +361,79 @@ describe("QueryView", () => {
     // Nanosecond timestamps became milliseconds on the shared axis.
     expect(data[0]).toEqual([0, 60_000]);
     expect(data[2]).toEqual([3, 4]);
+  });
+
+  // Fix: source/result/filters/run used to be local component state — a tab
+  // switch, Back, or reload wiped them. Now they round-trip through `update`.
+  describe("URL-backed builder state", () => {
+    it("persists source, result, and filters via update", async () => {
+      const patches: Partial<ExploreState>[] = [];
+      renderView({}, (p) => patches.push(p));
+
+      fireEvent.change(screen.getByLabelText("source"), {
+        target: { value: "traces" },
+      });
+      expect(patches).toContainEqual({ querySource: "traces" });
+
+      fireEvent.change(screen.getByLabelText("result"), {
+        target: { value: "table" },
+      });
+      expect(patches).toContainEqual({ queryResult: "table" });
+
+      await userEvent.click(screen.getByRole("button", { name: "+ filter" }));
+      await userEvent.type(screen.getByLabelText("Filter label"), "level");
+      await userEvent.type(screen.getByLabelText("Filter value"), "error");
+      await userEvent.click(screen.getByRole("button", { name: "Add" }));
+      expect(patches).toContainEqual({
+        queryFilters: [{ label: "level", op: "=", value: "error" }],
+      });
+    });
+
+    it("reloading with querySource/queryResult/queryFilters/queryRun already set runs immediately", async () => {
+      const calls = stubApiFetch({
+        result: "table",
+        window: { start_ns: 0, end_ns: 1 },
+        columns: [{ name: "service.name", type: "string" }],
+        rows: [["checkout"]],
+      });
+      renderView({
+        querySource: "traces",
+        queryResult: "table",
+        queryFilters: [{ label: "level", op: "=", value: "error" }],
+        queryRun: true,
+      });
+
+      await waitFor(() => expect(calls.length).toBeGreaterThan(0));
+      const doc = calls[0]!.body as { from?: string };
+      expect(doc.from).toBe("traces");
+      await screen.findByText("checkout");
+    });
+
+    it("Run persists queryRun so a reload reproduces the same result", () => {
+      const patches: Partial<ExploreState>[] = [];
+      stubApiFetch({ result: "rows", window: { start_ns: 0, end_ns: 1 } });
+      renderView({}, (p) => patches.push(p));
+
+      fireEvent.click(screen.getByText("Run"));
+
+      expect(patches).toContainEqual({ queryRun: true });
+    });
+
+    it("clicking Run again on an already-run query refetches instead of no-op", async () => {
+      const calls = stubApiFetch({
+        result: "rows",
+        window: { start_ns: 0, end_ns: 1 },
+        columns: [{ name: "service_name", type: "string" }],
+        rows: [["checkout"]],
+      });
+      renderView({ queryRun: true });
+
+      await waitFor(() => expect(calls.length).toBeGreaterThan(0));
+      const before = calls.length;
+
+      fireEvent.click(screen.getByText("Run"));
+
+      await waitFor(() => expect(calls.length).toBeGreaterThan(before));
+    });
   });
 });

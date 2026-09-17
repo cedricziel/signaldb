@@ -10,6 +10,7 @@
 import type { QueryIrRequest } from "./gen";
 import type { MetricHit } from "../features/schema/api";
 import type { EntityTypeDef } from "../features/catalog/entityTypes";
+import { toLokiLabel } from "../lib/labelSuggestions";
 import { compositeKey } from "../lib/traceGroups";
 import {
   aggFor,
@@ -35,9 +36,7 @@ export function headlineMetric(metrics: MetricHit[]): MetricHit | undefined {
 }
 
 /** The `metric_name`-style label the querier returns for a logical field. */
-function labelFor(field: string): string {
-  return field.replace(/\./g, "_");
-}
+const labelFor = toLokiLabel;
 
 /** One query for the whole column, grouped by the identity of each row. */
 export function buildSparklineDoc(

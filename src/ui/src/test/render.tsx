@@ -1,8 +1,10 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
 import type { ReactElement, ReactNode } from "react";
+import { Outlet } from "react-router";
 import { afterEach, vi } from "vitest";
 import { client as generatedClient } from "../api/gen/client.gen";
+import type { ExploreState } from "../lib/urlState";
 
 function testQueryClient() {
   return new QueryClient({
@@ -26,6 +28,18 @@ export function clientWrapper() {
   return ({ children }: { children: ReactNode }) => (
     <QueryClientProvider client={client}>{children}</QueryClientProvider>
   );
+}
+
+/** The shell's outlet context (`state`/`update`, see `App.tsx`) as the
+ * element a `<Route element={...}>` renders — every route/page test needs
+ * one ancestor route providing this, since `useOutletState` (and anything
+ * built on it, like `useSchemaSession`) throws without it. `update`
+ * defaults to a no-op mock. */
+export function outletContextRoute(
+  state: ExploreState,
+  update: (patch: Partial<ExploreState>) => void = vi.fn(),
+) {
+  return <Outlet context={{ state, update }} />;
 }
 
 const realFetch = globalThis.fetch;

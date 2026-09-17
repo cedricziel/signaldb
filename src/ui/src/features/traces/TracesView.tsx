@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Fragment, useId, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router";
 import {
   tempoSearchTags,
   type ProfileSummaryView,
@@ -33,6 +34,9 @@ import { useSemantics } from "../../hooks/useSemantics";
 import { useMobileSidebar } from "../../hooks/useMobileSidebar";
 import { spanDetailWidth } from "../../lib/sidebarWidth";
 import { groupBySemanticTitle } from "../../lib/semantics";
+import { liveRefetchInterval } from "../../lib/live";
+import { goBackOr } from "../../lib/router";
+import { formatErrorRate } from "../../lib/vizFormat";
 import { TraceFacets } from "./TraceFacets";
 import { TraceVolumeAreaChart } from "./TraceVolumeAreaChart";
 import { TraceVolumeHeatmap } from "./TraceVolumeHeatmap";
@@ -54,6 +58,7 @@ import {
   resolveStep,
   stepOptionsForRange,
   type ResolvedRange,
+  type TimeRange,
 } from "../../lib/time";
 import {
   BUILTIN_DIMENSIONS,
@@ -168,10 +173,12 @@ function TraceSearch({ state, update }: Props) {
   // Deliberately keyed without `state.limit`: the volume aggregate covers the
   // whole window and must not move when the trace list's limit changes. It
   // does follow the filters, so the chart describes what the table shows.
+  const refetchInterval = liveRefetchInterval(state.live);
   const volume = useQuery({
     queryKey: ["trace-volume", rangeKey, step, traceql],
     queryFn: () =>
       fetchTraceVolume(resolveRange(state.range, Date.now()), step, filters),
+    refetchInterval,
   });
   const latencyHeatmap = useQuery({
     queryKey: ["trace-latency", rangeKey, step, traceql],
@@ -182,6 +189,7 @@ function TraceSearch({ state, update }: Props) {
         filters,
       ),
     enabled: volumeView === "heatmap",
+    refetchInterval,
   });
 
   const addFilter = (f: TraceFilter) =>
@@ -340,10 +348,11 @@ function TraceSearch({ state, update }: Props) {
               dims={dims}
               filters={filters}
               traceql={traceql}
-              range={resolvedForStep}
+              timeRange={state.range}
               rangeKey={rangeKey}
               grain={state.grain}
               rangeSeconds={rangeSeconds(state)}
+              live={state.live}
               update={update}
             />
           ) : (
@@ -515,19 +524,21 @@ function GroupList({
   dims,
   filters,
   traceql,
-  range,
+  timeRange,
   rangeKey,
   grain,
   rangeSeconds,
+  live,
   update,
 }: {
   dims: string[];
   filters: TraceFilter[];
   traceql: string;
-  range: ResolvedRange;
+  timeRange: TimeRange;
   rangeKey: string;
   grain: GroupGrain;
   rangeSeconds: number;
+  live: boolean;
   update: UpdateFn;
 }) {
   // Sorting is a server-side `order` stage (see api/traceGroups), so a new
@@ -536,6 +547,7 @@ function GroupList({
     DEFAULT_GROUP_SORT.key,
     DEFAULT_GROUP_SORT.dir,
   );
+  const refetchInterval = liveRefetchInterval(live);
   const result = useQuery({
     queryKey: [
       "trace-groups",
@@ -546,8 +558,19 @@ function GroupList({
       sort.key,
       sort.dir,
     ],
+    // Resolved fresh on every fetch (as the volume chart does), not hoisted
+    // from a render captured before this call — a live refetch of a relative
+    // range must slide the window forward with it, not repeat the exact same
+    // one every 15s.
     queryFn: () =>
-      fetchTraceGroups(dims, range, filters, grain, sort as GroupSort),
+      fetchTraceGroups(
+        dims,
+        resolveRange(timeRange, Date.now()),
+        filters,
+        grain,
+        sort as GroupSort,
+      ),
+    refetchInterval,
   });
 
   // #1070: an unresolvable dimension answers 200 with a single null-labelled
@@ -559,8 +582,10 @@ function GroupList({
   const suspect = result.data ? looksUnresolved(result.data.groups) : false;
   const windowTotal = useQuery({
     queryKey: ["trace-window-total", rangeKey, grain, traceql],
-    queryFn: () => fetchWindowTotal(range, filters, grain),
+    queryFn: () =>
+      fetchWindowTotal(resolveRange(timeRange, Date.now()), filters, grain),
     enabled: suspect,
+    refetchInterval,
   });
   const unresolved =
     suspect &&
@@ -586,103 +611,103 @@ function GroupList({
       {result.isError && (
         <QueryError what="trace groups" error={result.error} />
       )}
-      <table className="trace-table" aria-busy={pending}>
-        <thead>
-          <tr>
-            {dims.map((d, i) => (
+      <div className="table-scroll">
+        <table className="trace-table" aria-busy={pending}>
+          <thead>
+            <tr>
+              {dims.map((d, i) => (
+                <SortTh
+                  key={d}
+                  label={d}
+                  sortKey={`dim:${i}`}
+                  sort={sort}
+                  toggle={toggle}
+                />
+              ))}
               <SortTh
-                key={d}
-                label={d}
-                sortKey={`dim:${i}`}
+                label={countLabel}
+                sortKey="n"
                 sort={sort}
                 toggle={toggle}
+                numeric
               />
-            ))}
-            <SortTh
-              label={countLabel}
-              sortKey="n"
-              sort={sort}
-              toggle={toggle}
-              numeric
-            />
-            {/* Rate is count / a fixed window — strictly increasing in count,
-                so it sorts identically to n; no separate sort key needed. */}
-            <SortTh
-              label="Rate"
-              sortKey="n"
-              sort={sort}
-              toggle={toggle}
-              numeric
-            />
-            <SortTh
-              label="Errors"
-              sortKey="errors"
-              sort={sort}
-              toggle={toggle}
-              numeric
-            />
-            <SortTh
-              label="P50"
-              sortKey="p50"
-              sort={sort}
-              toggle={toggle}
-              numeric
-            />
-            <SortTh
-              label="P95"
-              sortKey="p95"
-              sort={sort}
-              toggle={toggle}
-              numeric
-            />
-            <SortTh
-              label="Last seen"
-              sortKey="last"
-              sort={sort}
-              toggle={toggle}
-              firstDir="desc"
-            />
-          </tr>
-        </thead>
-        <tbody>
-          {pending ? (
-            <SkeletonRows
-              rows={8}
-              columns={columns}
-              numericFrom={dims.length}
-            />
-          ) : (
-            groups.map((g) => {
-              const key = compositeKey(g.values);
-              return (
-                <tr
-                  key={key}
-                  onClick={() => update({ group: key }, { push: true })}
-                >
-                  <td>
-                    <button className="trace-open">
-                      {g.values[0] ?? NOT_SET}
-                    </button>
-                  </td>
-                  {g.values.slice(1).map((v, i) => (
-                    <td key={dims[i + 1]}>{v ?? NOT_SET}</td>
-                  ))}
-                  <td className="num">{g.count}</td>
-                  <td className="num">{formatRate(g.count, rangeSeconds)}</td>
-                  <td className={`num${g.errors > 0 ? " err-rate" : ""}`}>
-                    {g.errors > 0
-                      ? `${Math.round((100 * g.errors) / g.count)}%`
-                      : "–"}
-                  </td>
-                  <td className="num">{formatDurationMs(g.p50Ms)}</td>
-                  <td className="num">{formatDurationMs(g.p95Ms)}</td>
-                  <td>{formatTimestamp(nanosToMs(g.lastNs))}</td>
-                </tr>
-              );
-            })
-          )}
-        </tbody>
-      </table>
+              {/* Rate is count / a fixed window — strictly increasing in count,
+                  so it sorts identically to n; no separate sort key needed. */}
+              <SortTh
+                label="Rate"
+                sortKey="n"
+                sort={sort}
+                toggle={toggle}
+                numeric
+              />
+              <SortTh
+                label="Errors"
+                sortKey="errors"
+                sort={sort}
+                toggle={toggle}
+                numeric
+              />
+              <SortTh
+                label="P50"
+                sortKey="p50"
+                sort={sort}
+                toggle={toggle}
+                numeric
+              />
+              <SortTh
+                label="P95"
+                sortKey="p95"
+                sort={sort}
+                toggle={toggle}
+                numeric
+              />
+              <SortTh
+                label="Last seen"
+                sortKey="last"
+                sort={sort}
+                toggle={toggle}
+                firstDir="desc"
+              />
+            </tr>
+          </thead>
+          <tbody>
+            {pending ? (
+              <SkeletonRows
+                rows={8}
+                columns={columns}
+                numericFrom={dims.length}
+              />
+            ) : (
+              groups.map((g) => {
+                const key = compositeKey(g.values);
+                return (
+                  <tr
+                    key={key}
+                    onClick={() => update({ group: key }, { push: true })}
+                  >
+                    <td>
+                      <button className="trace-open">
+                        {g.values[0] ?? NOT_SET}
+                      </button>
+                    </td>
+                    {g.values.slice(1).map((v, i) => (
+                      <td key={dims[i + 1]}>{v ?? NOT_SET}</td>
+                    ))}
+                    <td className="num">{g.count}</td>
+                    <td className="num">{formatRate(g.count, rangeSeconds)}</td>
+                    <td className={`num${g.errors > 0 ? " err-rate" : ""}`}>
+                      {formatErrorRate(g.errors, g.count)}
+                    </td>
+                    <td className="num">{formatDurationMs(g.p50Ms)}</td>
+                    <td className="num">{formatDurationMs(g.p95Ms)}</td>
+                    <td>{formatTimestamp(nanosToMs(g.lastNs))}</td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
       {unresolved && (
         <div className="view-note">
           &ldquo;{dims.join(", ")}&rdquo; isn&rsquo;t queryable for this tenant
@@ -721,8 +746,12 @@ function GroupDetail({
   update: UpdateFn;
 }) {
   const rangeKey = rangeScopeKey(state);
-  const range = resolveRange(state.range, Date.now());
-  const traceql = compileTraceQL(state.traceFilters);
+  // Same default-kind read as the group table (see TraceSearch): the state
+  // may name no kind filter, in which case the default remote-boundary
+  // kinds apply. Both the key and the drill-in members query must agree
+  // with the group table on what "this group" means.
+  const filters = withDefaultTraceFilters(state.traceFilters);
+  const traceql = compileTraceQL(filters);
   const dims = parseGroupBy(state.groupBy);
   const values = parseCompositeKey(state.group, dims);
 
@@ -739,15 +768,19 @@ function GroupDetail({
       traceql,
       state.limit,
     ],
+    // Resolved fresh on every fetch, not once per render — a live refetch of
+    // a relative range must slide the window forward with it (see GroupList
+    // above for the same fix on the group table's own queries).
     queryFn: () =>
       fetchTraceGroupMembers(
         dims,
         values,
-        range,
-        state.traceFilters,
+        resolveRange(state.range, Date.now()),
+        filters,
         state.grain,
         state.limit,
       ),
+    refetchInterval: liveRefetchInterval(state.live),
   });
 
   // At trace grain the root-span predicate makes every row a whole trace,
@@ -792,6 +825,12 @@ function TraceDetail({ state, update }: Props) {
   const pointer = useVizPointer(bodyRef);
   const [hoveredSpanId, setHoveredSpanId] = useState<string | null>(null);
   const tipId = useId();
+  const navigate = useNavigate();
+  // A trace opened by push (from the search list, a group, a log row, …)
+  // leaves in-app history behind it; stepping out with Back rather than a
+  // fresh `update({ trace: "" })` returns to wherever it was opened from
+  // instead of always landing on the bare /traces list.
+  const backToTraces = () => goBackOr(navigate, () => update({ trace: "" }));
   const clearHover = () => {
     setHoveredSpanId(null);
     pointer.clear();
@@ -799,9 +838,11 @@ function TraceDetail({ state, update }: Props) {
   // One Query IR read for the whole trace: spans with kind, status,
   // attribute containers, and events, plus the profiles captured during it.
   // The viewer's range is tried first; a trace opened by ID that lies
-  // outside it is retried over a wide window (see fetchTraceDetail).
+  // outside it is retried over a wide window (see fetchTraceDetail). The
+  // range rides in the key so widening it (per the not-found copy below)
+  // actually refetches instead of serving the same empty result.
   const trace = useQuery({
-    queryKey: ["trace-detail", state.trace, state.tenant, state.dataset],
+    queryKey: ["trace-detail", state.trace, rangeScopeKey(state)],
     queryFn: () =>
       fetchTraceDetail(state.trace, resolveRange(state.range, Date.now())),
   });
@@ -818,25 +859,29 @@ function TraceDetail({ state, update }: Props) {
   );
 
   if (trace.isError || (trace.isSuccess && trace.data === null)) {
-    if (
+    const notFound =
       !trace.isError ||
-      (trace.error instanceof ApiError && trace.error.status === 404)
-    ) {
-      return (
-        <div className="trace-not-found" role="alert">
-          <button className="backbtn" onClick={() => update({ trace: "" })}>
-            ← traces
-          </button>
-          <h3>Trace not found</h3>
-          <p>
-            <code>{state.trace}</code> isn&rsquo;t in the selected time window.
-            Trace storage is scoped by time — if you know roughly when it
-            happened, widen the range and try again.
-          </p>
-        </div>
-      );
-    }
-    return <QueryError what="the trace" error={trace.error} />;
+      (trace.error instanceof ApiError && trace.error.status === 404);
+    return (
+      <div className="trace-not-found" role={notFound ? "alert" : undefined}>
+        <button className="backbtn" onClick={backToTraces}>
+          ← traces
+        </button>
+        {notFound ? (
+          <>
+            <h3>Trace not found</h3>
+            <p>
+              <code>{state.trace}</code> wasn&rsquo;t found in the selected
+              time window or the last 30 days. Trace storage is scoped by
+              time — if you know roughly when it happened, widen the range
+              and try again.
+            </p>
+          </>
+        ) : (
+          <QueryError what="the trace" error={trace.error} />
+        )}
+      </div>
+    );
   }
   if (trace.isPending) {
     return (
@@ -868,7 +913,7 @@ function TraceDetail({ state, update }: Props) {
   return (
     <div className="traceview">
       <div className="trace-head">
-        <button className="backbtn" onClick={() => update({ trace: "" })}>
+        <button className="backbtn" onClick={backToTraces}>
           ← traces
         </button>
         <h3>{traceData.rootTraceName}</h3>
@@ -909,18 +954,23 @@ function TraceDetail({ state, update }: Props) {
         </div>
       )}
       <div className="trace-body viz-host" ref={bodyRef}>
+        {/* A labelled group of native buttons, not a listbox: a proper
+            listbox owes its `option`s a roving-focus keyboard pattern
+            (arrow-key navigation, one tab stop) that this doesn't implement
+            yet — that lands in a later pass. `aria-pressed` states each
+            span's selection without asserting a pattern the markup doesn't
+            back up. */}
         <div
           className="waterfall"
-          role="list"
+          role="group"
           aria-label="Spans"
           onPointerLeave={clearHover}
         >
           {waterfall.rows.map((row) => (
             <button
               key={row.span.spanId}
-              role="listitem"
               className="span-row"
-              aria-selected={selectedRow?.span.spanId === row.span.spanId}
+              aria-pressed={selectedRow?.span.spanId === row.span.spanId}
               aria-describedby={
                 hoveredSpanId === row.span.spanId ? tipId : undefined
               }
@@ -1035,12 +1085,21 @@ function SpanDetail({
       <button
         className="act act-primary"
         onClick={() =>
-          update({
-            signal: "logs",
-            trace: "",
-            raw: "",
-            filters: [{ label: "trace_id", op: "=", value: traceId }],
-          })
+          update(
+            {
+              signal: "logs",
+              trace: "",
+              raw: "",
+              // Trace-only params must not ride into /logs — an active
+              // search/group-detail/trace-filter selection would silently
+              // narrow (or error against) a view that doesn't understand it.
+              search: "",
+              group: "",
+              traceFilters: [],
+              filters: [{ label: "trace_id", op: "=", value: traceId }],
+            },
+            { push: true },
+          )
         }
       >
         Logs for this trace →

@@ -1,5 +1,5 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { initTheme, toggleTheme } from "./theme";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { initTheme, subscribeTheme, toggleTheme } from "./theme";
 
 describe("theme", () => {
   beforeEach(() => {
@@ -50,6 +50,27 @@ describe("theme", () => {
       toggleTheme();
       expect(document.documentElement.getAttribute("data-theme")).toBe("light");
       expect(localStorage.getItem("signaldb-theme")).toBe("light");
+    });
+  });
+
+  describe("subscribeTheme", () => {
+    it("notifies when data-theme changes", async () => {
+      const cb = vi.fn();
+      const unsubscribe = subscribeTheme(cb);
+      document.documentElement.setAttribute("data-theme", "dark");
+      await vi.waitFor(() => expect(cb).toHaveBeenCalled());
+      unsubscribe();
+    });
+
+    it("stops notifying once unsubscribed", async () => {
+      const cb = vi.fn();
+      const unsubscribe = subscribeTheme(cb);
+      unsubscribe();
+      document.documentElement.setAttribute("data-theme", "dark");
+      // Give a MutationObserver microtask a chance to fire, if it were
+      // (wrongly) still connected.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(cb).not.toHaveBeenCalled();
     });
   });
 });

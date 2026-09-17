@@ -1,4 +1,5 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
@@ -173,9 +174,47 @@ describe("LogsView", () => {
     await userEvent.click(
       screen.getByRole("button", { name: /View trace abcd1234/ }),
     );
-    expect(update).toHaveBeenCalledWith({
-      signal: "traces",
-      trace: "abcd1234",
+    expect(update).toHaveBeenCalledWith(
+      { signal: "traces", trace: "abcd1234" },
+      { push: true },
+    );
+  });
+
+  it("resyncs the search box when state.search changes externally", async () => {
+    routes();
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
     });
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <LogsView
+          state={{ ...DEFAULT_STATE, search: "checkout" }}
+          update={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    const input = await screen.findByLabelText("Search in log lines");
+    expect(input).toHaveValue("checkout");
+
+    // A re-click of the Logs tab (crossSignalSearch drops `q`) or Back/
+    // Forward changes state.search without remounting LogsView.
+    rerender(
+      <QueryClientProvider client={client}>
+        <LogsView
+          state={{ ...DEFAULT_STATE, search: "" }}
+          update={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByLabelText("Search in log lines")).toHaveValue("");
+  });
+
+  it("clearing the native search box submits the empty query", async () => {
+    routes();
+    const { update } = renderView({ search: "checkout" });
+    const input = await screen.findByLabelText("Search in log lines");
+    expect(input).toHaveValue("checkout");
+    fireEvent.change(input, { target: { value: "" } });
+    expect(update).toHaveBeenCalledWith({ search: "" });
   });
 });

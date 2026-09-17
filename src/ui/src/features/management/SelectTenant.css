@@ -92,6 +92,34 @@
   margin-top: 4px;
 }
 
+.dataset-loading {
+  padding: 8px 14px 8px 28px;
+  color: var(--dim);
+  font-size: 12px;
+}
+
+.dataset-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px 8px 28px;
+  color: var(--err);
+  font-size: 12px;
+}
+
+.dataset-error p {
+  margin: 0;
+}
+
+.dataset-error button {
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 9px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
 .dataset-row {
   display: flex;
   align-items: center;

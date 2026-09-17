@@ -22,6 +22,16 @@ export const LABEL_SUGGESTION_LIMIT = 12;
  * both spellings so a dotted prefix still finds them. */
 const flat = (s: string) => s.toLowerCase().replace(/\./g, "_");
 
+/**
+ * A dotted registry key (`service.name`) as the Loki label spelling
+ * (`service_name`) a filter chip actually needs — labels are bare
+ * identifiers (see `lib/filters.ts`'s `LABEL_RE`), so a suggestion picked
+ * from the registry must be flattened before it lands in the chip form.
+ */
+export function toLokiLabel(key: string): string {
+  return key.replace(/\./g, "_");
+}
+
 export function mergeLabelSuggestions(
   prefix: string,
   hits: AttributeHit[],

@@ -89,6 +89,15 @@ export function AttributeKeyInput({
           onChange(e.target.value);
         }}
         onKeyDown={onKeyDown}
+        // Closes the suggestion list once the input loses focus. Clicking a
+        // suggestion doesn't trigger this: its `onMouseDown` above already
+        // prevents the blur that would otherwise race the click.
+        onBlur={() => {
+          if (picked !== value) {
+            setPicked(value);
+            setActive(-1);
+          }
+        }}
       />
       {open && (
         <ul

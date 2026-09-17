@@ -8,6 +8,7 @@ import {
 } from "../../api/pyroscope";
 import { fetchFlamegraph, fetchFlamegraphById } from "../../api/profilesIr";
 import { QueryError } from "../../components/QueryError";
+import { liveRefetchInterval } from "../../lib/live";
 import {
   rangeScopeKey,
   rangeToParam,
@@ -28,7 +29,7 @@ interface Props {
 
 export function ProfilesView({ state, update }: Props) {
   if (state.profileId) {
-    return <SingleProfileView profileId={state.profileId} update={update} />;
+    return <SingleProfileView state={state} update={update} />;
   }
   if (state.profileCompare) {
     return <CompareView state={state} update={update} />;
@@ -218,7 +219,31 @@ function SelectorControls({
         <input
           type="checkbox"
           checked={state.profileCompare}
-          onChange={(e) => update({ profileCompare: e.target.checked })}
+          onChange={(e) => {
+            const compare = e.target.checked;
+            // The default baseline (see lib/urlState.ts's DEFAULT_STATE) is
+            // the same window as the comparison range, which makes both
+            // flame graphs identical the moment Compare turns on. Switching
+            // it to the window right before the current range gives an
+            // actually-different baseline to diff against, without
+            // requiring the user to pick one first.
+            const sameAsRange =
+              rangeToParam(state.profileBaseline) === rangeToParam(state.range);
+            if (compare && sameAsRange) {
+              const resolved = resolveRange(state.range, Date.now());
+              const span = resolved.toMs - resolved.fromMs;
+              update({
+                profileCompare: true,
+                profileBaseline: {
+                  type: "absolute",
+                  fromMs: resolved.fromMs - span,
+                  toMs: resolved.fromMs,
+                },
+              });
+            } else {
+              update({ profileCompare: compare });
+            }
+          }}
         />
         Compare
       </label>
@@ -242,7 +267,7 @@ function SingleRangeView({ state, update }: Props) {
       ? { label: state.profileMatcherLabel, value: state.profileMatcherValue }
       : undefined,
     enabled: selectedType !== "",
-    refetchInterval: state.live ? 15_000 : false,
+    refetchInterval: liveRefetchInterval(state.live),
   });
 
   const isEmpty =
@@ -260,7 +285,14 @@ function SingleRangeView({ state, update }: Props) {
         />
       )}
 
-      {selectedType === "" && !typesQuery.isFetching && (
+      {typesQuery.isPending && <SkeletonLines lines={12} />}
+
+      {/* Gated on isSuccess, not "settled" (!isFetching): on a failed
+          fetch, isFetching is also false and selectedType is also "" (no
+          types to pick from), which used to render this note *alongside*
+          the error alert above — a confusing "here's why, also here's a
+          totally different reason" pairing. */}
+      {selectedType === "" && typesQuery.isSuccess && (
         <div className="view-note">
           No profiles in this window. Enable{" "}
           <code>[self_monitoring].profiles_enabled</code> to have SignalDB
@@ -343,7 +375,9 @@ function CompareView({ state, update }: Props) {
 
       {error && <QueryError what="profiles" error={error} />}
 
-      {selectedType === "" && !typesQuery.isFetching && (
+      {typesQuery.isPending && <SkeletonLines lines={12} />}
+
+      {selectedType === "" && typesQuery.isSuccess && (
         <div className="view-note">
           No profiles in this window. Enable{" "}
           <code>[self_monitoring].profiles_enabled</code> to have SignalDB
@@ -401,17 +435,27 @@ function ComparePane({
   );
 }
 
-function SingleProfileView({
-  profileId,
-  update,
-}: {
-  profileId: string;
-  update: UpdateFn;
-}) {
+function SingleProfileView({ state, update }: Props) {
+  const { profileId, profileType, range } = state;
   const renderQuery = useQuery({
     queryKey: ["pyro-byid", profileId],
     queryFn: () => fetchFlamegraphById(profileId),
   });
+  // `fetchFlamegraphById`'s response carries no sample-type/unit metadata
+  // (a single profile's Pyroscope flamebearer encoding has none — see
+  // FlamegraphResult), so without this, every by-id flamegraph's tooltip
+  // showed bare tick counts regardless of what it actually measured. Only
+  // fetched when the caller named a type, and only for its unit.
+  // Keyed on the full range scope (tenant/dataset included, not just the
+  // range) — the same tenant's profile-type list under a different tenant's
+  // key would otherwise mislabel a sample type this tenant never registered.
+  const typesQuery = useQuery({
+    queryKey: ["pyro-types-for-unit", rangeScopeKey(state)],
+    queryFn: () => pyroscopeProfileTypes(resolveRange(range, Date.now())),
+    enabled: profileType !== "",
+  });
+  const unit =
+    typesQuery.data?.find((t) => t.ID === profileType)?.sampleUnit ?? "";
 
   return (
     <div className="profilesview">
@@ -434,7 +478,9 @@ function SingleProfileView({
       {renderQuery.isFetching && !renderQuery.data && (
         <SkeletonLines lines={12} />
       )}
-      {renderQuery.data && <FlameGraph render={renderQuery.data} unit="" />}
+      {renderQuery.data && (
+        <FlameGraph render={renderQuery.data} unit={unit} />
+      )}
     </div>
   );
 }

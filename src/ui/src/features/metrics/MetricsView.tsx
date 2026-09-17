@@ -1,10 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { promQueryRange, seriesName } from "../../api/prom";
 import { buildMetricIrDoc, irSeriesToPromSeries } from "../../api/metricsIr";
 import { runIrQuery } from "../../api/queryIr";
 import { AttributeValue } from "../../components/AttributeValue";
 import { QueryError } from "../../components/QueryError";
+import { liveRefetchInterval } from "../../lib/live";
 import {
   durationToSeconds,
   rangeScopeKey,
@@ -17,6 +18,7 @@ import {
   buildFormula,
   emptyQuery,
   nextRef,
+  parseMetricQuery,
   type MetricQuery,
 } from "./buildPromQL";
 import { MetricsChart } from "./MetricsChart";
@@ -32,8 +34,16 @@ type Mode = "builder" | "promql";
 
 export function MetricsView({ state, update }: Props) {
   const [mode, setMode] = useState<Mode>("builder");
+  // Seeded once at mount from `?mq=` (see lib/urlState.ts's `metricQuery`):
+  // a shared/reloaded link that ran an IR-eligible builder query restores the
+  // builder rows and re-runs via IR, rather than falling back to an empty
+  // builder plus a PromQL string the IR-only metric name can't even lex
+  // (dotted OTel names aren't valid PromQL). A fresh mount with no `mq`
+  // (including a shared `?promql=` link) starts from an empty query, so a
+  // bookmarked raw PromQL query is never silently "upgraded" to IR.
+  const initial = parseMetricQuery(state.metricQuery);
   const [queries, setQueries] = useState<MetricQuery[]>(() => [
-    emptyQuery("a"),
+    initial ?? emptyQuery("a"),
   ]);
   const [formula, setFormula] = useState("");
   const [draft, setDraft] = useState(state.promql);
@@ -41,10 +51,37 @@ export function MetricsView({ state, update }: Props) {
   // was within the minimal metrics IR source's coverage (see
   // api/metricsIr.ts) — null for a PromQL-tab run, or a builder run using a
   // range function or multi-query formula, either of which stays on the
-  // PromQL path below. A fresh mount (including from a shared `?promql=`
-  // link) starts null, so a bookmarked raw PromQL query is never silently
-  // "upgraded" to IR — only an interactive builder Run is.
-  const [ranQuery, setRanQuery] = useState<MetricQuery | null>(null);
+  // PromQL path below.
+  const [ranQuery, setRanQuery] = useState<MetricQuery | null>(initial);
+  // The `metricQuery`/`promql` values this component itself last wrote via
+  // `update()` (seeded from the mount-time URL, which counts as already
+  // applied). Distinguishes an external change — a browser Back/Forward
+  // landing on a different `?mq=`/`?promql=` — from this component simply
+  // observing its own write echoed back through `state`; only the former
+  // should resync the builder/draft/ranQuery, or every Run would immediately
+  // stomp on the very query state it just set (e.g. a multi-query formula's
+  // rows, cleared the moment it runs and `metricQuery` goes back to "").
+  const lastWritten = useRef({
+    metricQuery: state.metricQuery,
+    promql: state.promql,
+  });
+
+  useEffect(() => {
+    if (
+      state.metricQuery === lastWritten.current.metricQuery &&
+      state.promql === lastWritten.current.promql
+    ) {
+      return;
+    }
+    lastWritten.current = {
+      metricQuery: state.metricQuery,
+      promql: state.promql,
+    };
+    const reseeded = parseMetricQuery(state.metricQuery);
+    setQueries([reseeded ?? emptyQuery("a")]);
+    setRanQuery(reseeded);
+    setDraft(state.promql);
+  }, [state.metricQuery, state.promql]);
 
   const rangeKey = rangeScopeKey(state);
   // Freeze the resolved window per range selection so metadata pickers don't
@@ -79,19 +116,36 @@ export function MetricsView({ state, update }: Props) {
       return promQueryRange(promql, range, step);
     },
     enabled: ranQuery !== null || promql.trim() !== "",
-    refetchInterval: state.live ? 15_000 : false,
+    refetchInterval: liveRefetchInterval(state.live),
   });
 
   // Builder → Query IR when the current builder state is within its
-  // coverage (see api/metricsIr.ts); PromQL escape hatch → always PromQL,
-  // unchanged.
+  // coverage (see api/metricsIr.ts: a solo query, no range function);
+  // PromQL escape hatch → always PromQL. Whichever path ran is the one a
+  // reload must reproduce, so the URL carries exactly one of `metricQuery`/
+  // `promql` — never both — rather than always writing `promql` and relying
+  // on in-memory `ranQuery`, which a reload starts fresh.
+  const solo = formula.trim() === "" && queries.length === 1;
+  const soloQuery = solo ? queries[0]! : null;
+  const irEligible = soloQuery !== null && !soloQuery.range;
+
   const runBuilder = () => {
-    update({ promql: compiled.trim() });
-    const solo = formula.trim() === "" && queries.length === 1;
-    setRanQuery(solo ? queries[0]! : null);
+    if (irEligible && soloQuery) {
+      const metricQuery = JSON.stringify(soloQuery);
+      lastWritten.current = { metricQuery, promql: "" };
+      update({ metricQuery, promql: "" });
+      setRanQuery(soloQuery);
+    } else {
+      const promql = compiled.trim();
+      lastWritten.current = { metricQuery: "", promql };
+      update({ promql, metricQuery: "" });
+      setRanQuery(null);
+    }
   };
   const runPromQL = (q: string) => {
-    update({ promql: q.trim() });
+    const promql = q.trim();
+    lastWritten.current = { metricQuery: "", promql };
+    update({ promql, metricQuery: "" });
     setRanQuery(null);
   };
 
@@ -197,7 +251,7 @@ export function MetricsView({ state, update }: Props) {
         </form>
       )}
 
-      {promql === "" && (
+      {promql === "" && ranQuery === null && (
         <div className="view-note">
           Build a query above, or switch to PromQL, then Run to chart metrics.
         </div>

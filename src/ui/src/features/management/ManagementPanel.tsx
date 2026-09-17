@@ -251,7 +251,7 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
               origins={origins}
               onChange={setOrigins}
             />
-            <fieldset>
+            <fieldset className="scopes">
               <legend>Ingestion scopes</legend>
               {scopes.map((scope) => (
                 <label key={scope}>
