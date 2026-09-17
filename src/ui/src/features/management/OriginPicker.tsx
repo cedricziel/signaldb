@@ -79,7 +79,7 @@ export function OriginPicker({
       {origins.length > 0 && (
         <div className="origin-chips">
           {origins.map((origin) => (
-            <span key={origin} className="origin-chip">
+            <span key={origin} className="origin-chip chip">
               {origin}
               <button
                 type="button"

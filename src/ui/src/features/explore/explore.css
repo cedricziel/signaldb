@@ -160,15 +160,16 @@
   gap: 7px;
 }
 
-.chip {
-  display: inline-flex;
-  align-items: center;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+/* Segmented (label:op:value + its own × control), so — unlike a plain
+   .chip — the padding lives on each segment below, not the chip itself.
+   Compounded with .chip so it beats the global pill base (same
+   specificity as a bare .chip) regardless of CSS import order. */
+.chip.chip-segmented {
+  padding: 0;
   overflow: hidden;
   font-family: var(--mono);
-  font-size: 11.5px;
   background: var(--surface2);
+  border-radius: 6px;
 }
 
 .chip-k {
@@ -212,13 +213,7 @@
 }
 
 .filter-chip {
-  display: inline-flex;
   align-items: baseline;
-  gap: 5px;
-  font-size: 11.5px;
-  padding: 2px 7px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
   background: var(--surface);
 }
 

@@ -286,7 +286,7 @@ function TraceSearch({ state, update }: Props) {
             const display = f.op === "absent" ? NOT_SET : f.value;
             return (
               <button
-                className="filter-chip"
+                className="filter-chip chip"
                 key={`${f.field}|${f.value}`}
                 aria-label={`Remove filter ${f.field} = ${display}`}
                 onClick={() => removeFilter(f)}

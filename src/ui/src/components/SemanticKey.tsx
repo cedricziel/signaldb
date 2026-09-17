@@ -311,7 +311,7 @@ export function SemanticKey({ name, semantics, showTitle }: SemanticKeyProps) {
     <span className="semkey" data-deprecated={deprecated ? "" : undefined}>
       <SemanticHover semantics={semantics} className="semkey-head">
         <span className="semkey-name">{name}</span>
-        <span className="semkey-ns" data-source={primary.source}>
+        <span className="semkey-ns chip" data-source={primary.source}>
           {primary.namespace}
         </span>
       </SemanticHover>

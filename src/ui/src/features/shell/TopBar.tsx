@@ -62,7 +62,7 @@ function TenantSelector({ state, update }: Props) {
   if (!editing) {
     return (
       <button
-        className="tenant-chip"
+        className="tenant-chip chip"
         title="Tenant / dataset context for all queries"
         onClick={() => setEditing(true)}
       >

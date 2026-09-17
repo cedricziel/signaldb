@@ -121,7 +121,7 @@ export function AttributeKeyInput({
               <span className="chip-suggest-head">
                 <span className="chip-suggest-key">{s.key}</span>
                 {s.namespace && (
-                  <span className="chip-suggest-ns">{s.namespace}</span>
+                  <span className="chip-suggest-ns chip">{s.namespace}</span>
                 )}
                 {s.seen && <span className="chip-suggest-seen">● seen</span>}
               </span>

@@ -137,13 +137,7 @@
 }
 
 .origin-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 3px 6px;
-  border: 1px solid var(--border);
-  border-radius: 999px;
-  font: 11px var(--mono);
+  font-family: var(--mono);
   background: var(--surface2);
 }
 

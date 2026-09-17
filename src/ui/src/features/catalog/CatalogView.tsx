@@ -200,7 +200,7 @@ function CatalogNav({
               onClick={() => onSelect(e.id)}
             >
               <span>{e.label}</span>
-              <span className="facet-active">{countLabel}</span>
+              <span className="facet-active chip">{countLabel}</span>
             </button>
           );
         })}

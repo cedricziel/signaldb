@@ -242,7 +242,7 @@ export function ErrorsView({ state, update }: Props) {
           <div className="filter-chips" aria-label="Active filters">
             {filters.map((f) => (
               <button
-                className="filter-chip"
+                className="filter-chip chip"
                 key={`${f.field}|${f.value}`}
                 aria-label={`Remove filter ${f.field} = ${f.value}`}
                 onClick={() => removeFilter(f)}

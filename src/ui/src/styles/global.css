@@ -474,14 +474,16 @@ select:focus-visible {
   text-decoration-color: var(--warn);
 }
 
-.semkey-ns {
+.semkey-ns,
+.chip-suggest-ns {
   font-family: var(--ui);
   font-size: 9.5px;
-  line-height: 1.3;
   padding: 0 5px;
-  border-radius: 8px;
   color: var(--faint);
-  border: 1px solid var(--border);
+}
+
+.semkey-ns {
+  line-height: 1.3;
   white-space: nowrap;
 }
 
@@ -707,6 +709,19 @@ select:focus-visible {
   color: var(--dim);
 }
 
+/* ---------- shared chips (filter/tenant/origin/status/facet/semantic-key
+   pills) ---------- */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+}
+
 /* ---------- data tables (every feature's own <table>) ---------- */
 
 /* The browser default centres headers, sizes them like the body text and
@@ -828,15 +843,6 @@ th[aria-sort="descending"] .th-sort::after {
 
 .chip-suggest-key {
   overflow-wrap: anywhere;
-}
-
-.chip-suggest-ns {
-  font-family: var(--ui);
-  font-size: 9.5px;
-  padding: 0 5px;
-  border-radius: 8px;
-  color: var(--faint);
-  border: 1px solid var(--border);
 }
 
 .chip-suggest-seen {

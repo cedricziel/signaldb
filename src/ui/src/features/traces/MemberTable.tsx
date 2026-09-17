@@ -139,7 +139,7 @@ export function MemberTable({
                   {(() => {
                     const { word } = statusOf(m.statusCode);
                     return (
-                      <span className={`status-chip status-${word}`}>
+                      <span className={`status-chip chip status-${word}`}>
                         {word}
                       </span>
                     );

@@ -222,12 +222,11 @@
   margin: 0;
 }
 
-/* Trace-level status in the list: the OTel status word, coloured. */
-.status-chip {
-  display: inline-block;
-  padding: 0 6px;
-  border-radius: 999px;
-  font-size: 10.5px;
+/* Trace-level status in the list: the OTel status word, coloured.
+   Compounded with .chip so this beats the global pill base's border-color
+   regardless of CSS import order. */
+.status-chip.chip {
+  border-color: transparent;
   font-weight: 600;
   line-height: 16px;
   text-transform: lowercase;
@@ -757,14 +756,15 @@
 
 /* ---------- facet sidebar + filter chips ---------- */
 
-.facet-active {
+/* Compounded with .chip so this beats the global pill base's border-color
+   regardless of CSS import order. */
+.facet-active.chip {
   margin-left: auto;
   font-size: 10px;
   font-variant-numeric: tabular-nums;
   color: var(--accent);
   background: var(--accent-soft);
-  border-radius: 8px;
-  padding: 0 5px;
+  border-color: transparent;
 }
 
 .facet-val {

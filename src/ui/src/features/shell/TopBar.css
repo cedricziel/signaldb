@@ -45,14 +45,8 @@
 }
 
 .tenant-chip {
-  display: inline-flex;
-  align-items: center;
   gap: 6px;
   background: var(--surface2);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 10px;
-  font-size: 12px;
   max-width: 40vw;
   overflow: hidden;
   text-overflow: ellipsis;
