@@ -19,7 +19,7 @@
   flex: 1;
   min-width: 0;
   overflow: auto;
-  padding: 16px 20px;
+  padding: 16px var(--gutter);
 }
 
 @media (max-width: 600px) {

@@ -176,7 +176,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 12px 16px;
+  padding: 12px var(--gutter);
   border-bottom: 1px solid var(--border);
   /* Both this row and .group-pickers wrap: the pickers otherwise push the
      page sideways below ~1100px. */
@@ -354,7 +354,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 16px 10px;
+  padding: 12px var(--gutter) 10px;
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }

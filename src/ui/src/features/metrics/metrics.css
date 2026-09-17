@@ -10,7 +10,7 @@
 .promql-form {
   display: flex;
   gap: 8px;
-  padding: 12px 16px;
+  padding: 12px var(--gutter);
   border-bottom: 1px solid var(--border);
 }
 
@@ -36,7 +36,7 @@
 .metrics-modes {
   display: flex;
   gap: 4px;
-  padding: 8px 16px 0;
+  padding: 8px var(--gutter) 0;
 }
 
 .metrics-modes button {
@@ -57,7 +57,7 @@
 /* --- visual builder --- */
 .metrics-builder {
   border-bottom: 1px solid var(--border);
-  padding: 10px 16px 12px;
+  padding: 10px var(--gutter) 12px;
 }
 
 .qrow {
@@ -209,7 +209,7 @@
 }
 
 .mchart-wrap {
-  padding: 14px 18px 4px;
+  padding: 14px var(--gutter) 4px;
 }
 
 /* uPlot's own cursor crosshair defaults to a hard-coded color that ignores

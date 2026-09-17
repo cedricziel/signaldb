@@ -4,7 +4,7 @@
   align-items: center;
   flex-wrap: wrap;
   gap: 10px;
-  padding: 9px 14px;
+  padding: 9px var(--gutter-sm);
   border-bottom: 1px solid var(--border);
   background: var(--surface);
 }

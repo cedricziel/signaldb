@@ -9,7 +9,7 @@
 .explore-controls {
   display: flex;
   align-items: center;
-  padding: 0 14px;
+  padding: 0 var(--gutter);
   border-bottom: 1px solid var(--border);
   gap: 10px;
 }
@@ -144,7 +144,7 @@
   align-items: flex-start;
   flex-wrap: wrap;
   gap: 7px;
-  padding: 10px 14px;
+  padding: 10px var(--gutter);
   border-bottom: 1px solid var(--border);
 }
 
@@ -646,7 +646,7 @@
 /* ---------- histogram ---------- */
 
 .histo-wrap {
-  padding: 10px 16px 4px;
+  padding: 10px var(--gutter) 4px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -677,7 +677,7 @@
 }
 
 .trace-not-found {
-  padding: 16px;
+  padding: var(--gutter);
 }
 
 .trace-not-found h3 {
