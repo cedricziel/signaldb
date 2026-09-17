@@ -140,6 +140,24 @@ describe("MetricsChart", () => {
     expect(wideSize).toBeGreaterThan(narrowSize!);
   });
 
+  // The gutter was sized from `compactCount` of the *magnitude* alone, so a
+  // negative tick's leading "-" (e.g. "-1.5K" vs "1.5K") had no room budgeted
+  // for it and could clip.
+  it("widens the y-axis gutter to fit a negative tick's leading sign", () => {
+    const positive: PromSeries[] = [{ labels: {}, points: [[0, 1500]] }]; // "1.5K"
+    const negative: PromSeries[] = [{ labels: {}, points: [[0, -1500]] }]; // "-1.5K"
+    render(<MetricsChart series={positive} />);
+    const positiveSize = (
+      uPlotCtor.mock.calls[0]![0] as { axes: { size?: number }[] }
+    ).axes[1]?.size;
+    uPlotCtor.mockClear();
+    render(<MetricsChart series={negative} />);
+    const negativeSize = (
+      uPlotCtor.mock.calls[0]![0] as { axes: { size?: number }[] }
+    ).axes[1]?.size;
+    expect(negativeSize).toBeGreaterThan(positiveSize!);
+  });
+
   it("rebuilds the chart when the theme changes", async () => {
     render(<MetricsChart series={SERIES} />);
     expect(uPlotCtor).toHaveBeenCalledTimes(1);

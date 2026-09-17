@@ -161,21 +161,23 @@ export function MetricsChart({
     // at 120px tall has little room to recover from a clipped label.
     // Mirrors the character-width measurement `TraceVolumeHeatmap.tsx` uses
     // for its own y-axis gutter.
-    const maxAbsValue = series.reduce(
-      (max, s) =>
-        s.points.reduce((m, [, v]) => Math.max(m, Math.abs(v)), max),
-      0,
-    );
+    let maxAbsValue = 0;
+    let hasNegativeValue = false;
+    for (const s of series) {
+      for (const [, v] of s.points) {
+        maxAbsValue = Math.max(maxAbsValue, Math.abs(v));
+        if (v < 0) hasNegativeValue = true;
+      }
+    }
     const AXIS_CHAR_WIDTH = 6.5;
     const AXIS_MIN_SIZE = 40;
+    const widestLabel =
+      (hasNegativeValue ? "-" : "") + compactCount(maxAbsValue, unit);
     const yAxis: uPlot.Axis = {
       ...axis,
       values: (_u, splits) =>
         splits.map((v) => (v === null ? null : compactCount(v, unit))),
-      size: Math.max(
-        AXIS_MIN_SIZE,
-        compactCount(maxAbsValue, unit).length * AXIS_CHAR_WIDTH + 18,
-      ),
+      size: Math.max(AXIS_MIN_SIZE, widestLabel.length * AXIS_CHAR_WIDTH + 18),
     };
     const make = () =>
       new uPlot(
