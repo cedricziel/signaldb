@@ -24,6 +24,20 @@ describe("compactCount", () => {
     expect(compactCount(1_500_000)).toBe("1.5M");
     expect(compactCount(2_400_000_000)).toBe("2.4B");
   });
+
+  // A byte-valued axis (OTel's "By" unit) otherwise falls through to the
+  // decimal K/M/B scaling above, which reads like a plain count rather than
+  // a size — 512 MiB showed as "537M", indistinguishable from half a
+  // billion of something. Binary-scaled instead, matching the size
+  // formatting `lib/flamebearer.ts`'s `formatTicks` already uses.
+  it("binary-scales a byte unit into B/KB/MB/GB instead of decimal K/M/B", () => {
+    expect(compactCount(0, "By")).toBe("0 B");
+    expect(compactCount(512, "By")).toBe("512 B");
+    expect(compactCount(2048, "By")).toBe("2 KB");
+    expect(compactCount(1_572_864, "by")).toBe("1.5 MB");
+    expect(compactCount(536_870_912, "bytes")).toBe("512 MB");
+    expect(compactCount(2_147_483_648, "Byte")).toBe("2 GB");
+  });
 });
 
 describe("formatTimestamp", () => {

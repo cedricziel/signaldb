@@ -3,9 +3,9 @@ import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
 import { seriesName, type PromSeries } from "../../api/prom";
 import { VizTooltip, type VizTooltipRow } from "../../components/VizTooltip";
-import { alignSeries, seriesColorVar } from "../../lib/promSeries";
+import { alignSeries, seriesColorVar, seriesDash } from "../../lib/promSeries";
 import { subscribeTheme } from "../../lib/theme";
-import { formatTimestamp, formatValue } from "../../lib/vizFormat";
+import { compactCount, formatTimestamp, formatValue } from "../../lib/vizFormat";
 
 interface Props {
   series: PromSeries[];
@@ -152,6 +152,31 @@ export function MetricsChart({
       grid: { stroke: gridStroke },
       font: font ? `12px ${font}` : undefined,
     };
+    // The y-axis routes its tick labels through the same unit-aware
+    // formatter as the tooltip (a byte-valued metric otherwise shows a
+    // plain grouped number, e.g. "536,870,912" rather than "512 MB") and
+    // reserves enough gutter width for the longest label this series can
+    // produce — uPlot's own auto-sizing measures the *rendered* ticks, which
+    // is one render behind a chart whose data just grew a digit, and a tile
+    // at 120px tall has little room to recover from a clipped label.
+    // Mirrors the character-width measurement `TraceVolumeHeatmap.tsx` uses
+    // for its own y-axis gutter.
+    const maxAbsValue = series.reduce(
+      (max, s) =>
+        s.points.reduce((m, [, v]) => Math.max(m, Math.abs(v)), max),
+      0,
+    );
+    const AXIS_CHAR_WIDTH = 6.5;
+    const AXIS_MIN_SIZE = 40;
+    const yAxis: uPlot.Axis = {
+      ...axis,
+      values: (_u, splits) =>
+        splits.map((v) => (v === null ? null : compactCount(v, unit))),
+      size: Math.max(
+        AXIS_MIN_SIZE,
+        compactCount(maxAbsValue, unit).length * AXIS_CHAR_WIDTH + 18,
+      ),
+    };
     const make = () =>
       new uPlot(
         {
@@ -164,11 +189,15 @@ export function MetricsChart({
             ...series.map((s, i) => ({
               label: labelOf(s),
               stroke: cssColor(seriesColorVar(i), host),
+              // Past the 12-color palette (uncommon: a high-cardinality
+              // group-by), a repeated color also gets a distinct dash
+              // pattern so two series sharing a hue still read apart.
+              dash: seriesDash(i),
               width: 1.5,
               points: { show: false },
             })),
           ],
-          axes: [axis, axis],
+          axes: [axis, yAxis],
           legend: { show: false },
           hooks: {
             setCursor: [(u) => onCursor(u as unknown as CursorPlot)],

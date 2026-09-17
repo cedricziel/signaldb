@@ -164,10 +164,15 @@ function MetricTile({
   return (
     <figure className="metric-tile">
       <figcaption>
-        <span className="metric-tile-name">{metric.name}</span>
+        <span className="metric-tile-name" title={metric.name}>
+          {metric.name}
+        </span>
         {/* The instrument is not decoration: a cumulative counter charted as
             a level would otherwise read as a rate. */}
-        <span className="metric-tile-meta">
+        <span
+          className="metric-tile-meta"
+          title={`${metric.instrument} · ${metric.unit}`}
+        >
           {metric.instrument} · {metric.unit}
         </span>
       </figcaption>
