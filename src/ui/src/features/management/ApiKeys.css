@@ -13,7 +13,7 @@
 }
 
 .api-keys-title {
-  font-size: 18px;
+  font-size: var(--text-title);
   font-weight: 600;
   margin: 0 0 8px;
 }
@@ -34,7 +34,7 @@
 
 .api-keys-create h2,
 .api-keys-list h2 {
-  font-size: 14px;
+  font-size: var(--text-section);
   font-weight: 650;
 }
 

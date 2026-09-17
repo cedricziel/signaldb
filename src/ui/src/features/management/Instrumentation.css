@@ -14,7 +14,7 @@
 }
 
 .instrumentation-page h1 {
-  font-size: 20px;
+  font-size: var(--text-title);
   font-weight: 600;
   margin: 0;
   color: var(--text);

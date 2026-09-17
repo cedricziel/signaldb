@@ -57,6 +57,10 @@
      single-row top bar), not as a per-feature alternative to --gutter. */
   --gutter: 16px;
   --gutter-sm: 12px;
+  /* Every page/dialog title reads at the same size and weight; every
+     in-page section heading (a card or list's own <h2>/<h3>) does too. */
+  --text-title: 18px;
+  --text-section: 14px;
 }
 
 @media (prefers-color-scheme: dark) {

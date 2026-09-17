@@ -56,7 +56,7 @@
 }
 
 .schema-title {
-  font-size: 18px;
+  font-size: var(--text-title);
   font-weight: 600;
   margin: 0 0 8px;
   overflow-wrap: anywhere;
@@ -279,7 +279,7 @@
 }
 
 .schema-browser-head h1 {
-  font-size: 18px;
+  font-size: var(--text-title);
   font-weight: 600;
   margin: 0;
   font-family: var(--mono);

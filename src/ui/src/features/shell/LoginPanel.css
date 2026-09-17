@@ -14,8 +14,8 @@
 }
 
 .login-panel h2 {
-  font-size: 16px;
-  font-weight: 650;
+  font-size: var(--text-title);
+  font-weight: 600;
   line-height: 1.3;
 }
 
