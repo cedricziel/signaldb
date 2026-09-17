@@ -8,6 +8,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { SERIES_COLOR_VARS } from "../lib/promSeries";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const css = readFileSync(resolve(here, "global.css"), "utf-8");
@@ -167,6 +168,23 @@ describe("categorical series colors clear 3:1 against --surface", () => {
         expect(contrastRatio(color, surface)).toBeGreaterThanOrEqual(3);
       });
     }
+  }
+});
+
+describe("promSeries' SERIES_COLOR_VARS resolve to pairwise-distinct colors", () => {
+  // Two series sharing a hue on the very first (solid) pass through the
+  // palette read as one series on a chart — `promSeries.ts` only varies dash
+  // pattern once the *palette itself* repeats, not within a single pass.
+  // `--svc-a` matching `--info` (both series 1 and 2) was exactly that bug.
+  const seriesVars = SERIES_COLOR_VARS.map((v) => v.replace(/^--/, ""));
+
+  for (const [theme, getBlock] of Object.entries(themeBlocks)) {
+    it(`${theme} theme: every SERIES_COLOR_VARS token is a distinct color`, () => {
+      const cssBlock = getBlock();
+      const colors = seriesVars.map((name) => token(cssBlock, name).join(","));
+
+      expect(new Set(colors).size).toBe(colors.length);
+    });
   }
 });
 
