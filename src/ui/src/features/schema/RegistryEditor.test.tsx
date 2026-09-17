@@ -10,6 +10,7 @@ import {
   useNavigate,
 } from "react-router";
 import * as semantics from "../../hooks/useSemantics";
+import { anyDirty, resetDirtyForms } from "../../lib/dirtyForms";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { RegistryEditor } from "./RegistryEditor";
 import {
@@ -90,7 +91,10 @@ async function requestBody(
   return JSON.parse(await req.clone().text());
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  resetDirtyForms();
+});
 
 describe("RegistryEditor", () => {
   it("redirects non-admins away from the editor", async () => {
@@ -638,5 +642,76 @@ describe("RegistryEditor", () => {
       (screen.getByLabelText("Registry document") as HTMLTextAreaElement)
         .value,
     ).not.toContain("# unsaved edit for v1");
+  });
+
+  describe("dirty tracking", () => {
+    it("is not dirty for a fresh, untouched document", async () => {
+      stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN }]);
+      renderEditor("/schema/conventions/new");
+      await screen.findByLabelText("Registry document");
+
+      expect(anyDirty()).toBe(false);
+    });
+
+    it("becomes dirty once the document is edited", async () => {
+      stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN }]);
+      renderEditor("/schema/conventions/new");
+      const user = userEvent.setup();
+
+      const source = await screen.findByLabelText("Registry document");
+      await user.click(source);
+      await user.paste("name: acme");
+
+      expect(anyDirty()).toBe(true);
+    });
+
+    it("clears once a save persists the edit as the new baseline", async () => {
+      stubFetchRoutes([
+        { match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN },
+        {
+          match: "/api/v1/schema/registries:validate",
+          method: "POST",
+          body: VALIDATION_OK,
+        },
+        {
+          match: /\/api\/v1\/schema\/registries$/,
+          method: "POST",
+          body: ACME_REGISTRY,
+          status: 201,
+        },
+      ]);
+      renderEditor("/schema/conventions/new");
+      const user = userEvent.setup();
+
+      const source = await screen.findByLabelText("Registry document");
+      await user.click(source);
+      await user.paste(ACME_YAML);
+      await user.click(screen.getByRole("button", { name: "Validate" }));
+      await screen.findByRole("status");
+      expect(anyDirty()).toBe(true);
+
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() =>
+        expect(screen.getByTestId("location")).toHaveTextContent(
+          "/schema/conventions/acme/1.0.0",
+        ),
+      );
+
+      expect(anyDirty()).toBe(false);
+    });
+
+    it("clears on unmount", async () => {
+      stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN }]);
+      const { unmount } = renderEditor("/schema/conventions/new");
+      const user = userEvent.setup();
+
+      const source = await screen.findByLabelText("Registry document");
+      await user.click(source);
+      await user.paste("name: acme");
+      expect(anyDirty()).toBe(true);
+
+      unmount();
+      expect(anyDirty()).toBe(false);
+    });
   });
 });

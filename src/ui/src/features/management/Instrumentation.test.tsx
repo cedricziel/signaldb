@@ -6,6 +6,17 @@ import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { connectionInfoBody } from "../../test/connectionInfo";
 import { Instrumentation } from "./Instrumentation";
 
+/** A Query IR `table` response with a single count cell, as
+ * `fetchIngestStatus` decodes it. */
+function ingestCountBody(n: number) {
+  return {
+    result: "table",
+    window: { start_ns: 0, end_ns: 0 },
+    columns: [],
+    rows: [[n]],
+  };
+}
+
 /** Locate the <code> element inside the "Configuration snippet" panel. */
 function getCodeBlock(): HTMLElement {
   const header = screen.getByText("Configuration snippet");
@@ -101,6 +112,7 @@ describe("Instrumentation page", () => {
   it("shows verification status section", async () => {
     stubFetchRoutes([
       { match: "/api/v1/connection", body: connectionInfoBody() },
+      { match: "/api/v1/query", body: ingestCountBody(0) },
     ]);
     renderInstrumentation({ state: { tenant: "acme", dataset: "production" } });
 
@@ -110,6 +122,82 @@ describe("Instrumentation page", () => {
       expect(screen.getByText("Logs")).toBeInTheDocument();
       expect(screen.getByText("Metrics")).toBeInTheDocument();
       expect(screen.getByText("Profiles")).toBeInTheDocument();
+    });
+  });
+
+  describe("verification status", () => {
+    /** The IR `from` field the given signal's status row queries. */
+    function bodyMatchFor(from: string) {
+      return (body: unknown) =>
+        !!body &&
+        typeof body === "object" &&
+        (body as { from?: unknown }).from === from;
+    }
+
+    it('shows "Waiting for data" for every signal with no recent records', async () => {
+      stubFetchRoutes([
+        { match: "/api/v1/connection", body: connectionInfoBody() },
+        { match: "/api/v1/query", body: ingestCountBody(0) },
+      ]);
+      renderInstrumentation({
+        state: { tenant: "acme", dataset: "production" },
+      });
+
+      await waitFor(() => {
+        const rows = screen.getAllByText("Waiting for data");
+        expect(rows).toHaveLength(4);
+      });
+      const tracesRow = screen.getByText("Traces").closest(".status-item")!;
+      expect(tracesRow.querySelector(".status-icon")).toHaveClass("waiting");
+    });
+
+    it('shows "Receiving (N in the last 15 min)" for a signal with recent records', async () => {
+      stubFetchRoutes([
+        { match: "/api/v1/connection", body: connectionInfoBody() },
+        { match: "/api/v1/query", body: ingestCountBody(0) },
+        {
+          match: "/api/v1/query",
+          bodyMatch: bodyMatchFor("traces"),
+          body: ingestCountBody(7),
+        },
+      ]);
+      renderInstrumentation({
+        state: { tenant: "acme", dataset: "production" },
+      });
+
+      const tracesRow = await waitFor(() => {
+        const row = screen.getByText("Traces").closest(".status-item")!;
+        expect(row).toHaveTextContent("Receiving (7 in the last 15 min)");
+        return row;
+      });
+      expect(tracesRow.querySelector(".status-icon")).toHaveClass("receiving");
+      // Unaffected signals stay in the waiting state.
+      expect(
+        screen.getByText("Logs").closest(".status-item"),
+      ).toHaveTextContent("Waiting for data");
+    });
+
+    it("shows the query's error inline when a signal's status query fails", async () => {
+      stubFetchRoutes([
+        { match: "/api/v1/connection", body: connectionInfoBody() },
+        { match: "/api/v1/query", body: ingestCountBody(0) },
+        {
+          match: "/api/v1/query",
+          bodyMatch: bodyMatchFor("logs"),
+          body: { error: "boom" },
+          status: 500,
+        },
+      ]);
+      renderInstrumentation({
+        state: { tenant: "acme", dataset: "production" },
+      });
+
+      const logsRow = await waitFor(() => {
+        const row = screen.getByText("Logs").closest(".status-item")!;
+        expect(row).toHaveTextContent(/boom/);
+        return row;
+      });
+      expect(logsRow.querySelector(".status-icon")).toHaveClass("error");
     });
   });
 

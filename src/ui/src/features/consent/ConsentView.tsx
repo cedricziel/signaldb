@@ -6,7 +6,7 @@
 // to the URL the server returns (the client's redirect URI carrying the code
 // or an error).
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import { isAuthError, toErrorMessage } from "../../api/http";
 import {
@@ -17,6 +17,7 @@ import {
   submitConsentDecision,
 } from "../../api/consent";
 import { Dialog } from "../../components/Dialog";
+import { useDirtyForm } from "../../lib/dirtyForms";
 import { loginRedirectPath } from "../../lib/redirectTarget";
 import "../shell/LoginPanel.css";
 import "./consent.css";
@@ -103,6 +104,17 @@ export function ConsentView() {
   );
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // The tenant/dataset grant selections as loaded, to detect unsaved changes
+  // worth protecting from a PWA update reload (see lib/dirtyForms.ts) — set
+  // alongside `selections` once the context loads.
+  const initialSelectionsRef = useRef<Record<string, TenantSelection>>({});
+  const selectionsDirty = useMemo(
+    () =>
+      JSON.stringify(selections) !==
+      JSON.stringify(initialSelectionsRef.current),
+    [selections],
+  );
+  useDirtyForm("oauth-consent", selectionsDirty);
 
   const setTenantSelection = (
     tenantId: string,
@@ -127,7 +139,9 @@ export function ConsentView() {
       .then((ctx) => {
         if (cancelled) return;
         setContext(ctx);
-        setSelections(initialSelections(ctx.tenants));
+        const initial = initialSelections(ctx.tenants);
+        initialSelectionsRef.current = initial;
+        setSelections(initial);
       })
       .catch((err: unknown) => {
         if (cancelled) return;

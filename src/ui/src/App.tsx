@@ -9,6 +9,8 @@ import {
 } from "./api/http";
 import { ThrottleBanner } from "./features/shell/ThrottleBanner";
 import { TopBar } from "./features/shell/TopBar";
+import { UpdateBanner } from "./features/shell/UpdateBanner";
+import { maybeAutoApplyUpdate } from "./lib/pwaUpdate";
 import { loginRedirectPath, safeRedirectTarget } from "./lib/redirectTarget";
 import { useExploreState } from "./lib/urlState";
 import { useCurrentSession } from "./lib/useWhoami";
@@ -88,6 +90,18 @@ export function App() {
     update,
   ]);
 
+  // A pending PWA update (see lib/pwaUpdate.ts) applies itself the next time
+  // the visitor navigates, as long as no form is dirty — never on the
+  // landing render, only on an actual route change thereafter.
+  const isFirstLocation = useRef(true);
+  useEffect(() => {
+    if (isFirstLocation.current) {
+      isFirstLocation.current = false;
+      return;
+    }
+    maybeAutoApplyUpdate();
+  }, [location.pathname, location.search, location.hash]);
+
   // A 401 anywhere in the app (session expiry, a request that outran the
   // cookie) sends the visitor to the dedicated login page rather than
   // popping a dialog over the current one — `LoginRoute` lands them back
@@ -114,6 +128,7 @@ export function App() {
   return (
     <div className="app-frame">
       <TopBar state={effective} update={update} />
+      <UpdateBanner />
       <ThrottleBanner />
       <main className="app-main">
         <Outlet context={{ state: effective, update }} />

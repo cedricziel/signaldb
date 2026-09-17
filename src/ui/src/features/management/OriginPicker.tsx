@@ -4,6 +4,7 @@
 // (see `DatasetPicker` for the sibling, checkbox-based restriction picker).
 
 import { useState } from "react";
+import { useDirtyForm } from "../../lib/dirtyForms";
 
 /** The subset of a key/response shape needed to read its allowed-origins
  * restriction: the `allowed_origins` set, or absent/null for unrestricted. */
@@ -49,6 +50,13 @@ export function OriginPicker({
   mode?: "create" | "update";
 }) {
   const [pending, setPending] = useState("");
+  // Typed-but-not-yet-added text or a committed chip is input worth
+  // protecting from a PWA update reload (see lib/dirtyForms.ts) — `idPrefix`
+  // keeps the two instances on the ApiKeys page (create/edit) independent.
+  useDirtyForm(
+    `${idPrefix}-origin-picker`,
+    pending.trim() !== "" || origins.length > 0,
+  );
 
   const add = () => {
     const value = pending.trim();

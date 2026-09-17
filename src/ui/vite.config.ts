@@ -77,12 +77,16 @@ export default defineConfig(({ mode }) => {
     plugins: [
       react(),
       VitePWA({
-        // Silently install and activate new versions, then reload — an
-        // ops dashboard left open for days must never get stuck on a
-        // stale build waiting for a prompt nobody sees. Periodic
-        // re-checks are wired in src/pwa.ts, since a long-lived tab may
-        // never navigate again to trigger the browser's own check.
-        registerType: "autoUpdate",
+        // Install new versions in the background but wait to activate them —
+        // an ops dashboard is exactly where a half-typed API-key form, a
+        // pending consent selection, or an in-progress registry edit lives,
+        // and autoUpdate's silent reload can land mid-edit and wipe it. The
+        // deferred apply (banner + auto-apply on the next route change once
+        // no form is dirty) lives in src/pwa.ts and src/lib/pwaUpdate.ts.
+        // Periodic re-checks are still wired in src/pwa.ts, since a
+        // long-lived tab may never navigate again to trigger the browser's
+        // own check.
+        registerType: "prompt",
         // The install-only PNG icons aren't worth precaching for every
         // visitor; the browser fetches them itself if/when it installs the
         // app. Only the favicon (tiny) is added for an offline app shell.
