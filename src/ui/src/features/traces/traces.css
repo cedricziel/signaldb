@@ -176,7 +176,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 12px 16px;
+  padding: 12px var(--gutter);
   border-bottom: 1px solid var(--border);
   /* Both this row and .group-pickers wrap: the pickers otherwise push the
      page sideways below ~1100px. */
@@ -222,12 +222,11 @@
   margin: 0;
 }
 
-/* Trace-level status in the list: the OTel status word, coloured. */
-.status-chip {
-  display: inline-block;
-  padding: 0 6px;
-  border-radius: 999px;
-  font-size: 10.5px;
+/* Trace-level status in the list: the OTel status word, coloured.
+   Compounded with .chip so this beats the global pill base's border-color
+   regardless of CSS import order. */
+.status-chip.chip {
+  border-color: transparent;
   font-weight: 600;
   line-height: 16px;
   text-transform: lowercase;
@@ -279,28 +278,9 @@
   font-family: var(--mono);
 }
 
-.trace-id-form button {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 12px;
-  font-size: 12px;
-  color: var(--dim);
-}
-
 .trace-table {
   border-collapse: collapse;
   width: 100%;
-  font-size: 12px;
-}
-
-.trace-table th {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--dim);
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--border);
-  font-weight: 650;
 }
 
 .trace-table td {
@@ -354,7 +334,7 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 16px 10px;
+  padding: 12px var(--gutter) 10px;
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
@@ -384,7 +364,6 @@
 }
 
 .tmeta-err {
-  color: var(--err);
   font-style: normal;
   font-weight: 600;
 }
@@ -776,14 +755,15 @@
 
 /* ---------- facet sidebar + filter chips ---------- */
 
-.facet-active {
+/* Compounded with .chip so this beats the global pill base's border-color
+   regardless of CSS import order. */
+.facet-active.chip {
   margin-left: auto;
   font-size: 10px;
   font-variant-numeric: tabular-nums;
   color: var(--accent);
   background: var(--accent-soft);
-  border-radius: 8px;
-  padding: 0 5px;
+  border-color: transparent;
 }
 
 .facet-val {

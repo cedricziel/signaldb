@@ -62,7 +62,7 @@ export function RegistryEditor() {
   if (stored.isError) {
     return (
       <div className="schema-page">
-        <p className="schema-error">
+        <p className="error-text" role="alert">
           Could not load {ns}@{version}: {toErrorMessage(stored.error)}
         </p>
         <Link to={CONVENTIONS}>Back to conventions</Link>
@@ -314,7 +314,7 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
           You have unsaved changes.{" "}
           <button
             type="button"
-            className="schema-button"
+            className="schema-button btn"
             onClick={() => {
               const to = pendingNav;
               setPendingNav(null);
@@ -325,7 +325,7 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
           </button>{" "}
           <button
             type="button"
-            className="schema-button"
+            className="schema-button btn"
             onClick={() => setPendingNav(null)}
           >
             Stay
@@ -355,7 +355,7 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
           <span className="spacer" />
           <button
             type="button"
-            className="schema-button"
+            className="schema-button btn"
             disabled={busy || text.trim() === ""}
             onClick={() => validation.mutate(text)}
           >
@@ -363,7 +363,7 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
           </button>
           <button
             type="button"
-            className="schema-button primary"
+            className="schema-button btn btn-primary"
             disabled={busy || !validated}
             title={validated ? undefined : "Validate first"}
             onClick={() => save.mutate()}
@@ -381,14 +381,14 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
               />
               <button
                 type="button"
-                className="schema-button"
+                className="schema-button btn"
                 disabled={busy || !validated || newVersion.trim() === ""}
                 onClick={() => saveAsNew.mutate()}
               >
                 Save as new version
               </button>
               <ConfirmButton
-                className="schema-button danger"
+                className="schema-button"
                 label="Delete"
                 prompt={`Delete ${title}?`}
                 disabled={busy}
@@ -411,7 +411,7 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
           }
         />
 
-        {error && <p className="schema-error">{error}</p>}
+        {error && <p className="error-text" role="alert">{error}</p>}
 
         {outcome && (
           <ValidationOutcome outcome={outcome} stale={validatedText !== text} />

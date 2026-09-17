@@ -149,7 +149,7 @@ function UserMenuPopover({ who, role, canManage, onClose }: PopoverProps) {
         </span>
 
         {signOutError && (
-          <p className="user-menu-alert" role="alert">
+          <p className="user-menu-alert error-text" role="alert">
             {signOutError}
           </p>
         )}

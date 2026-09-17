@@ -211,7 +211,7 @@ describe("MetricsView", () => {
     expect(writeText).toHaveBeenCalledWith('up{service_name="checkout"}');
   });
 
-  it("shows an empty state for zero series", async () => {
+  it("shows the shared empty state for zero series", async () => {
     stubFetchRoutes([
       {
         match: "query_range",
@@ -219,7 +219,9 @@ describe("MetricsView", () => {
       },
     ]);
     renderView({ promql: "up" });
-    expect(await screen.findByText("No series returned.")).toBeInTheDocument();
+    expect(await screen.findByRole("status")).toHaveTextContent(
+      "No series in this range",
+    );
   });
 
   it("surfaces query errors", async () => {

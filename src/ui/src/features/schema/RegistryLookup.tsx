@@ -34,12 +34,12 @@ export function RegistryLookup() {
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
-        <button type="submit" disabled={resolve.isPending}>
+        <button type="submit" className="btn btn-primary" disabled={resolve.isPending}>
           Resolve
         </button>
       </form>
       {resolve.isError && (
-        <p className="schema-error">
+        <p className="error-text" role="alert">
           Could not complete the lookup: {toErrorMessage(resolve.error)}
         </p>
       )}

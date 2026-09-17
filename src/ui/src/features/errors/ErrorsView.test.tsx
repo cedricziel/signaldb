@@ -89,7 +89,7 @@ describe("ErrorsView", () => {
   it("shows an empty state when there are no captured exceptions", async () => {
     renderView();
     expect(
-      await screen.findByText(/No exceptions captured/),
+      await screen.findByText(/No exceptions in this range/),
     ).toBeInTheDocument();
   });
 
@@ -405,7 +405,7 @@ describe("ErrorsView", () => {
     fetchErrorGroups.mockResolvedValue({ groups: [], truncated: false });
     renderView({ group: JSON.stringify(["traces", {}, null, null, null]) });
 
-    await screen.findByText(/No exceptions captured/);
+    await screen.findByText(/No exceptions in this range/);
     expect(
       screen.queryByText(/individual occurrences/),
     ).not.toBeInTheDocument();
@@ -418,7 +418,7 @@ describe("ErrorsView", () => {
       group: JSON.stringify(["traces", "E", "m", "svc", "maybe"]),
     });
 
-    await screen.findByText(/No exceptions captured/);
+    await screen.findByText(/No exceptions in this range/);
     expect(fetchErrorOccurrences).not.toHaveBeenCalled();
   });
 

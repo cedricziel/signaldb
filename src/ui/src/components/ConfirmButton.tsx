@@ -51,7 +51,7 @@ export function ConfirmButton({
       <button
         ref={buttonRef}
         type="button"
-        className={className}
+        className={className ? `${className} btn btn-danger` : "btn btn-danger"}
         disabled={disabled}
         onClick={() => setConfirming(true)}
       >
@@ -66,6 +66,7 @@ export function ConfirmButton({
       <button
         ref={confirmRef}
         type="button"
+        className="btn btn-danger"
         disabled={disabled}
         onClick={() => {
           setConfirming(false);
@@ -74,7 +75,11 @@ export function ConfirmButton({
       >
         Confirm
       </button>
-      <button type="button" onClick={() => setConfirming(false)}>
+      <button
+        type="button"
+        className="btn"
+        onClick={() => setConfirming(false)}
+      >
         Cancel
       </button>
     </span>

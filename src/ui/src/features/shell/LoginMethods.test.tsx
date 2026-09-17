@@ -34,7 +34,7 @@ describe("LoginMethods", () => {
     expect(screen.getByLabelText("Email")).toBeInTheDocument();
     expect(screen.queryByRole("link")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sign in" })).toHaveClass(
-      "login-submit--primary",
+      "btn-primary",
     );
   });
 
@@ -47,9 +47,9 @@ describe("LoginMethods", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("or")).toBeInTheDocument();
     expect(screen.getByLabelText("Email")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Sign in" })).toHaveClass(
-      "login-submit--soft",
-    );
+    const submit = screen.getByRole("button", { name: "Sign in" });
+    expect(submit).toHaveClass("btn");
+    expect(submit).not.toHaveClass("btn-primary");
   });
 
   it("SSO only: no password form, and a hint that password sign-in is off", () => {
@@ -79,7 +79,7 @@ describe("LoginMethods", () => {
     );
     expect(screen.getByLabelText("Email")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "Sign in" })).toHaveClass(
-      "login-submit--primary",
+      "btn-primary",
     );
   });
 

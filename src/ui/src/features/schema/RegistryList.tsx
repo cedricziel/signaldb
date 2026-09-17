@@ -40,7 +40,10 @@ export function RegistryList() {
             <Link className="schema-button" to={`${CONVENTIONS}/new?upload=1`}>
               Upload registry
             </Link>
-            <Link className="schema-button primary" to={`${CONVENTIONS}/new`}>
+            <Link
+              className="schema-button btn btn-primary"
+              to={`${CONVENTIONS}/new`}
+            >
               New
             </Link>
           </div>
@@ -51,7 +54,7 @@ export function RegistryList() {
 
       {registries.isPending && <p className="schema-note">Loading…</p>}
       {registries.isError && (
-        <p className="schema-error">
+        <p className="error-text" role="alert">
           Could not load registries: {toErrorMessage(registries.error)}
         </p>
       )}

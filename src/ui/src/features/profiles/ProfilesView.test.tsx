@@ -204,7 +204,7 @@ describe("ProfilesView", () => {
 
     renderWithClient(<ProfilesView state={state()} update={vi.fn()} />);
     expect(
-      await screen.findByText(/No profiles in this window for this/),
+      await screen.findByText(/No profiles in this range/),
     ).toBeInTheDocument();
   });
 
@@ -231,7 +231,7 @@ describe("ProfilesView", () => {
       await screen.findByRole("button", { name: "total" }),
     ).toBeInTheDocument();
     expect(
-      screen.queryByText(/No profiles in this window for this/),
+      screen.queryByText(/No profiles in this range/),
     ).not.toBeInTheDocument();
   });
 

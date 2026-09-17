@@ -52,6 +52,15 @@
     ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas,
     monospace;
   --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+  /* Shared horizontal inset for every view-level toolbar and pane. Use
+     --gutter-sm only for a bar that's genuinely compact (e.g. the app's own
+     single-row top bar), not as a per-feature alternative to --gutter. */
+  --gutter: 16px;
+  --gutter-sm: 12px;
+  /* Every page/dialog title reads at the same size and weight; every
+     in-page section heading (a card or list's own <h2>/<h3>) does too. */
+  --text-title: 18px;
+  --text-section: 14px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -223,6 +232,69 @@ select:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
   border-radius: 3px;
+}
+
+/* ---------- shared buttons (every feature's own toolbar/dialog/form
+   buttons) ---------- */
+
+/* The base look every plain "secondary" button shared already, just
+   restated per feature with small drifts in padding/radius/colour. Compose
+   with a modifier below for a different treatment; a feature's own class
+   stays alongside for whatever layout or hover rule is still its own. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface2);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--dim);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The one call-to-action treatment: every button that used to reach for a
+   solid, soft-tinted or accent-bordered accent look renders this way now. */
+.btn-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+/* No border or background until interaction — a menu item or a quiet
+   inline action, not a boxed control. */
+.btn-ghost {
+  border-color: transparent;
+  background: none;
+}
+
+.btn-ghost:hover:not(:disabled) {
+  border-color: var(--border);
+  background: var(--surface2);
+}
+
+.btn-danger {
+  color: var(--err);
+}
+
+.btn-danger:hover:not(:disabled) {
+  border-color: var(--err);
+  background: color-mix(in srgb, var(--err) 12%, var(--surface2));
 }
 
 .copy-value {
@@ -402,14 +474,16 @@ select:focus-visible {
   text-decoration-color: var(--warn);
 }
 
-.semkey-ns {
+.semkey-ns,
+.chip-suggest-ns {
   font-family: var(--ui);
   font-size: 9.5px;
-  line-height: 1.3;
   padding: 0 5px;
-  border-radius: 8px;
   color: var(--faint);
-  border: 1px solid var(--border);
+}
+
+.semkey-ns {
+  line-height: 1.3;
   white-space: nowrap;
 }
 
@@ -635,11 +709,65 @@ select:focus-visible {
   color: var(--dim);
 }
 
-/* ---------- sortable table headers (lib/sortTable.tsx) ---------- */
+/* ---------- shared empty state (components/EmptyState.tsx) ---------- */
 
-/* The browser default centres headers; every table here wants them left. */
+.empty-state {
+  padding: 14px 16px;
+}
+
+.empty-state-title {
+  margin: 0;
+  font-size: 13px;
+  color: var(--dim);
+}
+
+.empty-state-detail {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--faint);
+}
+
+/* ---------- shared inline error text (every feature's own failed-load or
+   validation message) ---------- */
+
+.error-text {
+  font-size: 12px;
+  color: var(--err);
+}
+
+/* ---------- shared chips (filter/tenant/origin/status/facet/semantic-key
+   pills) ---------- */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+/* ---------- data tables (every feature's own <table>) ---------- */
+
+/* The browser default centres headers, sizes them like the body text and
+   bolds them; every data table here wants them left, quieter than the rows
+   below and set apart by case rather than weight alone. Per-feature widths,
+   numeric alignment and other genuinely feature-specific column rules stay
+   in that feature's own stylesheet. */
 th {
+  padding: 8px 10px;
   text-align: left;
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  border-bottom: 1px solid var(--border);
+}
+
+td {
+  font-size: 12px;
 }
 
 th.num,
@@ -647,6 +775,8 @@ td.num {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
+/* ---------- sortable table headers (lib/sortTable.tsx) ---------- */
 
 .th-sort {
   font: inherit;
@@ -739,15 +869,6 @@ th[aria-sort="descending"] .th-sort::after {
 
 .chip-suggest-key {
   overflow-wrap: anywhere;
-}
-
-.chip-suggest-ns {
-  font-family: var(--ui);
-  font-size: 9.5px;
-  padding: 0 5px;
-  border-radius: 8px;
-  color: var(--faint);
-  border: 1px solid var(--border);
 }
 
 .chip-suggest-seen {

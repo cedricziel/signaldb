@@ -10,8 +10,9 @@ interface Props {
    * whether that's a resolved tenant or a set of memberships to choose
    * from. */
   onAuthenticated: (result: SessionResult) => void;
-  /** Filled accent submit style vs the existing soft style — soft when an
-   * SSO control is offered above this form. */
+  /** Solid `.btn-primary` submit vs the plain `.btn` style — plain when an
+   * SSO control is offered above this form, so it reads as the secondary
+   * path. */
   primary: boolean;
 }
 
@@ -60,13 +61,13 @@ export function PasswordForm({ onAuthenticated, primary }: Props) {
         />
       </label>
       {error && (
-        <p className="login-error" role="alert">
+        <p className="error-text" role="alert">
           {error}
         </p>
       )}
       <button
         type="submit"
-        className={`login-submit ${primary ? "login-submit--primary" : "login-submit--soft"}`}
+        className={`login-submit btn ${primary ? "btn-primary" : ""}`}
         disabled={busy}
       >
         {busy ? "Signing in…" : "Sign in"}

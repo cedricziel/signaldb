@@ -29,7 +29,7 @@
 
 .select-tenant h2 {
   margin: 0 0 8px;
-  font-size: 18px;
+  font-size: var(--text-title);
   font-weight: 600;
   color: var(--text);
 }
@@ -103,8 +103,6 @@
   align-items: center;
   gap: 10px;
   padding: 8px 14px 8px 28px;
-  color: var(--err);
-  font-size: 12px;
 }
 
 .dataset-error p {
@@ -113,11 +111,6 @@
 
 .dataset-error button {
   flex: none;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 3px 9px;
-  font-size: 12px;
-  color: var(--dim);
 }
 
 .dataset-row {

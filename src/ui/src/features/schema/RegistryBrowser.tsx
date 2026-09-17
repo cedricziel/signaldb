@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, NavLink, useParams } from "react-router";
 import { getRegistry, listRegistries, type DefinitionKind } from "./api";
+import { EmptyState } from "../../components/EmptyState";
 import { DefinitionPane } from "./DefinitionPane";
 import {
   CONVENTIONS,
@@ -70,7 +71,7 @@ function LatestRedirect({
   if (registries.isError) {
     return (
       <div className="schema-page">
-        <p className="schema-error">
+        <p className="error-text" role="alert">
           Could not load registries: {toErrorMessage(registries.error)}
         </p>
         <Link to={CONVENTIONS}>Back to conventions</Link>
@@ -81,7 +82,7 @@ function LatestRedirect({
   if (!found) {
     return (
       <div className="schema-page">
-        <p className="schema-error">
+        <p className="error-text" role="alert">
           No visible registry named <code>{namespace}</code>.
         </p>
         <Link to={CONVENTIONS}>Back to conventions</Link>
@@ -131,7 +132,7 @@ function RegistryView({
   if (registry.isError || !index) {
     return (
       <div className="schema-page">
-        <p className="schema-error">
+        <p className="error-text" role="alert">
           Could not load {namespace}@{version}: {toErrorMessage(registry.error)}
         </p>
         <Link to={CONVENTIONS}>Back to conventions</Link>
@@ -289,7 +290,7 @@ function Section({
         <span>{count}</span>
       </h2>
       {shown.length === 0 ? (
-        <p className="schema-note">No matches.</p>
+        <EmptyState title="No matches yet" />
       ) : (
         <ul>
           {shown.map((item) => (

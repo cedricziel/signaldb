@@ -35,7 +35,10 @@ export function FilterChips({ filters, labels, onChange }: Props) {
   return (
     <div className="chips" role="group" aria-label="Filters">
       {filters.map((f, i) => (
-        <span className="chip" key={`${f.label}-${f.op}-${f.value}-${i}`}>
+        <span
+          className="chip chip-segmented"
+          key={`${f.label}-${f.op}-${f.value}-${i}`}
+        >
           <span className="chip-k">{f.label}</span>
           <span className="chip-op">{f.op}</span>
           <span className="chip-v">{f.value}</span>
@@ -87,10 +90,14 @@ export function FilterChips({ filters, labels, onChange }: Props) {
             value={value}
             onChange={(e) => setValue(e.target.value)}
           />
-          <button type="submit" disabled={!labelValid}>
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={!labelValid}
+          >
             Add
           </button>
-          <button type="button" onClick={() => setAdding(false)}>
+          <button type="button" className="btn" onClick={() => setAdding(false)}>
             Cancel
           </button>
         </form>

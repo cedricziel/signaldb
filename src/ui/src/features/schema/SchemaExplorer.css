@@ -24,10 +24,6 @@
   font-size: 13px;
 }
 
-.schema-explorer-error {
-  color: var(--err);
-}
-
 .schema-explorer-section {
   margin-bottom: 32px;
 }
@@ -110,17 +106,6 @@
 .schema-explorer-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
-}
-
-.schema-explorer-table th {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--faint);
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--border);
-  font-weight: 650;
 }
 
 .schema-explorer-table td {

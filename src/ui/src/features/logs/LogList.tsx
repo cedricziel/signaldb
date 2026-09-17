@@ -3,6 +3,7 @@ import { Fragment, useMemo, useRef, useState } from "react";
 import type { LogRow } from "../../api/loki";
 import { AttributeValue } from "../../components/AttributeValue";
 import { CopyValueButton } from "../../components/CopyValueButton";
+import { EmptyState } from "../../components/EmptyState";
 import { SemanticKey } from "../../components/SemanticKey";
 import { useSemantics } from "../../hooks/useSemantics";
 import type { LabelFilter } from "../../lib/filters";
@@ -74,7 +75,7 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
   });
 
   if (rows.length === 0) {
-    return <div className="loglist-empty">No log lines match this query.</div>;
+    return <EmptyState title="No log lines in this range" />;
   }
 
   return (
@@ -120,7 +121,7 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
                   <div className="logdetail-actions">
                     {traceId !== null && (
                       <button
-                        className="act act-primary"
+                        className="act-primary btn btn-primary"
                         onClick={() => onOpenTrace(traceId)}
                       >
                         View trace {traceId.slice(0, 8)}…
@@ -128,7 +129,7 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
                     )}
                     <CopyValueButton value={row.line} label="log message" />
                     <button
-                      className="act"
+                      className="btn"
                       onClick={() =>
                         navigator.clipboard?.writeText(
                           JSON.stringify(

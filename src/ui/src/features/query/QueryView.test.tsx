@@ -311,8 +311,8 @@ describe("QueryView", () => {
     });
     fireEvent.click(screen.getByText("Run"));
 
-    const note = await screen.findByText("No series");
-    expect(note).toHaveClass("view-note");
+    const note = await screen.findByRole("status");
+    expect(note).toHaveTextContent("No series in this range");
   });
 
   it("charts a series envelope through the metrics chart", async () => {

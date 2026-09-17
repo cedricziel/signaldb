@@ -4,7 +4,7 @@ import { isAuthError, toErrorMessage } from "../api/http";
  * not be loaded and the server's message. */
 export function QueryError({ what, error }: { what: string; error: unknown }) {
   return (
-    <div className="query-error" role="alert">
+    <div className="query-error error-text" role="alert">
       Could not load {what}: {toErrorMessage(error)}
     </div>
   );

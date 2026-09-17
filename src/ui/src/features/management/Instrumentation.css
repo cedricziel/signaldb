@@ -14,7 +14,7 @@
 }
 
 .instrumentation-page h1 {
-  font-size: 20px;
+  font-size: var(--text-title);
   font-weight: 600;
   margin: 0;
   color: var(--text);
@@ -122,8 +122,6 @@
   padding: 14px;
   border-radius: 6px;
   border: 1px solid var(--border);
-  color: var(--err);
-  font-size: 13px;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -132,20 +130,6 @@
 
 .instrumentation-error p {
   margin: 0;
-}
-
-.instrumentation-error button {
-  padding: 6px 12px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface2);
-  color: var(--text);
-  font-size: 12px;
-  cursor: pointer;
-}
-
-.instrumentation-error button:hover {
-  background: var(--surface3);
 }
 
 .code-snippet {

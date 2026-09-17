@@ -4,6 +4,7 @@
 // presentational: the caller fetches (`fetchTraceGroupMembers` or similar)
 // and supplies rows, loading/error state, and the copy that differs by
 // context (empty message, footnote, what the identity column is called).
+import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
 import { SkeletonRows } from "../explore/Skeleton";
 import { SortTh, sortRows, useSort, type SortValue } from "../../lib/sortTable";
@@ -117,7 +118,7 @@ export function MemberTable({
   }
 
   if (rows.length === 0) {
-    return <div className="view-note">{emptyMessage}</div>;
+    return <EmptyState title={emptyMessage} />;
   }
 
   return (
@@ -139,7 +140,7 @@ export function MemberTable({
                   {(() => {
                     const { word } = statusOf(m.statusCode);
                     return (
-                      <span className={`status-chip status-${word}`}>
+                      <span className={`status-chip chip status-${word}`}>
                         {word}
                       </span>
                     );

@@ -139,12 +139,16 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
           <span className="eyebrow">Administration</span>
           <h2>{tenant}</h2>
         </div>
-        <button onClick={onClose} aria-label="Close management">
+        <button
+          className="btn btn-ghost"
+          onClick={onClose}
+          aria-label="Close management"
+        >
           Close
         </button>
       </header>
 
-      {error && <p className="manage-error">{error}</p>}
+      {error && <p className="manage-error error-text" role="alert">{error}</p>}
       {secret && (
         <div className="secret-once">
           <strong>Copy this key now</strong>
@@ -196,7 +200,9 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
             }}
           >
             <input name="name" placeholder="new-dataset" required />
-            <button disabled={datasetMutation.isPending}>Create dataset</button>
+            <button className="btn btn-primary" disabled={datasetMutation.isPending}>
+              Create dataset
+            </button>
           </form>
         </section>
 
@@ -260,7 +266,9 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
                 </label>
               ))}
             </fieldset>
-            <button disabled={keyMutation.isPending}>Create API key</button>
+            <button className="btn btn-primary" disabled={keyMutation.isPending}>
+              Create API key
+            </button>
           </form>
         </section>
       </div>
@@ -328,7 +336,7 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
             <option value="member">Member</option>
             <option value="admin">Admin</option>
           </select>
-          <button>Add or update member</button>
+          <button className="btn btn-primary">Add or update member</button>
         </form>
       </section>
 
@@ -355,6 +363,7 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
           <p>No signal tables provisioned yet for this dataset.</p>
         )}
         <button
+          className="btn"
           onClick={() => provisionMutation.mutate()}
           disabled={provisionMutation.isPending}
         >
@@ -384,7 +393,7 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
             <input name="id" placeholder="tenant-id" required />
             <input name="name" placeholder="Tenant name" required />
             <input name="dataset" placeholder="default dataset" />
-            <button>Create tenant</button>
+            <button className="btn btn-primary">Create tenant</button>
           </form>
         </section>
       )}

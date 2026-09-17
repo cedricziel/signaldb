@@ -124,13 +124,14 @@ export function LoginRoute() {
             instance.
           </p>
           {signOutError && (
-            <p className="login-alert" role="alert">
+            <p className="login-alert error-text" role="alert">
               {signOutError}
             </p>
           )}
           <p className="login-account">
             <button
               type="button"
+              className="btn"
               disabled={signingOut}
               onClick={() => {
                 setSignOutError(null);
@@ -186,7 +187,7 @@ export function LoginRoute() {
     <LoginPageShell>
       <LoginCard as="h1" title="Sign in">
         {(alert ?? queryErrorMessage) && (
-          <p className="login-alert" role="alert">
+          <p className="login-alert error-text" role="alert">
             {alert ?? queryErrorMessage}
           </p>
         )}

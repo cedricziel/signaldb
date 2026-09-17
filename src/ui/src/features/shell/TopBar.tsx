@@ -62,7 +62,7 @@ function TenantSelector({ state, update }: Props) {
   if (!editing) {
     return (
       <button
-        className="tenant-chip"
+        className="tenant-chip chip"
         title="Tenant / dataset context for all queries"
         onClick={() => setEditing(true)}
       >
@@ -128,8 +128,10 @@ function TenantSelector({ state, update }: Props) {
             </option>
           ))}
         </select>
-        <button type="submit">Apply</button>
-        <button type="button" onClick={() => setEditing(false)}>
+        <button type="submit" className="btn btn-primary">
+          Apply
+        </button>
+        <button type="button" className="btn" onClick={() => setEditing(false)}>
           Cancel
         </button>
       </form>
@@ -162,8 +164,10 @@ function TenantSelector({ state, update }: Props) {
         placeholder="default dataset"
         defaultValue={state.dataset || DEFAULT_DATASET}
       />
-      <button type="submit">Apply</button>
-      <button type="button" onClick={() => setEditing(false)}>
+      <button type="submit" className="btn btn-primary">
+        Apply
+      </button>
+      <button type="button" className="btn" onClick={() => setEditing(false)}>
         Cancel
       </button>
     </form>

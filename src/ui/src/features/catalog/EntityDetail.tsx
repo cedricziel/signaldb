@@ -260,7 +260,7 @@ export function EntityDetail({ entity, range, state, update }: Props) {
       <div className="catalog-headline">
         <span className="catalog-title">{title}</span>
         {drillable && (
-          <button className="act" onClick={openTraces}>
+          <button className="btn" onClick={openTraces}>
             View matching traces →
           </button>
         )}
@@ -326,7 +326,7 @@ export function EntityDetail({ entity, range, state, update }: Props) {
         error={membersQuery.error}
         what="spans"
         identityLabel="Span"
-        emptyMessage="No matching spans in this window."
+        emptyMessage="No spans in this range"
         onOpenTrace={(traceId) =>
           update({ signal: "traces", trace: traceId }, { push: true })
         }

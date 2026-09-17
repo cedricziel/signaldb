@@ -4,6 +4,7 @@ import { promQueryRange, seriesName } from "../../api/prom";
 import { buildMetricIrDoc, irSeriesToPromSeries } from "../../api/metricsIr";
 import { runIrQuery } from "../../api/queryIr";
 import { AttributeValue } from "../../components/AttributeValue";
+import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
 import { liveRefetchInterval } from "../../lib/live";
 import {
@@ -229,6 +230,7 @@ export function MetricsView({ state, update }: Props) {
             </code>
             <button
               type="button"
+              className="btn btn-primary"
               disabled={compiled === ""}
               onClick={runBuilder}
             >
@@ -251,7 +253,9 @@ export function MetricsView({ state, update }: Props) {
             value={draft}
             onChange={(e) => setDraft(e.target.value)}
           />
-          <button type="submit">Run</button>
+          <button type="submit" className="btn btn-primary">
+            Run
+          </button>
         </form>
       )}
 
@@ -265,7 +269,7 @@ export function MetricsView({ state, update }: Props) {
         <div className="view-note">Loading…</div>
       )}
       {chart.data && chart.data.length === 0 && (
-        <div className="view-note">No series returned.</div>
+        <EmptyState title="No series in this range" />
       )}
       {chart.data && chart.data.length > 0 && (
         <>

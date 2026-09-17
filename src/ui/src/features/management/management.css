@@ -18,6 +18,18 @@
   margin: 3px 0 14px;
 }
 
+/* The dialog's own title (the tenant name) — was unstyled and fell back to
+   the browser default heading size. */
+.manage-panel h2 {
+  font-size: var(--text-title);
+  font-weight: 600;
+}
+
+.manage-panel h3 {
+  font-size: var(--text-section);
+  font-weight: 650;
+}
+
 .eyebrow {
   color: var(--accent);
   font: 600 10px/1 var(--mono);
@@ -46,16 +58,6 @@
   border: 1px solid var(--border);
   border-radius: 5px;
   background: var(--surface2);
-}
-
-/* Excludes OriginPicker's own `.origin-chip` remove ×, which keeps its own
-   borderless styling from ApiKeys.css (loaded app-wide, not just on the API
-   keys page). */
-.manage-panel button:not(.origin-chip button) {
-  padding: 7px 11px;
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 5px;
 }
 
 .compact-list {
@@ -131,7 +133,6 @@
 }
 
 .manage-error {
-  color: var(--err);
   border-color: currentColor;
 }
 

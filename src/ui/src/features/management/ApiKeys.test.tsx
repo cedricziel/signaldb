@@ -243,6 +243,17 @@ describe("ApiKeys page", () => {
     expect(revokedRow?.className).toContain("revoked");
   });
 
+  it("shows the shared empty state when there are no API keys", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, body: [] },
+    ]);
+    renderApiKeys();
+
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent("No API keys yet");
+  });
+
   it("shows a multi-dataset key's restriction as the joined dataset list", async () => {
     stubFetchRoutes([
       { match: "/api/v1/whoami", body: WHOAMI_ADMIN },

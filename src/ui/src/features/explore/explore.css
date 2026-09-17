@@ -9,7 +9,7 @@
 .explore-controls {
   display: flex;
   align-items: center;
-  padding: 0 14px;
+  padding: 0 var(--gutter);
   border-bottom: 1px solid var(--border);
   gap: 10px;
 }
@@ -77,8 +77,7 @@
   gap: 8px;
 }
 
-.time-picker select,
-.livebtn {
+.time-picker select {
   border: 1px solid var(--border);
   background: var(--surface2);
   border-radius: 6px;
@@ -87,8 +86,6 @@
 }
 
 .livebtn {
-  display: inline-flex;
-  align-items: center;
   gap: 7px;
 }
 
@@ -144,7 +141,7 @@
   align-items: flex-start;
   flex-wrap: wrap;
   gap: 7px;
-  padding: 10px 14px;
+  padding: 10px var(--gutter);
   border-bottom: 1px solid var(--border);
 }
 
@@ -163,15 +160,16 @@
   gap: 7px;
 }
 
-.chip {
-  display: inline-flex;
-  align-items: center;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+/* Segmented (label:op:value + its own × control), so — unlike a plain
+   .chip — the padding lives on each segment below, not the chip itself.
+   Compounded with .chip so it beats the global pill base (same
+   specificity as a bare .chip) regardless of CSS import order. */
+.chip.chip-segmented {
+  padding: 0;
   overflow: hidden;
   font-family: var(--mono);
-  font-size: 11.5px;
   background: var(--surface2);
+  border-radius: 6px;
 }
 
 .chip-k {
@@ -215,13 +213,7 @@
 }
 
 .filter-chip {
-  display: inline-flex;
   align-items: baseline;
-  gap: 5px;
-  font-size: 11.5px;
-  padding: 2px 7px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
   background: var(--surface);
 }
 
@@ -271,14 +263,6 @@
   font-size: 12px;
   font-family: var(--mono);
   max-width: 160px;
-}
-
-.chip-form button {
-  font-size: 12px;
-  color: var(--dim);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 3px 9px;
 }
 
 @media (max-width: 600px) {
@@ -357,14 +341,6 @@
   gap: 8px;
 }
 
-.raw-actions button {
-  font-size: 12px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 3px 11px;
-  color: var(--dim);
-}
-
 /* ---------- layout ---------- */
 
 /* One sidebar width for every signal: logs' fields panel and traces' facets
@@ -435,11 +411,6 @@
     align-items: center;
     gap: 6px;
     margin: 10px 14px 0;
-    border: 1px solid var(--border);
-    background: var(--surface2);
-    border-radius: 6px;
-    padding: 4px 10px;
-    font-size: 12px;
     color: var(--dim);
   }
 
@@ -496,11 +467,7 @@
     display: block;
     flex: none;
     margin: 8px 10px 0 auto;
-    font-size: 12px;
     color: var(--dim);
-    border: 1px solid var(--border);
-    border-radius: 5px;
-    padding: 3px 10px;
   }
 }
 
@@ -646,7 +613,7 @@
 /* ---------- histogram ---------- */
 
 .histo-wrap {
-  padding: 10px 16px 4px;
+  padding: 10px var(--gutter) 4px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -670,14 +637,12 @@
 }
 
 .query-error {
-  color: var(--err);
   font-family: var(--mono);
-  font-size: 12px;
   padding: 12px 16px;
 }
 
 .trace-not-found {
-  padding: 16px;
+  padding: var(--gutter);
 }
 
 .trace-not-found h3 {
@@ -779,18 +744,9 @@ span.level-debug {
   margin-bottom: 10px;
 }
 
-.act {
-  font-size: 11.5px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 10px;
-  background: var(--surface);
-}
-
+/* .btn-primary now supplies the accent treatment (was its own accent-border
+   and soft-background variant); only the row's own weight stays here. */
 .act-primary {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--accent-soft);
   font-weight: 550;
 }
 

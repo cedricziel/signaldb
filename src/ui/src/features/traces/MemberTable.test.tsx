@@ -55,18 +55,18 @@ describe("MemberTable", () => {
     expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });
 
-  it("shows the empty message when the query resolved with zero rows", () => {
+  it("shows the shared empty state when the query resolved with zero rows", () => {
     render(
       <MemberTable
         members={[]}
         error={null}
         what="spans"
         identityLabel="Span"
-        emptyMessage="No spans for this window."
+        emptyMessage="No spans in this range"
         onOpenTrace={vi.fn()}
       />,
     );
-    expect(screen.getByText("No spans for this window.")).toBeInTheDocument();
+    expect(screen.getByRole("status")).toHaveTextContent("No spans in this range");
   });
 
   it("renders rows and the identity column's header label", () => {

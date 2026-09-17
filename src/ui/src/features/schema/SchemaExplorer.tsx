@@ -75,7 +75,10 @@ export function SchemaExplorer() {
 
       {schema.isPending && <p className="schema-explorer-note">Loading…</p>}
       {schema.isError && (
-        <p className="schema-explorer-note schema-explorer-error">
+        <p
+          className="schema-explorer-note error-text"
+          role="alert"
+        >
           Could not load schema: {toErrorMessage(schema.error)}
         </p>
       )}

@@ -178,7 +178,7 @@ export function ConsentView() {
       <Dialog label="Authorize access" className="login-panel">
         <p className="login-hint">Loading…</p>
         {error && (
-          <p className="login-error" role="alert">
+          <p className="error-text" role="alert">
             {error}
           </p>
         )}
@@ -369,7 +369,7 @@ export function ConsentView() {
       </div>
 
       {error && (
-        <p className="login-error" role="alert">
+        <p className="error-text" role="alert">
           {error}
         </p>
       )}
@@ -377,7 +377,7 @@ export function ConsentView() {
       <div className="consent-actions">
         <button
           type="button"
-          className="consent-deny"
+          className="btn"
           disabled={busy}
           onClick={() => decide(false)}
         >
@@ -385,7 +385,7 @@ export function ConsentView() {
         </button>
         <button
           type="button"
-          className="consent-approve"
+          className="btn btn-primary"
           disabled={busy || !canSubmit}
           onClick={() => decide(true)}
         >

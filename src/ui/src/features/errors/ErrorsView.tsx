@@ -14,6 +14,7 @@ import {
   MobileFiltersToggle,
   MobileSidebarDrawer,
 } from "../../components/MobileSidebarDrawer";
+import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
 import { useMobileSidebar } from "../../hooks/useMobileSidebar";
 import { SkeletonRows } from "../explore/Skeleton";
@@ -242,7 +243,7 @@ export function ErrorsView({ state, update }: Props) {
           <div className="filter-chips" aria-label="Active filters">
             {filters.map((f) => (
               <button
-                className="filter-chip"
+                className="filter-chip chip"
                 key={`${f.field}|${f.value}`}
                 aria-label={`Remove filter ${f.field} = ${f.value}`}
                 onClick={() => removeFilter(f)}
@@ -278,17 +279,15 @@ export function ErrorsView({ state, update }: Props) {
             <QueryError what="exceptions" error={groupsQuery.error} />
           )}
           {!pending && !groupsQuery.isError && allGroups.length === 0 && (
-            <div className="view-note">
-              No exceptions captured in this window.
-            </div>
+            <EmptyState title="No exceptions in this range" />
           )}
           {!pending &&
             !groupsQuery.isError &&
             allGroups.length > 0 &&
             groups.length === 0 && (
-              <div className="view-note">
+              <EmptyState title="No exceptions in this range">
                 No exceptions match the active filters.
-              </div>
+              </EmptyState>
             )}
 
           {(pending || groups.length > 0) && (
@@ -408,9 +407,7 @@ export function ErrorsView({ state, update }: Props) {
                 <QueryError what="occurrences" error={occurrencesQuery.error} />
               )}
               {occurrencesQuery.isSuccess && occurrences.length === 0 && (
-                <div className="view-note">
-                  No occurrences found in this window.
-                </div>
+                <EmptyState title="No occurrences in this range" />
               )}
               {(occurrencesQuery.isPending || occurrences.length > 0) && (
                 <div className="table-scroll">
@@ -444,7 +441,7 @@ export function ErrorsView({ state, update }: Props) {
                                 {o.traceId ? (
                                   <button
                                     type="button"
-                                    className="act"
+                                    className="btn"
                                     onClick={(e) => {
                                       e.stopPropagation();
                                       update(

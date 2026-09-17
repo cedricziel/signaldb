@@ -32,7 +32,7 @@ export function MobileFiltersToggle({
   return (
     <button
       type="button"
-      className="mobile-filters-toggle"
+      className="mobile-filters-toggle btn"
       aria-expanded={open}
       onClick={onToggle}
     >
@@ -77,7 +77,7 @@ export function MobileSidebarDrawer({
         {open && (
           <button
             type="button"
-            className="mobile-sidebar-close"
+            className="mobile-sidebar-close btn"
             onClick={onClose}
           >
             Close ×

@@ -9,6 +9,7 @@ import {
 } from "../../api/tempo";
 import { ApiError } from "../../api/http";
 import { fetchTraceDetail } from "../../api/traceDetail";
+import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
 import {
   STATUS_COLORS,
@@ -286,7 +287,7 @@ function TraceSearch({ state, update }: Props) {
             const display = f.op === "absent" ? NOT_SET : f.value;
             return (
               <button
-                className="filter-chip"
+                className="filter-chip chip"
                 key={`${f.field}|${f.value}`}
                 aria-label={`Remove filter ${f.field} = ${display}`}
                 onClick={() => removeFilter(f)}
@@ -335,7 +336,9 @@ function TraceSearch({ state, update }: Props) {
                 aria-label="Trace ID"
                 placeholder="Open trace by ID…"
               />
-              <button type="submit">Open</button>
+              <button type="submit" className="btn btn-primary">
+                Open
+              </button>
             </form>
             {state.group === "" && (
               <>
@@ -738,18 +741,17 @@ function GroupList({
         </div>
       )}
       {done && !unresolved && groups.length === 0 && rootGrainOnly && (
-        <div className="view-note">
-          No groups: trace grain only inspects each trace's root span, and one
-          of the active filters is on a field that only appears on a child span.
+        <EmptyState title="No groups in this range">
+          Trace grain only inspects each trace's root span, and one of the
+          active filters is on a field that only appears on a child span.
           Switch to span grain to see it.
-        </div>
+        </EmptyState>
       )}
       {done && !unresolved && groups.length === 0 && !rootGrainOnly && (
-        <div className="view-note">
-          No groups in this window.
+        <EmptyState title="No groups in this range">
           {kindsNarrowed &&
-            " Only the selected span kinds are included — Internal spans are off by default; adjust span.kind in the sidebar."}
-        </div>
+            "Only the selected span kinds are included — Internal spans are off by default; adjust span.kind in the sidebar."}
+        </EmptyState>
       )}
       {result.data?.truncated && (
         <div className="view-note">
@@ -828,7 +830,7 @@ function GroupDetail({
         error={membersQuery.error}
         what={`${memberNoun}s`}
         identityLabel={isSpanGrain ? "Span" : "Root"}
-        emptyMessage={`No ${memberNoun}s for this group in this window.`}
+        emptyMessage={`No ${memberNoun}s in this range`}
         // Always true (the query always applies a limit) — states the bound
         // rather than claiming truncation we can't detect here.
         footnote={`Showing up to ${plural(state.limit, memberNoun)}, newest first.`}
@@ -950,7 +952,7 @@ function TraceDetail({ state, update }: Props) {
           · {plural(waterfall.rows.length, "span")} ·{" "}
           {plural(waterfall.services.length, "service")}
           {waterfall.errorCount > 0 && (
-            <em className="tmeta-err">
+            <em className="tmeta-err error-text">
               {" "}
               · {plural(waterfall.errorCount, "error")}
             </em>
@@ -1103,10 +1105,10 @@ function SpanDetail({
       <div className="span-detail-sub">
         {kind && <span className={`kind-chip ${kindClass(kind)}`}>{kind}</span>}
         {describeService(span.serviceName, span.attributes)}
-        {span.status === "error" && <em className="tmeta-err"> · error</em>}
+        {span.status === "error" && <em className="tmeta-err error-text"> · error</em>}
       </div>
       <button
-        className="act act-primary"
+        className="act-primary btn btn-primary"
         onClick={() =>
           update(
             {
@@ -1130,7 +1132,7 @@ function SpanDetail({
       {spanProfiles.map((p) => (
         <button
           key={p.profileId}
-          className="act"
+          className="btn"
           onClick={() =>
             update(
               {

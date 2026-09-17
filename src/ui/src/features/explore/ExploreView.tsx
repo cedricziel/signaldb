@@ -77,7 +77,7 @@ export function ExploreView({ state, update }: Props) {
             onChange={(range) => update({ range })}
           />
           <button
-            className="livebtn"
+            className="livebtn btn"
             aria-pressed={liveDisabled ? false : state.live}
             aria-disabled={liveDisabled}
             disabled={liveDisabled}

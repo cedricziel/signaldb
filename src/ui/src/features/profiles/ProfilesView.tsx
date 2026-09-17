@@ -7,6 +7,7 @@ import {
   pyroscopeServices,
 } from "../../api/pyroscope";
 import { fetchFlamegraph, fetchFlamegraphById } from "../../api/profilesIr";
+import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
 import { liveRefetchInterval } from "../../lib/live";
 import {
@@ -293,11 +294,10 @@ function SingleRangeView({ state, update }: Props) {
           the error alert above — a confusing "here's why, also here's a
           totally different reason" pairing. */}
       {selectedType === "" && typesQuery.isSuccess && (
-        <div className="view-note">
-          No profiles in this window. Enable{" "}
-          <code>[self_monitoring].profiles_enabled</code> to have SignalDB
-          profile itself, or send profiles over OTLP.
-        </div>
+        <EmptyState title="No profiles yet">
+          Enable <code>[self_monitoring].profiles_enabled</code> to have
+          SignalDB profile itself, or send profiles over OTLP.
+        </EmptyState>
       )}
 
       {renderQuery.isFetching && !renderQuery.data && (
@@ -311,11 +311,7 @@ function SingleRangeView({ state, update }: Props) {
         </div>
       )}
 
-      {isEmpty && (
-        <div className="view-note">
-          No profiles in this window for this filter.
-        </div>
-      )}
+      {isEmpty && <EmptyState title="No profiles in this range" />}
 
       {renderQuery.data && !isEmpty && (
         <FlameGraph render={renderQuery.data.render} unit={unit} />
@@ -378,11 +374,10 @@ function CompareView({ state, update }: Props) {
       {typesQuery.isPending && <SkeletonLines lines={12} />}
 
       {selectedType === "" && typesQuery.isSuccess && (
-        <div className="view-note">
-          No profiles in this window. Enable{" "}
-          <code>[self_monitoring].profiles_enabled</code> to have SignalDB
-          profile itself, or send profiles over OTLP.
-        </div>
+        <EmptyState title="No profiles yet">
+          Enable <code>[self_monitoring].profiles_enabled</code> to have
+          SignalDB profile itself, or send profiles over OTLP.
+        </EmptyState>
       )}
 
       <div className="profiles-compare">
@@ -419,7 +414,7 @@ function ComparePane({
     return (
       <div className="profiles-compare-pane">
         <div className="flame-title">{title}</div>
-        <div className="view-note">No profiles in this window.</div>
+        <EmptyState title="No profiles in this range" />
       </div>
     );
   }

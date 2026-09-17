@@ -145,6 +145,16 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   tab opening a bare `/schema/storage`, `/api-keys`, or `/manage` resumes
   there instead of turning into a tenant-less request. Tenant/dataset
   administration lives at `/manage`.
+- Every view shares one visual vocabulary. A query that returns nothing
+  renders the same empty state everywhere, worded "No <things> in this
+  range" (or "No <things> yet" where nothing has ever been recorded), with
+  any actionable hint on a second line, and announced as a status to
+  assistive technology. Inline errors are one style, announced as alerts.
+  Buttons come in one primary, one secondary, one ghost and one danger
+  treatment, chips share one shape, table headers and body text share one
+  size, page and dialog titles share one size, and toolbars and panes share
+  one gutter, so the Logs search box lines up with the histogram axis and
+  no page is padded differently from its neighbours.
 
 ### The catalog
 

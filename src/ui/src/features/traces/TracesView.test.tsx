@@ -569,7 +569,7 @@ describe("TracesView group list", () => {
 
   it("does not suggest span grain when nothing is filtered", async () => {
     renderView();
-    await screen.findByText(/no groups in this window/i);
+    await screen.findByText(/no groups in this range/i);
     expect(screen.queryByText(/span grain/i)).not.toBeInTheDocument();
   });
 
@@ -960,9 +960,7 @@ describe("TracesView group detail", () => {
 
   it("notes no spans (not traces) for an empty group at span grain", async () => {
     renderView({ group: "charge", grain: "spans" });
-    expect(
-      await screen.findByText(/no spans for this group/i),
-    ).toBeInTheDocument();
+    expect(await screen.findByText(/no spans in this range/i)).toBeInTheDocument();
   });
 
   it("renders skeleton rows while the drill-in query is pending", async () => {
@@ -1867,7 +1865,7 @@ describe("TracesView span-volume chart", () => {
     stubFetchRoutes(routes);
     renderView();
     await screen.findByRole("group", { name: /span volume/i });
-    expect(screen.getByText(/no groups in this window/i)).toBeInTheDocument();
+    expect(screen.getByText(/no groups in this range/i)).toBeInTheDocument();
   });
 });
 
