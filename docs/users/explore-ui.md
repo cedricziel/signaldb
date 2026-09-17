@@ -831,7 +831,9 @@ the user menu, browser Back or Forward) opens an "Unsaved changes" dialog
 with **Stay** and **Leave**, and reload or tab close still gets the
 browser's own warning. The same guard covers the API-key form, the consent
 dialog and the allowed-origins picker, since they register as dirty forms
-too.
+too. A successful **Save**, **Save as new version** or **Delete** leaves the
+editor without a prompt: once the document is stored there is nothing
+unsaved to protect.
 
 ## Throttling and retries
 

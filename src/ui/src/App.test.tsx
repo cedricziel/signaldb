@@ -753,5 +753,56 @@ describe("App", () => {
       await screen.findByText(/No log lines in this range/);
       expect(window.location.pathname).toBe("/logs");
     });
+
+    it("prompts before an in-app navigation away from a dirty consent form, even though /oauth/consent sits outside the explore shell", async () => {
+      const CONSENT_QUERY =
+        "client_id=client-1&redirect_uri=https%3A%2F%2Fclaude.ai%2Fcb&code_challenge=chal";
+      stubFetchRoutes([
+        { match: "query_range", body: emptyStreams },
+        { match: "/labels?", body: emptyLabels },
+        {
+          match: "/oauth/consent/context",
+          body: {
+            client_name: "Claude",
+            tenants: [
+              {
+                id: "acme",
+                role: "member",
+                datasets: [{ id: "production", name: "production" }],
+              },
+            ],
+          },
+        },
+      ]);
+      // A prior in-app page, so `router.navigate(-1)` below (browser Back)
+      // has somewhere to go back to.
+      window.history.replaceState(null, "", "/logs");
+      const router = createAppRouter();
+      renderWithClient(<RouterProvider router={router} />);
+      await router.navigate(`/oauth/consent?${CONSENT_QUERY}`);
+
+      const user = (await import("@testing-library/user-event")).default;
+      await screen.findByRole("heading", { name: /Claude/ });
+      // The lone tenant is pre-checked with no checkbox of its own; changing
+      // its dataset restriction is what dirties the form.
+      await user.click(
+        screen.getByRole("radio", { name: /Only these datasets in acme/ }),
+      );
+
+      // Browser Back is an in-app (POP) navigation the data router — and so
+      // the guard — sees, unlike the final `window.location.href` redirect
+      // ConsentView makes itself on submit, which a router blocker can't and
+      // shouldn't intercept.
+      void router.navigate(-1);
+      const dialog = await screen.findByRole("dialog", {
+        name: "Unsaved changes",
+      });
+      expect(
+        screen.getByRole("heading", { name: /Claude/ }),
+      ).toBeInTheDocument();
+
+      await user.click(within(dialog).getByRole("button", { name: "Leave" }));
+      await waitFor(() => expect(window.location.pathname).toBe("/logs"));
+    });
   });
 });
