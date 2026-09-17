@@ -436,7 +436,7 @@ function ComparePane({
 }
 
 function SingleProfileView({ state, update }: Props) {
-  const { profileId, profileType, range } = state;
+  const { profileId, profileType, profileUnit, range } = state;
   const renderQuery = useQuery({
     queryKey: ["pyro-byid", profileId],
     queryFn: () => fetchFlamegraphById(profileId),
@@ -445,17 +445,18 @@ function SingleProfileView({ state, update }: Props) {
   // (a single profile's Pyroscope flamebearer encoding has none — see
   // FlamegraphResult), so without this, every by-id flamegraph's tooltip
   // showed bare tick counts regardless of what it actually measured. Only
-  // fetched when the caller named a type, and only for its unit.
+  // fetched as a fallback: when the caller named a type but not a unit.
   // Keyed on the full range scope (tenant/dataset included, not just the
   // range) — the same tenant's profile-type list under a different tenant's
   // key would otherwise mislabel a sample type this tenant never registered.
   const typesQuery = useQuery({
     queryKey: ["pyro-types-for-unit", rangeScopeKey(state)],
     queryFn: () => pyroscopeProfileTypes(resolveRange(range, Date.now())),
-    enabled: profileType !== "",
+    enabled: profileUnit === "" && profileType !== "",
   });
   const unit =
-    typesQuery.data?.find((t) => t.ID === profileType)?.sampleUnit ?? "";
+    profileUnit ||
+    (typesQuery.data?.find((t) => t.ID === profileType)?.sampleUnit ?? "");
 
   return (
     <div className="profilesview">

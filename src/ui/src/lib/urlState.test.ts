@@ -215,6 +215,7 @@ describe("buildSearch", () => {
       profileCompare: true,
       profileBaseline: { type: "relative" as const, seconds: 86400 },
       profileId: "abc123",
+      profileUnit: "nanoseconds",
     };
     const search = buildSearch(state);
     expect(search).toContain("plabel=region");
@@ -222,6 +223,7 @@ describe("buildSearch", () => {
     expect(search).toContain("pcmp=1");
     expect(search).toContain("pbase=1d");
     expect(search).toContain("pid=abc123");
+    expect(search).toContain("punit=nanoseconds");
     expect(parseExploreState(search)).toEqual({ ...state, signal: "logs" });
   });
 
@@ -232,6 +234,7 @@ describe("buildSearch", () => {
     expect(search).not.toContain("plabel");
     expect(search).not.toContain("pvalue");
     expect(search).not.toContain("pid");
+    expect(search).not.toContain("punit");
   });
 
   it("no longer emits or parses catalog entity/primary/secondary query params", () => {

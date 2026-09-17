@@ -1111,7 +1111,12 @@ function SpanDetail({
           className="act"
           onClick={() =>
             update(
-              { signal: "profiles", trace: "", profileId: p.profileId },
+              {
+                signal: "profiles",
+                trace: "",
+                profileId: p.profileId,
+                profileUnit: p.sampleUnit,
+              },
               { push: true },
             )
           }

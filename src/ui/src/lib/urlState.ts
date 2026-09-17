@@ -82,6 +82,10 @@ export interface ExploreState {
   /** Exact profile id to render (from a trace's linked-profile action) —
    * "" means the normal service/type-filtered view. */
   profileId: string;
+  /** Sample unit of a linked profile opened via `profileId` (e.g.
+   * "nanoseconds") — carried alongside it since `ProfileSummaryView` has no
+   * type id `profileType` can resolve a unit from; "" means unknown. */
+  profileUnit: string;
   /**
    * Explicit tenant/dataset context. Empty means "ambient default": the dev
    * proxy (or a future session) supplies it and no header is sent.
@@ -143,6 +147,7 @@ export const DEFAULT_STATE: ExploreState = {
   profileCompare: false,
   profileBaseline: DEFAULT_RANGE,
   profileId: "",
+  profileUnit: "",
   tenant: "",
   dataset: "",
   catalogEntity: DEFAULT_ENTITY_TYPE,
@@ -315,6 +320,7 @@ export function parseExploreState(search: string): ExploreState {
     profileCompare: p.get("pcmp") === "1",
     profileBaseline: parseRangeParam(p.get("pbase")),
     profileId: p.get("pid") ?? "",
+    profileUnit: p.get("punit") ?? "",
     tenant: p.get("tenant") ?? "",
     dataset: p.get("dataset") ?? "",
     // Catalog selection lives in the path (/catalog/:entity/:primary/
@@ -399,6 +405,7 @@ export function buildSearch(state: ExploreState): string {
     p.set("pbase", rangeToParam(state.profileBaseline));
   }
   if (state.profileId) p.set("pid", state.profileId);
+  if (state.profileUnit) p.set("punit", state.profileUnit);
   if (state.tenant) p.set("tenant", state.tenant);
   if (state.dataset) p.set("dataset", state.dataset);
   const s = p.toString();
