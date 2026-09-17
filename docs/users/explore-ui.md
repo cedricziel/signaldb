@@ -32,6 +32,11 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
 - **Logs** — filter chips compiled to LogQL (with an "edit as text" escape
   hatch), a per-level volume histogram, a virtualized log list with
   per-attribute filter/exclude actions, a fields sidebar, and live tail.
+  The add-filter key box suggests schema-registry keys; picking a dotted
+  OTel key (`service.name`) inserts its Loki label spelling
+  (`service_name`), and a hand-typed key that isn't a valid label name
+  disables **Add** with an inline hint rather than failing silently. An
+  expanded row stays expanded while live tail prepends newer lines.
 - **Traces** — a facet sidebar and a span-volume chart stacked by span status
   sit above a group-first view: recent traces arrive grouped by root
   span name (or by service, any observed root-span/resource attribute, or
@@ -95,7 +100,10 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   a link into the trace waterfall when it carries a trace id — occurrences
   of the same group don't all share one trace outcome — and expands to its
   own stacktrace, rendered with the caller's own frames legible against
-  dimmed dependency noise.
+  dimmed dependency noise. The selected group (`?group=`) and the facet
+  selection (`?f=`) live in the URL, so following a trace link and pressing
+  Back lands on the same group; the occurrences panel scrolls into view on
+  selection and carries an "← all groups" control.
 - **Query** — a native [Query IR](querying-ir.md) builder for `logs`, `traces`,
   and profile summaries:
   pick a source and result envelope, add filter chips, and the tab emits a
@@ -103,16 +111,29 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   client, rendering the declared `rows`/`series`/`table` result. Any warnings
   the response carries are shown above the result — a group-by field nothing in
   the window carries names itself there, with the closest real field as a
-  suggestion, instead of silently rendering one `null`-labelled group.
+  suggestion, instead of silently rendering one `null`-labelled group. The
+  builder is URL-backed (`?qsrc=`, `?qres=`, repeated `?qf=`, and `?qrun=1`
+  once run), so a reload, a tab switch, or Back keeps the query; **Run** on
+  an unchanged document re-runs it against a fresh "now".
 - **Correlation** — log rows with a `trace_id` open the trace waterfall;
   the span panel links back to logs filtered by that trace, and, for a span
   with a linked profile, offers a "Profile: `<sample type>` →" button that
-  opens that exact profile's flame graph.
+  opens that exact profile's flame graph. Each of these pivots is a history
+  entry: browser Back returns to the list you came from with its filters
+  intact, and the waterfall's "← traces" control steps back the same way
+  (to the log list when the trace was opened from a log row).
+- **Live** — the Live toggle tails Logs, Traces (groups, volume chart, and a
+  group's trace list), Metrics, and single-window Profiles. It is disabled,
+  with a tooltip saying why, on Catalog, Errors, and Query, and whenever the
+  time range is absolute — a fixed window has nothing to tail.
 - Every view is a URL: each signal has its own path (`/catalog`, `/logs`,
   `/traces`, `/metrics`, `/profiles`, `/query`), with time range, filters, and
   selection in query parameters alongside it — so views are separately
   navigable and can be bookmarked, shared, and revisited with the browser
-  back/forward buttons. The tenant/dataset context rides along as
+  back/forward buttons. A metrics builder run is carried as `?mq=` (the
+  builder query itself) rather than only as compiled PromQL, so reloading or
+  sharing the link restores the builder and keeps a dotted OTel metric name
+  on the Query IR path. The tenant/dataset context rides along as
   `?tenant=&dataset=`; links that omit it (the user menu, deep links inside
   the schema hub) keep the last context you were in, and the last context is
   also remembered in the browser (cleared on sign-out) so a bookmark or a new
@@ -264,8 +285,10 @@ same attribute-container resolution the Query tab uses, so anything visible
 there as a filterable field is filterable here too.
 
 **Compare** replaces the single flame graph with two independent ones, a
-**Baseline** window (its own time-range picker, defaulting to the last
-hour) and the current range as the **Comparison** — each fetched, zoomed,
+**Baseline** window (its own time-range picker; when Compare is switched on
+it defaults to the window immediately preceding the comparison range, so
+the two panes never show the same data) and the current range as the
+**Comparison** — each fetched, zoomed,
 and searched independently, so you can drill into the same subtree on both
 sides to see where time moved. There's no synchronized zoom between the two
 panes; it's two ordinary flame graphs side by side, not a merged
@@ -614,12 +637,15 @@ Once signed in, a user menu appears in the top bar showing an avatar
 - **Appearance** — toggle between light and dark theme; the choice is
   persisted in `localStorage` and restored on reload.
 - **Send data** — opens the Instrumentation page (see below).
-- **API keys** — opens the API Keys page (see below).
+- **API keys** — opens the API Keys page (see below); shown only to tenant
+  admins and instance admins, the same rule as the **Manage** link.
 - **Schema** — opens the Schema hub (see below).
 - **Docs** — opens the SignalDB documentation in a new tab.
 - **Switch tenant** — opens the Tenant Selection page (see below).
 - **Sign out** — deletes the session, clears the query cache, and
-  reloads on the [`/login`](#signing-in) page.
+  reloads on the [`/login`](#signing-in) page. If the sign-out request
+  fails the menu stays open with an inline error instead of reloading a
+  still-signed-in session.
 
 The menu closes on Escape or backdrop click.
 
@@ -642,7 +668,12 @@ action calls the manual-trigger endpoint — see
 [table provisioning](../operations/table-provisioning.md)), and, for
 instance administrators only, **New tenant**. Destructive actions (delete a
 dataset, revoke a key, remove a member) swap the button for an inline
-confirmation first; Escape or Cancel backs out. All of it consumes the
+confirmation first; Escape or Cancel backs out. Close, Escape, and a
+backdrop click step back to the page the panel was opened from, or to the
+Logs view when the panel was the first page of the tab (a bookmark or a
+new-tab link). A whoami failure that isn't a 401 shows an inline error with
+the message instead of silently bouncing to Logs; only a resolved
+non-admin role redirects. All of it consumes the
 generated client (`src/ui/src/api/management.ts`), never raw `fetch`.
 The tenant's default dataset carries a **Default** badge instead of a delete
 button — it can't be deleted — rather than silently omitting the button with
@@ -652,9 +683,13 @@ no explanation.
 
 Shows every tenant the user is a member of, with their role on each.
 The current tenant is expanded by default to reveal its datasets;
-clicking a dataset navigates to `/logs` with that tenant/dataset
-selected. Other tenants are collapsed and fetch their datasets lazily
-via `whoami(tenant_id)` on expansion.
+clicking a dataset navigates to the `?redirect=` target (default `/logs`)
+with `?tenant=&dataset=` set on that URL in a single navigation, so the
+pick lands in the address bar and the top-bar chip together. Other tenants
+are collapsed and fetch their datasets lazily via `whoami(tenant_id)` on
+expansion. Until a tenant is resolved the shell sends no tenant-scoped
+`whoami` at all — a signed-in visitor landing on a bare URL is routed here
+by the session, never to the login page.
 
 ### API keys (`/api-keys`)
 
@@ -736,7 +771,9 @@ Weaver-format YAML or JSON document with server-side **Validate**
 until validation passes), **Save as new version**, a summary of added,
 changed, and removed definitions against the stored document, and
 **Delete** with confirmation. Bundled registries never expose these
-actions.
+actions. Unsaved edits prompt before leaving via the editor's own crumb
+links and warn on reload or tab close, but not when leaving via the top
+bar's own links or the browser's Back button.
 
 ## Throttling and retries
 
