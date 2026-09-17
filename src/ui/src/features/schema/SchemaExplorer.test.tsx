@@ -122,6 +122,34 @@ afterEach(() => {
 });
 
 describe("SchemaExplorer", () => {
+  it("waits for the tenant to resolve instead of redirecting to Conventions", () => {
+    // `useWhoami` disables its query while `tenant === ""`, which settles it
+    // as `isLoading: false` with no data — the same shape as "loaded, not an
+    // instance admin". Rendering before the tenant resolves must not read
+    // that as a real answer and redirect away.
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_INSTANCE_ADMIN },
+    ]);
+    renderWithClient(
+      <MemoryRouter initialEntries={["/schema/storage"]}>
+        <Routes>
+          <Route element={shellOutlet("")}>
+            <Route path="/schema/storage" element={<SchemaExplorer />} />
+            <Route
+              path="/schema/conventions"
+              element={<div>Conventions page</div>}
+            />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    );
+
+    expect(screen.queryByText("Conventions page")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("heading", { level: 1, name: "Storage schema" }),
+    ).not.toBeInTheDocument();
+  });
+
   it("redirects a non-instance-admin to the sibling Conventions tab", async () => {
     stubFetchRoutes([
       { match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN_ONLY },

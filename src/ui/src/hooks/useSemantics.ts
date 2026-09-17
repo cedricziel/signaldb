@@ -166,6 +166,19 @@ const searchInflight = new Set<string>();
 const searchKey = (tenant: string, prefix: string) => `${tenant}${SEP}${prefix}`;
 
 /**
+ * Bumped by `invalidateSemantics` per tenant so a search already in flight
+ * when invalidation lands can tell it's stale: it still clears its own
+ * `searchInflight` entry and notifies (so a re-run isn't stuck waiting on
+ * it forever), but skips writing its answer into `searchCache` — otherwise
+ * that write would silently resurrect the entry invalidation just dropped.
+ */
+const searchGeneration = new Map<string, number>();
+
+function currentSearchGeneration(tenant: string): number {
+  return searchGeneration.get(tenant) ?? 0;
+}
+
+/**
  * Registry prefix search for autocomplete: `[]` until the hits arrive (or
  * forever, on error), cached per tenant and prefix for the session.
  */
@@ -180,18 +193,25 @@ export function useAttributeSearch(prefix: string, limit = 20): AttributeHit[] {
       return;
     }
     searchInflight.add(cacheKey);
+    const generation = currentSearchGeneration(tenant);
     let fired = false;
     const timer = setTimeout(() => {
       fired = true;
       void (async () => {
+        let hits: AttributeHit[];
         try {
-          searchCache.set(cacheKey, await searchAttributes(trimmed, limit));
+          hits = await searchAttributes(trimmed, limit);
         } catch {
-          searchCache.set(cacheKey, NO_HITS);
-        } finally {
-          searchInflight.delete(cacheKey);
-          notify();
+          hits = NO_HITS;
         }
+        // A generation bump means `invalidateSemantics` ran while this was
+        // in flight: the tenant's cache was meant to come back empty, not
+        // get this (now possibly stale) answer written into it.
+        if (currentSearchGeneration(tenant) === generation) {
+          searchCache.set(cacheKey, hits);
+        }
+        searchInflight.delete(cacheKey);
+        notify();
       })();
     }, SEMANTICS_DEBOUNCE_MS);
     return () => {
@@ -221,6 +241,7 @@ export function resetSemanticsCache(): void {
   tenants.clear();
   searchCache.clear();
   searchInflight.clear();
+  searchGeneration.clear();
   notify();
 }
 
@@ -233,6 +254,7 @@ export function resetSemanticsCache(): void {
  * can change what the combobox should suggest.
  */
 export function invalidateSemantics(tenant: string = getTenantContext().tenant): void {
+  searchGeneration.set(tenant, currentSearchGeneration(tenant) + 1);
   const state = tenants.get(tenant);
   if (state) {
     if (state.timer !== null) clearTimeout(state.timer);
