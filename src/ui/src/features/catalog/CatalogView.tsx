@@ -7,6 +7,7 @@ import {
 } from "../../api/catalog";
 import { GROUP_BUDGET, type GroupSort } from "../../api/traceGroups";
 import { fetchFieldValueSketch } from "../../api/sourceFields";
+import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
 import { SkeletonRows } from "../explore/Skeleton";
 import { SortTh, useSort } from "../../lib/sortTable";
@@ -323,9 +324,8 @@ function EmptyEntityState({
   });
 
   return (
-    <div className="view-note">
-      No {entity.label.toLowerCase()} observed in this window — no matching{" "}
-      <code>{primary}</code> value seen in {sources.join(" or ")}.
+    <EmptyState title={`No ${entity.label.toLowerCase()} in this range`}>
+      No matching <code>{primary}</code> value seen in {sources.join(" or ")}.
       {sketch.data && (
         <>
           {" "}
@@ -342,7 +342,7 @@ function EmptyEntityState({
           . Try a wider time range.
         </>
       )}
-    </div>
+    </EmptyState>
   );
 }
 

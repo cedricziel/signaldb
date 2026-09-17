@@ -709,6 +709,24 @@ select:focus-visible {
   color: var(--dim);
 }
 
+/* ---------- shared empty state (components/EmptyState.tsx) ---------- */
+
+.empty-state {
+  padding: 14px 16px;
+}
+
+.empty-state-title {
+  margin: 0;
+  font-size: 13px;
+  color: var(--dim);
+}
+
+.empty-state-detail {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--faint);
+}
+
 /* ---------- shared chips (filter/tenant/origin/status/facet/semantic-key
    pills) ---------- */
 

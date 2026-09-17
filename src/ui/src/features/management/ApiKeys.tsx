@@ -16,6 +16,7 @@ import type { WhoamiResponse } from "../../api/session";
 import { ConfirmButton } from "../../components/ConfirmButton";
 import { CopyValueButton } from "../../components/CopyValueButton";
 import { Dialog } from "../../components/Dialog";
+import { EmptyState } from "../../components/EmptyState";
 import { whoamiQueryError } from "../../components/QueryError";
 import { useDirtyForm } from "../../lib/dirtyForms";
 import { useOutletState } from "../../lib/outletState";
@@ -307,6 +308,9 @@ function ApiKeysBody({ who }: { who: WhoamiResponse }) {
 
       <section className="api-keys-list">
         <h2>Existing keys</h2>
+        {keys.data && keys.data.length === 0 && (
+          <EmptyState title="No API keys yet" />
+        )}
         <ul>
           {(keys.data ?? []).map((key) => (
             <li

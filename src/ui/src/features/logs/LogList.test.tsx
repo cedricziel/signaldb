@@ -147,9 +147,10 @@ describe("LogList", () => {
     expect(onOpenTrace).toHaveBeenCalledWith("cafe1234beef");
   });
 
-  it("shows an empty state", () => {
+  it("shows the shared empty state", () => {
     render(<LogList rows={[]} onAddFilter={() => {}} onOpenTrace={() => {}} />);
-    expect(screen.getByText(/No log lines/)).toBeInTheDocument();
+    const status = screen.getByRole("status");
+    expect(status).toHaveTextContent(/No log lines/);
   });
 
   it("keeps a row expanded when a newer row is prepended and shifts its index", async () => {

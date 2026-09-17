@@ -2,6 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, NavLink, useParams } from "react-router";
 import { getRegistry, listRegistries, type DefinitionKind } from "./api";
+import { EmptyState } from "../../components/EmptyState";
 import { DefinitionPane } from "./DefinitionPane";
 import {
   CONVENTIONS,
@@ -289,7 +290,7 @@ function Section({
         <span>{count}</span>
       </h2>
       {shown.length === 0 ? (
-        <p className="schema-note">No matches.</p>
+        <EmptyState title="No matches yet" />
       ) : (
         <ul>
           {shown.map((item) => (

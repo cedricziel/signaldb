@@ -326,7 +326,7 @@ export function EntityDetail({ entity, range, state, update }: Props) {
         error={membersQuery.error}
         what="spans"
         identityLabel="Span"
-        emptyMessage="No matching spans in this window."
+        emptyMessage="No spans in this range"
         onOpenTrace={(traceId) =>
           update({ signal: "traces", trace: traceId }, { push: true })
         }

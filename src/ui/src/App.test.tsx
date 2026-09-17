@@ -68,7 +68,7 @@ describe("App", () => {
       "true",
     );
     expect(
-      await screen.findByText(/No log lines match this query/),
+      await screen.findByText(/No log lines in this range/),
     ).toBeInTheDocument();
   });
 
@@ -78,7 +78,7 @@ describe("App", () => {
       { match: "/labels?", body: emptyLabels },
     ]);
     renderApp("/");
-    await screen.findByText(/No log lines match this query/);
+    await screen.findByText(/No log lines in this range/);
     expect(window.location.pathname).toBe("/logs");
   });
 
@@ -88,7 +88,7 @@ describe("App", () => {
       { match: "/labels?", body: emptyLabels },
     ]);
     renderApp("/bogus");
-    await screen.findByText(/No log lines match this query/);
+    await screen.findByText(/No log lines in this range/);
     expect(window.location.pathname).toBe("/logs");
   });
 
@@ -515,7 +515,7 @@ describe("App", () => {
       { match: "/api/v1/whoami", body: WHOAMI },
     ]);
     renderApp("/manage?tenant=acme&dataset=production");
-    await screen.findByText(/No log lines match this query/);
+    await screen.findByText(/No log lines in this range/);
     expect(window.location.pathname).toBe("/logs");
   });
 
@@ -651,7 +651,7 @@ describe("App", () => {
         { match: "/labels?", body: emptyLabels },
       ]);
       renderApp("/logs?tenant=acme&dataset=prod");
-      await screen.findByText(/No log lines match this query/);
+      await screen.findByText(/No log lines in this range/);
       expect(
         fetchFn.mock.calls.some((call) => SESSION.test(String(call[0]))),
       ).toBe(false);
@@ -665,7 +665,7 @@ describe("App", () => {
         { match: "/labels?", body: emptyLabels },
       ]);
       renderApp("/logs");
-      await screen.findByText(/No log lines match this query/);
+      await screen.findByText(/No log lines in this range/);
 
       act(() => {
         setUpdateAvailable(vi.fn());

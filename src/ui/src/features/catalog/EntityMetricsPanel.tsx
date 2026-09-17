@@ -9,6 +9,7 @@ import { useQuery } from "@tanstack/react-query";
 import { fetchEntityMetricSeries } from "../../api/entityMetricSeries";
 import { irSeriesToPromSeries } from "../../api/metricsIr";
 import { pinsKey, type EntityPin } from "../../api/catalog";
+import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
 import {
   durationToSeconds,
@@ -115,9 +116,7 @@ export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
     body = series.isPending ? (
       <SkeletonLines lines={4} />
     ) : (
-      <div className="view-note">
-        No metric data for this {entity.singular} in this window.
-      </div>
+      <EmptyState title={`No metrics for this ${entity.singular} in this range`} />
     );
   } else {
     body = (

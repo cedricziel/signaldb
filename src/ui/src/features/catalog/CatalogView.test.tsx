@@ -256,7 +256,8 @@ describe("CatalogView", () => {
 
   it("shows an honest empty state naming the missing identity attribute", async () => {
     renderView({ catalogEntity: "host" });
-    const note = await screen.findByText(/No hosts observed in this window/);
+    await screen.findByText(/No hosts in this range/);
+    const note = screen.getByRole("status");
     expect(within(note).getByText("host.name")).toBeInTheDocument();
   });
 
@@ -382,7 +383,8 @@ describe("the empty state", () => {
     // The note renders as soon as the window comes back empty; the sketch is
     // a second, later fetch that appends to it — so this waits for the
     // sketch's own sentence rather than reading the note the moment it exists.
-    const note = await screen.findByText(/No hosts observed in this window/);
+    const note = await screen.findByRole("status");
+    expect(note).toHaveTextContent("No hosts in this range");
     await waitFor(() =>
       expect(note).toHaveTextContent("3 values have been seen outside it"),
     );
@@ -397,7 +399,8 @@ describe("the empty state", () => {
     fetchFieldValueSketch.mockResolvedValue(undefined);
     renderView({ catalogEntity: "host" });
 
-    const note = await screen.findByText(/No hosts observed in this window/);
+    const note = await screen.findByRole("status");
+    expect(note).toHaveTextContent("No hosts in this range");
     expect(note).not.toHaveTextContent("seen outside it");
     expect(note).not.toHaveTextContent("wider time range");
   });
@@ -409,7 +412,7 @@ describe("the empty state", () => {
     });
     renderView({ catalogEntity: "host" });
 
-    const note = await screen.findByText(/No hosts observed in this window/);
+    const note = await screen.findByRole("status");
     await waitFor(() =>
       expect(note).toHaveTextContent("One value has been seen outside it"),
     );

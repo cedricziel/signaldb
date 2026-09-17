@@ -227,7 +227,7 @@ describe("EntityMetricsPanel", () => {
     render();
 
     expect(
-      await screen.findByText(/No metric data for this host in this window/),
+      await screen.findByText(/No metrics for this host in this range/),
     ).toBeInTheDocument();
     expect(screen.queryByRole("figure")).not.toBeInTheDocument();
   });

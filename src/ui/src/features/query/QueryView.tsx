@@ -11,6 +11,7 @@ import { useQuery } from "@tanstack/react-query";
 import { runIrQuery } from "../../api/queryIr";
 import { irSeriesToPromSeries } from "../../api/metricsIr";
 import { AttributeValue } from "../../components/AttributeValue";
+import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
 import type { QueryIrRequest, QueryIrResponse } from "../../api/gen";
 import type { PromSeries } from "../../api/prom";
@@ -284,7 +285,7 @@ function RowsTable({ data, topN }: { data: QueryIrResponse; topN: boolean }) {
   const columns = data.columns ?? [];
   const rows = data.rows ?? [];
   if (rows.length === 0) {
-    return <div className="view-note">No rows in this window.</div>;
+    return <EmptyState title="No rows in this range" />;
   }
   return (
     <div className="table-scroll">
@@ -326,7 +327,7 @@ function SeriesChart({ data }: { data: QueryIrResponse }) {
   const series = useMemo(() => irSeriesToPromSeries(data.series ?? []), [data]);
   return (
     <div className="ir-series">
-      {series.length === 0 && <div className="view-note">No series</div>}
+      {series.length === 0 && <EmptyState title="No series in this range" />}
       {series.length > 0 && (
         <div className="mchart-wrap">
           <MetricsChart series={series} labelOf={irSeriesLabel} />
