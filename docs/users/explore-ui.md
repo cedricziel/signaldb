@@ -593,8 +593,13 @@ tenant-less page.
 Signing in calls `POST /ui/session`, which validates the credentials and
 sets an `HttpOnly`, `Secure`, `SameSite=Lax` cookie containing an opaque
 random token. The password and tenant API keys never live in the cookie,
-page JavaScript, `localStorage`, or URLs. Sessions expire after 12 hours;
-`DELETE /ui/session` revokes the server-side session and clears the cookie.
+page JavaScript, `localStorage`, or URLs. A session starts with a 12-hour
+lifetime and slides forward automatically while it's active — any
+authenticated request made within 6 hours of expiry extends it another 12,
+so a user who keeps working never hits the cliff. It only lapses after 12
+hours of inactivity, or after 30 days since login regardless of activity,
+whichever comes first. `DELETE /ui/session` revokes the server-side session
+and clears the cookie.
 
 Once signed in, the tenant/dataset selector offers the user's tenant
 memberships and the selected tenant's datasets. The chosen values are sent

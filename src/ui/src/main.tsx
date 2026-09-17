@@ -5,6 +5,7 @@ import { BrowserRouter } from "react-router";
 import { AppRoutes } from "./routes";
 import { initTelemetry } from "./telemetry";
 import { initTheme } from "./lib/theme";
+import { queryRetry } from "./lib/queryRetry";
 import { sidebarWidth, spanDetailWidth } from "./lib/sidebarWidth";
 import "./styles/global.css";
 
@@ -27,7 +28,7 @@ const queryClient = new QueryClient({
       // Observability queries are time-window scoped; refetching on focus
       // would silently shift results under the user.
       refetchOnWindowFocus: false,
-      retry: 1,
+      retry: queryRetry,
     },
   },
 });

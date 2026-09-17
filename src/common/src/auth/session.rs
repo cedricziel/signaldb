@@ -6,22 +6,34 @@
 
 use axum::http::HeaderMap;
 
-use super::SESSION_TOKEN_PREFIX;
+use super::{SESSION_TOKEN_PREFIX, SESSION_TTL};
 
 /// Name of the session cookie set by `POST /ui/session`.
 pub const SESSION_COOKIE: &str = "signaldb_session";
 
-/// Build the `Set-Cookie` header value for a freshly issued session token.
-/// The single construction site for the cookie every login path (password,
-/// OIDC SSO — change: oidc-login) sets, so they stay byte-for-byte
-/// identical: `HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=43200`
-/// (12 hours, matching [`crate::catalog::Catalog::create_user_session`]'s
-/// TTL). `SameSite=Lax`, not `Strict`, because this cookie is set at the end
-/// of an OIDC redirect chain (IdP -> callback): a `Strict` cookie set during
-/// that cross-site navigation is not reliably sent on the browser's very
-/// next same-origin request.
+/// Build the `Set-Cookie` header value for a freshly issued or renewed
+/// session token. The single construction site for the cookie every login
+/// path (password, OIDC SSO — change: oidc-login) and every renewal (change:
+/// session-renewal) sets, so they stay byte-for-byte identical:
+/// `HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=<SESSION_TTL in seconds>`.
+/// `Max-Age` is derived from [`SESSION_TTL`] rather than a separate literal,
+/// so the browser's copy of the cookie can never silently drift from the
+/// server-side session lifetime it's meant to match. `SameSite=Lax`, not
+/// `Strict`, because this cookie is set at the end of an OIDC redirect chain
+/// (IdP -> callback): a `Strict` cookie set during that cross-site navigation
+/// is not reliably sent on the browser's very next same-origin request.
 pub fn session_cookie_header(token: &str) -> String {
-    format!("{SESSION_COOKIE}={token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=43200")
+    let max_age = SESSION_TTL.num_seconds();
+    format!("{SESSION_COOKIE}={token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age={max_age}")
+}
+
+/// The `Set-Cookie` header to reissue when `Authenticator::authenticate_session`
+/// renewed a session on this request (sliding TTL, change: session-renewal),
+/// or `None` when it didn't. The single decision point `auth_middleware` and
+/// `GET /ui/session` (`current_session`) both call, rather than each
+/// re-deriving "if renewed, build the cookie" on their own.
+pub fn renewed_cookie_header(renewed: bool, token: &str) -> Option<String> {
+    renewed.then(|| session_cookie_header(token))
 }
 
 /// Extract an opaque server-side session token from the session cookie.

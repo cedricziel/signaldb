@@ -64,7 +64,14 @@ the headers, for browsers using the [embedded explore UI](explore-ui.md):
   no memberships is rejected with 403.
 - On requests without an `Authorization` header, the router validates the
   opaque session and resolves `X-Tenant-ID` through the user's memberships.
-  The optional `X-Dataset-ID` selects a dataset in that tenant.
+  The optional `X-Dataset-ID` selects a dataset in that tenant. A session's
+  TTL slides forward: any authenticated request (this path, `GET
+  /ui/session`, or the OTLP/Tempo/Loki/query routes below) made within 6
+  hours of the session's expiry extends it another 12, and the response
+  carries a fresh `Set-Cookie` when that happens. A session only lapses
+  after 12 hours with no authenticated request — capped at 30 days since
+  login, after which it stops renewing and the user must sign in again
+  regardless of activity.
 - `DELETE /ui/session` revokes the server-side session before clearing the
   cookie. Disabling a user immediately invalidates all of their sessions.
 - `GET /ui/session` (cookie only) introspects the current session without a

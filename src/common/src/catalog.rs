@@ -4979,6 +4979,38 @@ impl Catalog {
         })
     }
 
+    /// Slide a session's expiry forward. A no-op (affecting zero rows) if the
+    /// session is already revoked or does not exist; the caller treats a
+    /// failed renewal as non-fatal since the session remains valid until its
+    /// original expiry.
+    pub async fn extend_session(
+        &self,
+        session_id: &str,
+        expires_at: DateTime<Utc>,
+    ) -> Result<(), sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                query(
+                    "UPDATE user_sessions SET expires_at = ? WHERE id = ? AND revoked_at IS NULL",
+                )
+                .bind(expires_at.to_rfc3339())
+                .bind(session_id)
+                .execute(pool)
+                .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query(
+                    "UPDATE user_sessions SET expires_at = $1 WHERE id = $2 AND revoked_at IS NULL",
+                )
+                .bind(expires_at)
+                .bind(session_id)
+                .execute(pool)
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
     /// Count every session row (revoked or not, expired or not) belonging to
     /// a user. Used to assert that a refused login created nothing (change:
     /// oidc-login task 3.4) rather than just that no cookie was returned.
@@ -9136,6 +9168,65 @@ mod user_membership_tests {
         assert!(
             catalog
                 .get_valid_session("unknown-hash")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn extend_session_updates_expiry() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let user = catalog
+            .create_user("extend@example.com", None, Some("hash"), false)
+            .await
+            .unwrap();
+
+        let expires_at = Utc::now() + Duration::hours(1);
+        let session = catalog
+            .create_user_session(&user.id, "token-hash-extend", expires_at)
+            .await
+            .unwrap();
+
+        let new_expiry = Utc::now() + Duration::hours(12);
+        catalog
+            .extend_session(&session.id, new_expiry)
+            .await
+            .unwrap();
+
+        let renewed = catalog
+            .get_valid_session("token-hash-extend")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(renewed.expires_at > expires_at);
+        assert!((renewed.expires_at - new_expiry).num_seconds().abs() < 2);
+    }
+
+    #[tokio::test]
+    async fn extend_session_is_a_no_op_for_a_revoked_session() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let user = catalog
+            .create_user("extend-revoked@example.com", None, Some("hash"), false)
+            .await
+            .unwrap();
+
+        let expires_at = Utc::now() + Duration::hours(1);
+        let session = catalog
+            .create_user_session(&user.id, "token-hash-extend-revoked", expires_at)
+            .await
+            .unwrap();
+        catalog.revoke_session(&session.id).await.unwrap();
+
+        // Must not resurrect a revoked session by extending its expiry.
+        catalog
+            .extend_session(&session.id, Utc::now() + Duration::hours(12))
+            .await
+            .unwrap();
+
+        assert!(
+            catalog
+                .get_valid_session("token-hash-extend-revoked")
                 .await
                 .unwrap()
                 .is_none()

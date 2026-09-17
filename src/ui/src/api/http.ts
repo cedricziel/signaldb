@@ -371,6 +371,14 @@ export function isAuthError(err: unknown): boolean {
   return err instanceof ApiError && err.status === 401;
 }
 
+/** True when the error is an authorization failure: valid credentials, but
+ * refused for this tenant/resource. Unlike a 401, signing in again can't fix
+ * it, so callers that redirect to `/login` on `isAuthError` should not treat
+ * this the same way. */
+export function isForbiddenError(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 403;
+}
+
 // --- generated-client result unwrapping -------------------------------------
 
 /** Result envelope produced by the generated SDK (`RequestResult` with the

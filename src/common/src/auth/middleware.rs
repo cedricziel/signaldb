@@ -4,12 +4,12 @@
 //! authentication headers on HTTP requests.
 
 use super::{
-    AuthError, Authenticator, TenantContext, session_token_from_headers, validate_dataset_id,
-    validate_tenant_id,
+    AuthError, Authenticator, TenantContext, session, session_token_from_headers,
+    validate_dataset_id, validate_tenant_id,
 };
 use axum::{
     extract::Request,
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, header::SET_COOKIE},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -171,6 +171,12 @@ pub async fn auth_middleware(
         }
     };
 
+    // Set only for the UserSession credential kind, so a renewed session's
+    // cookie can be reissued after the handler runs — API key and OAuth
+    // requests never carry a session cookie.
+    let mut session_token: Option<String> = None;
+    let mut session_renewed = false;
+
     // Authenticate using the Authenticator
     let auth_result = match credentials {
         RequestCredentials::ApiKey(api_key) => {
@@ -179,9 +185,14 @@ pub async fn auth_middleware(
                 .await
         }
         RequestCredentials::UserSession(token) => {
-            authenticator
+            let result = authenticator
                 .authenticate_session(&token, &tenant_id, dataset_id.as_deref())
-                .await
+                .await;
+            session_token = Some(token);
+            result.map(|(ctx, renewed)| {
+                session_renewed = renewed;
+                ctx
+            })
         }
         RequestCredentials::OAuthToken(token) => {
             // Tenant and scopes come from the token; audience is bound to the
@@ -229,7 +240,19 @@ pub async fn auth_middleware(
             tenant_context.source
         );
         request.extensions_mut().insert(tenant_context);
-        next.run(request).await
+        let mut response = next.run(request).await;
+        // Sliding TTL (change: session-renewal): the authenticator already
+        // extended the session's expiry in the database when it renewed it;
+        // the browser's copy of the cookie only catches up once we reissue
+        // it here, so the client's copy doesn't drift from a renewal it
+        // never sees.
+        if let Some(token) = session_token
+            && let Some(cookie) = session::renewed_cookie_header(session_renewed, &token)
+            && let Ok(value) = HeaderValue::from_str(&cookie)
+        {
+            response.headers_mut().append(SET_COOKIE, value);
+        }
+        response
     })
     .await
 }
@@ -685,6 +708,130 @@ mod tests {
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Shared setup for the session-renewal tests below: an `acme` tenant
+    /// with one dataset, a viewer user, and a session token expiring at
+    /// `expires_at`. Returns the wired-up app (a single `/test` route behind
+    /// [`auth_middleware`]) and the plaintext cookie token.
+    async fn renewal_test_app(
+        email: &str,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> (axum::Router, String) {
+        use crate::auth::{generate_session_token, hash_session_token};
+        use crate::catalog::MembershipRole;
+        use axum::{Router, middleware, routing::get};
+
+        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        let auth_config = AuthConfig {
+            tenants: vec![TenantConfig {
+                id: "acme".to_string(),
+                slug: "acme".to_string(),
+                name: "Acme Corp".to_string(),
+                default_dataset: Some("production".to_string()),
+                datasets: vec![DatasetConfig {
+                    id: "production".to_string(),
+                    slug: "production".to_string(),
+                    is_default: true,
+                    storage: None,
+                }],
+                api_keys: vec![],
+                schema_config: None,
+                limits: None,
+            }],
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&auth_config).await.unwrap();
+        let user = catalog
+            .create_user(email, None, Some("unused"), false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        let cookie = generate_session_token();
+        catalog
+            .create_user_session(&user.id, &hash_session_token(&cookie), expires_at)
+            .await
+            .unwrap();
+        let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
+
+        async fn test_handler() -> &'static str {
+            "ok"
+        }
+
+        let app = Router::new()
+            .route("/test", get(test_handler))
+            .layer(middleware::from_fn(move |req, next| {
+                auth_middleware(authenticator.clone(), req, next)
+            }));
+
+        (app, cookie)
+    }
+
+    /// A session within the renewal threshold gets its expiry extended
+    /// server-side (change: session-renewal), and the response carries a
+    /// `Set-Cookie` reissuing the same token so the browser's copy matches.
+    #[tokio::test]
+    async fn session_cookie_is_reissued_when_session_is_renewed() {
+        use crate::auth::SESSION_COOKIE;
+        use axum::{
+            body::Body,
+            http::{Request, StatusCode, header::SET_COOKIE},
+        };
+        use chrono::{Duration, Utc};
+        use tower::ServiceExt;
+
+        // Within the renewal threshold (6h): the middleware must renew it.
+        let (app, cookie) =
+            renewal_test_app("renew@example.com", Utc::now() + Duration::hours(1)).await;
+
+        let request = Request::builder()
+            .uri("/test")
+            .header("cookie", format!("{SESSION_COOKIE}={cookie}"))
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let set_cookie = response
+            .headers()
+            .get(SET_COOKIE)
+            .expect("renewed session reissues its cookie")
+            .to_str()
+            .unwrap();
+        assert!(
+            set_cookie.starts_with(&format!("{SESSION_COOKIE}={cookie}")),
+            "{set_cookie}"
+        );
+    }
+
+    /// A freshly created session, far from expiry, is left untouched — no
+    /// `Set-Cookie` header on a request that needed no renewal.
+    #[tokio::test]
+    async fn session_cookie_is_not_reissued_for_a_fresh_session() {
+        use crate::auth::SESSION_COOKIE;
+        use axum::{
+            body::Body,
+            http::{Request, StatusCode, header::SET_COOKIE},
+        };
+        use chrono::{Duration, Utc};
+        use tower::ServiceExt;
+
+        // Far from expiry (12h, the full TTL): no renewal is due.
+        let (app, cookie) =
+            renewal_test_app("fresh@example.com", Utc::now() + Duration::hours(12)).await;
+
+        let request = Request::builder()
+            .uri("/test")
+            .header("cookie", format!("{SESSION_COOKIE}={cookie}"))
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get(SET_COOKIE).is_none());
     }
 
     #[tokio::test]
