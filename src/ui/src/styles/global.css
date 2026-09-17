@@ -640,11 +640,26 @@ select:focus-visible {
   color: var(--dim);
 }
 
-/* ---------- sortable table headers (lib/sortTable.tsx) ---------- */
+/* ---------- data tables (every feature's own <table>) ---------- */
 
-/* The browser default centres headers; every table here wants them left. */
+/* The browser default centres headers, sizes them like the body text and
+   bolds them; every data table here wants them left, quieter than the rows
+   below and set apart by case rather than weight alone. Per-feature widths,
+   numeric alignment and other genuinely feature-specific column rules stay
+   in that feature's own stylesheet. */
 th {
+  padding: 8px 10px;
   text-align: left;
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  border-bottom: 1px solid var(--border);
+}
+
+td {
+  font-size: 12px;
 }
 
 th.num,
@@ -652,6 +667,8 @@ td.num {
   text-align: right;
   font-variant-numeric: tabular-nums;
 }
+
+/* ---------- sortable table headers (lib/sortTable.tsx) ---------- */
 
 .th-sort {
   font: inherit;

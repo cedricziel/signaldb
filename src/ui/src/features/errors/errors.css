@@ -19,16 +19,6 @@
 .errors-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
-}
-
-.errors-table th {
-  padding: 6px 10px;
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--dim);
-  border-bottom: 1px solid var(--border);
 }
 
 .errors-table td {
@@ -128,17 +118,7 @@
 .errors-occurrences {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
   margin-top: 8px;
-}
-
-.errors-occurrences th {
-  padding: 6px 10px;
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--dim);
-  border-bottom: 1px solid var(--border);
 }
 
 .errors-occurrences td {

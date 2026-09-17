@@ -64,17 +64,6 @@
 .ir-topn {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
-}
-
-.ir-rows th,
-.ir-topn th {
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
-  color: var(--dim);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 
 .ir-rows td,
