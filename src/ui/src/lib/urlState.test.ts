@@ -98,8 +98,10 @@ describe("buildSearch", () => {
       live: true,
       group: "POST /checkout",
       groupBy: "resource.host.name",
+      // Not `metricQuery` too: only one of `promql`/`metricQuery` is ever
+      // kept (see the dedicated `mq`-precedence tests below), so combining
+      // both here would test a state the app itself never produces.
       promql: "rate(x[5m])",
-      metricQuery: JSON.stringify({ ref: "a", metric: "up", filters: [] }),
       querySource: "traces" as const,
       queryResult: "series" as const,
       queryFilters: [{ label: "kind", op: "=" as const, value: "server" }],
@@ -118,6 +120,24 @@ describe("buildSearch", () => {
     const search = buildSearch(state);
     expect(search).toContain("mq=");
     expect(parseExploreState(search).metricQuery).toBe(mq);
+  });
+
+  it("keeps only mq when a URL carries both mq and promql, preferring mq", () => {
+    const mq = JSON.stringify({ ref: "a", metric: "up", filters: [] });
+    const state = parseExploreState(`?mq=${encodeURIComponent(mq)}&promql=rate(x[5m])`);
+    expect(state.metricQuery).toBe(mq);
+    expect(state.promql).toBe("");
+  });
+
+  it("serializes only metricQuery when state somehow carries both", () => {
+    const mq = JSON.stringify({ ref: "a", metric: "up", filters: [] });
+    const search = buildSearch({
+      ...DEFAULT_STATE,
+      metricQuery: mq,
+      promql: "rate(x[5m])",
+    });
+    expect(search).toContain("mq=");
+    expect(search).not.toContain("promql=");
   });
 
   it("drops the metrics builder query when switching signals", () => {

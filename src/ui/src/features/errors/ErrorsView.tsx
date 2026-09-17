@@ -73,6 +73,12 @@ function groupSortValue(g: ErrorGroup, key: string): SortValue {
  * waiting for the group list to load and without re-deriving a second
  * encoding just for the URL.
  */
+/** `field` must be a string identity value or its absence, never some other
+ * JSON shape a hand-edited or stale link might carry. */
+function isIdentityField(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
+}
+
 function decodeGroupKey(key: string): ErrorGroup | null {
   if (key === "") return null;
   try {
@@ -81,12 +87,22 @@ function decodeGroupKey(key: string): ErrorGroup | null {
     const [source, exceptionType, exceptionMessage, serviceName, escaped] =
       parsed as unknown[];
     if (source !== "traces" && source !== "logs") return null;
+    if (
+      !isIdentityField(exceptionType) ||
+      !isIdentityField(exceptionMessage) ||
+      !isIdentityField(serviceName)
+    ) {
+      return null;
+    }
+    if (escaped !== null && escaped !== "true" && escaped !== "false") {
+      return null;
+    }
     return {
       source: source as ErrorSource,
-      exceptionType: (exceptionType as string | null) ?? null,
-      exceptionMessage: (exceptionMessage as string | null) ?? null,
-      serviceName: (serviceName as string | null) ?? null,
-      escaped: (escaped as string | null) ?? null,
+      exceptionType,
+      exceptionMessage,
+      serviceName,
+      escaped,
       // Not carried by the key, and not read by anything querying from it.
       count: 0,
       firstNs: "0",
@@ -118,7 +134,7 @@ const ERROR_FACET_FIELD_SET = new Set<string>(ERROR_FACET_FIELDS);
  * hand-edited link naming a field this tab has no facet for) is dropped. */
 function errorFiltersFromState(filters: LabelFilter[]): ErrorFilter[] {
   return filters
-    .filter((f) => ERROR_FACET_FIELD_SET.has(f.label))
+    .filter((f) => f.op === "=" && ERROR_FACET_FIELD_SET.has(f.label))
     .map((f) => ({ field: f.label as ErrorFacetField, value: f.value }));
 }
 

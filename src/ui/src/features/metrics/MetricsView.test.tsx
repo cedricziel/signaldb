@@ -1,4 +1,5 @@
-import { screen } from "@testing-library/react";
+import { render, screen } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
@@ -236,5 +237,105 @@ describe("MetricsView", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent(
       /unknown function foo/,
     );
+  });
+
+  it("resyncs the builder/draft/ranQuery to a ?mq= that changed via Back/Forward", async () => {
+    stubFetchRoutes([
+      {
+        match: /label\/__name__\/values/,
+        body: { status: "success", data: [] },
+      },
+      { match: /\/labels\?/, body: { status: "success", data: [] } },
+    ]);
+    runIrQuery.mockResolvedValue(IR_SERIES);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const stateA: ExploreState = {
+      ...DEFAULT_STATE,
+      signal: "metrics",
+      metricQuery: JSON.stringify({ ref: "a", metric: "metric_one", filters: [] }),
+      promql: "",
+    };
+    const stateB: ExploreState = {
+      ...DEFAULT_STATE,
+      signal: "metrics",
+      metricQuery: JSON.stringify({ ref: "a", metric: "metric_two", filters: [] }),
+      promql: "",
+    };
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <MetricsView state={stateA} update={vi.fn()} />
+      </QueryClientProvider>,
+    );
+    expect(await screen.findByLabelText("Metric")).toHaveValue("metric_one");
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <MetricsView state={stateB} update={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    // A URL-driven change (browser Back/Forward) must resync the builder —
+    // not just the initial-mount seeding — or the view keeps showing/running
+    // the query from before the navigation.
+    expect(await screen.findByLabelText("Metric")).toHaveValue("metric_two");
+  });
+
+  it("resyncs the PromQL draft to a ?promql= that changed via Back/Forward", async () => {
+    stubFetchRoutes([{ match: "query_range", body: MATRIX }]);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const stateA: ExploreState = {
+      ...DEFAULT_STATE,
+      signal: "metrics",
+      promql: "up",
+    };
+    const stateB: ExploreState = {
+      ...DEFAULT_STATE,
+      signal: "metrics",
+      promql: "down",
+    };
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <MetricsView state={stateA} update={vi.fn()} />
+      </QueryClientProvider>,
+    );
+    await screen.findByTestId("metrics-chart");
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <MetricsView state={stateB} update={vi.fn()} />
+      </QueryClientProvider>,
+    );
+    await userEvent.click(screen.getByRole("tab", { name: "PromQL" }));
+    expect(screen.getByLabelText("PromQL query")).toHaveValue("down");
+  });
+
+  it("does not show the empty-builder note once a builder query has actually run", async () => {
+    stubFetchRoutes([
+      {
+        match: /label\/__name__\/values/,
+        body: { status: "success", data: [] },
+      },
+      { match: /\/labels\?/, body: { status: "success", data: [] } },
+    ]);
+    runIrQuery.mockResolvedValue(IR_SERIES);
+    // `?mq=` runs via IR, leaving `state.promql` at "" — the empty-builder
+    // note must key off `ranQuery`, not `promql === ""` alone.
+    renderView({
+      metricQuery: JSON.stringify({
+        ref: "a",
+        metric: "signaldb.wal.entries_processed",
+        filters: [],
+      }),
+      promql: "",
+    });
+
+    await screen.findByTestId("metrics-chart");
+    expect(
+      screen.queryByText(/Build a query above/),
+    ).not.toBeInTheDocument();
   });
 });

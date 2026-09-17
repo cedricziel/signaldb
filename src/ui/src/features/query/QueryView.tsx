@@ -219,16 +219,34 @@ function EnvelopeResult({
   return <RowsTable data={data} topN={view === "table"} />;
 }
 
-/** A column carrying an absolute point in time by its own name. */
-const TIME_COLUMN_RE = /(time|timestamp)$/i;
+/** Column names that carry an absolute point in time in their entirety —
+ * matched exactly, not by suffix, so a name like `runtime` (which merely
+ * ends in the letters "time") never qualifies. */
+const EXACT_TIME_COLUMNS = new Set([
+  "timestamp",
+  "time",
+  "start_time_unix_nano",
+  "observed_timestamp",
+  "end_time_unix_nano",
+]);
 
-/** Epoch-nanosecond timestamps (19 digits) show up even in columns not named
- * `*time`/`*timestamp` — e.g. a raw `start_time_unix_nano` alias — so a value
- * matching the shape is formatted too, not just a name match. */
-const EPOCH_NANOS_RE = /^\d{19}$/;
+/** Column-name suffixes that name a timestamp regardless of the field they're
+ * attached to (`span_start_time_unix_nano`, `log.timestamp`, …). */
+const TIME_COLUMN_SUFFIXES = ["_time_unix_nano", "_timestamp", ".timestamp"];
 
-/** A cell that is nothing but digits — the shape both timestamp checks below
- * require before testing column name or digit count. */
+/** Whether a column's own name declares it a timestamp. A value merely
+ * *shaped* like an epoch-nanosecond integer (19 digits) is deliberately not
+ * enough on its own — an id column can be exactly that shape by coincidence,
+ * and formatting it would make it uncopyable in its real form. */
+function isTimeColumnName(column: string): boolean {
+  return (
+    EXACT_TIME_COLUMNS.has(column) ||
+    TIME_COLUMN_SUFFIXES.some((suffix) => column.endsWith(suffix))
+  );
+}
+
+/** A cell that is nothing but digits — the shape the timestamp check below
+ * requires before it re-parses the value as nanoseconds. */
 const NUMERIC_RE = /^\d+$/;
 
 /** Above this length a copy affordance earns its keep; below it, the value
@@ -236,13 +254,24 @@ const NUMERIC_RE = /^\d+$/;
  * a count, a short string) is more chrome than help. */
 const COPY_THRESHOLD = 40;
 
-/** One rows/topN table cell: an epoch-nanosecond value (by column name or by
- * shape) renders as an absolute timestamp; a long string gets a copy button;
- * anything else renders as plain text. */
-function RowsCell({ column, cell }: { column: string; cell: unknown }) {
+/** One rows/topN table cell: a column the server's own result metadata
+ * declares as `timestamp_ns`, or whose name unambiguously names a timestamp,
+ * renders as an absolute date/time; a long string gets a copy button;
+ * anything else — including a value that merely happens to be
+ * epoch-nanosecond-shaped, e.g. a 19-digit id — renders as plain text. */
+function RowsCell({
+  column,
+  columnType,
+  cell,
+}: {
+  column: string;
+  columnType: string | undefined;
+  cell: unknown;
+}) {
   const value = formatCell(cell);
-  const numeric = NUMERIC_RE.test(value);
-  if (numeric && (TIME_COLUMN_RE.test(column) || EPOCH_NANOS_RE.test(value))) {
+  const isTimestamp =
+    columnType === "timestamp_ns" || isTimeColumnName(column);
+  if (isTimestamp && NUMERIC_RE.test(value)) {
     return <span>{formatTimestamp(nanosToMs(value), 0)}</span>;
   }
   if (value.length > COPY_THRESHOLD) {
@@ -272,7 +301,11 @@ function RowsTable({ data, topN }: { data: QueryIrResponse; topN: boolean }) {
             <tr key={i}>
               {row.map((cell, j) => (
                 <td key={j}>
-                  <RowsCell column={columns[j]?.name ?? ""} cell={cell} />
+                  <RowsCell
+                    column={columns[j]?.name ?? ""}
+                    columnType={columns[j]?.type}
+                    cell={cell}
+                  />
                 </td>
               ))}
             </tr>

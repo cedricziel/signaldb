@@ -219,6 +219,47 @@ describe("QueryView", () => {
     expect(screen.queryByText("1700000000000000000")).not.toBeInTheDocument();
   });
 
+  it("keeps a 19-digit id column verbatim and copyable rather than reading it as an epoch timestamp", async () => {
+    const id = "1234567890123456789";
+    stubApiFetch({
+      result: "rows",
+      window: { start_ns: 0, end_ns: 1 },
+      columns: [{ name: "request_id", type: "string" }],
+      rows: [[id]],
+    });
+    renderView();
+
+    fireEvent.click(screen.getByText("Run"));
+    expect(await screen.findByText(id)).toBeInTheDocument();
+    expect(screen.queryByText(/^\d{4}-\d{2}-\d{2} /)).not.toBeInTheDocument();
+  });
+
+  it("does not treat a column merely ending in the letters 'time' (e.g. runtime) as a timestamp", async () => {
+    stubApiFetch({
+      result: "rows",
+      window: { start_ns: 0, end_ns: 1 },
+      columns: [{ name: "runtime", type: "int64" }],
+      rows: [["42"]],
+    });
+    renderView();
+
+    fireEvent.click(screen.getByText("Run"));
+    expect(await screen.findByText("42")).toBeInTheDocument();
+  });
+
+  it("formats a column the server's own metadata declares as timestamp_ns, even without a *_timestamp name", async () => {
+    stubApiFetch({
+      result: "rows",
+      window: { start_ns: 0, end_ns: 1 },
+      columns: [{ name: "observed_at", type: "timestamp_ns" }],
+      rows: [["1700000000000000000"]],
+    });
+    renderView();
+
+    fireEvent.click(screen.getByText("Run"));
+    expect(await screen.findByText(/^\d{4}-\d{2}-\d{2} /)).toBeInTheDocument();
+  });
+
   it("wraps the rows table in a scrollable container", async () => {
     stubApiFetch({
       result: "rows",

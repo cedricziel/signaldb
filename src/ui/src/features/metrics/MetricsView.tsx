@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { promQueryRange, seriesName } from "../../api/prom";
 import { buildMetricIrDoc, irSeriesToPromSeries } from "../../api/metricsIr";
 import { runIrQuery } from "../../api/queryIr";
@@ -53,6 +53,35 @@ export function MetricsView({ state, update }: Props) {
   // range function or multi-query formula, either of which stays on the
   // PromQL path below.
   const [ranQuery, setRanQuery] = useState<MetricQuery | null>(initial);
+  // The `metricQuery`/`promql` values this component itself last wrote via
+  // `update()` (seeded from the mount-time URL, which counts as already
+  // applied). Distinguishes an external change — a browser Back/Forward
+  // landing on a different `?mq=`/`?promql=` — from this component simply
+  // observing its own write echoed back through `state`; only the former
+  // should resync the builder/draft/ranQuery, or every Run would immediately
+  // stomp on the very query state it just set (e.g. a multi-query formula's
+  // rows, cleared the moment it runs and `metricQuery` goes back to "").
+  const lastWritten = useRef({
+    metricQuery: state.metricQuery,
+    promql: state.promql,
+  });
+
+  useEffect(() => {
+    if (
+      state.metricQuery === lastWritten.current.metricQuery &&
+      state.promql === lastWritten.current.promql
+    ) {
+      return;
+    }
+    lastWritten.current = {
+      metricQuery: state.metricQuery,
+      promql: state.promql,
+    };
+    const reseeded = parseMetricQuery(state.metricQuery);
+    setQueries([reseeded ?? emptyQuery("a")]);
+    setRanQuery(reseeded);
+    setDraft(state.promql);
+  }, [state.metricQuery, state.promql]);
 
   const rangeKey = rangeScopeKey(state);
   // Freeze the resolved window per range selection so metadata pickers don't
@@ -102,15 +131,21 @@ export function MetricsView({ state, update }: Props) {
 
   const runBuilder = () => {
     if (irEligible && soloQuery) {
-      update({ metricQuery: JSON.stringify(soloQuery), promql: "" });
+      const metricQuery = JSON.stringify(soloQuery);
+      lastWritten.current = { metricQuery, promql: "" };
+      update({ metricQuery, promql: "" });
       setRanQuery(soloQuery);
     } else {
-      update({ promql: compiled.trim(), metricQuery: "" });
+      const promql = compiled.trim();
+      lastWritten.current = { metricQuery: "", promql };
+      update({ promql, metricQuery: "" });
       setRanQuery(null);
     }
   };
   const runPromQL = (q: string) => {
-    update({ promql: q.trim(), metricQuery: "" });
+    const promql = q.trim();
+    lastWritten.current = { metricQuery: "", promql };
+    update({ promql, metricQuery: "" });
     setRanQuery(null);
   };
 
@@ -216,7 +251,7 @@ export function MetricsView({ state, update }: Props) {
         </form>
       )}
 
-      {promql === "" && (
+      {promql === "" && ranQuery === null && (
         <div className="view-note">
           Build a query above, or switch to PromQL, then Run to chart metrics.
         </div>

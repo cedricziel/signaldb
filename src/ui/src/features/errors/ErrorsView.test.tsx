@@ -380,6 +380,48 @@ describe("ErrorsView", () => {
     ).toBeInTheDocument();
   });
 
+  it("ignores a facet filter whose op is not equality", async () => {
+    // `?f=serviceName|!=|api` must not become an equality filter on "api" —
+    // errorFiltersFromState has no way to express "not equal", so it must
+    // drop the filter rather than silently mis-narrow the list.
+    fetchErrorGroups.mockResolvedValue({
+      groups: [
+        group({ exceptionType: "std::io::Error", serviceName: "api" }),
+        group({ exceptionType: "ValueError", serviceName: "signaldb-ui" }),
+      ],
+      truncated: false,
+    });
+    renderView({
+      filters: [{ label: "serviceName", op: "!=", value: "api" }],
+    });
+
+    expect(await screen.findByText("std::io::Error")).toBeInTheDocument();
+    expect(await screen.findByText("ValueError")).toBeInTheDocument();
+  });
+
+  it("ignores a ?group= tuple with invalid field shapes", async () => {
+    // A non-string/non-null field (here an object for exceptionType) must
+    // not be coerced into an ErrorGroup — decodeGroupKey should reject it.
+    fetchErrorGroups.mockResolvedValue({ groups: [], truncated: false });
+    renderView({ group: JSON.stringify(["traces", {}, null, null, null]) });
+
+    await screen.findByText(/No exceptions captured/);
+    expect(
+      screen.queryByText(/individual occurrences/),
+    ).not.toBeInTheDocument();
+    expect(fetchErrorOccurrences).not.toHaveBeenCalled();
+  });
+
+  it("ignores a ?group= tuple with an invalid escaped value", async () => {
+    fetchErrorGroups.mockResolvedValue({ groups: [], truncated: false });
+    renderView({
+      group: JSON.stringify(["traces", "E", "m", "svc", "maybe"]),
+    });
+
+    await screen.findByText(/No exceptions captured/);
+    expect(fetchErrorOccurrences).not.toHaveBeenCalled();
+  });
+
   it("the back-to-all-groups control clears the selection", async () => {
     fetchErrorGroups.mockResolvedValue({ groups: [group()], truncated: false });
     fetchErrorOccurrences.mockResolvedValue([occurrence()]);

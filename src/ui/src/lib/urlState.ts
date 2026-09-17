@@ -290,11 +290,16 @@ export function parseExploreState(search: string): ExploreState {
     group: p.get("group") ?? "",
     groupBy: p.get("groupBy") || DEFAULT_GROUP_BY,
     grain: grainFromParam(p.get("grain")),
-    promql: p.get("promql") ?? "",
+    // Only one of `promql`/`metricQuery` is ever kept (see MetricQuery's own
+    // doc comment): a hand-edited or stale link carrying both is not a state
+    // the app itself produces, so `mq` wins and `promql` is dropped rather
+    // than resurrecting a PromQL run alongside a builder one.
+    //
     // Defensive JSON parsing of the encoded MetricQuery happens where it's
     // consumed (features/metrics/MetricsView.tsx's parseMetricQuery) — a
     // malformed value degrades to an unseeded builder there, same as any
     // other malformed param degrading to its default here.
+    promql: p.get("mq") ? "" : (p.get("promql") ?? ""),
     metricQuery: p.get("mq") ?? "",
     querySource: querySourceFromParam(p.get("qsrc")),
     queryResult: queryResultFromParam(p.get("qres")),
@@ -372,8 +377,11 @@ export function buildSearch(state: ExploreState): string {
   if (state.group) p.set("group", state.group);
   if (state.groupBy !== DEFAULT_GROUP_BY) p.set("groupBy", state.groupBy);
   if (state.grain !== DEFAULT_GRAIN) p.set("grain", state.grain);
-  if (state.promql) p.set("promql", state.promql);
+  // Only one of `promql`/`metricQuery` is ever serialized, mirroring
+  // `parseExploreState`'s own precedence — `mq` wins when a caller somehow
+  // holds both.
   if (state.metricQuery) p.set("mq", state.metricQuery);
+  else if (state.promql) p.set("promql", state.promql);
   if (state.querySource !== DEFAULT_STATE.querySource) {
     p.set("qsrc", state.querySource);
   }
