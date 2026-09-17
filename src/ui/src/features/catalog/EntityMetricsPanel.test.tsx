@@ -240,7 +240,7 @@ describe("EntityMetricsPanel", () => {
         entity={host}
         pinned={[
           { field: "service.name", value: "gateway" },
-          { field: "service.namespace", value: null },
+          { field: "host.name", value: null },
         ]}
         range={range}
         rangeKey="1h|acme|prod"

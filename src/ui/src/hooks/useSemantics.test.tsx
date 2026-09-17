@@ -186,9 +186,13 @@ describe("useAttributeSearch", () => {
   });
 
   it("re-requests a previously-empty prefix after invalidateSemantics", async () => {
-    stubFetchRoutes([{ match: "/api/v1/schema/attributes", body: { hits: [] } }]);
+    const firstFetch = stubFetchRoutes([
+      { match: "/api/v1/schema/attributes", body: { hits: [] } },
+    ]);
     const hook = renderHook(() => useAttributeSearch("k8s"));
-    await new Promise((r) => setTimeout(r, 30));
+    // Proves the first request actually ran, rather than just asserting the
+    // (still-default) empty result after an arbitrary wait.
+    await waitFor(() => expect(firstFetch).toHaveBeenCalled());
     expect(hook.result.current).toEqual([]);
 
     // The registry now has a match (e.g. just saved) — without invalidation
