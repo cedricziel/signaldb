@@ -78,7 +78,9 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   profile type, and (optionally) any discovered attribute. Click a frame to
   zoom into its subtree; a breadcrumb (`root › ... › frame`) tracks the path
   and lets you step back out one level at a time, not just all the way to
-  root. Type in the highlight box to light up matching frames — e.g. a crate
+  root. Past four levels deep the middle of the path collapses to a single
+  `…` crumb that stays readable in the toolbar instead of clipping; click it
+  to reveal the whole path. Type in the highlight box to light up matching frames — e.g. a crate
   prefix like `common::` — while everything else dims, with a matched-share
   readout for finding your code in a library-heavy profile. A **Compare**
   toggle renders a baseline window (its own time-range picker) alongside the
@@ -262,7 +264,11 @@ metric a deployment never emits is absent rather than drawn as a flat zero,
 and an entity type the registry associates no metric with shows no metrics
 section at all. Every tile names its instrument and unit, which matters for
 counters: a cumulative counter is charted as the cumulative value it is, not
-as a rate. Where an entity associates more metrics than fit, the panel says
+as a rate. A long metric name ellipsizes rather than pushing the instrument
+and unit off the tile, and both carry a title with the full text. A metric
+whose unit is bytes gets a y-axis in `KB`/`MB`/`GB`, the same scale its
+tooltip uses, rather than a raw count with a `K`/`M` suffix. Where an entity
+associates more metrics than fit, the panel says
 how many it is not showing rather than truncating silently. "View matching traces →"
 on the entity page hands off to the Traces tab, pre-filtered — the general
 escape hatch when the catalog's own view isn't enough.
@@ -474,11 +480,19 @@ per-series values, and total; the latency heatmap shows a cell's time bucket,
 latency range, span count, and share of its column; the error sparkline shows a
 bucket's occurrences; the catalog's dependency bar shows a category's time,
 share, and call count; and the flame graph names a frame with its self/total
-time. The tooltip follows the pointer, flips to stay inside the panel, and
-never gets in the way of the data. Bars, cells, and segments are keyboard
-focusable and announce the same content to assistive technology; the metrics
-chart, drawn on a canvas, is pointer-only. Pointing at an empty region shows
-nothing.
+time. The tooltip follows the pointer and stays inside the panel: it flips
+to the left past the panel's midline, and near the bottom edge it flips above
+the pointer only when the panel has room there, otherwise it pins to the top
+edge rather than painting over whatever sits above the chart. It never gets in
+the way of the data.
+
+Each chart is a single tab stop. Tab lands on the chart's active bar, cell,
+segment, or frame (the last one you pointed at, or the first), and the arrow
+keys move between marks — left/right along a row or level, up/down across
+heatmap rows and flame-graph levels — with `Home`/`End` jumping to the first
+and last. The focused mark shows the same tooltip and announces the same
+content to assistive technology as hovering it; the metrics chart, drawn on a
+canvas, is pointer-only. Pointing at an empty region shows nothing.
 
 Two controls sit beside the time axis. **Bucket width** sets the chart's
 resolution — it defaults to a width chosen for the selected window, and each
@@ -528,7 +542,15 @@ Labels are annotated with their approximate value count (from
 high-cardinality label — one that would explode into thousands of series, like
 a pod or trace id — shows a `⚠` warning before you run it.
 
+The metric and group-by boxes grow with what you type, up to the row's
+width, and the row wraps onto a second line once its parts no longer fit,
+so a long dotted metric name is neither clipped nor cut off without an
+ellipsis; each box also carries its full value as a title.
+
 A live preview shows the compiled PromQL beneath the row; **Run** charts it.
+Series take one of twelve colours in order; past twelve, the colours repeat
+with a different dash pattern, so two series sharing a hue are still
+distinguishable in the chart and the legend.
 For a single query row with no range function and no formula, Run queries the
 [Query IR](querying-ir.md) `metrics` source instead of PromQL — same builder,
 same preview, no visible difference, except a dotted OTel-native metric name
