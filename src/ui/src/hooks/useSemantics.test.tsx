@@ -186,9 +186,13 @@ describe("useAttributeSearch", () => {
   });
 
   it("re-requests a previously-empty prefix after invalidateSemantics", async () => {
-    stubFetchRoutes([{ match: "/api/v1/schema/attributes", body: { hits: [] } }]);
+    const firstFetch = stubFetchRoutes([
+      { match: "/api/v1/schema/attributes", body: { hits: [] } },
+    ]);
     const hook = renderHook(() => useAttributeSearch("k8s"));
-    await new Promise((r) => setTimeout(r, 30));
+    // Proves the first request actually ran, rather than just asserting the
+    // (still-default) empty result after an arbitrary wait.
+    await waitFor(() => expect(firstFetch).toHaveBeenCalled());
     expect(hook.result.current).toEqual([]);
 
     // The registry now has a match (e.g. just saved) — without invalidation
@@ -203,5 +207,44 @@ describe("useAttributeSearch", () => {
 
     await waitFor(() => expect(hook.result.current).toHaveLength(1));
     expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it("does not let a search already in flight resurrect a cache invalidateSemantics just cleared", async () => {
+    // Distinguishable from the correct answer so the assertion can tell
+    // "the stale request's answer landed in the cache" apart from "a fresh,
+    // correct request ran and answered instead".
+    const STALE_HIT = { ...POD_UID, key: "stale.should.not.be.cached" };
+    const jsonResponse = (hits: unknown[]) =>
+      new Response(JSON.stringify({ hits }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      });
+    let resolveFirst!: (value: Response) => void;
+    const firstResponse = new Promise<Response>((resolve) => {
+      resolveFirst = resolve;
+    });
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(() => firstResponse)
+      .mockImplementation(async () => jsonResponse([POD_UID]));
+    installFetch(fetchMock);
+
+    const hook = renderHook(() => useAttributeSearch("k8s"));
+    // Let the debounce fire and the (stalled) first request start.
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+
+    // Invalidate while that request is still in flight.
+    invalidateSemantics("acme");
+
+    // The stale request now lands with its (stale) hit — it must not be
+    // written into the cache the invalidation just cleared. Without the
+    // fix, this also poisons the cache so the re-run below never fires a
+    // fresh request at all.
+    resolveFirst(jsonResponse([STALE_HIT]));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(hook.result.current.map((h) => h.key)).toEqual([POD_UID.key]),
+    );
   });
 });

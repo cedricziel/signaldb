@@ -34,13 +34,16 @@ export function traceIdOf(row: LogRow): string | null {
 }
 
 /** Cheap canonical form of a labels/metadata record for a key — sorted so
- * insertion order never changes the result, joined rather than
- * `JSON.stringify`'d to stay cheap on the typically-small records here. */
+ * insertion order never changes the result. `JSON.stringify`d over the
+ * sorted `[key, value]` tuples rather than joined with plain delimiters: an
+ * unescaped `,`/`=` join collapses distinct records (e.g. `{ a: "b,c=d" }`
+ * and `{ a: "b", c: "d" }`) onto the same string. */
 function canonicalEntries(record: Record<string, string>): string {
-  return Object.keys(record)
-    .sort()
-    .map((k) => `${k}=${record[k]}`)
-    .join(",");
+  return JSON.stringify(
+    Object.keys(record)
+      .sort()
+      .map((k) => [k, record[k]]),
+  );
 }
 
 /**

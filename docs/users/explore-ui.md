@@ -135,7 +135,9 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   back/forward buttons. A metrics builder run is carried as `?mq=` (the
   builder query itself) rather than only as compiled PromQL, so reloading or
   sharing the link restores the builder and keeps a dotted OTel metric name
-  on the Query IR path. The tenant/dataset context rides along as
+  on the Query IR path. When Back or Forward re-seeds the builder from the
+  URL, the formula box is cleared with it, so a formula never refers to
+  query letters that are no longer there. The tenant/dataset context rides along as
   `?tenant=&dataset=`; links that omit it (the user menu, deep links inside
   the schema hub) keep the last context you were in, and the last context is
   also remembered in the browser (cleared on sign-out) so a bookmark or a new

@@ -214,6 +214,14 @@ describe("rowKey", () => {
     });
     expect(rowKey(a)).toBe(rowKey(b));
   });
+
+  it("distinguishes records whose plain `,`/`=` join would collide", () => {
+    // `{ a: "b,c=d" }` and `{ a: "b", c: "d" }` both join to `a=b,c=d` under
+    // a naive `k=v` joiner — an unambiguous encoding must keep them apart.
+    const a = row({ labels: { a: "b,c=d" } });
+    const b = row({ labels: { a: "b", c: "d" } });
+    expect(rowKey(a)).not.toBe(rowKey(b));
+  });
 });
 
 describe("LogList structured metadata", () => {

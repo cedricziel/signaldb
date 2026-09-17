@@ -282,6 +282,51 @@ describe("MetricsView", () => {
     expect(await screen.findByLabelText("Metric")).toHaveValue("metric_two");
   });
 
+  it("clears a stale formula when a ?mq= change re-seeds the builder via Back/Forward", async () => {
+    stubFetchRoutes([
+      {
+        match: /label\/__name__\/values/,
+        body: { status: "success", data: [] },
+      },
+      { match: /\/labels\?/, body: { status: "success", data: [] } },
+    ]);
+    runIrQuery.mockResolvedValue(IR_SERIES);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const stateA: ExploreState = {
+      ...DEFAULT_STATE,
+      signal: "metrics",
+      metricQuery: JSON.stringify({ ref: "a", metric: "metric_one", filters: [] }),
+      promql: "",
+    };
+    const stateB: ExploreState = {
+      ...DEFAULT_STATE,
+      signal: "metrics",
+      metricQuery: JSON.stringify({ ref: "a", metric: "metric_two", filters: [] }),
+      promql: "",
+    };
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <MetricsView state={stateA} update={vi.fn()} />
+      </QueryClientProvider>,
+    );
+    const formulaInput = await screen.findByLabelText("Formula");
+    await userEvent.type(formulaInput, "a - b");
+    expect(formulaInput).toHaveValue("a - b");
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <MetricsView state={stateB} update={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    // A formula referencing a query letter the reseed just dropped must not
+    // survive the navigation — it would silently compile against whatever
+    // letters happen to still exist.
+    expect(await screen.findByLabelText("Formula")).toHaveValue("");
+  });
+
   it("resyncs the PromQL draft to a ?promql= that changed via Back/Forward", async () => {
     stubFetchRoutes([{ match: "query_range", body: MATRIX }]);
     const client = new QueryClient({

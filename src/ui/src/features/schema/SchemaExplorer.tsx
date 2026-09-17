@@ -47,7 +47,12 @@ export function SchemaExplorer() {
     staleTime: 60_000,
   });
 
-  if (whoLoading) return null;
+  // `useWhoami` disables its query while `state.tenant === ""` (no tenant
+  // resolved yet), which settles it as `isLoading: false` with no data —
+  // indistinguishable from "loaded, and not an admin" and, left unguarded,
+  // redirects to the conventions tab before the tenant even resolves. See
+  // `useSchemaSession`'s identical guard.
+  if (state.tenant === "" || whoLoading) return null;
   if (whoamiIsError) return whoamiQueryError("schema", whoamiError);
   if (!who?.user?.is_instance_admin) {
     return <Navigate to={CONVENTIONS} replace />;
