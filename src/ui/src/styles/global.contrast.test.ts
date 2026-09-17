@@ -121,21 +121,29 @@ describe("--on-accent on --accent (solid-background buttons)", () => {
     expect(contrastRatio(onAccent, accent)).toBeGreaterThanOrEqual(4.5);
   });
 
-  // Light theme's --accent (#c25a0a) is dark enough that white text is the
-  // better of the two extremes (black measures lower still), but not quite
-  // dark enough to clear 4.5:1 with any single foreground — white lands
-  // ~4.41:1. That's a pre-existing shortfall (the shipped code already used
-  // literal `#fff` here before --on-accent existed), not a regression this
-  // token introduces, and fixing it for real needs a darker --accent, which
-  // is a broader visual change than this token swap. Guard against making it
-  // worse without asserting a threshold the current palette can't meet.
-  it("light theme: --on-accent on --accent does not regress below ~4.4:1", () => {
+  it("light theme: --on-accent on --accent is >= 4.5:1", () => {
     const cssBlock = themeBlocks.light();
     const onAccent = token(cssBlock, "on-accent");
     const accent = token(cssBlock, "accent");
 
-    expect(contrastRatio(onAccent, accent)).toBeGreaterThanOrEqual(4.4);
+    expect(contrastRatio(onAccent, accent)).toBeGreaterThanOrEqual(4.5);
   });
+});
+
+describe("--accent as a text color meets WCAG AA on --surface", () => {
+  // `--accent` is used as `color` (not just borders/backgrounds) in several
+  // places — links, active-tab labels, icon-adjacent text — so it needs the
+  // same 4.5:1 normal-text floor as any other text color, not just the
+  // solid-button case above.
+  for (const [theme, getBlock] of Object.entries(themeBlocks)) {
+    it(`${theme} theme: --accent on --surface is >= 4.5:1`, () => {
+      const cssBlock = getBlock();
+      const accent = token(cssBlock, "accent");
+      const surface = token(cssBlock, "surface");
+
+      expect(contrastRatio(accent, surface)).toBeGreaterThanOrEqual(4.5);
+    });
+  }
 });
 
 describe("categorical series colors clear 3:1 against --surface", () => {
