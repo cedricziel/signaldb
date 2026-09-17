@@ -1,7 +1,7 @@
 import { screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import {
   outletContextRoute,
@@ -28,6 +28,19 @@ const WHOAMI_VIEWER = {
   memberships: [{ tenant_id: "acme", role: "viewer" }],
 };
 
+/** Reports the search string /logs was reached with, so a redirect that
+ * drops the tenant/dataset (a bare `/logs`) is distinguishable from one that
+ * carries it via `crossSignalSearch`. */
+function LogsPage() {
+  const location = useLocation();
+  return (
+    <div>
+      Logs page
+      <span data-testid="logs-search">{location.search}</span>
+    </div>
+  );
+}
+
 function renderManagementRoute(
   entries: string[] = ["/manage"],
   state: Partial<ExploreState> = {},
@@ -43,7 +56,7 @@ function renderManagementRoute(
       <Routes>
         <Route element={outletContextRoute(contextState)}>
           <Route path="/manage" element={<ManagementRoute />} />
-          <Route path="/logs" element={<div>Logs page</div>} />
+          <Route path="/logs" element={<LogsPage />} />
         </Route>
       </Routes>
     </MemoryRouter>,
@@ -59,6 +72,15 @@ describe("ManagementRoute", () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI_VIEWER }]);
     renderManagementRoute();
     expect(await screen.findByText("Logs page")).toBeInTheDocument();
+  });
+
+  it("carries the tenant/dataset search along the non-admin redirect, like the close button does", async () => {
+    stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI_VIEWER }]);
+    renderManagementRoute();
+    await screen.findByText("Logs page");
+    expect(screen.getByTestId("logs-search")).toHaveTextContent(
+      "tenant=acme",
+    );
   });
 
   it("shows an inline error on a non-401 whoami failure instead of redirecting to /logs", async () => {

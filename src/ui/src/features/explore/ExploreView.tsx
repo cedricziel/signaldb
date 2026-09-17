@@ -43,6 +43,13 @@ export function ExploreView({ state, update }: Props) {
     : liveUnsupportedRange
       ? "Live tail needs a relative time range"
       : undefined;
+  // Views read `state.live` straight from what they're handed to decide
+  // whether to poll; when Live isn't actually available (wrong signal or an
+  // absolute range) that must read false there too, or a view can keep
+  // polling a fixed window after the toggle itself goes disabled.
+  const viewState: ExploreState = liveDisabled
+    ? { ...state, live: false }
+    : state;
   return (
     <div className="explore">
       <div className="explore-controls">
@@ -83,23 +90,25 @@ export function ExploreView({ state, update }: Props) {
       </div>
 
       {state.signal === "catalog" && (
-        <CatalogView state={state} update={update} />
+        <CatalogView state={viewState} update={update} />
       )}
-      {state.signal === "logs" && <LogsView state={state} update={update} />}
+      {state.signal === "logs" && (
+        <LogsView state={viewState} update={update} />
+      )}
       {state.signal === "traces" && (
-        <TracesView state={state} update={update} />
+        <TracesView state={viewState} update={update} />
       )}
       {state.signal === "metrics" && (
-        <MetricsView state={state} update={update} />
+        <MetricsView state={viewState} update={update} />
       )}
       {state.signal === "profiles" && (
-        <ProfilesView state={state} update={update} />
+        <ProfilesView state={viewState} update={update} />
       )}
       {state.signal === "errors" && (
-        <ErrorsView state={state} update={update} />
+        <ErrorsView state={viewState} update={update} />
       )}
       {state.signal === "query" && (
-        <QueryView state={state} update={update} />
+        <QueryView state={viewState} update={update} />
       )}
     </div>
   );

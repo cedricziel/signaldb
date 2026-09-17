@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { Fragment, useId, useMemo, useRef, useState } from "react";
-import { useLocation, useNavigate } from "react-router";
+import { useNavigate } from "react-router";
 import {
   tempoSearchTags,
   type ProfileSummaryView,
@@ -58,6 +58,7 @@ import {
   resolveStep,
   stepOptionsForRange,
   type ResolvedRange,
+  type TimeRange,
 } from "../../lib/time";
 import {
   BUILTIN_DIMENSIONS,
@@ -347,7 +348,7 @@ function TraceSearch({ state, update }: Props) {
               dims={dims}
               filters={filters}
               traceql={traceql}
-              range={resolvedForStep}
+              timeRange={state.range}
               rangeKey={rangeKey}
               grain={state.grain}
               rangeSeconds={rangeSeconds(state)}
@@ -523,7 +524,7 @@ function GroupList({
   dims,
   filters,
   traceql,
-  range,
+  timeRange,
   rangeKey,
   grain,
   rangeSeconds,
@@ -533,7 +534,7 @@ function GroupList({
   dims: string[];
   filters: TraceFilter[];
   traceql: string;
-  range: ResolvedRange;
+  timeRange: TimeRange;
   rangeKey: string;
   grain: GroupGrain;
   rangeSeconds: number;
@@ -557,8 +558,18 @@ function GroupList({
       sort.key,
       sort.dir,
     ],
+    // Resolved fresh on every fetch (as the volume chart does), not hoisted
+    // from a render captured before this call — a live refetch of a relative
+    // range must slide the window forward with it, not repeat the exact same
+    // one every 15s.
     queryFn: () =>
-      fetchTraceGroups(dims, range, filters, grain, sort as GroupSort),
+      fetchTraceGroups(
+        dims,
+        resolveRange(timeRange, Date.now()),
+        filters,
+        grain,
+        sort as GroupSort,
+      ),
     refetchInterval,
   });
 
@@ -571,7 +582,8 @@ function GroupList({
   const suspect = result.data ? looksUnresolved(result.data.groups) : false;
   const windowTotal = useQuery({
     queryKey: ["trace-window-total", rangeKey, grain, traceql],
-    queryFn: () => fetchWindowTotal(range, filters, grain),
+    queryFn: () =>
+      fetchWindowTotal(resolveRange(timeRange, Date.now()), filters, grain),
     enabled: suspect,
     refetchInterval,
   });
@@ -734,7 +746,6 @@ function GroupDetail({
   update: UpdateFn;
 }) {
   const rangeKey = rangeScopeKey(state);
-  const range = resolveRange(state.range, Date.now());
   // Same default-kind read as the group table (see TraceSearch): the state
   // may name no kind filter, in which case the default remote-boundary
   // kinds apply. Both the key and the drill-in members query must agree
@@ -757,11 +768,14 @@ function GroupDetail({
       traceql,
       state.limit,
     ],
+    // Resolved fresh on every fetch, not once per render — a live refetch of
+    // a relative range must slide the window forward with it (see GroupList
+    // above for the same fix on the group table's own queries).
     queryFn: () =>
       fetchTraceGroupMembers(
         dims,
         values,
-        range,
+        resolveRange(state.range, Date.now()),
         filters,
         state.grain,
         state.limit,
@@ -811,13 +825,12 @@ function TraceDetail({ state, update }: Props) {
   const pointer = useVizPointer(bodyRef);
   const [hoveredSpanId, setHoveredSpanId] = useState<string | null>(null);
   const tipId = useId();
-  const location = useLocation();
   const navigate = useNavigate();
   // A trace opened by push (from the search list, a group, a log row, …)
   // leaves in-app history behind it; stepping out with Back rather than a
   // fresh `update({ trace: "" })` returns to wherever it was opened from
   // instead of always landing on the bare /traces list.
-  const backToTraces = () => goBackOr(navigate, location, () => update({ trace: "" }));
+  const backToTraces = () => goBackOr(navigate, () => update({ trace: "" }));
   const clearHover = () => {
     setHoveredSpanId(null);
     pointer.clear();
@@ -941,18 +954,23 @@ function TraceDetail({ state, update }: Props) {
         </div>
       )}
       <div className="trace-body viz-host" ref={bodyRef}>
+        {/* A labelled group of native buttons, not a listbox: a proper
+            listbox owes its `option`s a roving-focus keyboard pattern
+            (arrow-key navigation, one tab stop) that this doesn't implement
+            yet — that lands in a later pass. `aria-pressed` states each
+            span's selection without asserting a pattern the markup doesn't
+            back up. */}
         <div
           className="waterfall"
-          role="listbox"
+          role="group"
           aria-label="Spans"
           onPointerLeave={clearHover}
         >
           {waterfall.rows.map((row) => (
             <button
               key={row.span.spanId}
-              role="option"
               className="span-row"
-              aria-selected={selectedRow?.span.spanId === row.span.spanId}
+              aria-pressed={selectedRow?.span.spanId === row.span.spanId}
               aria-describedby={
                 hoveredSpanId === row.span.spanId ? tipId : undefined
               }

@@ -201,7 +201,11 @@ export function useAttributeSearch(prefix: string, limit = 20): AttributeHit[] {
         searchInflight.delete(cacheKey);
       }
     };
-  }, [cacheKey, trimmed, limit]);
+    // `seen` re-runs this after `invalidateSemantics` drops a cached prefix
+    // so it re-requests without needing the prefix itself to change; `if
+    // (!trimmed || searchCache.has(cacheKey) || ...)` above stays the no-op
+    // guard for a prefix that's still cached or in flight.
+  }, [cacheKey, trimmed, limit, seen]);
 
   return useMemo(
     () => (trimmed ? (searchCache.get(cacheKey) ?? NO_HITS) : NO_HITS),

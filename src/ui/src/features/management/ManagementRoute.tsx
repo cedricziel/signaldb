@@ -1,4 +1,4 @@
-import { Navigate, useLocation, useNavigate } from "react-router";
+import { Navigate, useNavigate } from "react-router";
 import { whoamiQueryError } from "../../components/QueryError";
 import { useOutletState } from "../../lib/outletState";
 import { goBackOr } from "../../lib/router";
@@ -16,7 +16,6 @@ import { ManagementPanel } from "./ManagementPanel";
  */
 export function ManagementRoute() {
   const navigate = useNavigate();
-  const location = useLocation();
   const { state, update } = useOutletState();
   const {
     data: who,
@@ -30,14 +29,14 @@ export function ManagementRoute() {
   if (isError) return whoamiQueryError("your account", error);
 
   if (!who || !canManage) {
-    return <Navigate to="/logs" replace />;
+    return <Navigate to={`/logs${crossSignalSearch(state)}`} replace />;
   }
 
   return (
     <ManagementPanel
       who={who}
       onClose={() =>
-        goBackOr(navigate, location, () =>
+        goBackOr(navigate, () =>
           navigate(`/logs${crossSignalSearch(state)}`, { replace: true }),
         )
       }

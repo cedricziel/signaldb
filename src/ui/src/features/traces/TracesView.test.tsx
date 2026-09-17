@@ -723,6 +723,95 @@ describe("TracesView unresolvable-dimension guard (#1070)", () => {
   });
 });
 
+describe("TracesView live refetch resolves a fresh window", () => {
+  beforeEach(() => {
+    stubFetchRoutes([]);
+  });
+
+  /** Renders with an isolated `QueryClient` (rather than `renderWithClient`)
+   * so a test can force a refetch directly via `client.refetchQueries` —
+   * exactly what a live-tail interval does — without waiting on real timers. */
+  function renderWithOwnClient(state: Partial<ExploreState> = {}) {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter>
+          <TracesView
+            state={{ ...DEFAULT_STATE, signal: "traces", live: true, ...state }}
+            update={vi.fn()}
+          />
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    return client;
+  }
+
+  it("re-resolves the group list's window on each refetch instead of reusing the window captured at render", async () => {
+    const client = renderWithOwnClient();
+    await waitFor(() => expect(fetchTraceGroups).toHaveBeenCalled());
+    const [, firstRange] = fetchTraceGroups.mock.calls[0]!;
+
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5 * 60_000);
+    await client.refetchQueries({ queryKey: ["trace-groups"] });
+
+    await waitFor(() =>
+      expect(fetchTraceGroups.mock.calls.length).toBeGreaterThan(1),
+    );
+    const [, secondRange] = fetchTraceGroups.mock.calls.at(-1)!;
+    // A tighter bound than "not equal": natural re-renders can jitter the
+    // resolved window by a few ms on their own, so the assertion checks the
+    // shift tracks the deliberate 5-minute jump in `Date.now()`, not that.
+    expect(secondRange.toMs - firstRange.toMs).toBeGreaterThan(200_000);
+  });
+
+  it("re-resolves the unresolved-window total's window on each refetch", async () => {
+    fetchTraceGroups.mockResolvedValue({
+      groups: [group([null], 1000, 0, 1, 1, "1")],
+      truncated: false,
+    });
+    fetchWindowTotal.mockResolvedValue(1000);
+    const client = renderWithOwnClient();
+    await waitFor(() => expect(fetchWindowTotal).toHaveBeenCalled());
+    const [firstRange] = fetchWindowTotal.mock.calls[0]!;
+
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5 * 60_000);
+    await client.refetchQueries({ queryKey: ["trace-window-total"] });
+
+    await waitFor(() =>
+      expect(fetchWindowTotal.mock.calls.length).toBeGreaterThan(1),
+    );
+    const [secondRange] = fetchWindowTotal.mock.calls.at(-1)!;
+    // A tighter bound than "not equal": natural re-renders can jitter the
+    // resolved window by a few ms on their own, so the assertion checks the
+    // shift tracks the deliberate 5-minute jump in `Date.now()`, not that.
+    expect(secondRange.toMs - firstRange.toMs).toBeGreaterThan(200_000);
+  });
+
+  it("re-resolves a group's member list window on each refetch", async () => {
+    fetchTraceGroupMembers.mockResolvedValue([]);
+    const client = renderWithOwnClient({
+      groupBy: "http.route",
+      group: "GET /health",
+    });
+    await waitFor(() => expect(fetchTraceGroupMembers).toHaveBeenCalled());
+    const [, , firstRange] = fetchTraceGroupMembers.mock.calls[0]!;
+
+    vi.spyOn(Date, "now").mockReturnValue(Date.now() + 5 * 60_000);
+    await client.refetchQueries({ queryKey: ["trace-group-members"] });
+
+    await waitFor(() =>
+      expect(fetchTraceGroupMembers.mock.calls.length).toBeGreaterThan(1),
+    );
+    const [, , secondRange] = fetchTraceGroupMembers.mock.calls.at(-1)!;
+    // A tighter bound than "not equal": natural re-renders can jitter the
+    // resolved window by a few ms on their own, so the assertion checks the
+    // shift tracks the deliberate 5-minute jump in `Date.now()`, not that.
+    expect(secondRange.toMs - firstRange.toMs).toBeGreaterThan(200_000);
+  });
+});
+
 describe("TracesView group detail", () => {
   it("lists the group's members, newest first", async () => {
     fetchTraceGroupMembers.mockResolvedValue([
@@ -908,8 +997,8 @@ describe("TracesView detail", () => {
     stubFetchRoutes(traceRoutes(TRACE_BODY));
     renderView({ trace: "t1cafe" });
     const spans = await within(
-      await screen.findByRole("listbox", { name: "Spans" }),
-    ).findAllByRole("option");
+      await screen.findByRole("group", { name: "Spans" }),
+    ).findAllByRole("button");
     expect(spans).toHaveLength(2);
     // Error span is preselected, so its attributes show in the detail panel.
     expect(screen.getByText("payment.provider")).toBeInTheDocument();
@@ -920,7 +1009,7 @@ describe("TracesView detail", () => {
   it("opens and closes the mobile span-detail drawer", async () => {
     stubFetchRoutes(traceRoutes(TRACE_BODY));
     renderView({ trace: "t1cafe" });
-    await screen.findByRole("listbox", { name: "Spans" });
+    await screen.findByRole("group", { name: "Spans" });
 
     const toggleBtn = screen.getByRole("button", { name: "Details" });
     expect(toggleBtn).toHaveAttribute("aria-expanded", "false");
@@ -941,7 +1030,7 @@ describe("TracesView detail", () => {
       traceRoutes(TRACE_BODY, { root: "SERVER", charge: "CLIENT" }),
     );
     renderView({ trace: "t1cafe" });
-    await screen.findByRole("listbox", { name: "Spans" });
+    await screen.findByRole("group", { name: "Spans" });
 
     const legend = await screen.findByLabelText("Span kind legend");
     expect(within(legend).getByText("CLIENT")).toBeInTheDocument();
@@ -988,8 +1077,8 @@ describe("TracesView detail", () => {
     ]);
     renderView({ trace: "t1cafe" });
     const spans = await within(
-      await screen.findByRole("listbox", { name: "Spans" }),
-    ).findAllByRole("option");
+      await screen.findByRole("group", { name: "Spans" }),
+    ).findAllByRole("button");
     // Wait for the kinds enrichment to land (legend appears with it).
     await screen.findByLabelText("Span kind legend");
 
@@ -1022,7 +1111,7 @@ describe("TracesView detail", () => {
     expect(rootRows[1]).toHaveClass("viz-tip-muted");
     expect(rootRows[2]).toHaveTextContent("version–");
 
-    fireEvent.pointerLeave(screen.getByRole("listbox", { name: "Spans" }));
+    fireEvent.pointerLeave(screen.getByRole("group", { name: "Spans" }));
     expect(screen.queryByRole("tooltip")).toBeNull();
   });
 
@@ -1103,9 +1192,11 @@ describe("TracesView detail", () => {
   it("selects a span on click and shows its details", async () => {
     stubFetchRoutes(traceRoutes(TRACE_BODY));
     renderView({ trace: "t1cafe" });
-    const rows = await screen.findAllByRole("option");
+    const rows = await within(
+      await screen.findByRole("group", { name: "Spans" }),
+    ).findAllByRole("button");
     await userEvent.click(rows[0]!);
-    expect(rows[0]).toHaveAttribute("aria-selected", "true");
+    expect(rows[0]).toHaveAttribute("aria-pressed", "true");
     expect(
       screen.getByRole("heading", { name: "POST /api/checkout", level: 4 }),
     ).toBeInTheDocument();
@@ -1450,29 +1541,35 @@ describe("TracesView detail", () => {
   it("steps back through in-app history instead of always landing on the bare list", async () => {
     stubFetchRoutes(traceRoutes(TRACE_BODY));
     const update = vi.fn();
-    // Two entries so the current one isn't the router's initial "default"
-    // entry — the shape a trace opened by push (from a log row, a group,
-    // pasted-id search, ...) leaves behind.
-    renderWithClient(
-      <MemoryRouter
-        initialEntries={["/traces", "/traces/t1cafe"]}
-        initialIndex={1}
-      >
-        <TracesView
-          state={{ ...DEFAULT_STATE, signal: "traces", trace: "t1cafe" }}
-          update={update}
-        />
-      </MemoryRouter>,
-    );
-    await userEvent.click(
-      await screen.findByRole("button", { name: "← traces" }),
-    );
-    // Went back in history rather than issuing a fresh state patch.
-    expect(update).not.toHaveBeenCalledWith(
-      { trace: "" },
-      expect.anything(),
-    );
-    expect(update).not.toHaveBeenCalledWith({ trace: "" });
+    // `goBackOr` reads `window.history.state.idx` (a real browser-history
+    // concern — `MemoryRouter` never touches it), so the shape a trace
+    // opened by push leaves behind is simulated here directly: idx 1, one
+    // in-app entry behind the current one.
+    window.history.replaceState({ idx: 1 }, "");
+    try {
+      renderWithClient(
+        <MemoryRouter
+          initialEntries={["/traces", "/traces/t1cafe"]}
+          initialIndex={1}
+        >
+          <TracesView
+            state={{ ...DEFAULT_STATE, signal: "traces", trace: "t1cafe" }}
+            update={update}
+          />
+        </MemoryRouter>,
+      );
+      await userEvent.click(
+        await screen.findByRole("button", { name: "← traces" }),
+      );
+      // Went back in history rather than issuing a fresh state patch.
+      expect(update).not.toHaveBeenCalledWith(
+        { trace: "" },
+        expect.anything(),
+      );
+      expect(update).not.toHaveBeenCalledWith({ trace: "" });
+    } finally {
+      window.history.replaceState(null, "");
+    }
   });
 
   it("includes the time range in the trace-detail cache key so widening it refetches", async () => {
