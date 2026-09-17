@@ -124,8 +124,9 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   entry: browser Back returns to the list you came from with its filters
   intact, and the waterfall's "← traces" control steps back the same way
   (to the log list when the trace was opened from a log row).
-- **Live** — the Live toggle tails Logs, Traces (groups, volume chart, and a
-  group's trace list), Metrics, and single-window Profiles. It is disabled,
+- **Live** — the Live toggle tails Logs, Traces (groups, volume chart, a
+  group's trace list, and the facet sidebar's value counts), Metrics, and
+  single-window Profiles. It is disabled,
   with a tooltip saying why, on Catalog, Errors, and Query, and whenever the
   time range is absolute — a fixed window has nothing to tail.
 - Every view is a URL: each signal has its own path (`/catalog`, `/logs`,
@@ -273,7 +274,11 @@ tooltip uses, rather than a raw count with a `K`/`M` suffix. Where an entity
 associates more metrics than fit, the panel says
 how many it is not showing rather than truncating silently. "View matching traces →"
 on the entity page hands off to the Traces tab, pre-filtered — the general
-escape hatch when the catalog's own view isn't enough.
+escape hatch when the catalog's own view isn't enough. An identity value the
+catalog shows as `(not set)` becomes a filter for spans that carry no such
+attribute at all (a `(not set)` chip on the Traces tab, `field|absent` in the
+URL) rather than being dropped, so the handoff lists the same traces the
+entity page counted instead of every trace in the window.
 
 "Services" is scoped to server-kind spans specifically: a service's own
 resource attributes appear on every span it emits, including calls it makes
@@ -305,7 +310,9 @@ diff-coded one.
 Opening a profile from a trace span's "Profile: `<sample type>` →" button
 renders that one profile's actual payload — matched by its exact stored ID,
 not re-aggregated from a service/type/time filter — with a "← profiles"
-button back to the normal filtered view.
+button back to the normal filtered view. The link carries the profile's
+sample unit (`punit` in the URL), so the flame graph is labelled in that
+unit straight away instead of first looking it up in the profile-type list.
 
 ### Reading a noisy profile
 

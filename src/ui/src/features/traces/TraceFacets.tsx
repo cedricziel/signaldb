@@ -29,6 +29,12 @@ interface Props {
   filters: TraceFilter[];
   onAddFilter: (filter: TraceFilter) => void;
   onRemoveFilter: (filter: TraceFilter) => void;
+  /** TanStack Query's `refetchInterval` (see `lib/live.ts`'s
+   * `liveRefetchInterval`) for every facet's value-count query — so the
+   * sidebar keeps pace with the group list, volume chart, and member list
+   * it sits beside in live mode instead of freezing at the values seen when
+   * the tab loaded. */
+  refetchInterval?: number | false;
 }
 
 /**
@@ -44,6 +50,7 @@ export function TraceFacets({
   filters,
   onAddFilter,
   onRemoveFilter,
+  refetchInterval = false,
 }: Props) {
   // Facets with a filter set sit at the top and start expanded; the user can
   // still collapse one (`collapsed`) or expand an inactive one (`opened`).
@@ -117,6 +124,7 @@ export function TraceFacets({
                   filters={filters}
                   onAddFilter={onAddFilter}
                   onRemoveFilter={onRemoveFilter}
+                  refetchInterval={refetchInterval}
                 />
               )}
             </div>
@@ -134,6 +142,7 @@ function FacetValues({
   filters,
   onAddFilter,
   onRemoveFilter,
+  refetchInterval,
 }: {
   facet: FacetField;
   range: ResolvedRange;
@@ -141,6 +150,7 @@ function FacetValues({
   filters: TraceFilter[];
   onAddFilter: (filter: TraceFilter) => void;
   onRemoveFilter: (filter: TraceFilter) => void;
+  refetchInterval: number | false;
 }) {
   // Other facets' filters narrow the counts; this facet's own do not, so its
   // alternatives stay visible and switchable.
@@ -154,6 +164,7 @@ function FacetValues({
     ],
     queryFn: () => fetchFacet(facet.irField, range, narrowing),
     staleTime: 30_000,
+    refetchInterval,
   });
 
   const isActive = (v: FacetValue) =>

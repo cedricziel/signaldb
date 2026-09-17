@@ -1488,7 +1488,12 @@ describe("TracesView detail", () => {
       await screen.findByRole("button", { name: "Profile: cpu →" }),
     );
     expect(update).toHaveBeenCalledWith(
-      { signal: "profiles", trace: "", profileId: "prof-1" },
+      {
+        signal: "profiles",
+        trace: "",
+        profileId: "prof-1",
+        profileUnit: "nanoseconds",
+      },
       { push: true },
     );
   });
@@ -1904,6 +1909,22 @@ describe("TracesView facet filtering", () => {
     const chip = await screen.findByRole("button", {
       name: "Remove filter service.name = gateway",
     });
+    await userEvent.click(chip);
+    expect(update).toHaveBeenCalledWith({
+      traceFilters: DEFAULT_KIND_FILTERS,
+      group: "",
+    });
+  });
+
+  it("labels an absent-value filter's chip \"(not set)\", not a blank value", async () => {
+    stubFetchRoutes(routes);
+    const update = renderView({
+      traceFilters: [{ field: "host.name", value: "", op: "absent" }],
+    });
+    const chip = await screen.findByRole("button", {
+      name: "Remove filter host.name = (not set)",
+    });
+    expect(chip).toHaveTextContent("(not set)");
     await userEvent.click(chip);
     expect(update).toHaveBeenCalledWith({
       traceFilters: DEFAULT_KIND_FILTERS,

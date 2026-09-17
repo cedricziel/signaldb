@@ -279,18 +279,24 @@ function TraceSearch({ state, update }: Props) {
       </div>
       {chips.length > 0 && (
         <div className="filter-chips" aria-label="Active filters">
-          {chips.map((f) => (
-            <button
-              className="filter-chip"
-              key={`${f.field}|${f.value}`}
-              aria-label={`Remove filter ${f.field} = ${f.value}`}
-              onClick={() => removeFilter(f)}
-            >
-              <span className="filter-chip-k">{f.field}</span>
-              <span className="filter-chip-v">{f.value}</span>
-              <span className="filter-chip-x">×</span>
-            </button>
-          ))}
+          {chips.map((f) => {
+            // An absent-value filter (see CatalogView.tsx's drillFilters)
+            // has no value to show — "(not set)" says what it actually
+            // means, the same label the group table uses for the same case.
+            const display = f.op === "absent" ? NOT_SET : f.value;
+            return (
+              <button
+                className="filter-chip"
+                key={`${f.field}|${f.value}`}
+                aria-label={`Remove filter ${f.field} = ${display}`}
+                onClick={() => removeFilter(f)}
+              >
+                <span className="filter-chip-k">{f.field}</span>
+                <span className="filter-chip-v">{display}</span>
+                <span className="filter-chip-x">×</span>
+              </button>
+            );
+          })}
         </div>
       )}
       <MobileFiltersToggle
@@ -309,6 +315,7 @@ function TraceSearch({ state, update }: Props) {
             filters={filters}
             onAddFilter={addFilter}
             onRemoveFilter={removeFilter}
+            refetchInterval={refetchInterval}
           />
         </MobileSidebarDrawer>
         <div className="traces-main">
@@ -1126,7 +1133,12 @@ function SpanDetail({
           className="act"
           onClick={() =>
             update(
-              { signal: "profiles", trace: "", profileId: p.profileId },
+              {
+                signal: "profiles",
+                trace: "",
+                profileId: p.profileId,
+                profileUnit: p.sampleUnit,
+              },
               { push: true },
             )
           }

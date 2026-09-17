@@ -526,6 +526,35 @@ describe("ProfilesView", () => {
     );
   });
 
+  it("carries the unit passed directly (from a trace's linked-profile action) into a by-id profile's tooltip", async () => {
+    // No /pyroscope/profile-types stub: TracesView's link carries the unit
+    // straight from the trace's ProfileSummaryView, which has no type id for
+    // a `profileType` lookup to resolve — the direct unit must be enough on
+    // its own, with no fallback fetch.
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/query", body: FLAMEGRAPH },
+    ]);
+
+    renderWithClient(
+      <ProfilesView
+        state={state({ profileId: "abc123", profileUnit: "nanoseconds" })}
+        update={vi.fn()}
+      />,
+    );
+
+    const work = await screen.findByRole("button", { name: "work" });
+    fireEvent.pointerMove(work, { clientX: 10, clientY: 10 });
+    const tooltip = screen.getByRole("tooltip");
+    expect(tooltip).toHaveTextContent("80ns");
+    expect(
+      fetchMock.mock.calls.some(([input]) =>
+        String(input instanceof Request ? input.url : input).includes(
+          "/pyroscope/profile-types",
+        ),
+      ),
+    ).toBe(false);
+  });
+
   it("shows a not-found message for an unknown profile id", async () => {
     stubFetchRoutes([
       {
