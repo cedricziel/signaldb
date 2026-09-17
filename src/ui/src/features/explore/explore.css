@@ -33,6 +33,25 @@
   display: none;
 }
 
+@media (max-width: 600px) {
+  /* Below mobile width the tabs and the range/Live controls no longer fit on
+     one row even with the tab strip scrolling — give the tabs their own row
+     above the rest instead of letting them get squeezed off-screen. */
+  .explore-controls {
+    flex-wrap: wrap;
+    padding-top: 6px;
+  }
+
+  .signal-tabs {
+    flex: 1 1 100%;
+    order: -1;
+    /* Seven tabs still don't fit one 390px row: wrap onto a second row so
+       every signal stays visible instead of hiding behind a scroll edge. */
+    flex-wrap: wrap;
+    overflow-x: visible;
+  }
+}
+
 .sigtab {
   flex: none;
   padding: 9px 13px 7px;
@@ -101,11 +120,6 @@
   .livebtn .live-pip {
     animation: none !important;
   }
-}
-
-.view-placeholder {
-  color: var(--dim);
-  padding: 24px;
 }
 
 .visually-hidden {
@@ -184,6 +198,12 @@
   color: var(--err);
 }
 
+/* `.chip`'s `overflow: hidden` (its rounded corners) otherwise clips the
+   default outline's outer half. */
+.chip-x:focus-visible {
+  outline-offset: -2px;
+}
+
 /* Active-filter pills (traces, errors): the whole chip is the remove
    button, unlike the segmented builder .chip above whose × is its own
    control. Shared here because both views render the same markup. */
@@ -259,6 +279,32 @@
   border: 1px solid var(--border);
   border-radius: 5px;
   padding: 3px 9px;
+}
+
+@media (max-width: 600px) {
+  /* The label/operator/value inputs plus Add/Cancel otherwise run off the
+     right edge of the page at this width instead of wrapping. */
+  .chip-form {
+    flex-wrap: wrap;
+  }
+
+  .chip-form input,
+  .chip-form select {
+    flex: 1 1 120px;
+    max-width: none;
+  }
+
+  /* The label field is AttributeKeyInput's `.chip-label` wrapper, not a bare
+     `<input>` — it's the flex item .chip-form actually lays out, so the grow
+     rule above has to target it instead for the label field to share this
+     wrapping. */
+  .chip-form .chip-label {
+    flex: 1 1 120px;
+  }
+
+  .chip-form .chip-label input {
+    width: 100%;
+  }
 }
 
 .search-form {
@@ -374,6 +420,15 @@
   display: none;
 }
 
+/* `.mobile-sidebar-drawer`'s own `display: contents` above promotes this
+   button into whatever grid/flex the drawer sits in once real layout rules
+   (below) only apply under 900px — without a default here, a drawer left
+   open across a resize past that breakpoint leaves the button as a stray
+   grid item instead of disappearing with the rest of the drawer chrome. */
+.mobile-sidebar-close {
+  display: none;
+}
+
 @media (max-width: 900px) {
   .mobile-filters-toggle {
     display: inline-flex;
@@ -438,6 +493,7 @@
   }
 
   .mobile-sidebar-close {
+    display: block;
     flex: none;
     margin: 8px 10px 0 auto;
     font-size: 12px;
@@ -663,7 +719,7 @@
 }
 
 .logrow-ts {
-  color: var(--faint);
+  color: var(--dim);
   font-variant-numeric: tabular-nums;
   flex: 0 0 auto;
 }
@@ -782,14 +838,26 @@ span.level-debug {
   overflow-wrap: anywhere;
 }
 
+/* `opacity`, not `visibility: hidden` — the latter also drops the buttons
+   from keyboard tab order and defeats a `:focus-within` reveal, so a
+   keyboard/touch user could never reach them (see `:focus-within` below and
+   the <=900px override, which keeps them reachable without a hover at
+   all). */
 .attr-actions {
-  visibility: hidden;
+  opacity: 0;
   display: inline-flex;
   gap: 6px;
 }
 
-.attr-row:hover .attr-actions {
-  visibility: visible;
+.attr-row:hover .attr-actions,
+.attr-row:focus-within .attr-actions {
+  opacity: 1;
+}
+
+@media (max-width: 900px) {
+  .attr-actions {
+    opacity: 1;
+  }
 }
 
 .attr-actions button {
@@ -833,7 +901,7 @@ span.level-debug {
   font-size: 9.5px;
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
-  color: var(--faint);
+  color: var(--dim);
   /* Nudge the end labels onto their gridlines rather than past them. */
   padding: 0 0 1px;
   white-space: nowrap;
@@ -891,7 +959,7 @@ span.level-debug {
   display: flex;
   justify-content: space-between;
   font-size: 10px;
-  color: var(--faint);
+  color: var(--dim);
   font-variant-numeric: tabular-nums;
   font-family: var(--mono);
   padding: 3px 0 4px 78px;
@@ -941,7 +1009,7 @@ span.level-debug {
 
 .attr-scope {
   font-size: 10px;
-  color: var(--faint);
+  color: var(--dim);
   font-style: italic;
   white-space: nowrap;
 }
@@ -956,7 +1024,7 @@ span.level-debug {
   font-size: 10.5px;
   font-family: var(--ui);
   color: var(--dim);
-  background: var(--surface);
+  background: var(--surface2);
   border: 1px solid var(--border);
   border-radius: 3px;
   padding: 1px 4px;
@@ -1006,4 +1074,12 @@ span.level-debug {
     animation: none !important;
     background: var(--surface2);
   }
+}
+
+/* Inline validation under the add-filter form: a picked registry key is
+   flattened to its Loki label spelling, but a hand-typed key can still be
+   invalid; the hint says why Add is disabled instead of failing silently. */
+.chip-form-hint {
+  font-size: 11px;
+  color: var(--dim);
 }

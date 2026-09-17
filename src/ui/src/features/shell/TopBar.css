@@ -36,7 +36,6 @@
 
 .manage-trigger {
   display: inline-block;
-  margin-left: auto;
   padding: 4px 10px;
   color: var(--dim);
   font-size: 12px;
@@ -54,6 +53,10 @@
   border-radius: 6px;
   padding: 4px 10px;
   font-size: 12px;
+  max-width: 40vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .tenant-chip:hover {
@@ -120,7 +123,9 @@
   flex-direction: column;
 }
 
-.placeholder {
-  color: var(--dim);
-  padding: 24px;
+/* Column-flex children with auto side margins otherwise shrink-to-fit their
+   widest unbreakable content and push the viewport sideways on phones. */
+.app-main > * {
+  width: 100%;
+  min-width: 0;
 }

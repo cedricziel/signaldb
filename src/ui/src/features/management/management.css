@@ -48,7 +48,10 @@
   background: var(--surface2);
 }
 
-.manage-panel button {
+/* Excludes OriginPicker's own `.origin-chip` remove ×, which keeps its own
+   borderless styling from ApiKeys.css (loaded app-wide, not just on the API
+   keys page). */
+.manage-panel button:not(.origin-chip button) {
   padding: 7px 11px;
   color: var(--text);
   border: 1px solid var(--border);
@@ -98,7 +101,10 @@
   margin-top: 6px;
 }
 
-.manage-panel fieldset {
+/* Scoped to the create-key form's own "Ingestion scopes" fieldset, not
+   DatasetPicker/OriginPicker's fieldsets (`.dataset-picker`/`.origin-picker`,
+   ApiKeys.css), which have their own single-column layout. */
+.manage-panel fieldset.scopes {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px;

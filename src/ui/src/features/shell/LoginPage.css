@@ -68,7 +68,7 @@
   display: flex;
   gap: 14px;
   font-size: 11px;
-  color: var(--faint);
+  color: var(--dim);
 }
 
 .login-foot a {
@@ -77,7 +77,7 @@
 }
 
 .login-foot a:hover {
-  color: var(--dim);
+  color: var(--text);
 }
 
 @media (max-width: 600px) {

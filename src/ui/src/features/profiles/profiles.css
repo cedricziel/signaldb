@@ -55,10 +55,6 @@
   }
 }
 
-.profiles-compare-ranges {
-  border-top: none;
-}
-
 .profiles-compare {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -305,6 +301,8 @@
 }
 
 .flame-detail-name {
+  flex: 1 1 auto;
+  min-width: 0;
   font-family: var(--mono);
   color: var(--text);
   overflow: hidden;
@@ -334,7 +332,7 @@
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
-  color: var(--faint);
+  color: var(--dim);
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
   font-weight: 650;

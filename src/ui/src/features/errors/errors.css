@@ -1,3 +1,14 @@
+/* The view itself is a column that fills the remaining app height — without
+   this the top bar and signal tabs above it scroll away with the page at
+   short viewports instead of staying put while only the table/detail below
+   scrolls. */
+.errors-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
 /* Matches .histo-wrap's left padding (the traces/logs tabs' equivalent
    above-the-sidebar content) so the page title aligns with the rest of the
    explore shell instead of sitting flush against the viewport edge. */
@@ -16,7 +27,7 @@
   font-size: 10.5px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--faint);
+  color: var(--dim);
   border-bottom: 1px solid var(--border);
 }
 
@@ -62,6 +73,21 @@
 .errors-source-logs {
   color: var(--svc-b);
   border-color: var(--svc-b);
+}
+
+/* .errors-main is itself a `.catalog-main` (padding + its own scroll,
+   ExploreView's shared shell); scroll it horizontally too so the table's
+   Count column isn't cut off at the right edge on a narrow viewport. */
+.errors-main {
+  overflow: auto;
+}
+
+/* The detail block below the table is a second, nested `.catalog-main` (see
+   the same pattern in catalog.css's `.entity-detail .catalog-main`) — reset
+   its padding/overflow so it doesn't double up on the outer one's. */
+.errors-main .catalog-main {
+  padding: 0;
+  overflow: visible;
 }
 
 .errors-detail {
@@ -111,7 +137,7 @@
   font-size: 10.5px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
-  color: var(--faint);
+  color: var(--dim);
   border-bottom: 1px solid var(--border);
 }
 

@@ -167,8 +167,7 @@
 
 .qrow-warn {
   font-size: 11px;
-  color: var(--warn);
-  white-space: nowrap;
+  color: var(--warn-banner-text);
 }
 
 .builder-run {
@@ -205,6 +204,13 @@
 
 .mchart-wrap {
   padding: 14px 18px 4px;
+}
+
+/* uPlot's own cursor crosshair defaults to a hard-coded color that ignores
+   the app's theme. */
+.u-cursor-x,
+.u-cursor-y {
+  border-color: var(--dim);
 }
 
 .mlegend {

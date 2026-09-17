@@ -34,7 +34,10 @@
   color: var(--text);
 }
 
-.query-ir-builder button {
+/* Direct children only — FilterChips (a shared component) renders its own
+   `.chip-x`/`.add-filter` buttons inside this toolbar and must keep their own
+   styling, not the toolbar's. */
+.query-ir-builder > button {
   border: 1px solid var(--border);
   border-radius: 6px;
   padding: 4px 14px;
@@ -48,7 +51,7 @@
 }
 
 .query-ir-warnings {
-  color: var(--warn);
+  color: var(--warn-banner-text);
   font-size: 12px;
   margin: 0 0 10px;
 }
@@ -68,7 +71,7 @@
 .ir-topn th {
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
-  color: var(--faint);
+  color: var(--dim);
   font-size: 11px;
   text-transform: uppercase;
   letter-spacing: 0.05em;

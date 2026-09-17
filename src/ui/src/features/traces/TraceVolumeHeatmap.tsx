@@ -1,5 +1,6 @@
 import { useRef, useState } from "react";
 import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
+import { useContainerWidth } from "../../hooks/useContainerWidth";
 import { axisLabelFormatter } from "../../lib/time";
 import { formatShare, formatTimeBucket } from "../../lib/vizFormat";
 import { formatDurationMs } from "../../lib/waterfall";
@@ -10,15 +11,29 @@ interface Props {
   label: string;
 }
 
-const WIDTH = 720;
+// A fallback for the one frame before the ResizeObserver below reports the
+// container's real pixel width — arbitrary but matches the old fixed value.
+const DEFAULT_WIDTH = 720;
 const HEIGHT = 220;
-const PADDING = { top: 3, right: 8, bottom: 14, left: 78 };
+// The left gutter widens to fit whatever the longest y-axis label turns out
+// to be (see `leftGutter` below); this is only the floor for a narrow label
+// set.
+const MIN_LEFT_PADDING = 48;
+// Roughly a monospace-ish character width at the label's 10px font size —
+// exact glyph metrics aren't worth measuring for an axis gutter.
+const LABEL_CHAR_WIDTH = 6;
+
 export function TraceVolumeHeatmap({ heatmap, label }: Props) {
   const rootRef = useRef<HTMLDivElement>(null);
   const pointer = useVizPointer(rootRef);
   const [active, setActive] = useState<{ column: number; row: number } | null>(
     null,
   );
+  // The viewBox tracks the container's real pixel width so `preserveAspectRatio="none"`
+  // never has to stretch it — otherwise text (and cell strokes) render
+  // non-uniformly, shrinking to unreadable sizes on a phone and clipping the
+  // gutter on a wide desktop panel.
+  const width = useContainerWidth(rootRef, DEFAULT_WIDTH);
 
   const start =
     Math.floor(heatmap.window.start_ns / heatmap.x.step_ns) * heatmap.x.step_ns;
@@ -49,10 +64,6 @@ export function TraceVolumeHeatmap({ heatmap, label }: Props) {
     times[times.length - 1]! / 1e6,
   );
   const stepMs = heatmap.x.step_ns / 1e6;
-  const plotWidth = WIDTH - PADDING.left - PADDING.right;
-  const plotHeight = HEIGHT - PADDING.top - PADDING.bottom;
-  const cellWidth = plotWidth / times.length;
-  const cellHeight = plotHeight / rows;
   const bucketBounds = (row: number) => {
     const lower = row === 0 ? 0 : heatmap.y.bounds[row - 1]! / 1e6;
     const upper =
@@ -67,6 +78,19 @@ export function TraceVolumeHeatmap({ heatmap, label }: Props) {
       ? `${formatDurationMs(lower)}+`
       : `${formatDurationMs(lower)}-${formatDurationMs(upper)}`;
   };
+  const longestLabel = Math.max(
+    ...Array.from({ length: rows }, (_, row) => bucketLabel(row).length),
+  );
+  const PADDING = {
+    top: 3,
+    right: 8,
+    bottom: 14,
+    left: Math.max(MIN_LEFT_PADDING, longestLabel * LABEL_CHAR_WIDTH + 14),
+  };
+  const plotWidth = width - PADDING.left - PADDING.right;
+  const plotHeight = HEIGHT - PADDING.top - PADDING.bottom;
+  const cellWidth = plotWidth / times.length;
+  const cellHeight = plotHeight / rows;
   /** The tooltip's latency range: `lo – hi`, or `lo+` for the overflow row. */
   const bucketRange = (row: number) => {
     const { lower, upper } = bucketBounds(row);
@@ -90,7 +114,7 @@ export function TraceVolumeHeatmap({ heatmap, label }: Props) {
       aria-describedby="trace-volume-heatmap-summary"
       ref={rootRef}
     >
-      <svg viewBox={`0 0 ${WIDTH} ${HEIGHT}`} preserveAspectRatio="none">
+      <svg viewBox={`0 0 ${width} ${HEIGHT}`} preserveAspectRatio="none">
         {Array.from({ length: rows }, (_, row) => (
           <g key={row}>
             <text
@@ -153,7 +177,7 @@ export function TraceVolumeHeatmap({ heatmap, label }: Props) {
         </text>
         <text
           className="trace-heatmap-xlabel"
-          x={WIDTH - PADDING.right}
+          x={width - PADDING.right}
           y={HEIGHT - 3}
           textAnchor="end"
         >

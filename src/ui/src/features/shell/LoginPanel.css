@@ -75,7 +75,7 @@
   font-size: 13px;
   font-weight: 600;
   text-decoration: none;
-  color: #fff;
+  color: var(--on-accent);
   background: var(--accent);
   border: 1px solid var(--accent);
 }
@@ -126,8 +126,13 @@
 }
 
 .login-form input:focus {
-  outline: none;
   border-color: var(--accent);
+}
+
+/* Only a mouse/touch click on the input drops the ring — a keyboard user
+   still gets one (see the global `:focus-visible` rule in global.css). */
+.login-form input:focus:not(:focus-visible) {
+  outline: none;
 }
 
 .login-submit {
@@ -141,7 +146,7 @@
 .login-submit--primary {
   border: 1px solid var(--accent);
   background: var(--accent);
-  color: #fff;
+  color: var(--on-accent);
 }
 
 .login-submit--soft {
@@ -203,6 +208,14 @@
   display: flex;
   align-items: center;
   gap: 8px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.login-account button {
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 3px 9px;
   font-size: 12px;
   color: var(--dim);
 }
