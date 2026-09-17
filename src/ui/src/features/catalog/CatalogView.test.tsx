@@ -682,4 +682,24 @@ describe("isDrillable / drillFilters", () => {
       { field: "service.name", value: "gateway" },
     ]);
   });
+
+  it("emits an absent-value filter for a null identity value, rather than dropping it", () => {
+    // Dropping the dimension entirely (the old behavior) turned "View
+    // matching traces" for `api · (not set)` into an unfiltered list of
+    // every host, not just the traces missing one.
+    const withHost: EntityTypeDef = {
+      id: "service_host",
+      label: "Service hosts",
+      singular: "service host",
+      identity: ["service.name", "host.name"],
+    };
+    expect(drillFilters(withHost, ["api", null])).toEqual([
+      { field: "service.name", value: "api" },
+      { field: "host.name", value: "", op: "absent" },
+    ]);
+    expect(drillFilters(withHost, [null, null])).toEqual([
+      { field: "service.name", value: "", op: "absent" },
+      { field: "host.name", value: "", op: "absent" },
+    ]);
+  });
 });

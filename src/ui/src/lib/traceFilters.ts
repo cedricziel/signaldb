@@ -14,6 +14,14 @@ import { escapeQuotedString, upsertBy } from "./collections";
 export interface TraceFilter {
   field: string;
   value: string;
+  /**
+   * `"eq"` (the default when omitted) matches `value`; `"absent"` matches
+   * records where the field is not set at all — `value` is then ignored (by
+   * convention "") since there is no value to compare against. Used for a
+   * catalog drill-down on a `(not set)` dimension (see `CatalogView.tsx`'s
+   * `drillFilters`), where the identity value is `null`, not a string.
+   */
+  op?: "eq" | "absent";
 }
 
 export interface FacetField {
@@ -165,27 +173,39 @@ export function facetField(field: string): FacetField | undefined {
  * TraceQL. An empty set compiles to "" — the caller omits `q` entirely.
  */
 export function compileTraceQL(filters: TraceFilter[]): string {
-  const terms = groupByFacet(filters).map(({ facet, values }) => {
+  const terms = groupByFacet(filters).flatMap(({ facet, values, absent }) => {
     const eq = (v: string) =>
       `${facet.selector} = ${facet.quoted ? `"${escapeQuotedString(v)}"` : v}`;
-    return values.length === 1
-      ? eq(values[0]!)
-      : `(${values.map(eq).join(" || ")})`;
+    const parts: string[] = [];
+    if (absent) parts.push(`${facet.selector} = nil`);
+    if (values.length === 1) parts.push(eq(values[0]!));
+    else if (values.length > 1) parts.push(`(${values.map(eq).join(" || ")})`);
+    return parts;
   });
   return terms.length === 0 ? "" : `{ ${terms.join(" && ")} }`;
 }
 
-/** Filters grouped by facet, in first-seen order; unknown fields dropped. */
+/**
+ * Filters grouped by facet, in first-seen order; unknown fields dropped.
+ * `absent` (an `op: "absent"` filter was present) is tracked separately from
+ * `values` (every `eq`/`in` value for the field) since a field's absence and
+ * its equality values compile to different predicate shapes.
+ */
 function groupByFacet(
   filters: TraceFilter[],
-): { facet: FacetField; values: string[] }[] {
-  const groups: { facet: FacetField; values: string[] }[] = [];
+): { facet: FacetField; values: string[]; absent: boolean }[] {
+  const groups: { facet: FacetField; values: string[]; absent: boolean }[] =
+    [];
   for (const f of filters) {
     const facet = facetField(f.field);
     if (!facet) continue;
-    const group = groups.find((g) => g.facet.field === facet.field);
-    if (group) group.values.push(f.value);
-    else groups.push({ facet, values: [f.value] });
+    let group = groups.find((g) => g.facet.field === facet.field);
+    if (!group) {
+      group = { facet, values: [], absent: false };
+      groups.push(group);
+    }
+    if (f.op === "absent") group.absent = true;
+    else group.values.push(f.value);
   }
   return groups;
 }
@@ -202,12 +222,19 @@ export function filterStages(
 ): Record<string, unknown>[] {
   return groupByFacet(filters)
     .filter(({ facet }) => facet.irField !== excludeIrField)
-    .map(({ facet, values }) => ({
-      where:
-        values.length === 1
-          ? { field: facet.irField, op: "eq", value: values[0] }
-          : { field: facet.irField, op: "in", value: values },
-    }));
+    .flatMap(({ facet, values, absent }) => {
+      const stages: Record<string, unknown>[] = [];
+      if (absent) stages.push({ not: { field: facet.irField, op: "exists" } });
+      if (values.length > 0) {
+        stages.push({
+          where:
+            values.length === 1
+              ? { field: facet.irField, op: "eq", value: values[0] }
+              : { field: facet.irField, op: "in", value: values },
+        });
+      }
+      return stages;
+    });
 }
 
 /**
@@ -231,9 +258,12 @@ export function traceFiltersForUrl(filters: TraceFilter[]): TraceFilter[] {
   return isDefault ? filters.filter((f) => f.field !== "kind") : filters;
 }
 
-/** URL serialization: one `tf` param per filter, "field|value". */
+/**
+ * URL serialization: one `tf` param per filter, "field|value" — or
+ * "field|absent" for an `op: "absent"` filter, whose value is always "".
+ */
 export function traceFilterToParam(f: TraceFilter): string {
-  return `${f.field}|${f.value}`;
+  return f.op === "absent" ? `${f.field}|absent` : `${f.field}|${f.value}`;
 }
 
 export function traceFilterFromParam(param: string): TraceFilter | null {
@@ -242,7 +272,10 @@ export function traceFilterFromParam(param: string): TraceFilter | null {
   const field = param.slice(0, sep);
   if (facetField(field) === undefined) return null;
   // Values may contain the separator; only the first one delimits.
-  return { field, value: param.slice(sep + 1) };
+  const rest = param.slice(sep + 1);
+  return rest === "absent"
+    ? { field, value: "", op: "absent" }
+    : { field, value: rest };
 }
 
 /**

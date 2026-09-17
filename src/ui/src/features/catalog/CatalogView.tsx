@@ -241,8 +241,14 @@ export function drillFilters(
   entity.identity.forEach((field, i) => {
     if (facetField(field) === undefined) return;
     const v = values[i];
-    if (v == null) return;
-    filters = upsertTraceFilter(filters, { field, value: v });
+    // A `(not set)` identity value means the field is absent, not that it
+    // equals the literal string "(not set)" — an `eq` filter here would
+    // match nothing, and dropping the dimension (the old behavior) matched
+    // everything instead of just the traces missing it.
+    filters = upsertTraceFilter(
+      filters,
+      v == null ? { field, value: "", op: "absent" } : { field, value: v },
+    );
   });
   return filters;
 }

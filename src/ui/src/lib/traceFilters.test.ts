@@ -137,6 +137,12 @@ describe("trace filter URL params", () => {
     expect(traceFilterFromParam("garbage")).toBeNull();
     expect(traceFilterFromParam("nonsense|x")).toBeNull();
   });
+
+  it("round-trips an absent-value filter", () => {
+    const f: TraceFilter = { field: "service.name", value: "", op: "absent" };
+    expect(traceFilterToParam(f)).toBe("service.name|absent");
+    expect(traceFilterFromParam("service.name|absent")).toEqual(f);
+  });
 });
 
 describe("upsertTraceFilter", () => {
@@ -268,5 +274,31 @@ describe("multi-value facets (kind)", () => {
     ).toBe(
       '{ resource.service.name = "api" && (kind = server || kind = client) }',
     );
+  });
+});
+
+describe("absent-value filters (op: \"absent\")", () => {
+  it("compiles to a `not exists` predicate, not `eq \"\"`", () => {
+    expect(
+      filterStages([{ field: "service.name", value: "", op: "absent" }]),
+    ).toEqual([{ not: { field: "service.name", op: "exists" } }]);
+  });
+
+  it("leaves the rest of the group's stages untouched", () => {
+    expect(
+      filterStages([
+        { field: "host.name", value: "", op: "absent" },
+        { field: "kind", value: "Server" },
+      ]),
+    ).toEqual([
+      { not: { field: "host.name", op: "exists" } },
+      { where: { field: "span_kind", op: "eq", value: "Server" } },
+    ]);
+  });
+
+  it("compiles to a TraceQL nil comparison", () => {
+    expect(
+      compileTraceQL([{ field: "service.name", value: "", op: "absent" }]),
+    ).toBe('{ resource.service.name = nil }');
   });
 });
