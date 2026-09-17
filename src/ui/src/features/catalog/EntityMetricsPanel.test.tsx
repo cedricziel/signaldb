@@ -225,6 +225,36 @@ describe("EntityMetricsPanel", () => {
     ).toBeInTheDocument();
   });
 
+  it("hides the metrics panel when a pinned identity value is unset", () => {
+    // A null pin can't be compiled to an equality predicate, so silently
+    // dropping it would widen the panel to every value of that dimension
+    // while the KPIs above stay scoped to the absent value.
+    useEntityMetrics.mockReturnValue({
+      metrics: [metric("system.cpu.utilization")],
+      isPending: false,
+      isError: false,
+    });
+
+    renderWithClient(
+      <EntityMetricsPanel
+        entity={host}
+        pinned={[
+          { field: "service.name", value: "gateway" },
+          { field: "service.namespace", value: null },
+        ]}
+        range={range}
+        rangeKey="1h|acme|prod"
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        /Metrics are not shown for an unset identity dimension/,
+      ),
+    ).toBeInTheDocument();
+    expect(fetchEntityMetricSeries).not.toHaveBeenCalled();
+  });
+
   it("names the registry association its selection came from", async () => {
     useEntityMetrics.mockReturnValue({
       metrics: [metric("system.cpu.utilization")],

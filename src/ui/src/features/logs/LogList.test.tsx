@@ -188,6 +188,32 @@ describe("rowKey", () => {
     expect(rowKey(a)).not.toBe(rowKey(b));
     expect(rowKey(a)).toBe(rowKey({ ...a }));
   });
+
+  it("distinguishes two streams sharing a timestamp and line but no span/trace id", () => {
+    const a = row({
+      tsNs: "1",
+      line: "same line",
+      labels: { host: "web-1", service_name: "checkout" },
+    });
+    const b = row({
+      tsNs: "1",
+      line: "same line",
+      labels: { host: "web-2", service_name: "checkout" },
+    });
+    expect(rowKey(a)).not.toBe(rowKey(b));
+  });
+
+  it("is unaffected by label/metadata insertion order", () => {
+    const a = row({
+      labels: { host: "web-1", service_name: "checkout" },
+      metadata: { a: "1", b: "2" },
+    });
+    const b = row({
+      labels: { service_name: "checkout", host: "web-1" },
+      metadata: { b: "2", a: "1" },
+    });
+    expect(rowKey(a)).toBe(rowKey(b));
+  });
 });
 
 describe("LogList structured metadata", () => {

@@ -54,7 +54,9 @@ export function rowsForCursorIndex(
     const missing = v === null || v === undefined || Number.isNaN(v);
     const stroke = u.series[i]?.stroke;
     all.push({
-      raw: missing ? -Infinity : Number(v),
+      // -1 (rather than 0) keeps a missing sample ranked below even a
+      // genuine zero-valued series, not just below every nonzero one.
+      magnitude: missing ? -1 : Math.abs(Number(v)),
       row: {
         swatch: typeof stroke === "string" ? stroke : undefined,
         label: u.series[i]?.label ?? `series ${i}`,
@@ -68,7 +70,7 @@ export function rowsForCursorIndex(
     return { title, rows: all.map((r) => r.row) };
   }
   const shown = [...all]
-    .sort((a, b) => b.raw - a.raw)
+    .sort((a, b) => b.magnitude - a.magnitude)
     .slice(0, MAX_TOOLTIP_ROWS)
     .map((r) => r.row);
   return {

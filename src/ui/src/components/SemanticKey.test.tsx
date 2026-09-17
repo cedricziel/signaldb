@@ -266,6 +266,21 @@ describe("SemanticKey tooltip placement", () => {
     expect(parseFloat(tip.style.left)).toBeGreaterThanOrEqual(8);
   });
 
+  it("caps the tooltip's own width to the viewport on a narrow screen", async () => {
+    // The clamped `left` alone doesn't stop the tip's own 360px CSS
+    // max-width from running past a viewport narrower than that.
+    vi.stubGlobal("innerWidth", 320);
+    render(<SemanticInfo name="k8s.pod.uid" semantics={semOf([hit()])} />);
+    const glyph = screen.getByLabelText("About k8s.pod.uid");
+    const trigger = glyph.parentElement as HTMLElement;
+    trigger.getBoundingClientRect = () =>
+      ({ left: 10, right: 30, top: 100, bottom: 116, width: 20, height: 16 }) as DOMRect;
+
+    await userEvent.hover(glyph);
+    const tip = await screen.findByRole("tooltip");
+    expect(tip.style.maxWidth).toBe("calc(100vw - 16px)");
+  });
+
   it("keeps the tooltip open while focus tabs into its links, closing once focus leaves both", async () => {
     const custom = hit({
       key: "service.name",

@@ -51,10 +51,11 @@ export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
 
   // `api/entityMetricSeries.ts` compiles every pin as a plain equality
   // match; it has no "not exists" case for a null pin the way
-  // `buildEntitySourceDoc` does (see `EntityPin` in api/catalog.ts), so a
-  // "(not set)" dimension is left out here rather than compiled to a
-  // metric.name-matching-nothing `eq: null` predicate.
-  const metricPins = pinned.filter((p) => p.value !== null);
+  // `buildEntitySourceDoc` does (see `EntityPin` in api/catalog.ts). Dropping
+  // a null pin instead of compiling it would widen the series to every value
+  // of that dimension while the KPIs above stay scoped to the absent value,
+  // so the panel is hidden rather than shown scoped wrong.
+  const hasUnsetPin = pinned.some((p) => p.value === null);
 
   const series = useQuery({
     queryKey: [
@@ -62,18 +63,18 @@ export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
       entity.id,
       rangeKey,
       names,
-      pinsKey(metricPins),
+      pinsKey(pinned),
     ],
     queryFn: () =>
       fetchEntityMetricSeries(
         metrics,
-        metricPins,
+        pinned,
         range,
         // The same snapped step the Metrics tab uses, so a tile and a chart of
         // the same metric bucket identically.
         durationToSeconds(stepForRange(range, TILE_POINTS)) ?? 60,
       ),
-    enabled: metrics.length > 0,
+    enabled: metrics.length > 0 && !hasUnsetPin,
   });
 
   // Failing to ask which metrics describe this entity is not the same answer
@@ -93,6 +94,14 @@ export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
   // Nothing the registry associates with this entity type — so there is no
   // panel to draw, rather than an empty one to explain.
   if (metrics.length === 0) return null;
+
+  if (hasUnsetPin) {
+    return (
+      <div className="view-note">
+        Metrics are not shown for an unset identity dimension.
+      </div>
+    );
+  }
 
   const observed = metrics.filter((m) => series.data?.has(m.name));
   const shown = observed.slice(0, METRIC_TILE_CAP);

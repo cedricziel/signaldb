@@ -152,7 +152,13 @@ function tipStyle(
   const left = Math.min(Math.max(rawLeft, TIP_EDGE_MARGIN), maxLeft);
   const placement: Placement =
     anchor.bottom + TIP_GAP + height > window.innerHeight ? "above" : "below";
-  const style: CSSProperties = { position: "fixed", left };
+  const style: CSSProperties = {
+    position: "fixed",
+    left,
+    // The clamped `left` alone doesn't stop the tip's own CSS max-width
+    // (`.sem-tip`, 360px) from running past a viewport narrower than that.
+    maxWidth: `calc(100vw - ${2 * TIP_EDGE_MARGIN}px)`,
+  };
   if (placement === "above") {
     style.bottom = window.innerHeight - anchor.top + TIP_GAP;
   } else {

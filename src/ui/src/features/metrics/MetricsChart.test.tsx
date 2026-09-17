@@ -242,6 +242,56 @@ describe("rowsForCursorIndex", () => {
     expect(rows.map((r) => r.label)).not.toContain("s0");
     expect(footer).toBe("+4 more");
   });
+
+  it("caps by magnitude, not raw value, so a large negative outlier survives the cut", () => {
+    const seriesCount = 12;
+    const plot = {
+      data: [
+        [0],
+        // Series 0 is a large-magnitude negative (e.g. a delta) — sorting by
+        // raw value descending would put it last; sorting by magnitude keeps
+        // it near the top alongside the largest positive series.
+        [-1000],
+        ...Array.from({ length: seriesCount - 1 }, (_, i) => [i + 1]),
+      ],
+      series: [
+        {},
+        { label: "big-negative", stroke: "red" },
+        ...Array.from({ length: seriesCount - 1 }, (_, i) => ({
+          label: `s${i + 1}`,
+          stroke: "blue",
+        })),
+      ],
+      cursor: { idx: 0, left: 0, top: 0 },
+      over: document.createElement("div"),
+    };
+    const { rows } = rowsForCursorIndex(plot, 0);
+    expect(rows.map((r) => r.label)).toContain("big-negative");
+  });
+
+  it("still ranks a missing sample last under magnitude sorting, not first", () => {
+    const seriesCount = 12;
+    const plot = {
+      data: [
+        [0],
+        [null], // a gap — must not out-rank real values just because
+        // `Math.abs` of its sentinel could otherwise look huge.
+        ...Array.from({ length: seriesCount - 1 }, (_, i) => [i + 1]),
+      ],
+      series: [
+        {},
+        { label: "gap", stroke: "red" },
+        ...Array.from({ length: seriesCount - 1 }, (_, i) => ({
+          label: `s${i + 1}`,
+          stroke: "blue",
+        })),
+      ],
+      cursor: { idx: 0, left: 0, top: 0 },
+      over: document.createElement("div"),
+    };
+    const { rows } = rowsForCursorIndex(plot, 0);
+    expect(rows.map((r) => r.label)).not.toContain("gap");
+  });
 });
 
 describe("MetricsChart tooltip", () => {
