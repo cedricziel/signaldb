@@ -8,14 +8,21 @@
 // navigation, so reload/close is still each dirty form's own `beforeunload`
 // handler, not this component's job.
 
-import { useCallback, useSyncExternalStore } from "react";
+import { useCallback } from "react";
 import { useBlocker } from "react-router";
 import { Dialog } from "../../components/Dialog";
-import { anyDirty, subscribe } from "../../lib/dirtyForms";
+import { anyDirty } from "../../lib/dirtyForms";
 import "./UnsavedChangesGuard.css";
 
 export function UnsavedChangesGuard() {
-  const dirty = useSyncExternalStore(subscribe, anyDirty, anyDirty);
+  // Reads `anyDirty()` live at the moment the router asks, rather than a
+  // snapshot captured at render time: `useBlocker` only re-registers this
+  // function with the router via an effect that runs after the next render,
+  // so a snapshot would still read stale on a same-tick clear-then-navigate
+  // — e.g. RegistryEditor's save/save-as-new-version/delete success paths,
+  // which call `markDirty(id, false)` immediately before their own
+  // redirect (see lib/dirtyForms.ts) and would otherwise have that redirect
+  // blocked by the very edit they just saved.
   // Only block an actual location change — re-rendering with the same
   // location (e.g. a search-param rewrite the shell makes itself) must not
   // trip the guard.
@@ -27,11 +34,11 @@ export function UnsavedChangesGuard() {
       currentLocation: { pathname: string; search: string; hash: string };
       nextLocation: { pathname: string; search: string; hash: string };
     }) =>
-      dirty &&
+      anyDirty() &&
       (currentLocation.pathname !== nextLocation.pathname ||
         currentLocation.search !== nextLocation.search ||
         currentLocation.hash !== nextLocation.hash),
-    [dirty],
+    [],
   );
   const blocker = useBlocker(shouldBlock);
 

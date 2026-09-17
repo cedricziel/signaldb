@@ -10,7 +10,7 @@ import {
 import YAML from "yaml";
 import { ConfirmButton } from "../../components/ConfirmButton";
 import { invalidateSemantics } from "../../hooks/useSemantics";
-import { useDirtyForm } from "../../lib/dirtyForms";
+import { markDirty, useDirtyForm } from "../../lib/dirtyForms";
 import {
   createRegistry,
   deleteRegistry,
@@ -105,6 +105,10 @@ type Report =
 const count = (n: number, one: string, many: string) =>
   `${n} ${n === 1 ? one : many}`;
 
+// A single id since only one editor instance is ever mounted at a time (one
+// route per registry/new-document) — see the `useDirtyForm` call below.
+const EDITOR_DIRTY_ID = "schema-registry-editor";
+
 function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -121,10 +125,10 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
   const [newVersion, setNewVersion] = useState("");
   const [error, setError] = useState<string | null>(null);
   const isDirty = text !== initialTextRef.current;
-  // Protects an in-progress edit from a PWA update reload (see
-  // lib/dirtyForms.ts) — a single id since only one editor instance is ever
-  // mounted at a time (one route per registry/new-document).
-  useDirtyForm("schema-registry-editor", isDirty);
+  // Protects an in-progress edit from a PWA update reload and, via the
+  // shell's UnsavedChangesGuard, from an in-app navigation (see
+  // lib/dirtyForms.ts).
+  useDirtyForm(EDITOR_DIRTY_ID, isDirty);
 
   // "Upload registry" from the list opens the file picker on arrival, once —
   // the shell rewrites `?tenant=` on the way in, which would otherwise
@@ -201,9 +205,13 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
 
   const finish = (namespace: string, version: string) => {
     invalidateSchemaCaches();
-    // The document just saved is the new baseline: no unsaved edits remain,
-    // so the navigation below isn't blocked by the dirty-document guard.
+    // The document just saved is the new baseline: no unsaved edits remain.
+    // Clear the registration synchronously (not via useDirtyForm's effect,
+    // which wouldn't run until after this render) so the shell's
+    // UnsavedChangesGuard doesn't block the navigation below on the edit it
+    // just saved.
     initialTextRef.current = text;
+    markDirty(EDITOR_DIRTY_ID, false);
     navigate(registryPath(namespace, version));
   };
   const onError = (e: unknown) =>
@@ -246,7 +254,10 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
     },
     onSuccess: () => {
       invalidateSchemaCaches();
+      // Same reasoning as `finish` above: clear the registration
+      // synchronously so the guard doesn't block this redirect.
       initialTextRef.current = text;
+      markDirty(EDITOR_DIRTY_ID, false);
       navigate(CONVENTIONS);
     },
     onError,

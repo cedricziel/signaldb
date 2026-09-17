@@ -11,7 +11,12 @@ import {
 } from "react-router";
 import * as semantics from "../../hooks/useSemantics";
 import { anyDirty, resetDirtyForms } from "../../lib/dirtyForms";
-import { renderWithClient, stubFetchRoutes } from "../../test/render";
+import { UnsavedChangesGuard } from "../shell/UnsavedChangesGuard";
+import {
+  renderWithClient,
+  renderWithRouter,
+  stubFetchRoutes,
+} from "../../test/render";
 import { RegistryEditor } from "./RegistryEditor";
 import {
   ACME_DOCUMENT,
@@ -56,6 +61,37 @@ function renderEditor(path: string) {
         </Route>
       </Routes>
     </MemoryRouter>,
+  );
+}
+
+/** Same route tree as `renderEditor`, but through a real data router (see
+ * `renderWithRouter`) with the shell's `UnsavedChangesGuard` mounted above
+ * it — needed to catch a regression where the editor's own success redirect
+ * (save/save-as-new-version/delete) races the guard's dirty-state check (see
+ * routes.tsx's `RootLayout`). `renderEditor`'s plain `MemoryRouter` can't
+ * host the guard at all (`useBlocker` throws outside a data router), so it
+ * can't catch that regression. */
+function renderEditorWithGuard(path: string) {
+  return renderWithRouter(
+    [
+      {
+        element: (
+          <>
+            <UnsavedChangesGuard />
+            {shellOutlet()}
+          </>
+        ),
+        children: [
+          { path: "/schema/conventions/new", element: <RegistryEditor /> },
+          {
+            path: "/schema/conventions/:ns/:version/edit",
+            element: <RegistryEditor />,
+          },
+          { path: "/schema/conventions", element: <div>List page</div> },
+        ],
+      },
+    ],
+    [path],
   );
 }
 
@@ -633,6 +669,118 @@ describe("RegistryEditor", () => {
       (screen.getByLabelText("Registry document") as HTMLTextAreaElement)
         .value,
     ).not.toContain("# unsaved edit for v1");
+  });
+
+  describe("guarded redirects", () => {
+    // The editor's own success redirects (save, save-as-new-version,
+    // delete) must clear the `schema-registry-editor` dirty registration
+    // before navigating — otherwise the shell's `UnsavedChangesGuard` (see
+    // App.tsx) blocks the very redirect the mutation just triggered.
+
+    it("saving a new registry redirects without the unsaved-changes dialog", async () => {
+      stubFetchRoutes([
+        { match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN },
+        {
+          match: "/api/v1/schema/registries:validate",
+          method: "POST",
+          body: VALIDATION_OK,
+        },
+        {
+          match: /\/api\/v1\/schema\/registries$/,
+          method: "POST",
+          body: ACME_REGISTRY,
+          status: 201,
+        },
+      ]);
+      const { router } = renderEditorWithGuard("/schema/conventions/new");
+      const user = userEvent.setup();
+
+      const source = await screen.findByLabelText("Registry document");
+      await user.click(source);
+      await user.paste(ACME_YAML);
+      await user.click(screen.getByRole("button", { name: "Validate" }));
+      await screen.findByRole("status");
+
+      await user.click(screen.getByRole("button", { name: "Save" }));
+      await waitFor(() =>
+        expect(router.state.location.pathname).toBe(
+          "/schema/conventions/acme/1.0.0",
+        ),
+      );
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+
+    it("saving as a new version redirects without the unsaved-changes dialog", async () => {
+      stubFetchRoutes([
+        { match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN },
+        { match: "/api/v1/schema/registries/acme/1.0.0", body: ACME_REGISTRY },
+        {
+          match: "/api/v1/schema/registries:validate",
+          method: "POST",
+          body: VALIDATION_OK,
+        },
+        {
+          match: /\/api\/v1\/schema\/registries$/,
+          method: "POST",
+          body: { ...ACME_REGISTRY, version: "1.1.0" },
+          status: 201,
+        },
+      ]);
+      const { router } = renderEditorWithGuard(
+        "/schema/conventions/acme/1.0.0/edit",
+      );
+      const user = userEvent.setup();
+
+      const source = (await screen.findByLabelText(
+        "Registry document",
+      )) as HTMLTextAreaElement;
+      await waitFor(() => expect(source.value).toContain("name: acme"));
+      // Dirty the document (distinct from the stored baseline) before
+      // validating, so the redirect below actually exercises the guard
+      // instead of finding nothing dirty to begin with.
+      await user.type(source, "\n# bump");
+      await user.click(screen.getByRole("button", { name: "Validate" }));
+      await screen.findByRole("status");
+
+      await user.type(screen.getByLabelText("New version"), "1.1.0");
+      await user.click(
+        screen.getByRole("button", { name: "Save as new version" }),
+      );
+      await waitFor(() =>
+        expect(router.state.location.pathname).toBe(
+          "/schema/conventions/acme/1.1.0",
+        ),
+      );
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
+
+    it("deleting redirects to the list without the unsaved-changes dialog", async () => {
+      stubFetchRoutes([
+        { match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN },
+        { match: "/api/v1/schema/registries/acme/1.0.0", body: ACME_REGISTRY },
+        {
+          match: "/api/v1/schema/registries/acme/1.0.0",
+          method: "DELETE",
+          body: {},
+        },
+      ]);
+      const { router } = renderEditorWithGuard(
+        "/schema/conventions/acme/1.0.0/edit",
+      );
+      const user = userEvent.setup();
+
+      // Dirty the document first — deleting doesn't care about its content,
+      // but the redirect below must still not be blocked by it.
+      const source = await screen.findByLabelText("Registry document");
+      await user.type(source, "\n# bump");
+
+      await user.click(screen.getByRole("button", { name: "Delete" }));
+      await user.click(screen.getByRole("button", { name: "Confirm" }));
+      await waitFor(() =>
+        expect(router.state.location.pathname).toBe("/schema/conventions"),
+      );
+      expect(screen.queryByRole("dialog")).toBeNull();
+    });
   });
 
   describe("dirty tracking", () => {
