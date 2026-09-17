@@ -103,6 +103,20 @@ describe("FlameGraph roving focus", () => {
       screen.getByRole("group", { name: "Flame graph frames" }),
     ).toBeInTheDocument();
   });
+
+  // Tab should land wherever the pointer last showed detail for, matching
+  // `docs/users/explore-ui.md`'s "the last one you pointed at" — not just
+  // wherever an arrow key left it.
+  it("moves the tab stop to the frame the pointer moves over", () => {
+    renderFlame();
+    const childB = screen.getByRole("button", { name: "childB" });
+    fireEvent.pointerMove(childB);
+    expect(childB).toHaveAttribute("tabindex", "0");
+    expect(screen.getByRole("button", { name: "root" })).toHaveAttribute(
+      "tabindex",
+      "-1",
+    );
+  });
 });
 
 describe("FlameGraph breadcrumb", () => {

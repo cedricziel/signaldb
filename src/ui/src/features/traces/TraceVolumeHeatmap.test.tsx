@@ -160,5 +160,28 @@ describe("TraceVolumeHeatmap", () => {
       expect(below).toHaveFocus();
       expect(below).toHaveAttribute("tabindex", "0");
     });
+
+    // Tab should land wherever the pointer last showed detail for, matching
+    // `docs/users/explore-ui.md`'s "the last one you pointed at" — not just
+    // wherever an arrow key left it.
+    it("moves the tab stop to the populated cell the pointer moves over", () => {
+      render(<TraceVolumeHeatmap {...props} />);
+      const first = screen.getByLabelText(/0.*10 ms.*2 spans/i);
+      const second = screen.getByLabelText(/10 ms.*1 spans/i);
+      fireEvent.pointerMove(second, { clientX: 100, clientY: 20 });
+      expect(second).toHaveAttribute("tabindex", "0");
+      expect(first).toHaveAttribute("tabindex", "-1");
+    });
+
+    // An empty cell has no roving index at all, so the pointer hovering one
+    // must leave whichever populated cell was previously active as the tab
+    // stop, not clear or crash on it.
+    it("leaves the tab stop unchanged when the pointer moves over an empty cell", () => {
+      render(<TraceVolumeHeatmap {...props} />);
+      const first = screen.getByLabelText(/0.*10 ms.*2 spans/i);
+      const empty = screen.getByLabelText(/10 ms.*100 ms.*no spans/i);
+      fireEvent.pointerMove(empty, { clientX: 100, clientY: 100 });
+      expect(first).toHaveAttribute("tabindex", "0");
+    });
   });
 });

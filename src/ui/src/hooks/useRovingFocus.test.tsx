@@ -101,4 +101,27 @@ describe("useRovingFocus", () => {
     expect(screen.getByTestId("mark-2")).toHaveAttribute("tabindex", "0");
     expect(screen.getByTestId("mark-0")).toHaveAttribute("tabindex", "-1");
   });
+
+  // A re-fetch (new time range, filter change, …) can shrink `count` out
+  // from under a stored index. If it stayed put, every remaining mark would
+  // read `index === activeIndex` as false and the group would lose its only
+  // tab stop, making the whole chart untabbable.
+  it("clamps the active index into range when count shrinks", () => {
+    const { rerender } = render(<Group count={5} />);
+    fireEvent.focus(screen.getByTestId("mark-4"));
+    expect(screen.getByTestId("mark-4")).toHaveAttribute("tabindex", "0");
+
+    rerender(<Group count={2} />);
+    expect(screen.getByTestId("mark-1")).toHaveAttribute("tabindex", "0");
+    expect(screen.getByTestId("mark-0")).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("resets the active index to 0 when count drops to 0 and back", () => {
+    const { rerender } = render(<Group count={3} />);
+    fireEvent.focus(screen.getByTestId("mark-2"));
+
+    rerender(<Group count={0} />);
+    rerender(<Group count={3} />);
+    expect(screen.getByTestId("mark-0")).toHaveAttribute("tabindex", "0");
+  });
 });

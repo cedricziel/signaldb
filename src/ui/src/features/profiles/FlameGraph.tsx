@@ -281,23 +281,6 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
     setHoverInfo(null);
     pointer.clear();
   }, [pointer.clear]);
-  const hoverFrame = useCallback(
-    (frame: FlameFrame, e: PointerEvent<HTMLElement>) => {
-      setHovered(frame);
-      setHoverInfo(frameHoverInfo(frame));
-      pointer.track(e);
-    },
-    [pointer.track],
-  );
-  const focusFrame = useCallback(
-    (frame: FlameFrame, e: FocusEvent<HTMLElement>) => {
-      setHovered(frame);
-      setHoverInfo(frameHoverInfo(frame));
-      pointer.anchorTo(e.currentTarget);
-    },
-    [pointer.anchorTo],
-  );
-
   // Below-threshold frames (and their subtrees) fold into "(other)" bars so
   // a wide, noisy profile isn't dominated by hairline slivers. Computed
   // against the root total so it stays stable across zoom.
@@ -392,6 +375,28 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
   const getFrameItemProps = useCallback(
     (frame: FlameFrame) => roving.itemProps(frameIndex.get(frame) ?? -1),
     [roving.itemProps, frameIndex],
+  );
+
+  // Pointer/focus over a frame also moves the pane's roving tab stop
+  // (`frameIndex`/`roving` above), so Tab picks up keyboard navigation from
+  // wherever the pointer last landed, not just where an arrow key left it.
+  const hoverFrame = useCallback(
+    (frame: FlameFrame, e: PointerEvent<HTMLElement>) => {
+      setHovered(frame);
+      setHoverInfo(frameHoverInfo(frame));
+      const index = frameIndex.get(frame);
+      if (index !== undefined) roving.setActiveIndex(index);
+      pointer.track(e);
+    },
+    [pointer.track, frameIndex, roving.setActiveIndex],
+  );
+  const focusFrame = useCallback(
+    (frame: FlameFrame, e: FocusEvent<HTMLElement>) => {
+      setHovered(frame);
+      setHoverInfo(frameHoverInfo(frame));
+      pointer.anchorTo(e.currentTarget);
+    },
+    [pointer.anchorTo],
   );
 
   // Case-insensitive substring match, and the self-time share it covers —

@@ -221,6 +221,7 @@ export function TraceVolumeHeatmap({ heatmap, label }: Props) {
                   aria-describedby={isActive ? "trace-heatmap-tip" : undefined}
                   onPointerMove={(e) => {
                     setActive({ column, row });
+                    if (index !== undefined) roving.setActiveIndex(index);
                     pointer.track(e);
                   }}
                   onPointerLeave={leave}

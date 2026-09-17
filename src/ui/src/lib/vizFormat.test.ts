@@ -25,6 +25,18 @@ describe("compactCount", () => {
     expect(compactCount(2_400_000_000)).toBe("2.4B");
   });
 
+  // A negative axis value (a delta, a diverging metric) scaled by magnitude
+  // and kept its sign, rather than falling through to an unscaled `"-1500"`
+  // because `n >= scale` never matched a negative number.
+  it("compacts a negative value by magnitude, mirroring the positive case", () => {
+    expect(compactCount(-999)).toBe("-999");
+    expect(compactCount(-1500)).toBe("-1.5K");
+    expect(compactCount(-9949)).toBe("-9.9K");
+    expect(compactCount(-186_665)).toBe("-187K");
+    expect(compactCount(-1_500_000)).toBe("-1.5M");
+    expect(compactCount(-2_400_000_000)).toBe("-2.4B");
+  });
+
   // A byte-valued axis (OTel's "By" unit) otherwise falls through to the
   // decimal K/M/B scaling above, which reads like a plain count rather than
   // a size — 512 MiB showed as "537M", indistinguishable from half a
@@ -37,6 +49,14 @@ describe("compactCount", () => {
     expect(compactCount(1_572_864, "by")).toBe("1.5 MB");
     expect(compactCount(536_870_912, "bytes")).toBe("512 MB");
     expect(compactCount(2_147_483_648, "Byte")).toBe("2 GB");
+  });
+
+  // A negative byte value rounded to one decimal below ten of a unit
+  // regardless of sign, because `v < 10` was true for every negative number
+  // — `roundToOneDecimalBelowTen` now compares the magnitude instead.
+  it("rounds a negative byte value the same as its positive counterpart", () => {
+    expect(compactCount(-536_870_912, "By")).toBe("-512 MB");
+    expect(compactCount(-12.34 * 1024 * 1024, "By")).toBe("-12 MB");
   });
 });
 

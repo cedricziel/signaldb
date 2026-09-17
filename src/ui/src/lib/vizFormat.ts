@@ -20,7 +20,7 @@ const GIB = MIB * 1024;
 
 /** One decimal below ten of a unit (`1.5`), none above it (`512`). */
 function roundToOneDecimalBelowTen(v: number): number {
-  return v < 10 ? Math.round(v * 10) / 10 : Math.round(v);
+  return Math.abs(v) < 10 ? Math.round(v * 10) / 10 : Math.round(v);
 }
 
 /**
@@ -51,14 +51,16 @@ function compactBytes(n: number): string {
  */
 export function compactCount(n: number, unit = ""): string {
   if (BYTE_UNIT_ALIASES.has(unit.toLowerCase())) return compactBytes(n);
+  const sign = n < 0 ? "-" : "";
+  const abs = Math.abs(n);
   const units: [number, string][] = [
     [1e9, "B"],
     [1e6, "M"],
     [1e3, "K"],
   ];
   for (const [scale, suffix] of units) {
-    if (n >= scale) {
-      return `${roundToOneDecimalBelowTen(n / scale)}${suffix}`;
+    if (abs >= scale) {
+      return `${sign}${roundToOneDecimalBelowTen(abs / scale)}${suffix}`;
     }
   }
   return String(Math.round(n));

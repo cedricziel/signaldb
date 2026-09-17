@@ -316,7 +316,9 @@ draws its own tooltip markup is a defect
 - Format through `src/ui/src/lib/vizFormat.ts` (`formatTimestamp`,
   `formatTimeBucket`, `formatValue`, `formatRange`, `formatShare`,
   `compactCount` — pass the metric's unit so a byte-valued metric scales
-  as `KB`/`MB`/`GB` on axis ticks and in the tooltip alike, `formatErrorRate`
+  as `KB`/`MB`/`GB` on axis ticks and in the tooltip alike; it compacts by
+  magnitude and keeps the sign, so budget a leading `-` when measuring an
+  axis gutter from it, `formatErrorRate`
   — a dash for no errors, `<1%` for a non-zero rate that would round to
   zero, never a red `0%`), not ad-hoc
   `toFixed`/`Intl` calls. Table timestamps on multi-day ranges go through

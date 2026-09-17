@@ -100,4 +100,19 @@ describe("DependencyBreakdown roving focus", () => {
     expect(segs[1]).toHaveFocus();
     expect(segs[1]).toHaveAttribute("tabindex", "0");
   });
+
+  // Tab should land wherever the pointer last showed detail for, matching
+  // `docs/users/explore-ui.md`'s "the last one you pointed at" — not just
+  // wherever an arrow key or native focus left it.
+  it("moves the tab stop to the segment the pointer moves over", async () => {
+    fetchDependencyBreakdown.mockResolvedValue([
+      { key: "database", label: "Database", durationNs: 300, count: 3 },
+      { key: "rpc", label: "RPC", durationNs: 100, count: 1 },
+    ]);
+    renderBreakdown();
+    const segs = await screen.findAllByTestId("dep-seg");
+    fireEvent.pointerMove(segs[1]!, { clientX: 100, clientY: 10 });
+    expect(segs[1]).toHaveAttribute("tabindex", "0");
+    expect(segs[0]).toHaveAttribute("tabindex", "-1");
+  });
 });

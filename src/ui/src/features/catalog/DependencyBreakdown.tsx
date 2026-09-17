@@ -90,6 +90,7 @@ export function DependencyBreakdown({
               aria-describedby={active === c.key ? "dep-tip" : undefined}
               onPointerMove={(e) => {
                 setActive(c.key);
+                roving.setActiveIndex(i);
                 pointer.track(e);
               }}
               onPointerLeave={() => {

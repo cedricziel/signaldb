@@ -192,6 +192,7 @@ export function SignalHistogram({
                 onKeyDown={item.onKeyDown}
                 onMouseEnter={(e) => {
                   setActive(i);
+                  roving.setActiveIndex(i);
                   pointer.track(e);
                 }}
                 onMouseMove={pointer.track}
