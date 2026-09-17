@@ -7,7 +7,7 @@ use super::oauth::hash_oauth_token;
 use super::{AuthError, TenantContext, TenantSource, UserContext, hash_session_token};
 use crate::catalog::{Catalog, MembershipRole, UserRecord};
 use crate::config::{AuthConfig, TenantConfig};
-use chrono::{Duration, Utc};
+use chrono::{DateTime, Duration, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -208,36 +208,13 @@ impl Authenticator {
             .ok_or_else(|| AuthError::unauthorized("Session user not found"))?;
         let role = self.resolve_role(&user, tenant_id).await?;
 
-        // Sliding TTL: an active session gets its expiry pushed out once it
-        // is within the renewal threshold of lapsing, so a user who keeps
-        // using the UI never hits the hard cliff. Capped by
-        // `SESSION_MAX_LIFETIME` since `created_at`, so an old (or stolen)
-        // session eventually forces a full re-login instead of renewing
-        // forever on activity alone. A renewal failure is never fatal to the
-        // request — the session is still valid until its original expiry, so
-        // we just log and carry on unrenewed. Run concurrently with tenant
-        // resolution below: the two are independent, so there's no reason to
-        // serialize their database round-trips.
+        // Run concurrently with tenant resolution below: the two are
+        // independent, so there's no reason to serialize their database
+        // round-trips. `session_id` is cloned so the `renew` future doesn't
+        // hold a borrow of `session` across the `Some(session.id)` move a
+        // few lines down.
         let session_id = session.id.clone();
-        let now = Utc::now();
-        let due_for_renewal = session.expires_at - now < SESSION_RENEWAL_THRESHOLD
-            && now - session.created_at < SESSION_MAX_LIFETIME;
-        let renew = async {
-            if !due_for_renewal {
-                return false;
-            }
-            match self
-                .catalog
-                .extend_session(&session_id, now + SESSION_TTL)
-                .await
-            {
-                Ok(()) => true,
-                Err(error) => {
-                    tracing::warn!(session_id = %session_id, %error, "failed to renew session");
-                    false
-                }
-            }
-        };
+        let renew = self.renew_session(&session_id, session.expires_at, session.created_at);
         let resolve = self.resolve_user_tenant(
             tenant_id,
             dataset_id,
@@ -248,6 +225,39 @@ impl Authenticator {
         );
         let (renewed, ctx) = tokio::join!(renew, resolve);
         Ok((ctx?, renewed))
+    }
+
+    /// Slide a session's expiry forward if it's within
+    /// [`SESSION_RENEWAL_THRESHOLD`] of lapsing, so a user who keeps using
+    /// the UI never hits the hard cliff — independent of resolving any
+    /// tenant, so callers that authenticate a session without one (`GET
+    /// /ui/session` when no tenant is auto-selected) can still renew it.
+    /// Capped at [`SESSION_MAX_LIFETIME`] since `created_at`: the renewed
+    /// expiry is never pushed past that absolute ceiling, so an old (or
+    /// stolen) session eventually forces a full re-login instead of
+    /// renewing forever on activity alone. A renewal failure is never fatal
+    /// to the caller — the session is still valid until its original
+    /// expiry, so this just logs and reports no renewal.
+    pub async fn renew_session(
+        &self,
+        session_id: &str,
+        expires_at: DateTime<Utc>,
+        created_at: DateTime<Utc>,
+    ) -> bool {
+        let now = Utc::now();
+        let due_for_renewal =
+            expires_at - now < SESSION_RENEWAL_THRESHOLD && now - created_at < SESSION_MAX_LIFETIME;
+        if !due_for_renewal {
+            return false;
+        }
+        let new_expiry = std::cmp::min(now + SESSION_TTL, created_at + SESSION_MAX_LIFETIME);
+        match self.catalog.extend_session(session_id, new_expiry).await {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(session_id, %error, "failed to renew session");
+                false
+            }
+        }
     }
 
     /// Resolve a user's role within a tenant: their explicit membership role,
@@ -1052,6 +1062,27 @@ mod tests {
         assert!((session.expires_at - original_expiry).num_seconds().abs() < 2);
     }
 
+    /// Backdate a session's `created_at` directly in the database, bypassing
+    /// `create_user_session`'s `Utc::now()` stamp, to simulate an old
+    /// session for the absolute-lifetime tests below. Sqlite-only, matching
+    /// `renewal_test_fixture`.
+    async fn backdate_session_created_at(
+        catalog: &Catalog,
+        session_id: &str,
+        created_at: DateTime<Utc>,
+    ) {
+        let pool = match catalog {
+            Catalog::Sqlite(pool) => pool.clone(),
+            Catalog::Postgres(_) => unreachable!("this test uses the sqlite backend"),
+        };
+        sqlx::query("UPDATE user_sessions SET created_at = ? WHERE id = ?")
+            .bind(created_at.to_rfc3339())
+            .bind(session_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
     /// A near-expiry session past [`SESSION_MAX_LIFETIME`] since its
     /// creation is left to expire rather than renewed — the absolute cap
     /// that keeps an old (or stolen) session from staying alive forever on
@@ -1063,20 +1094,8 @@ mod tests {
         let (catalog, auth, token, session) =
             renewal_test_fixture("old@example.com", original_expiry).await;
 
-        // Backdate `created_at` past the absolute cap; `create_user_session`
-        // always stamps `Utc::now()`, so this bypasses that to simulate an
-        // old session.
-        let pool = match catalog.as_ref() {
-            Catalog::Sqlite(pool) => pool.clone(),
-            Catalog::Postgres(_) => unreachable!("this test uses the sqlite backend"),
-        };
         let backdated = Utc::now() - SESSION_MAX_LIFETIME - Duration::hours(1);
-        sqlx::query("UPDATE user_sessions SET created_at = ? WHERE id = ?")
-            .bind(backdated.to_rfc3339())
-            .bind(&session.id)
-            .execute(&pool)
-            .await
-            .unwrap();
+        backdate_session_created_at(&catalog, &session.id, backdated).await;
 
         let (_ctx, renewed) = auth
             .authenticate_session(&token, "acme", None)
@@ -1090,6 +1109,43 @@ mod tests {
             .unwrap()
             .expect("session still valid");
         assert!((unchanged.expires_at - original_expiry).num_seconds().abs() < 2);
+    }
+
+    /// A session renewed just before it would hit [`SESSION_MAX_LIFETIME`]
+    /// still renews, but its new expiry is capped at `created_at +
+    /// SESSION_MAX_LIFETIME` rather than the full `now + SESSION_TTL` — the
+    /// fix for a bug where a renewal landing right under the age cap could
+    /// push a session's expiry past it.
+    #[tokio::test]
+    async fn authenticate_session_caps_renewal_at_the_absolute_max_lifetime() {
+        // Near expiry, so renewal is due.
+        let original_expiry = Utc::now() + Duration::hours(1);
+        let (catalog, auth, token, session) =
+            renewal_test_fixture("near-cap@example.com", original_expiry).await;
+
+        // Just inside the absolute cap: a full `SESSION_TTL` renewal would
+        // overshoot `created_at + SESSION_MAX_LIFETIME` by ten hours.
+        let created_at = Utc::now() - SESSION_MAX_LIFETIME + Duration::hours(2);
+        backdate_session_created_at(&catalog, &session.id, created_at).await;
+
+        let (_ctx, renewed) = auth
+            .authenticate_session(&token, "acme", None)
+            .await
+            .expect("still valid until its original expiry");
+        assert!(renewed);
+
+        let after = catalog
+            .get_valid_session(&hash_session_token(&token))
+            .await
+            .unwrap()
+            .expect("session still valid after renewal");
+        let cap = created_at + SESSION_MAX_LIFETIME;
+        assert!(
+            after.expires_at <= cap,
+            "renewed expiry {} must not exceed the absolute cap {cap}",
+            after.expires_at
+        );
+        assert!((after.expires_at - cap).num_seconds().abs() < 2);
     }
 
     #[tokio::test]

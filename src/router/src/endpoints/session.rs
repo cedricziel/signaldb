@@ -27,7 +27,7 @@ use common::auth::{
     generate_session_token, hash_session_token, renewed_cookie_header, session_cookie_header,
     session_token_from_headers, validate_dataset_id, validate_tenant_id, verify_password,
 };
-use common::catalog::{MembershipRole, UserRecord};
+use common::catalog::{MembershipRole, UserRecord, UserSessionRecord};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
@@ -353,17 +353,19 @@ async fn list_session_memberships<S: RouterState>(
         .collect())
 }
 
-/// Resolves the caller's session cookie to its token and user record: the
-/// lookup `GET /ui/session` needs before it can list memberships. Missing
-/// cookie, unknown/expired session, or unknown/disabled user all answer 401;
-/// a catalog error is a 500. `DELETE /ui/session` only needs the session
-/// half of this (no 401 on a missing/invalid cookie — logout is a no-op
-/// then), so it keeps its own lookup rather than reusing this.
+/// Resolves the caller's session cookie to its token, user record, and the
+/// session row itself: the lookup `GET /ui/session` needs before it can list
+/// memberships (and, when no tenant is auto-selected, renew the session on
+/// its own — see `current_session`). Missing cookie, unknown/expired
+/// session, or unknown/disabled user all answer 401; a catalog error is a
+/// 500. `DELETE /ui/session` only needs the session half of this (no 401 on
+/// a missing/invalid cookie — logout is a no-op then), so it keeps its own
+/// lookup rather than reusing this.
 #[allow(clippy::result_large_err)]
 async fn resolve_session_user<S: RouterState>(
     state: &S,
     headers: &axum::http::HeaderMap,
-) -> Result<(String, UserRecord), Response> {
+) -> Result<(String, UserRecord, UserSessionRecord), Response> {
     let Some(token) = session_token_from_headers(headers) else {
         return Err(error_response(401, "No valid session cookie".to_string()));
     };
@@ -391,7 +393,7 @@ async fn resolve_session_user<S: RouterState>(
             return Err(error_response(500, "Unable to resolve session".to_string()));
         }
     };
-    Ok((token, user))
+    Ok((token, user, session))
 }
 
 /// DELETE /ui/session
@@ -536,7 +538,7 @@ pub async fn current_session<S: RouterState>(
     State(state): State<S>,
     headers: axum::http::HeaderMap,
 ) -> Response {
-    let (token, user) = match resolve_session_user(&state, &headers).await {
+    let (token, user, session) = match resolve_session_user(&state, &headers).await {
         Ok(resolved) => resolved,
         Err(response) => return response,
     };
@@ -557,7 +559,20 @@ pub async fn current_session<S: RouterState>(
             // request.
             Err(response) => return response,
         },
-        None => (None, None, false),
+        // No tenant to resolve — several memberships still awaiting a pick,
+        // or none at all — but the session itself is still valid and should
+        // still slide forward on use (change: session-renewal). Renewing
+        // directly here (rather than only through `resolve_session_tenant`)
+        // means a multi-membership user or instance admin who lingers on
+        // the tenant-selection page doesn't lose their session just because
+        // they never send a tenant-scoped request.
+        None => {
+            let renewed = state
+                .authenticator()
+                .renew_session(&session.id, session.expires_at, session.created_at)
+                .await;
+            (None, None, renewed)
+        }
     };
 
     let mut response = Json(CurrentSessionResponse {
@@ -3173,6 +3188,82 @@ mod tests {
             set_cookie.starts_with(&format!("{}={token}", common::auth::SESSION_COOKIE)),
             "{set_cookie}"
         );
+    }
+
+    /// A user with several memberships (no tenant auto-selected) still
+    /// renews a near-expiry session on `GET /ui/session` — the fix for a bug
+    /// where the `None` branch (no tenant to resolve) skipped
+    /// `authenticate_session` entirely and so never renewed, silently
+    /// logging out a multi-tenant user or instance admin who lingers on the
+    /// tenant-selection page (change: session-renewal).
+    #[tokio::test]
+    async fn current_session_renews_even_when_no_tenant_is_auto_selected() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![
+                    tenant(
+                        "acme",
+                        "acme-key",
+                        &[("production", true)],
+                        Some("production"),
+                    ),
+                    tenant("globex", "globex-key", &[("main", true)], Some("main")),
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let hash = common::auth::hash_password("multi renew password").unwrap();
+        let user = catalog
+            .create_user("multi-renew@example.com", None, Some(&hash), false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "globex", MembershipRole::Member)
+            .await
+            .unwrap();
+
+        let token = common::auth::generate_session_token();
+        catalog
+            .create_user_session(
+                &user.id,
+                &common::auth::hash_session_token(&token),
+                chrono::Utc::now() + chrono::Duration::hours(1),
+            )
+            .await
+            .unwrap();
+
+        let app = create_router(RouterAppState::new(catalog, config));
+        let request = Request::builder()
+            .uri("/ui/session")
+            .header(
+                header::COOKIE,
+                format!("{}={token}", common::auth::SESSION_COOKIE),
+            )
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let set_cookie = res
+            .headers()
+            .get(header::SET_COOKIE)
+            .expect("a near-expiry session renews even with no tenant auto-selected")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            set_cookie.starts_with(&format!("{}={token}", common::auth::SESSION_COOKIE)),
+            "{set_cookie}"
+        );
+        let body = json_body(res).await;
+        assert_eq!(body["tenant"], Value::Null);
+        assert_eq!(body["dataset"], Value::Null);
     }
 
     #[tokio::test]
