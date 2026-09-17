@@ -1,8 +1,14 @@
-import { screen, waitFor } from "@testing-library/react";
+import { act, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { BrowserRouter } from "react-router";
 import { TENANT_CONTEXT_STORAGE_KEY, getTenantContext } from "./api/http";
 import * as catalogApi from "./api/catalog";
+import { markDirty, resetDirtyForms } from "./lib/dirtyForms";
+import {
+  getUpdateState,
+  resetUpdateState,
+  setUpdateAvailable,
+} from "./lib/pwaUpdate";
 import { AppRoutes } from "./routes";
 import {
   emptyLabels,
@@ -45,6 +51,8 @@ afterEach(() => {
   vi.unstubAllGlobals();
   window.history.replaceState(null, "", "/");
   localStorage.clear();
+  resetUpdateState();
+  resetDirtyForms();
 });
 
 describe("App", () => {
@@ -647,6 +655,61 @@ describe("App", () => {
       expect(
         fetchFn.mock.calls.some((call) => SESSION.test(String(call[0]))),
       ).toBe(false);
+    });
+  });
+
+  describe("PWA update", () => {
+    it("shows the update banner once an update is pending", async () => {
+      stubFetchRoutes([
+        { match: "query_range", body: emptyStreams },
+        { match: "/labels?", body: emptyLabels },
+      ]);
+      renderApp("/logs");
+      await screen.findByText(/No log lines match this query/);
+
+      act(() => {
+        setUpdateAvailable(vi.fn());
+      });
+
+      expect(screen.getByText("A new version is ready")).toBeInTheDocument();
+    });
+
+    it("auto-applies a pending update on the next route change when no form is dirty", async () => {
+      stubFetchRoutes([
+        { match: "query_range", body: emptyMatrix },
+        { match: "/labels?", body: emptyLabels },
+        { match: "/tempo/api/search", body: { traces: [], metrics: {} } },
+      ]);
+      renderApp("/logs");
+      const updateSW = vi.fn().mockResolvedValue(undefined);
+      setUpdateAvailable(updateSW);
+
+      const user = (await import("@testing-library/user-event")).default;
+      await user.click(screen.getByRole("tab", { name: "Traces" }));
+      await screen.findByLabelText("Trace ID");
+
+      expect(updateSW).toHaveBeenCalledWith(true);
+      expect(getUpdateState().updateSW).toBeNull();
+    });
+
+    it("never auto-applies a pending update while a form is dirty", async () => {
+      stubFetchRoutes([
+        { match: "query_range", body: emptyMatrix },
+        { match: "/labels?", body: emptyLabels },
+        { match: "/tempo/api/search", body: { traces: [], metrics: {} } },
+      ]);
+      renderApp("/logs");
+      const updateSW = vi.fn().mockResolvedValue(undefined);
+      setUpdateAvailable(updateSW);
+      markDirty("test-form", true);
+
+      const user = (await import("@testing-library/user-event")).default;
+      await user.click(screen.getByRole("tab", { name: "Traces" }));
+      await screen.findByLabelText("Trace ID");
+
+      expect(updateSW).not.toHaveBeenCalled();
+      expect(getUpdateState().updateSW).toBe(updateSW);
+      markDirty("test-form", false);
     });
   });
 });

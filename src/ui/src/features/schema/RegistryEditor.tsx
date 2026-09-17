@@ -10,6 +10,7 @@ import {
 import YAML from "yaml";
 import { ConfirmButton } from "../../components/ConfirmButton";
 import { invalidateSemantics } from "../../hooks/useSemantics";
+import { useDirtyForm } from "../../lib/dirtyForms";
 import {
   createRegistry,
   deleteRegistry,
@@ -121,6 +122,10 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
   const [newVersion, setNewVersion] = useState("");
   const [error, setError] = useState<string | null>(null);
   const isDirty = text !== initialTextRef.current;
+  // Protects an in-progress edit from a PWA update reload (see
+  // lib/dirtyForms.ts) — a single id since only one editor instance is ever
+  // mounted at a time (one route per registry/new-document).
+  useDirtyForm("schema-registry-editor", isDirty);
 
   // "Upload registry" from the list opens the file picker on arrival, once —
   // the shell rewrites `?tenant=` on the way in, which would otherwise

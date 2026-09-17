@@ -4,6 +4,7 @@ import { MemoryRouter, Route, Routes, useSearchParams } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as consentApi from "../../api/consent";
 import { ApiError } from "../../api/http";
+import { anyDirty, resetDirtyForms } from "../../lib/dirtyForms";
 import { renderWithClient } from "../../test/render";
 import { ConsentView } from "./ConsentView";
 
@@ -37,6 +38,7 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.clearAllMocks();
+  resetDirtyForms();
 });
 
 /** Renders the redirect target `ConsentView` navigates to on a 401, so tests
@@ -263,5 +265,49 @@ describe("ConsentView", () => {
     expect(await screen.findByTestId("login-redirect")).toHaveTextContent(
       `/oauth/consent?${QUERY}`,
     );
+  });
+});
+
+describe("ConsentView dirty tracking", () => {
+  it("is not dirty right after the tenant/dataset selection loads", async () => {
+    renderConsent();
+    await screen.findByRole("heading", { name: /Claude/ });
+
+    expect(anyDirty()).toBe(false);
+  });
+
+  it("becomes dirty once a tenant is checked", async () => {
+    renderConsent();
+    await screen.findByRole("heading", { name: /Claude/ });
+
+    await userEvent.click(screen.getByRole("checkbox", { name: /^globex/ }));
+
+    expect(anyDirty()).toBe(true);
+  });
+
+  it("becomes dirty once a dataset restriction changes, even for an already-checked lone tenant", async () => {
+    vi.mocked(consentApi.consentContext).mockResolvedValueOnce({
+      client_name: "Claude",
+      tenants: [{ id: "acme", role: "member", datasets: ACME_DATASETS }],
+    });
+    renderConsent();
+    await screen.findByRole("heading", { name: /Claude/ });
+    expect(anyDirty()).toBe(false);
+
+    await userEvent.click(
+      screen.getByRole("radio", { name: /Only these datasets in acme/ }),
+    );
+    expect(anyDirty()).toBe(true);
+  });
+
+  it("clears once the decision is submitted (component unmounts on navigation)", async () => {
+    const { unmount } = renderConsent();
+    await screen.findByRole("heading", { name: /Claude/ });
+
+    await userEvent.click(screen.getByRole("checkbox", { name: /^globex/ }));
+    expect(anyDirty()).toBe(true);
+
+    unmount();
+    expect(anyDirty()).toBe(false);
   });
 });

@@ -3,6 +3,7 @@ import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router";
+import { anyDirty, resetDirtyForms } from "../../lib/dirtyForms";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import {
   outletContextRoute,
@@ -118,6 +119,7 @@ function findFetchCall(
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  resetDirtyForms();
 });
 
 const API_KEYS_PATH = "/api/v1/manage/tenants/acme/api-keys";
@@ -972,5 +974,78 @@ describe("ApiKeys page", () => {
     // stylesheet rules, so we check the class).
     const revokedName = screen.getByText("old-key");
     expect(revokedName.className).toContain("revoked");
+  });
+});
+
+describe("create-form dirty tracking", () => {
+  it("is not dirty when the create form is untouched (default scopes only)", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, body: [] },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+
+    expect(anyDirty()).toBe(false);
+  });
+
+  it("becomes dirty once a name is typed", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, body: [] },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+
+    await userEvent.type(
+      screen.getByPlaceholderText("collector-production"),
+      "collector-prod",
+    );
+
+    expect(anyDirty()).toBe(true);
+  });
+
+  it("becomes dirty once a scope is toggled away from the defaults", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, body: [] },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+
+    await userEvent.click(screen.getByLabelText("schema:read"));
+
+    expect(anyDirty()).toBe(true);
+  });
+
+  it("clears after a successful create (form reset)", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, method: "GET", body: [] },
+      { match: API_KEYS_PATH, method: "POST", body: { key: "sdbk_new" } },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+
+    await userEvent.type(
+      screen.getByPlaceholderText("collector-production"),
+      "collector-prod",
+    );
+    expect(anyDirty()).toBe(true);
+
+    await userEvent.click(screen.getByText("Create API key"));
+    await waitFor(() =>
+      expect(findFetchCall(fetchMock, "/api-keys", "POST")).toBeDefined(),
+    );
+
+    expect(anyDirty()).toBe(false);
   });
 });

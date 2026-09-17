@@ -17,6 +17,7 @@ import { ConfirmButton } from "../../components/ConfirmButton";
 import { CopyValueButton } from "../../components/CopyValueButton";
 import { Dialog } from "../../components/Dialog";
 import { whoamiQueryError } from "../../components/QueryError";
+import { useDirtyForm } from "../../lib/dirtyForms";
 import { useOutletState } from "../../lib/outletState";
 import { useWhoami } from "../../lib/useWhoami";
 import {
@@ -116,6 +117,12 @@ function ApiKeysBody({ who }: { who: WhoamiResponse }) {
   const [createOrigins, setCreateOrigins] = useState<string[]>([]);
   const [editOrigins, setEditOrigins] = useState<string[]>([]);
   const [clearOriginRestriction, setClearOriginRestriction] = useState(false);
+  // A typed name or a scope selection away from the create form's own
+  // defaults (see ScopePicker's INGEST_SCOPES `defaultChecked`) is unsaved
+  // input worth protecting from a PWA update reload (see lib/dirtyForms.ts).
+  // Origins have their own tracking inside OriginPicker itself.
+  const [createFormDirty, setCreateFormDirty] = useState(false);
+  useDirtyForm("api-keys-create", createFormDirty);
 
   const tenant = who?.tenant.id;
   const keys = useQuery({
@@ -200,6 +207,20 @@ function ApiKeysBody({ who }: { who: WhoamiResponse }) {
     });
     form.reset();
     setCreateOrigins([]);
+    setCreateFormDirty(false);
+  };
+
+  /** Recomputed on every keystroke/checkbox change in the create form (via
+   * the form's own bubbling `onChange`) — true once the name is non-empty or
+   * the scopes differ from the form's own defaults. */
+  const handleCreateFormChange = (event: React.FormEvent<HTMLFormElement>) => {
+    const data = new FormData(event.currentTarget);
+    const name = String(data.get("name") ?? "").trim();
+    const scopes = selectedScopes(data);
+    const scopesChanged =
+      scopes.length !== INGEST_SCOPES.length ||
+      scopes.some((scope) => !INGEST_SCOPES.includes(scope));
+    setCreateFormDirty(name !== "" || scopesChanged);
   };
 
   const handleUpdate = (
@@ -250,7 +271,11 @@ function ApiKeysBody({ who }: { who: WhoamiResponse }) {
 
       <section className="api-keys-create">
         <h2>Create new key</h2>
-        <form className="api-keys-form" onSubmit={handleCreate}>
+        <form
+          className="api-keys-form"
+          onSubmit={handleCreate}
+          onChange={handleCreateFormChange}
+        >
           <input
             name="name"
             placeholder="collector-production"
