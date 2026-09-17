@@ -1,6 +1,10 @@
-import { screen } from "@testing-library/react";
+import { screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Outlet, Route, Routes } from "react-router";
+import { setTenantContext } from "../../api/http";
+import { DEFAULT_STATE } from "../../lib/urlState";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { SchemaExplorer } from "./SchemaExplorer";
 import { shellOutlet } from "./testFixtures";
@@ -151,6 +155,80 @@ describe("SchemaExplorer", () => {
     expect(
       screen.getByRole("heading", { level: 1, name: "Storage schema" }),
     ).toBeInTheDocument();
+  });
+
+  it("refetches the schema and reissues it with the new X-Tenant-ID when the active tenant changes", async () => {
+    // Mimics the shell: a top-bar tenant switch rewrites the outlet state
+    // (and the imperative header context) without unmounting the page.
+    function Harness() {
+      const [tenant, setTenant] = useState("acme-corp");
+      return (
+        <Routes>
+          <Route
+            element={
+              <Outlet
+                context={{
+                  state: { ...DEFAULT_STATE, tenant, dataset: "" },
+                  update: vi.fn(),
+                }}
+              />
+            }
+          >
+            <Route
+              path="/schema/storage"
+              element={
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTenantContext({ tenant: "globex", dataset: "" });
+                      setTenant("globex");
+                    }}
+                  >
+                    switch tenant
+                  </button>
+                  <SchemaExplorer />
+                </>
+              }
+            />
+          </Route>
+        </Routes>
+      );
+    }
+    setTenantContext({ tenant: "acme-corp", dataset: "" });
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_INSTANCE_ADMIN },
+      { match: "/api/v1/manage/schema", body: SCHEMA },
+    ]);
+    renderWithClient(
+      <MemoryRouter initialEntries={["/schema/storage"]}>
+        <Harness />
+      </MemoryRouter>,
+    );
+    const user = userEvent.setup();
+
+    await screen.findByText("span.name");
+    const schemaCalls = () =>
+      fetchMock.mock.calls.filter(
+        ([input]) =>
+          input instanceof Request &&
+          input.url.includes("/api/v1/manage/schema"),
+      ).length;
+    const before = schemaCalls();
+
+    await user.click(screen.getByRole("button", { name: "switch tenant" }));
+
+    // A new tenant is an unseen query key: it refetches at once instead of
+    // reusing the previous tenant's 60s-fresh cache entry.
+    await waitFor(() => expect(schemaCalls()).toBeGreaterThan(before));
+    const lastCall = fetchMock.mock.calls
+      .filter(
+        ([input]) =>
+          input instanceof Request &&
+          input.url.includes("/api/v1/manage/schema"),
+      )
+      .at(-1)![0] as Request;
+    expect(lastCall.headers.get("X-Tenant-ID")).toBe("globex");
   });
 
   it("marks the current physical schema version and shows its columns", async () => {

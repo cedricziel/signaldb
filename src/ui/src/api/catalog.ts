@@ -44,9 +44,7 @@ export interface EntityPin {
  * genuine `field=null` value (unlikely, but not impossible) can't collide
  * with an absent one. */
 export function pinsKey(pinned: EntityPin[]): string {
-  return pinned
-    .map((p) => `${p.field}=${p.value === null ? "∅" : p.value}`)
-    .join(",");
+  return JSON.stringify(pinned);
 }
 
 const NANOS_PER_MS = 1_000_000;

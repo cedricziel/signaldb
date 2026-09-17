@@ -31,7 +31,11 @@ export function useSchemaSession(): SchemaSession {
   const isInstanceAdmin = !!who?.user?.is_instance_admin;
   return {
     who,
-    isLoading,
+    // `useWhoami` disables its query while `tenant === ""`, which settles it
+    // as `isLoading: false` with no data — indistinguishable, to a caller
+    // gating on this flag, from "loaded, and not an admin". "No tenant yet"
+    // must keep reading as still loading.
+    isLoading: tenant === "" || isLoading,
     isInstanceAdmin,
     isTenantAdmin: isInstanceAdmin || role === "admin",
     tenant,

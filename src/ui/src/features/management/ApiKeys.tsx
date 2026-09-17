@@ -12,6 +12,7 @@ import {
   type ApiKeyScope,
 } from "../../api/management";
 import { toErrorMessage } from "../../api/http";
+import type { WhoamiResponse } from "../../api/session";
 import { ConfirmButton } from "../../components/ConfirmButton";
 import { CopyValueButton } from "../../components/CopyValueButton";
 import { Dialog } from "../../components/Dialog";
@@ -72,7 +73,6 @@ function ScopePicker({
 }
 
 export function ApiKeys() {
-  const queryClient = useQueryClient();
   const { state } = useOutletState();
   const {
     data: who,
@@ -82,6 +82,25 @@ export function ApiKeys() {
     canManage,
   } = useWhoami(state);
 
+  if (isLoading) return null;
+  if (whoamiIsError) return whoamiQueryError("your account", whoamiError);
+
+  if (!who || !canManage) {
+    return <Navigate to="/logs" replace />;
+  }
+
+  // Keyed on the outlet's own tenant (not `who.tenant.id`, which can briefly
+  // lag it during a switch): every piece of local state below — the secret
+  // dialog, which key is being edited, the clear-restriction checkboxes — is
+  // scoped to one tenant's keys, and none of it means anything once the user
+  // has moved to another. Remounting on tenant change resets it all in one
+  // place, and drops any in-flight mutation whose `onSuccess` would otherwise
+  // land on a screen that has since moved on.
+  return <ApiKeysBody key={state.tenant} who={who} />;
+}
+
+function ApiKeysBody({ who }: { who: WhoamiResponse }) {
+  const queryClient = useQueryClient();
   const [secret, setSecret] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editingKeyId, setEditingKeyId] = useState<string | null>(null);
@@ -157,13 +176,6 @@ export function ApiKeys() {
     },
     onError: (value) => setError(toErrorMessage(value)),
   });
-
-  if (isLoading) return null;
-  if (whoamiIsError) return whoamiQueryError("your account", whoamiError);
-
-  if (!who || !canManage) {
-    return <Navigate to="/logs" replace />;
-  }
 
   const datasets = who.datasets;
 

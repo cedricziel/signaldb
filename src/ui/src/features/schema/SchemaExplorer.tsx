@@ -41,7 +41,7 @@ export function SchemaExplorer() {
   } = useWhoami(state);
 
   const schema = useQuery({
-    queryKey: ["schema"],
+    queryKey: ["schema", state.tenant, state.dataset],
     queryFn: () => getSchema(),
     enabled: !!who?.user?.is_instance_admin,
     staleTime: 60_000,

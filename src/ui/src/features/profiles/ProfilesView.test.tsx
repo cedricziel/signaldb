@@ -1,4 +1,11 @@
-import { fireEvent, screen, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
@@ -470,6 +477,53 @@ describe("ProfilesView", () => {
     // TYPES[0].sampleUnit is "nanoseconds"; self=80 ticks -> "80ns", not a
     // bare "80" the way an unknown/empty unit would render.
     expect(tooltip).toHaveTextContent("80ns");
+  });
+
+  it("refetches the by-id profile's type lookup under a new tenant instead of reusing the previous tenant's cache", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/pyroscope/profile-types", body: TYPES },
+      { match: "/api/v1/query", body: FLAMEGRAPH },
+    ]);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const stateAcme = state({
+      profileId: "abc123",
+      profileType: TYPES[0]!.ID,
+      tenant: "acme",
+      dataset: "production",
+    });
+    const stateGlobex = state({
+      profileId: "abc123",
+      profileType: TYPES[0]!.ID,
+      tenant: "globex",
+      dataset: "main",
+    });
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <ProfilesView state={stateAcme} update={vi.fn()} />
+      </QueryClientProvider>,
+    );
+    const profileTypesCalls = () =>
+      fetchMock.mock.calls.filter((call) => {
+        const req = call[0];
+        const url = req instanceof Request ? req.url : String(req);
+        return url.includes("/pyroscope/profile-types");
+      }).length;
+
+    await screen.findByRole("button", { name: "work" });
+    await waitFor(() => expect(profileTypesCalls()).toBeGreaterThan(0));
+    const callsForAcme = profileTypesCalls();
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <ProfilesView state={stateGlobex} update={vi.fn()} />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() =>
+      expect(profileTypesCalls()).toBeGreaterThan(callsForAcme),
+    );
   });
 
   it("shows a not-found message for an unknown profile id", async () => {

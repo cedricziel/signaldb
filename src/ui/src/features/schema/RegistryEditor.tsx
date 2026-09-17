@@ -49,7 +49,13 @@ export function RegistryEditor() {
 
   if (isLoading) return null;
   if (!isTenantAdmin) return <Navigate to={CONVENTIONS} replace />;
-  if (!editing) return <EditorForm stored={undefined} />;
+  // Keyed on tenant/dataset/namespace/version: without it, navigating
+  // between two registries whose data is already cached (no intervening
+  // "Loading…" render to unmount the old instance) keeps the same
+  // `EditorForm` mounted, letting unsaved text from the previous registry
+  // carry into the new one instead of resetting to its own document.
+  const formKey = `${tenant}|${dataset}|${ns ?? ""}|${version ?? ""}`;
+  if (!editing) return <EditorForm key={formKey} stored={undefined} />;
 
   if (stored.isPending) return <p className="schema-note">Loading…</p>;
   if (stored.isError) {
@@ -65,7 +71,7 @@ export function RegistryEditor() {
   if (stored.data.read_only) {
     return <Navigate to={registryPath(ns, version)} replace />;
   }
-  return <EditorForm stored={stored.data} />;
+  return <EditorForm key={formKey} stored={stored.data} />;
 }
 
 type ParseOutcome =

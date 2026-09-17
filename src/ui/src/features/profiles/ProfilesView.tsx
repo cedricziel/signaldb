@@ -29,14 +29,7 @@ interface Props {
 
 export function ProfilesView({ state, update }: Props) {
   if (state.profileId) {
-    return (
-      <SingleProfileView
-        profileId={state.profileId}
-        profileType={state.profileType}
-        range={state.range}
-        update={update}
-      />
-    );
+    return <SingleProfileView state={state} update={update} />;
   }
   if (state.profileCompare) {
     return <CompareView state={state} update={update} />;
@@ -442,20 +435,8 @@ function ComparePane({
   );
 }
 
-function SingleProfileView({
-  profileId,
-  profileType,
-  range,
-  update,
-}: {
-  profileId: string;
-  /** The profile type this profile was fetched for (see `spanProfiles` on
-   * TracesView's linked-profile action), if the caller named one — used
-   * only to look up its unit; "" when unknown, same as the default. */
-  profileType: string;
-  range: TimeRange;
-  update: UpdateFn;
-}) {
+function SingleProfileView({ state, update }: Props) {
+  const { profileId, profileType, range } = state;
   const renderQuery = useQuery({
     queryKey: ["pyro-byid", profileId],
     queryFn: () => fetchFlamegraphById(profileId),
@@ -465,8 +446,11 @@ function SingleProfileView({
   // FlamegraphResult), so without this, every by-id flamegraph's tooltip
   // showed bare tick counts regardless of what it actually measured. Only
   // fetched when the caller named a type, and only for its unit.
+  // Keyed on the full range scope (tenant/dataset included, not just the
+  // range) — the same tenant's profile-type list under a different tenant's
+  // key would otherwise mislabel a sample type this tenant never registered.
   const typesQuery = useQuery({
-    queryKey: ["pyro-types-for-unit", rangeToParam(range)],
+    queryKey: ["pyro-types-for-unit", rangeScopeKey(state)],
     queryFn: () => pyroscopeProfileTypes(resolveRange(range, Date.now())),
     enabled: profileType !== "",
   });

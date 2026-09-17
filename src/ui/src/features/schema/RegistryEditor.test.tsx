@@ -1,5 +1,5 @@
-import { QueryClient } from "@tanstack/react-query";
-import { screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -553,5 +553,90 @@ describe("RegistryEditor", () => {
     await user.click(screen.getByRole("link", { name: "Conventions" }));
     await user.click(screen.getByRole("button", { name: "Leave" }));
     expect(await screen.findByText("List page")).toBeInTheDocument();
+  });
+
+  it("resets the editor's own text when the URL moves to a different registry, dropping unsaved edits from the previous one", async () => {
+    // A second writable registry the in-app nav below jumps to — distinct
+    // content so leftover state from editing acme@1.0.0 is unmistakable.
+    const ACME_REGISTRY_V2 = {
+      ...ACME_REGISTRY,
+      version: "2.0.0",
+      document: { ...ACME_DOCUMENT, version: "2.0.0" },
+    };
+    function JumpToV2() {
+      const navigate = useNavigate();
+      return (
+        <button
+          type="button"
+          onClick={() => navigate("/schema/conventions/acme/2.0.0/edit")}
+        >
+          jump to v2
+        </button>
+      );
+    }
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN },
+      { match: "/api/v1/schema/registries/acme/1.0.0", body: ACME_REGISTRY },
+      {
+        match: "/api/v1/schema/registries/acme/2.0.0",
+        body: ACME_REGISTRY_V2,
+      },
+    ]);
+    // A manually-owned `QueryClient`, pre-warmed with v2's data under the
+    // exact key `RegistryEditor` reads (`shellOutlet()`'s default tenant
+    // "acme", dataset "") — so the jump below resolves synchronously, with
+    // no intervening `stored.isPending` "Loading…" render to incidentally
+    // unmount `EditorForm` on its own and mask the bug this test targets.
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    client.setQueryData(
+      ["schema-registry", "acme", "2.0.0", "acme", ""],
+      ACME_REGISTRY_V2,
+    );
+    render(
+      <QueryClientProvider client={client}>
+        <MemoryRouter initialEntries={["/schema/conventions/acme/1.0.0/edit"]}>
+          <Routes>
+            <Route element={shellOutlet()}>
+              <Route
+                path="/schema/conventions/:ns/:version/edit"
+                element={
+                  <>
+                    <JumpToV2 />
+                    <RegistryEditor />
+                  </>
+                }
+              />
+            </Route>
+          </Routes>
+        </MemoryRouter>
+      </QueryClientProvider>,
+    );
+    const user = userEvent.setup();
+
+    const source = (await screen.findByLabelText(
+      "Registry document",
+    )) as HTMLTextAreaElement;
+    await waitFor(() => expect(source.value).toContain("version: 1.0.0"));
+
+    // Dirty the editor with text that belongs to no fetched document at all
+    // — if it survives the jump below, the bug (a stale `EditorForm`
+    // instance carrying edits into the new registry's context) reproduced.
+    await user.type(source, "\n# unsaved edit for v1");
+    expect(source.value).toContain("# unsaved edit for v1");
+
+    await user.click(screen.getByRole("button", { name: "jump to v2" }));
+
+    await waitFor(() => {
+      const reloaded = screen.getByLabelText(
+        "Registry document",
+      ) as HTMLTextAreaElement;
+      expect(reloaded.value).toContain("version: 2.0.0");
+    });
+    expect(
+      (screen.getByLabelText("Registry document") as HTMLTextAreaElement)
+        .value,
+    ).not.toContain("# unsaved edit for v1");
   });
 });
