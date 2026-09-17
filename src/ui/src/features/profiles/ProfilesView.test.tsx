@@ -239,6 +239,18 @@ describe("ProfilesView", () => {
     expect(await screen.findByText(/profiles_enabled/)).toBeInTheDocument();
   });
 
+  it("does not show the no-profiles note alongside a failed types fetch", async () => {
+    stubFetchRoutes([
+      { match: "/pyroscope/profile-types", body: {}, status: 500 },
+      { match: "/pyroscope/label-names", body: { names: [] } },
+      { match: "/pyroscope/label-values", body: { names: [] } },
+    ]);
+
+    renderWithClient(<ProfilesView state={state()} update={vi.fn()} />);
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    expect(screen.queryByText(/profiles_enabled/)).not.toBeInTheDocument();
+  });
+
   it("shows a truncation note when the flamegraph was capped", async () => {
     stubFetchRoutes([
       ...DISCOVERY_ROUTES,
@@ -368,6 +380,57 @@ describe("ProfilesView", () => {
     await screen.findByRole("button", { name: "main" });
 
     await userEvent.click(screen.getByRole("checkbox", { name: "Compare" }));
+    // Also seeds a distinct baseline (see the next test) — the default
+    // baseline starts equal to `range`, which would otherwise make both
+    // panes identical the moment Compare turns on.
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({ profileCompare: true }),
+    );
+  });
+
+  it("switching on Compare defaults the baseline to the window before the current range", async () => {
+    stubFetchRoutes([
+      ...DISCOVERY_ROUTES,
+      { match: "/api/v1/query", body: FLAMEGRAPH },
+    ]);
+    const update = vi.fn();
+
+    renderWithClient(<ProfilesView state={state()} update={update} />);
+    await screen.findByRole("button", { name: "main" });
+
+    await userEvent.click(screen.getByRole("checkbox", { name: "Compare" }));
+
+    const [patch] = update.mock.calls[0] as [
+      { profileCompare: boolean; profileBaseline: { type: string; fromMs: number; toMs: number } },
+    ];
+    expect(patch.profileCompare).toBe(true);
+    expect(patch.profileBaseline.type).toBe("absolute");
+    // Immediately preceding, same length as the 1h default range.
+    const span = patch.profileBaseline.toMs - patch.profileBaseline.fromMs;
+    expect(span).toBe(3600_000);
+  });
+
+  it("leaves an already-distinct baseline alone when toggling Compare", async () => {
+    stubFetchRoutes([
+      ...DISCOVERY_ROUTES,
+      { match: "/api/v1/query", body: FLAMEGRAPH },
+    ]);
+    const update = vi.fn();
+    const distinctBaseline = {
+      type: "absolute" as const,
+      fromMs: 1,
+      toMs: 2,
+    };
+
+    renderWithClient(
+      <ProfilesView
+        state={state({ profileBaseline: distinctBaseline })}
+        update={update}
+      />,
+    );
+    await screen.findByRole("button", { name: "main" });
+
+    await userEvent.click(screen.getByRole("checkbox", { name: "Compare" }));
     expect(update).toHaveBeenCalledWith({ profileCompare: true });
   });
 
@@ -386,6 +449,27 @@ describe("ProfilesView", () => {
 
     await userEvent.click(screen.getByRole("button", { name: /profiles/ }));
     expect(update).toHaveBeenCalledWith({ profileId: "" });
+  });
+
+  it("carries the unit from the named profile type into a by-id profile's tooltip", async () => {
+    stubFetchRoutes([
+      { match: "/pyroscope/profile-types", body: TYPES },
+      { match: "/api/v1/query", body: FLAMEGRAPH },
+    ]);
+
+    renderWithClient(
+      <ProfilesView
+        state={state({ profileId: "abc123", profileType: TYPES[0]!.ID })}
+        update={vi.fn()}
+      />,
+    );
+
+    const work = await screen.findByRole("button", { name: "work" });
+    fireEvent.pointerMove(work, { clientX: 10, clientY: 10 });
+    const tooltip = screen.getByRole("tooltip");
+    // TYPES[0].sampleUnit is "nanoseconds"; self=80 ticks -> "80ns", not a
+    // bare "80" the way an unknown/empty unit would render.
+    expect(tooltip).toHaveTextContent("80ns");
   });
 
   it("shows a not-found message for an unknown profile id", async () => {

@@ -64,6 +64,33 @@ export function emptyQuery(ref: string): MetricQuery {
   return { ref, metric: "", filters: [] };
 }
 
+/**
+ * Defensive JSON parse for a builder query round-tripped through the URL
+ * (`?mq=` — see lib/urlState.ts's `metricQuery`). Malformed JSON or a value
+ * that isn't shaped like a `MetricQuery` degrades to `null` rather than
+ * throwing, so a corrupted/hand-edited link falls back to an empty builder
+ * instead of crashing the view.
+ */
+export function parseMetricQuery(raw: string): MetricQuery | null {
+  if (raw === "") return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (
+    parsed !== null &&
+    typeof parsed === "object" &&
+    typeof (parsed as MetricQuery).ref === "string" &&
+    typeof (parsed as MetricQuery).metric === "string" &&
+    Array.isArray((parsed as MetricQuery).filters)
+  ) {
+    return parsed as MetricQuery;
+  }
+  return null;
+}
+
 /** `metric{label=~"…", …}` — or bare `metric` when there are no valid filters. */
 export function buildSelector(metric: string, filters: LabelFilter[]): string {
   const matchers = filters

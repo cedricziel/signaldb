@@ -17,7 +17,7 @@ import {
 } from "../../lib/traceFilters";
 import { NOT_SET, compositeKey } from "../../lib/traceGroups";
 import {
-  formatTimestamp,
+  formatTimestampForRange,
   nanosToMs,
   rangeScopeKey,
   resolveRange,
@@ -483,7 +483,19 @@ export function EntityTable({
               >
                 {g.values.map((v, i) => (
                   <td key={entity.identity[i]} title={v ?? undefined}>
-                    {v ?? NOT_SET}
+                    {/* Only the primary identity cell is a button: it's the
+                        one drill target a row has, mirroring
+                        MemberTable.tsx's span-name cell. No own onClick — a
+                        native button dispatches a click on Enter/Space too,
+                        which bubbles to the row's own handler above, making
+                        the row keyboard-reachable without a second handler. */}
+                    {onRowClick && i === 0 ? (
+                      <button type="button" className="trace-open">
+                        {v ?? NOT_SET}
+                      </button>
+                    ) : (
+                      v ?? NOT_SET
+                    )}
                   </td>
                 ))}
                 <td className="num">{redRate(g.red, rangeSeconds)}</td>
@@ -492,7 +504,7 @@ export function EntityTable({
                 </td>
                 <td className="num">{redDuration(g.red, "p50Ms")}</td>
                 <td className="num">{redDuration(g.red, "p95Ms")}</td>
-                <td>{formatTimestamp(nanosToMs(g.lastNs))}</td>
+                <td>{formatTimestampForRange(nanosToMs(g.lastNs), range)}</td>
                 {sparklineLabel && (
                   <td className="entity-sparkline-cell">
                     <EntitySparkline

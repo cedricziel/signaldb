@@ -4,6 +4,7 @@ import "uplot/dist/uPlot.min.css";
 import { seriesName, type PromSeries } from "../../api/prom";
 import { VizTooltip, type VizTooltipRow } from "../../components/VizTooltip";
 import { alignSeries, seriesColorVar } from "../../lib/promSeries";
+import { subscribeTheme } from "../../lib/theme";
 import { formatTimestamp, formatValue } from "../../lib/vizFormat";
 
 interface Props {
@@ -26,33 +27,55 @@ export interface CursorPlot {
   over: HTMLElement;
 }
 
+/** Rows shown at once; past this, a chart with many series (a busy metric
+ * builder formula, a high-cardinality group-by) would otherwise grow a
+ * tooltip taller than the chart itself. */
+const MAX_TOOLTIP_ROWS = 10;
+
 /**
  * Resolve the cursor's x-aligned index into tooltip rows: the timestamp at
  * the panel's resolution, and one row per series with its swatch and value —
  * a muted `–` where the series has no sample rather than dropping the row.
+ * Past {@link MAX_TOOLTIP_ROWS}, only the largest-magnitude values are shown
+ * (a missing sample sorts last), with the rest summarized in `footer`.
  */
 export function rowsForCursorIndex(
   u: CursorPlot,
   idx: number,
   unit = "",
-): { title: string; rows: VizTooltipRow[] } {
+): { title: string; rows: VizTooltipRow[]; footer?: string } {
   const xs = u.data[0] ?? [];
   const t = Number(xs[idx]);
   const resolution =
     xs.length > 1 ? Math.abs(Number(xs[1]) - Number(xs[0])) : 60_000;
-  const rows: VizTooltipRow[] = [];
+  const all = [];
   for (let i = 1; i < u.series.length; i++) {
     const v = u.data[i]?.[idx];
     const missing = v === null || v === undefined || Number.isNaN(v);
     const stroke = u.series[i]?.stroke;
-    rows.push({
-      swatch: typeof stroke === "string" ? stroke : undefined,
-      label: u.series[i]?.label ?? `series ${i}`,
-      value: missing ? "–" : formatValue(v, unit),
-      muted: missing,
+    all.push({
+      raw: missing ? -Infinity : Number(v),
+      row: {
+        swatch: typeof stroke === "string" ? stroke : undefined,
+        label: u.series[i]?.label ?? `series ${i}`,
+        value: missing ? "–" : formatValue(v, unit),
+        muted: missing,
+      } satisfies VizTooltipRow,
     });
   }
-  return { title: formatTimestamp(t, resolution), rows };
+  const title = formatTimestamp(t, resolution);
+  if (all.length <= MAX_TOOLTIP_ROWS) {
+    return { title, rows: all.map((r) => r.row) };
+  }
+  const shown = [...all]
+    .sort((a, b) => b.raw - a.raw)
+    .slice(0, MAX_TOOLTIP_ROWS)
+    .map((r) => r.row);
+  return {
+    title,
+    rows: shown,
+    footer: `+${all.length - MAX_TOOLTIP_ROWS} more`,
+  };
 }
 
 function cssColor(varExpr: string, el: HTMLElement): string {
@@ -66,6 +89,7 @@ interface Tip {
   host: { width: number; height: number };
   title: string;
   rows: VizTooltipRow[];
+  footer?: string;
 }
 
 /** Hoisted so a stable default keeps the chart effect from re-running. */
@@ -79,6 +103,13 @@ export function MetricsChart({
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [tip, setTip] = useState<Tip | null>(null);
+  // Bumped whenever the effective theme may have changed (a toggle, or a
+  // system-level prefers-color-scheme flip) so the effect below re-runs and
+  // rebuilds the chart with freshly resolved CSS variables — a chart drawn
+  // once at mount otherwise keeps the colours (grid, ticks, series strokes)
+  // of whichever theme was active then.
+  const [themeTick, setThemeTick] = useState(0);
+  useEffect(() => subscribeTheme(() => setThemeTick((t) => t + 1)), []);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -95,7 +126,7 @@ export function MetricsChart({
       }
       const hostRect = host.getBoundingClientRect();
       const overRect = u.over.getBoundingClientRect();
-      const { title, rows } = rowsForCursorIndex(u, idx, unit);
+      const { title, rows, footer } = rowsForCursorIndex(u, idx, unit);
       setTip({
         anchor: {
           x: (u.cursor.left ?? 0) + overRect.left - hostRect.left,
@@ -104,9 +135,21 @@ export function MetricsChart({
         host: { width: hostRect.width, height: hostRect.height },
         title,
         rows,
+        footer,
       });
     };
     const initialWidth = host.clientWidth || 800;
+    const gridStroke = cssColor("var(--border)", host);
+    const tickStroke = cssColor("var(--dim)", host);
+    const font = getComputedStyle(host).getPropertyValue("--ui").trim();
+    // Both axes read the same theme colours; built once and shared rather
+    // than repeating the same four-key object per axis.
+    const axis: uPlot.Axis = {
+      stroke: tickStroke,
+      ticks: { stroke: tickStroke },
+      grid: { stroke: gridStroke },
+      font: font ? `12px ${font}` : undefined,
+    };
     const make = () =>
       new uPlot(
         {
@@ -123,10 +166,7 @@ export function MetricsChart({
               points: { show: false },
             })),
           ],
-          axes: [
-            { stroke: cssColor("var(--dim)", host) },
-            { stroke: cssColor("var(--dim)", host) },
-          ],
+          axes: [axis, axis],
           legend: { show: false },
           hooks: {
             setCursor: [(u) => onCursor(u as unknown as CursorPlot)],
@@ -161,7 +201,7 @@ export function MetricsChart({
       plot.destroy();
       setTip(null);
     };
-  }, [series, height, unit, labelOf]);
+  }, [series, height, unit, labelOf, themeTick]);
 
   return (
     <div ref={hostRef} className="viz-host" data-testid="metrics-chart">
@@ -171,6 +211,7 @@ export function MetricsChart({
           host={tip.host}
           title={tip.title}
           rows={tip.rows}
+          footer={tip.footer}
         />
       )}
     </div>

@@ -88,11 +88,11 @@ describe("MetricsView", () => {
     await userEvent.click(screen.getByRole("tab", { name: "PromQL" }));
     await userEvent.type(screen.getByLabelText("PromQL query"), "up ");
     await userEvent.click(screen.getByRole("button", { name: "Run" }));
-    expect(update).toHaveBeenCalledWith({ promql: "up" });
+    expect(update).toHaveBeenCalledWith({ promql: "up", metricQuery: "" });
     expect(runIrQuery).not.toHaveBeenCalled();
   });
 
-  it("runs a solo builder query via Query IR, not PromQL", async () => {
+  it("runs a solo builder query via Query IR, not PromQL, and writes it to ?mq= for reload", async () => {
     stubFetchRoutes([
       {
         match: /label\/__name__\/values/,
@@ -108,7 +108,12 @@ describe("MetricsView", () => {
     );
     await userEvent.click(screen.getByRole("button", { name: "Run" }));
     expect(update).toHaveBeenCalledWith({
-      promql: "signaldb.wal.entries_processed",
+      metricQuery: expect.stringContaining("signaldb.wal.entries_processed"),
+      promql: "",
+    });
+    const [{ metricQuery }] = update.mock.calls[0] as [{ metricQuery: string }];
+    expect(JSON.parse(metricQuery)).toMatchObject({
+      metric: "signaldb.wal.entries_processed",
     });
     expect(await screen.findByTestId("metrics-chart")).toHaveTextContent(
       "chart:2",
@@ -118,6 +123,33 @@ describe("MetricsView", () => {
         from: "metrics",
         result: "series",
       }),
+    );
+  });
+
+  it("reloads a shared ?mq= link with the builder populated, querying via IR", async () => {
+    stubFetchRoutes([
+      {
+        match: /label\/__name__\/values/,
+        body: { status: "success", data: [] },
+      },
+      { match: /\/labels\?/, body: { status: "success", data: [] } },
+    ]);
+    runIrQuery.mockResolvedValue(IR_SERIES);
+    const mq = JSON.stringify({
+      ref: "a",
+      metric: "signaldb.wal.entries_processed",
+      filters: [],
+    });
+    renderView({ metricQuery: mq, promql: "" });
+
+    expect(screen.getByLabelText("Metric")).toHaveValue(
+      "signaldb.wal.entries_processed",
+    );
+    expect(await screen.findByTestId("metrics-chart")).toHaveTextContent(
+      "chart:2",
+    );
+    expect(runIrQuery).toHaveBeenCalledWith(
+      expect.objectContaining({ from: "metrics", result: "series" }),
     );
   });
 
@@ -143,6 +175,7 @@ describe("MetricsView", () => {
     await userEvent.click(screen.getByRole("button", { name: "Run" }));
     expect(update).toHaveBeenCalledWith({
       promql: "((http_errors) / (http_total)) * 100",
+      metricQuery: "",
     });
     // A formula spans multiple queries — no single metric.name to filter on
     // in the minimal metrics IR source — so it stays on PromQL.
@@ -158,6 +191,8 @@ describe("MetricsView", () => {
     const legend = screen.getByRole("list", { name: "Series" });
     expect(legend).toHaveTextContent('up{service_name="checkout"}');
     expect(legend).toHaveTextContent('up{service_name="payments"}');
+    // A `?promql=` link with no `?mq=` stays on the PromQL path.
+    expect(runIrQuery).not.toHaveBeenCalled();
   });
 
   it("copies a rendered series label", async () => {

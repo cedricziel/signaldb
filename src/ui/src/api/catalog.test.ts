@@ -120,6 +120,22 @@ describe("buildEntitySourceDoc", () => {
       where: { field: "db.namespace", op: "eq", value: "orders" },
     });
   });
+
+  // A "(not set)" identity dimension pins to "absent on this record", not
+  // to an unconstrained field — otherwise a two-dimension entity's KPIs
+  // could be pulled from a different entity that happens to have a value
+  // for the "(not set)" dimension.
+  it("compiles a null-valued pin to a negated exists check, not an eq", () => {
+    const doc = buildEntitySourceDoc(service, "traces", range, [
+      { field: "service.name", value: "gateway" },
+      { field: "service.namespace", value: null },
+    ]);
+    expect(doc.pipeline?.slice(0, 3)).toEqual([
+      { where: { field: "span_kind", op: "eq", value: "Server" } },
+      { where: { field: "service.name", op: "eq", value: "gateway" } },
+      { where: { not: { field: "service.namespace", op: "exists" } } },
+    ]);
+  });
 });
 
 describe("fetchCatalogEntities", () => {

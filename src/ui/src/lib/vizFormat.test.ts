@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   compactCount,
+  formatErrorRate,
   formatRange,
   formatShare,
   formatTimeBucket,
@@ -93,5 +94,26 @@ describe("formatShare", () => {
   it("renders a part of a total as a one-decimal percentage", () => {
     expect(formatShare(2, 3)).toBe("66.7%");
     expect(formatShare(0, 0)).toBe("0%");
+  });
+});
+
+describe("formatErrorRate", () => {
+  it("renders a dash for no measurement at all", () => {
+    expect(formatErrorRate(0, 0)).toBe("–");
+  });
+
+  it("renders a dash for a genuinely clean rate, not a bare 0%", () => {
+    expect(formatErrorRate(0, 500)).toBe("–");
+  });
+
+  it("renders <1% for a nonzero rate that rounds to zero", () => {
+    // 1/500 = 0.2%, which would previously round to a misleadingly clean 0%.
+    expect(formatErrorRate(1, 500)).toBe("<1%");
+    expect(formatErrorRate(2, 500)).toBe("<1%");
+  });
+
+  it("rounds a rate at or above the <1% cutoff to the nearest whole percent", () => {
+    expect(formatErrorRate(3, 500)).toBe("1%"); // 0.6%, rounds to 1%
+    expect(formatErrorRate(1, 4)).toBe("25%");
   });
 });

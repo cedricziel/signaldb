@@ -49,18 +49,25 @@ export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
   } = useEntityMetrics(entity, range, rangeKey);
   const names = metrics.map((m) => m.name).join(",");
 
+  // `api/entityMetricSeries.ts` compiles every pin as a plain equality
+  // match; it has no "not exists" case for a null pin the way
+  // `buildEntitySourceDoc` does (see `EntityPin` in api/catalog.ts), so a
+  // "(not set)" dimension is left out here rather than compiled to a
+  // metric.name-matching-nothing `eq: null` predicate.
+  const metricPins = pinned.filter((p) => p.value !== null);
+
   const series = useQuery({
     queryKey: [
       "entity-metric-series",
       entity.id,
       rangeKey,
       names,
-      pinsKey(pinned),
+      pinsKey(metricPins),
     ],
     queryFn: () =>
       fetchEntityMetricSeries(
         metrics,
-        pinned,
+        metricPins,
         range,
         // The same snapped step the Metrics tab uses, so a tile and a chart of
         // the same metric bucket identically.

@@ -57,6 +57,15 @@ export interface ExploreState {
   grain: GroupGrain;
   /** PromQL expression for the metrics view. */
   promql: string;
+  /**
+   * The metrics builder's single query, JSON-encoded, when the last Run was
+   * within the minimal metrics IR source's coverage (see api/metricsIr.ts) —
+   * "" when the last run used the PromQL escape hatch (or a builder query
+   * outside that coverage, which falls back to `promql` too). Only one of
+   * `metricQuery`/`promql` is ever set at a time, so a reload can tell which
+   * path produced the chart on screen.
+   */
+  metricQuery: string;
   /** Profile type id (e.g. `cpu:nanoseconds`) — "" auto-picks the first. */
   profileType: string;
   /** Service filter for the profiles view — "" means all services. */
@@ -79,6 +88,17 @@ export interface ExploreState {
    */
   tenant: string;
   dataset: string;
+  /** Query IR builder's source (logs/traces/profiles) on the Query tab. */
+  querySource: "logs" | "traces" | "profiles";
+  /** Query IR builder's declared result envelope on the Query tab. */
+  queryResult: "rows" | "series" | "table";
+  /** Query IR builder's filter chips on the Query tab — the `f`-style
+   * LabelFilter encoding, under its own `qf` param so it doesn't collide
+   * with the logs tab's own `f` filters. */
+  queryFilters: LabelFilter[];
+  /** Whether the Query tab has been run at least once — gates the result
+   * query and distinguishes "not run yet" from "ran and returned nothing". */
+  queryRun: boolean;
   /** Selected entity type on the catalog tab (an `EntityTypeDef.id`). */
   catalogEntity: string;
   /**
@@ -111,6 +131,11 @@ export const DEFAULT_STATE: ExploreState = {
   groupBy: DEFAULT_GROUP_BY,
   grain: DEFAULT_GRAIN,
   promql: "",
+  metricQuery: "",
+  querySource: "logs",
+  queryResult: "rows",
+  queryFilters: [],
+  queryRun: false,
   profileType: "",
   profileService: "",
   profileMatcherLabel: "",
@@ -266,6 +291,18 @@ export function parseExploreState(search: string): ExploreState {
     groupBy: p.get("groupBy") || DEFAULT_GROUP_BY,
     grain: grainFromParam(p.get("grain")),
     promql: p.get("promql") ?? "",
+    // Defensive JSON parsing of the encoded MetricQuery happens where it's
+    // consumed (features/metrics/MetricsView.tsx's parseMetricQuery) — a
+    // malformed value degrades to an unseeded builder there, same as any
+    // other malformed param degrading to its default here.
+    metricQuery: p.get("mq") ?? "",
+    querySource: querySourceFromParam(p.get("qsrc")),
+    queryResult: queryResultFromParam(p.get("qres")),
+    queryFilters: p
+      .getAll("qf")
+      .map(filterFromParam)
+      .filter((f): f is LabelFilter => f !== null),
+    queryRun: p.get("qrun") === "1",
     profileType: p.get("ptype") ?? "",
     profileService: p.get("psvc") ?? "",
     profileMatcherLabel: p.get("plabel") ?? "",
@@ -299,6 +336,25 @@ function stepFromParam(value: string | null): string {
   return durationToSeconds(value) === null ? "" : value;
 }
 
+/** An unknown source degrades to the default rather than rejecting the URL. */
+function querySourceFromParam(
+  value: string | null,
+): ExploreState["querySource"] {
+  return value === "logs" || value === "traces" || value === "profiles"
+    ? value
+    : DEFAULT_STATE.querySource;
+}
+
+/** An unknown result envelope degrades to the default rather than rejecting
+ * the URL. */
+function queryResultFromParam(
+  value: string | null,
+): ExploreState["queryResult"] {
+  return value === "rows" || value === "series" || value === "table"
+    ? value
+    : DEFAULT_STATE.queryResult;
+}
+
 export function buildSearch(state: ExploreState): string {
   const p = new URLSearchParams();
   const rangeParam = rangeToParam(state.range);
@@ -317,6 +373,15 @@ export function buildSearch(state: ExploreState): string {
   if (state.groupBy !== DEFAULT_GROUP_BY) p.set("groupBy", state.groupBy);
   if (state.grain !== DEFAULT_GRAIN) p.set("grain", state.grain);
   if (state.promql) p.set("promql", state.promql);
+  if (state.metricQuery) p.set("mq", state.metricQuery);
+  if (state.querySource !== DEFAULT_STATE.querySource) {
+    p.set("qsrc", state.querySource);
+  }
+  if (state.queryResult !== DEFAULT_STATE.queryResult) {
+    p.set("qres", state.queryResult);
+  }
+  for (const f of state.queryFilters) p.append("qf", filterToParam(f));
+  if (state.queryRun) p.set("qrun", "1");
   if (state.profileType) p.set("ptype", state.profileType);
   if (state.profileService) p.set("psvc", state.profileService);
   if (state.profileMatcherLabel) p.set("plabel", state.profileMatcherLabel);

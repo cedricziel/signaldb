@@ -3,6 +3,7 @@ import { NOT_SET, compositeKey } from "./traceGroups";
 import {
   buildPath,
   buildSearch,
+  crossSignalSearch,
   DEFAULT_STATE,
   decodeCatalogSegment,
   encodeCatalogSegment,
@@ -98,12 +99,51 @@ describe("buildSearch", () => {
       group: "POST /checkout",
       groupBy: "resource.host.name",
       promql: "rate(x[5m])",
+      metricQuery: JSON.stringify({ ref: "a", metric: "up", filters: [] }),
+      querySource: "traces" as const,
+      queryResult: "series" as const,
+      queryFilters: [{ label: "kind", op: "=" as const, value: "server" }],
+      queryRun: true,
       profileType: "cpu:nanoseconds",
       profileService: "signaldb-router",
       tenant: "acme",
       dataset: "production",
     };
     expect(parseExploreState(buildSearch(state))).toEqual(state);
+  });
+
+  it("round-trips the metrics builder query through ?mq=", () => {
+    const mq = JSON.stringify({ ref: "a", metric: "up", filters: [] });
+    const state = { ...DEFAULT_STATE, metricQuery: mq };
+    const search = buildSearch(state);
+    expect(search).toContain("mq=");
+    expect(parseExploreState(search).metricQuery).toBe(mq);
+  });
+
+  it("drops the metrics builder query when switching signals", () => {
+    const mq = JSON.stringify({ ref: "a", metric: "up", filters: [] });
+    const search = crossSignalSearch({ ...DEFAULT_STATE, metricQuery: mq });
+    expect(search).not.toContain("mq=");
+  });
+
+  it("round-trips the Query tab's builder state", () => {
+    const state = {
+      ...DEFAULT_STATE,
+      querySource: "traces" as const,
+      queryResult: "table" as const,
+      queryFilters: [{ label: "service_name", op: "=" as const, value: "x" }],
+      queryRun: true,
+    };
+    const search = buildSearch(state);
+    expect(parseExploreState(search)).toEqual(state);
+  });
+
+  it("omits the Query tab params at their defaults", () => {
+    const search = buildSearch(DEFAULT_STATE);
+    expect(search).not.toContain("qsrc");
+    expect(search).not.toContain("qres");
+    expect(search).not.toContain("qf=");
+    expect(search).not.toContain("qrun");
   });
 
   it("omits the groupBy param for the default dimension", () => {

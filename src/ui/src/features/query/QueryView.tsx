@@ -5,7 +5,7 @@
 // api/gen), with no dialect-string compilation in the browser. The result view
 // is chosen from the declared envelope (`rows`→list, `series`→chart,
 // `table`→topN) before results arrive.
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { runIrQuery } from "../../api/queryIr";
@@ -20,7 +20,15 @@ import "../metrics/metrics.css";
 import "./query.css";
 import { FilterChips } from "../logs/FilterChips";
 import type { LabelFilter } from "../../lib/filters";
-import { msToNanos, type TimeRange } from "../../lib/time";
+import {
+  msToNanos,
+  nanosToMs,
+  resolveRange,
+  stepForRange,
+  type TimeRange,
+} from "../../lib/time";
+import { formatTimestamp } from "../../lib/vizFormat";
+import type { ExploreState } from "../../lib/urlState";
 import {
   buildIrDocument,
   type IrAggregate,
@@ -55,11 +63,13 @@ function toIrFilters(filters: LabelFilter[]): IrFilter[] {
 
 /** The aggregate implied by a declared envelope, so the emitted terminal
  * relation matches (`series` needs a step aggregate; `table` a grouped one).
- * Both sources share the `service.name` logical field. */
-function aggregateFor(result: IrResult): IrAggregate | undefined {
+ * Both sources share the `service.name` logical field. `step` is sized to
+ * the selected range (see `stepForRange`) rather than a fixed bucket width,
+ * so a wide range doesn't ask for thousands of one-point buckets. */
+function aggregateFor(result: IrResult, step: string): IrAggregate | undefined {
   const groupField = "service.name";
   if (result === "series") {
-    return { by: [groupField], aggs: [{ fn: "count", as: "n" }], step: "1m" };
+    return { by: [groupField], aggs: [{ fn: "count", as: "n" }], step };
   }
   if (result === "table") {
     return { by: [groupField], aggs: [{ fn: "count", as: "n" }] };
@@ -70,37 +80,62 @@ function aggregateFor(result: IrResult): IrAggregate | undefined {
 /** Map the shared explore time range to IR range anchors: a relative range
  * becomes a `now-Ns` anchor (resolved once, server-side), an absolute range
  * becomes nanosecond strings. */
-function irRange(range: TimeRange | undefined): { from: string; to: string } {
-  if (!range) return { from: "now-1h", to: "now" };
+function irRange(range: TimeRange): { from: string; to: string } {
   if (range.type === "absolute") {
     return { from: msToNanos(range.fromMs), to: msToNanos(range.toMs) };
   }
   return { from: `now-${range.seconds}s`, to: "now" };
 }
 
-export function QueryView({ range }: { range?: TimeRange } = {}) {
-  const [source, setSource] = useState<IrSource>("logs");
-  const [result, setResult] = useState<IrResult>("rows");
-  const [filters, setFilters] = useState<LabelFilter[]>([]);
-  const [submitted, setSubmitted] = useState<QueryIrRequest | null>(null);
+interface Props {
+  state: ExploreState;
+  update: (patch: Partial<ExploreState>) => void;
+}
+
+export function QueryView({ state, update }: Props) {
+  const source = state.querySource;
+  const result = state.queryResult;
+  const filters = state.queryFilters;
+  const run = state.queryRun;
+
+  const setSource = (v: IrSource) => update({ querySource: v });
+  const setResult = (v: IrResult) => update({ queryResult: v });
+  const setFilters = (fs: LabelFilter[]) => update({ queryFilters: fs });
+
+  const resolved = useMemo(
+    () => resolveRange(state.range, Date.now()),
+    [state.range],
+  );
+  const step = stepForRange(resolved);
 
   const document = useMemo<QueryIrRequest>(
     () =>
       buildIrDocument({
         source,
         result,
-        range: irRange(range),
+        range: irRange(state.range),
         filters: toIrFilters(filters),
-        aggregate: aggregateFor(result),
+        aggregate: aggregateFor(result, step),
       }),
-    [source, result, filters, range],
+    [source, result, filters, state.range, step],
   );
 
   const query = useQuery({
-    queryKey: ["ir-query", JSON.stringify(submitted)],
-    queryFn: () => runIrQuery(submitted as QueryIrRequest),
-    enabled: submitted !== null,
+    queryKey: ["ir-query", JSON.stringify(document), run],
+    queryFn: () => runIrQuery(document),
+    enabled: run,
   });
+
+  // A relative range must slide forward on a second Run even though the
+  // document (and therefore the query key) is unchanged — the anchors
+  // resolve server-side, so only a fresh request picks up a later "now".
+  const runQuery = () => {
+    if (run) {
+      void query.refetch();
+    } else {
+      update({ queryRun: true });
+    }
+  };
 
   // The view is a function of the *declared* envelope, available before results.
   const view = viewForResult(result);
@@ -133,16 +168,14 @@ export function QueryView({ range }: { range?: TimeRange } = {}) {
           </select>
         </label>
         <FilterChips filters={filters} labels={[]} onChange={setFilters} />
-        <button type="button" onClick={() => setSubmitted(document)}>
+        <button type="button" onClick={runQuery}>
           Run
         </button>
       </div>
 
       <div className="query-ir-result" data-testid={`ir-view-${view}`}>
         {query.isError && <QueryError what="results" error={query.error} />}
-        {query.isLoading && submitted && (
-          <div className="view-note">Loading…</div>
-        )}
+        {query.isLoading && run && <div className="view-note">Loading…</div>}
         {query.data && <QueryWarnings data={query.data} />}
         {query.data && <EnvelopeResult view={view} data={query.data} />}
       </div>
@@ -186,6 +219,38 @@ function EnvelopeResult({
   return <RowsTable data={data} topN={view === "table"} />;
 }
 
+/** A column carrying an absolute point in time by its own name. */
+const TIME_COLUMN_RE = /(time|timestamp)$/i;
+
+/** Epoch-nanosecond timestamps (19 digits) show up even in columns not named
+ * `*time`/`*timestamp` — e.g. a raw `start_time_unix_nano` alias — so a value
+ * matching the shape is formatted too, not just a name match. */
+const EPOCH_NANOS_RE = /^\d{19}$/;
+
+/** A cell that is nothing but digits — the shape both timestamp checks below
+ * require before testing column name or digit count. */
+const NUMERIC_RE = /^\d+$/;
+
+/** Above this length a copy affordance earns its keep; below it, the value
+ * is already easy to select and retyping "Copy" in every short cell (an id,
+ * a count, a short string) is more chrome than help. */
+const COPY_THRESHOLD = 40;
+
+/** One rows/topN table cell: an epoch-nanosecond value (by column name or by
+ * shape) renders as an absolute timestamp; a long string gets a copy button;
+ * anything else renders as plain text. */
+function RowsCell({ column, cell }: { column: string; cell: unknown }) {
+  const value = formatCell(cell);
+  const numeric = NUMERIC_RE.test(value);
+  if (numeric && (TIME_COLUMN_RE.test(column) || EPOCH_NANOS_RE.test(value))) {
+    return <span>{formatTimestamp(nanosToMs(value), 0)}</span>;
+  }
+  if (value.length > COPY_THRESHOLD) {
+    return <AttributeValue value={value} label={`cell ${value}`} />;
+  }
+  return <span>{value}</span>;
+}
+
 function RowsTable({ data, topN }: { data: QueryIrResponse; topN: boolean }) {
   const columns = data.columns ?? [];
   const rows = data.rows ?? [];
@@ -193,29 +258,28 @@ function RowsTable({ data, topN }: { data: QueryIrResponse; topN: boolean }) {
     return <div className="view-note">No rows in this window.</div>;
   }
   return (
-    <table className={topN ? "ir-topn" : "ir-rows"}>
-      <thead>
-        <tr>
-          {columns.map((c) => (
-            <th key={c.name}>{c.name}</th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row, i) => (
-          <tr key={i}>
-            {row.map((cell, j) => {
-              const value = formatCell(cell);
-              return (
-                <td key={j}>
-                  <AttributeValue value={value} label={`cell ${value}`} />
-                </td>
-              );
-            })}
+    <div className="table-scroll">
+      <table className={topN ? "ir-topn" : "ir-rows"}>
+        <thead>
+          <tr>
+            {columns.map((c) => (
+              <th key={c.name}>{c.name}</th>
+            ))}
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i}>
+              {row.map((cell, j) => (
+                <td key={j}>
+                  <RowsCell column={columns[j]?.name ?? ""} cell={cell} />
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -229,7 +293,7 @@ function SeriesChart({ data }: { data: QueryIrResponse }) {
   const series = useMemo(() => irSeriesToPromSeries(data.series ?? []), [data]);
   return (
     <div className="ir-series">
-      {series.length === 0 && <div>No series</div>}
+      {series.length === 0 && <div className="view-note">No series</div>}
       {series.length > 0 && (
         <div className="mchart-wrap">
           <MetricsChart series={series} labelOf={irSeriesLabel} />

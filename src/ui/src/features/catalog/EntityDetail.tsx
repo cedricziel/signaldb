@@ -15,7 +15,7 @@ import { QueryError } from "../../components/QueryError";
 import { DependencyBreakdown } from "./DependencyBreakdown";
 import { EntityMetricsPanel } from "./EntityMetricsPanel";
 import {
-  formatTimestamp,
+  formatTimestampForRange,
   nanosToMs,
   rangeScopeKey,
   type ResolvedRange,
@@ -70,9 +70,17 @@ export function EntityDetail({ entity, range, state, update }: Props) {
     state.catalogPrimary,
     entity.identity,
   );
-  const primaryPinned: EntityPin[] = entity.identity
-    .map((field, i) => ({ field, value: primaryValues[i] }))
-    .filter((p): p is EntityPin => p.value != null);
+  // `parseCompositeKey` always returns one entry per identity dimension
+  // (null for a "(not set)" segment), so every dimension is pinned — a
+  // dimension whose value is null pins to "absent on this record" (see
+  // `EntityPin`/`buildEntitySourceDoc` in api/catalog.ts), not left
+  // unconstrained. Dropping a null value here used to let the KPI query
+  // match *any* value for that dimension, pulling in a different entity's
+  // numbers under this one's name.
+  const primaryPinned: EntityPin[] = entity.identity.map((field, i) => ({
+    field,
+    value: primaryValues[i] ?? null,
+  }));
 
   const breakdownEntity: EntityTypeDef | undefined = entity.breakdown
     ? {
@@ -146,8 +154,18 @@ export function EntityDetail({ entity, range, state, update }: Props) {
 
   const drillable = isDrillable(entity);
   const openTraces = () => {
+    const filters = drillFilters(entity, primaryValues);
+    // At the breakdown level (an operation within a service, say) the
+    // parent entity's own filters say nothing about *which* operation was
+    // drilled into — without this, "View matching traces →" from an
+    // operation page dropped the operation and showed every trace for the
+    // whole service.
+    const withBreakdown =
+      atSecondary && breakdownEntity?.identity[0] === "span.name"
+        ? [...filters, { field: "name", value: state.catalogSecondary }]
+        : filters;
     update(
-      { signal: "traces", traceFilters: drillFilters(entity, primaryValues) },
+      { signal: "traces", traceFilters: withBreakdown },
       { push: true },
     );
   };
@@ -188,7 +206,7 @@ export function EntityDetail({ entity, range, state, update }: Props) {
       </div>
       <div>
         <dt>Last seen</dt>
-        <dd>{formatTimestamp(nanosToMs(kpiRow.lastNs))}</dd>
+        <dd>{formatTimestampForRange(nanosToMs(kpiRow.lastNs), range)}</dd>
       </div>
     </dl>
   ) : (
@@ -199,20 +217,32 @@ export function EntityDetail({ entity, range, state, update }: Props) {
     <div className="catalog-main entity-detail">
       <nav className="catalog-breadcrumb" aria-label="Breadcrumb">
         <button
-          onClick={() => update({ catalogPrimary: "", catalogSecondary: "" })}
+          onClick={() =>
+            update(
+              { catalogPrimary: "", catalogSecondary: "" },
+              { push: true },
+            )
+          }
         >
           catalog
         </button>
         <span className="catalog-crumb-sep">/</span>
         <button
-          onClick={() => update({ catalogPrimary: "", catalogSecondary: "" })}
+          onClick={() =>
+            update(
+              { catalogPrimary: "", catalogSecondary: "" },
+              { push: true },
+            )
+          }
         >
           {entity.label}
         </button>
         <span className="catalog-crumb-sep">/</span>
         {atSecondary ? (
           <>
-            <button onClick={() => update({ catalogSecondary: "" })}>
+            <button
+              onClick={() => update({ catalogSecondary: "" }, { push: true })}
+            >
               {groupLabel(state.catalogPrimary)}
             </button>
             <span className="catalog-crumb-sep">/</span>

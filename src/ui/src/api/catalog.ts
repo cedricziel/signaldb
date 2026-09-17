@@ -26,17 +26,27 @@ import type { EntityTypeDef } from "../features/catalog/entityTypes";
  * previously-fetched row), not user-typed input, so it bypasses
  * `FACET_FIELDS`/`TraceFilter` entirely; that mechanism exists for
  * compiling user-facing filters (TraceQL search, URL round-tripping), a
- * different concern from pinning a query to one specific entity. */
+ * different concern from pinning a query to one specific entity. `value` is
+ * `null` for a dimension whose row carries no value at all (a `"(not set)"`
+ * breakdown) — compiled to `not exists`, not `eq null` (see
+ * `buildEntitySourceDoc`), since "(not set)" means the field is absent, the
+ * same distinction `api/traceGroupMembers.ts`'s `buildMembersDoc` and
+ * `api/errors.ts`'s `pin()` make. */
 export interface EntityPin {
   field: string;
-  value: string;
+  value: string | null;
 }
 
 /** A pin set as one cache-key element. Spelled in one place so that a change
  * to the shape — escaping a value that contains `,` or `=`, say — cannot
- * leave some call sites on the old spelling and others on the new. */
+ * leave some call sites on the old spelling and others on the new. A `null`
+ * value gets its own marker rather than the literal string "null", so a
+ * genuine `field=null` value (unlikely, but not impossible) can't collide
+ * with an absent one. */
 export function pinsKey(pinned: EntityPin[]): string {
-  return pinned.map((p) => `${p.field}=${p.value}`).join(",");
+  return pinned
+    .map((p) => `${p.field}=${p.value === null ? "∅" : p.value}`)
+    .join(",");
 }
 
 const NANOS_PER_MS = 1_000_000;
@@ -75,7 +85,10 @@ export function buildEntitySourceDoc(
         ]
       : []),
     ...pinned.map((p) => ({
-      where: { field: p.field, op: "eq", value: p.value },
+      where:
+        p.value === null
+          ? { not: { field: p.field, op: "exists" } }
+          : { field: p.field, op: "eq", value: p.value },
     })),
   ];
 

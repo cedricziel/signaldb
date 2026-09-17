@@ -9,6 +9,7 @@
  */
 import { formatRate } from "../../lib/traceGroups";
 import { formatDurationMs } from "../../lib/waterfall";
+import { formatErrorRate } from "../../lib/vizFormat";
 import type { EntityObservation, EntityRed } from "../../api/catalog";
 
 /**
@@ -50,10 +51,7 @@ export function redRate(red: EntityRed | undefined, seconds: number): string {
 
 export function redErrorRate(red: EntityRed | undefined): string {
   if (!red) return "–";
-  // `traces` is the population the errors were counted among. An entity with
-  // a `red` was seen in traces so it is never zero, but guarding the division
-  // keeps that a local fact rather than an invariant held at a distance.
-  return `${Math.round((100 * red.errors) / Math.max(1, red.traces))}%`;
+  return formatErrorRate(red.errors, red.traces);
 }
 
 /** Takes the percentile to read rather than its value: every caller had
