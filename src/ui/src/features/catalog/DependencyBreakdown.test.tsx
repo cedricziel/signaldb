@@ -70,12 +70,34 @@ describe("DependencyBreakdown bar tooltip", () => {
       { key: "rpc", label: "RPC", durationNs: 100, count: 1 },
     ]);
     renderBreakdown();
-    const seg = (await screen.findAllByTestId("dep-seg"))[1]!;
-    expect(seg).toHaveAttribute("tabindex", "0");
+    const segs = await screen.findAllByTestId("dep-seg");
+    const seg = segs[1]!;
+    // Only the first segment is a native tab stop; ArrowRight moves the
+    // roving one over to it (see the roving-focus suite below).
+    segs[0]!.focus();
+    fireEvent.keyDown(segs[0]!, { key: "ArrowRight" });
+    expect(seg).toHaveFocus();
     fireEvent.focus(seg);
     expect(screen.getByRole("tooltip")).toHaveTextContent("RPC");
     expect(screen.getByRole("tooltip")).toHaveTextContent("25.0%");
     fireEvent.blur(seg);
     expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+});
+
+describe("DependencyBreakdown roving focus", () => {
+  it("gives the first segment the only tab stop and moves it with ArrowRight", async () => {
+    fetchDependencyBreakdown.mockResolvedValue([
+      { key: "database", label: "Database", durationNs: 300, count: 3 },
+      { key: "rpc", label: "RPC", durationNs: 100, count: 1 },
+    ]);
+    renderBreakdown();
+    const segs = await screen.findAllByTestId("dep-seg");
+    expect(segs[0]).toHaveAttribute("tabindex", "0");
+    expect(segs[1]).toHaveAttribute("tabindex", "-1");
+    segs[0]!.focus();
+    fireEvent.keyDown(segs[0]!, { key: "ArrowRight" });
+    expect(segs[1]).toHaveFocus();
+    expect(segs[1]).toHaveAttribute("tabindex", "0");
   });
 });

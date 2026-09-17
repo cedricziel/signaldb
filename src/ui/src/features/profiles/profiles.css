@@ -194,7 +194,12 @@
   align-items: center;
   gap: 4px;
   font-size: 11px;
-  overflow: hidden;
+  max-width: 100%;
+  /* The collapsed form (root › … › parent › current) handles most deep
+     zooms; horizontal scroll is the fallback for what's still too long
+     (unusually long frame names). */
+  overflow-x: auto;
+  overflow-y: hidden;
   white-space: nowrap;
 }
 
@@ -203,6 +208,11 @@
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 160px;
+  flex: none;
+}
+
+.flame-crumb-ellipsis {
+  max-width: none;
 }
 
 .flame-crumb:last-child {

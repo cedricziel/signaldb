@@ -1,6 +1,7 @@
-import { useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
 import { useContainerWidth } from "../../hooks/useContainerWidth";
+import { useRovingFocus } from "../../hooks/useRovingFocus";
 import { axisLabelFormatter } from "../../lib/time";
 import { formatShare, formatTimeBucket } from "../../lib/vizFormat";
 import { formatDurationMs } from "../../lib/waterfall";
@@ -41,8 +42,6 @@ export function TraceVolumeHeatmap({ heatmap, label }: Props) {
   for (let t = start; t < heatmap.window.end_ns; t += heatmap.x.step_ns)
     times.push(t);
   const rows = heatmap.y.bounds.length + 1;
-  if (heatmap.cells.length === 0)
-    return <div className="trace-heatmap-empty">No spans in this window</div>;
   // Epoch nanoseconds exceed JavaScript's safe integer range, so use relative
   // bucket positions rather than independently-rounded absolute coordinates.
   const columnOf = (time: number) =>
@@ -58,7 +57,66 @@ export function TraceVolumeHeatmap({ heatmap, label }: Props) {
     const column = columnOf(cell.time_bucket_ns);
     columnTotals.set(column, (columnTotals.get(column) ?? 0) + cell.count);
   }
-  const max = Math.max(...heatmap.cells.map((cell) => cell.count));
+  const max =
+    heatmap.cells.length > 0
+      ? Math.max(...heatmap.cells.map((cell) => cell.count))
+      : 0;
+  // Only populated cells are tab stops (a heatmap has hundreds of empty
+  // ones); rows outer, columns inner, matching render order below.
+  const populated = useMemo(() => {
+    const out: { column: number; row: number }[] = [];
+    for (let row = 0; row < rows; row++) {
+      for (let column = 0; column < times.length; column++) {
+        if ((cells.get(`${column}|${row}`) ?? 0) > 0) {
+          out.push({ column, row });
+        }
+      }
+    }
+    return out;
+  }, [cells, rows, times.length]);
+  const populatedIndex = useMemo(() => {
+    const m = new Map<string, number>();
+    populated.forEach((p, i) => m.set(`${p.column}|${p.row}`, i));
+    return m;
+  }, [populated]);
+  const byColumn = useMemo(() => {
+    const m = new Map<number, number[]>();
+    for (const p of populated) {
+      const list = m.get(p.column) ?? [];
+      list.push(p.row);
+      m.set(p.column, list);
+    }
+    return m;
+  }, [populated]);
+  const roving = useRovingFocus(populated.length, {
+    // Left/right step through populated cells in the same row only.
+    horizontal: (index, direction) => {
+      const cell = populated[index];
+      if (!cell) return null;
+      for (
+        let column = cell.column + direction;
+        column >= 0 && column < times.length;
+        column += direction
+      ) {
+        const next = populatedIndex.get(`${column}|${cell.row}`);
+        if (next !== undefined) return next;
+      }
+      return null;
+    },
+    // Up/down step through populated cells in the same column only.
+    vertical: (index, direction) => {
+      const cell = populated[index];
+      if (!cell) return null;
+      const rowsInColumn = byColumn.get(cell.column) ?? [];
+      const at = rowsInColumn.indexOf(cell.row);
+      const targetRow = rowsInColumn[at + direction];
+      return targetRow === undefined
+        ? null
+        : (populatedIndex.get(`${cell.column}|${targetRow}`) ?? null);
+    },
+  });
+  if (heatmap.cells.length === 0)
+    return <div className="trace-heatmap-empty">No spans in this window</div>;
   const formatAxis = axisLabelFormatter(
     times[0]! / 1e6,
     times[times.length - 1]! / 1e6,
@@ -135,6 +193,10 @@ export function TraceVolumeHeatmap({ heatmap, label }: Props) {
                 );
                 pointer.clear();
               };
+              // Only populated cells are tab stops: an empty cell has
+              // nothing to announce, and a heatmap has hundreds of them.
+              const index = populatedIndex.get(`${column}|${row}`);
+              const item = index === undefined ? null : roving.itemProps(index);
               return (
                 <rect
                   key={time}
@@ -148,9 +210,9 @@ export function TraceVolumeHeatmap({ heatmap, label }: Props) {
                   height={cellHeight}
                   fill="var(--info-bar)"
                   fillOpacity={count > 0 ? 0.12 + intensity * 0.88 : 0}
-                  // Only populated cells are tab stops: an empty cell has
-                  // nothing to announce, and a heatmap has hundreds of them.
-                  tabIndex={count > 0 ? 0 : undefined}
+                  tabIndex={item?.tabIndex}
+                  ref={item?.ref}
+                  onKeyDown={item?.onKeyDown}
                   aria-label={
                     count > 0
                       ? `${formatAxis(time / 1e6)}, ${bucketLabel(row)}: ${count} spans`
@@ -163,6 +225,7 @@ export function TraceVolumeHeatmap({ heatmap, label }: Props) {
                   }}
                   onPointerLeave={leave}
                   onFocus={(e) => {
+                    item?.onFocus();
                     setActive({ column, row });
                     pointer.anchorTo(e.currentTarget);
                   }}

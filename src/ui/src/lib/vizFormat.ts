@@ -13,15 +13,44 @@ const FRACTION_LARGE = new Intl.NumberFormat(undefined, {
   maximumFractionDigits: 2,
 });
 
+const BYTE_UNIT_ALIASES = new Set(["by", "byte", "bytes"]);
+const KIB = 1024;
+const MIB = KIB * 1024;
+const GIB = MIB * 1024;
+
+/** One decimal below ten of a unit (`1.5`), none above it (`512`). */
+function roundToOneDecimalBelowTen(v: number): number {
+  return v < 10 ? Math.round(v * 10) / 10 : Math.round(v);
+}
+
+/**
+ * Binary-scaled size (`512 MB`), for a byte-valued axis — a byte count run
+ * through the decimal K/M/B scaling below reads as a plain count (`537M`,
+ * indistinguishable from half a billion of something) rather than a size.
+ * Matches the scaling `lib/flamebearer.ts`'s `formatTicks` already uses for
+ * memory profiles, minus its `i` (`MiB`): shorter, and this is axis-label
+ * space, not a value people will hand off elsewhere.
+ */
+function compactBytes(n: number): string {
+  const abs = Math.abs(n);
+  if (abs >= GIB) return `${roundToOneDecimalBelowTen(n / GIB)} GB`;
+  if (abs >= MIB) return `${roundToOneDecimalBelowTen(n / MIB)} MB`;
+  if (abs >= KIB) return `${roundToOneDecimalBelowTen(n / KIB)} KB`;
+  return `${Math.round(n)} B`;
+}
+
 /**
  * Abbreviate a count for an axis gridline, where width is scarce.
  *
  * Deliberately not `Intl`'s `notation: "compact"`: that is locale-dependent
  * and in some locales (`de`, for one) does not abbreviate at all, which both
  * overflows the axis and makes the result untestable. One decimal below ten of
- * a unit (`1.5K`), none above it (`373K`).
+ * a unit (`1.5K`), none above it (`373K`) — except a byte unit (`unit`, an
+ * OTel/UCUM code such as `"By"`), which binary-scales via {@link compactBytes}
+ * instead.
  */
-export function compactCount(n: number): string {
+export function compactCount(n: number, unit = ""): string {
+  if (BYTE_UNIT_ALIASES.has(unit.toLowerCase())) return compactBytes(n);
   const units: [number, string][] = [
     [1e9, "B"],
     [1e6, "M"],
@@ -29,8 +58,7 @@ export function compactCount(n: number): string {
   ];
   for (const [scale, suffix] of units) {
     if (n >= scale) {
-      const v = n / scale;
-      return `${v < 10 ? Math.round(v * 10) / 10 : Math.round(v)}${suffix}`;
+      return `${roundToOneDecimalBelowTen(n / scale)}${suffix}`;
     }
   }
   return String(Math.round(n));

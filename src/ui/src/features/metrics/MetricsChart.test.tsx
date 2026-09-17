@@ -102,6 +102,44 @@ describe("MetricsChart", () => {
     expect(opts.axes[0]?.grid?.stroke).toBeTruthy();
   });
 
+  it("routes the y-axis ticks through the unit-aware formatter", () => {
+    render(<MetricsChart series={SERIES} unit="By" />);
+    const [opts] = uPlotCtor.mock.calls[0]! as unknown as [
+      {
+        axes: {
+          values?: (
+            u: unknown,
+            splits: (number | null)[],
+          ) => (string | null)[];
+        }[];
+      },
+    ];
+    const values = opts.axes[1]?.values;
+    expect(values).toBeTypeOf("function");
+    expect(values!(null, [0, 2_097_152, null])).toEqual([
+      "0 B",
+      "2 MB",
+      null,
+    ]);
+  });
+
+  it("widens the y-axis gutter to fit the series' longest formatted label", () => {
+    const wide: PromSeries[] = [
+      { labels: {}, points: [[0, 536_870_912]] }, // "512 MB"
+    ];
+    const narrow: PromSeries[] = [{ labels: {}, points: [[0, 1]] }]; // "1"
+    render(<MetricsChart series={narrow} unit="By" />);
+    const narrowSize = (
+      uPlotCtor.mock.calls[0]![0] as { axes: { size?: number }[] }
+    ).axes[1]?.size;
+    uPlotCtor.mockClear();
+    render(<MetricsChart series={wide} unit="By" />);
+    const wideSize = (
+      uPlotCtor.mock.calls[0]![0] as { axes: { size?: number }[] }
+    ).axes[1]?.size;
+    expect(wideSize).toBeGreaterThan(narrowSize!);
+  });
+
   it("rebuilds the chart when the theme changes", async () => {
     render(<MetricsChart series={SERIES} />);
     expect(uPlotCtor).toHaveBeenCalledTimes(1);

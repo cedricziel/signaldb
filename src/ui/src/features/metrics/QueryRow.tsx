@@ -96,6 +96,7 @@ export function QueryRow({ query, range, onChange }: Props) {
         list={metricList}
         placeholder="metric"
         value={query.metric}
+        title={query.metric}
         onChange={(e) => patch({ metric: e.target.value })}
       />
 
@@ -148,6 +149,7 @@ export function QueryRow({ query, range, onChange }: Props) {
             list={labelList}
             placeholder="group by (comma-separated)"
             value={query.agg.by.join(", ")}
+            title={query.agg.by.join(", ")}
             onChange={(e) =>
               patch({
                 agg: {

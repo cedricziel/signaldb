@@ -78,6 +78,27 @@ describe("QueryRow", () => {
     );
   });
 
+  it("carries the full metric and group-by text in a title, for when either overflows", async () => {
+    stubMetadata();
+    renderWithClient(<Harness />);
+    const user = userEvent.setup();
+
+    const longMetric = "http_server_request_duration_seconds_bucket_total";
+    await user.type(screen.getByLabelText("Metric"), longMetric);
+    expect(screen.getByLabelText("Metric")).toHaveAttribute(
+      "title",
+      longMetric,
+    );
+
+    await user.selectOptions(screen.getByLabelText("Aggregation"), "sum");
+    const longGroupBy = "deployment.environment.name";
+    await user.type(screen.getByLabelText("Group by"), longGroupBy);
+    expect(screen.getByLabelText("Group by")).toHaveAttribute(
+      "title",
+      longGroupBy,
+    );
+  });
+
   it("removing a filter drops it from the query", async () => {
     stubMetadata();
     renderWithClient(<Harness />);

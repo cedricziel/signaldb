@@ -141,4 +141,24 @@ describe("TraceVolumeHeatmap", () => {
       expect(screen.queryByRole("tooltip")).toBeNull();
     });
   });
+
+  describe("roving focus", () => {
+    it("gives only the first populated cell a tab stop", () => {
+      render(<TraceVolumeHeatmap {...props} />);
+      const first = screen.getByLabelText(/0.*10 ms.*2 spans/i);
+      const second = screen.getByLabelText(/10 ms.*1 spans/i);
+      expect(first).toHaveAttribute("tabindex", "0");
+      expect(second).toHaveAttribute("tabindex", "-1");
+    });
+
+    it("moves down a column to the next populated cell with ArrowDown", () => {
+      render(<TraceVolumeHeatmap {...props} />);
+      const first = screen.getByLabelText(/0.*10 ms.*2 spans/i);
+      const below = screen.getByLabelText(/10 ms.*1 spans/i);
+      first.focus();
+      fireEvent.keyDown(first, { key: "ArrowDown" });
+      expect(below).toHaveFocus();
+      expect(below).toHaveAttribute("tabindex", "0");
+    });
+  });
 });

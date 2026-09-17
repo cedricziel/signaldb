@@ -276,6 +276,8 @@
 }
 
 .metric-tile-name {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 12px;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -283,11 +285,18 @@
 }
 
 /* Instrument and unit: what keeps a cumulative counter from reading as a
-   rate while the IR has no range stage. */
+   rate while the IR has no range stage. Fixed-size (not `flex-shrink`'s
+   default proportional squeeze) so the metric name above gives up its own
+   space first; only truncates once even 40% of the tile isn't enough for it. */
 .metric-tile-meta {
+  flex: none;
+  max-width: 40%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
   font-size: 11px;
   color: var(--dim);
-  white-space: nowrap;
 }
 
 /* Sparkline column — a shape at cell size, deliberately without axes or

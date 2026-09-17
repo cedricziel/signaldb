@@ -77,11 +77,29 @@ describe("TraceVolumeAreaChart tooltip", () => {
 
   it("reaches the same detail from the keyboard", () => {
     renderChart();
-    const bucket = screen.getAllByTestId("trace-area-bucket")[1]!;
-    expect(bucket).toHaveAttribute("tabindex", "0");
+    const buckets = screen.getAllByTestId("trace-area-bucket");
+    const bucket = buckets[1]!;
+    // Only the first bucket is a native tab stop; ArrowRight moves the
+    // roving one over to it (see the roving-focus suite below).
+    buckets[0]!.focus();
+    fireEvent.keyDown(buckets[0]!, { key: "ArrowRight" });
+    expect(bucket).toHaveFocus();
     fireEvent.focus(bucket);
     expect(screen.getByRole("tooltip")).toHaveTextContent("5 spans");
     fireEvent.blur(bucket);
     expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+});
+
+describe("TraceVolumeAreaChart roving focus", () => {
+  it("gives the first bucket the only tab stop and moves it with ArrowRight", () => {
+    renderChart();
+    const buckets = screen.getAllByTestId("trace-area-bucket");
+    expect(buckets[0]).toHaveAttribute("tabindex", "0");
+    expect(buckets[1]).toHaveAttribute("tabindex", "-1");
+    buckets[0]!.focus();
+    fireEvent.keyDown(buckets[0]!, { key: "ArrowRight" });
+    expect(buckets[1]).toHaveFocus();
+    expect(buckets[1]).toHaveAttribute("tabindex", "0");
   });
 });

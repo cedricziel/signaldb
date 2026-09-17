@@ -315,14 +315,25 @@ draws its own tooltip markup is a defect
   `u.cursor.idx` in a `setCursor` hook (see `MetricsChart.rowsForCursorIndex`).
 - Format through `src/ui/src/lib/vizFormat.ts` (`formatTimestamp`,
   `formatTimeBucket`, `formatValue`, `formatRange`, `formatShare`,
-  `compactCount`, `formatErrorRate` — a dash for no errors, `<1%` for a
-  non-zero rate that would round to zero, never a red `0%`), not ad-hoc
+  `compactCount` — pass the metric's unit so a byte-valued metric scales
+  as `KB`/`MB`/`GB` on axis ticks and in the tooltip alike, `formatErrorRate`
+  — a dash for no errors, `<1%` for a non-zero rate that would round to
+  zero, never a red `0%`), not ad-hoc
   `toFixed`/`Intl` calls. Table timestamps on multi-day ranges go through
   `formatTimestampForRange` in `src/ui/src/lib/time.ts`, which prepends the
   date once the window spans more than a day.
-- Data marks that can take focus (bars, cells, segments) get `tabIndex={0}`
-  and `aria-describedby` pointing at the tooltip `id` while active; focus sets
-  the same "active datum" state as hover. Empty marks show no tooltip.
+- Data marks that can take focus (bars, cells, segments, frames) are one
+  tab stop per chart: spread `useRovingFocus(count, { horizontal, vertical })`
+  from `src/ui/src/hooks/useRovingFocus.ts` `itemProps(i)` onto each mark
+  (roving `tabIndex`, arrow/`Home`/`End` handling, a ref so the arrow keys move
+  real focus) — never `tabIndex={0}` on every mark. Pass `horizontal`/
+  `vertical` steppers for 2-D layouts (heatmap rows, flame levels); omit
+  `vertical` for a flat list so up/down still scroll the page. The active
+  mark gets `aria-describedby` pointing at the tooltip `id`; focus sets the
+  same "active datum" state as hover. Empty marks show no tooltip.
+- Series colour comes from `seriesColorVar(i)` / `seriesDash(i)` in
+  `src/ui/src/lib/promSeries.ts` (twelve `--svc-*` tokens, then a dash
+  pattern past twelve), not a per-chart palette.
 - Tests assert tooltip _content_ after `fireEvent.pointerMove`/`focus` on the
   mark (jsdom does no layout); for uPlot, test the pure row resolver.
 

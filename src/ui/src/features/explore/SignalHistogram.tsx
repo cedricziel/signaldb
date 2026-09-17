@@ -9,6 +9,7 @@
  */
 import { useMemo, useRef, useState } from "react";
 import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
+import { useRovingFocus } from "../../hooks/useRovingFocus";
 import { axisLabelFormatter, durationToSeconds } from "../../lib/time";
 import { compactCount } from "../../lib/vizFormat";
 import { barHeight, splitSegments, valueAtFraction, type Scale } from "./scale";
@@ -141,6 +142,9 @@ export function SignalHistogram({
       ? padBuckets(raw, rangeMs.fromMs, rangeMs.toMs, stepMs)
       : raw;
   }, [series, rangeMs.fromMs, rangeMs.toMs, stepMs]);
+  // One tab stop for the whole bar strip; called unconditionally ahead of
+  // the empty-state return below, as hooks must be.
+  const roving = useRovingFocus(buckets.length);
 
   if (buckets.length === 0 || buckets.every((b) => b.total === 0)) {
     return <div className="svol svol-empty">No volume in this window</div>;
@@ -168,9 +172,10 @@ export function SignalHistogram({
           </span>
           <span className="svol-yzero">{compactWithUnit(0, unit)}</span>
         </div>
-        <div className="svol-bars" role="img" aria-label={label}>
+        <div className="svol-bars" role="group" aria-label={label}>
           {buckets.map((b, i) => {
             const px = barHeight(b.total, max, height, scale);
+            const item = roving.itemProps(i);
             return (
               <button
                 type="button"
@@ -182,6 +187,9 @@ export function SignalHistogram({
                 style={{ height: "100%" }}
                 aria-label={`${fmtAxis(b.tMs)}: ${withUnit(b.total, unit)}`}
                 aria-describedby={active === i ? "svol-tip" : undefined}
+                tabIndex={item.tabIndex}
+                ref={item.ref}
+                onKeyDown={item.onKeyDown}
                 onMouseEnter={(e) => {
                   setActive(i);
                   pointer.track(e);
@@ -189,6 +197,7 @@ export function SignalHistogram({
                 onMouseMove={pointer.track}
                 onMouseLeave={() => setActive((a) => (a === i ? null : a))}
                 onFocus={(e) => {
+                  item.onFocus();
                   setActive(i);
                   pointer.anchorTo(e.currentTarget);
                 }}

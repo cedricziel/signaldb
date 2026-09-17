@@ -122,6 +122,37 @@ describe("EntityMetricsPanel", () => {
     expect(counter).toHaveTextContent("s");
   });
 
+  it("carries the full name and instrument/unit in a title, for when either truncates", async () => {
+    useEntityMetrics.mockReturnValue({
+      metrics: [
+        metric(
+          "system.network.io.unusually.long.metric.name.for.this.tile",
+          "counter",
+          "By",
+        ),
+      ],
+      isPending: false,
+      isError: false,
+    });
+    fetchEntityMetricSeries.mockResolvedValue(
+      seriesFor([
+        "system.network.io.unusually.long.metric.name.for.this.tile",
+      ]),
+    );
+
+    render();
+
+    const tile = await screen.findByRole("figure");
+    expect(within(tile).getByText(/unusually\.long/)).toHaveAttribute(
+      "title",
+      "system.network.io.unusually.long.metric.name.for.this.tile",
+    );
+    expect(within(tile).getByText("counter · By")).toHaveAttribute(
+      "title",
+      "counter · By",
+    );
+  });
+
   it("says so when the association lookup itself failed", () => {
     // An empty list because the lookup broke must not render like an empty
     // list because the entity has no metrics.

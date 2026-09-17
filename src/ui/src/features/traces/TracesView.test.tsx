@@ -1650,7 +1650,7 @@ describe("TracesView span-volume chart", () => {
   it("renders span volume stacked by status", async () => {
     stubFetchRoutes(routes);
     renderView();
-    await screen.findByRole("img", { name: /span volume/i });
+    await screen.findByRole("group", { name: /span volume/i });
     expect(screen.getByRole("button", { name: "Histogram" })).toHaveAttribute(
       "aria-pressed",
       "true",
@@ -1664,7 +1664,7 @@ describe("TracesView span-volume chart", () => {
   it("switches the span volume visualization to an area chart without refetching", async () => {
     stubFetchRoutes(routes);
     renderView();
-    await screen.findByRole("img", { name: /span volume/i });
+    await screen.findByRole("group", { name: /span volume/i });
 
     const volumeQueries = () =>
       vi
@@ -1683,7 +1683,7 @@ describe("TracesView span-volume chart", () => {
       "true",
     );
     expect(
-      screen.getByRole("img", { name: /span volume area chart/i }),
+      screen.getByRole("group", { name: /span volume area chart/i }),
     ).toBeInTheDocument();
     const area = screen.getByTestId("trace-volume-area");
     expect(
@@ -1696,7 +1696,7 @@ describe("TracesView span-volume chart", () => {
   it("submits a v2 native IR heatmap only when switching views", async () => {
     stubFetchRoutes(routes);
     renderView();
-    await screen.findByRole("img", { name: /span volume/i });
+    await screen.findByRole("group", { name: /span volume/i });
     const heatmapFetch = stubFetchRoutes([
       {
         match: "/api/v1/query",
@@ -1775,7 +1775,7 @@ describe("TracesView span-volume chart", () => {
   it("shows a loading indicator while the heatmap query is pending", async () => {
     stubFetchRoutes(routes);
     renderView();
-    await screen.findByRole("img", { name: /span volume/i });
+    await screen.findByRole("group", { name: /span volume/i });
     vi.spyOn(traceVolumeApi, "fetchTraceLatencyHeatmap").mockReturnValue(
       new Promise(() => {}),
     );
@@ -1788,7 +1788,7 @@ describe("TracesView span-volume chart", () => {
   it("shows a query error when the heatmap query fails", async () => {
     stubFetchRoutes(routes);
     renderView();
-    await screen.findByRole("img", { name: /span volume/i });
+    await screen.findByRole("group", { name: /span volume/i });
     vi.spyOn(traceVolumeApi, "fetchTraceLatencyHeatmap").mockRejectedValue(
       new Error("heatmap failed"),
     );
@@ -1828,7 +1828,7 @@ describe("TracesView span-volume chart", () => {
   it("asks for the volume aggregate without a row limit", async () => {
     stubFetchRoutes(routes);
     renderView({ limit: 25 });
-    await screen.findByRole("img", { name: /span volume/i });
+    await screen.findByRole("group", { name: /span volume/i });
     // The facet sidebar (kind is expanded by default) also queries this
     // endpoint; pick the volume aggregate by its result shape.
     const requests = vi
@@ -1848,7 +1848,7 @@ describe("TracesView span-volume chart", () => {
   it("keeps the chart visible when the group table has nothing to show", async () => {
     stubFetchRoutes(routes);
     renderView();
-    await screen.findByRole("img", { name: /span volume/i });
+    await screen.findByRole("group", { name: /span volume/i });
     expect(screen.getByText(/no groups in this window/i)).toBeInTheDocument();
   });
 });
