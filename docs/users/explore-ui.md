@@ -267,7 +267,9 @@ counters: a cumulative counter is charted as the cumulative value it is, not
 as a rate. A long metric name ellipsizes rather than pushing the instrument
 and unit off the tile, and both carry a title with the full text. A metric
 whose unit is bytes gets a y-axis in `KB`/`MB`/`GB`, the same scale its
-tooltip uses, rather than a raw count with a `K`/`M` suffix. Where an entity
+tooltip uses, rather than a raw count with a `K`/`M` suffix; a gauge that
+goes negative is compacted by magnitude and keeps its sign, and the axis
+gutter leaves room for it. Where an entity
 associates more metrics than fit, the panel says
 how many it is not showing rather than truncating silently. "View matching traces →"
 on the entity page hands off to the Traces tab, pre-filtered — the general
