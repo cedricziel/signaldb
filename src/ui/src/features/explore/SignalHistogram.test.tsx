@@ -213,13 +213,18 @@ describe("SignalHistogram interaction", () => {
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   });
 
-  it("reaches the same detail from the keyboard", async () => {
+  it("reaches the same detail from the keyboard via roving tabindex", async () => {
     const user = userEvent.setup();
     renderChart(series);
+    const cols = screen.getAllByTestId("svol-col");
+    expect(cols[0]).toHaveAttribute("tabindex", "0");
+    expect(cols[1]).toHaveAttribute("tabindex", "-1");
     await user.tab();
-    expect(screen.getAllByTestId("svol-col")[0]).toHaveFocus();
-    await user.tab();
-    expect(screen.getAllByTestId("svol-col")[1]).toHaveFocus();
+    expect(cols[0]).toHaveFocus();
+    await user.keyboard("{ArrowRight}");
+    expect(cols[1]).toHaveFocus();
+    expect(cols[1]).toHaveAttribute("tabindex", "0");
+    expect(cols[0]).toHaveAttribute("tabindex", "-1");
     expect(
       within(screen.getByRole("tooltip")).getByText("537 lines"),
     ).toBeInTheDocument();

@@ -92,6 +92,17 @@ export function placeFrames(
 }
 
 /**
+ * Whether `outer`'s tick interval contains `inner`'s — the flamegraph
+ * nesting test a call tree guarantees at most one frame per level can
+ * satisfy for a given `inner`. Shared by {@link ancestorPath} (walking every
+ * level from the root) and the flame graph's keyboard navigation (walking
+ * just one level up from the current frame).
+ */
+export function frameContains(outer: FlameFrame, inner: FlameFrame): boolean {
+  return outer.x <= inner.x && outer.x + outer.total >= inner.x + inner.total;
+}
+
+/**
  * The chain of frames from the root down to (and including) `target`, one
  * per level. Each ancestor is the unique frame at that level whose interval
  * contains `target`'s — proper flamegraph nesting guarantees exactly one.
@@ -104,11 +115,8 @@ export function ancestorPath(
   target: FlameFrame,
 ): FlameFrame[] {
   const path: FlameFrame[] = [];
-  const end = target.x + target.total;
   for (let level = 0; level <= target.level; level++) {
-    const found = levels[level]?.find(
-      (f) => f.x <= target.x && f.x + f.total >= end,
-    );
+    const found = levels[level]?.find((f) => frameContains(f, target));
     if (found) path.push(found);
   }
   return path;

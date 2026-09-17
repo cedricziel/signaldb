@@ -7,6 +7,7 @@ import {
 } from "../explore/SignalHistogram";
 import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
 import { useContainerWidth } from "../../hooks/useContainerWidth";
+import { useRovingFocus } from "../../hooks/useRovingFocus";
 import { axisLabelFormatter } from "../../lib/time";
 import {
   compactCount,
@@ -80,6 +81,9 @@ export function TraceVolumeAreaChart({
   if (buckets.length > 0) {
     buckets = padBuckets(buckets, rangeMs.fromMs, rangeMs.toMs, stepMs);
   }
+  // One tab stop for the whole strip; called unconditionally ahead of the
+  // empty-state return below, as hooks must be.
+  const roving = useRovingFocus(buckets.length);
   if (buckets.length === 0 || buckets.every((bucket) => bucket.total === 0)) {
     return <div className="trace-area-empty">No volume in this window</div>;
   }
@@ -119,7 +123,7 @@ export function TraceVolumeAreaChart({
     >
       <svg
         viewBox={`0 0 ${width} ${HEIGHT}`}
-        role="img"
+        role="group"
         aria-label={`${label} area chart`}
         preserveAspectRatio="none"
       >
@@ -150,38 +154,44 @@ export function TraceVolumeAreaChart({
             stroke={colors[key]}
           />
         ))}
-        {buckets.map((bucket, index) => (
-          <rect
-            key={bucket.tMs}
-            className="trace-area-hit"
-            data-testid="trace-area-bucket"
-            x={hitX(index)}
-            y={PADDING.top}
-            width={hitWidth(index)}
-            height={plotHeight}
-            tabIndex={0}
-            aria-label={bucketLabel(bucket)}
-            aria-describedby={
-              activeBucket === bucket ? "trace-area-tip" : undefined
-            }
-            onPointerMove={(e) => {
-              setActive(index);
-              pointer.track(e);
-            }}
-            onPointerLeave={() => {
-              setActive((a) => (a === index ? null : a));
-              pointer.clear();
-            }}
-            onFocus={(e) => {
-              setActive(index);
-              pointer.anchorTo(e.currentTarget);
-            }}
-            onBlur={() => {
-              setActive((a) => (a === index ? null : a));
-              pointer.clear();
-            }}
-          />
-        ))}
+        {buckets.map((bucket, index) => {
+          const item = roving.itemProps(index);
+          return (
+            <rect
+              key={bucket.tMs}
+              className="trace-area-hit"
+              data-testid="trace-area-bucket"
+              x={hitX(index)}
+              y={PADDING.top}
+              width={hitWidth(index)}
+              height={plotHeight}
+              tabIndex={item.tabIndex}
+              ref={item.ref}
+              onKeyDown={item.onKeyDown}
+              aria-label={bucketLabel(bucket)}
+              aria-describedby={
+                activeBucket === bucket ? "trace-area-tip" : undefined
+              }
+              onPointerMove={(e) => {
+                setActive(index);
+                pointer.track(e);
+              }}
+              onPointerLeave={() => {
+                setActive((a) => (a === index ? null : a));
+                pointer.clear();
+              }}
+              onFocus={(e) => {
+                item.onFocus();
+                setActive(index);
+                pointer.anchorTo(e.currentTarget);
+              }}
+              onBlur={() => {
+                setActive((a) => (a === index ? null : a));
+                pointer.clear();
+              }}
+            />
+          );
+        })}
         <text className="trace-area-xlabel" x={PADDING.left} y={HEIGHT - 5}>
           {formatAxis(buckets[0]!.tMs)}
         </text>
