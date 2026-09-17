@@ -1,16 +1,48 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router";
-import { renderWithClient, stubFetchRoutes } from "../../test/render";
+import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
+import {
+  outletContextRoute,
+  renderWithClient,
+  stubFetchRoutes,
+} from "../../test/render";
 import { ApiKeys } from "./ApiKeys";
 
-function renderApiKeys() {
+/** The same route shape as `renderApiKeys`, but as a bare element so a test
+ * can `rerender` it with a different outlet `state` against the *same*
+ * `QueryClient` — exercising the whoami query key's tenant/dataset scoping
+ * (fix: switching tenants must refetch, not answer from the old tenant's
+ * cached response). */
+function ApiKeysHarness({ state }: { state: ExploreState }) {
+  return (
+    <MemoryRouter initialEntries={["/api-keys"]}>
+      <Routes>
+        <Route element={outletContextRoute(state)}>
+          <Route path="/api-keys" element={<ApiKeys />} />
+          <Route path="/logs" element={<div>Logs page</div>} />
+        </Route>
+      </Routes>
+    </MemoryRouter>
+  );
+}
+
+function renderApiKeys(state: Partial<ExploreState> = {}) {
+  const contextState: ExploreState = {
+    ...DEFAULT_STATE,
+    tenant: "acme",
+    dataset: "production",
+    ...state,
+  };
   return renderWithClient(
     <MemoryRouter initialEntries={["/api-keys"]}>
       <Routes>
-        <Route path="/api-keys" element={<ApiKeys />} />
-        <Route path="/logs" element={<div>Logs page</div>} />
+        <Route element={outletContextRoute(contextState)}>
+          <Route path="/api-keys" element={<ApiKeys />} />
+          <Route path="/logs" element={<div>Logs page</div>} />
+        </Route>
       </Routes>
     </MemoryRouter>,
   );
@@ -99,6 +131,68 @@ describe("ApiKeys page", () => {
       expect(screen.getByText("Logs page")).toBeInTheDocument(),
     );
     expect(screen.queryByText("API keys")).not.toBeInTheDocument();
+  });
+
+  it("shows an inline error on a non-401 whoami failure instead of redirecting to /logs", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: { error: "boom" }, status: 500 },
+    ]);
+    renderApiKeys();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/500/);
+    expect(screen.queryByText("Logs page")).not.toBeInTheDocument();
+  });
+
+  it("refetches whoami under its own key when the outlet tenant changes", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, body: [] },
+      {
+        match: "/api/v1/manage/tenants/globex/api-keys",
+        body: [],
+      },
+    ]);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const stateAcme: ExploreState = {
+      ...DEFAULT_STATE,
+      tenant: "acme",
+      dataset: "production",
+    };
+    const stateGlobex: ExploreState = {
+      ...DEFAULT_STATE,
+      tenant: "globex",
+      dataset: "main",
+    };
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <ApiKeysHarness state={stateAcme} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some((call) =>
+          String(call[0]).includes("/api/v1/whoami"),
+        ),
+      ).toBe(true),
+    );
+    const whoamiCallsForAcme = fetchMock.mock.calls.filter((call) =>
+      String(call[0]).includes("/api/v1/whoami"),
+    ).length;
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <ApiKeysHarness state={stateGlobex} />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      const whoamiCallsAfter = fetchMock.mock.calls.filter((call) =>
+        String(call[0]).includes("/api/v1/whoami"),
+      ).length;
+      expect(whoamiCallsAfter).toBeGreaterThan(whoamiCallsForAcme);
+    });
   });
 
   it("shows existing API keys list", async () => {

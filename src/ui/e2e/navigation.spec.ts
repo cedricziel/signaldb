@@ -78,16 +78,19 @@ test("an admin can open /manage and the back button returns them", async ({
     json(route, []),
   );
 
-  await page.goto("/logs");
+  // The shell only asks whoami once a tenant is known (a tenant-less
+  // request is a 401 by design), so the admin gate needs the context in
+  // the URL; the sticky context then rides along on the bare /manage link.
+  await page.goto("/logs?tenant=acme&dataset=production");
   await page.getByRole("link", { name: "Manage" }).click();
 
-  await expect(page).toHaveURL(/\/manage$/);
+  await expect(page).toHaveURL(/\/manage(\?.*)?$/);
   await expect(
     page.getByRole("dialog", { name: "Manage tenant" }),
   ).toBeVisible();
 
   await page.goBack();
-  await expect(page).toHaveURL(/\/logs$/);
+  await expect(page).toHaveURL(/\/logs(\?.*)?$/);
   await expect(
     page.getByRole("dialog", { name: "Manage tenant" }),
   ).not.toBeVisible();

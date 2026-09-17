@@ -474,7 +474,9 @@ describe("App", () => {
       { match: "/api-keys", body: [] },
       { match: "/memberships", body: [] },
     ]);
-    renderApp("/logs");
+    // A tenant already resolved into the URL — the whoami-backed Manage link
+    // only queries once one exists (see TopBar's gating).
+    renderApp("/logs?tenant=acme&dataset=production");
     const user = (await import("@testing-library/user-event")).default;
     await user.click(await screen.findByRole("link", { name: "Manage" }));
     expect(
@@ -504,7 +506,7 @@ describe("App", () => {
       { match: "/labels?", body: emptyLabels },
       { match: "/api/v1/whoami", body: WHOAMI },
     ]);
-    renderApp("/manage");
+    renderApp("/manage?tenant=acme&dataset=production");
     await screen.findByText(/No log lines match this query/);
     expect(window.location.pathname).toBe("/logs");
   });

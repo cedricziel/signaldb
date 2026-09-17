@@ -11,11 +11,13 @@ import {
   updateApiKey,
   type ApiKeyScope,
 } from "../../api/management";
-import { whoami } from "../../api/session";
 import { toErrorMessage } from "../../api/http";
 import { ConfirmButton } from "../../components/ConfirmButton";
 import { CopyValueButton } from "../../components/CopyValueButton";
 import { Dialog } from "../../components/Dialog";
+import { whoamiQueryError } from "../../components/QueryError";
+import { useOutletState } from "../../lib/outletState";
+import { useWhoami } from "../../lib/useWhoami";
 import {
   DatasetPicker,
   datasetRestrictionLabel,
@@ -71,12 +73,14 @@ function ScopePicker({
 
 export function ApiKeys() {
   const queryClient = useQueryClient();
-  const { data: who, isLoading } = useQuery({
-    queryKey: ["whoami"],
-    queryFn: () => whoami(),
-    staleTime: 60_000,
-    retry: false,
-  });
+  const { state } = useOutletState();
+  const {
+    data: who,
+    isLoading,
+    isError: whoamiIsError,
+    error: whoamiError,
+    canManage,
+  } = useWhoami(state);
 
   const [secret, setSecret] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -155,11 +159,8 @@ export function ApiKeys() {
   });
 
   if (isLoading) return null;
+  if (whoamiIsError) return whoamiQueryError("your account", whoamiError);
 
-  const role = who?.memberships.find(
-    (membership) => membership.tenant_id === who.tenant.id,
-  )?.role;
-  const canManage = who?.user?.is_instance_admin || role === "admin";
   if (!who || !canManage) {
     return <Navigate to="/logs" replace />;
   }
@@ -384,7 +385,12 @@ export function ApiKeys() {
           <code>{secret}</code>
           <div className="secret-modal-footer">
             <CopyValueButton value={secret} label="API key" />
-            <button onClick={() => setSecret(null)}>Done</button>
+            <button
+              className="secret-modal-done"
+              onClick={() => setSecret(null)}
+            >
+              Done
+            </button>
           </div>
         </Dialog>
       )}

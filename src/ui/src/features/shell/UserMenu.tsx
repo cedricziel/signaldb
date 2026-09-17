@@ -1,12 +1,13 @@
 // User menu dropdown for the top bar. Shows avatar with initials, user info,
 // theme toggle, navigation items, and sign-out action.
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { clearPersistedTenantContext } from "../../api/http";
-import { whoami, deleteSession, type WhoamiResponse } from "../../api/session";
+import { clearPersistedTenantContext, toErrorMessage } from "../../api/http";
+import { deleteSession, type WhoamiResponse } from "../../api/session";
 import type { ExploreState } from "../../lib/urlState";
+import { useWhoami } from "../../lib/useWhoami";
 import { isDarkTheme, toggleTheme } from "../../lib/theme";
 import { useEscapeKey } from "../../hooks/useEscapeKey";
 import "./UserMenu.css";
@@ -17,12 +18,7 @@ interface Props {
 
 export function UserMenu({ state }: Props) {
   const [open, setOpen] = useState(false);
-  const { data: who } = useQuery({
-    queryKey: ["whoami", state.tenant, state.dataset],
-    queryFn: () => whoami(),
-    staleTime: 60_000,
-    retry: false,
-  });
+  const { data: who, canManage } = useWhoami(state);
   const toggle = () => setOpen((prev) => !prev);
   const close = () => setOpen(false);
 
@@ -44,7 +40,14 @@ export function UserMenu({ state }: Props) {
         <span className="user-name">{user.display_name || user.email}</span>
         <span className="user-caret">▾</span>
       </button>
-      {open && <UserMenuPopover who={who} role={role} onClose={close} />}
+      {open && (
+        <UserMenuPopover
+          who={who}
+          role={role}
+          canManage={canManage}
+          onClose={close}
+        />
+      )}
     </span>
   );
 }
@@ -52,13 +55,16 @@ export function UserMenu({ state }: Props) {
 interface PopoverProps {
   who: WhoamiResponse;
   role: string | undefined;
+  canManage: boolean;
   onClose: () => void;
 }
 
-function UserMenuPopover({ who, role, onClose }: PopoverProps) {
+function UserMenuPopover({ who, role, canManage, onClose }: PopoverProps) {
   const client = useQueryClient();
   const navigate = useNavigate();
   const backdropRef = useRef<HTMLSpanElement>(null);
+  const [signOutError, setSignOutError] = useState<string | null>(null);
+  const [isDark, setIsDark] = useState(isDarkTheme());
 
   // Close on backdrop click or Escape
   useEscapeKey(true, onClose);
@@ -68,23 +74,25 @@ function UserMenuPopover({ who, role, onClose }: PopoverProps) {
   };
 
   const handleSignOut = async () => {
+    setSignOutError(null);
     try {
       await deleteSession();
       clearPersistedTenantContext();
       client.clear();
       navigate("/login");
       window.location.reload();
-    } catch {
-      // If session delete fails, still reload to clear stale state
-      window.location.reload();
+    } catch (err) {
+      // A failed sign-out leaves the session intact — report it and keep
+      // the menu open rather than reloading into a page that still thinks
+      // it's signed in.
+      setSignOutError(toErrorMessage(err));
     }
   };
 
   const handleThemeToggle = () => {
     toggleTheme();
+    setIsDark(isDarkTheme());
   };
-
-  const isDark = isDarkTheme();
 
   const user = who.user!;
 
@@ -119,10 +127,12 @@ function UserMenuPopover({ who, role, onClose }: PopoverProps) {
             <span>Send data</span>
             <span className="user-menu-hint">instrumentation</span>
           </Link>
-          <Link className="user-menu-item" to="/api-keys" onClick={onClose}>
-            <span>API keys</span>
-            <span className="user-menu-hint">{who.tenant.id}</span>
-          </Link>
+          {canManage && (
+            <Link className="user-menu-item" to="/api-keys" onClick={onClose}>
+              <span>API keys</span>
+              <span className="user-menu-hint">{who.tenant.id}</span>
+            </Link>
+          )}
           <Link className="user-menu-item" to="/schema" onClick={onClose}>
             <span>Schema</span>
             <span className="user-menu-hint">conventions</span>
@@ -138,6 +148,12 @@ function UserMenuPopover({ who, role, onClose }: PopoverProps) {
           </a>
         </span>
 
+        {signOutError && (
+          <p className="user-menu-alert" role="alert">
+            {signOutError}
+          </p>
+        )}
+
         {/* Bottom actions */}
         <span className="user-menu-actions">
           <Link
@@ -149,7 +165,7 @@ function UserMenuPopover({ who, role, onClose }: PopoverProps) {
           </Link>
           <button
             className="user-menu-item user-menu-signout"
-            onClick={handleSignOut}
+            onClick={() => void handleSignOut()}
           >
             <span>Sign out</span>
           </button>

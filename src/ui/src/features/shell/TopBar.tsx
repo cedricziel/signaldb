@@ -1,8 +1,7 @@
-import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { Link } from "react-router";
 import { DEFAULT_DATASET, DEFAULT_TENANT } from "../../api/http";
-import { whoami } from "../../api/session";
+import { useWhoami } from "../../lib/useWhoami";
 import { crossSignalSearch, type ExploreState } from "../../lib/urlState";
 import { UserMenu } from "./UserMenu";
 import "./TopBar.css";
@@ -13,16 +12,7 @@ interface Props {
 }
 
 export function TopBar({ state, update }: Props) {
-  const { data: who } = useQuery({
-    queryKey: ["whoami", state.tenant, state.dataset],
-    queryFn: () => whoami(),
-    staleTime: 60_000,
-    retry: false,
-  });
-  const role = who?.memberships.find(
-    (membership) => membership.tenant_id === who.tenant.id,
-  )?.role;
-  const canManage = who?.user?.is_instance_admin || role === "admin";
+  const { canManage } = useWhoami(state);
   return (
     <header className="topbar">
       <Link className="topbar-mark" to={`/logs${crossSignalSearch(state)}`}>
@@ -63,12 +53,7 @@ function TenantSelector({ state, update }: Props) {
   // read-only and the dataset a proper selector. On any failure (older
   // server without the endpoint, unauthenticated) the free-text form
   // remains as the fallback.
-  const { data: who } = useQuery({
-    queryKey: ["whoami", state.tenant, state.dataset],
-    queryFn: () => whoami(),
-    staleTime: 60_000,
-    retry: false,
-  });
+  const { data: who } = useWhoami(state);
 
   const effectiveTenant = state.tenant || who?.tenant.id || DEFAULT_TENANT;
   const effectiveDataset =
@@ -90,28 +75,35 @@ function TenantSelector({ state, update }: Props) {
   }
 
   if (who) {
+    const hasTenantChoice = who.memberships.length > 1;
     return (
       <form
         className="tenant-form"
         onSubmit={(e) => {
           e.preventDefault();
           const data = new FormData(e.currentTarget);
+          const tenant = hasTenantChoice
+            ? String(data.get("tenant") ?? who.tenant.id)
+            : who.tenant.id;
+          // The dataset select still lists the *previous* tenant's datasets
+          // (switching tenants doesn't requery them here), so a tenant
+          // change resets the dataset rather than submitting a stale pick.
           update({
-            tenant: who.tenant.id,
-            dataset: String(data.get("dataset") ?? ""),
+            tenant,
+            dataset:
+              tenant === who.tenant.id
+                ? String(data.get("dataset") ?? "")
+                : "",
           });
           setEditing(false);
         }}
       >
-        {who.memberships.length > 1 ? (
+        {hasTenantChoice ? (
           <select
             name="tenant"
             aria-label="Tenant"
             defaultValue={who.tenant.id}
-            onChange={(event) => {
-              update({ tenant: event.target.value, dataset: "" });
-              setEditing(false);
-            }}
+            autoFocus
           >
             {who.memberships.map((membership) => (
               <option key={membership.tenant_id} value={membership.tenant_id}>
@@ -128,7 +120,7 @@ function TenantSelector({ state, update }: Props) {
           name="dataset"
           aria-label="Dataset"
           defaultValue={state.dataset || who.default_dataset || ""}
-          autoFocus
+          autoFocus={!hasTenantChoice}
         >
           {who.datasets.map((d) => (
             <option key={d.id} value={d.id}>

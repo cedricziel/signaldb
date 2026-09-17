@@ -1,31 +1,34 @@
-import { useQuery } from "@tanstack/react-query";
-import { Navigate, useNavigate } from "react-router";
-import { whoami } from "../../api/session";
+import { Navigate, useLocation, useNavigate } from "react-router";
+import { whoamiQueryError } from "../../components/QueryError";
 import { useOutletState } from "../../lib/outletState";
+import { goBackOr } from "../../lib/router";
+import { crossSignalSearch } from "../../lib/urlState";
+import { useWhoami } from "../../lib/useWhoami";
 import { ManagementPanel } from "./ManagementPanel";
 
 /**
  * `/manage` — a real, deep-linkable URL for the panel TopBar used to render
  * as ad hoc component state (which couldn't be bookmarked and didn't close
- * on browser back). Redirects non-admins and unauthenticated users back to
- * the logs view rather than rendering an empty panel.
+ * on browser back). Redirects non-admins back to the logs view; a 401 is
+ * handled globally (the app shell sends it to `/login`); any other failure
+ * (5xx, network, an older server without the endpoint) shows an inline
+ * error instead of silently bouncing to /logs.
  */
 export function ManagementRoute() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { state, update } = useOutletState();
-  const { data: who, isLoading } = useQuery({
-    queryKey: ["whoami", state.tenant, state.dataset],
-    queryFn: () => whoami(),
-    staleTime: 60_000,
-    retry: false,
-  });
+  const {
+    data: who,
+    isLoading,
+    isError,
+    error,
+    canManage,
+  } = useWhoami(state);
 
   if (isLoading) return null;
+  if (isError) return whoamiQueryError("your account", error);
 
-  const role = who?.memberships.find(
-    (membership) => membership.tenant_id === who.tenant.id,
-  )?.role;
-  const canManage = who?.user?.is_instance_admin || role === "admin";
   if (!who || !canManage) {
     return <Navigate to="/logs" replace />;
   }
@@ -33,7 +36,11 @@ export function ManagementRoute() {
   return (
     <ManagementPanel
       who={who}
-      onClose={() => navigate(-1)}
+      onClose={() =>
+        goBackOr(navigate, location, () =>
+          navigate(`/logs${crossSignalSearch(state)}`, { replace: true }),
+        )
+      }
       onTenantCreated={(tenant, dataset) => {
         // Setting the signal explicitly leaves /manage for /logs, which
         // closes the panel as a side effect.

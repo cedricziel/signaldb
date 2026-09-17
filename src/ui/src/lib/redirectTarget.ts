@@ -46,3 +46,18 @@ export function safeRedirectTarget(raw: string | null | undefined): string {
 export function loginRedirectPath(currentPath: string): string {
   return `/login?redirect=${encodeURIComponent(safeRedirectTarget(currentPath))}`;
 }
+
+/** `target` with the resolved tenant/dataset appended, as a router path.
+ * Shared by every place that finishes a tenant resolution — a password
+ * login, an SSO landing, or a `/select-tenant` pick — and needs to navigate
+ * to `target` carrying the chosen `?tenant=&dataset=` in one step. */
+export function withTenantDataset(
+  target: string,
+  tenant: string,
+  dataset: string,
+): string {
+  const url = new URL(target, window.location.origin);
+  url.searchParams.set("tenant", tenant);
+  url.searchParams.set("dataset", dataset);
+  return `${url.pathname}${url.search}${url.hash}`;
+}

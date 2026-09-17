@@ -1,5 +1,9 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_TARGET, safeRedirectTarget } from "./redirectTarget";
+import {
+  DEFAULT_TARGET,
+  safeRedirectTarget,
+  withTenantDataset,
+} from "./redirectTarget";
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -47,5 +51,25 @@ describe("safeRedirectTarget", () => {
   it("falls back to the default for /login, to avoid looping the credential step", () => {
     expect(safeRedirectTarget("/login")).toBe(DEFAULT_TARGET);
     expect(safeRedirectTarget("/login?redirect=%2Flogs")).toBe(DEFAULT_TARGET);
+  });
+});
+
+describe("withTenantDataset", () => {
+  it("appends tenant and dataset to a bare path", () => {
+    expect(withTenantDataset("/logs", "acme", "production")).toBe(
+      "/logs?tenant=acme&dataset=production",
+    );
+  });
+
+  it("preserves an existing query string and hash", () => {
+    expect(withTenantDataset("/traces?range=15m#top", "acme", "staging")).toBe(
+      "/traces?range=15m&tenant=acme&dataset=staging#top",
+    );
+  });
+
+  it("overwrites a tenant/dataset already present in the target", () => {
+    expect(
+      withTenantDataset("/logs?tenant=old&dataset=old", "acme", "production"),
+    ).toBe("/logs?tenant=acme&dataset=production");
   });
 });
