@@ -133,7 +133,6 @@
 }
 
 .manage-error {
-  color: var(--err);
   border-color: currentColor;
 }
 

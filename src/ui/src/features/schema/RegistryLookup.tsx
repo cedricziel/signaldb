@@ -39,7 +39,7 @@ export function RegistryLookup() {
         </button>
       </form>
       {resolve.isError && (
-        <p className="schema-error">
+        <p className="error-text" role="alert">
           Could not complete the lookup: {toErrorMessage(resolve.error)}
         </p>
       )}

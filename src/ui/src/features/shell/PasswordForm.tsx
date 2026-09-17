@@ -61,7 +61,7 @@ export function PasswordForm({ onAuthenticated, primary }: Props) {
         />
       </label>
       {error && (
-        <p className="login-error" role="alert">
+        <p className="error-text" role="alert">
           {error}
         </p>
       )}

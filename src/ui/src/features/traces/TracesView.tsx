@@ -952,7 +952,7 @@ function TraceDetail({ state, update }: Props) {
           · {plural(waterfall.rows.length, "span")} ·{" "}
           {plural(waterfall.services.length, "service")}
           {waterfall.errorCount > 0 && (
-            <em className="tmeta-err">
+            <em className="tmeta-err error-text">
               {" "}
               · {plural(waterfall.errorCount, "error")}
             </em>
@@ -1105,7 +1105,7 @@ function SpanDetail({
       <div className="span-detail-sub">
         {kind && <span className={`kind-chip ${kindClass(kind)}`}>{kind}</span>}
         {describeService(span.serviceName, span.attributes)}
-        {span.status === "error" && <em className="tmeta-err"> · error</em>}
+        {span.status === "error" && <em className="tmeta-err error-text"> · error</em>}
       </div>
       <button
         className="act-primary btn btn-primary"

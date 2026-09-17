@@ -637,9 +637,7 @@
 }
 
 .query-error {
-  color: var(--err);
   font-family: var(--mono);
-  font-size: 12px;
   padding: 12px 16px;
 }
 

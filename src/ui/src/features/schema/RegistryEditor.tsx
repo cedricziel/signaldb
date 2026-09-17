@@ -62,7 +62,7 @@ export function RegistryEditor() {
   if (stored.isError) {
     return (
       <div className="schema-page">
-        <p className="schema-error">
+        <p className="error-text" role="alert">
           Could not load {ns}@{version}: {toErrorMessage(stored.error)}
         </p>
         <Link to={CONVENTIONS}>Back to conventions</Link>
@@ -411,7 +411,7 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
           }
         />
 
-        {error && <p className="schema-error">{error}</p>}
+        {error && <p className="error-text" role="alert">{error}</p>}
 
         {outcome && (
           <ValidationOutcome outcome={outcome} stale={validatedText !== text} />

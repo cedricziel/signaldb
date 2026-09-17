@@ -24,10 +24,6 @@
   font-size: 13px;
 }
 
-.schema-explorer-error {
-  color: var(--err);
-}
-
 .schema-explorer-section {
   margin-bottom: 32px;
 }

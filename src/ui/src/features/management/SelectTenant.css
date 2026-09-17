@@ -103,8 +103,6 @@
   align-items: center;
   gap: 10px;
   padding: 8px 14px 8px 28px;
-  color: var(--err);
-  font-size: 12px;
 }
 
 .dataset-error p {

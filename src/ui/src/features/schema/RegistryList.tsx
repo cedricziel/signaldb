@@ -54,7 +54,7 @@ export function RegistryList() {
 
       {registries.isPending && <p className="schema-note">Loading…</p>}
       {registries.isError && (
-        <p className="schema-error">
+        <p className="error-text" role="alert">
           Could not load registries: {toErrorMessage(registries.error)}
         </p>
       )}

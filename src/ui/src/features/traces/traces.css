@@ -364,7 +364,6 @@
 }
 
 .tmeta-err {
-  color: var(--err);
   font-style: normal;
   font-weight: 600;
 }

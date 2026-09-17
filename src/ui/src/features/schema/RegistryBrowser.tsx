@@ -71,7 +71,7 @@ function LatestRedirect({
   if (registries.isError) {
     return (
       <div className="schema-page">
-        <p className="schema-error">
+        <p className="error-text" role="alert">
           Could not load registries: {toErrorMessage(registries.error)}
         </p>
         <Link to={CONVENTIONS}>Back to conventions</Link>
@@ -82,7 +82,7 @@ function LatestRedirect({
   if (!found) {
     return (
       <div className="schema-page">
-        <p className="schema-error">
+        <p className="error-text" role="alert">
           No visible registry named <code>{namespace}</code>.
         </p>
         <Link to={CONVENTIONS}>Back to conventions</Link>
@@ -132,7 +132,7 @@ function RegistryView({
   if (registry.isError || !index) {
     return (
       <div className="schema-page">
-        <p className="schema-error">
+        <p className="error-text" role="alert">
           Could not load {namespace}@{version}: {toErrorMessage(registry.error)}
         </p>
         <Link to={CONVENTIONS}>Back to conventions</Link>

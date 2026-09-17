@@ -268,7 +268,7 @@ function ApiKeysBody({ who }: { who: WhoamiResponse }) {
         explicit scopes; edit them any time without rotating the secret.
       </p>
 
-      {error && <p className="manage-error">{error}</p>}
+      {error && <p className="manage-error error-text" role="alert">{error}</p>}
 
       <section className="api-keys-create">
         <h2>Create new key</h2>

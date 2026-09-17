@@ -148,7 +148,7 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
         </button>
       </header>
 
-      {error && <p className="manage-error">{error}</p>}
+      {error && <p className="manage-error error-text" role="alert">{error}</p>}
       {secret && (
         <div className="secret-once">
           <strong>Copy this key now</strong>

@@ -122,8 +122,6 @@
   padding: 14px;
   border-radius: 6px;
   border: 1px solid var(--border);
-  color: var(--err);
-  font-size: 13px;
   display: flex;
   align-items: center;
   gap: 12px;
@@ -133,7 +131,6 @@
 .instrumentation-error p {
   margin: 0;
 }
-
 
 .code-snippet {
   margin: 24px 0 0;

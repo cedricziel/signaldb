@@ -330,7 +330,7 @@ export function Instrumentation({ state }: Props) {
               </div>
             )}
             {connection.isError ? (
-              <div className="instrumentation-error" role="alert">
+              <div className="instrumentation-error error-text" role="alert">
                 {connection.error instanceof ApiError &&
                 connection.error.status === 403 ? (
                   <p>

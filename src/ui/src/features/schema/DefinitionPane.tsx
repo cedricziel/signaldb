@@ -54,7 +54,7 @@ export function DefinitionPane({ namespace, version, kind, name }: Props) {
   if (resolution.isError) {
     return (
       <div className="schema-definition">
-        <p className="schema-error">
+        <p className="error-text" role="alert">
           Failed to resolve <code>{name}</code>:{" "}
           {resolution.error instanceof Error
             ? resolution.error.message

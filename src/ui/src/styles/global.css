@@ -727,6 +727,14 @@ select:focus-visible {
   color: var(--faint);
 }
 
+/* ---------- shared inline error text (every feature's own failed-load or
+   validation message) ---------- */
+
+.error-text {
+  font-size: 12px;
+  color: var(--err);
+}
+
 /* ---------- shared chips (filter/tenant/origin/status/facet/semantic-key
    pills) ---------- */
 
