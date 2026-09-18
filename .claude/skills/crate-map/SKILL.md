@@ -112,8 +112,8 @@ This is the shared foundation. Key modules:
 | `oidc.rs`                | `src/router/src/oidc.rs`                | OIDC relying-party runtime: background provider discovery, PKCE/state, token exchange, JIT provisioning + group-mapping sync                             |
 | `endpoints/github.rs`    | `src/router/src/endpoints/github.rs`    | GitHub App installation linking: `/api/v1/manage/tenants/{id}/github-installations{,/link,/{id}}` + the `/ui/github/callback` install redirect; 404 when `[github]` is unset |
 | `github.rs`              | `src/router/src/github.rs`              | GitHub App outbound client: RS256 app JWT, installation-token minting with an in-process cache, OAuth-on-install code exchange, installation/repo listing |
-| `endpoints/source_context.rs` | `src/router/src/endpoints/source_context.rs` | `POST /api/v1/tenants/{id}/source-context`: source lines around a stack frame from the tenant's linked GitHub repositories (always 200, `available`/`unavailable`) |
-| `source_context.rs`      | `src/router/src/source_context.rs`      | Snippet service: repository normalization/probing, Contents API fetch + slice, TTL/LRU cache keyed per installation/repo/ref/path/window |
+| `endpoints/source_context.rs` | `src/router/src/endpoints/source_context.rs` | `POST`/`GET /api/v1/tenants/{id}/source-context`: source lines around a stack frame from the tenant's linked GitHub repositories, and whether they can be served at all (contract: `docs/operations/github-app.md`) |
+| `source_context.rs`      | `src/router/src/source_context.rs`      | Snippet service: repository normalization/probing, Contents API fetch + slice, TTL/LRU cache keyed per installation/repo/ref/path |
 | `endpoints/flight.rs`    | `src/router/src/endpoints/flight.rs`    | Router Flight service                                                                                                                                    |
 
 ## The `compactor` Crate

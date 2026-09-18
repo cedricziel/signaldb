@@ -189,13 +189,16 @@ POST /api/v1/tenants/{id}/source-context
 
 The Explore UI does this behind a **View source** control on trace exception
 frames, Errors-view stacktrace frames, and profile frames whose file and
-line are known. The response is always `200`: either `status: "available"`
+line are known. A well-formed, authorized request always gets `200`: either `status: "available"`
 with the snippet (the lines around `line`, the repository and ref that
 served it, and a link into GitHub), or `status: "unavailable"` with a
 `reason` (`not_configured`, `no_installation`, `not_found`, `not_a_file`,
 `too_large`, `undecodable`, `line_out_of_range`, `github_error`,
-`internal`). A frame whose source is unavailable simply shows no snippet;
-it never fails the trace, error, or profile view.
+`internal`). The only non-`200` answers are `400` for a malformed request
+(empty path, `line` of zero, a traversal or absolute path), `403` when the
+path's tenant is not the caller's or the caller can read no signal, and
+`429` from the shared rate limit. A frame whose source is unavailable
+simply shows no snippet; it never fails the trace, error, or profile view.
 
 Resolution rules:
 
