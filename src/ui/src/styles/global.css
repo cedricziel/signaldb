@@ -454,87 +454,32 @@ select:focus-visible {
 
 /* ---------- semantic attribute labels (schema registry) ---------- */
 
-/* Detail-row key label: raw key first (copyable), brief and markers below,
-   namespace tag trailing. Unresolved keys never reach these rules. */
-.semkey {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-  white-space: normal;
-}
-
-.semkey-head {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  min-width: 0;
-  position: relative;
-  border-radius: 3px;
-}
-
 .semkey-name {
   flex: 1 1 auto;
   min-width: 0;
   overflow-wrap: anywhere;
 }
 
-/* Dotted-underline affordance for a key resolved by the registry — set by
-   `SemanticKeyLabel` (components/AttributeTable.tsx's compact key form). */
-.semkey-name[data-known] {
+/* Dotted-underline affordance for a key the registry resolved — set on the
+   attribute-table key label (`.semkey-name`) and the fields sidebar's row
+   button (`.field`, features/explore/explore.css). */
+[data-known] {
   text-decoration: underline dotted;
   text-decoration-color: var(--faint);
   text-underline-offset: 2px;
+}
+
+/* `cursor: help` is specific to the attribute-table key label — the fields
+   sidebar's row button has its own click affordance. */
+.semkey-name[data-known] {
   cursor: help;
 }
 
-.semkey[data-deprecated] .semkey-name {
-  text-decoration: line-through;
-  text-decoration-color: var(--warn);
-}
-
-.semkey-ns,
 .chip-suggest-ns {
   font-family: var(--ui);
   font-size: 9.5px;
   padding: 0 5px;
   color: var(--faint);
-}
-
-.semkey-ns {
-  line-height: 1.3;
-  white-space: nowrap;
-}
-
-.semkey-ns[data-source="custom"] {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-}
-
-.semkey-brief {
-  font-family: var(--ui);
-  font-size: 11px;
-  line-height: 1.35;
-  color: var(--dim);
-  overflow-wrap: anywhere;
-}
-
-.semkey-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-  font-family: var(--ui);
-  font-size: 10px;
-  color: var(--faint);
-}
-
-.semkey-title {
-  color: var(--dim);
-  font-weight: 550;
-}
-
-.semkey-role-identifying {
-  color: var(--info);
 }
 
 .semkey-dep {
@@ -1107,11 +1052,17 @@ th[aria-sort="descending"] .th-sort::after {
   margin-left: 0;
 }
 
-/* Each button keeps its intrinsic width while the strip is clipped to zero,
-   otherwise its label would wrap letter by letter and stretch the row. */
+/* Each button keeps its intrinsic width while the strip is clipped to zero
+   (otherwise its label would wrap letter by letter and stretch the row), and
+   its own resting look. */
 .attrtable-actions button {
   flex: none;
   white-space: nowrap;
+  font-size: 10px;
+  color: var(--faint);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 5px;
 }
 
 .attrtable-row:hover .attrtable-actions,
@@ -1131,23 +1082,15 @@ th[aria-sort="descending"] .th-sort::after {
   }
 }
 
-.attrtable-actions button {
-  font-size: 10px;
-  color: var(--faint);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0 5px;
-}
-
 .attrtable-actions button:hover {
   color: var(--accent);
   border-color: var(--accent);
 }
 
-/* Section head above a titled block of an attribute table (LogList's "THIS
-   LINE"/"STREAM · RESOURCE", TracesView's "SPAN"/"SCOPE"/"RESOURCE") —
-   same treatment as .span-detail-sec. A collapsible section renders it as a
-   button carrying `aria-expanded`. */
+/* Section head above a titled block of an attribute table (`AttributeSection`
+   in components/AttributeTable.tsx — LogList's "This line"/"Resource ·
+   stream", TracesView's "Span"/"Scope"/"Resource"/"Events"). A collapsible
+   section renders it as a button carrying `aria-expanded`. */
 .attrtable-section {
   display: flex;
   align-items: center;

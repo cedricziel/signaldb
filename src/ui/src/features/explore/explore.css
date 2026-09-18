@@ -616,14 +616,6 @@
   padding-left: 20px;
 }
 
-/* Resolved key affordance: a dotted underline hints it has semantics before
-   the (otherwise hover/focus-only) info glyph appears. */
-.field[data-known] {
-  text-decoration: underline dotted;
-  text-decoration-color: var(--faint);
-  text-underline-offset: 2px;
-}
-
 .field-dep {
   margin-left: 4px;
   font-family: var(--ui);

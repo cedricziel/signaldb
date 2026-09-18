@@ -626,34 +626,6 @@
   margin-bottom: 10px;
 }
 
-.span-detail-sec {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
-  color: var(--faint);
-  font-weight: 650;
-  margin: 14px 0 6px;
-}
-
-/* Span/Scope/Resource section head: title plus a trailing count or the
-   descriptions toggle. A collapsible section (Scope, Resource) renders this
-   as a <button data-expanded>, styled the same as the plain <div> ones
-   (Events, Span). */
-.span-detail-sec-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  background: none;
-  border: none;
-  padding: 0;
-  text-align: left;
-}
-
-.span-detail-toggle {
-  cursor: pointer;
-}
-
 .span-events {
   list-style: none;
   margin: 0;
