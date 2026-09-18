@@ -479,6 +479,151 @@ impl GitHubApp {
     }
 }
 
+/// Cap on the decoded size of a file [`GitHubApp::file_content`] will serve.
+/// A larger decoded file maps to [`FileFetch::TooLarge`] rather than being
+/// returned — the source-context lookup only ever needs a bounded window of
+/// lines around one line number, never a whole large file.
+pub const MAX_FILE_BYTES: usize = 512 * 1024;
+
+/// Outcome of a Contents API fetch that is not a transport/HTTP failure
+/// (change: github-app-source-context).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FileFetch {
+    /// The path resolved to a regular file, successfully decoded as UTF-8
+    /// text within [`MAX_FILE_BYTES`].
+    File {
+        /// The file's full decoded text.
+        text: String,
+        /// The blob's `sha`, as GitHub reports it.
+        sha: String,
+        /// GitHub's `html_url` for this file at the resolved ref.
+        html_url: String,
+    },
+    /// A 404: either the path or the ref does not exist — GitHub's Contents
+    /// API answers 404 for both, indistinguishably.
+    NotFound,
+    /// The path resolved to something other than a regular file: a
+    /// directory listing (a JSON array), a directory entry object, an
+    /// unresolved `symlink` entry, or a `submodule` entry.
+    NotAFile,
+    /// The content was reported with `encoding: "none"` (GitHub's shape for
+    /// a file over its own size threshold), or decoded to more than
+    /// [`MAX_FILE_BYTES`].
+    TooLarge,
+    /// The content failed base64 decoding, decoded to bytes that are not
+    /// valid UTF-8, or arrived in an `encoding` this client does not
+    /// support.
+    Undecodable,
+}
+
+/// The subset of a Contents API file-entry response this client reads.
+/// Deserialized only after the raw JSON has been confirmed to be an object
+/// (not an array) — see [`GitHubApp::file_content`].
+#[derive(Deserialize)]
+struct ContentsFileEntry {
+    #[serde(rename = "type")]
+    kind: String,
+    #[serde(default)]
+    encoding: Option<String>,
+    #[serde(default)]
+    content: Option<String>,
+    #[serde(default)]
+    sha: Option<String>,
+    #[serde(default)]
+    html_url: Option<String>,
+}
+
+impl GitHubApp {
+    /// Fetch one file's content from the Contents API
+    /// (`GET /repos/{repository}/contents/{path}`, `?ref=` when `git_ref` is
+    /// given) using `installation_id`'s access token, and classify the
+    /// result per [`FileFetch`]. Every non-file shape (directory, symlink,
+    /// submodule, undecodable/oversized content) is reported as a variant
+    /// rather than an error — only a transport failure or a non-404 status
+    /// propagates as [`GitHubError`].
+    pub async fn file_content(
+        &self,
+        installation_id: i64,
+        repository: &str,
+        git_ref: Option<&str>,
+        path: &str,
+    ) -> Result<FileFetch, GitHubError> {
+        let token = self.installation_token(installation_id).await?;
+        let mut url = reqwest::Url::parse(&format!(
+            "{}/repos/{repository}/contents",
+            self.config.api_base()
+        ))
+        .map_err(|e| GitHubError::Malformed(format!("invalid repository or api_url: {e}")))?;
+        {
+            let mut segments = url
+                .path_segments_mut()
+                .map_err(|_| GitHubError::Malformed("api_url cannot be a base URL".to_string()))?;
+            segments.extend(path.split('/'));
+        }
+        if let Some(git_ref) = git_ref {
+            url.query_pairs_mut().append_pair("ref", git_ref);
+        }
+        let url_string = url.to_string();
+        let request = self.http.get(url.clone()).bearer_auth(&token);
+        let response = match self.send(request, "GET", &url_string).await {
+            Ok(response) => response,
+            Err(GitHubError::Status { status: 404, .. }) => return Ok(FileFetch::NotFound),
+            Err(other) => return Err(other),
+        };
+        let body: serde_json::Value = response
+            .json()
+            .await
+            .map_err(|e| GitHubError::Malformed(e.to_string()))?;
+        if body.is_array() {
+            // A directory listing.
+            return Ok(FileFetch::NotAFile);
+        }
+        let entry: ContentsFileEntry =
+            serde_json::from_value(body).map_err(|e| GitHubError::Malformed(e.to_string()))?;
+        if entry.kind != "file" {
+            // A directory entry, an unresolved symlink, or a submodule.
+            return Ok(FileFetch::NotAFile);
+        }
+        let Some(encoding) = entry.encoding.as_deref() else {
+            return Ok(FileFetch::Undecodable);
+        };
+        if encoding == "none" {
+            // GitHub's shape for a file over its own size threshold: no
+            // content is sent at all.
+            return Ok(FileFetch::TooLarge);
+        }
+        if encoding != "base64" {
+            return Ok(FileFetch::Undecodable);
+        }
+        let Some(content) = entry.content else {
+            return Ok(FileFetch::Undecodable);
+        };
+        // GitHub wraps base64 content at 60 columns.
+        let stripped: String = content.chars().filter(|c| !c.is_whitespace()).collect();
+        use base64::Engine;
+        let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&stripped) else {
+            return Ok(FileFetch::Undecodable);
+        };
+        if decoded.len() > MAX_FILE_BYTES {
+            return Ok(FileFetch::TooLarge);
+        }
+        let Ok(text) = String::from_utf8(decoded) else {
+            return Ok(FileFetch::Undecodable);
+        };
+        let sha = entry.sha.ok_or_else(|| {
+            GitHubError::Malformed("Contents API response missing sha".to_string())
+        })?;
+        let html_url = entry.html_url.ok_or_else(|| {
+            GitHubError::Malformed("Contents API response missing html_url".to_string())
+        })?;
+        Ok(FileFetch::File {
+            text,
+            sha,
+            html_url,
+        })
+    }
+}
+
 /// Permission names carried at a write-capable level (`write` or `admin`).
 /// The linking flow refuses an installation with any such permission (spec:
 /// only `contents:read` and `metadata:read` are expected).
@@ -488,6 +633,48 @@ pub fn write_permissions(permissions: &BTreeMap<String, String>) -> Vec<String> 
         .filter(|(_, level)| level.as_str() == "write" || level.as_str() == "admin")
         .map(|(name, _)| name.clone())
         .collect()
+}
+
+/// Test scaffolding shared by every GitHub-App-backed test in this crate
+/// (change: github-app-source-context task 8) — `router::github`'s own
+/// tests, `router::source_context`, `router::endpoints::github`, and
+/// `router::endpoints::source_context`. The end-to-end test in
+/// `tests-integration` cannot see `pub(crate)` and keeps its own copies, but
+/// uses [`common::testing::github_test_config`] for the config itself.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use chrono::Utc;
+    use serde_json::json;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    /// Mounts the installation-token mint mock for `installation_id`, as
+    /// every test that calls an installation-scoped endpoint needs first.
+    pub(crate) async fn mount_installation_token(server: &MockServer, installation_id: i64) {
+        Mock::given(method("POST"))
+            .and(path(format!(
+                "/app/installations/{installation_id}/access_tokens"
+            )))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                "token": format!("ghs_{installation_id}"),
+                "expires_at": (Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
+            })))
+            .mount(server)
+            .await;
+    }
+
+    /// A Contents API file-entry body for `text`, base64-wrapped the way
+    /// GitHub's own response is.
+    pub(crate) fn contents_file_body(text: &str, sha: &str, html_url: &str) -> serde_json::Value {
+        use base64::Engine;
+        json!({
+            "type": "file",
+            "encoding": "base64",
+            "content": base64::engine::general_purpose::STANDARD.encode(text),
+            "sha": sha,
+            "html_url": html_url,
+        })
+    }
 }
 
 #[cfg(test)]
@@ -516,16 +703,7 @@ mod tests {
     }
 
     fn test_config(server: &MockServer) -> GitHubAppConfig {
-        GitHubAppConfig {
-            app_id: 12345,
-            app_slug: "test-app".to_string(),
-            private_key: TEST_PEM.to_string(),
-            client_id: "test-client-id".to_string(),
-            client_secret: "test-client-secret".to_string(),
-            api_url: server.uri(),
-            web_url: server.uri(),
-            ..GitHubAppConfig::default()
-        }
+        common::testing::github_test_config(&server.uri())
     }
 
     fn decode_jwt(token: &str, app_id: u64) -> jsonwebtoken::TokenData<serde_json::Value> {
@@ -546,7 +724,7 @@ mod tests {
         let token = app.app_jwt().expect("signs");
         let data = decode_jwt(&token, app.config().app_id);
 
-        assert_eq!(data.claims["iss"], "12345");
+        assert_eq!(data.claims["iss"], app.config().app_id.to_string());
         let iat = data.claims["iat"].as_i64().expect("iat is a number");
         let exp = data.claims["exp"].as_i64().expect("exp is a number");
         assert!((before - JWT_CLOCK_SKEW - 2..=before - JWT_CLOCK_SKEW + 2).contains(&iat));
@@ -863,5 +1041,184 @@ mod tests {
 
         let err = app.installation(1).await.expect_err("connection refused");
         assert!(matches!(err, GitHubError::Transport(_)));
+    }
+
+    #[tokio::test]
+    async fn file_content_happy_path_decodes_wrapped_base64_and_sends_ref() {
+        let server = MockServer::start().await;
+        let app = GitHubApp::new(test_config(&server)).expect("valid config");
+        test_support::mount_installation_token(&server, 42).await;
+
+        let text = "fn main() {\n    println!(\"hi\");\n}\n";
+        use base64::Engine;
+        let raw_b64 = base64::engine::general_purpose::STANDARD.encode(text);
+        // GitHub wraps base64 content at 60 columns; simulate that here.
+        let wrapped = raw_b64
+            .as_bytes()
+            .chunks(10)
+            .map(|c| std::str::from_utf8(c).unwrap())
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        Mock::given(method("GET"))
+            .and(path("/repos/octo/api/contents/src/my%20file.rs"))
+            .and(query_param("ref", "main"))
+            .and(header("Authorization", "Bearer ghs_42"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "type": "file",
+                "encoding": "base64",
+                "content": wrapped,
+                "sha": "abc123",
+                "html_url": "https://github.com/octo/api/blob/main/src/my%20file.rs",
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let result = app
+            .file_content(42, "octo/api", Some("main"), "src/my file.rs")
+            .await
+            .expect("fetches");
+        match result {
+            FileFetch::File {
+                text: got_text,
+                sha,
+                html_url,
+            } => {
+                assert_eq!(got_text, text);
+                assert_eq!(sha, "abc123");
+                assert_eq!(
+                    html_url,
+                    "https://github.com/octo/api/blob/main/src/my%20file.rs"
+                );
+            }
+            other => panic!("expected File, got {other:?}"),
+        }
+    }
+
+    /// Fetches `file_path` from a fresh mocked server/app (installation 42,
+    /// repo `octo/api`), mounting a single Contents API response of
+    /// `status` with `body`, and returns the decoded [`FileFetch`]. Shared
+    /// boilerplate for the seven non-happy-path `file_content_*` tests
+    /// below.
+    async fn fetch_with_body(status: u16, file_path: &str, body: serde_json::Value) -> FileFetch {
+        let server = MockServer::start().await;
+        let app = GitHubApp::new(test_config(&server)).expect("valid config");
+        test_support::mount_installation_token(&server, 42).await;
+
+        Mock::given(method("GET"))
+            .and(path(format!("/repos/octo/api/contents/{file_path}")))
+            .respond_with(ResponseTemplate::new(status).set_body_json(body))
+            .mount(&server)
+            .await;
+
+        app.file_content(42, "octo/api", None, file_path)
+            .await
+            .expect("maps to a result, not an error")
+    }
+
+    #[tokio::test]
+    async fn file_content_404_maps_to_not_found() {
+        let result = fetch_with_body(404, "missing.rs", json!({"message": "Not Found"})).await;
+        assert_eq!(result, FileFetch::NotFound);
+    }
+
+    #[tokio::test]
+    async fn file_content_directory_listing_maps_to_not_a_file() {
+        let result = fetch_with_body(
+            200,
+            "src",
+            json!([
+                { "type": "file", "name": "main.rs" },
+            ]),
+        )
+        .await;
+        assert_eq!(result, FileFetch::NotAFile);
+    }
+
+    #[tokio::test]
+    async fn file_content_non_file_entry_types_map_to_not_a_file() {
+        for (idx, kind) in ["dir", "symlink", "submodule"].iter().enumerate() {
+            let file_path = format!("entry-{idx}");
+            let result =
+                fetch_with_body(200, &file_path, json!({ "type": kind, "name": file_path })).await;
+            assert_eq!(result, FileFetch::NotAFile, "type {kind}");
+        }
+    }
+
+    #[tokio::test]
+    async fn file_content_invalid_base64_maps_to_undecodable() {
+        let result = fetch_with_body(
+            200,
+            "bad.rs",
+            json!({
+                "type": "file",
+                "encoding": "base64",
+                "content": "not-valid-base64!!!",
+                "sha": "abc",
+                "html_url": "https://github.com/octo/api/blob/main/bad.rs",
+            }),
+        )
+        .await;
+        assert_eq!(result, FileFetch::Undecodable);
+    }
+
+    #[tokio::test]
+    async fn file_content_non_utf8_bytes_map_to_undecodable() {
+        use base64::Engine;
+        let invalid_utf8: &[u8] = &[0xff, 0xfe, 0xfd];
+        let encoded = base64::engine::general_purpose::STANDARD.encode(invalid_utf8);
+
+        let result = fetch_with_body(
+            200,
+            "binary.dat",
+            json!({
+                "type": "file",
+                "encoding": "base64",
+                "content": encoded,
+                "sha": "abc",
+                "html_url": "https://github.com/octo/api/blob/main/binary.dat",
+            }),
+        )
+        .await;
+        assert_eq!(result, FileFetch::Undecodable);
+    }
+
+    #[tokio::test]
+    async fn file_content_encoding_none_maps_to_too_large() {
+        let result = fetch_with_body(
+            200,
+            "huge.bin",
+            json!({
+                "type": "file",
+                "encoding": "none",
+                "content": "",
+                "sha": "abc",
+                "html_url": "https://github.com/octo/api/blob/main/huge.bin",
+            }),
+        )
+        .await;
+        assert_eq!(result, FileFetch::TooLarge);
+    }
+
+    #[tokio::test]
+    async fn file_content_over_cap_after_decoding_maps_to_too_large() {
+        use base64::Engine;
+        let oversized = "x".repeat(MAX_FILE_BYTES + 1);
+        let encoded = base64::engine::general_purpose::STANDARD.encode(oversized);
+
+        let result = fetch_with_body(
+            200,
+            "big.rs",
+            json!({
+                "type": "file",
+                "encoding": "base64",
+                "content": encoded,
+                "sha": "abc",
+                "html_url": "https://github.com/octo/api/blob/main/big.rs",
+            }),
+        )
+        .await;
+        assert_eq!(result, FileFetch::TooLarge);
     }
 }
