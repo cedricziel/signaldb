@@ -1,8 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
-import { Fragment, useId, useMemo, useRef, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import {
   tempoSearchTags,
+  type AttrValue,
   type ProfileSummaryView,
   type SpanEventView,
   type TempoSpan,
@@ -21,10 +22,16 @@ import { SignalHistogram } from "../explore/SignalHistogram";
 import { AttributeKeyInput } from "../../components/AttributeKeyInput";
 import { AttributeValue } from "../../components/AttributeValue";
 import {
+  AttributeSection,
+  AttributeSummary,
+  AttributeTable,
+  DescriptionsToggle,
+  type AttributeRowAction,
+} from "../../components/AttributeTable";
+import {
   MobileFiltersToggle,
   MobileSidebarDrawer,
 } from "../../components/MobileSidebarDrawer";
-import { SemanticKey } from "../../components/SemanticKey";
 import { SidebarResizer } from "../../components/SidebarResizer";
 import {
   useVizPointer,
@@ -33,8 +40,14 @@ import {
 } from "../../components/VizTooltip";
 import { useSemantics } from "../../hooks/useSemantics";
 import { useMobileSidebar } from "../../hooks/useMobileSidebar";
+import { useAttrDescriptions } from "../../lib/attrDescriptions";
+import { pivotRowActions } from "../../lib/attrPivots";
+import {
+  RESOURCE_IDENTITY_FIELDS,
+  summarizeAttributes,
+  type SummaryField,
+} from "../../lib/attrSummary";
 import { spanDetailWidth } from "../../lib/sidebarWidth";
-import { groupBySemanticTitle } from "../../lib/semantics";
 import { liveRefetchInterval } from "../../lib/live";
 import { goBackOr } from "../../lib/router";
 import { formatErrorRate } from "../../lib/vizFormat";
@@ -45,6 +58,7 @@ import {
   KIND_VALUES,
   compileTraceQL,
   facetField,
+  facetableField,
   removeTraceFilter,
   upsertTraceFilter,
   withDefaultTraceFilters,
@@ -1053,6 +1067,7 @@ function TraceDetail({ state, update }: Props) {
                 profiles={traceData.profiles}
                 kind={spanKinds[selectedRow.span.spanId]}
                 update={update}
+                traceFilters={state.traceFilters}
               />
             </MobileSidebarDrawer>
           </>
@@ -1075,12 +1090,43 @@ function TraceDetail({ state, update }: Props) {
   );
 }
 
+/** Collapsed Resource-section summary, in preference order — the first
+ * present spelling of each field wins, then `+ N more`; the SDK language and
+ * version are shown together as one `sdk go 1.28.0` entry. Built from the
+ * shared resource-identity fields (`lib/attrSummary.ts`) plus the service
+ * version (ahead of the pod/host/region identity fields), the k8s node, and
+ * the sdk pair (trailing). */
+const RESOURCE_SUMMARY_FIELDS: SummaryField[] = [
+  ...RESOURCE_IDENTITY_FIELDS.slice(0, 3),
+  { keys: ["service.version"] },
+  RESOURCE_IDENTITY_FIELDS[3]!,
+  { keys: ["k8s.node.name"] },
+  ...RESOURCE_IDENTITY_FIELDS.slice(4),
+  {
+    keys: ["telemetry.sdk.language", "telemetry.sdk.version"],
+    render: (found) => ({
+      key: "sdk",
+      value: [
+        found.get("telemetry.sdk.language"),
+        found.get("telemetry.sdk.version"),
+      ]
+        .filter(Boolean)
+        .join(" "),
+    }),
+  },
+];
+
+function stringEntries(entries: [string, AttrValue][]): [string, string][] {
+  return entries.map(([k, v]) => [k, String(v)]);
+}
+
 function SpanDetail({
   span,
   traceId,
   profiles,
   kind,
   update,
+  traceFilters,
 }: {
   span: TempoSpan;
   traceId: string;
@@ -1088,6 +1134,8 @@ function SpanDetail({
   /** OTel span kind, when the IR row carried one. */
   kind: string | undefined;
   update: UpdateFn;
+  /** The URL's raw trace filters, for the "+ filter" row action. */
+  traceFilters: TraceFilter[];
 }) {
   const groups = useMemo(
     () => groupSpanAttributes(span.attributes),
@@ -1098,7 +1146,76 @@ function SpanDetail({
     [groups],
   );
   const semantics = useSemantics(attributeKeys);
+  // Every span/scope/resource attribute on this span, for a catalog pivot's
+  // identity check (lib/attrPivots.ts) — it needs an entity's full identity,
+  // not just the one row's own key/value.
+  const attributeBag = useMemo(
+    (): ReadonlyMap<string, string> =>
+      new Map(groups.flatMap((g) => stringEntries(g.entries))),
+    [groups],
+  );
   const spanProfiles = profiles.filter((p) => p.spanId === span.spanId);
+  const [showDescriptions, toggleDescriptions] = useAttrDescriptions();
+  const [scopeExpanded, setScopeExpanded] = useState(false);
+  const [resourceExpanded, setResourceExpanded] = useState(false);
+
+  const spanGroup = groups.find((g) => g.label === "Span");
+  const scopeGroup = groups.find((g) => g.label === "Scope");
+  const resourceGroup = groups.find((g) => g.label === "Resource");
+  const spanEntries = useMemo(
+    () => (spanGroup ? stringEntries(spanGroup.entries) : []),
+    [spanGroup],
+  );
+  const scopeEntries = useMemo(
+    () => (scopeGroup ? stringEntries(scopeGroup.entries) : []),
+    [scopeGroup],
+  );
+  const resourceEntries = useMemo(
+    () => (resourceGroup ? stringEntries(resourceGroup.entries) : []),
+    [resourceGroup],
+  );
+  const resourceSummary = useMemo(
+    () => summarizeAttributes(resourceEntries, RESOURCE_SUMMARY_FIELDS),
+    [resourceEntries],
+  );
+
+  const rowActions = (key: string, value: string): AttributeRowAction[] => {
+    const actions: AttributeRowAction[] = [
+      {
+        label: "group by",
+        ariaLabel: `Group by ${key}`,
+        onClick: () => update({ groupBy: key, group: "" }),
+      },
+    ];
+    const field = facetableField(key);
+    if (field) {
+      actions.push({
+        label: "+ filter",
+        ariaLabel: `Filter for ${key} = ${value}`,
+        onClick: () =>
+          update(
+            {
+              trace: "",
+              traceFilters: upsertTraceFilter(traceFilters, { field, value }),
+              group: "",
+            },
+            { push: true },
+          ),
+      });
+    }
+    actions.push(
+      ...pivotRowActions(
+        key,
+        value,
+        semantics.get(key),
+        attributeBag,
+        "traces",
+        update,
+      ),
+    );
+    return actions;
+  };
+
   return (
     <aside className="span-detail" aria-label="Span details">
       <h4>{span.name}</h4>
@@ -1150,7 +1267,7 @@ function SpanDetail({
       ))}
       {span.events.length > 0 && (
         <>
-          <div className="span-detail-sec">Events</div>
+          <AttributeSection title="Events" />
           <ul className="span-events">
             {span.events.map((event, i) => (
               <SpanEventItem key={i} event={event} spanStartNs={span.startNs} />
@@ -1158,39 +1275,63 @@ function SpanDetail({
           </ul>
         </>
       )}
-      {groups.length === 0 && (
+      <AttributeSection title="Span">
+        <DescriptionsToggle
+          checked={showDescriptions}
+          onToggle={toggleDescriptions}
+        />
+      </AttributeSection>
+      {spanGroup ? (
+        <AttributeTable
+          entries={spanEntries}
+          semantics={semantics}
+          layout="stacked"
+          showDescriptions={showDescriptions}
+          actions={rowActions}
+        />
+      ) : (
+        <div className="view-note">No attributes recorded.</div>
+      )}
+      {scopeGroup && (
         <>
-          <div className="span-detail-sec">Attributes</div>
-          <div className="view-note">No attributes recorded.</div>
+          <AttributeSection
+            title="Scope"
+            count={scopeGroup.entries.length}
+            expanded={scopeExpanded}
+            onToggle={() => setScopeExpanded((current) => !current)}
+          />
+          {scopeExpanded && (
+            <AttributeTable
+              entries={scopeEntries}
+              semantics={semantics}
+              layout="stacked"
+              showDescriptions={showDescriptions}
+              actions={rowActions}
+            />
+          )}
         </>
       )}
-      {groups.map((group) => (
-        <div key={group.label}>
-          <div className="span-detail-sec">{group.label}</div>
-          {groupBySemanticTitle(group.entries, semantics).map((sub) => (
-            <Fragment key={sub.title ?? ""}>
-              {sub.title && (
-                <div className="span-detail-subsec">{sub.title}</div>
-              )}
-              <dl className="span-attrs">
-                {sub.entries.map(([k, v]) => (
-                  <div key={k}>
-                    <dt>
-                      <SemanticKey name={k} semantics={semantics.get(k)} />
-                    </dt>
-                    <dd>
-                      <AttributeValue
-                        value={String(v)}
-                        label={`value for ${k}`}
-                      />
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            </Fragment>
-          ))}
-        </div>
-      ))}
+      {resourceGroup && (
+        <>
+          <AttributeSection
+            title="Resource"
+            count={resourceGroup.entries.length}
+            expanded={resourceExpanded}
+            onToggle={() => setResourceExpanded((current) => !current)}
+          />
+          {resourceExpanded ? (
+            <AttributeTable
+              entries={resourceEntries}
+              semantics={semantics}
+              layout="stacked"
+              showDescriptions={showDescriptions}
+              actions={rowActions}
+            />
+          ) : (
+            <AttributeSummary summary={resourceSummary} />
+          )}
+        </>
+      )}
     </aside>
   );
 }

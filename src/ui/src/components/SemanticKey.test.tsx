@@ -4,7 +4,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AttributeHit } from "../api/gen";
 import { semanticsFromResolution } from "../lib/semantics";
-import { SemanticInfo, SemanticKey } from "./SemanticKey";
+import { SemanticInfo, SemanticKeyLabel } from "./SemanticKey";
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -25,29 +25,19 @@ const hit = (over: Partial<AttributeHit> = {}): AttributeHit => ({
 const semOf = (hits: AttributeHit[]) =>
   semanticsFromResolution({ key: hits[0]!.key, hits, primary: hits[0] });
 
-describe("SemanticKey", () => {
+describe("SemanticKeyLabel", () => {
   it("renders the bare key when the registry does not know it", () => {
     const { container } = render(
       <dt>
-        <SemanticKey name="app.order.id" semantics={undefined} />
+        <SemanticKeyLabel name="app.order.id" semantics={undefined} />
       </dt>,
     );
-    expect(container.querySelector("dt")!.innerHTML).toBe("app.order.id");
-  });
-
-  it("shows key, brief, title and namespace tag for a registered key", () => {
-    render(
-      <SemanticKey name="k8s.pod.uid" semantics={semOf([hit()])} showTitle />,
-    );
-    expect(screen.getByText("k8s.pod.uid")).toBeInTheDocument();
-    expect(screen.getByText("The UID of the Pod.")).toBeInTheDocument();
-    expect(screen.getByText("Kubernetes Attributes")).toBeInTheDocument();
-    expect(screen.getByText("otel")).toBeInTheDocument();
+    expect(container.querySelector("dt")!.textContent).toBe("app.order.id");
   });
 
   it("marks a deprecated key with its replacement", () => {
     render(
-      <SemanticKey
+      <SemanticKeyLabel
         name="http.status_code"
         semantics={semOf([
           hit({
@@ -57,25 +47,11 @@ describe("SemanticKey", () => {
         ])}
       />,
     );
+    const struck = screen.getByText("http.status_code", { selector: "s" });
+    expect(struck.closest(".semkey-name")).not.toBeNull();
     expect(
-      screen.getByText("⚠ deprecated → http.response.status_code"),
+      screen.getByText("→ http.response.status_code"),
     ).toBeInTheDocument();
-  });
-
-  it("shows entity roles with the identifying/descriptive glyphs", () => {
-    render(
-      <SemanticKey
-        name="k8s.pod.uid"
-        semantics={semOf([
-          hit({
-            entity_roles: [
-              { namespace: "otel", entity: "k8s.pod", role: "identifying" },
-            ],
-          }),
-        ])}
-      />,
-    );
-    expect(screen.getByText("◆ identifying · k8s.pod")).toBeInTheDocument();
   });
 
   it("tags the tenant's definition as primary and offers otel in the tooltip", async () => {
@@ -92,10 +68,8 @@ describe("SemanticKey", () => {
       brief: "Logical name of the service.",
     });
     render(
-      <SemanticKey name="service.name" semantics={semOf([custom, otel])} />,
+      <SemanticKeyLabel name="service.name" semantics={semOf([custom, otel])} />,
     );
-    expect(screen.getByText("Our service registry name.")).toBeInTheDocument();
-    expect(screen.getByText("acme")).toBeInTheDocument();
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
 
     const label = screen.getByText("service.name", {
@@ -103,6 +77,7 @@ describe("SemanticKey", () => {
     });
     await userEvent.hover(label);
     const tip = await screen.findByRole("tooltip");
+    expect(tip).toHaveTextContent("Our service registry name.");
     expect(tip).toHaveTextContent("acme@1.0.0");
     expect(tip).toHaveTextContent("Also defined in: otel@1.43.0");
     expect(tip).toHaveTextContent("Acme Service · string · development");
@@ -125,7 +100,7 @@ describe("SemanticKey", () => {
     const otel = hit({ key: "service.name" });
     render(
       <MemoryRouter>
-        <SemanticKey name="service.name" semantics={semOf([custom, otel])} />
+        <SemanticKeyLabel name="service.name" semantics={semOf([custom, otel])} />
       </MemoryRouter>,
     );
     await userEvent.hover(
@@ -151,7 +126,7 @@ describe("SemanticKey", () => {
   });
 
   it("degrades registry mentions to plain anchors outside a router", async () => {
-    render(<SemanticKey name="k8s.pod.uid" semantics={semOf([hit()])} />);
+    render(<SemanticKeyLabel name="k8s.pod.uid" semantics={semOf([hit()])} />);
     await userEvent.hover(
       screen.getByText("k8s.pod.uid", { selector: ".semkey-name" }),
     );
@@ -183,7 +158,7 @@ describe("SemanticInfo", () => {
   });
 });
 
-describe("SemanticKey tooltip placement", () => {
+describe("SemanticInfo tooltip placement", () => {
   it("renders the tooltip in a body portal, positioned from the trigger", async () => {
     // Facet sidebars and attribute tables scroll (`overflow: auto`), which
     // would clip a tooltip positioned inside them at the pane edge — so the
@@ -291,12 +266,12 @@ describe("SemanticKey tooltip placement", () => {
     const otel = hit({ key: "service.name" });
     render(
       <MemoryRouter>
-        <SemanticKey name="service.name" semantics={semOf([custom, otel])} />
+        <SemanticKeyLabel name="service.name" semantics={semOf([custom, otel])} />
       </MemoryRouter>,
     );
-    const trigger = screen
-      .getByText("service.name", { selector: ".semkey-name" })
-      .closest(".semkey-head") as HTMLElement;
+    const trigger = screen.getByText("service.name", {
+      selector: ".semkey-name",
+    });
     trigger.focus();
     const tip = await screen.findByRole("tooltip");
     const link = within(tip).getByRole("link", { name: "acme@1.0.0" });
@@ -307,6 +282,73 @@ describe("SemanticKey tooltip placement", () => {
 
     // Focus leaving the tooltip (and the trigger) for anywhere else closes it.
     fireEvent.focusOut(link, { relatedTarget: document.body });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  });
+});
+
+describe("SemanticKeyLabel tooltip keyboard access", () => {
+  function renderTrigger() {
+    render(
+      <MemoryRouter>
+        <SemanticKeyLabel
+          name="service.name"
+          semantics={semOf([hit({ key: "service.name" })])}
+        />
+      </MemoryRouter>,
+    );
+    return screen.getByText("service.name", { selector: ".semkey-name" });
+  }
+
+  it("shows the tooltip when the trigger receives focus", async () => {
+    const trigger = renderTrigger();
+    trigger.focus();
+    expect(await screen.findByRole("tooltip")).toBeInTheDocument();
+  });
+
+  it("hides the tooltip on Escape without letting the row/drawer also react", async () => {
+    const trigger = renderTrigger();
+    const onKeyDown = vi.fn();
+    document.body.addEventListener("keydown", onKeyDown);
+    trigger.focus();
+    await screen.findByRole("tooltip");
+
+    fireEvent.keyDown(trigger, { key: "Escape" });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    expect(onKeyDown).not.toHaveBeenCalled();
+    document.body.removeEventListener("keydown", onKeyDown);
+  });
+
+  it("moves focus to the tooltip's first link on Tab, keeping the tooltip open", async () => {
+    const trigger = renderTrigger();
+    trigger.focus();
+    const tip = await screen.findByRole("tooltip");
+
+    await userEvent.tab();
+    const link = within(tip).getByRole("link", { name: "otel@1.43.0" });
+    expect(link).toHaveFocus();
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+  });
+
+  it("returns focus to the trigger on Shift+Tab from the tooltip's first link", async () => {
+    const trigger = renderTrigger();
+    trigger.focus();
+    await screen.findByRole("tooltip");
+    await userEvent.tab();
+
+    await userEvent.tab({ shift: true });
+    expect(trigger).toHaveFocus();
+  });
+
+  it("returns focus to the trigger and closes on Tab from the tooltip's last link", async () => {
+    const trigger = renderTrigger();
+    trigger.focus();
+    const tip = await screen.findByRole("tooltip");
+    await userEvent.tab();
+    const links = within(tip).getAllByRole("link");
+    links[links.length - 1]!.focus();
+
+    await userEvent.tab();
+    expect(trigger).toHaveFocus();
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   });
 });

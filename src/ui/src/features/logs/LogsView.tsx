@@ -229,6 +229,7 @@ export function LogsView({ state, update }: Props) {
               rows={logs.data}
               onAddFilter={addFilter}
               onOpenTrace={openTrace}
+              update={update}
             />
           )}
         </div>

@@ -316,6 +316,18 @@ select:focus-visible {
   white-space: nowrap;
 }
 
+/* Inside the attribute table a value wraps instead of ellipsizing — the row
+   already has a whole line to itself, so cutting it off there hides text an
+   ellipsis elsewhere (a log row's inline preview, say) has a real space
+   reason to trim. The >=200-char collapse/"More" threshold in
+   AttributeValue is unaffected: this only changes how the shown text (the
+   whole value, or its truncated preview) wraps within its own line. */
+.attrtable .copy-value-text {
+  overflow-wrap: anywhere;
+  white-space: normal;
+  text-overflow: clip;
+}
+
 .attribute-value {
   display: inline-block;
   min-width: 0;
@@ -442,39 +454,27 @@ select:focus-visible {
 
 /* ---------- semantic attribute labels (schema registry) ---------- */
 
-/* Detail-row key label: raw key first (copyable), brief and markers below,
-   namespace tag trailing. Unresolved keys never reach these rules. */
-.semkey {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-  white-space: normal;
-}
-
-.semkey-head {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  min-width: 0;
-  position: relative;
-  border-radius: 3px;
-}
-
 .semkey-name {
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
-.semkey[data-deprecated] .semkey-name {
-  text-decoration: line-through;
-  text-decoration-color: var(--warn);
+/* Dotted-underline affordance for a key the registry resolved — set on the
+   attribute-table key label (`.semkey-name`) and the fields sidebar's row
+   button (`.field`, features/explore/explore.css). */
+[data-known] {
+  text-decoration: underline dotted;
+  text-decoration-color: var(--faint);
+  text-underline-offset: 2px;
 }
 
-.semkey-ns,
+/* `cursor: help` is specific to the attribute-table key label — the fields
+   sidebar's row button has its own click affordance. */
+.semkey-name[data-known] {
+  cursor: help;
+}
+
 .chip-suggest-ns {
   font-family: var(--ui);
   font-size: 9.5px;
@@ -482,43 +482,8 @@ select:focus-visible {
   color: var(--faint);
 }
 
-.semkey-ns {
-  line-height: 1.3;
-  white-space: nowrap;
-}
-
-.semkey-ns[data-source="custom"] {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-}
-
-.semkey-brief {
-  font-family: var(--ui);
-  font-size: 11px;
-  line-height: 1.35;
-  color: var(--dim);
-  overflow-wrap: anywhere;
-}
-
-.semkey-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 10px;
-  font-family: var(--ui);
-  font-size: 10px;
-  color: var(--faint);
-}
-
-.semkey-title {
-  color: var(--dim);
-  font-weight: 550;
-}
-
-.semkey-role-identifying {
-  color: var(--info);
-}
-
 .semkey-dep {
+  margin-left: 6px;
   color: var(--warn-banner-text);
 }
 
@@ -882,6 +847,16 @@ th[aria-sort="descending"] .th-sort::after {
 .chip-suggest-brief {
   font-size: 11px;
   color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.chip-suggest-dep {
+  color: var(--warn-banner-text);
+  font-size: 10px;
+  font-family: var(--ui);
 }
 
 /* ---------- dialog (components/Dialog.tsx) ---------- */
@@ -934,4 +909,258 @@ th[aria-sort="descending"] .th-sort::after {
   gap: 6px;
   color: var(--dim);
   font-size: 12px;
+}
+
+/* ---------- attribute table (components/AttributeTable.tsx) ---------- */
+
+.attrtable {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.attrtable[data-layout="grid"] {
+  max-width: 720px;
+}
+
+/* One <dl> per group (see components/AttributeTable.tsx), stacked the same
+   way the single table-wide <dl> used to lay out its rows. */
+.attrtable-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Facts shared by every row in a titled group, stated once instead of
+   repeated per row: the title, the group's namespace, and (when every
+   resolved row agrees on one) the entity it describes. */
+.attrtable-group {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--ui);
+  margin: 8px 0 1px;
+}
+
+.attrtable-title {
+  font-size: 10.5px;
+  color: var(--dim);
+  font-weight: 600;
+}
+
+.attrtable-ns {
+  font-size: 9.5px;
+  color: var(--faint);
+}
+
+.attrtable-ns[data-source="custom"] {
+  color: var(--accent);
+}
+
+.attrtable-entity {
+  font-size: 9.5px;
+  color: var(--faint);
+}
+
+.attrtable-row {
+  font-family: var(--mono);
+}
+
+.attrtable[data-layout="grid"] .attrtable-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 260px) minmax(0, 1fr);
+  gap: 0 14px;
+  align-items: baseline;
+  font-size: 11.5px;
+}
+
+.attrtable[data-layout="stacked"] .attrtable-row {
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+}
+
+.attrtable-row dt {
+  color: var(--dim);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The value, the action strip, and (with the descriptions toggle on) the
+   brief line all live in `dd` now (see components/AttributeTable.tsx) — a
+   wrapping flex row rather than a grid cell, so the actions sit beside the
+   value instead of needing their own grid column or absolute position. */
+.attrtable-row dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+
+/* The value stretches across the cell so its copy button lines up at the
+   right edge from row to row instead of trailing each value's text. */
+.attrtable-row dd > .copy-value,
+.attrtable-row dd > .attribute-value {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.attrtable[data-layout="stacked"] .attrtable-row dd {
+  padding-left: 10px;
+}
+
+/* Plain-text brief, shown under a resolved row only with the descriptions
+   toggle on; forced onto its own line within `dd`'s wrapping flex row rather
+   than sharing one with the value/actions. */
+.attrtable-desc {
+  flex-basis: 100%;
+  margin-top: 2px;
+  font-family: var(--ui);
+  font-size: 11px;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+
+.attrtable-desc-suffix {
+  color: var(--faint);
+}
+
+/* `opacity`, not `visibility: hidden` — the latter also drops the buttons
+   from keyboard tab order and defeats a `:focus-within` reveal, so a
+   keyboard/touch user could never reach them; the override below keeps them
+   reachable without a hover at all, on a narrow viewport or any device that
+   reports no hover capability (touch). */
+.attrtable-actions {
+  opacity: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--ui);
+  /* Hidden, the strip takes no width, so it never wraps onto a line of its
+     own under the value and leaves a blank gap there; revealed, it grows to
+     its content and wraps below the value only when it does not fit beside
+     it. `max-width`, not `width: 0`, so the buttons keep their own size and
+     stay focusable. */
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  /* No spacing while hidden either: `dd` has no gap of its own, so a
+     zero-width strip always fits on the value's line. */
+  margin-left: 0;
+}
+
+/* Each button keeps its intrinsic width while the strip is clipped to zero
+   (otherwise its label would wrap letter by letter and stretch the row), and
+   its own resting look. */
+.attrtable-actions button {
+  flex: none;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--faint);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 5px;
+}
+
+.attrtable-row:hover .attrtable-actions,
+.attrtable-row:focus-within .attrtable-actions {
+  opacity: 1;
+  max-width: none;
+  overflow: visible;
+  margin-left: 6px;
+}
+
+@media (max-width: 900px), (hover: none) {
+  .attrtable-actions {
+    opacity: 1;
+    max-width: none;
+    overflow: visible;
+    margin-left: 6px;
+  }
+}
+
+.attrtable-actions button:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Section head above a titled block of an attribute table (`AttributeSection`
+   in components/AttributeTable.tsx — LogList's "This line"/"Resource ·
+   stream", TracesView's "Span"/"Scope"/"Resource"/"Events"). A collapsible
+   section renders it as a button carrying `aria-expanded`. */
+.attrtable-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 14px 0 6px;
+  font-family: var(--ui);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--faint);
+  font-weight: 650;
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+}
+
+button.attrtable-section {
+  cursor: pointer;
+}
+
+.attrtable-count {
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+/* Collapsed-section one-line preview (LogList's stream summary, TracesView's
+   resource summary): a row of `key value` parts (components/AttributeTable.
+   tsx's AttributeSummary) plus a trailing "+N more", wrapping as a group
+   rather than each part fighting for its own line. */
+.attrtable-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.attrtable-summary-kv {
+  display: inline-flex;
+  gap: 4px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attrtable-summary-k {
+  color: var(--dim);
+}
+
+.attrtable-summary-v {
+  color: var(--text);
+}
+
+.attrtable-summary-more {
+  color: var(--accent);
+}
+
+.attrtable-desc-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  font-family: var(--ui);
+  font-size: 11px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--faint);
 }

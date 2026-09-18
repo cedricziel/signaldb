@@ -23,6 +23,70 @@ const POD_UID = {
   source: "bundled",
 };
 
+const NODE_NAME = {
+  key: "k8s.node.name",
+  brief: "The name of the Node.",
+  type: "string",
+  group_id: "registry.k8s.node",
+  group_display_name: "Kubernetes Attributes",
+  namespace: "otel",
+  version: "1.43.0",
+  source: "bundled",
+};
+
+const CLOUD_REGION = {
+  key: "cloud.region",
+  brief: "The cloud region.",
+  type: "string",
+  group_id: "registry.cloud",
+  group_display_name: "Cloud Attributes",
+  namespace: "otel",
+  version: "1.43.0",
+  source: "bundled",
+};
+
+const OLD_KEY = {
+  key: "old.key",
+  brief: "A deprecated key.",
+  type: "string",
+  group_id: "registry.old",
+  group_display_name: "Cloud Attributes",
+  namespace: "otel",
+  version: "1.43.0",
+  source: "bundled",
+  deprecated: { renamed_to: "cloud.region" },
+};
+
+const RETIRED_KEY = {
+  key: "retired.key",
+  brief: "A retired key with no replacement.",
+  type: "string",
+  group_id: "registry.retired",
+  group_display_name: "Cloud Attributes",
+  namespace: "otel",
+  version: "1.43.0",
+  source: "bundled",
+  deprecated: { reason: "no longer collected" },
+};
+
+/** Stub `/schema/attributes` resolving each key in `known` to its fixture,
+ * and any other requested key to "unknown". */
+function stubResolve(known: Record<string, unknown>) {
+  return stubFetchRoutes([
+    {
+      match: "/api/v1/schema/attributes",
+      body: {
+        hits: [],
+        resolutions: Object.entries(known).map(([key, hit]) => ({
+          key,
+          hits: [hit],
+          primary: hit,
+        })),
+      },
+    },
+  ]);
+}
+
 describe("FieldSidebar", () => {
   it("lists labels and filters them by search text", async () => {
     renderWithClient(
@@ -113,5 +177,136 @@ describe("FieldSidebar", () => {
     expect(await screen.findByRole("tooltip")).toHaveTextContent(
       "The UID of the Pod.",
     );
+  });
+
+  it("renders no group headers when semantics never resolve", async () => {
+    renderWithClient(
+      <FieldSidebar
+        labels={["b_field", "a_field"]}
+        range={RANGE}
+        rangeKey="1h"
+        onAddFilter={() => {}}
+      />,
+    );
+    expect(screen.getByText("a_field")).toBeInTheDocument();
+    expect(screen.getByText("b_field")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Kubernetes|Cloud|Other/ }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("groups fields with titles and counts once semantics resolve", async () => {
+    stubResolve({
+      "k8s.pod.uid": POD_UID,
+      "k8s.node.name": NODE_NAME,
+      "cloud.region": CLOUD_REGION,
+    });
+    renderWithClient(
+      <FieldSidebar
+        labels={["k8s.pod.uid", "k8s.node.name", "cloud.region", "level"]}
+        range={RANGE}
+        rangeKey="1h"
+        onAddFilter={() => {}}
+      />,
+    );
+    const kubernetesHead = await screen.findByRole("button", {
+      name: /Kubernetes/,
+    });
+    expect(kubernetesHead).toHaveTextContent("2");
+    const cloudHead = screen.getByRole("button", { name: /Cloud/ });
+    expect(cloudHead).toHaveTextContent("1");
+    expect(screen.getByRole("button", { name: /^Line/ })).toHaveTextContent(
+      "1",
+    );
+    expect(
+      screen.getByRole("button", { name: "k8s.pod.uid" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "k8s.node.name" }),
+    ).toBeInTheDocument();
+  });
+
+  it("collapsing a group hides its fields", async () => {
+    stubResolve({ "cloud.region": CLOUD_REGION });
+    renderWithClient(
+      <FieldSidebar
+        labels={["cloud.region"]}
+        range={RANGE}
+        rangeKey="1h"
+        onAddFilter={() => {}}
+      />,
+    );
+    const cloudHead = await screen.findByRole("button", { name: /Cloud/ });
+    expect(
+      screen.getByRole("button", { name: "cloud.region" }),
+    ).toBeInTheDocument();
+    expect(cloudHead).toHaveAttribute("aria-expanded", "true");
+    await userEvent.click(cloudHead);
+    expect(cloudHead).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.queryByRole("button", { name: "cloud.region" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("filter text hides groups with no matching label, and expands the rest", async () => {
+    stubResolve({
+      "k8s.pod.uid": POD_UID,
+      "cloud.region": CLOUD_REGION,
+    });
+    renderWithClient(
+      <FieldSidebar
+        labels={["k8s.pod.uid", "cloud.region"]}
+        range={RANGE}
+        rangeKey="1h"
+        onAddFilter={() => {}}
+      />,
+    );
+    await screen.findByRole("button", { name: /Kubernetes/ });
+    await userEvent.type(screen.getByLabelText("Filter fields"), "pod");
+    expect(
+      screen.getByRole("button", { name: "k8s.pod.uid" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /Cloud/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "cloud.region" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows a deprecated key struck through with its replacement", async () => {
+    stubResolve({
+      "cloud.region": CLOUD_REGION,
+      "old.key": OLD_KEY,
+    });
+    renderWithClient(
+      <FieldSidebar
+        labels={["cloud.region", "old.key"]}
+        range={RANGE}
+        rangeKey="1h"
+        onAddFilter={() => {}}
+      />,
+    );
+    const deprecatedHead = await screen.findByRole("button", {
+      name: /Deprecated/,
+    });
+    expect(deprecatedHead).toHaveTextContent("1");
+    expect(screen.getByText("old.key").tagName).toBe("S");
+    expect(screen.getByText("→ cloud.region")).toBeInTheDocument();
+  });
+
+  it("shows the bare word 'deprecated' for a deprecated key with no replacement", async () => {
+    stubResolve({ "retired.key": RETIRED_KEY });
+    renderWithClient(
+      <FieldSidebar
+        labels={["retired.key"]}
+        range={RANGE}
+        rangeKey="1h"
+        onAddFilter={() => {}}
+      />,
+    );
+    await screen.findByRole("button", { name: /Deprecated/ });
+    expect(screen.getByText("retired.key").tagName).toBe("S");
+    expect(screen.getByText("deprecated")).toBeInTheDocument();
   });
 });

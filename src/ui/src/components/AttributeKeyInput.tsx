@@ -1,6 +1,7 @@
 import { useId, useMemo, useState } from "react";
 import { useAttributeSearch } from "../hooks/useSemantics";
 import { mergeLabelSuggestions } from "../lib/labelSuggestions";
+import { deprecationLabel } from "../lib/semantics";
 
 /**
  * Attribute/label key combobox: registry prefix hits (key, brief, namespace)
@@ -119,13 +120,22 @@ export function AttributeKeyInput({
               onClick={() => pick(s.key)}
             >
               <span className="chip-suggest-head">
-                <span className="chip-suggest-key">{s.key}</span>
-                {s.namespace && (
+                <span className="chip-suggest-key">
+                  {s.deprecated ? <s>{s.key}</s> : s.key}
+                </span>
+                {s.source === "custom" && (
                   <span className="chip-suggest-ns chip">{s.namespace}</span>
+                )}
+                {s.deprecated && (
+                  <span className="chip-suggest-dep">
+                    {deprecationLabel({ renamed_to: s.deprecatedTo })}
+                  </span>
                 )}
                 {s.seen && <span className="chip-suggest-seen">● seen</span>}
               </span>
-              {s.brief && <span className="chip-suggest-brief">{s.brief}</span>}
+              {!s.deprecated && s.brief && (
+                <span className="chip-suggest-brief">{s.brief}</span>
+              )}
             </li>
           ))}
         </ul>

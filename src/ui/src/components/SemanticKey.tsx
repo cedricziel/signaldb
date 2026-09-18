@@ -1,30 +1,34 @@
 /**
  * Attribute-key labels enriched with schema-registry semantics.
  *
- * `SemanticKey` is the detail-row form (span/log attribute tables): the raw
- * key stays first and copyable; underneath sit the brief, the entity role
- * markers, and a deprecation marker, with the defining namespace tagged on
- * the right. `SemanticInfo` is the compact form for sidebars and facet
+ * `SemanticKeyLabel` is the detail-row form (span/log attribute tables): the
+ * raw key alone as the hover/focus trigger, struck through with its
+ * replacement when deprecated — everything else the registry knows lives in
+ * the tooltip. `SemanticInfo` is the compact form for sidebars and facet
  * headers: an info glyph that only appears when the registry knows the key.
  * Both open the same hover/focus tooltip. Without semantics they render
  * exactly what the raw key would — a plain text node, or nothing.
  */
 import {
+  Fragment,
   useEffect,
   useId,
   useLayoutEffect,
   useRef,
   useState,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
   type ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
 import { Link, useInRouterContext } from "react-router";
 import type { AttributeHit } from "../api/gen";
-import type { AttributeSemantics } from "../lib/semantics";
+import { deprecationLabel, type AttributeSemantics } from "../lib/semantics";
 
-const ROLE_GLYPH: Record<string, string> = {
+/** Entity-role glyph, shared by the tooltip's role list and
+ * `AttributeTable`'s group heading (◆ identifying, ○ descriptive). */
+export const ROLE_GLYPH: Record<string, string> = {
   identifying: "◆",
   descriptive: "○",
 };
@@ -83,7 +87,7 @@ export function SemanticTooltip({
         <HubLink to={attributeHref(primary)}>{registryLabel(primary)}</HubLink>
       </span>
       <span className="sem-tip-facts">{facts.join(" · ")}</span>
-      <span className="sem-tip-brief">{primary.brief}</span>
+      <span className="sem-tip-brief">{semantics.brief}</span>
       {examples && <span className="sem-tip-examples">e.g. {examples}</span>}
       {primary.entity_roles && primary.entity_roles.length > 0 && (
         <span className="sem-tip-roles">
@@ -198,10 +202,15 @@ function SemanticHover({
   semantics,
   className,
   children,
+  dataKnown,
 }: {
   semantics: AttributeSemantics;
   className: string;
   children: ReactNode;
+  /** Marks the trigger `data-known` for a dotted-underline affordance
+   * (`AttributeTable`'s compact key label); other callers own their own
+   * visual treatment and omit it. */
+  dataKnown?: boolean;
 }) {
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const [height, setHeight] = useState(TIP_HEIGHT_GUESS);
@@ -264,15 +273,61 @@ function SemanticHover({
     ? tipStyle(anchor, height, width)
     : { style: undefined, placement: "below" as Placement };
 
+  // Escape closes the tooltip without also collapsing whatever row/drawer
+  // the trigger sits in; Tab (no shift) steps into the tooltip's first link
+  // instead of leaving the trigger for whatever the DOM would reach next —
+  // the tooltip is portaled to <body>, so natural tab order can otherwise
+  // skip past it or land somewhere unrelated.
+  const onTriggerKeyDown = (e: ReactKeyboardEvent) => {
+    if (!anchor) return;
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      close();
+      return;
+    }
+    if (e.key === "Tab" && !e.shiftKey) {
+      const link = tipRef.current?.querySelector("a");
+      if (link) {
+        e.preventDefault();
+        link.focus();
+      }
+    }
+  };
+  // Shift+Tab off the tooltip's first link returns focus to the trigger
+  // rather than wherever the link would naturally precede in tab order.
+  // The tooltip is portaled to <body>, so native tab order would carry
+  // focus off to the end of the document from its last link; both edges
+  // hand focus back to the trigger instead, forward Tab closing the tip so
+  // the next Tab continues from the trigger's own position in the list.
+  const onTipKeyDown = (e: ReactKeyboardEvent) => {
+    if (e.key !== "Tab") return;
+    // React bubbles the portaled tooltip's events to the trigger, whose own
+    // Tab handler would otherwise send focus straight back into the tip.
+    e.stopPropagation();
+    const links = tipRef.current?.querySelectorAll("a") ?? [];
+    const firstLink = links[0];
+    const lastLink = links[links.length - 1];
+    if (e.shiftKey && e.target === firstLink) {
+      e.preventDefault();
+      triggerRef.current?.focus();
+    } else if (!e.shiftKey && e.target === lastLink) {
+      e.preventDefault();
+      triggerRef.current?.focus();
+      close();
+    }
+  };
+
   return (
     <span
       ref={triggerRef}
       className={className}
+      data-known={dataKnown ? "" : undefined}
       tabIndex={0}
       aria-describedby={anchor ? id : undefined}
       onMouseEnter={open}
       onMouseLeave={(e) => leaveTo(e, tipRef.current)}
       onFocus={open}
+      onKeyDown={onTriggerKeyDown}
     >
       {children}
       {anchor &&
@@ -285,6 +340,7 @@ function SemanticHover({
             data-placement={placement}
             style={style}
             onMouseLeave={(e) => leaveTo(e, triggerRef.current)}
+            onKeyDown={onTipKeyDown}
           >
             <HoverBridge placement={placement} />
             <SemanticTooltip semantics={semantics} />
@@ -295,47 +351,53 @@ function SemanticHover({
   );
 }
 
-interface SemanticKeyProps {
-  name: string;
-  semantics: AttributeSemantics | undefined;
-  /** Show the semantic title inline (when rows are not grouped by title). */
-  showTitle?: boolean;
+/** Key text with a `<wbr/>` after every `.` so a long dotted key (`cloud.
+ * region`, `db.statement`) wraps at a dot instead of overflowing or relying
+ * on an ellipsis — used by `SemanticKeyLabel` for both a resolved and a bare
+ * key, so wrapping is consistent either way. */
+function DottedKey({ name }: { name: string }) {
+  const segments = name.split(".");
+  return (
+    <>
+      {segments.map((segment, i) => (
+        <Fragment key={i}>
+          {i > 0 && (
+            <>
+              .<wbr />
+            </>
+          )}
+          {segment}
+        </Fragment>
+      ))}
+    </>
+  );
 }
 
-/** Detail-row key label. Falls back to the bare key when unresolved. */
-export function SemanticKey({ name, semantics, showTitle }: SemanticKeyProps) {
-  if (!semantics) return <>{name}</>;
-  const { primary, deprecated } = semantics;
-  const roles = primary.entity_roles ?? [];
+/**
+ * Compact key label for attribute tables (`components/AttributeTable.tsx`):
+ * the bare key when unresolved; otherwise the key alone as the hover/focus
+ * tooltip trigger, struck through with its replacement when deprecated.
+ * Everything else the registry knows — brief, roles, namespace — lives in
+ * the tooltip, not stacked under the row.
+ */
+export function SemanticKeyLabel({
+  name,
+  semantics,
+}: {
+  name: string;
+  semantics: AttributeSemantics | undefined;
+}) {
+  if (!semantics) return <DottedKey name={name} />;
+  const { deprecated } = semantics;
+  const text = <DottedKey name={name} />;
+  const depLabel = deprecationLabel(deprecated);
   return (
-    <span className="semkey" data-deprecated={deprecated ? "" : undefined}>
-      <SemanticHover semantics={semantics} className="semkey-head">
-        <span className="semkey-name">{name}</span>
-        <span className="semkey-ns chip" data-source={primary.source}>
-          {primary.namespace}
-        </span>
+    <>
+      <SemanticHover semantics={semantics} className="semkey-name" dataKnown>
+        {deprecated ? <s>{text}</s> : text}
       </SemanticHover>
-      <span className="semkey-brief">{primary.brief}</span>
-      {(showTitle || roles.length > 0 || deprecated) && (
-        <span className="semkey-meta">
-          {showTitle && <span className="semkey-title">{semantics.title}</span>}
-          {roles.map((r) => (
-            <span
-              className={`semkey-role semkey-role-${r.role}`}
-              key={`${r.namespace}/${r.entity}/${r.role}`}
-            >
-              {ROLE_GLYPH[r.role] ?? "·"} {r.role} · {r.entity}
-            </span>
-          ))}
-          {deprecated && (
-            <span className="semkey-dep">
-              ⚠ deprecated
-              {deprecated.renamed_to ? ` → ${deprecated.renamed_to}` : ""}
-            </span>
-          )}
-        </span>
-      )}
-    </span>
+      {depLabel && <span className="semkey-dep">{depLabel}</span>}
+    </>
   );
 }
 

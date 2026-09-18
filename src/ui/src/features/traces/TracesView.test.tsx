@@ -1288,15 +1288,23 @@ describe("TracesView detail", () => {
     renderView({ trace: "tgrouped" });
 
     const spanSection = await screen.findByText("Span");
-    const resourceSection = await screen.findByText("Resource");
+    const resourceToggle = await screen.findByRole("button", {
+      name: /Resource/,
+    });
     // Span section (with keys as sent, unprefixed) precedes Resource.
     expect(
-      spanSection.compareDocumentPosition(resourceSection) &
+      spanSection.compareDocumentPosition(resourceToggle) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
 
-    const dtOrder = screen.getAllByRole("term").map((el) => el.textContent);
-    expect(dtOrder).toEqual([
+    // Resource is collapsed behind a summary by default; its keys join the
+    // term list only once expanded.
+    expect(screen.getAllByRole("term").map((el) => el.textContent)).toEqual([
+      "session.id",
+      "url.full",
+    ]);
+    await userEvent.click(resourceToggle);
+    expect(screen.getAllByRole("term").map((el) => el.textContent)).toEqual([
       "session.id",
       "url.full",
       "service.name",
@@ -1315,6 +1323,15 @@ describe("TracesView detail", () => {
       version: "1.43.0",
       source: "bundled",
     };
+    // A second Kubernetes key alongside k8s.pod.uid: a titled group left with
+    // only one row folds into "Other" (see foldSingletonGroups) rather than
+    // keeping its own heading, so this test needs two resolved rows in the
+    // group to exercise the heading.
+    const podName = {
+      ...podUid,
+      key: "k8s.pod.name",
+      brief: "The name of the Pod.",
+    };
     stubFetchRoutes([
       {
         match: "/api/v1/schema/attributes",
@@ -1322,6 +1339,7 @@ describe("TracesView detail", () => {
           hits: [],
           resolutions: [
             { key: "k8s.pod.uid", hits: [podUid], primary: podUid },
+            { key: "k8s.pod.name", hits: [podName], primary: podName },
             { key: "app.order.id", hits: [] },
             { key: "payment.provider", hits: [] },
           ],
@@ -1350,6 +1368,10 @@ describe("TracesView detail", () => {
                     key: "resource.k8s.pod.uid",
                     value: { stringValue: "275ecb36" },
                   },
+                  "resource.k8s.pod.name": {
+                    key: "resource.k8s.pod.name",
+                    value: { stringValue: "web-1" },
+                  },
                   "resource.app.order.id": {
                     key: "resource.app.order.id",
                     value: { stringValue: "o-1" },
@@ -1364,27 +1386,270 @@ describe("TracesView detail", () => {
     renderView({ trace: "tsem" });
 
     const detail = await screen.findByLabelText("Span details");
+    // The Span section had nothing resolvable, so it renders as before: no
+    // sub-heading, key text only, visible without expanding anything.
     expect(
-      await within(detail).findByText("The UID of the Pod."),
-    ).toBeInTheDocument();
+      within(detail)
+        .getAllByRole("term")
+        .find((el) => el.textContent === "payment.provider"),
+    ).toBeDefined();
+
+    // k8s.pod.uid/app.order.id are Resource attributes, collapsed by default.
+    await userEvent.click(
+      await within(detail).findByRole("button", { name: /Resource/ }),
+    );
+    // Enrichment shows on the group heading (title + namespace, once) and a
+    // dotted-underline key — no inline brief without the descriptions
+    // toggle (see the log-detail equivalent for that behavior).
     expect(
-      within(detail).getByText("Kubernetes Attributes"),
+      within(detail).getByText("Kubernetes"),
     ).toBeInTheDocument();
     expect(within(detail).getByText("otel")).toBeInTheDocument();
+    expect(
+      within(detail).queryByText("The UID of the Pod."),
+    ).not.toBeInTheDocument();
+    expect(
+      within(detail).getByText("k8s.pod.uid", { selector: ".semkey-name" }),
+    ).toHaveAttribute("data-known", "");
     // Unknown keys stay bare, grouped under "Other" after the titled group.
     expect(within(detail).getByText("Other")).toBeInTheDocument();
     const orderTerm = within(detail)
       .getAllByRole("term")
       .find((el) => el.textContent === "app.order.id");
     expect(orderTerm).toBeDefined();
-    // The Span section had nothing resolvable, so it renders as before: no
-    // sub-heading, key text only.
+
+    await userEvent.click(within(detail).getByLabelText("Show descriptions"));
     expect(
-      within(detail)
-        .getAllByRole("term")
-        .find((el) => el.textContent === "payment.provider"),
-    ).toBeDefined();
-    expect(within(detail).getAllByText("Other")).toHaveLength(1);
+      within(detail).getByText("The UID of the Pod."),
+    ).toBeInTheDocument();
+  });
+
+  it("shows the Resource section collapsed behind a one-line summary by default", async () => {
+    stubFetchRoutes([
+      ...traceRoutes({
+        ...TRACE_BODY,
+        traceID: "tresource",
+        spanSets: [
+          {
+            matched: 1,
+            spans: [
+              {
+                spanID: "root",
+                startTimeUnixNano: "1000000000",
+                durationNanos: "412000000",
+                name: "POST /api/checkout",
+                serviceName: "gateway",
+                status: "ok",
+                attributes: {
+                  "resource.service.name": {
+                    key: "resource.service.name",
+                    value: { stringValue: "checkout-svc" },
+                  },
+                  "resource.k8s.pod.name": {
+                    key: "resource.k8s.pod.name",
+                    value: { stringValue: "checkout-7" },
+                  },
+                  "resource.telemetry.sdk.language": {
+                    key: "resource.telemetry.sdk.language",
+                    value: { stringValue: "go" },
+                  },
+                  "resource.telemetry.sdk.version": {
+                    key: "resource.telemetry.sdk.version",
+                    value: { stringValue: "1.28.0" },
+                  },
+                  // Not one of RESOURCE_SUMMARY_FIELDS's curated fields — the
+                  // one that stays behind the "+1 more" until expanded.
+                  "resource.container.name": {
+                    key: "resource.container.name",
+                    value: { stringValue: "checkout-container" },
+                  },
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    ]);
+    renderView({ trace: "tresource" });
+
+    const toggle = await screen.findByRole("button", { name: /Resource/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(screen.getByText("service.name")).toBeInTheDocument();
+    expect(screen.getByText("checkout-svc")).toBeInTheDocument();
+    expect(screen.getByText("sdk")).toBeInTheDocument();
+    expect(screen.getByText("go 1.28.0")).toBeInTheDocument();
+    expect(screen.getByText("+1 more")).toBeInTheDocument();
+    expect(screen.queryByText("checkout-container")).not.toBeInTheDocument();
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("checkout-container")).toBeInTheDocument();
+  });
+
+  it("groups by a span attribute from its row action", async () => {
+    stubFetchRoutes(traceRoutes(TRACE_BODY));
+    const update = renderView({ trace: "t1cafe" });
+    await screen.findByText("payment.provider");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Group by payment.provider" }),
+    );
+    expect(update).toHaveBeenCalledWith({
+      groupBy: "payment.provider",
+      group: "",
+    });
+  });
+
+  it("filters from a facetable resource attribute's row action, navigating to the list", async () => {
+    stubFetchRoutes([
+      ...traceRoutes({
+        ...TRACE_BODY,
+        traceID: "tfacet",
+        spanSets: [
+          {
+            matched: 1,
+            spans: [
+              {
+                spanID: "root",
+                startTimeUnixNano: "1000000000",
+                durationNanos: "412000000",
+                name: "POST /api/checkout",
+                serviceName: "gateway",
+                status: "ok",
+                attributes: {
+                  "resource.service.name": {
+                    key: "resource.service.name",
+                    value: { stringValue: "checkout-svc" },
+                  },
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    ]);
+    const update = renderView({
+      trace: "tfacet",
+      traceFilters: [{ field: "status", value: "error" }],
+    });
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Resource/ }),
+    );
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: "Filter for service.name = checkout-svc",
+      }),
+    );
+    expect(update).toHaveBeenCalledWith(
+      {
+        trace: "",
+        traceFilters: [
+          { field: "status", value: "error" },
+          { field: "service.name", value: "checkout-svc" },
+        ],
+        group: "",
+      },
+      { push: true },
+    );
+  });
+
+  it("offers logs and catalog pivots for an identifying resource attribute", async () => {
+    const serviceName = {
+      key: "service.name",
+      brief: "",
+      type: "string",
+      group_id: "registry.service",
+      namespace: "otel",
+      version: "1.43.0",
+      source: "bundled",
+      entity_roles: [
+        { namespace: "otel", entity: "service", role: "identifying" },
+      ],
+    };
+    stubFetchRoutes([
+      {
+        match: "/api/v1/schema/attributes",
+        body: {
+          hits: [],
+          resolutions: [
+            { key: "service.name", hits: [serviceName], primary: serviceName },
+          ],
+        },
+      },
+      ...traceRoutes({
+        ...TRACE_BODY,
+        traceID: "tpivot",
+        spanSets: [
+          {
+            matched: 1,
+            spans: [
+              {
+                spanID: "root",
+                startTimeUnixNano: "1000000000",
+                durationNanos: "412000000",
+                name: "POST /api/checkout",
+                serviceName: "gateway",
+                status: "ok",
+                attributes: {
+                  "resource.service.name": {
+                    key: "resource.service.name",
+                    value: { stringValue: "checkout-svc" },
+                  },
+                  "resource.service.namespace": {
+                    key: "resource.service.namespace",
+                    value: { stringValue: "shop" },
+                  },
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    ]);
+    const update = renderView({ trace: "tpivot" });
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Resource/ }),
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", {
+        name: "Logs with service.name = checkout-svc",
+      }),
+    );
+    expect(update).toHaveBeenCalledWith(
+      {
+        signal: "logs",
+        trace: "",
+        raw: "",
+        search: "",
+        group: "",
+        traceFilters: [],
+        filters: [{ label: "service_name", op: "=", value: "checkout-svc" }],
+      },
+      { push: true },
+    );
+
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: "Open service checkout-svc in the catalog",
+      }),
+    );
+    expect(update).toHaveBeenLastCalledWith(
+      {
+        signal: "catalog",
+        trace: "",
+        group: "",
+        // Trace/log-only params must not ride into /catalog either.
+        search: "",
+        traceFilters: [],
+        filters: [],
+        raw: "",
+        catalogEntity: "service",
+        // Composite key in identity order: service.name then service.namespace.
+        catalogPrimary: "checkout-svcshop",
+        catalogSecondary: "",
+      },
+      { push: true },
+    );
   });
 
   it("renders raw keys and no error when the schema endpoint fails", async () => {

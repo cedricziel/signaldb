@@ -141,7 +141,8 @@ describe("FilterChips", () => {
       "http.retries",
     ]);
     expect(options[0]).toHaveTextContent("HTTP request method.");
-    expect(options[0]).toHaveTextContent("otel");
+    // A bundled (otel) hit carries no namespace chip; only custom ones do.
+    expect(options[0]).not.toHaveTextContent("otel");
     expect(options[0]).toHaveTextContent("seen");
     expect(options[1]).not.toHaveTextContent("seen");
     expect(options[2]).not.toHaveTextContent("otel");

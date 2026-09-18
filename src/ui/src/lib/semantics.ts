@@ -18,8 +18,12 @@ export interface AttributeSemantics {
   alternatives: AttributeHit[];
   /** Semantic title: the group's display name or a humanized prefix. */
   title: string;
+  /** Plain-text form of `primary.brief` (see `plainBrief`) — rendering sites
+   * show this rather than stripping the markdown themselves. */
+  brief: string;
   /** Set when any hit deprecates the key; hits are never dropped, so a tenant
-   * re-describing a deprecated key does not hide the upstream deprecation. */
+   * re-describing a deprecated key does not hide the upstream deprecation.
+   * `note`, when present, is already plain text. */
   deprecated: DeprecatedInfo | null;
 }
 
@@ -43,8 +47,30 @@ export function humanizeNamespace(key: string): string {
     .join(" ");
 }
 
+/** Trailing suffix trimmed from a group's display name — "Kubernetes
+ * Attributes" reads as "Kubernetes" everywhere the title is shown (an
+ * attribute table heading, a sidebar group). */
+const ATTRIBUTES_SUFFIX = " Attributes";
+
 export function semanticTitle(hit: AttributeHit): string {
-  return hit.group_display_name || humanizeNamespace(hit.key);
+  const title = hit.group_display_name || humanizeNamespace(hit.key);
+  return title.endsWith(ATTRIBUTES_SUFFIX)
+    ? title.slice(0, -ATTRIBUTES_SUFFIX.length)
+    : title;
+}
+
+/**
+ * Registry briefs and deprecation notes carry markdown (`[label](url)`
+ * links, `` `code` `` spans); rendering sites here show plain text, so this
+ * strips the markup down to readable words rather than showing it verbatim.
+ */
+export function plainBrief(text: string | null | undefined): string {
+  if (!text) return "";
+  return text
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/`+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
 }
 
 export function semanticsFromResolution(
@@ -52,18 +78,41 @@ export function semanticsFromResolution(
 ): AttributeSemantics | undefined {
   const primary = res.primary ?? res.hits[0];
   if (!primary) return undefined;
-  const alternatives = res.hits.filter((h) => h !== primary);
-  const deprecated =
+  // The server clones the winning hit into `primary` (`hits.first().cloned()`
+  // in the schema registry), so after JSON round-tripping `hits[0]` and
+  // `primary` are distinct objects with equal fields — compare by identity
+  // (namespace + version), not by reference.
+  const alternatives = res.hits.filter(
+    (h) => h.namespace !== primary.namespace || h.version !== primary.version,
+  );
+  const deprecatedHit =
     primary.deprecated ??
     alternatives.find((h) => h.deprecated)?.deprecated ??
     null;
+  const deprecated = deprecatedHit
+    ? { ...deprecatedHit, note: plainBrief(deprecatedHit.note) }
+    : null;
   return {
     key: res.key,
     primary,
     alternatives,
     title: semanticTitle(primary),
+    brief: plainBrief(primary.brief),
     deprecated,
   };
+}
+
+/**
+ * `deprecated`'s badge text: `→ <renamed_to>` when the registry named a
+ * replacement, else the bare word "deprecated"; `null` when the key isn't
+ * deprecated at all, so callers can render nothing rather than an empty
+ * badge.
+ */
+export function deprecationLabel(
+  deprecated: DeprecatedInfo | null | undefined,
+): string | null {
+  if (!deprecated) return null;
+  return deprecated.renamed_to ? `→ ${deprecated.renamed_to}` : "deprecated";
 }
 
 export interface TitledGroup<V> {
@@ -104,4 +153,42 @@ export function groupBySemanticTitle<V>(
   }));
   if (other.length > 0) groups.push({ title: OTHER_TITLE, entries: other });
   return groups;
+}
+
+/**
+ * Folds a titled group with exactly one entry into the trailing "Other"
+ * group (created if it doesn't already exist) — a heading over a single row
+ * reads as clutter, not structure. The "Other" group's entries are then
+ * sorted by key (`localeCompare`) so folded rows interleave alphabetically
+ * with the genuinely-unknown ones already there, rather than trailing after
+ * them in fold order.
+ *
+ * When folding leaves no titled group besides "Other" standing, there is
+ * nothing left worth a heading at all: this returns the single untitled
+ * group `{ title: null, entries }` holding the merged, key-sorted "Other"
+ * entries — the same shape `groupBySemanticTitle` returns when nothing
+ * resolved, so the caller renders one flat, unheaded list.
+ */
+export function foldSingletonGroups<V>(
+  groups: TitledGroup<V>[],
+): TitledGroup<V>[] {
+  if (groups.length === 0) return [];
+  const kept: TitledGroup<V>[] = [];
+  let other: [string, V][] | undefined;
+  for (const group of groups) {
+    if (group.title === OTHER_TITLE) {
+      other = [...(other ?? []), ...group.entries];
+    } else if (group.title !== null && group.entries.length === 1) {
+      other = [...(other ?? []), group.entries[0]!];
+    } else {
+      kept.push(group);
+    }
+  }
+  if (other) {
+    other.sort(([a], [b]) => a.localeCompare(b));
+    kept.push({ title: OTHER_TITLE, entries: other });
+  }
+  return kept.every((g) => g.title === OTHER_TITLE)
+    ? [{ title: null, entries: kept.flatMap((g) => g.entries) }]
+    : kept;
 }

@@ -575,6 +575,52 @@
 
 .field-row .sem-info {
   padding-right: 10px;
+  opacity: 0;
+}
+
+.field-row:hover .sem-info,
+.field-row:focus-within .sem-info {
+  opacity: 1;
+}
+
+/* Group headers in the fields sidebar (semantic title, e.g. "Kubernetes"):
+   collapsible, with a field count. Absent for the flat fallback list (no
+   semantics resolved yet), which keeps the un-grouped layout/padding. */
+.fieldgroup-head {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--faint);
+}
+
+.fieldgroup-count {
+  margin-left: auto;
+  color: var(--faint);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.fieldgroup .field {
+  padding-left: 20px;
+}
+
+.fieldgroup .fieldvals {
+  padding-left: 20px;
+}
+
+.field-dep {
+  margin-left: 4px;
+  font-family: var(--ui);
+  font-size: 10px;
+  color: var(--warn-banner-text);
 }
 
 .field-row:hover {
@@ -750,85 +796,6 @@ span.level-debug {
   font-weight: 550;
 }
 
-.attr-grid {
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  max-width: 720px;
-}
-
-/* Semantic-title sub-heading when the registry resolved keys in a scope. */
-.attr-grid-title {
-  font-size: 10.5px;
-  color: var(--dim);
-  font-weight: 600;
-  margin: 6px 0 1px;
-}
-
-.attr-row {
-  display: grid;
-  grid-template-columns: minmax(120px, 220px) minmax(0, 1fr) max-content;
-  gap: 0 14px;
-  font-size: 11.5px;
-}
-
-.attr-row dt {
-  font-family: var(--mono);
-  color: var(--dim);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* A resolved key renders a multi-line SemanticKey; the key itself keeps its
-   ellipsis via `.semkey-name`. */
-.attr-row dt:has(.semkey) {
-  white-space: normal;
-}
-
-.attr-row dd {
-  font-family: var(--mono);
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-/* `opacity`, not `visibility: hidden` — the latter also drops the buttons
-   from keyboard tab order and defeats a `:focus-within` reveal, so a
-   keyboard/touch user could never reach them (see `:focus-within` below and
-   the <=900px override, which keeps them reachable without a hover at
-   all). */
-.attr-actions {
-  opacity: 0;
-  display: inline-flex;
-  gap: 6px;
-}
-
-.attr-row:hover .attr-actions,
-.attr-row:focus-within .attr-actions {
-  opacity: 1;
-}
-
-@media (max-width: 900px) {
-  .attr-actions {
-    opacity: 1;
-  }
-}
-
-.attr-actions button {
-  font-size: 10px;
-  color: var(--faint);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0 5px;
-}
-
-.attr-actions button:hover {
-  color: var(--accent);
-  border-color: var(--accent);
-}
-
 /* ---------- signal volume chart ---------- */
 
 .svol {
@@ -961,13 +928,6 @@ span.level-debug {
 .logs-rowcount-n {
   font-weight: 600;
   font-variant-numeric: tabular-nums;
-}
-
-.attr-scope {
-  font-size: 10px;
-  color: var(--dim);
-  font-style: italic;
-  white-space: nowrap;
 }
 
 .svol-controls {

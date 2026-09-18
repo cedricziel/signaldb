@@ -83,6 +83,11 @@ describe("LogsView", () => {
     await userEvent.click(
       await screen.findByText("charge failed: card_declined"),
     );
+    // The resource/stream section (where `service_name` lives) is collapsed
+    // behind a summary by default — see LogList.tsx.
+    await userEvent.click(
+      screen.getByRole("button", { name: /Resource · stream/ }),
+    );
     await userEvent.click(
       screen.getByRole("button", {
         name: "Filter for service_name = payments",
