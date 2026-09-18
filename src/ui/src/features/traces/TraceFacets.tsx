@@ -5,6 +5,7 @@ import { SemanticInfo } from "../../components/SemanticKey";
 import { SidebarResizer } from "../../components/SidebarResizer";
 import { sidebarWidth } from "../../lib/sidebarWidth";
 import { useSemantics } from "../../hooks/useSemantics";
+import { toggleInSet } from "../../lib/collections";
 import type { ResolvedRange } from "../../lib/time";
 import {
   FACET_FIELDS,
@@ -62,12 +63,7 @@ export function TraceFacets({
     isActive(field) ? !collapsed.has(field) : opened.has(field);
   const toggle = (field: string) => {
     const set = isActive(field) ? setCollapsed : setOpened;
-    set((prev) => {
-      const next = new Set(prev);
-      if (next.has(field)) next.delete(field);
-      else next.add(field);
-      return next;
-    });
+    set((prev) => toggleInSet(prev, field));
   };
   const ordered = [
     ...FACET_FIELDS.filter((f) => isActive(f.field)),
