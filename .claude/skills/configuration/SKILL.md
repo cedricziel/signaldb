@@ -168,6 +168,8 @@ client_secret = "..."                              # required
 api_url = "https://api.github.com"                 # GHES: https://ghe.example.com/api/v3
 web_url = "https://github.com"                     # GHES: https://ghe.example.com
 link_state_ttl = "10m"                             # link-flow state token lifetime
+snippet_cache_ttl = "10m"                          # source-snippet cache lifetime
+snippet_cache_capacity = 1000                      # cached source files (LRU, ≤512 KiB each)
 ```
 
 Env: `SIGNALDB__GITHUB__*`, e.g. `SIGNALDB__GITHUB__CLIENT_SECRET`. A partial

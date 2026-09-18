@@ -39,17 +39,49 @@ When no linked installation covers the requested repo, the ref or file does not 
 
 ### Requirement: Response caching
 
-Repeated lookups for the same repo, ref, file, and line window within a bounded cache period SHALL be served without a new GitHub API call, so that repeatedly viewing the same trace or profile does not consume GitHub API rate limit budget proportional to view count. The cache SHALL also enforce a fixed capacity and evict least-recently-used entries when that capacity is exceeded, independent of the cache period, so that a deployment fanning out across many distinct repo/ref/file/line-window combinations cannot grow the cache unbounded.
+Repeated lookups for the same repo, ref, and file within a bounded cache period — whatever the line window — SHALL be served without a new GitHub API call; an "unavailable" outcome caused by the content itself (missing, not a file, too large, undecodable, line out of range) SHALL be cached the same way, while a transport or internal failure SHALL NOT be. Removing an installation link SHALL evict its cached entries immediately. The system, so that repeatedly viewing the same trace or profile does not consume GitHub API rate limit budget proportional to view count. The cache SHALL also enforce a fixed capacity and evict least-recently-used entries when that capacity is exceeded, independent of the cache period, so that a deployment fanning out across many distinct repo/ref/file/line-window combinations cannot grow the cache unbounded.
 
 #### Scenario: Second lookup is cached
 
-- **WHEN** the same repo/ref/file/line lookup is requested twice within the cache period
+- **WHEN** the same repo/ref/file is requested twice within the cache period, for the same or a different line
 - **THEN** only the first request calls GitHub; the second is served from cache
 
 #### Scenario: Exceeding capacity evicts rather than growing unbounded
 
-- **WHEN** distinct repo/ref/file/line-window lookups fill the cache to its configured capacity and another distinct lookup is then made
+- **WHEN** distinct repo/ref/file lookups fill the cache to its configured capacity and another distinct lookup is then made
 - **THEN** the least-recently-used entry is evicted to make room, rather than the cache growing past its configured capacity
+
+### Requirement: Repository and ref resolution
+
+A lookup MAY name the repository as `owner/name` or as a GitHub URL, which the system SHALL normalize before resolving it against the caller's tenant. A lookup MAY omit the repository, in which case the system SHALL probe the caller's tenant's linked repositories (bounded) for the path and serve the first match, and SHALL name the repository that served the snippet in the response. A lookup MAY omit the ref, in which case the system SHALL read the repository's default branch and SHALL report a null ref so the caller can label the snippet as unpinned.
+
+#### Scenario: Lookup without a repository probes the tenant's repositories
+
+- **WHEN** a lookup names only a path and line and the caller's tenant has an installation covering a repository that contains the path
+- **THEN** the snippet is served from that repository and the response names it
+
+#### Scenario: Lookup without a ref reads the default branch
+
+- **WHEN** a lookup omits the ref
+- **THEN** the file is read from the repository's default branch and the response carries a null ref
+
+### Requirement: Availability probe for readers
+
+The system SHALL expose, under the same authorization as the lookup, whether source context can be offered for the caller's tenant (`configured` and `linked`), so a read-only user's UI can decide to show the affordance without access to the tenant's management endpoints.
+
+#### Scenario: Reader learns source context is available
+
+- **WHEN** a principal with read access to a signal asks for the tenant's source-context availability after an installation was linked
+- **THEN** the answer reports `configured: true` and `linked: true`
+
+### Requirement: Flame-graph frame locations
+
+The Query IR `flamegraph` envelope SHALL carry an optional `locations` array parallel to `names`, each entry either `{file, line}` for the first frame seen under that name or `null` when the frame carried no file, so the profile UI can offer a lookup for frames whose location is known. The Pyroscope-compatible render path is unchanged.
+
+#### Scenario: Frame with a known file reports its location
+
+- **WHEN** a profile's frames carry a source file and line for a function
+- **THEN** the flamegraph envelope's `locations` entry for that name holds the file and line
 
 ### Requirement: Tenant-scoped authorization
 
@@ -62,7 +94,7 @@ A lookup SHALL be authorized against the caller's authenticated tenant, and SHAL
 
 ### Requirement: Explore UI surfaces available snippets
 
-The Explore UI's trace exception detail panel and profile flame-graph frame detail SHALL request a source-context lookup only when the frame already carries a file path and line number, and SHALL display the returned snippet inline with the frame when available, without blocking the rest of the trace or profile view when it is not.
+The Explore UI's trace exception detail panel, the Errors view's stacktrace detail, and the profile flame-graph frame surface SHALL offer a source-context lookup only for a frame whose file path and line number are known — from `code.file.path`/`code.line.number` attributes, from a best-effort `path:line` extraction over a stacktrace line, or from the flamegraph's per-name `locations` — and SHALL display the returned snippet inline with the frame when available, naming the repository and ref it came from, without blocking the rest of the trace, error, or profile view when it is not.
 
 #### Scenario: Exception frame with file/line shows source
 

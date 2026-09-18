@@ -15,6 +15,8 @@ sources:
   - src/router/src/oidc.rs
   - src/router/src/github.rs
   - src/router/src/endpoints/github.rs
+  - src/router/src/source_context.rs
+  - src/router/src/endpoints/source_context.rs
   - src/router/src/read_scope.rs
   - src/signaldb-cli/src/commands/tenant_self.rs
   - src/mcp-server/src/server.rs
@@ -152,6 +154,20 @@ the caller's own tenant (`find_github_installation_for_repository`). Removal
 (`DELETE .../github-installations/{id}`) also drops the cached token, so it is
 immediate. `src/router/src/endpoints/github.rs`, `src/router/src/github.rs`;
 operator guide `docs/operations/github-app.md`.
+
+**Source context (the read side).** `POST /api/v1/tenants/{id}/source-context`
+(`src/router/src/endpoints/source_context.rs`, service in
+`src/router/src/source_context.rs`) fetches the lines around a stack frame
+from the tenant's linked repositories via the Contents API, always answering
+200 with `status: available|unavailable` + `reason`. Authorization: path
+tenant = context tenant and `can_read` on any signal (ingest-only keys 403).
+Resolution: explicit `repository` (`owner/name` or URL) → tenant-scoped
+`find_github_installation_for_repository`, or no repository → probe the
+tenant's covered repos; ref optional (default branch, reported as `null`).
+Fetched files and content-caused unavailability are cached per file (TTL +
+LRU from `[github].snippet_cache_*`; windows sliced locally);
+`remove_github_installation` evicts. `GET …/source-context` is the reader-
+level `{configured, linked}` probe the UI gates "View source" on.
 
 **Read scopes.** OAuth scopes populate `TenantContext.api_key_scopes` and are
 enforced like API-key write scopes. `can_read(<signal>)` requires the matching

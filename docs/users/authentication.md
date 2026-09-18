@@ -11,6 +11,7 @@ sources:
   - src/router/src/endpoints/oidc.rs
   - src/router/src/oidc.rs
   - src/router/src/endpoints/github.rs
+  - src/router/src/endpoints/source_context.rs
   - src/common/src/auth/session.rs
   - src/common/src/auth/mod.rs
   - src/common/src/bootstrap.rs
@@ -423,6 +424,13 @@ tenant's repositories; they answer `404` until the operator configures
 browser signed in to SignalDB; GitHub redirects back to
 `/ui/github/callback`, which completes the link against that session. See
 [Connecting GitHub](../operations/github-app.md).
+
+`POST /api/v1/tenants/{tenant_id}/source-context` (`source_context`, and
+its `GET` sibling `source_context_availability` answering whether the
+tenant can be served at all) is the read side of that integration: any principal that may read a signal
+(a session, an OAuth token, or a key with a `<signal>:read` scope or no
+scopes) can fetch the source lines around a stack frame from the tenant's
+linked repositories; an ingest-only key is refused with `403`.
 
 Example — CI provisioning a dataset and an ingest key with a `tenant:manage`
 key (`--api-key`/`SIGNALDB_API_KEY`, `--tenant-id`/`SIGNALDB_TENANT_ID`):
