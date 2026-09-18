@@ -83,7 +83,7 @@ fn is_dataset_restricted(ctx: &TenantContext) -> bool {
         .is_some_and(|ids| !ids.is_empty())
 }
 
-fn authorize_tenant(
+pub(crate) fn authorize_tenant(
     ctx: &TenantContext,
     tenant_id: &str,
 ) -> Result<(), (StatusCode, &'static str)> {
@@ -99,7 +99,7 @@ fn authorize_tenant(
     Ok(())
 }
 
-fn error(status: StatusCode, message: impl Into<String>) -> Response {
+pub(crate) fn error(status: StatusCode, message: impl Into<String>) -> Response {
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 

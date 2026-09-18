@@ -1514,6 +1514,197 @@
         }
       }
     },
+    "/api/v1/manage/tenants/{tenant_id}/github-installations": {
+      "get": {
+        "tags": [
+          "github"
+        ],
+        "summary": "`GET /api/v1/manage/tenants/{tenant_id}/github-installations`",
+        "description": "Always 200, even when `[github]` is unconfigured (`configured: false`).\nWhen configured, refreshes each installation's repository list from\nGitHub; a refresh failure falls back to the last stored list, marked\n`stale: true`, rather than failing the whole request.",
+        "operationId": "manage_list_github_installations",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Linked GitHub installations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubInstallationsResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/manage/tenants/{tenant_id}/github-installations/link": {
+      "post": {
+        "tags": [
+          "github"
+        ],
+        "summary": "`POST /api/v1/manage/tenants/{tenant_id}/github-installations/link`",
+        "description": "Mints a single-use, tenant-and-admin-bound state token and returns the\nGitHub install-flow URL carrying it. 404 when `[github]` is not\nconfigured.",
+        "operationId": "manage_start_github_link",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Link flow started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubLinkStartResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "GitHub integration is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/manage/tenants/{tenant_id}/github-installations/{installation_id}": {
+      "delete": {
+        "tags": [
+          "github"
+        ],
+        "summary": "`DELETE /api/v1/manage/tenants/{tenant_id}/github-installations/{installation_id}`",
+        "description": "Removes the tenant's link and drops any cached installation token, so\ntoken minting for that installation stops immediately (spec: \"removal\ntakes effect immediately\").",
+        "operationId": "manage_remove_github_installation",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "installation_id",
+            "in": "path",
+            "description": "GitHub installation identifier",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Installation link removed"
+          },
+          "403": {
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "GitHub installation not found for this tenant, or GitHub integration is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/manage/tenants/{tenant_id}/memberships": {
       "get": {
         "tags": [
@@ -4294,6 +4485,65 @@
         ]
       }
     },
+    "/ui/github/callback": {
+      "get": {
+        "tags": [
+          "github"
+        ],
+        "summary": "`GET /ui/github/callback`",
+        "description": "The App's registered callback URL. See the module docs for the two\nchecks this performs and the redirect contract. Plain 404 (no redirect)\nwhen `[github]` is not configured — there is nowhere safe to send the\nbrowser back to in that case.",
+        "operationId": "github_callback",
+        "parameters": [
+          {
+            "name": "code",
+            "in": "query",
+            "description": "OAuth-on-install authorization code",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "installation_id",
+            "in": "query",
+            "description": "The installation id GitHub reports",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "setup_action",
+            "in": "query",
+            "description": "GitHub's setup_action (install/update/request)",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "state",
+            "in": "query",
+            "description": "The state token issued by the link-start endpoint",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Redirects to /integrations/github?github=linked&installation_id=<id> on success, or /integrations/github?github=error&reason=<state|session|forbidden|github|permissions|internal> on failure"
+          },
+          "404": {
+            "description": "GitHub integration is not configured"
+          }
+        },
+        "security": [
+          {}
+        ]
+      }
+    },
     "/ui/session": {
       "get": {
         "tags": [
@@ -5943,6 +6193,111 @@
           "truncated": {
             "type": "boolean",
             "description": "`true` when more than `FLAMEGRAPH_PROFILE_CAP` (1,000) profile rows\nmatched — a row-count cap, not a byte-size one — and the flamegraph\nwas aggregated over only the first 1,000 of them."
+          }
+        }
+      },
+      "GitHubInstallationResponse": {
+        "type": "object",
+        "description": "One linked installation, as reported by [`list_github_installations`].",
+        "required": [
+          "installation_id",
+          "account_login",
+          "account_type",
+          "repositories",
+          "repositories_synced_at",
+          "stale",
+          "manage_url",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "account_login": {
+            "type": "string"
+          },
+          "account_type": {
+            "type": "string"
+          },
+          "created_at": {
+            "type": "string",
+            "description": "RFC 3339 timestamp."
+          },
+          "installation_id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "linked_by_github_login": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "manage_url": {
+            "type": "string",
+            "description": "GitHub's own installation-settings page for this installation."
+          },
+          "repositories": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The installation's covered repositories, as `\"owner/name\"` full\nnames."
+          },
+          "repositories_synced_at": {
+            "type": "string",
+            "description": "RFC 3339 timestamp of the last successful repository-list refresh."
+          },
+          "stale": {
+            "type": "boolean",
+            "description": "`true` when the live GitHub refresh failed and `repositories` is the\nlast successfully fetched copy rather than a fresh one."
+          },
+          "updated_at": {
+            "type": "string",
+            "description": "RFC 3339 timestamp."
+          }
+        }
+      },
+      "GitHubInstallationsResponse": {
+        "type": "object",
+        "description": "200 response body for [`list_github_installations`].",
+        "required": [
+          "configured",
+          "installations"
+        ],
+        "properties": {
+          "app_slug": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The App's URL slug, present only when `configured`."
+          },
+          "configured": {
+            "type": "boolean",
+            "description": "`false` when `[github]` is absent (or failed to build) — the\nendpoint answers 200 rather than 404 so a caller can render \"GitHub\nis not set up\" without special-casing an error status."
+          },
+          "installations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GitHubInstallationResponse"
+            }
+          }
+        }
+      },
+      "GitHubLinkStartResponse": {
+        "type": "object",
+        "description": "201 response body for [`start_github_link`].",
+        "required": [
+          "install_url",
+          "expires_at"
+        ],
+        "properties": {
+          "expires_at": {
+            "type": "string",
+            "description": "RFC 3339 timestamp naming when the state token (and so this link\nattempt) expires."
+          },
+          "install_url": {
+            "type": "string",
+            "description": "GitHub's install page to redirect the admin's browser to. Carries\nthe single-use state token as its `state` query parameter."
           }
         }
       },
@@ -8285,6 +8640,10 @@
     {
       "name": "schema",
       "description": "Schema registry: semantic-convention registries, attribute/entity/metric resolution"
+    },
+    {
+      "name": "github",
+      "description": "GitHub App installations linked to a tenant"
     }
   ]
 }
