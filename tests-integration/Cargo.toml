@@ -66,6 +66,10 @@ testcontainers-modules.workspace = true
 criterion = { workspace = true, optional = true }
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
+[dev-dependencies]
+base64.workspace = true
+wiremock.workspace = true
+
 [features]
 # Enables the Criterion read-path benchmarks under benches/.
 benchmarks = ["dep:criterion"]
@@ -118,3 +122,7 @@ path = "tests/mcp_router_trace_continuity.rs"
 [[test]]
 name = "query_parity"
 path = "tests/query_parity.rs"
+
+[[test]]
+name = "github_source_context_e2e"
+path = "tests/github_source_context_e2e.rs"
