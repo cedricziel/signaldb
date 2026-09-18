@@ -94,6 +94,7 @@ Parquet storage with DataFusion query processing:
 | **traceql**           | `src/traceql/`               | Library    | TraceQL parser for the supported equality subset — syntax only, no product dependency; published as `traceql-parser`                                                                     |
 | **query-ir**          | `src/query-ir/`              | Library    | Signal-agnostic query IR: document model, validation, field resolution — leaf crate, not published; re-exported as `common::query_ir`                                                    |
 | **ql-ir**             | `src/ql-ir/`                 | Library    | Lowers parsed LogQL/TraceQL onto the query IR — no FDAP dependency, so query text can become an executable document without the engine; not published                                    |
+| **ottl**              | `src/ottl/`                  | Library    | In-house bounded OTTL subset (pest grammar): parser, compiler, evaluator over `opentelemetry-proto` request structs — backs tenant telemetry processors ([Processors](../users/processors.md)) |
 | **schema-model**      | `src/schema-model/`          | Library    | OTel Weaver semantic-convention model: parser, resolver (flat attribute/entity/metric definitions), and the validator applied to custom schema registries                                |
 | **signaldb-bin**      | `src/signaldb-bin/`          | Binary     | The `signaldb` executable: monolith by default, or one service via a subcommand (`signaldb router`, …); every service crate exposes `cli::Args` + `cli::run`                             |
 | **signaldb-api**      | `src/signaldb-api/`          | Library    | Hand-written admin API DTOs (utoipa `ToSchema`); OpenAPI schema source — see [OpenAPI codegen](openapi-codegen.md)                                                                       |
@@ -137,6 +138,7 @@ flowchart LR
 
 1. **OTLP Ingestion**: Client sends traces/logs/metrics via gRPC (port 4317) or HTTP (port 4318) to the Acceptor. The Acceptor also supports Prometheus remote_write at `/api/v1/write`.
 2. **Authentication**: Acceptor validates the API key via `Authorization: Bearer <key>` header, resolves tenant and dataset context.
+2a. **Telemetry processors**: Acceptor applies the tenant's enabled OTTL processors (`common::processors::ProcessorRegistry`, crate `ottl`) matching the request's dataset and signal, directly against the decoded OTLP protobuf — tenant-wide first, then dataset-scoped. This runs before step 3, so the transformed request is the only form ever converted to Arrow, written to WAL, or forwarded. See [Processors](../users/processors.md).
 3. **OTLP-to-Arrow Conversion**: Acceptor converts OTLP protobuf data to Arrow RecordBatches using Flight schemas (v1 format).
 4. **Acceptor WAL**: Acceptor appends the Arrow batch to its own WAL (per tenant/dataset/signal type) and flushes it before forwarding.
 5. **Flight Transfer**: Acceptor sends Arrow RecordBatches to a Writer via Flight `do_put`, discovered by `Storage` capability.

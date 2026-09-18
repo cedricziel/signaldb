@@ -60,6 +60,17 @@ these:
 | `replace_schema_registry`  | Replace a custom registry's document by namespace/version (requires `schema:write`; bundled registries refuse).                                                                                                                                                                                                       |
 | `validate_schema_registry` | Validate a registry document without storing it; errors carry document paths (requires `schema:write`).                                                                                                                                                                                                               |
 | `delete_schema_registry`   | Delete a custom registry by namespace/version (requires `schema:write`; bundled registries refuse).                                                                                                                                                                                                                   |
+| `list_processors`          | List the tenant's OTTL telemetry processors (requires `processors:read`). See [Processors](processors.md).                                                                                                                                                                                                            |
+| `get_processor`            | Fetch one processor by name (requires `processors:read`).                                                                                                                                                                                                                                                             |
+| `validate_processor`       | Compile-check a processor specification without storing it; errors carry statement index, column, and message (requires `processors:read`).                                                                                                                                                                          |
+| `test_processor`           | Dry-run a processor set against an OTLP JSON payload — transformed payload plus per-statement match/error counts; never writes to the WAL or forwards data (requires `processors:read`).                                                                                                                             |
+| `create_processor`         | Create a processor (requires `processors:write`; tenant-admin only, not OAuth-grantable).                                                                                                                                                                                                                             |
+| `replace_processor`        | Replace a processor's full document by name (requires `processors:write`).                                                                                                                                                                                                                                            |
+| `delete_processor`         | Delete a processor by name (requires `processors:write`).                                                                                                                                                                                                                                                             |
+
+Every processor tool takes the `tenant` parameter validated the same way as
+the query tools above. Changes apply at ingest within
+`[processors].reload_interval` (default 30s) — see [Processors](processors.md#applies-within-reload_interval).
 
 Each query tool requires a `dataset` argument, targeting the dataset your
 tenant may access (the router validates access and rejects the rest). Large
@@ -494,11 +505,13 @@ scopes, audience, and expiry — this is how the `signaldb mcp` sidecar learns
 a multi-tenant connector's whole reachable set before any one tenant has been
 selected for a call; it isn't something you call directly as an operator or
 agent. The read scopes a token may hold —
-`traces:read`, `logs:read`, `metrics:read`, `profiles:read`, `schema:read` —
+`traces:read`, `logs:read`, `metrics:read`, `profiles:read`, `schema:read`,
+`processors:read` —
 gate the corresponding query surface (see the
 [multi-tenancy](../architecture/overview.md) model); a request with no `scope`
-is granted all of them, and `schema:write` is never grantable through OAuth
-(a request naming only it is rejected with `invalid_scope`). The
+is granted all of them, and `schema:write`/`processors:write` are never
+grantable through OAuth (a request naming only one of them is rejected with
+`invalid_scope`). The
 existing `Bearer <api-key>` + `X-Tenant-ID` path is unchanged; OAuth is an
 added credential type, not a replacement.
 

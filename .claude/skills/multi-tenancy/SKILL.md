@@ -190,6 +190,16 @@ need tenant Admin / instance admin; not OAuth-grantable). `API_KEY_SCOPES` is
 the single vocabulary (`validate_scopes()`), used by key creation on every
 surface. Bundled registries answer `409` on mutation regardless of scope.
 
+**Telemetry processors** (change `tenant-ottl-processors`). Per-tenant,
+per-dataset, per-signal OTTL processors applied at ingest before durability —
+see `docs/users/processors.md`. `processors:read` (list/get/validate/test)
+joins `READ_SCOPES` (OAuth-grantable, mirrors `schema:read`);
+`processors:write` (create/replace/delete) requires tenant-admin rights via
+`can_write_processors()` and is never OAuth-grantable, mirroring
+`schema:write`. A processor's optional `dataset` field scopes it to one
+dataset (unset = every dataset of the tenant); dataset-scoped processors
+always run after tenant-wide ones, so they can override a tenant baseline.
+
 **Management scope** (change `management-api-key-scope`). `tenant:manage`
 (`TENANT_MANAGE_SCOPE`, in `API_KEY_SCOPES`, never in `READ_SCOPES` so never
 OAuth-grantable) lets an API key call the management API for its own tenant.
