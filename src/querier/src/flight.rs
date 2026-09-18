@@ -2357,7 +2357,7 @@ fn querier_error_to_status(
             too_many @ crate::query::error::QuerierError::TooManyGroups { .. } => {
                 Status::invalid_argument(too_many.to_string())
             }
-            other => Status::internal(format!("{signal} query failed: {other:?}")),
+            other => Status::internal(format!("{signal} query failed: {other}")),
         })
     }
 }
@@ -2370,7 +2370,7 @@ fn trace_error_to_status(
 ) -> impl Fn(crate::query::error::QuerierError) -> Status {
     move |e| {
         common_error_status(e)
-            .unwrap_or_else(|other| Status::internal(format!("{context} failed: {other:?}")))
+            .unwrap_or_else(|other| Status::internal(format!("{context} failed: {other}")))
     }
 }
 
