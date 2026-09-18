@@ -15,6 +15,7 @@ use anyhow::Context;
 use common::auth::TenantContext;
 use common::flight::conversion::otlp_metrics_to_arrow;
 use common::flight::transport::InMemoryFlightTransport;
+use common::processors::ProcessorRegistry;
 use common::wal::{WalOperation, record_batch_to_bytes};
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 
@@ -22,12 +23,15 @@ use super::WalManager;
 use super::forward::forward_batch_to_writer;
 use super::ingest_error::IngestError;
 use super::metrics_partition;
+use super::processors_apply::apply_metric_processors;
 
 pub struct MetricsHandler {
     /// Flight transport for forwarding telemetry
     flight_transport: Arc<InMemoryFlightTransport>,
     /// WAL manager for multi-tenant WAL isolation
     wal_manager: Arc<WalManager>,
+    /// Tenant OTTL processors (change: tenant-ottl-processors)
+    processor_registry: Arc<ProcessorRegistry>,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -68,10 +72,12 @@ impl MetricsHandler {
     pub fn new(
         flight_transport: Arc<InMemoryFlightTransport>,
         wal_manager: Arc<WalManager>,
+        processor_registry: Arc<ProcessorRegistry>,
     ) -> Self {
         Self {
             flight_transport,
             wal_manager,
+            processor_registry,
         }
     }
 
@@ -95,13 +101,15 @@ impl MetricsHandler {
     pub async fn handle_grpc_otlp_metrics(
         &self,
         tenant_context: &TenantContext,
-        request: ExportMetricsServiceRequest,
+        mut request: ExportMetricsServiceRequest,
     ) -> Result<(), IngestError> {
         tracing::debug!(
             tenant_id = %tenant_context.tenant_id,
             dataset_id = %tenant_context.dataset_id,
             "Handling OTLP metrics request"
         );
+
+        apply_metric_processors(&self.processor_registry, tenant_context, &mut request).await?;
 
         // Get tenant/dataset-specific WAL
         let wal = self

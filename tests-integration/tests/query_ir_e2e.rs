@@ -243,8 +243,17 @@ async fn setup() -> TestServices {
         wal_config.clone(),
         wal_config.clone(),
     ));
-    let log_handler = LogHandler::new(flight_transport.clone(), wal_manager.clone());
-    let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager);
+    let processor_catalog = Arc::new(Catalog::new(&catalog_dsn).await.expect("catalog"));
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        processor_catalog,
+        &common::config::ProcessorsConfig::default(),
+    ));
+    let log_handler = LogHandler::new(
+        flight_transport.clone(),
+        wal_manager.clone(),
+        processor_registry.clone(),
+    );
+    let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager, processor_registry);
 
     // Wait for storage + query services to register.
     for attempt in 0..50 {

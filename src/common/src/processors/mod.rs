@@ -5,10 +5,12 @@
 //! D3). The uploaded statement list is stored verbatim; compilation into a
 //! runnable `ottl::CompiledProgram` happens elsewhere (`ProcessorRegistry`).
 
+pub mod registry;
 pub mod store;
 
 use serde::{Deserialize, Serialize};
 
+pub use registry::{CompiledProcessor, ProcessorRegistry};
 pub use store::StoreError;
 
 /// A stored processor row.

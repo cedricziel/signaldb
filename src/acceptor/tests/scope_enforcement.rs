@@ -129,19 +129,26 @@ async fn setup_scoped_app() -> (axum::Router, TempDir) {
     let storage_usage =
         Arc::new(common::storage_usage::StorageUsageTracker::from_auth_config(&auth_config));
 
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        catalog.clone(),
+        &common::config::ProcessorsConfig::default(),
+    ));
     let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 
     let trace_handler = Arc::new(TraceHandler::new(
         flight_transport.clone(),
         wal_manager.clone(),
+        processor_registry.clone(),
     ));
     let log_handler = Arc::new(LogHandler::new(
         flight_transport.clone(),
         wal_manager.clone(),
+        processor_registry.clone(),
     ));
     let metrics_handler = Arc::new(MetricsHandler::new(
         flight_transport.clone(),
         wal_manager.clone(),
+        processor_registry,
     ));
     let profile_handler = Arc::new(ProfileHandler::new(
         flight_transport.clone(),

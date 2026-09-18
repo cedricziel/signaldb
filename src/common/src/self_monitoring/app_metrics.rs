@@ -119,6 +119,13 @@ pub struct AppMetrics {
     // `requests`, `bytes`, `quota`). Exported as
     // `signaldb_rate_limit_rejections_total` over Prometheus.
     pub rate_limit_rejections: Counter<u64>,
+
+    // Tenant OTTL processors (change: tenant-ottl-processors, design D9):
+    // one increment per statement evaluation outcome (`outcome=applied|
+    // error|skipped`, plus `tenant`/`processor`), and one per export
+    // rejected by an `ErrorMode::Propagate` processor.
+    pub processors_statements: Counter<u64>,
+    pub processors_rejected_requests: Counter<u64>,
 }
 
 /// Attribute key naming the tool on the MCP metrics (`gen_ai.tool.name`).
@@ -395,8 +402,48 @@ impl AppMetrics {
                 )
                 .with_unit("{rejection}")
                 .build(),
+            processors_statements: meter
+                .u64_counter("signaldb.processors.statements")
+                .with_description(
+                    "Tenant OTTL processor statement evaluations, by tenant, processor, and outcome",
+                )
+                .with_unit("{statement}")
+                .build(),
+            processors_rejected_requests: meter
+                .u64_counter("signaldb.processors.rejected_requests")
+                .with_description(
+                    "Ingest requests rejected by a tenant OTTL processor in propagate error mode",
+                )
+                .with_unit("{request}")
+                .build(),
         }
     }
+}
+
+/// Record one tenant-OTTL-processor statement evaluation outcome
+/// (`applied`, `error`, or `skipped`), labelled by tenant and processor
+/// name. Bounded by tenant count × processor count, both small.
+pub fn record_processor_statement(tenant_id: &str, processor: &str, outcome: &'static str) {
+    use opentelemetry::KeyValue;
+
+    app_metrics().processors_statements.add(
+        1,
+        &[
+            KeyValue::new("tenant", tenant_id.to_owned()),
+            KeyValue::new("processor", processor.to_owned()),
+            KeyValue::new("outcome", outcome),
+        ],
+    );
+}
+
+/// Record one export rejected by a processor running in `propagate` error
+/// mode.
+pub fn record_processor_rejected_request(tenant_id: &str) {
+    use opentelemetry::KeyValue;
+
+    app_metrics()
+        .processors_rejected_requests
+        .add(1, &[KeyValue::new("tenant", tenant_id.to_owned())]);
 }
 
 /// Record one rate-limit rejection, labelled by the rejecting surface

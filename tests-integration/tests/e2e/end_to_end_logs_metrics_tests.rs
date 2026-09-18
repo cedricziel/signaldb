@@ -172,8 +172,21 @@ async fn setup_logs_metrics_services() -> TestServices {
         wal_config,
     ));
 
-    let log_handler = LogHandler::new(flight_transport.clone(), wal_manager.clone());
-    let metrics_handler = MetricsHandler::new(flight_transport.clone(), wal_manager);
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        Arc::new(
+            common::catalog::Catalog::new("sqlite::memory:")
+                .await
+                .unwrap(),
+        ),
+        &common::config::ProcessorsConfig::default(),
+    ));
+    let log_handler = LogHandler::new(
+        flight_transport.clone(),
+        wal_manager.clone(),
+        processor_registry.clone(),
+    );
+    let metrics_handler =
+        MetricsHandler::new(flight_transport.clone(), wal_manager, processor_registry);
 
     TestServices {
         object_store,

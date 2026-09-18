@@ -160,9 +160,17 @@ async fn setup_traces_test_with_limit(
     let storage_usage =
         Arc::new(common::storage_usage::StorageUsageTracker::from_auth_config(&auth_config));
 
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        catalog.clone(),
+        &common::config::ProcessorsConfig::default(),
+    ));
     let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 
-    let trace_handler = Arc::new(TraceHandler::new(flight_transport, wal_manager.clone()));
+    let trace_handler = Arc::new(TraceHandler::new(
+        flight_transport,
+        wal_manager.clone(),
+        processor_registry,
+    ));
 
     let app = traces_http_router(authenticator, trace_handler, rate_limiter, storage_usage);
     let app = with_http_transport_limits(app, max_request_body_bytes);

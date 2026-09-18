@@ -58,6 +58,10 @@ async fn test_resources(temp_dir: &TempDir) -> AcceptorResources {
     ));
     let storage_usage =
         Arc::new(common::storage_usage::StorageUsageTracker::from_auth_config(&auth_config));
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        catalog.clone(),
+        &common::config::ProcessorsConfig::default(),
+    ));
     let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 
     AcceptorResources {
@@ -66,6 +70,7 @@ async fn test_resources(temp_dir: &TempDir) -> AcceptorResources {
         authenticator,
         rate_limiter,
         storage_usage,
+        processor_registry,
     }
 }
 
@@ -134,6 +139,7 @@ async fn http_bind_failure_is_returned_as_error_not_a_panic() {
             authenticator: resources.authenticator,
             rate_limiter: resources.rate_limiter,
             storage_usage: resources.storage_usage,
+            processor_registry: resources.processor_registry,
             max_request_body_bytes: 64 * 1024 * 1024,
         },
         init_tx,
@@ -216,6 +222,7 @@ async fn http_init_send_after_receiver_dropped_is_returned_as_error_not_a_panic(
             authenticator: resources.authenticator,
             rate_limiter: resources.rate_limiter,
             storage_usage: resources.storage_usage,
+            processor_registry: resources.processor_registry,
             max_request_body_bytes: 64 * 1024 * 1024,
         },
         init_tx,

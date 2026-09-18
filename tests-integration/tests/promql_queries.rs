@@ -201,7 +201,17 @@ async fn setup() -> TestServices {
         wal_config.clone(),
         wal_config,
     ));
-    let metrics_handler = MetricsHandler::new(flight_transport.clone(), wal_manager);
+    let processor_catalog = Arc::new(
+        Catalog::new(config.discovery.as_ref().unwrap().dsn.as_str())
+            .await
+            .expect("catalog"),
+    );
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        processor_catalog,
+        &common::config::ProcessorsConfig::default(),
+    ));
+    let metrics_handler =
+        MetricsHandler::new(flight_transport.clone(), wal_manager, processor_registry);
 
     for attempt in 0..50 {
         let has_query = !flight_transport

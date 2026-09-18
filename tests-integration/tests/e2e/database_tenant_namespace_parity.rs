@@ -217,7 +217,11 @@ async fn setup_services() -> TestServices {
         wal_config.clone(),
         wal_config,
     ));
-    let log_handler = LogHandler::new(flight_transport.clone(), wal_manager);
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        Arc::new(Catalog::new("sqlite::memory:").await.unwrap()),
+        &common::config::ProcessorsConfig::default(),
+    ));
+    let log_handler = LogHandler::new(flight_transport.clone(), wal_manager, processor_registry);
     let log_acceptor_service = LogAcceptorService::new(log_handler);
     let acceptor_service_with_auth =
         LogsServiceServer::with_interceptor(log_acceptor_service, |mut req: tonic::Request<()>| {
