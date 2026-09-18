@@ -3,7 +3,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
-import { renderWithClient } from "../../test/render";
+import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { ErrorsView } from "./ErrorsView";
 import * as errorsApi from "../../api/errors";
 import type { ErrorGroup, ErrorOccurrence } from "../../api/errors";
@@ -204,6 +204,33 @@ describe("ErrorsView", () => {
     expect(screen.queryByText(/at foo/)).not.toBeInTheDocument();
     await user.click(await screen.findByTestId("occurrence-row-0"));
     expect(await screen.findByText(/at foo/)).toBeInTheDocument();
+  });
+
+  it("offers View source for a frame line once GitHub is linked", async () => {
+    stubFetchRoutes([
+      {
+        match: "/source-context",
+        method: "GET",
+        body: { configured: true, linked: true },
+      },
+    ]);
+    fetchErrorGroups.mockResolvedValue({
+      groups: [group()],
+      truncated: false,
+    });
+    fetchErrorOccurrences.mockResolvedValue([
+      occurrence({ stacktrace: "boom\n    at src/handler.rs:42:9\n    at ?" }),
+    ]);
+    renderView({ tenant: "acme" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("std::io::Error"));
+    await user.click(await screen.findByTestId("occurrence-row-0"));
+
+    const triggers = await screen.findAllByRole("button", {
+      name: "View source",
+    });
+    expect(triggers).toHaveLength(1);
+    expect(triggers[0]).toHaveAttribute("title", "src/handler.rs:42");
   });
 
   it("clicking a trace link navigates without expanding the row", async () => {

@@ -34,6 +34,7 @@ function flamegraphBody(fg: {
   total: number;
   max_self: number;
   truncated?: boolean;
+  locations?: Array<{ file: string; line: number } | null>;
 }) {
   return {
     result: "flamegraph",
@@ -91,6 +92,46 @@ describe("ProfilesView", () => {
       await screen.findByRole("button", { name: "main" }),
     ).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "work" })).toBeInTheDocument();
+  });
+
+  // The view no longer waits on GitHub-linked state before handing
+  // FlameGraph a tenant — SourceSnippet gates the trigger itself (see
+  // lib/useSourceContextEnabled.ts) — so the Top-functions Source column
+  // appears whenever the view has a tenant, whether or not GitHub ends up
+  // being linked for it.
+  it("passes the view's tenant to the flame graph's Top-functions table", async () => {
+    stubFetchRoutes([
+      ...DISCOVERY_ROUTES,
+      {
+        match: "/api/v1/query",
+        body: flamegraphBody({
+          names: ["total", "main", "work"],
+          levels: [
+            [0, 100, 0, 0],
+            [0, 100, 20, 1],
+            [0, 80, 80, 2],
+          ],
+          total: 100,
+          max_self: 80,
+          locations: [null, { file: "src/main.rs", line: 10 }, null],
+        }),
+      },
+      {
+        match: "/source-context",
+        method: "GET",
+        body: { configured: true, linked: true },
+      },
+    ]);
+
+    renderWithClient(
+      <ProfilesView state={state({ tenant: "acme" })} update={vi.fn()} />,
+    );
+    await screen.findByRole("button", { name: "main" });
+    await userEvent.click(screen.getByRole("tab", { name: "Top functions" }));
+
+    expect(
+      await screen.findByRole("button", { name: "View source" }),
+    ).toBeInTheDocument();
   });
 
   it("submits a where-pipeline scoped to the selected service and sample type", async () => {

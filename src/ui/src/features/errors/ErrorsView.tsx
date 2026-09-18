@@ -29,7 +29,7 @@ import {
   type ErrorFilter,
 } from "../../lib/errorFacets";
 import type { LabelFilter } from "../../lib/filters";
-import { parseStacktraceLines } from "../../lib/stacktrace";
+import { StacktraceLines } from "../../components/StacktraceLines";
 import { SortTh, sortRows, useSort, type SortValue } from "../../lib/sortTable";
 import {
   durationToSeconds,
@@ -461,7 +461,17 @@ export function ErrorsView({ state, update }: Props) {
                               <tr className="errors-occurrence-detail">
                                 <td colSpan={2}>
                                   {o.stacktrace ? (
-                                    <Stacktrace text={o.stacktrace} />
+                                    // No repository/ref hints are available
+                                    // for an occurrence (unlike a trace's
+                                    // exception span, it carries no resource
+                                    // attributes here), so the lookup probes
+                                    // the tenant's linked repositories at
+                                    // their default branch.
+                                    <StacktraceLines
+                                      text={o.stacktrace}
+                                      tenant={state.tenant}
+                                      variant="error"
+                                    />
                                   ) : (
                                     <div className="view-note">
                                       No stacktrace captured for this occurrence.
@@ -482,20 +492,5 @@ export function ErrorsView({ state, update }: Props) {
         </div>
       </div>
     </div>
-  );
-}
-
-function Stacktrace({ text }: { text: string }) {
-  return (
-    <pre className="errors-stacktrace">
-      {parseStacktraceLines(text).map((line, i) => (
-        <div
-          key={i}
-          className={`errors-stacktrace-line errors-stacktrace-${line.kind}`}
-        >
-          {line.text}
-        </div>
-      ))}
-    </pre>
   );
 }

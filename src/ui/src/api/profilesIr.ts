@@ -9,6 +9,7 @@ import { runIrQuery } from "./queryIr";
 import { ApiError } from "./http";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 import type { RenderResponse } from "./pyroscope";
+import type { FrameLocation } from "./gen";
 
 /** An additional attribute matcher beyond service/sample-type — the field
  * is a bare attribute key, which Query IR coalesces across the profile's
@@ -29,6 +30,9 @@ export interface FlamegraphFetch {
   /** True when the match set exceeded the server's per-query row cap and
    * the flamegraph only reflects the first N profiles matched. */
   truncated: boolean;
+  /** Per-name source location, parallel to `render.flamebearer.names`; see
+   * `FlamegraphResult.locations`. */
+  locations: Array<FrameLocation | null>;
 }
 
 function whereEq(field: string, value: string): Record<string, unknown> {
@@ -80,6 +84,7 @@ export async function fetchFlamegraph(
   return {
     render: toRenderResponse(res.flamegraph, query.sampleType ?? ""),
     truncated: res.flamegraph.truncated,
+    locations: res.flamegraph.locations,
   };
 }
 

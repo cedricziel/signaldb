@@ -702,6 +702,42 @@
   color: var(--dim);
 }
 
+.span-event-trace-lines {
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.span-event-trace-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 1px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.span-event-trace-vendor {
+  color: var(--faint);
+}
+
+.span-event-trace-header {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.span-code-location {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 4px 0 8px;
+  font-size: 12px;
+}
+
+.span-code-location-label {
+  color: var(--dim);
+}
+
 /* ---------- facet sidebar + filter chips ---------- */
 
 /* Compounded with .chip so this beats the global pill base's border-color

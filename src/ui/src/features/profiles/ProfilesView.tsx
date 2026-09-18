@@ -22,6 +22,7 @@ import { TimeRangePicker } from "../shell/TimeRangePicker";
 import { FlameGraph, FlamePane } from "./FlameGraph";
 import { decodeFlamebearer } from "../../lib/flamebearer";
 import "./profiles.css";
+import { useSourceContextEnabled } from "../../lib/useSourceContextEnabled";
 
 interface Props {
   state: ExploreState;
@@ -253,6 +254,9 @@ function SelectorControls({
 }
 
 function SingleRangeView({ state, update }: Props) {
+  // The Top-functions Source column only makes sense when snippets can be
+  // served; `SourceSnippet` gates each row the same way.
+  const sourceContextEnabled = useSourceContextEnabled(state.tenant);
   const selectors = useProfileSelectors(state);
   const { typesQuery, servicesQuery, selectedType, selectedTypeMeta, unit } =
     selectors;
@@ -314,7 +318,12 @@ function SingleRangeView({ state, update }: Props) {
       {isEmpty && <EmptyState title="No profiles in this range" />}
 
       {renderQuery.data && !isEmpty && (
-        <FlameGraph render={renderQuery.data.render} unit={unit} />
+        <FlameGraph
+          render={renderQuery.data.render}
+          unit={unit}
+          tenant={sourceContextEnabled ? state.tenant : undefined}
+          locations={renderQuery.data.locations}
+        />
       )}
     </div>
   );
