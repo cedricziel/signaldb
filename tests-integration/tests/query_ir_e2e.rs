@@ -48,8 +48,12 @@ const BASE_NS: i64 = 1_700_000_000_000_000_000;
 
 struct TestServices {
     flight_transport: Arc<InMemoryFlightTransport>,
-    log_handler: LogHandler,
-    trace_handler: TraceHandler,
+    log_handler: Arc<LogHandler>,
+    trace_handler: Arc<TraceHandler>,
+    /// Shared with the router built by `build_router`, so a processor
+    /// created through `POST /api/v1/processors` is visible to the next
+    /// `for_request` lookup the ingest handlers make (task 3.3).
+    processor_registry: Arc<common::processors::ProcessorRegistry>,
     config: Configuration,
     _temp_dir: TempDir,
 }
@@ -248,12 +252,16 @@ async fn setup() -> TestServices {
         processor_catalog,
         &common::config::ProcessorsConfig::default(),
     ));
-    let log_handler = LogHandler::new(
+    let log_handler = Arc::new(LogHandler::new(
         flight_transport.clone(),
         wal_manager.clone(),
         processor_registry.clone(),
-    );
-    let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager, processor_registry);
+    ));
+    let trace_handler = Arc::new(TraceHandler::new(
+        flight_transport.clone(),
+        wal_manager,
+        processor_registry.clone(),
+    ));
 
     // Wait for storage + query services to register.
     for attempt in 0..50 {
@@ -276,6 +284,7 @@ async fn setup() -> TestServices {
         flight_transport,
         log_handler,
         trace_handler,
+        processor_registry,
         config,
         _temp_dir: temp_dir,
     }
@@ -426,6 +435,7 @@ async fn build_router(services: &TestServices) -> Router {
         service_registry: ServiceRegistry,
         config: Configuration,
         authenticator: Arc<common::auth::Authenticator>,
+        processor_registry: Arc<common::processors::ProcessorRegistry>,
     }
     impl std::fmt::Debug for State {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -445,6 +455,9 @@ async fn build_router(services: &TestServices) -> Router {
         fn authenticator(&self) -> &Arc<common::auth::Authenticator> {
             &self.authenticator
         }
+        fn processor_registry(&self) -> Arc<common::processors::ProcessorRegistry> {
+            self.processor_registry.clone()
+        }
     }
 
     let state = State {
@@ -452,9 +465,26 @@ async fn build_router(services: &TestServices) -> Router {
         service_registry,
         config: services.config.clone(),
         authenticator: authenticator.clone(),
+        processor_registry: services.processor_registry.clone(),
     };
+    let traces_http = acceptor::traces_http_router(
+        authenticator.clone(),
+        services.trace_handler.clone(),
+        Arc::new(common::ratelimit::TenantRateLimiter::from_auth_config(
+            &services.config.auth,
+        )),
+        Arc::new(
+            common::storage_usage::StorageUsageTracker::from_auth_config(&services.config.auth),
+        ),
+    );
     Router::new()
-        .nest("/api/v1", endpoints::query::router().with_state(state))
+        .nest(
+            "/api/v1",
+            endpoints::query::router()
+                .merge(endpoints::processors::router::<State>())
+                .with_state(state),
+        )
+        .merge(traces_http)
         .layer(middleware::from_fn(move |req, next| {
             auth_middleware(authenticator.clone(), req, next)
         }))
@@ -1297,5 +1327,91 @@ async fn logs_group_by_resource_identity_end_to_end() {
     assert!(
         names.contains(&"resource.identity"),
         "describe advertises resource.identity: {names:?}"
+    );
+}
+
+// Task 3.3 — a processor created through the router HTTP API redacts PII in
+// an OTLP/HTTP export before it reaches storage; the Query IR surface never
+// sees the original value.
+#[tokio::test]
+async fn processor_created_via_router_api_redacts_pii_end_to_end() {
+    let services = setup().await;
+    let app = build_router(&services).await;
+
+    const PII_EMAIL: &str = "alice@example.com";
+
+    // 1. Create the processor through the router HTTP API (not the catalog
+    //    directly) — design D6/D7's public contract for this change.
+    let create = Request::builder()
+        .method("POST")
+        .uri("/api/v1/processors")
+        .header("authorization", "Bearer test-key-123")
+        .header("x-tenant-id", "test-tenant")
+        .header("content-type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "name": "hash-email",
+                "signal": "traces",
+                "statements": [
+                    r#"set(attributes["user.email"], SHA256(attributes["user.email"])) where attributes["user.email"] != nil"#
+                ],
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(create).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::CREATED,
+        "processor create: {:?}",
+        axum::body::to_bytes(response.into_body(), usize::MAX).await
+    );
+
+    // 2. Export a span carrying the PII value over OTLP/HTTP.
+    let mut pii_span = span("GET /account", 9, 10_000_000);
+    pii_span.attributes.push(KeyValue {
+        key: "user.email".to_string(),
+        value: Some(string_value(PII_EMAIL)),
+        ..Default::default()
+    });
+    let export_body = serde_json::to_vec(&traces_request("checkout", vec![pii_span])).unwrap();
+    let export = Request::builder()
+        .method("POST")
+        .uri("/v1/traces")
+        .header("authorization", "Bearer test-key-123")
+        .header("x-tenant-id", "test-tenant")
+        .header("content-type", "application/json")
+        .body(Body::from(export_body))
+        .unwrap();
+    let response = app.clone().oneshot(export).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    // 3. Query via the native Query IR: only the redacted value ever
+    //    appears, never the original.
+    let (status, body) = post_ir_until_rows(
+        &app,
+        serde_json::json!({
+            "irVersion": 1,
+            "from": "traces",
+            "range": range(),
+            "result": "rows",
+            "fields": ["span.name", "user.email"],
+            "pipeline": [
+                { "where": { "field": "span.name", "op": "eq", "value": "GET /account" } }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "traces IR query: {body}");
+    let rows = body["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 1, "expected the one redacted span: {body}");
+    let queried_email = rows[0][1].as_str().expect("user.email is a string");
+    assert_ne!(
+        queried_email, PII_EMAIL,
+        "the processor must have redacted the value before it was queryable"
+    );
+    assert!(
+        !body.to_string().contains(PII_EMAIL),
+        "the raw PII value must never appear anywhere in the query response: {body}"
     );
 }

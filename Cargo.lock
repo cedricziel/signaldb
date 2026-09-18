@@ -6693,6 +6693,8 @@ dependencies = [
  "loki-api",
  "lru",
  "openidconnect",
+ "opentelemetry-proto",
+ "ottl",
  "prometheus-api",
  "pyroscope-api",
  "reqwest 0.13.5",

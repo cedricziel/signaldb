@@ -9,6 +9,7 @@ pub mod management;
 pub mod oauth;
 pub mod oidc;
 pub mod ops;
+pub mod processors;
 pub mod promql;
 pub mod pyroscope;
 pub mod query;

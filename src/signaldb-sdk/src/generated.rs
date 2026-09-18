@@ -571,7 +571,8 @@ pub mod types {
     `scopes` is required and non-empty: a key's permissions are always
     explicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,
     `profiles:write`, `traces:read`, `logs:read`, `metrics:read`,
-    `profiles:read`, `schema:read`, `schema:write`.
+    `profiles:read`, `schema:read`, `schema:write`, `processors:read`,
+    `processors:write`.
 
     The legacy singular `dataset_id` field is not accepted here (removed in
     the multi-dataset-key-restriction change): a request body carrying it is
@@ -2006,6 +2007,139 @@ pub mod types {
             Default::default()
         }
     }
+    ///Error body for the processors API.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ProcessorError {
+        pub error: ::std::string::String,
+        ///Positional compile errors (422 only).
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub errors: ::std::vec::Vec<StatementError>,
+    }
+    impl ProcessorError {
+        pub fn builder() -> builder::ProcessorError {
+            Default::default()
+        }
+    }
+    ///`ProcessorListResponse`
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ProcessorListResponse {
+        pub processors: ::std::vec::Vec<ProcessorResponse>,
+    }
+    impl ProcessorListResponse {
+        pub fn builder() -> builder::ProcessorListResponse {
+            Default::default()
+        }
+    }
+    ///A stored processor row.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ProcessorRecord {
+        /**RFC3339 timestamp, as stored (`StoredRegistry` follows the same
+        string-typed convention for the same reason: one dialect-agnostic
+        decode path in the store, see `row_to_record`).*/
+        pub created_at: ::std::string::String,
+        /**The dataset *name* this processor applies to, or `None` for a
+        tenant-wide rule.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset: ::std::option::Option<::std::string::String>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub description: ::std::option::Option<::std::string::String>,
+        pub enabled: bool,
+        pub error_mode: ::std::string::String,
+        pub name: ::std::string::String,
+        pub priority: i32,
+        pub signal: ::std::string::String,
+        pub statements: ::std::vec::Vec<::std::string::String>,
+        pub tenant_id: ::std::string::String,
+        pub updated_at: ::std::string::String,
+    }
+    impl ProcessorRecord {
+        pub fn builder() -> builder::ProcessorRecord {
+            Default::default()
+        }
+    }
+    ///A processor row plus its compiled status.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ProcessorResponse {
+        /**RFC3339 timestamp, as stored (`StoredRegistry` follows the same
+        string-typed convention for the same reason: one dialect-agnostic
+        decode path in the store, see `row_to_record`).*/
+        pub created_at: ::std::string::String,
+        /**The dataset *name* this processor applies to, or `None` for a
+        tenant-wide rule.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset: ::std::option::Option<::std::string::String>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub description: ::std::option::Option<::std::string::String>,
+        pub enabled: bool,
+        pub error_mode: ::std::string::String,
+        pub name: ::std::string::String,
+        pub priority: i32,
+        pub signal: ::std::string::String,
+        pub statements: ::std::vec::Vec<::std::string::String>,
+        /**`"invalid"` when the stored statements currently fail to compile
+        (skipped at apply time, never blocking ingest); `"ok"` otherwise.*/
+        pub status: ::std::string::String,
+        pub tenant_id: ::std::string::String,
+        pub updated_at: ::std::string::String,
+    }
+    impl ProcessorResponse {
+        pub fn builder() -> builder::ProcessorResponse {
+            Default::default()
+        }
+    }
+    /**Caller-supplied processor definition, without tenant scoping or
+    timestamps — the body of a create/replace request.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ProcessorSpec {
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset: ::std::option::Option<::std::string::String>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub description: ::std::option::Option<::std::string::String>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub enabled: ::std::option::Option<bool>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub error_mode: ::std::option::Option<::std::string::String>,
+        pub name: ::std::string::String,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub priority: ::std::option::Option<i32>,
+        pub signal: ::std::string::String,
+        pub statements: ::std::vec::Vec<::std::string::String>,
+    }
+    impl ProcessorSpec {
+        pub fn builder() -> builder::ProcessorSpec {
+            Default::default()
+        }
+    }
+    /**Every write response carries the cross-process propagation bound for the
+    change: the `ProcessorRegistry` cache TTL, in seconds.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ProcessorWriteResponse {
+        pub applies_within_seconds: i64,
+        /**RFC3339 timestamp, as stored (`StoredRegistry` follows the same
+        string-typed convention for the same reason: one dialect-agnostic
+        decode path in the store, see `row_to_record`).*/
+        pub created_at: ::std::string::String,
+        /**The dataset *name* this processor applies to, or `None` for a
+        tenant-wide rule.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset: ::std::option::Option<::std::string::String>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub description: ::std::option::Option<::std::string::String>,
+        pub enabled: bool,
+        pub error_mode: ::std::string::String,
+        pub name: ::std::string::String,
+        pub priority: i32,
+        pub signal: ::std::string::String,
+        pub statements: ::std::vec::Vec<::std::string::String>,
+        pub status: ::std::string::String,
+        pub tenant_id: ::std::string::String,
+        pub updated_at: ::std::string::String,
+    }
+    impl ProcessorWriteResponse {
+        pub fn builder() -> builder::ProcessorWriteResponse {
+            Default::default()
+        }
+    }
     /**Summary of a stored profile linked to a trace, without the bulky
     stack/sample payloads.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
@@ -2659,6 +2793,19 @@ pub mod types {
             Default::default()
         }
     }
+    ///One compile error, positioned to a statement and (where known) a column.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct StatementError {
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub column: ::std::option::Option<u64>,
+        pub message: ::std::string::String,
+        pub statement: u64,
+    }
+    impl StatementError {
+        pub fn builder() -> builder::StatementError {
+            Default::default()
+        }
+    }
     ///API response for table information
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TableInfo {
@@ -2870,6 +3017,47 @@ pub mod types {
     }
     impl TenantSelfListResponse {
         pub fn builder() -> builder::TenantSelfListResponse {
+            Default::default()
+        }
+    }
+    ///`TestRequest`
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct TestRequest {
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset: ::std::option::Option<::std::string::String>,
+        ///The OTLP export request (OTLP/JSON), for `signal`.
+        pub payload: ::serde_json::Value,
+        /**Processors to apply, in the given order; when omitted, the tenant's
+        stored processors for `signal`/`dataset` are used instead.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub processors: ::std::option::Option<::std::vec::Vec<ProcessorSpec>>,
+        pub signal: ::std::string::String,
+    }
+    impl TestRequest {
+        pub fn builder() -> builder::TestRequest {
+            Default::default()
+        }
+    }
+    ///`TestResponse`
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct TestResponse {
+        pub payload: ::serde_json::Value,
+        pub statements: ::std::vec::Vec<TestStatementResult>,
+    }
+    impl TestResponse {
+        pub fn builder() -> builder::TestResponse {
+            Default::default()
+        }
+    }
+    ///`TestStatementResult`
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct TestStatementResult {
+        pub errors: i64,
+        pub index: u64,
+        pub matched: i64,
+    }
+    impl TestStatementResult {
+        pub fn builder() -> builder::TestStatementResult {
             Default::default()
         }
     }
@@ -3104,6 +3292,28 @@ pub mod types {
     }
     impl UserResponse {
         pub fn builder() -> builder::UserResponse {
+            Default::default()
+        }
+    }
+    ///`ValidateRequest`
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ValidateRequest {
+        pub signal: ::std::string::String,
+        pub statements: ::std::vec::Vec<::std::string::String>,
+    }
+    impl ValidateRequest {
+        pub fn builder() -> builder::ValidateRequest {
+            Default::default()
+        }
+    }
+    ///`ValidateResponse`
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Default)]
+    pub struct ValidateResponse {
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub errors: ::std::vec::Vec<StatementError>,
+    }
+    impl ValidateResponse {
+        pub fn builder() -> builder::ValidateResponse {
             Default::default()
         }
     }
@@ -10836,6 +11046,867 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct ProcessorError {
+            error: ::std::result::Result<::std::string::String, ::std::string::String>,
+            errors: ::std::result::Result<
+                ::std::vec::Vec<super::StatementError>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for ProcessorError {
+            fn default() -> Self {
+                Self {
+                    error: Err("no value supplied for error".to_string()),
+                    errors: Ok(Default::default()),
+                }
+            }
+        }
+        impl ProcessorError {
+            pub fn error<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.error = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for error: {e}"));
+                self
+            }
+            pub fn errors<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::StatementError>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.errors = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for errors: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ProcessorError> for super::ProcessorError {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ProcessorError,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    error: value.error?,
+                    errors: value.errors?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ProcessorError> for ProcessorError {
+            fn from(value: super::ProcessorError) -> Self {
+                Self {
+                    error: Ok(value.error),
+                    errors: Ok(value.errors),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ProcessorListResponse {
+            processors: ::std::result::Result<
+                ::std::vec::Vec<super::ProcessorResponse>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for ProcessorListResponse {
+            fn default() -> Self {
+                Self {
+                    processors: Err("no value supplied for processors".to_string()),
+                }
+            }
+        }
+        impl ProcessorListResponse {
+            pub fn processors<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::ProcessorResponse>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.processors = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for processors: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ProcessorListResponse> for super::ProcessorListResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ProcessorListResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    processors: value.processors?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ProcessorListResponse> for ProcessorListResponse {
+            fn from(value: super::ProcessorListResponse) -> Self {
+                Self {
+                    processors: Ok(value.processors),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ProcessorRecord {
+            created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+            dataset: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            description: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            enabled: ::std::result::Result<bool, ::std::string::String>,
+            error_mode: ::std::result::Result<::std::string::String, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            priority: ::std::result::Result<i32, ::std::string::String>,
+            signal: ::std::result::Result<::std::string::String, ::std::string::String>,
+            statements: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            tenant_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            updated_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ProcessorRecord {
+            fn default() -> Self {
+                Self {
+                    created_at: Err("no value supplied for created_at".to_string()),
+                    dataset: Ok(Default::default()),
+                    description: Ok(Default::default()),
+                    enabled: Err("no value supplied for enabled".to_string()),
+                    error_mode: Err("no value supplied for error_mode".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                    priority: Err("no value supplied for priority".to_string()),
+                    signal: Err("no value supplied for signal".to_string()),
+                    statements: Err("no value supplied for statements".to_string()),
+                    tenant_id: Err("no value supplied for tenant_id".to_string()),
+                    updated_at: Err("no value supplied for updated_at".to_string()),
+                }
+            }
+        }
+        impl ProcessorRecord {
+            pub fn created_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.created_at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for created_at: {e}"));
+                self
+            }
+            pub fn dataset<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset: {e}"));
+                self
+            }
+            pub fn description<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.description = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for description: {e}"));
+                self
+            }
+            pub fn enabled<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.enabled = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for enabled: {e}"));
+                self
+            }
+            pub fn error_mode<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.error_mode = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for error_mode: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn priority<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i32>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.priority = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for priority: {e}"));
+                self
+            }
+            pub fn signal<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.signal = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for signal: {e}"));
+                self
+            }
+            pub fn statements<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.statements = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for statements: {e}"));
+                self
+            }
+            pub fn tenant_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tenant_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tenant_id: {e}"));
+                self
+            }
+            pub fn updated_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.updated_at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for updated_at: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ProcessorRecord> for super::ProcessorRecord {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ProcessorRecord,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    created_at: value.created_at?,
+                    dataset: value.dataset?,
+                    description: value.description?,
+                    enabled: value.enabled?,
+                    error_mode: value.error_mode?,
+                    name: value.name?,
+                    priority: value.priority?,
+                    signal: value.signal?,
+                    statements: value.statements?,
+                    tenant_id: value.tenant_id?,
+                    updated_at: value.updated_at?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ProcessorRecord> for ProcessorRecord {
+            fn from(value: super::ProcessorRecord) -> Self {
+                Self {
+                    created_at: Ok(value.created_at),
+                    dataset: Ok(value.dataset),
+                    description: Ok(value.description),
+                    enabled: Ok(value.enabled),
+                    error_mode: Ok(value.error_mode),
+                    name: Ok(value.name),
+                    priority: Ok(value.priority),
+                    signal: Ok(value.signal),
+                    statements: Ok(value.statements),
+                    tenant_id: Ok(value.tenant_id),
+                    updated_at: Ok(value.updated_at),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ProcessorResponse {
+            created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+            dataset: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            description: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            enabled: ::std::result::Result<bool, ::std::string::String>,
+            error_mode: ::std::result::Result<::std::string::String, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            priority: ::std::result::Result<i32, ::std::string::String>,
+            signal: ::std::result::Result<::std::string::String, ::std::string::String>,
+            statements: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            status: ::std::result::Result<::std::string::String, ::std::string::String>,
+            tenant_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            updated_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ProcessorResponse {
+            fn default() -> Self {
+                Self {
+                    created_at: Err("no value supplied for created_at".to_string()),
+                    dataset: Ok(Default::default()),
+                    description: Ok(Default::default()),
+                    enabled: Err("no value supplied for enabled".to_string()),
+                    error_mode: Err("no value supplied for error_mode".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                    priority: Err("no value supplied for priority".to_string()),
+                    signal: Err("no value supplied for signal".to_string()),
+                    statements: Err("no value supplied for statements".to_string()),
+                    status: Err("no value supplied for status".to_string()),
+                    tenant_id: Err("no value supplied for tenant_id".to_string()),
+                    updated_at: Err("no value supplied for updated_at".to_string()),
+                }
+            }
+        }
+        impl ProcessorResponse {
+            pub fn created_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.created_at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for created_at: {e}"));
+                self
+            }
+            pub fn dataset<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset: {e}"));
+                self
+            }
+            pub fn description<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.description = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for description: {e}"));
+                self
+            }
+            pub fn enabled<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.enabled = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for enabled: {e}"));
+                self
+            }
+            pub fn error_mode<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.error_mode = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for error_mode: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn priority<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i32>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.priority = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for priority: {e}"));
+                self
+            }
+            pub fn signal<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.signal = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for signal: {e}"));
+                self
+            }
+            pub fn statements<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.statements = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for statements: {e}"));
+                self
+            }
+            pub fn status<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.status = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for status: {e}"));
+                self
+            }
+            pub fn tenant_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tenant_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tenant_id: {e}"));
+                self
+            }
+            pub fn updated_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.updated_at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for updated_at: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ProcessorResponse> for super::ProcessorResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ProcessorResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    created_at: value.created_at?,
+                    dataset: value.dataset?,
+                    description: value.description?,
+                    enabled: value.enabled?,
+                    error_mode: value.error_mode?,
+                    name: value.name?,
+                    priority: value.priority?,
+                    signal: value.signal?,
+                    statements: value.statements?,
+                    status: value.status?,
+                    tenant_id: value.tenant_id?,
+                    updated_at: value.updated_at?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ProcessorResponse> for ProcessorResponse {
+            fn from(value: super::ProcessorResponse) -> Self {
+                Self {
+                    created_at: Ok(value.created_at),
+                    dataset: Ok(value.dataset),
+                    description: Ok(value.description),
+                    enabled: Ok(value.enabled),
+                    error_mode: Ok(value.error_mode),
+                    name: Ok(value.name),
+                    priority: Ok(value.priority),
+                    signal: Ok(value.signal),
+                    statements: Ok(value.statements),
+                    status: Ok(value.status),
+                    tenant_id: Ok(value.tenant_id),
+                    updated_at: Ok(value.updated_at),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ProcessorSpec {
+            dataset: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            description: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            enabled: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+            error_mode: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            priority: ::std::result::Result<::std::option::Option<i32>, ::std::string::String>,
+            signal: ::std::result::Result<::std::string::String, ::std::string::String>,
+            statements: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for ProcessorSpec {
+            fn default() -> Self {
+                Self {
+                    dataset: Ok(Default::default()),
+                    description: Ok(Default::default()),
+                    enabled: Ok(Default::default()),
+                    error_mode: Ok(Default::default()),
+                    name: Err("no value supplied for name".to_string()),
+                    priority: Ok(Default::default()),
+                    signal: Err("no value supplied for signal".to_string()),
+                    statements: Err("no value supplied for statements".to_string()),
+                }
+            }
+        }
+        impl ProcessorSpec {
+            pub fn dataset<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset: {e}"));
+                self
+            }
+            pub fn description<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.description = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for description: {e}"));
+                self
+            }
+            pub fn enabled<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<bool>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.enabled = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for enabled: {e}"));
+                self
+            }
+            pub fn error_mode<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.error_mode = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for error_mode: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn priority<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<i32>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.priority = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for priority: {e}"));
+                self
+            }
+            pub fn signal<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.signal = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for signal: {e}"));
+                self
+            }
+            pub fn statements<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.statements = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for statements: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ProcessorSpec> for super::ProcessorSpec {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ProcessorSpec,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    dataset: value.dataset?,
+                    description: value.description?,
+                    enabled: value.enabled?,
+                    error_mode: value.error_mode?,
+                    name: value.name?,
+                    priority: value.priority?,
+                    signal: value.signal?,
+                    statements: value.statements?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ProcessorSpec> for ProcessorSpec {
+            fn from(value: super::ProcessorSpec) -> Self {
+                Self {
+                    dataset: Ok(value.dataset),
+                    description: Ok(value.description),
+                    enabled: Ok(value.enabled),
+                    error_mode: Ok(value.error_mode),
+                    name: Ok(value.name),
+                    priority: Ok(value.priority),
+                    signal: Ok(value.signal),
+                    statements: Ok(value.statements),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ProcessorWriteResponse {
+            applies_within_seconds: ::std::result::Result<i64, ::std::string::String>,
+            created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+            dataset: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            description: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            enabled: ::std::result::Result<bool, ::std::string::String>,
+            error_mode: ::std::result::Result<::std::string::String, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            priority: ::std::result::Result<i32, ::std::string::String>,
+            signal: ::std::result::Result<::std::string::String, ::std::string::String>,
+            statements: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            status: ::std::result::Result<::std::string::String, ::std::string::String>,
+            tenant_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            updated_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for ProcessorWriteResponse {
+            fn default() -> Self {
+                Self {
+                    applies_within_seconds: Err(
+                        "no value supplied for applies_within_seconds".to_string()
+                    ),
+                    created_at: Err("no value supplied for created_at".to_string()),
+                    dataset: Ok(Default::default()),
+                    description: Ok(Default::default()),
+                    enabled: Err("no value supplied for enabled".to_string()),
+                    error_mode: Err("no value supplied for error_mode".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                    priority: Err("no value supplied for priority".to_string()),
+                    signal: Err("no value supplied for signal".to_string()),
+                    statements: Err("no value supplied for statements".to_string()),
+                    status: Err("no value supplied for status".to_string()),
+                    tenant_id: Err("no value supplied for tenant_id".to_string()),
+                    updated_at: Err("no value supplied for updated_at".to_string()),
+                }
+            }
+        }
+        impl ProcessorWriteResponse {
+            pub fn applies_within_seconds<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.applies_within_seconds = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for applies_within_seconds: {e}")
+                });
+                self
+            }
+            pub fn created_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.created_at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for created_at: {e}"));
+                self
+            }
+            pub fn dataset<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset: {e}"));
+                self
+            }
+            pub fn description<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.description = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for description: {e}"));
+                self
+            }
+            pub fn enabled<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.enabled = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for enabled: {e}"));
+                self
+            }
+            pub fn error_mode<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.error_mode = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for error_mode: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn priority<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i32>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.priority = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for priority: {e}"));
+                self
+            }
+            pub fn signal<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.signal = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for signal: {e}"));
+                self
+            }
+            pub fn statements<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.statements = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for statements: {e}"));
+                self
+            }
+            pub fn status<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.status = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for status: {e}"));
+                self
+            }
+            pub fn tenant_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tenant_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tenant_id: {e}"));
+                self
+            }
+            pub fn updated_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.updated_at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for updated_at: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ProcessorWriteResponse> for super::ProcessorWriteResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ProcessorWriteResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    applies_within_seconds: value.applies_within_seconds?,
+                    created_at: value.created_at?,
+                    dataset: value.dataset?,
+                    description: value.description?,
+                    enabled: value.enabled?,
+                    error_mode: value.error_mode?,
+                    name: value.name?,
+                    priority: value.priority?,
+                    signal: value.signal?,
+                    statements: value.statements?,
+                    status: value.status?,
+                    tenant_id: value.tenant_id?,
+                    updated_at: value.updated_at?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ProcessorWriteResponse> for ProcessorWriteResponse {
+            fn from(value: super::ProcessorWriteResponse) -> Self {
+                Self {
+                    applies_within_seconds: Ok(value.applies_within_seconds),
+                    created_at: Ok(value.created_at),
+                    dataset: Ok(value.dataset),
+                    description: Ok(value.description),
+                    enabled: Ok(value.enabled),
+                    error_mode: Ok(value.error_mode),
+                    name: Ok(value.name),
+                    priority: Ok(value.priority),
+                    signal: Ok(value.signal),
+                    statements: Ok(value.statements),
+                    status: Ok(value.status),
+                    tenant_id: Ok(value.tenant_id),
+                    updated_at: Ok(value.updated_at),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct ProfileSummary {
             duration_nano: ::std::result::Result<::std::string::String, ::std::string::String>,
             profile_id: ::std::result::Result<::std::string::String, ::std::string::String>,
@@ -13211,6 +14282,74 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct StatementError {
+            column: ::std::result::Result<::std::option::Option<u64>, ::std::string::String>,
+            message: ::std::result::Result<::std::string::String, ::std::string::String>,
+            statement: ::std::result::Result<u64, ::std::string::String>,
+        }
+        impl ::std::default::Default for StatementError {
+            fn default() -> Self {
+                Self {
+                    column: Ok(Default::default()),
+                    message: Err("no value supplied for message".to_string()),
+                    statement: Err("no value supplied for statement".to_string()),
+                }
+            }
+        }
+        impl StatementError {
+            pub fn column<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<u64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.column = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for column: {e}"));
+                self
+            }
+            pub fn message<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.message = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for message: {e}"));
+                self
+            }
+            pub fn statement<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<u64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.statement = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for statement: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<StatementError> for super::StatementError {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: StatementError,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    column: value.column?,
+                    message: value.message?,
+                    statement: value.statement?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::StatementError> for StatementError {
+            fn from(value: super::StatementError) -> Self {
+                Self {
+                    column: Ok(value.column),
+                    message: Ok(value.message),
+                    statement: Ok(value.statement),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct TableInfo {
             dataset: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
@@ -13850,6 +14989,221 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct TestRequest {
+            dataset: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            payload: ::std::result::Result<::serde_json::Value, ::std::string::String>,
+            processors: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<super::ProcessorSpec>>,
+                ::std::string::String,
+            >,
+            signal: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for TestRequest {
+            fn default() -> Self {
+                Self {
+                    dataset: Ok(Default::default()),
+                    payload: Err("no value supplied for payload".to_string()),
+                    processors: Ok(Default::default()),
+                    signal: Err("no value supplied for signal".to_string()),
+                }
+            }
+        }
+        impl TestRequest {
+            pub fn dataset<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset: {e}"));
+                self
+            }
+            pub fn payload<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::serde_json::Value>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.payload = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for payload: {e}"));
+                self
+            }
+            pub fn processors<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<super::ProcessorSpec>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.processors = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for processors: {e}"));
+                self
+            }
+            pub fn signal<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.signal = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for signal: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<TestRequest> for super::TestRequest {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: TestRequest,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    dataset: value.dataset?,
+                    payload: value.payload?,
+                    processors: value.processors?,
+                    signal: value.signal?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::TestRequest> for TestRequest {
+            fn from(value: super::TestRequest) -> Self {
+                Self {
+                    dataset: Ok(value.dataset),
+                    payload: Ok(value.payload),
+                    processors: Ok(value.processors),
+                    signal: Ok(value.signal),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct TestResponse {
+            payload: ::std::result::Result<::serde_json::Value, ::std::string::String>,
+            statements: ::std::result::Result<
+                ::std::vec::Vec<super::TestStatementResult>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for TestResponse {
+            fn default() -> Self {
+                Self {
+                    payload: Err("no value supplied for payload".to_string()),
+                    statements: Err("no value supplied for statements".to_string()),
+                }
+            }
+        }
+        impl TestResponse {
+            pub fn payload<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::serde_json::Value>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.payload = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for payload: {e}"));
+                self
+            }
+            pub fn statements<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::TestStatementResult>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.statements = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for statements: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<TestResponse> for super::TestResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: TestResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    payload: value.payload?,
+                    statements: value.statements?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::TestResponse> for TestResponse {
+            fn from(value: super::TestResponse) -> Self {
+                Self {
+                    payload: Ok(value.payload),
+                    statements: Ok(value.statements),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct TestStatementResult {
+            errors: ::std::result::Result<i64, ::std::string::String>,
+            index: ::std::result::Result<u64, ::std::string::String>,
+            matched: ::std::result::Result<i64, ::std::string::String>,
+        }
+        impl ::std::default::Default for TestStatementResult {
+            fn default() -> Self {
+                Self {
+                    errors: Err("no value supplied for errors".to_string()),
+                    index: Err("no value supplied for index".to_string()),
+                    matched: Err("no value supplied for matched".to_string()),
+                }
+            }
+        }
+        impl TestStatementResult {
+            pub fn errors<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.errors = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for errors: {e}"));
+                self
+            }
+            pub fn index<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<u64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.index = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for index: {e}"));
+                self
+            }
+            pub fn matched<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.matched = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for matched: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<TestStatementResult> for super::TestStatementResult {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: TestStatementResult,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    errors: value.errors?,
+                    index: value.index?,
+                    matched: value.matched?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::TestStatementResult> for TestStatementResult {
+            fn from(value: super::TestStatementResult) -> Self {
+                Self {
+                    errors: Ok(value.errors),
+                    index: Ok(value.index),
+                    matched: Ok(value.matched),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct Timeline {
             duration_delta: ::std::result::Result<i64, ::std::string::String>,
             samples: ::std::result::Result<::std::vec::Vec<i64>, ::std::string::String>,
@@ -14373,6 +15727,106 @@ pub mod types {
                     email: Ok(value.email),
                     id: Ok(value.id),
                     instance_admin: Ok(value.instance_admin),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ValidateRequest {
+            signal: ::std::result::Result<::std::string::String, ::std::string::String>,
+            statements: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for ValidateRequest {
+            fn default() -> Self {
+                Self {
+                    signal: Err("no value supplied for signal".to_string()),
+                    statements: Err("no value supplied for statements".to_string()),
+                }
+            }
+        }
+        impl ValidateRequest {
+            pub fn signal<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.signal = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for signal: {e}"));
+                self
+            }
+            pub fn statements<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.statements = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for statements: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ValidateRequest> for super::ValidateRequest {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ValidateRequest,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    signal: value.signal?,
+                    statements: value.statements?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ValidateRequest> for ValidateRequest {
+            fn from(value: super::ValidateRequest) -> Self {
+                Self {
+                    signal: Ok(value.signal),
+                    statements: Ok(value.statements),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ValidateResponse {
+            errors: ::std::result::Result<
+                ::std::vec::Vec<super::StatementError>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for ValidateResponse {
+            fn default() -> Self {
+                Self {
+                    errors: Ok(Default::default()),
+                }
+            }
+        }
+        impl ValidateResponse {
+            pub fn errors<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::StatementError>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.errors = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for errors: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ValidateResponse> for super::ValidateResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ValidateResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    errors: value.errors?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ValidateResponse> for ValidateResponse {
+            fn from(value: super::ValidateResponse) -> Self {
+                Self {
+                    errors: Ok(value.errors),
                 }
             }
         }
@@ -15314,6 +16768,90 @@ impl Client {
     ```*/
     pub fn ops_compact_status(&self) -> builder::OpsCompactStatus<'_> {
         builder::OpsCompactStatus::new(self)
+    }
+    /**Sends a `GET` request to `/api/v1/processors`
+
+    ```ignore
+    let response = client.processors_list()
+        .send()
+        .await;
+    ```*/
+    pub fn processors_list(&self) -> builder::ProcessorsList<'_> {
+        builder::ProcessorsList::new(self)
+    }
+    /**Sends a `POST` request to `/api/v1/processors`
+
+    ```ignore
+    let response = client.processors_create()
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn processors_create(&self) -> builder::ProcessorsCreate<'_> {
+        builder::ProcessorsCreate::new(self)
+    }
+    /**Sends a `GET` request to `/api/v1/processors/{name}`
+
+    Arguments:
+    - `name`: Processor name
+    ```ignore
+    let response = client.processors_get()
+        .name(name)
+        .send()
+        .await;
+    ```*/
+    pub fn processors_get(&self) -> builder::ProcessorsGet<'_> {
+        builder::ProcessorsGet::new(self)
+    }
+    /**Sends a `PUT` request to `/api/v1/processors/{name}`
+
+    Arguments:
+    - `name`: Processor name
+    - `body`
+    ```ignore
+    let response = client.processors_replace()
+        .name(name)
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn processors_replace(&self) -> builder::ProcessorsReplace<'_> {
+        builder::ProcessorsReplace::new(self)
+    }
+    /**Sends a `DELETE` request to `/api/v1/processors/{name}`
+
+    Arguments:
+    - `name`: Processor name
+    ```ignore
+    let response = client.processors_delete()
+        .name(name)
+        .send()
+        .await;
+    ```*/
+    pub fn processors_delete(&self) -> builder::ProcessorsDelete<'_> {
+        builder::ProcessorsDelete::new(self)
+    }
+    /**Sends a `POST` request to `/api/v1/processors:test`
+
+    ```ignore
+    let response = client.processors_test()
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn processors_test(&self) -> builder::ProcessorsTest<'_> {
+        builder::ProcessorsTest::new(self)
+    }
+    /**Sends a `POST` request to `/api/v1/processors:validate`
+
+    ```ignore
+    let response = client.processors_validate()
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn processors_validate(&self) -> builder::ProcessorsValidate<'_> {
+        builder::ProcessorsValidate::new(self)
     }
     /**Submit a native Query IR document
 
@@ -18895,6 +20433,556 @@ pub mod builder {
                 502u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 503u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 504u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::processors_list`]
+
+    [`Client::processors_list`]: super::Client::processors_list*/
+    #[derive(Debug, Clone)]
+    pub struct ProcessorsList<'a> {
+        client: &'a super::Client,
+    }
+    impl<'a> ProcessorsList<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self { client: client }
+        }
+        ///Sends a `GET` request to `/api/v1/processors`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::ProcessorListResponse>, Error<types::ProcessorError>>
+        {
+            let Self { client } = self;
+            let url = format!("{}/api/v1/processors", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "processors_list",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::processors_create`]
+
+    [`Client::processors_create`]: super::Client::processors_create*/
+    #[derive(Debug, Clone)]
+    pub struct ProcessorsCreate<'a> {
+        client: &'a super::Client,
+        body: Result<types::builder::ProcessorSpec, String>,
+    }
+    impl<'a> ProcessorsCreate<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::ProcessorSpec>,
+            <V as std::convert::TryInto<types::ProcessorSpec>>::Error: std::fmt::Display,
+        {
+            self.body = value
+                .try_into()
+                .map(From::from)
+                .map_err(|s| format!("conversion to `ProcessorSpec` for body failed: {}", s));
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(types::builder::ProcessorSpec) -> types::builder::ProcessorSpec,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/processors`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::ProcessorWriteResponse>, Error<types::ProcessorError>>
+        {
+            let Self { client, body } = self;
+            let body = body
+                .and_then(|v| types::ProcessorSpec::try_from(v).map_err(|e| e.to_string()))
+                .map_err(Error::InvalidRequest)?;
+            let url = format!("{}/api/v1/processors", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "processors_create",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                201u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                422u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::processors_get`]
+
+    [`Client::processors_get`]: super::Client::processors_get*/
+    #[derive(Debug, Clone)]
+    pub struct ProcessorsGet<'a> {
+        client: &'a super::Client,
+        name: Result<::std::string::String, String>,
+    }
+    impl<'a> ProcessorsGet<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                name: Err("name was not initialized".to_string()),
+            }
+        }
+        pub fn name<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.name = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for name failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/v1/processors/{name}`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::ProcessorResponse>, Error<types::ProcessorError>> {
+            let Self { client, name } = self;
+            let name = name.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/processors/{}",
+                client.baseurl,
+                encode_path(&name.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "processors_get",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::processors_replace`]
+
+    [`Client::processors_replace`]: super::Client::processors_replace*/
+    #[derive(Debug, Clone)]
+    pub struct ProcessorsReplace<'a> {
+        client: &'a super::Client,
+        name: Result<::std::string::String, String>,
+        body: Result<types::builder::ProcessorSpec, String>,
+    }
+    impl<'a> ProcessorsReplace<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                name: Err("name was not initialized".to_string()),
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn name<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.name = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for name failed".to_string()
+            });
+            self
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::ProcessorSpec>,
+            <V as std::convert::TryInto<types::ProcessorSpec>>::Error: std::fmt::Display,
+        {
+            self.body = value
+                .try_into()
+                .map(From::from)
+                .map_err(|s| format!("conversion to `ProcessorSpec` for body failed: {}", s));
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(types::builder::ProcessorSpec) -> types::builder::ProcessorSpec,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `PUT` request to `/api/v1/processors/{name}`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::ProcessorWriteResponse>, Error<types::ProcessorError>>
+        {
+            let Self { client, name, body } = self;
+            let name = name.map_err(Error::InvalidRequest)?;
+            let body = body
+                .and_then(|v| types::ProcessorSpec::try_from(v).map_err(|e| e.to_string()))
+                .map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/processors/{}",
+                client.baseurl,
+                encode_path(&name.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .put(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "processors_replace",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                422u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::processors_delete`]
+
+    [`Client::processors_delete`]: super::Client::processors_delete*/
+    #[derive(Debug, Clone)]
+    pub struct ProcessorsDelete<'a> {
+        client: &'a super::Client,
+        name: Result<::std::string::String, String>,
+    }
+    impl<'a> ProcessorsDelete<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                name: Err("name was not initialized".to_string()),
+            }
+        }
+        pub fn name<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.name = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for name failed".to_string()
+            });
+            self
+        }
+        ///Sends a `DELETE` request to `/api/v1/processors/{name}`
+        pub async fn send(self) -> Result<ResponseValue<()>, Error<types::ProcessorError>> {
+            let Self { client, name } = self;
+            let name = name.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/processors/{}",
+                client.baseurl,
+                encode_path(&name.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .delete(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "processors_delete",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                204u16 => Ok(ResponseValue::empty(response)),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::processors_test`]
+
+    [`Client::processors_test`]: super::Client::processors_test*/
+    #[derive(Debug, Clone)]
+    pub struct ProcessorsTest<'a> {
+        client: &'a super::Client,
+        body: Result<types::builder::TestRequest, String>,
+    }
+    impl<'a> ProcessorsTest<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::TestRequest>,
+            <V as std::convert::TryInto<types::TestRequest>>::Error: std::fmt::Display,
+        {
+            self.body = value
+                .try_into()
+                .map(From::from)
+                .map_err(|s| format!("conversion to `TestRequest` for body failed: {}", s));
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(types::builder::TestRequest) -> types::builder::TestRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/processors:test`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::TestResponse>, Error<types::ProcessorError>> {
+            let Self { client, body } = self;
+            let body = body
+                .and_then(|v| types::TestRequest::try_from(v).map_err(|e| e.to_string()))
+                .map_err(Error::InvalidRequest)?;
+            let url = format!("{}/api/v1/processors:test", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "processors_test",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                413u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                422u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::processors_validate`]
+
+    [`Client::processors_validate`]: super::Client::processors_validate*/
+    #[derive(Debug, Clone)]
+    pub struct ProcessorsValidate<'a> {
+        client: &'a super::Client,
+        body: Result<types::builder::ValidateRequest, String>,
+    }
+    impl<'a> ProcessorsValidate<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::ValidateRequest>,
+            <V as std::convert::TryInto<types::ValidateRequest>>::Error: std::fmt::Display,
+        {
+            self.body = value
+                .try_into()
+                .map(From::from)
+                .map_err(|s| format!("conversion to `ValidateRequest` for body failed: {}", s));
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(types::builder::ValidateRequest) -> types::builder::ValidateRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/processors:validate`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::ValidateResponse>, Error<types::ProcessorError>> {
+            let Self { client, body } = self;
+            let body = body
+                .and_then(|v| types::ValidateRequest::try_from(v).map_err(|e| e.to_string()))
+                .map_err(Error::InvalidRequest)?;
+            let url = format!("{}/api/v1/processors:validate", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "processors_validate",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -23084,6 +25172,13 @@ pub const OPERATIONS: &[&str] = &[
     "ops_compact",
     "ops_compact_dry_run",
     "ops_compact_status",
+    "processors_create",
+    "processors_delete",
+    "processors_get",
+    "processors_list",
+    "processors_replace",
+    "processors_test",
+    "processors_validate",
     "profiles_by_trace",
     "promql_label_values",
     "promql_labels",

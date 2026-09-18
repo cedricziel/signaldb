@@ -13,6 +13,8 @@ loki-api.workspace = true
 prometheus-api.workspace = true
 pyroscope-api.workspace = true
 tempo-api.workspace = true
+ottl.workspace = true
+opentelemetry-proto.workspace = true
 arrow-flight.workspace = true
 datafusion.workspace = true
 

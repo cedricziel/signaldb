@@ -109,7 +109,8 @@ async fn self_monitoring_export_lands_in_system_wal() {
         wal_config(&temp_dir, "profiles"),
     ));
 
-    let trace_handler = TraceHandler::new(flight_transport, wal_manager.clone(), processor_registry);
+    let trace_handler =
+        TraceHandler::new(flight_transport, wal_manager.clone(), processor_registry);
     let service = TraceAcceptorService::new(trace_handler);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

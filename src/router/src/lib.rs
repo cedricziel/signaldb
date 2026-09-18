@@ -52,6 +52,16 @@ pub trait RouterState: std::fmt::Debug + Clone + Send + Sync + 'static {
     fn schema_resolver(&self) -> SchemaResolver {
         SchemaResolver::new(self.catalog().clone())
     }
+    /// The tenant OTTL processor registry (change: tenant-ottl-processors).
+    /// The default builds a fresh (uncached) registry over the catalog,
+    /// fine for tests; the app state overrides it with a shared instance
+    /// whose per-tenant cache persists across requests.
+    fn processor_registry(&self) -> Arc<common::processors::ProcessorRegistry> {
+        Arc::new(common::processors::ProcessorRegistry::new(
+            Arc::new(self.catalog().clone()),
+            &self.config().processors,
+        ))
+    }
     /// The OIDC relying-party runtime (change: oidc-login). `None` when
     /// `[auth.oidc]` is absent — the endpoints 404 and no background
     /// discovery task ever runs. Defaulted so the trait stays satisfiable by
@@ -85,6 +95,7 @@ pub struct RouterAppState {
     config: Configuration,
     authenticator: Arc<Authenticator>,
     schema_resolver: SchemaResolver,
+    processor_registry: Arc<common::processors::ProcessorRegistry>,
     oidc: Option<Arc<oidc::OidcRuntime>>,
     github: Option<Arc<github::GitHubApp>>,
     source_context: Option<Arc<source_context::SourceContextService>>,
@@ -119,6 +130,10 @@ impl RouterAppState {
 
         Self {
             schema_resolver: SchemaResolver::new(catalog.clone()),
+            processor_registry: Arc::new(common::processors::ProcessorRegistry::new(
+                Arc::new(catalog.clone()),
+                &config.processors,
+            )),
             catalog,
             service_registry,
             config,
@@ -148,6 +163,10 @@ impl RouterAppState {
 
         Self {
             schema_resolver: SchemaResolver::new(catalog.clone()),
+            processor_registry: Arc::new(common::processors::ProcessorRegistry::new(
+                Arc::new(catalog.clone()),
+                &config.processors,
+            )),
             catalog,
             service_registry,
             config,
@@ -216,6 +235,10 @@ impl RouterState for RouterAppState {
 
     fn schema_resolver(&self) -> SchemaResolver {
         self.schema_resolver.clone()
+    }
+
+    fn processor_registry(&self) -> Arc<common::processors::ProcessorRegistry> {
+        self.processor_registry.clone()
     }
 
     fn oidc(&self) -> Option<&Arc<oidc::OidcRuntime>> {
@@ -440,6 +463,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
                     endpoints::management::router().merge(endpoints::github::manage_router::<S>()),
                 )
                 .nest("/schema", endpoints::schema::router())
+                .merge(endpoints::processors::router::<S>())
                 .route("/whoami", get(endpoints::session::whoami::<S>))
                 .route("/connection", get(endpoints::session::connection_info::<S>))
                 .merge(endpoints::query::router())
