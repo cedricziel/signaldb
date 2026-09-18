@@ -1938,6 +1938,24 @@ mod tests {
     }
 
     #[test]
+    fn default_grant_includes_processors_read_but_never_processors_write() {
+        let granted = super::granted_read_scopes(None).expect("default grant");
+        assert!(granted.iter().any(|s| s == "processors:read"));
+        assert!(!granted.iter().any(|s| s == "processors:write"));
+
+        assert_eq!(
+            super::granted_read_scopes(Some("processors:read traces:read")),
+            Some(vec![
+                "processors:read".to_string(),
+                "traces:read".to_string()
+            ])
+        );
+        // processors:write is not a read scope: a request naming only it is
+        // rejected instead of silently widened.
+        assert_eq!(super::granted_read_scopes(Some("processors:write")), None);
+    }
+
+    #[test]
     fn oauth_consent_never_grants_tenant_manage() {
         use common::auth::TENANT_MANAGE_SCOPE;
         let granted = super::granted_read_scopes(None).expect("default grant");

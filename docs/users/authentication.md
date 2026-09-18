@@ -201,6 +201,8 @@ The vocabulary is shared:
 | `traces:read`, `logs:read`, `metrics:read`, `profiles:read`     | Query access to that signal (Tempo/Loki/Prometheus/Pyroscope APIs, MCP)                                                    |
 | `schema:read`                                                   | Reading the schema registry (registries, attribute/entity/metric lookups)                                                  |
 | `schema:write`                                                  | Creating, replacing, validating, and deleting custom schema registries                                                     |
+| `processors:read`                                               | Listing, reading, validating, and dry-running telemetry processors (see [Telemetry processors](processors.md))             |
+| `processors:write`                                              | Creating, replacing, and deleting telemetry processors (tenant admin)                                                      |
 | `tenant:manage`                                                 | The [tenant management API](#tenant-management-api) for the key's own tenant: datasets, API keys, memberships, schema view |
 
 Keys may additionally be restricted to a **set** of datasets within their
@@ -221,8 +223,9 @@ deliberate exception: `tenant:manage` is **explicit only**. A legacy unscoped
 key never gains tenant management, because those keys were minted before
 management existed for keys and silently widening them would be a security
 surprise. `tenant:manage` is also never grantable through OAuth consent (like
-`schema:write`). Human sessions read the schema with any tenant role and
-write it as tenant admin or instance admin.
+`schema:write` and `processors:write`). Human sessions read the schema and the
+telemetry processors with any tenant role and write them as tenant admin or
+instance admin.
 
 The scopes and dataset restriction of a live key can be changed without
 rotating its secret; the change applies to the key's next request:

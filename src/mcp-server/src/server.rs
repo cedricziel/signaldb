@@ -321,7 +321,8 @@ struct CreateApiKeyParams {
     /// Scopes the key carries (required, at least one). Vocabulary:
     /// `metrics:write`, `logs:write`, `traces:write`, `profiles:write`,
     /// `traces:read`, `logs:read`, `metrics:read`, `profiles:read`,
-    /// `schema:read`, `schema:write`, `tenant:manage` (manage the key's own
+    /// `schema:read`, `schema:write`, `processors:read`, `processors:write`,
+    /// `tenant:manage` (manage the key's own
     /// tenant — datasets, API keys, memberships, schema — through the
     /// management API; explicit only, never implied by an unscoped key).
     scopes: Vec<String>,
@@ -1367,7 +1368,8 @@ struct TenantCreateApiKeyParams {
     /// Scopes the key carries (required, at least one). Vocabulary:
     /// `metrics:write`, `logs:write`, `traces:write`, `profiles:write`,
     /// `traces:read`, `logs:read`, `metrics:read`, `profiles:read`,
-    /// `schema:read`, `schema:write`, `tenant:manage` (manage this tenant's
+    /// `schema:read`, `schema:write`, `processors:read`, `processors:write`,
+    /// `tenant:manage` (manage this tenant's
     /// datasets, API keys, memberships, and schema view; explicit only).
     scopes: Vec<String>,
     /// Dataset set the key is restricted to (non-empty; a bare empty array
@@ -2471,7 +2473,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Create an API key for a tenant carrying exactly the given `scopes` (required, at least one; e.g. traces:write, schema:read), optionally restricted to a set of datasets via `dataset_ids`, and optionally restricted to a set of browser origins for CORS on ingest requests via `allowed_origins` (admin API; requires administrative credentials). The raw secret is returned once."
+        description = "Create an API key for a tenant carrying exactly the given `scopes` (required, at least one; e.g. traces:write, schema:read, processors:read), optionally restricted to a set of datasets via `dataset_ids`, and optionally restricted to a set of browser origins for CORS on ingest requests via `allowed_origins` (admin API; requires administrative credentials). The raw secret is returned once."
     )]
     async fn create_api_key(
         &self,

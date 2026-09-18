@@ -1615,6 +1615,41 @@ pub struct Configuration {
     /// by default: no GitHub surface is exposed.
     #[serde(default)]
     pub github: Option<GitHubAppConfig>,
+    /// Tenant OTTL processor limits and reload cadence (change:
+    /// tenant-ottl-processors).
+    #[serde(default)]
+    pub processors: ProcessorsConfig,
+}
+
+/// Tenant OTTL processor limits and the `ProcessorRegistry` reload cadence
+/// (change: tenant-ottl-processors, design D5/D3).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ProcessorsConfig {
+    /// How often a stale per-tenant `ProcessorRegistry` cache entry is
+    /// refreshed from the catalog. Also the cross-process propagation bound
+    /// for a processor write, surfaced to callers as
+    /// `applies_within_seconds`.
+    #[serde(with = "humantime_serde")]
+    pub reload_interval: Duration,
+    /// Maximum payload size accepted by `POST /api/v1/processors:test`.
+    pub test_payload_max_bytes: usize,
+    /// Maximum number of OTTL statements a single processor may carry.
+    pub max_statements: usize,
+    /// Maximum length of a regex literal in an OTTL statement, enforced at
+    /// compile time.
+    pub max_regex_len: usize,
+}
+
+impl Default for ProcessorsConfig {
+    fn default() -> Self {
+        Self {
+            reload_interval: Duration::from_secs(30),
+            test_payload_max_bytes: 1024 * 1024,
+            max_statements: 200,
+            max_regex_len: 2048,
+        }
+    }
 }
 
 /// Public-facing endpoint URLs for this deployment, as reached from outside
@@ -1971,6 +2006,7 @@ impl Default for Configuration {
             mcp: McpConfig::default(),
             public: PublicEndpointsConfig::default(),
             github: None,
+            processors: ProcessorsConfig::default(),
         }
     }
 }
@@ -3361,6 +3397,41 @@ mod tests {
 
             assert_eq!(config.writer.commit_interval, Duration::from_secs(30));
             assert_eq!(config.writer.max_uncommitted_rows, 250_000);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_processors_config_defaults() {
+        let processors = ProcessorsConfig::default();
+        assert_eq!(processors.reload_interval, Duration::from_secs(30));
+        assert_eq!(processors.test_payload_max_bytes, 1024 * 1024);
+        assert_eq!(processors.max_statements, 200);
+        assert_eq!(processors.max_regex_len, 2048);
+
+        // Present on the top-level Configuration with the same defaults.
+        let config = Configuration::default();
+        assert_eq!(config.processors.reload_interval, Duration::from_secs(30));
+        assert_eq!(config.processors.test_payload_max_bytes, 1024 * 1024);
+        assert_eq!(config.processors.max_statements, 200);
+        assert_eq!(config.processors.max_regex_len, 2048);
+    }
+
+    #[test]
+    fn test_processors_config_env_vars() {
+        Jail::expect_with(|jail| {
+            jail.set_env("SIGNALDB__PROCESSORS__RELOAD_INTERVAL", "10s");
+            jail.set_env("SIGNALDB__PROCESSORS__MAX_STATEMENTS", "50");
+
+            let config = Figment::from(Serialized::defaults(Configuration::default()))
+                .merge(Env::prefixed("SIGNALDB_").split("_"))
+                .merge(Env::prefixed("SIGNALDB__").split("__"))
+                .extract::<Configuration>()
+                .unwrap();
+
+            assert_eq!(config.processors.reload_interval, Duration::from_secs(10));
+            assert_eq!(config.processors.max_statements, 50);
 
             Ok(())
         });
