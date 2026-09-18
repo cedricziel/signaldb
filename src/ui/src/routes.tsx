@@ -23,6 +23,7 @@ import { ManagementRoute } from "./features/management/ManagementRoute";
 import { SelectTenantRoute } from "./features/management/SelectTenantRoute";
 import { LoginRoute } from "./features/shell/LoginRoute";
 import { UnsavedChangesGuard } from "./features/shell/UnsavedChangesGuard";
+import { processorsRoutes } from "./features/processors/routes";
 import { schemaRoutes } from "./features/schema/routes";
 import { useOutletState } from "./lib/outletState";
 import { signalFromParam } from "./lib/urlState";
@@ -94,6 +95,7 @@ export function routeElements() {
         />
         <Route path="instrumentation" element={<InstrumentationRoute />} />
         {schemaRoutes()}
+        {processorsRoutes()}
         {/* Single-trace view is a route, not a `?trace=` param on /traces —
             see buildPath in lib/urlState.ts. Matched by React Router's
             specificity ranking regardless of declaration order relative to

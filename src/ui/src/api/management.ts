@@ -38,6 +38,9 @@ export type IngestScope =
 /** Schema-registry scopes an API key may be granted. */
 export type SchemaScope = "schema:read" | "schema:write";
 
+/** Tenant OTTL processor scopes an API key may be granted. */
+export type ProcessorScope = "processors:read" | "processors:write";
+
 /** Tenant self-management scope: the key may call the management API for
  * its own tenant. Explicit only — a legacy unscoped key never gains it. */
 export type ManagementScope = "tenant:manage";
@@ -45,7 +48,11 @@ export type ManagementScope = "tenant:manage";
 /** Every scope selectable on the management UI. Narrower than the generated
  * `string[]`, this drives the scope picker; the vocabulary mirrors
  * `common::auth::API_KEY_SCOPES` (the read scopes are OAuth-only). */
-export type ApiKeyScope = IngestScope | SchemaScope | ManagementScope;
+export type ApiKeyScope =
+  | IngestScope
+  | SchemaScope
+  | ProcessorScope
+  | ManagementScope;
 
 /** Scope picker groups with one-line descriptions, in display order. */
 export const SCOPE_GROUPS: ReadonlyArray<{
@@ -72,6 +79,20 @@ export const SCOPE_GROUPS: ReadonlyArray<{
       {
         scope: "schema:write",
         description: "Create, replace, validate, and delete custom registries",
+      },
+    ],
+  },
+  {
+    name: "Processors",
+    scopes: [
+      {
+        scope: "processors:read",
+        description:
+          "Read tenant OTTL processors: list, get, validate, and dry-run test",
+      },
+      {
+        scope: "processors:write",
+        description: "Create, replace, and delete tenant OTTL processors",
       },
     ],
   },

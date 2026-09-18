@@ -147,6 +147,14 @@ function UserMenuPopover({ who, role, canManage, onClose }: PopoverProps) {
             <span>Schema</span>
             <span className="user-menu-hint">conventions</span>
           </Link>
+          <Link
+            className="user-menu-item"
+            to="/processors"
+            onClick={onClose}
+          >
+            <span>Processors</span>
+            <span className="user-menu-hint">OTTL</span>
+          </Link>
           <a
             className="user-menu-item"
             href="https://signaldb.dev/docs"
