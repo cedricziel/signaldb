@@ -62,7 +62,7 @@ describe("attributePivots", () => {
         search: "",
         group: "",
         traceFilters: [],
-        filters: [{ label: "service_name", op: "=", value: "checkout" }],
+        filters: [{ label: "service.name", op: "=", value: "checkout" }],
       },
     });
   });

@@ -9,6 +9,11 @@
 //! - A number immediately followed by a letter is a duration literal
 //!   (`5m`, `1h30m`, `1.5h`); an invalid unit is an error rather than
 //!   two adjacent tokens.
+//! - An identifier starts with a letter or `_`, and continues with
+//!   letters, digits, `_`, or a `.` joining another identifier segment
+//!   (`k8s.pod.name`), so a label name can spell a dotted attribute key
+//!   directly. A `.` only joins when followed by another identifier
+//!   char, so a trailing `.` (or `..`) is left for the next token.
 //! - Double-quoted strings process escapes; backtick strings are raw
 //!   (the form used for regex patterns).
 //! - `#` starts a comment running to end of line.
@@ -91,6 +96,15 @@ impl<'a> Lexer<'a> {
             self.col += 1;
         }
         Some(c)
+    }
+
+    /// The character one past `self.chars.peek()`, without consuming
+    /// either. Used where a single-token decision needs to see past the
+    /// next character.
+    fn peek2(&self) -> Option<char> {
+        let mut lookahead = self.chars.clone();
+        lookahead.next();
+        lookahead.peek().copied()
     }
 
     /// Consume the next char when it equals `expected`.
@@ -199,12 +213,25 @@ impl<'a> Lexer<'a> {
                 c if c.is_ascii_digit() => self.lex_number_or_duration(c, line, col)?,
                 c if c.is_alphabetic() || c == '_' => {
                     let mut word = String::from(c);
-                    while let Some(&next) = self.chars.peek() {
-                        if next.is_alphanumeric() || next == '_' {
-                            word.push(next);
-                            self.bump();
-                        } else {
-                            break;
+                    loop {
+                        match self.chars.peek() {
+                            Some(&next) if next.is_alphanumeric() || next == '_' => {
+                                word.push(next);
+                                self.bump();
+                            }
+                            // A dot joins two identifier segments
+                            // (`k8s.pod.name`) only when another
+                            // identifier char follows it, so a trailing
+                            // `.` (end of ident) or `..` is left
+                            // unconsumed for the caller to lex.
+                            Some(&'.') => match self.peek2() {
+                                Some(after) if after.is_alphanumeric() || after == '_' => {
+                                    word.push('.');
+                                    self.bump();
+                                }
+                                _ => break,
+                            },
+                            _ => break,
                         }
                     }
                     Token::keyword(&word).unwrap_or(Token::Ident(word))
@@ -326,12 +353,13 @@ impl<'a> Lexer<'a> {
         // `5e` in a duration position is not misread. Peek-ahead here is
         // single-char, so clone the iterator to look past the 'e'.
         if matches!(self.chars.peek(), Some('e' | 'E')) {
-            let mut lookahead = self.chars.clone();
-            lookahead.next();
-            let next = lookahead.peek().copied();
-            let is_exponent = match next {
+            let is_exponent = match self.peek2() {
                 Some(d) if d.is_ascii_digit() => true,
                 Some('+') | Some('-') => {
+                    // The sign needs its own, deeper lookahead: past `e`
+                    // and past the sign to the digit after it.
+                    let mut lookahead = self.chars.clone();
+                    lookahead.next();
                     lookahead.next();
                     matches!(lookahead.peek(), Some(d) if d.is_ascii_digit())
                 }
@@ -755,5 +783,46 @@ mod tests {
                 Token::Ident("By".into()),
             ]
         );
+    }
+
+    /// A dotted label name (`k8s.pod.name`) lexes as a single `Ident`, so a
+    /// matcher or label filter can name an attribute by its real OTel key.
+    #[test]
+    fn lexes_dotted_identifier() {
+        assert_eq!(
+            tokens("k8s.pod.name"),
+            vec![Token::Ident("k8s.pod.name".into())]
+        );
+        assert_eq!(
+            tokens("http.response.status_code"),
+            vec![Token::Ident("http.response.status_code".into())]
+        );
+    }
+
+    #[test]
+    fn lexes_dotted_identifier_followed_by_eq() {
+        assert_eq!(
+            tokens(r#"{k8s.pod.name="checkout-7c9f"}"#),
+            vec![
+                Token::LBrace,
+                Token::Ident("k8s.pod.name".into()),
+                Token::Eq,
+                Token::String("checkout-7c9f".into()),
+                Token::RBrace,
+            ]
+        );
+    }
+
+    /// A trailing `.` (end of identifier, or `..`) is not folded into the
+    /// identifier: it is left for the next lex step, where a bare `.` is
+    /// not itself a valid token, so the whole input is rejected rather than
+    /// silently growing the identifier.
+    #[test]
+    fn dotted_identifier_does_not_consume_trailing_dot() {
+        let err = tokenize("foo.").expect_err("a bare trailing '.' is not a token");
+        assert_eq!(err.col, 4, "the dot, not 'foo', should be blamed");
+
+        let err = tokenize("foo..bar").expect_err("'..' is not a token");
+        assert_eq!(err.col, 4);
     }
 }

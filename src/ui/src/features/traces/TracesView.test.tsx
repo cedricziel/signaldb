@@ -1623,7 +1623,7 @@ describe("TracesView detail", () => {
         search: "",
         group: "",
         traceFilters: [],
-        filters: [{ label: "service_name", op: "=", value: "checkout-svc" }],
+        filters: [{ label: "service.name", op: "=", value: "checkout-svc" }],
       },
       { push: true },
     );

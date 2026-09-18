@@ -16,14 +16,16 @@
 //!
 //! ## Column mapping
 //!
-//! A small set of well-known LogQL labels map to dedicated logs columns;
-//! any other label is matched against the flat-JSON attribute columns
-//! (`log_attributes` / `resource_attributes`) by the serialized
-//! `"key":"value"` fragment.
+//! A small set of well-known LogQL labels map to dedicated logs columns —
+//! the alias table is [`ql_ir::logql_label_field`], resolved to a physical
+//! column by [`super::logs::column_for_label`], which this module imports
+//! rather than keeping its own copy. Any other label is matched against the
+//! flat-JSON attribute columns (`log_attributes` / `resource_attributes`) by
+//! the serialized `"key":"value"` fragment.
 //!
 //! | LogQL label | Column |
 //! |-------------|--------|
-//! | `service_name`, `service`, `job` | `service_name` |
+//! | `service_name`, `service`, `job`, `service.name` | `service_name` |
 //! | `level`, `severity`, `detected_level` | `severity_text` |
 //! | `trace_id` | `trace_id` |
 //! | `span_id` | `span_id` |
@@ -44,6 +46,7 @@ use logql::{
 };
 
 use super::error::QuerierError;
+use super::logs::column_for_label;
 
 /// The error for a construct the `logql` crate parsed but this build does not
 /// lower.
@@ -184,17 +187,6 @@ fn label_filter_expr(expr: &LabelFilterExpr, ctx: &AttrContext) -> Result<Expr, 
         }
         LabelFilterExpr::Or(a, b) => Ok(label_filter_expr(a, ctx)?.or(label_filter_expr(b, ctx)?)),
         other => Err(unlowerable("label-filter expression", other)),
-    }
-}
-
-/// A well-known LogQL label mapped to its dedicated column name.
-fn column_for_label(label: &str) -> Option<&'static str> {
-    match label {
-        "service_name" | "service" | "job" => Some("service_name"),
-        "level" | "severity" | "detected_level" => Some("severity_text"),
-        "trace_id" => Some("trace_id"),
-        "span_id" => Some("span_id"),
-        _ => None,
     }
 }
 
@@ -594,6 +586,38 @@ mod tests {
         );
     }
 
+    /// A dotted label name and its underscore (flattened) spelling both
+    /// resolve to the same sanitized `label_<key>` column — dots were
+    /// replaced with underscores at ingest (`materialized_column_name`),
+    /// so a query can spell the attribute either way.
+    #[test]
+    fn dotted_and_underscore_labels_resolve_to_the_same_materialized_column() {
+        assert_eq!(
+            sql_with(r#"{k8s.pod.name="checkout-7c9f"}"#, &["label_k8s_pod_name"]),
+            r#"label_k8s_pod_name = Utf8("checkout-7c9f")"#
+        );
+        assert_eq!(
+            sql_with(r#"{k8s_pod_name="checkout-7c9f"}"#, &["label_k8s_pod_name"]),
+            r#"label_k8s_pod_name = Utf8("checkout-7c9f")"#
+        );
+    }
+
+    /// On a map-typed table, an attribute-key label that is not a
+    /// materialized column resolves by exact dotted key via `get_field` —
+    /// no flattening needed, since the map already stores the real OTel key.
+    #[test]
+    fn dotted_label_lowers_to_get_field_on_the_dotted_key() {
+        let eq = sql_map(r#"{k8s.pod.name="checkout-7c9f"}"#);
+        assert!(
+            eq.contains(r#"get_field(log_attributes, Utf8("k8s.pod.name"))"#),
+            "{eq}"
+        );
+        assert!(
+            eq.contains(r#"get_field(resource_attributes, Utf8("k8s.pod.name"))"#),
+            "{eq}"
+        );
+    }
+
     #[test]
     fn materialized_label_supports_ordered_comparison() {
         // `| status > 500` on a materialized column casts to Float64.
@@ -624,6 +648,13 @@ mod tests {
     fn well_known_label_aliases() {
         assert_eq!(sql(r#"{job="api"}"#), r#"service_name = Utf8("api")"#);
         assert_eq!(sql(r#"{service="api"}"#), r#"service_name = Utf8("api")"#);
+        // `service.name` is the dotted OTel resource attribute key; it
+        // routes to the dedicated column exactly like the underscore alias,
+        // not through the attribute maps.
+        assert_eq!(
+            sql(r#"{service.name="api"}"#),
+            r#"service_name = Utf8("api")"#
+        );
         assert_eq!(
             sql(r#"{level="error"}"#),
             r#"severity_text = Utf8("error")"#

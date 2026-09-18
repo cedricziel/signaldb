@@ -61,17 +61,17 @@ describe("FilterChips", () => {
     expect(onChange).not.toHaveBeenCalled();
   });
 
-  it("disables Add and shows a hint for a dotted (invalid) label", async () => {
+  it("disables Add and shows a hint for an invalid label", async () => {
     render(<FilterChips filters={[]} labels={[]} onChange={() => {}} />);
     await userEvent.click(screen.getByRole("button", { name: "+ filter" }));
-    await userEvent.type(screen.getByLabelText("Filter label"), "http.x");
+    await userEvent.type(screen.getByLabelText("Filter label"), "bad label!");
     expect(screen.getByRole("button", { name: "Add" })).toBeDisabled();
     expect(screen.getByRole("status")).toHaveTextContent(
-      "use letters, digits and _",
+      "use letters, digits, _ and .",
     );
   });
 
-  it("flattens a dotted suggestion key to the Loki label spelling on pick", async () => {
+  it("keeps a dotted suggestion key as spelled on pick", async () => {
     stubFetchRoutes([
       { match: "/api/v1/schema/attributes", body: { hits: [] } },
     ]);
@@ -89,13 +89,13 @@ describe("FilterChips", () => {
       name: "Attribute key suggestions",
     });
     await userEvent.click(within(list).getByText("service.name"));
-    expect(screen.getByLabelText("Filter label")).toHaveValue("service_name");
+    expect(screen.getByLabelText("Filter label")).toHaveValue("service.name");
     expect(screen.getByRole("button", { name: "Add" })).not.toBeDisabled();
 
     await userEvent.type(screen.getByLabelText("Filter value"), "checkout");
     await userEvent.click(screen.getByRole("button", { name: "Add" }));
     expect(onChange).toHaveBeenCalledWith([
-      { label: "service_name", op: "=", value: "checkout" },
+      { label: "service.name", op: "=", value: "checkout" },
     ]);
   });
 
@@ -152,10 +152,10 @@ describe("FilterChips", () => {
     expect(url.searchParams.get("prefix")).toBe("http.re");
 
     await userEvent.click(options[1]!);
-    // Picking a suggestion flattens the dotted registry key to the Loki
-    // label spelling the compiled selector needs (see FilterChips' onPick).
+    // Picking a suggestion keeps the registry key spelled as-is — LogQL
+    // resolves a dotted label directly (see FilterChips' onPick).
     expect(screen.getByLabelText("Filter label")).toHaveValue(
-      "http_response_status_code",
+      "http.response.status_code",
     );
     expect(
       screen.queryByRole("listbox", { name: "Attribute key suggestions" }),

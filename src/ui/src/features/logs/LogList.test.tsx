@@ -303,8 +303,10 @@ describe("LogList structured metadata", () => {
     ).toBeTruthy();
   });
 
-  // Structured metadata varies per line, so a stream selector cannot match it.
-  it("offers no stream-selector filter actions for metadata", async () => {
+  // The querier resolves a LogQL matcher against the attribute maps
+  // directly, so per-line metadata gets filter actions too, keyed by its
+  // own (possibly dotted) name.
+  it("offers filter actions on metadata rows, not just stream labels", async () => {
     render(
       <LogList
         rows={[metaRow]}
@@ -316,8 +318,8 @@ describe("LogList structured metadata", () => {
     await userEvent.click(screen.getByText("checkout timed out"));
     await expandResource();
     expect(
-      screen.queryByRole("button", { name: "Filter for span_id = def456" }),
-    ).toBeNull();
+      screen.getByRole("button", { name: "Filter for span_id = def456" }),
+    ).toBeInTheDocument();
     expect(
       screen.getByRole("button", {
         name: "Filter for service_name = checkout",

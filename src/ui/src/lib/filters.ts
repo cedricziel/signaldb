@@ -22,10 +22,28 @@ export interface LogQueryModel {
 
 export const FILTER_OPS: FilterOp[] = ["=", "!=", "=~", "!~"];
 
-const LABEL_RE = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+/** One identifier segment, shared by the PromQL and LogQL label-name shapes
+ * below so they can't drift apart. */
+const LABEL_SEGMENT = "[a-zA-Z_][a-zA-Z0-9_]*";
 
+const LABEL_RE = new RegExp(`^${LABEL_SEGMENT}$`);
+
+/** Strict Prometheus-style label name: PromQL matchers require this shape
+ * (see `features/metrics/buildPromQL.ts`). */
 export function isValidLabelName(name: string): boolean {
   return LABEL_RE.test(name);
+}
+
+const LOG_LABEL_RE = new RegExp(`^${LABEL_SEGMENT}(\\.[a-zA-Z0-9_]+)*$`);
+
+/**
+ * LogQL label name, spelled either as a plain identifier or dotted (an
+ * attribute's real key, e.g. `k8s.pod.name`) — the querier resolves a
+ * dotted label directly against the attribute maps. No leading, trailing,
+ * or doubled dots.
+ */
+export function isValidLogLabelName(name: string): boolean {
+  return LOG_LABEL_RE.test(name);
 }
 
 /**
@@ -35,7 +53,7 @@ export function isValidLabelName(name: string): boolean {
 export const MATCH_ALL_SELECTOR = '{service_name=~".+"}';
 
 export function compileSelector(filters: LabelFilter[]): string {
-  const valid = filters.filter((f) => isValidLabelName(f.label));
+  const valid = filters.filter((f) => isValidLogLabelName(f.label));
   if (valid.length === 0) return MATCH_ALL_SELECTOR;
   const matchers = valid.map(
     (f) => `${f.label}${f.op}"${escapeQuotedString(f.value)}"`,
@@ -74,7 +92,7 @@ export function filterFromParam(param: string): LabelFilter | null {
   const m = /^([^|]+)\|(=|!=|=~|!~)\|(.*)$/.exec(param);
   if (!m) return null;
   const label = m[1] ?? "";
-  if (!isValidLabelName(label)) return null;
+  if (!isValidLogLabelName(label)) return null;
   return { label, op: m[2] as FilterOp, value: m[3] ?? "" };
 }
 

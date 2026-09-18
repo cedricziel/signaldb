@@ -57,13 +57,13 @@ Common query parameters: `query` (the LogQL string), `start`/`end`
 SignalDB stores logs in columnar form, not as free-form label sets. LogQL
 labels resolve as follows:
 
-| LogQL label                           | Resolves to                                       |
-| ------------------------------------- | ------------------------------------------------- |
-| `service_name`, `service`, `job`      | the `service_name` column                         |
-| `level`, `severity`, `detected_level` | the `severity_text` column                        |
-| `trace_id`, `span_id`                 | the matching columns                              |
-| a **materialized** label (see below)  | its dedicated `label_<key>` column                |
-| any other label                       | the `log_attributes` / `resource_attributes` maps |
+| LogQL label                                      | Resolves to                                       |
+| ------------------------------------------------ | ------------------------------------------------- |
+| `service_name`, `service`, `job`, `service.name` | the `service_name` column                         |
+| `level`, `severity`, `detected_level`            | the `severity_text` column                        |
+| `trace_id`, `span_id`                            | the matching columns                              |
+| a **materialized** label (see below)             | its dedicated `label_<key>` column                |
+| any other label                                  | the `log_attributes` / `resource_attributes` maps |
 
 Labels backed by a column are exact. On tables created since attributes
 became typed maps, **any other label is also exact**: the value is looked
@@ -72,6 +72,17 @@ every attribute. Older tables store attributes as serialized JSON, where a
 label is matched by its `"key":"value"` fragment — an approximation that
 can over-match and supports only `=`/`!=`; the querier picks the right
 form per table automatically.
+
+A label name may contain dots (`{k8s.pod.name="checkout-7c9f"}`,
+`| http.response.status_code >= 500`), so a query can name an attribute by
+its real OTel key. Apart from the well-known aliases in the table above
+(`service.name` reaches the `service_name` column), a dotted key resolves
+directly against the attribute maps by exact key — no materialization
+needed. The underscore spelling of
+the same attribute (`k8s_pod_name`) only resolves to that data once the
+label has been **materialized** (see below): both spellings sanitize to
+the identical `label_<key>` column, so either works once the column
+exists, but only the dotted form is guaranteed to match beforehand.
 
 ### Materialized labels
 
