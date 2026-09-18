@@ -1123,6 +1123,10 @@ pub mod types {
         /**One entry per depth level; each level is a flat sequence of
         `[offset_delta, total, self, name_index]` quadruples.*/
         pub levels: ::std::vec::Vec<::std::vec::Vec<i64>>,
+        /**Source location for each entry in `names`, aligned by index; `None`
+        (or the array is shorter than `names`) where unknown. See
+        `common::profile::Flamegraph::locations`.*/
+        pub locations: ::std::vec::Vec<::std::option::Option<FrameLocation>>,
         ///Largest self value of any block, used for color scaling.
         pub max_self: i64,
         ///Function name table referenced by the blocks' name indices.
@@ -1136,6 +1140,19 @@ pub mod types {
     }
     impl FlamegraphResult {
         pub fn builder() -> builder::FlamegraphResult {
+            Default::default()
+        }
+    }
+    ///A function's source location, carried alongside a flamegraph name entry.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct FrameLocation {
+        ///Source file path, as reported by the profiler.
+        pub file: ::std::string::String,
+        ///Line number within `file`; 0 means unknown.
+        pub line: i64,
+    }
+    impl FrameLocation {
+        pub fn builder() -> builder::FrameLocation {
             Default::default()
         }
     }
@@ -2436,6 +2453,145 @@ pub mod types {
             Default::default()
         }
     }
+    /**Whether source context can be served for a tenant at all — the UI's
+    read-level probe for showing or hiding "View source" (the installation
+    *list* is a management-only endpoint that ordinary readers cannot call).*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct SourceContextAvailability {
+        ///`[github]` is configured on this deployment.
+        pub configured: bool,
+        ///The tenant has linked at least one GitHub App installation.
+        pub linked: bool,
+    }
+    impl SourceContextAvailability {
+        pub fn builder() -> builder::SourceContextAvailability {
+            Default::default()
+        }
+    }
+    ///Request body for [`source_context`].
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct SourceContextRequest {
+        /**Lines of context on each side of `line`; defaults to
+        [`DEFAULT_CONTEXT_LINES`] and is clamped to
+        [`crate::source_context::MAX_CONTEXT_LINES`].*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub context_lines: ::std::option::Option<i32>,
+        ///The 1-based line number to center the snippet on.
+        pub line: i32,
+        ///The file path within the repository.
+        pub path: ::std::string::String,
+        /**The ref (branch, tag, or commit SHA) to read the file at. Omit it to
+        read the repository's default branch.*/
+        #[serde(rename = "ref", skip_serializing_if = "::std::option::Option::is_none")]
+        pub ref_: ::std::option::Option<::std::string::String>,
+        /**`owner/name`, or a GitHub URL naming the repository (`https://github.com/owner/name`,
+        `owner/name.git`, ...). Omit it to probe every repository covered by
+        the tenant's linked GitHub installations by path alone.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub repository: ::std::option::Option<::std::string::String>,
+    }
+    impl SourceContextRequest {
+        pub fn builder() -> builder::SourceContextRequest {
+            Default::default()
+        }
+    }
+    /**Response body for [`source_context`]. Always `200` for a well-formed
+    request, whether or not a snippet could be served.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct SourceContextResponse {
+        /**Why no snippet was served; present only when `status` is
+        `"unavailable"`.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub reason: ::std::option::Option<UnavailableReason>,
+        ///The resolved snippet; present only when `status` is `"available"`.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub snippet: ::std::option::Option<SourceSnippet>,
+        pub status: SourceContextStatus,
+    }
+    impl SourceContextResponse {
+        pub fn builder() -> builder::SourceContextResponse {
+            Default::default()
+        }
+    }
+    ///Whether [`source_context`] served a snippet.
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum SourceContextStatus {
+        #[serde(rename = "available")]
+        Available,
+        #[serde(rename = "unavailable")]
+        Unavailable,
+    }
+    impl ::std::fmt::Display for SourceContextStatus {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Available => f.write_str("available"),
+                Self::Unavailable => f.write_str("unavailable"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for SourceContextStatus {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "available" => Ok(Self::Available),
+                "unavailable" => Ok(Self::Unavailable),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for SourceContextStatus {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for SourceContextStatus {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    /**A bounded window of source lines around one line of one file, plus
+    enough metadata to render and link to it.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct SourceSnippet {
+        ///GitHub's `html_url` for the file, with a `#L{line}` fragment.
+        pub html_url: ::std::string::String,
+        ///The 1-based line number the snippet is centered on.
+        pub line: i32,
+        ///The window of source lines, `start_line..=start_line + lines.len() - 1`.
+        pub lines: ::std::vec::Vec<::std::string::String>,
+        ///The file path within the repository.
+        pub path: ::std::string::String,
+        /**The ref the caller asked for; `None` means the repository's default
+        branch.*/
+        #[serde(rename = "ref", skip_serializing_if = "::std::option::Option::is_none")]
+        pub ref_: ::std::option::Option<::std::string::String>,
+        ///The `"owner/name"` repository that served the snippet.
+        pub repository: ::std::string::String,
+        ///The blob's `sha`, as GitHub reports it.
+        pub sha: ::std::string::String,
+        ///The 1-based line number `lines[0]` corresponds to.
+        pub start_line: i32,
+    }
+    impl SourceSnippet {
+        pub fn builder() -> builder::SourceSnippet {
+            Default::default()
+        }
+    }
     ///`Span`
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Span {
@@ -2788,6 +2944,85 @@ pub mod types {
     impl Trace {
         pub fn builder() -> builder::Trace {
             Default::default()
+        }
+    }
+    ///Why a lookup could not serve a snippet.
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum UnavailableReason {
+        #[serde(rename = "not_configured")]
+        NotConfigured,
+        #[serde(rename = "no_installation")]
+        NoInstallation,
+        #[serde(rename = "not_found")]
+        NotFound,
+        #[serde(rename = "not_a_file")]
+        NotAFile,
+        #[serde(rename = "too_large")]
+        TooLarge,
+        #[serde(rename = "undecodable")]
+        Undecodable,
+        #[serde(rename = "line_out_of_range")]
+        LineOutOfRange,
+        #[serde(rename = "github_error")]
+        GithubError,
+        #[serde(rename = "internal")]
+        Internal,
+    }
+    impl ::std::fmt::Display for UnavailableReason {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::NotConfigured => f.write_str("not_configured"),
+                Self::NoInstallation => f.write_str("no_installation"),
+                Self::NotFound => f.write_str("not_found"),
+                Self::NotAFile => f.write_str("not_a_file"),
+                Self::TooLarge => f.write_str("too_large"),
+                Self::Undecodable => f.write_str("undecodable"),
+                Self::LineOutOfRange => f.write_str("line_out_of_range"),
+                Self::GithubError => f.write_str("github_error"),
+                Self::Internal => f.write_str("internal"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for UnavailableReason {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "not_configured" => Ok(Self::NotConfigured),
+                "no_installation" => Ok(Self::NoInstallation),
+                "not_found" => Ok(Self::NotFound),
+                "not_a_file" => Ok(Self::NotAFile),
+                "too_large" => Ok(Self::TooLarge),
+                "undecodable" => Ok(Self::Undecodable),
+                "line_out_of_range" => Ok(Self::LineOutOfRange),
+                "github_error" => Ok(Self::GithubError),
+                "internal" => Ok(Self::Internal),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for UnavailableReason {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for UnavailableReason {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
         }
     }
     /**Request body for updating a live API key's scopes and/or dataset restriction.
@@ -7235,6 +7470,10 @@ pub mod types {
         pub struct FlamegraphResult {
             levels:
                 ::std::result::Result<::std::vec::Vec<::std::vec::Vec<i64>>, ::std::string::String>,
+            locations: ::std::result::Result<
+                ::std::vec::Vec<::std::option::Option<super::FrameLocation>>,
+                ::std::string::String,
+            >,
             max_self: ::std::result::Result<i64, ::std::string::String>,
             names: ::std::result::Result<
                 ::std::vec::Vec<::std::string::String>,
@@ -7247,6 +7486,7 @@ pub mod types {
             fn default() -> Self {
                 Self {
                     levels: Err("no value supplied for levels".to_string()),
+                    locations: Err("no value supplied for locations".to_string()),
                     max_self: Err("no value supplied for max_self".to_string()),
                     names: Err("no value supplied for names".to_string()),
                     total: Err("no value supplied for total".to_string()),
@@ -7263,6 +7503,18 @@ pub mod types {
                 self.levels = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for levels: {e}"));
+                self
+            }
+            pub fn locations<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::vec::Vec<::std::option::Option<super::FrameLocation>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.locations = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for locations: {e}"));
                 self
             }
             pub fn max_self<T>(mut self, value: T) -> Self
@@ -7313,6 +7565,7 @@ pub mod types {
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
                     levels: value.levels?,
+                    locations: value.locations?,
                     max_self: value.max_self?,
                     names: value.names?,
                     total: value.total?,
@@ -7324,10 +7577,65 @@ pub mod types {
             fn from(value: super::FlamegraphResult) -> Self {
                 Self {
                     levels: Ok(value.levels),
+                    locations: Ok(value.locations),
                     max_self: Ok(value.max_self),
                     names: Ok(value.names),
                     total: Ok(value.total),
                     truncated: Ok(value.truncated),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct FrameLocation {
+            file: ::std::result::Result<::std::string::String, ::std::string::String>,
+            line: ::std::result::Result<i64, ::std::string::String>,
+        }
+        impl ::std::default::Default for FrameLocation {
+            fn default() -> Self {
+                Self {
+                    file: Err("no value supplied for file".to_string()),
+                    line: Err("no value supplied for line".to_string()),
+                }
+            }
+        }
+        impl FrameLocation {
+            pub fn file<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.file = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for file: {e}"));
+                self
+            }
+            pub fn line<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.line = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for line: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<FrameLocation> for super::FrameLocation {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: FrameLocation,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    file: value.file?,
+                    line: value.line?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::FrameLocation> for FrameLocation {
+            fn from(value: super::FrameLocation) -> Self {
+                Self {
+                    file: Ok(value.file),
+                    line: Ok(value.line),
                 }
             }
         }
@@ -12232,6 +12540,380 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct SourceContextAvailability {
+            configured: ::std::result::Result<bool, ::std::string::String>,
+            linked: ::std::result::Result<bool, ::std::string::String>,
+        }
+        impl ::std::default::Default for SourceContextAvailability {
+            fn default() -> Self {
+                Self {
+                    configured: Err("no value supplied for configured".to_string()),
+                    linked: Err("no value supplied for linked".to_string()),
+                }
+            }
+        }
+        impl SourceContextAvailability {
+            pub fn configured<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.configured = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for configured: {e}"));
+                self
+            }
+            pub fn linked<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.linked = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for linked: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<SourceContextAvailability> for super::SourceContextAvailability {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: SourceContextAvailability,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    configured: value.configured?,
+                    linked: value.linked?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::SourceContextAvailability> for SourceContextAvailability {
+            fn from(value: super::SourceContextAvailability) -> Self {
+                Self {
+                    configured: Ok(value.configured),
+                    linked: Ok(value.linked),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct SourceContextRequest {
+            context_lines: ::std::result::Result<::std::option::Option<i32>, ::std::string::String>,
+            line: ::std::result::Result<i32, ::std::string::String>,
+            path: ::std::result::Result<::std::string::String, ::std::string::String>,
+            ref_: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            repository: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for SourceContextRequest {
+            fn default() -> Self {
+                Self {
+                    context_lines: Ok(Default::default()),
+                    line: Err("no value supplied for line".to_string()),
+                    path: Err("no value supplied for path".to_string()),
+                    ref_: Ok(Default::default()),
+                    repository: Ok(Default::default()),
+                }
+            }
+        }
+        impl SourceContextRequest {
+            pub fn context_lines<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<i32>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.context_lines = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for context_lines: {e}"));
+                self
+            }
+            pub fn line<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i32>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.line = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for line: {e}"));
+                self
+            }
+            pub fn path<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.path = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for path: {e}"));
+                self
+            }
+            pub fn ref_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.ref_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for ref_: {e}"));
+                self
+            }
+            pub fn repository<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.repository = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for repository: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<SourceContextRequest> for super::SourceContextRequest {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: SourceContextRequest,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    context_lines: value.context_lines?,
+                    line: value.line?,
+                    path: value.path?,
+                    ref_: value.ref_?,
+                    repository: value.repository?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::SourceContextRequest> for SourceContextRequest {
+            fn from(value: super::SourceContextRequest) -> Self {
+                Self {
+                    context_lines: Ok(value.context_lines),
+                    line: Ok(value.line),
+                    path: Ok(value.path),
+                    ref_: Ok(value.ref_),
+                    repository: Ok(value.repository),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct SourceContextResponse {
+            reason: ::std::result::Result<
+                ::std::option::Option<super::UnavailableReason>,
+                ::std::string::String,
+            >,
+            snippet: ::std::result::Result<
+                ::std::option::Option<super::SourceSnippet>,
+                ::std::string::String,
+            >,
+            status: ::std::result::Result<super::SourceContextStatus, ::std::string::String>,
+        }
+        impl ::std::default::Default for SourceContextResponse {
+            fn default() -> Self {
+                Self {
+                    reason: Ok(Default::default()),
+                    snippet: Ok(Default::default()),
+                    status: Err("no value supplied for status".to_string()),
+                }
+            }
+        }
+        impl SourceContextResponse {
+            pub fn reason<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::UnavailableReason>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.reason = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for reason: {e}"));
+                self
+            }
+            pub fn snippet<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::SourceSnippet>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.snippet = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for snippet: {e}"));
+                self
+            }
+            pub fn status<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::SourceContextStatus>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.status = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for status: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<SourceContextResponse> for super::SourceContextResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: SourceContextResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    reason: value.reason?,
+                    snippet: value.snippet?,
+                    status: value.status?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::SourceContextResponse> for SourceContextResponse {
+            fn from(value: super::SourceContextResponse) -> Self {
+                Self {
+                    reason: Ok(value.reason),
+                    snippet: Ok(value.snippet),
+                    status: Ok(value.status),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct SourceSnippet {
+            html_url: ::std::result::Result<::std::string::String, ::std::string::String>,
+            line: ::std::result::Result<i32, ::std::string::String>,
+            lines: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            path: ::std::result::Result<::std::string::String, ::std::string::String>,
+            ref_: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            repository: ::std::result::Result<::std::string::String, ::std::string::String>,
+            sha: ::std::result::Result<::std::string::String, ::std::string::String>,
+            start_line: ::std::result::Result<i32, ::std::string::String>,
+        }
+        impl ::std::default::Default for SourceSnippet {
+            fn default() -> Self {
+                Self {
+                    html_url: Err("no value supplied for html_url".to_string()),
+                    line: Err("no value supplied for line".to_string()),
+                    lines: Err("no value supplied for lines".to_string()),
+                    path: Err("no value supplied for path".to_string()),
+                    ref_: Ok(Default::default()),
+                    repository: Err("no value supplied for repository".to_string()),
+                    sha: Err("no value supplied for sha".to_string()),
+                    start_line: Err("no value supplied for start_line".to_string()),
+                }
+            }
+        }
+        impl SourceSnippet {
+            pub fn html_url<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.html_url = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for html_url: {e}"));
+                self
+            }
+            pub fn line<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i32>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.line = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for line: {e}"));
+                self
+            }
+            pub fn lines<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.lines = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for lines: {e}"));
+                self
+            }
+            pub fn path<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.path = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for path: {e}"));
+                self
+            }
+            pub fn ref_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.ref_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for ref_: {e}"));
+                self
+            }
+            pub fn repository<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.repository = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for repository: {e}"));
+                self
+            }
+            pub fn sha<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.sha = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for sha: {e}"));
+                self
+            }
+            pub fn start_line<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i32>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.start_line = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for start_line: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<SourceSnippet> for super::SourceSnippet {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: SourceSnippet,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    html_url: value.html_url?,
+                    line: value.line?,
+                    lines: value.lines?,
+                    path: value.path?,
+                    ref_: value.ref_?,
+                    repository: value.repository?,
+                    sha: value.sha?,
+                    start_line: value.start_line?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::SourceSnippet> for SourceSnippet {
+            fn from(value: super::SourceSnippet) -> Self {
+                Self {
+                    html_url: Ok(value.html_url),
+                    line: Ok(value.line),
+                    lines: Ok(value.lines),
+                    path: Ok(value.path),
+                    ref_: Ok(value.ref_),
+                    repository: Ok(value.repository),
+                    sha: Ok(value.sha),
+                    start_line: Ok(value.start_line),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct Span {
             attributes: ::std::result::Result<
                 ::std::collections::HashMap<::std::string::String, super::Attribute>,
@@ -14898,6 +15580,54 @@ impl Client {
     ```*/
     pub fn list_tenant_schemas(&self) -> builder::ListTenantSchemas<'_> {
         builder::ListTenantSchemas::new(self)
+    }
+    /**`GET /api/v1/tenants/{tenant_id}/source-context`
+
+    Reports whether `[github]` is configured and whether the tenant has
+    linked any installation, so a read-only caller can decide to offer
+    source lookups without the management-scoped installation list.
+
+    Sends a `GET` request to `/api/v1/tenants/{tenant_id}/source-context`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier (must match the authenticated tenant)
+    ```ignore
+    let response = client.source_context_availability()
+        .tenant_id(tenant_id)
+        .send()
+        .await;
+    ```*/
+    pub fn source_context_availability(&self) -> builder::SourceContextAvailability<'_> {
+        builder::SourceContextAvailability::new(self)
+    }
+    /**`POST /api/v1/tenants/{tenant_id}/source-context`
+
+    Resolves a repo/ref/file/line reference to a bounded, cached source
+    snippet through the tenant's linked GitHub App installation(s). `400` on
+    a malformed request (empty `path`, `line: 0`, or an unsafe path —
+    containing a `..`, `.`, empty, or absolute segment — see
+    `crate::source_context::SourceRequest::new`); `403` when the path tenant
+    doesn't match the caller's authenticated tenant, or the caller has no
+    read access to any signal. Otherwise always `200`: an unconfigured
+    deployment, no covering installation, a missing file, or an out-of-range
+    line all answer `status: "unavailable"` with a `reason`, never an error —
+    the surrounding trace or profile view must render without the source
+    panel rather than fail.
+
+    Sends a `POST` request to `/api/v1/tenants/{tenant_id}/source-context`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier (must match the authenticated tenant)
+    - `body`
+    ```ignore
+    let response = client.source_context()
+        .tenant_id(tenant_id)
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn source_context(&self) -> builder::SourceContext<'_> {
+        builder::SourceContext::new(self)
     }
     /**GET /tenants/:tenant_id/tables
 
@@ -19485,6 +20215,184 @@ pub mod builder {
             }
         }
     }
+    /**Builder for [`Client::source_context_availability`]
+
+    [`Client::source_context_availability`]: super::Client::source_context_availability*/
+    #[derive(Debug, Clone)]
+    pub struct SourceContextAvailability<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+    }
+    impl<'a> SourceContextAvailability<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/v1/tenants/{tenant_id}/source-context`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::SourceContextAvailability>, Error<types::ApiErrorBody>>
+        {
+            let Self { client, tenant_id } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}/source-context",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "source_context_availability",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::source_context`]
+
+    [`Client::source_context`]: super::Client::source_context*/
+    #[derive(Debug, Clone)]
+    pub struct SourceContext<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+        body: Result<types::builder::SourceContextRequest, String>,
+    }
+    impl<'a> SourceContext<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::SourceContextRequest>,
+            <V as std::convert::TryInto<types::SourceContextRequest>>::Error: std::fmt::Display,
+        {
+            self.body = value.try_into().map(From::from).map_err(|s| {
+                format!(
+                    "conversion to `SourceContextRequest` for body failed: {}",
+                    s
+                )
+            });
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(
+                    types::builder::SourceContextRequest,
+                ) -> types::builder::SourceContextRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/tenants/{tenant_id}/source-context`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::SourceContextResponse>, Error<types::ApiErrorBody>>
+        {
+            let Self {
+                client,
+                tenant_id,
+                body,
+            } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let body = body
+                .and_then(|v| types::SourceContextRequest::try_from(v).map_err(|e| e.to_string()))
+                .map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}/source-context",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "source_context",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
     /**Builder for [`Client::list_tenant_tables`]
 
     [`Client::list_tenant_tables`]: super::Client::list_tenant_tables*/
@@ -22209,6 +23117,8 @@ pub const OPERATIONS: &[&str] = &[
     "search_tags_v2",
     "session_oidc_callback",
     "session_oidc_start",
+    "source_context",
+    "source_context_availability",
     "update_api_key",
     "update_tenant",
     "whoami",

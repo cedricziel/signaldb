@@ -857,6 +857,12 @@ export type FlamegraphResult = {
      */
     levels: Array<Array<number>>;
     /**
+     * Source location for each entry in `names`, aligned by index; `None`
+     * (or the array is shorter than `names`) where unknown. See
+     * `common::profile::Flamegraph::locations`.
+     */
+    locations: Array<null | FrameLocation>;
+    /**
      * Largest self value of any block, used for color scaling.
      */
     max_self: number;
@@ -874,6 +880,20 @@ export type FlamegraphResult = {
      * was aggregated over only the first 1,000 of them.
      */
     truncated: boolean;
+};
+
+/**
+ * A function's source location, carried alongside a flamegraph name entry.
+ */
+export type FrameLocation = {
+    /**
+     * Source file path, as reported by the profiler.
+     */
+    file: string;
+    /**
+     * Line number within `file`; 0 means unknown.
+     */
+    line: number;
 };
 
 /**
@@ -1640,6 +1660,111 @@ export type SessionUser = {
     is_instance_admin: boolean;
 };
 
+/**
+ * Whether source context can be served for a tenant at all — the UI's
+ * read-level probe for showing or hiding "View source" (the installation
+ * *list* is a management-only endpoint that ordinary readers cannot call).
+ */
+export type SourceContextAvailability = {
+    /**
+     * `[github]` is configured on this deployment.
+     */
+    configured: boolean;
+    /**
+     * The tenant has linked at least one GitHub App installation.
+     */
+    linked: boolean;
+};
+
+/**
+ * Request body for [`source_context`].
+ */
+export type SourceContextRequest = {
+    /**
+     * Lines of context on each side of `line`; defaults to
+     * [`DEFAULT_CONTEXT_LINES`] and is clamped to
+     * [`crate::source_context::MAX_CONTEXT_LINES`].
+     */
+    context_lines?: number | null;
+    /**
+     * The 1-based line number to center the snippet on.
+     */
+    line: number;
+    /**
+     * The file path within the repository.
+     */
+    path: string;
+    /**
+     * The ref (branch, tag, or commit SHA) to read the file at. Omit it to
+     * read the repository's default branch.
+     */
+    ref?: string | null;
+    /**
+     * `owner/name`, or a GitHub URL naming the repository (`https://github.com/owner/name`,
+     * `owner/name.git`, ...). Omit it to probe every repository covered by
+     * the tenant's linked GitHub installations by path alone.
+     */
+    repository?: string | null;
+};
+
+/**
+ * Response body for [`source_context`]. Always `200` for a well-formed
+ * request, whether or not a snippet could be served.
+ */
+export type SourceContextResponse = {
+    reason?: null | UnavailableReason;
+    snippet?: null | SourceSnippet;
+    /**
+     * Whether a snippet was served.
+     */
+    status: SourceContextStatus;
+};
+
+/**
+ * Whether [`source_context`] served a snippet.
+ */
+export type SourceContextStatus = 'available' | 'unavailable';
+
+/**
+ * A bounded window of source lines around one line of one file, plus
+ * enough metadata to render and link to it.
+ */
+export type SourceSnippet = {
+    /**
+     * GitHub's `html_url` for the file, with a `#L{line}` fragment.
+     */
+    html_url: string;
+    /**
+     * The 1-based line number the snippet is centered on.
+     */
+    line: number;
+    /**
+     * The window of source lines, `start_line..=start_line + lines.len() - 1`.
+     */
+    lines: Array<string>;
+    /**
+     * The file path within the repository.
+     */
+    path: string;
+    /**
+     * The ref the caller asked for; `None` means the repository's default
+     * branch.
+     */
+    ref?: string | null;
+    /**
+     * The `"owner/name"` repository that served the snippet.
+     */
+    repository: string;
+    /**
+     * The blob's `sha`, as GitHub reports it.
+     */
+    sha: string;
+    /**
+     * The 1-based line number `lines[0]` corresponds to.
+     */
+    start_line: number;
+};
+
 export type Span = {
     attributes: {
         [key: string]: Attribute;
@@ -1870,6 +1995,11 @@ export type Trace = {
     startTimeUnixNano: string;
     traceID: string;
 };
+
+/**
+ * Why a lookup could not serve a snippet.
+ */
+export type UnavailableReason = 'not_configured' | 'no_installation' | 'not_found' | 'not_a_file' | 'too_large' | 'undecodable' | 'line_out_of_range' | 'github_error' | 'internal';
 
 /**
  * Request body for updating a live API key's scopes and/or dataset restriction.
@@ -4439,6 +4569,116 @@ export type ListTenantSchemasResponses = {
 };
 
 export type ListTenantSchemasResponse = ListTenantSchemasResponses[keyof ListTenantSchemasResponses];
+
+export type SourceContextAvailabilityData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier (must match the authenticated tenant)
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/source-context';
+};
+
+export type SourceContextAvailabilityErrors = {
+    /**
+     * Requested tenant does not match the authenticated tenant, or the caller has no read access to any signal
+     */
+    403: ApiErrorBody;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ApiErrorBody;
+};
+
+export type SourceContextAvailabilityError = SourceContextAvailabilityErrors[keyof SourceContextAvailabilityErrors];
+
+export type SourceContextAvailabilityResponses = {
+    /**
+     * Whether source context can be served for this tenant
+     */
+    200: SourceContextAvailability;
+};
+
+export type SourceContextAvailabilityResponse = SourceContextAvailabilityResponses[keyof SourceContextAvailabilityResponses];
+
+export type SourceContextData = {
+    body: SourceContextRequest;
+    path: {
+        /**
+         * Tenant identifier (must match the authenticated tenant)
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/source-context';
+};
+
+export type SourceContextErrors = {
+    /**
+     * Empty path, line is zero, or an unsafe (traversal/absolute) path
+     */
+    400: ApiErrorBody;
+    /**
+     * Requested tenant does not match the authenticated tenant, or the caller has no read access to any signal
+     */
+    403: ApiErrorBody;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type SourceContextError = SourceContextErrors[keyof SourceContextErrors];
+
+export type SourceContextResponses = {
+    /**
+     * Snippet lookup result (available or unavailable, never an error for a well-formed request)
+     */
+    200: SourceContextResponse;
+};
+
+export type SourceContextResponse2 = SourceContextResponses[keyof SourceContextResponses];
 
 export type ListTenantTablesData = {
     body?: never;
