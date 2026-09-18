@@ -8,6 +8,7 @@ members = [
     "src/logql",
     "src/loki-api",
     "src/mcp-server",
+    "src/ottl",
     "src/prometheus-api",
     "src/pyroscope-api",
     "src/querier",
@@ -44,6 +45,7 @@ default-members = [
     "src/logql",
     "src/loki-api",
     "src/mcp-server",
+    "src/ottl",
     "src/prometheus-api",
     "src/pyroscope-api",
     "src/querier",
@@ -80,6 +82,7 @@ signaldb-sdk = { path = "src/signaldb-sdk" }
 logql = { path = "src/logql", package = "logql-parser" }
 traceql = { path = "src/traceql", package = "traceql-parser" }
 loki-api = { path = "src/loki-api" }
+ottl = { path = "src/ottl" }
 prometheus-api = { path = "src/prometheus-api" }
 pyroscope-api = { path = "src/pyroscope-api" }
 tempo-api = { path = "src/tempo-api" }
@@ -209,6 +212,11 @@ snap = "1.1"
 promql-parser = "0.10"
 
 thiserror = "2.0.12"
+
+# OTTL parser (ottl crate)
+pest = "2.8"
+pest_derive = "2.8"
+regex = "1.13"
 
 reqwest = { version = "0.13", features = ["json", "form"] }
 progenitor-client = "0.15.0"
