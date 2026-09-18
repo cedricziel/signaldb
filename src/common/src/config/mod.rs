@@ -1155,6 +1155,19 @@ pub struct GitHubAppConfig {
     /// GitHub's redirect back to the callback.
     #[serde(with = "humantime_serde")]
     pub link_state_ttl: Duration,
+    /// How long a fetched source-context snippet (change:
+    /// github-app-source-context) stays cached before it is re-fetched from
+    /// GitHub. Applies uniformly to ref- and SHA-keyed lookups (see the
+    /// design's "Snippet cache" decision).
+    #[serde(with = "humantime_serde")]
+    pub snippet_cache_ttl: Duration,
+    /// Maximum number of distinct *files* (not line-windows — the cache
+    /// keys on `(installation, repo, ref, path)` and slices whatever window
+    /// a request asks for out of the cached file) cached at once,
+    /// independent of `snippet_cache_ttl`. Exceeding this evicts the
+    /// least-recently-used entry. Each entry is at most `MAX_FILE_BYTES`
+    /// (512 KiB) of source text.
+    pub snippet_cache_capacity: usize,
 }
 
 impl Default for GitHubAppConfig {
@@ -1169,6 +1182,8 @@ impl Default for GitHubAppConfig {
             api_url: "https://api.github.com".to_string(),
             web_url: "https://github.com".to_string(),
             link_state_ttl: Duration::from_secs(10 * 60),
+            snippet_cache_ttl: Duration::from_secs(10 * 60),
+            snippet_cache_capacity: 1_000,
         }
     }
 }
@@ -1187,6 +1202,8 @@ impl std::fmt::Debug for GitHubAppConfig {
             .field("api_url", &self.api_url)
             .field("web_url", &self.web_url)
             .field("link_state_ttl", &self.link_state_ttl)
+            .field("snippet_cache_ttl", &self.snippet_cache_ttl)
+            .field("snippet_cache_capacity", &self.snippet_cache_capacity)
             .finish()
     }
 }
@@ -1254,6 +1271,12 @@ impl GitHubAppConfig {
         }
         if self.link_state_ttl.is_zero() {
             return Err("[github].link_state_ttl must be greater than zero".to_string());
+        }
+        if self.snippet_cache_ttl.is_zero() {
+            return Err("[github].snippet_cache_ttl must be greater than zero".to_string());
+        }
+        if self.snippet_cache_capacity == 0 {
+            return Err("[github].snippet_cache_capacity must be greater than zero".to_string());
         }
         Ok(())
     }
@@ -3534,6 +3557,8 @@ mod tests {
                 web_url = "https://ghe.example.com/"
                 api_url = "https://ghe.example.com/api/v3"
                 link_state_ttl = "5m"
+                snippet_cache_ttl = "15m"
+                snippet_cache_capacity = 500
                 "#
                 ),
             )?;
@@ -3547,6 +3572,8 @@ mod tests {
             assert_eq!(github.app_slug, "signaldb-dev");
             assert_eq!(github.client_id, "Iv1.abc");
             assert_eq!(github.link_state_ttl, Duration::from_secs(300));
+            assert_eq!(github.snippet_cache_ttl, Duration::from_secs(15 * 60));
+            assert_eq!(github.snippet_cache_capacity, 500);
             assert_eq!(github.api_base(), "https://ghe.example.com/api/v3");
             assert_eq!(
                 github.install_url("st-1"),
@@ -3567,6 +3594,8 @@ mod tests {
         assert_eq!(github.api_url, "https://api.github.com");
         assert_eq!(github.web_url, "https://github.com");
         assert_eq!(github.link_state_ttl, Duration::from_secs(600));
+        assert_eq!(github.snippet_cache_ttl, Duration::from_secs(600));
+        assert_eq!(github.snippet_cache_capacity, 1_000);
     }
 
     use crate::testing::GITHUB_TEST_PEM as TEST_PEM;
@@ -3662,6 +3691,20 @@ mod tests {
                     ..valid.clone()
                 },
                 "[github].link_state_ttl",
+            ),
+            (
+                GitHubAppConfig {
+                    snippet_cache_ttl: Duration::ZERO,
+                    ..valid.clone()
+                },
+                "[github].snippet_cache_ttl",
+            ),
+            (
+                GitHubAppConfig {
+                    snippet_cache_capacity: 0,
+                    ..valid.clone()
+                },
+                "[github].snippet_cache_capacity",
             ),
         ];
         for (config, expected) in cases {

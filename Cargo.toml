@@ -230,6 +230,9 @@ dashmap = "6.2"
 # Fast, non-cryptographic hasher for internal hot maps keyed on already-random
 # data (e.g. Uuid) where SipHash's DoS resistance buys nothing (issue #1112).
 rustc-hash = "2.1"
+# Bounded, LRU-evicting cache (change: github-app-source-context, the
+# source-context snippet cache).
+lru = "0.18"
 
 testcontainers-modules = { version = "0.15", features = ["postgres", "kafka", "minio", "http_wait"] }
 tempfile = "3.20.0"

@@ -6674,6 +6674,7 @@ dependencies = [
  "jsonwebtoken",
  "logql-parser",
  "loki-api",
+ "lru",
  "openidconnect",
  "prometheus-api",
  "pyroscope-api",
@@ -8142,6 +8143,7 @@ dependencies = [
  "anyhow",
  "arrow-flight",
  "axum",
+ "base64 0.23.1",
  "bytes",
  "chrono",
  "clap",
@@ -8179,6 +8181,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "wiremock",
  "workspace-hack",
  "writer",
 ]
