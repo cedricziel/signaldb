@@ -167,7 +167,13 @@ tenant's covered repos; ref optional (default branch, reported as `null`).
 Fetched files and content-caused unavailability are cached per file (TTL +
 LRU from `[github].snippet_cache_*`; windows sliced locally);
 `remove_github_installation` evicts. `GET …/source-context` is the reader-
-level `{configured, linked}` probe the UI gates "View source" on.
+level `{configured, linked}` probe the UI gates "View source" on. CLI:
+`signaldb-cli tenant source-context` (any tenant key, not `tenant:manage`).
+MCP: `get_source_context`, grouped with the query/discovery tools in
+`src/mcp-server/src/server.rs` rather than the `tenant_*` management family —
+it is a per-frame read any tenant reader may call. `source_context_availability`
+(the `GET` probe) has no CLI/MCP surface of its own; the parity guard's
+`EXCLUDED` list explains why (`tests-integration/tests/query_parity.rs`).
 
 **Read scopes.** OAuth scopes populate `TenantContext.api_key_scopes` and are
 enforced like API-key write scopes. `can_read(<signal>)` requires the matching
@@ -484,8 +490,8 @@ ingest/query/mcp endpoints, headers, scopes, and OTel env vars —
 (`registry`/`attribute`/`entity`/`metric` lookup with a tenant key holding
 `schema:read`), `admin` (`tenant`/`api-key`/`dataset`, plus `schema`
 create/replace/delete/validate with a tenant key holding `schema:write`),
-`tenant` (`show`, `table`, and — with a `tenant:manage` key — `dataset`,
-`api-key`, `membership`, `schema`, `github`), `user`, `tui`,
+`tenant` (`show`, `table`, `source-context`, and — with a `tenant:manage`
+key — `dataset`, `api-key`, `membership`, `schema`, `github`), `user`, `tui`,
 `completions` (static shell scripts; dynamic tenant-ID completion for
 tenant-taking args via `COMPLETE=<shell> signaldb-cli` — queries the admin
 API like `admin tenant list`, silently empty when the backend is

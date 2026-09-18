@@ -15,6 +15,10 @@
 //! - `get_trace` — single trace by ID
 //! - `get_profile` — single profile's flamegraph by ID (wraps the native
 //!   Query IR `flamegraph` envelope)
+//! - `get_source_context` — source-code snippet around a stack-frame
+//!   location (`path`/`line`), through the tenant's linked GitHub App
+//!   installation(s); `status: "unavailable"` with a `reason` is a normal
+//!   answer, not an error
 //! - `search_trace_groups` — grouped RED-metrics (rate/errors/duration) view,
 //!   the same aggregate the UI's traces-tab group table builds
 //! - `discover_attributes` — queryable attribute/label names or values,
@@ -499,6 +503,36 @@ struct ProfilesForTraceParams {
     /// datasets, so there is no implicit session default; see
     /// `discover_datasets`.
     dataset: String,
+}
+
+/// Parameters for `get_source_context`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct GetSourceContextParams {
+    /// `owner/name`, or a GitHub URL naming the repository
+    /// (`https://github.com/owner/name`, `owner/name.git`, ...). Omit it to
+    /// probe every repository covered by the tenant's linked GitHub App
+    /// installations by path alone.
+    #[serde(default)]
+    repository: Option<String>,
+    /// The ref (branch, tag, or commit SHA) to read the file at. Omit it to
+    /// read the repository's default branch. Sent on the wire as `ref`.
+    #[serde(default, rename = "ref")]
+    git_ref: Option<String>,
+    /// The file path within the repository.
+    path: String,
+    /// The 1-based line number to center the snippet on.
+    line: u32,
+    /// Lines of context on each side of `line`. Omit for the router's
+    /// default; the router clamps an oversized value.
+    #[serde(default)]
+    context_lines: Option<u32>,
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
 }
 
 /// Parameters for `discover_attributes`.
@@ -1915,6 +1949,33 @@ impl McpServer {
             .send()
             .await
             .map_err(|e| map_sdk_err(e, "profiles_for_trace"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Fetch a source-code snippet around a stack-frame location — file `path` and 1-based `line` — through the tenant's linked GitHub App installation(s), for rendering alongside a trace span or profile frame. `repository` may be omitted to probe every repository covered by the tenant's linked installations by path alone; `ref` may be omitted to read the repository's default branch. Always succeeds for a well-formed request: `status: \"unavailable\"` with a `reason` (e.g. `not_configured`, `no_installation`, `not_found`) is a normal answer, not an error — render the frame without a source panel rather than treat it as a failure.",
+        annotations(read_only_hint = true)
+    )]
+    async fn get_source_context(
+        &self,
+        Parameters(p): Parameters<GetSourceContextParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, None)?;
+        let resp = client
+            .source_context()
+            .tenant_id(&p.tenant)
+            .body(signaldb_sdk::types::SourceContextRequest {
+                repository: p.repository,
+                ref_: p.git_ref,
+                path: p.path,
+                line: p.line as i32,
+                context_lines: p.context_lines.map(|v| v as i32),
+            })
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "get_source_context"))?;
         json_result(&resp.into_inner())
     }
 
@@ -4121,7 +4182,7 @@ mod tests {
             "window": { "start_ns": 0, "end_ns": 1 },
             "flamegraph": {
                 "names": ["main"], "levels": [[0, 10, 10, 0]],
-                "total": 10, "max_self": 10, "truncated": false
+                "total": 10, "max_self": 10, "truncated": false, "locations": [null]
             }
         }));
         let flamegraph = flamegraph_or_not_found(response).expect("flamegraph is present");
@@ -4139,7 +4200,8 @@ mod tests {
             "result": "flamegraph",
             "window": { "start_ns": 0, "end_ns": 1 },
             "flamegraph": {
-                "names": [], "levels": [], "total": 0, "max_self": 0, "truncated": false
+                "names": [], "levels": [], "total": 0, "max_self": 0, "truncated": false,
+                "locations": []
             }
         }));
         let err = flamegraph_or_not_found(response).expect_err("empty flamegraph means not found");
@@ -5914,6 +5976,7 @@ mod tests {
             "server_info",
             "search_traces",
             "get_trace",
+            "get_source_context",
             "search_trace_groups",
             "discover_attributes",
             "discover_metrics",

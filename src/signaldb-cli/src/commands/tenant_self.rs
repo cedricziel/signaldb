@@ -7,6 +7,9 @@
 //! - `signaldb-cli tenant table list|provision|schemas|available-schemas` —
 //!   signal tables (`/api/v1/tenants/{id}/tables...`; any valid key of the
 //!   tenant)
+//! - `signaldb-cli tenant source-context` — a source-code snippet around a
+//!   stack-frame location (`/api/v1/tenants/{id}/source-context`; any valid
+//!   key of the tenant, not `tenant:manage`)
 //! - `signaldb-cli tenant dataset list|create|delete`,
 //!   `tenant api-key list|create|update|revoke`,
 //!   `tenant membership list|set|remove`, `tenant schema get`,
@@ -29,7 +32,8 @@ use std::io::{IsTerminal, Write as _};
 use clap::{ArgAction, Args, Subcommand};
 use signaldb_sdk::types::{
     GitHubInstallationResponse, ManageApiKeyResponse, ManageCreateApiKeyRequest,
-    ManageCreateDatasetRequest, ManageUpdateApiKeyRequest, MembershipRole, UpsertMembershipRequest,
+    ManageCreateDatasetRequest, ManageUpdateApiKeyRequest, MembershipRole, SourceContextRequest,
+    SourceContextResponse, SourceContextStatus, UpsertMembershipRequest,
 };
 
 use super::discover::ConnectArgs;
@@ -72,6 +76,11 @@ pub enum TenantSelfAction {
         #[command(subcommand)]
         action: GithubAction,
     },
+    /// Fetch a source-code snippet around a stack-frame location, through
+    /// the tenant's linked GitHub App installation(s) (any valid key of the
+    /// tenant)
+    #[command(name = "source-context")]
+    SourceContext(SourceContextArgs),
 }
 
 impl TenantSelfAction {
@@ -93,6 +102,7 @@ impl TenantSelfAction {
             TenantSelfAction::Schema { action } => action.run().await,
             TenantSelfAction::Table { action } => action.run().await,
             TenantSelfAction::Github { action } => action.run().await,
+            TenantSelfAction::SourceContext(args) => run_source_context(args).await,
         }
     }
 }
@@ -771,6 +781,93 @@ impl GithubAction {
             }
         }
     }
+}
+
+/// `tenant source-context` args: connection plus the lookup parameters.
+#[derive(Args)]
+pub struct SourceContextArgs {
+    /// File path within the repository
+    #[arg(long)]
+    path: String,
+    /// 1-based line number to center the snippet on
+    #[arg(long)]
+    line: u32,
+    /// `owner/name`, or a GitHub URL naming the repository; omit to probe
+    /// every repository covered by the tenant's linked installations by
+    /// path alone
+    #[arg(long)]
+    repository: Option<String>,
+    /// The ref (branch, tag, or commit SHA) to read the file at; omit for
+    /// the repository's default branch
+    #[arg(long = "ref")]
+    git_ref: Option<String>,
+    /// Lines of context on each side of `--line`; omit for the router's
+    /// default
+    #[arg(long)]
+    context: Option<u32>,
+    #[command(flatten)]
+    connect: ConnectArgs,
+    /// Print the raw JSON response instead of the human-readable snippet
+    #[arg(long)]
+    json: bool,
+}
+
+/// Render `repository path (@ref | default branch)` followed by the
+/// numbered snippet lines with a `>` marker on the target line, or the
+/// unavailable-reason sentence. A malformed `available` response missing
+/// its snippet degrades to the unavailable rendering rather than panicking
+/// — same defensive stance as `flamegraph_or_not_found` in the MCP server.
+/// Pure and synchronous, so it's directly unit-testable without a server.
+fn format_source_context(response: &SourceContextResponse) -> String {
+    match (response.status, response.snippet.as_ref()) {
+        (SourceContextStatus::Available, Some(snippet)) => {
+            let ref_label = snippet
+                .ref_
+                .as_deref()
+                .map(|r| format!("@{r}"))
+                .unwrap_or_else(|| "default branch".to_string());
+            let mut out = format!("{} {} ({})\n", snippet.repository, snippet.path, ref_label);
+            for (offset, text) in snippet.lines.iter().enumerate() {
+                let line_no = snippet.start_line + offset as i32;
+                let marker = if line_no == snippet.line { '>' } else { ' ' };
+                out.push_str(&format!("{marker} {line_no:>5} | {text}\n"));
+            }
+            out.trim_end().to_string()
+        }
+        _ => {
+            let reason = response
+                .reason
+                .map(|r| r.to_string())
+                .unwrap_or_else(|| "unknown".to_string());
+            format!("Source context unavailable: {reason}")
+        }
+    }
+}
+
+async fn run_source_context(args: SourceContextArgs) -> anyhow::Result<()> {
+    let tenant_id = require_tenant_id(&args.connect)?;
+    let v = args
+        .connect
+        .build_client()?
+        .source_context()
+        .tenant_id(tenant_id)
+        .body(SourceContextRequest {
+            repository: args.repository,
+            ref_: args.git_ref,
+            path: args.path,
+            line: args.line as i32,
+            context_lines: args.context.map(|c| c as i32),
+        })
+        .send()
+        .await
+        .map_err(|e| anyhow::Error::new(e).context("source_context failed"))?
+        .into_inner();
+    if args.json {
+        crate::commands::print_json(&v)?;
+    } else {
+        println!("{}", format_source_context(&v));
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -1629,6 +1726,163 @@ mod tests {
         assert!(TestCli::try_parse_from(["tenant", "github", "remove", "42", "--yes"]).is_ok());
         // Removal needs an installation id.
         assert!(TestCli::try_parse_from(["tenant", "github", "remove"]).is_err());
+    }
+
+    #[test]
+    fn source_context_subcommand_parses() {
+        assert!(
+            TestCli::try_parse_from([
+                "tenant",
+                "source-context",
+                "--path",
+                "src/main.rs",
+                "--line",
+                "42",
+            ])
+            .is_ok()
+        );
+        assert!(
+            TestCli::try_parse_from([
+                "tenant",
+                "source-context",
+                "--path",
+                "src/main.rs",
+                "--line",
+                "42",
+                "--repository",
+                "octo/api",
+                "--ref",
+                "main",
+                "--context",
+                "5",
+            ])
+            .is_ok()
+        );
+        // `--path` and `--line` are required.
+        assert!(TestCli::try_parse_from(["tenant", "source-context"]).is_err());
+        assert!(
+            TestCli::try_parse_from(["tenant", "source-context", "--path", "src/main.rs"]).is_err()
+        );
+    }
+
+    fn source_context_response(json: &str) -> SourceContextResponse {
+        serde_json::from_str(json).expect("valid SourceContextResponse fixture")
+    }
+
+    #[test]
+    fn format_source_context_renders_the_snippet_with_a_marker_on_the_target_line() {
+        let response = source_context_response(
+            r#"{
+                "status": "available",
+                "snippet": {
+                    "repository": "octo/api",
+                    "path": "src/f.rs",
+                    "ref": "main",
+                    "line": 3,
+                    "start_line": 2,
+                    "lines": ["two", "three", "four"],
+                    "sha": "sha-abc",
+                    "html_url": "https://github.com/octo/api/blob/main/src/f.rs#L3"
+                }
+            }"#,
+        );
+
+        let rendered = format_source_context(&response);
+
+        assert!(rendered.starts_with("octo/api src/f.rs (@main)"));
+        assert!(rendered.contains("> "));
+        assert!(rendered.contains("three"));
+        // Only the target line carries the marker.
+        let marked_lines: Vec<&str> = rendered.lines().filter(|l| l.starts_with('>')).collect();
+        assert_eq!(marked_lines.len(), 1);
+        assert!(marked_lines[0].contains("three"));
+    }
+
+    #[test]
+    fn format_source_context_labels_an_omitted_ref_as_the_default_branch() {
+        let response = source_context_response(
+            r#"{
+                "status": "available",
+                "snippet": {
+                    "repository": "octo/api",
+                    "path": "f.rs",
+                    "line": 1,
+                    "start_line": 1,
+                    "lines": ["a"],
+                    "sha": "sha",
+                    "html_url": "https://github.com/octo/api/blob/main/f.rs#L1"
+                }
+            }"#,
+        );
+
+        assert!(format_source_context(&response).contains("(default branch)"));
+    }
+
+    #[test]
+    fn format_source_context_reports_the_unavailable_reason() {
+        let response =
+            source_context_response(r#"{ "status": "unavailable", "reason": "no_installation" }"#);
+
+        assert_eq!(
+            format_source_context(&response),
+            "Source context unavailable: no_installation"
+        );
+    }
+
+    #[tokio::test]
+    async fn source_context_requires_tenant_id() {
+        let result = run_source_context(SourceContextArgs {
+            path: "f.rs".into(),
+            line: 1,
+            repository: None,
+            git_ref: None,
+            context: None,
+            connect: ConnectArgs {
+                url: "http://127.0.0.1:1".to_string(),
+                api_key: Some("sk-test".to_string()),
+                tenant_id: None,
+                dataset_id: None,
+            },
+            json: false,
+        })
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn source_context_sends_the_request_and_prints_the_snippet() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/v1/tenants/acme/source-context")
+            .match_header("authorization", "Bearer sk-test")
+            .match_header("x-tenant-id", "acme")
+            .match_body(mockito::Matcher::Json(serde_json::json!({
+                "repository": "octo/api",
+                "ref": "main",
+                "path": "src/f.rs",
+                "line": 3,
+                "context_lines": 1
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"status":"available","snippet":{"repository":"octo/api","path":"src/f.rs","ref":"main","line":3,"start_line":2,"lines":["two","three","four"],"sha":"sha","html_url":"https://github.com/octo/api/blob/main/src/f.rs#L3"}}"#,
+            )
+            .create_async()
+            .await;
+
+        run_source_context(SourceContextArgs {
+            path: "src/f.rs".into(),
+            line: 3,
+            repository: Some("octo/api".into()),
+            git_ref: Some("main".into()),
+            context: Some(1),
+            connect: connect_acme(&server),
+            json: false,
+        })
+        .await
+        .expect("source-context succeeds");
+        mock.assert_async().await;
     }
 
     fn sample_installation(

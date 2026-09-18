@@ -226,6 +226,9 @@ is therefore consumed once per distinct file per TTL, not once per view.
 UI uses it to decide whether to offer **View source** at all, since the
 installation list itself is a management-only endpoint.
 
+Outside the Explore UI, `signaldb-cli tenant source-context` and the MCP
+tool `get_source_context` reach the same lookup.
+
 ## Verify
 
 - `GET /api/v1/manage/tenants/{id}/github-installations` returns
