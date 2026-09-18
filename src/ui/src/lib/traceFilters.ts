@@ -168,13 +168,9 @@ export function facetField(field: string): FacetField | undefined {
 }
 
 /** A row's attribute key mapped to the `TraceFilter` field it's facetable
- * under, when there is one: a direct facet match (`db.namespace`, ...) or a
- * known alias whose facet label differs from its field (`span.name` → the
- * `name` field, `span.kind` → `kind`). */
+ * under, when there is one. */
 export function facetableField(key: string): string | undefined {
-  return (
-    facetField(key)?.field ?? FACET_FIELDS.find((f) => f.label === key)?.field
-  );
+  return facetField(key)?.field;
 }
 
 /**
