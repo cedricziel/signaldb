@@ -70,7 +70,7 @@ describe("LogList", () => {
 
   it("renders virtualized rows with level and service", () => {
     render(
-      <LogList rows={rows} onAddFilter={() => {}} onOpenTrace={() => {}} />,
+      <LogList rows={rows} onAddFilter={() => {}} onOpenTrace={() => {}} update={vi.fn()} />,
     );
     expect(screen.getByText("payment failed")).toBeInTheDocument();
     expect(screen.getByText("request handled")).toBeInTheDocument();
@@ -81,7 +81,7 @@ describe("LogList", () => {
   it("expands a row to show attributes and filter actions", async () => {
     const onAddFilter = vi.fn();
     render(
-      <LogList rows={rows} onAddFilter={onAddFilter} onOpenTrace={() => {}} />,
+      <LogList rows={rows} onAddFilter={onAddFilter} onOpenTrace={() => {}} update={vi.fn()} />,
     );
     await userEvent.click(screen.getByText("payment failed"));
     await expandStream();
@@ -109,6 +109,7 @@ describe("LogList", () => {
         ]}
         onAddFilter={() => {}}
         onOpenTrace={() => {}}
+        update={vi.fn()}
       />,
     );
 
@@ -132,7 +133,7 @@ describe("LogList", () => {
   it("supports exclude filters from the detail view", async () => {
     const onAddFilter = vi.fn();
     render(
-      <LogList rows={rows} onAddFilter={onAddFilter} onOpenTrace={() => {}} />,
+      <LogList rows={rows} onAddFilter={onAddFilter} onOpenTrace={() => {}} update={vi.fn()} />,
     );
     await userEvent.click(screen.getByText("payment failed"));
     await expandStream();
@@ -149,7 +150,7 @@ describe("LogList", () => {
   it("pivots to the trace from a row with a trace id", async () => {
     const onOpenTrace = vi.fn();
     render(
-      <LogList rows={rows} onAddFilter={() => {}} onOpenTrace={onOpenTrace} />,
+      <LogList rows={rows} onAddFilter={() => {}} onOpenTrace={onOpenTrace} update={vi.fn()} />,
     );
     await userEvent.click(screen.getByText("payment failed"));
     await userEvent.click(
@@ -159,14 +160,14 @@ describe("LogList", () => {
   });
 
   it("shows the shared empty state", () => {
-    render(<LogList rows={[]} onAddFilter={() => {}} onOpenTrace={() => {}} />);
+    render(<LogList rows={[]} onAddFilter={() => {}} onOpenTrace={() => {}} update={vi.fn()} />);
     const status = screen.getByRole("status");
     expect(status).toHaveTextContent(/No log lines/);
   });
 
   it("keeps a row expanded when a newer row is prepended and shifts its index", async () => {
     const { rerender } = render(
-      <LogList rows={rows} onAddFilter={() => {}} onOpenTrace={() => {}} />,
+      <LogList rows={rows} onAddFilter={() => {}} onOpenTrace={() => {}} update={vi.fn()} />,
     );
     await userEvent.click(screen.getByText("request handled"));
     await expandStream();
@@ -186,6 +187,7 @@ describe("LogList", () => {
         rows={prepended}
         onAddFilter={() => {}}
         onOpenTrace={() => {}}
+        update={vi.fn()}
       />,
     );
     // "request handled" is now at index 2, not 1 — expansion keyed by index
@@ -252,6 +254,7 @@ describe("LogList structured metadata", () => {
         rows={[metaRow]}
         onAddFilter={() => {}}
         onOpenTrace={() => {}}
+        update={vi.fn()}
       />,
     );
     await userEvent.click(screen.getByText("checkout timed out"));
@@ -266,6 +269,7 @@ describe("LogList structured metadata", () => {
         rows={[metaRow]}
         onAddFilter={() => {}}
         onOpenTrace={() => {}}
+        update={vi.fn()}
       />,
     );
     await userEvent.click(screen.getByText("checkout timed out"));
@@ -304,6 +308,7 @@ describe("LogList structured metadata", () => {
         rows={[metaRow]}
         onAddFilter={() => {}}
         onOpenTrace={() => {}}
+        update={vi.fn()}
       />,
     );
     await userEvent.click(screen.getByText("checkout timed out"));
@@ -326,6 +331,7 @@ describe("LogList structured metadata", () => {
         rows={[metaRow]}
         onAddFilter={() => {}}
         onOpenTrace={() => {}}
+        update={vi.fn()}
       />,
     );
 
@@ -357,6 +363,7 @@ describe("LogList structured metadata", () => {
         rows={[metaRow]}
         onAddFilter={() => {}}
         onOpenTrace={() => {}}
+        update={vi.fn()}
       />,
     );
     await userEvent.click(screen.getByText("checkout timed out"));
@@ -414,7 +421,7 @@ describe("LogList semantic labels", () => {
       },
     ]);
     const { container } = render(
-      <LogList rows={[semRow]} onAddFilter={() => {}} onOpenTrace={() => {}} />,
+      <LogList rows={[semRow]} onAddFilter={() => {}} onOpenTrace={() => {}} update={vi.fn()} />,
     );
     await userEvent.click(screen.getByText("pod started"));
     // Enrichment shows on the group heading (title + namespace, once) and a
@@ -455,7 +462,7 @@ describe("LogList semantic labels", () => {
       },
     ]);
     render(
-      <LogList rows={[semRow]} onAddFilter={() => {}} onOpenTrace={() => {}} />,
+      <LogList rows={[semRow]} onAddFilter={() => {}} onOpenTrace={() => {}} update={vi.fn()} />,
     );
     await userEvent.click(screen.getByText("pod started"));
     await screen.findByText("Kubernetes Attributes");
@@ -473,7 +480,7 @@ describe("LogList semantic labels", () => {
       },
     ]);
     const { container } = render(
-      <LogList rows={[semRow]} onAddFilter={() => {}} onOpenTrace={() => {}} />,
+      <LogList rows={[semRow]} onAddFilter={() => {}} onOpenTrace={() => {}} update={vi.fn()} />,
     );
     await userEvent.click(screen.getByText("pod started"));
     await expandStream();
@@ -504,7 +511,7 @@ describe("LogList stream/resource section", () => {
 
   it("is collapsed behind a one-line summary by default and expands on click", async () => {
     render(
-      <LogList rows={[bigRow]} onAddFilter={() => {}} onOpenTrace={() => {}} />,
+      <LogList rows={[bigRow]} onAddFilter={() => {}} onOpenTrace={() => {}} update={vi.fn()} />,
     );
     await userEvent.click(screen.getByText("many labels"));
 
@@ -525,7 +532,7 @@ describe("LogList stream/resource section", () => {
 
   it("renders per-line fields above the stream section", async () => {
     render(
-      <LogList rows={[bigRow]} onAddFilter={() => {}} onOpenTrace={() => {}} />,
+      <LogList rows={[bigRow]} onAddFilter={() => {}} onOpenTrace={() => {}} update={vi.fn()} />,
     );
     await userEvent.click(screen.getByText("many labels"));
     const thisLine = screen.getByText("This line");
@@ -573,7 +580,7 @@ describe("LogList stream/resource section", () => {
       },
     ]);
     const { unmount } = render(
-      <LogList rows={[bigRow]} onAddFilter={() => {}} onOpenTrace={() => {}} />,
+      <LogList rows={[bigRow]} onAddFilter={() => {}} onOpenTrace={() => {}} update={vi.fn()} />,
     );
     await userEvent.click(screen.getByText("many labels"));
     await userEvent.click(screen.getByLabelText("Show descriptions"));
@@ -581,10 +588,96 @@ describe("LogList stream/resource section", () => {
     unmount();
 
     render(
-      <LogList rows={[bigRow]} onAddFilter={() => {}} onOpenTrace={() => {}} />,
+      <LogList rows={[bigRow]} onAddFilter={() => {}} onOpenTrace={() => {}} update={vi.fn()} />,
     );
     await userEvent.click(screen.getByText("many labels"));
     expect(screen.getByLabelText("Show descriptions")).toBeChecked();
+  });
+});
+
+describe("LogList entity pivots", () => {
+  const podName = {
+    key: "k8s.pod.name",
+    brief: "The name of the Pod.",
+    type: "string",
+    group_id: "registry.k8s.pod",
+    group_display_name: "Kubernetes Attributes",
+    namespace: "otel",
+    version: "1.43.0",
+    source: "bundled",
+    entity_roles: [
+      { namespace: "otel", entity: "k8s.pod", role: "identifying" },
+    ],
+  };
+  const pivotRow = row({
+    line: "pod started",
+    labels: { service_name: "api" },
+    metadata: {
+      trace_id: "abc123",
+      "k8s.pod.name": "web-1",
+      "k8s.namespace.name": "prod",
+    },
+  });
+
+  it("offers traces/catalog pivots for an identifying key and an open-trace action for trace_id", async () => {
+    stubFetchRoutes([
+      {
+        match: "/api/v1/schema/attributes",
+        body: {
+          hits: [],
+          resolutions: [
+            { key: "k8s.pod.name", hits: [podName], primary: podName },
+          ],
+        },
+      },
+    ]);
+    const update = vi.fn();
+    const onOpenTrace = vi.fn();
+    render(
+      <LogList
+        rows={[pivotRow]}
+        onAddFilter={() => {}}
+        onOpenTrace={onOpenTrace}
+        update={update}
+      />,
+    );
+    await userEvent.click(screen.getByText("pod started"));
+
+    await userEvent.click(
+      await screen.findByRole("button", {
+        name: "Traces with k8s.pod.name = web-1",
+      }),
+    );
+    expect(update).toHaveBeenCalledWith(
+      {
+        signal: "traces",
+        trace: "",
+        search: "",
+        group: "",
+        traceFilters: [{ field: "k8s.pod.name", value: "web-1" }],
+      },
+      { push: true },
+    );
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Open pod web-1 in the catalog" }),
+    );
+    expect(update).toHaveBeenLastCalledWith(
+      {
+        signal: "catalog",
+        trace: "",
+        group: "",
+        catalogEntity: "k8s_pod",
+        catalogPrimary: "web-1prod",
+        catalogSecondary: "",
+      },
+      { push: true },
+    );
+
+    await userEvent.click(
+      screen.getByRole("button", { name: "Open trace abc123" }),
+    );
+    expect(onOpenTrace).toHaveBeenCalledWith("abc123");
   });
 });
 

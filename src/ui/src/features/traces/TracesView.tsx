@@ -42,6 +42,7 @@ import {
   readAttrDescriptions,
   writeAttrDescriptions,
 } from "../../lib/attrDescriptions";
+import { pivotRowActions } from "../../lib/attrPivots";
 import { summarizeAttributes, type SummaryField } from "../../lib/attrSummary";
 import { spanDetailWidth } from "../../lib/sidebarWidth";
 import { liveRefetchInterval } from "../../lib/live";
@@ -51,10 +52,10 @@ import { TraceFacets } from "./TraceFacets";
 import { TraceVolumeAreaChart } from "./TraceVolumeAreaChart";
 import { TraceVolumeHeatmap } from "./TraceVolumeHeatmap";
 import {
-  FACET_FIELDS,
   KIND_VALUES,
   compileTraceQL,
   facetField,
+  facetableField,
   removeTraceFilter,
   upsertTraceFilter,
   withDefaultTraceFilters,
@@ -1112,16 +1113,6 @@ const RESOURCE_SUMMARY_FIELDS: SummaryField[] = [
   },
 ];
 
-/** A row's attribute key mapped to the `TraceFilter` field it's facetable
- * under, when there is one: a direct facet match (`db.namespace`, ...) or a
- * known alias whose facet label differs from its field (`span.name` → the
- * `name` field, `span.kind` → `kind`). */
-function facetableField(key: string): string | undefined {
-  return (
-    facetField(key)?.field ?? FACET_FIELDS.find((f) => f.label === key)?.field
-  );
-}
-
 function stringEntries(entries: [string, AttrValue][]): [string, string][] {
   return entries.map(([k, v]) => [k, String(v)]);
 }
@@ -1178,6 +1169,14 @@ function SpanDetail({
     [groups],
   );
   const semantics = useSemantics(attributeKeys);
+  // Every span/scope/resource attribute on this span, for a catalog pivot's
+  // identity check (lib/attrPivots.ts) — it needs an entity's full identity,
+  // not just the one row's own key/value.
+  const attributeBag = useMemo(
+    (): ReadonlyMap<string, string> =>
+      new Map(groups.flatMap((g) => stringEntries(g.entries))),
+    [groups],
+  );
   const spanProfiles = profiles.filter((p) => p.spanId === span.spanId);
   const [showDescriptions, setShowDescriptions] = useState(readAttrDescriptions);
   const [scopeExpanded, setScopeExpanded] = useState(false);
@@ -1211,6 +1210,16 @@ function SpanDetail({
           ),
       });
     }
+    actions.push(
+      ...pivotRowActions(
+        key,
+        value,
+        semantics.get(key),
+        attributeBag,
+        "traces",
+        update,
+      ),
+    );
     return actions;
   };
 

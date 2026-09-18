@@ -1552,6 +1552,106 @@ describe("TracesView detail", () => {
     );
   });
 
+  it("offers logs and catalog pivots for an identifying resource attribute", async () => {
+    const serviceName = {
+      key: "service.name",
+      brief: "",
+      type: "string",
+      group_id: "registry.service",
+      namespace: "otel",
+      version: "1.43.0",
+      source: "bundled",
+      entity_roles: [
+        { namespace: "otel", entity: "service", role: "identifying" },
+      ],
+    };
+    stubFetchRoutes([
+      {
+        match: "/api/v1/schema/attributes",
+        body: {
+          hits: [],
+          resolutions: [
+            { key: "service.name", hits: [serviceName], primary: serviceName },
+          ],
+        },
+      },
+      ...traceRoutes({
+        ...TRACE_BODY,
+        traceID: "tpivot",
+        spanSets: [
+          {
+            matched: 1,
+            spans: [
+              {
+                spanID: "root",
+                startTimeUnixNano: "1000000000",
+                durationNanos: "412000000",
+                name: "POST /api/checkout",
+                serviceName: "gateway",
+                status: "ok",
+                attributes: {
+                  "resource.service.name": {
+                    key: "resource.service.name",
+                    value: { stringValue: "checkout-svc" },
+                  },
+                  "resource.service.namespace": {
+                    key: "resource.service.namespace",
+                    value: { stringValue: "shop" },
+                  },
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    ]);
+    const update = renderView({ trace: "tpivot" });
+    await userEvent.click(
+      await screen.findByRole("button", { name: /Resource/ }),
+    );
+
+    await userEvent.click(
+      await screen.findByRole("button", {
+        name: "Logs with service.name = checkout-svc",
+      }),
+    );
+    expect(update).toHaveBeenCalledWith(
+      {
+        signal: "logs",
+        trace: "",
+        raw: "",
+        search: "",
+        group: "",
+        traceFilters: [],
+        filters: [{ label: "service_name", op: "=", value: "checkout-svc" }],
+      },
+      { push: true },
+    );
+
+    await userEvent.click(
+      screen.getByRole("button", {
+        name: "Open service checkout-svc in the catalog",
+      }),
+    );
+    expect(update).toHaveBeenLastCalledWith(
+      {
+        signal: "catalog",
+        trace: "",
+        group: "",
+        // Trace/log-only params must not ride into /catalog either.
+        search: "",
+        traceFilters: [],
+        filters: [],
+        raw: "",
+        catalogEntity: "service",
+        // Composite key in identity order: service.name then service.namespace.
+        catalogPrimary: "checkout-svcshop",
+        catalogSecondary: "",
+      },
+      { push: true },
+    );
+  });
+
   it("renders raw keys and no error when the schema endpoint fails", async () => {
     stubFetchRoutes([
       {

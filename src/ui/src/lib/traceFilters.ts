@@ -167,6 +167,16 @@ export function facetField(field: string): FacetField | undefined {
   return FACET_FIELDS.find((f) => f.field === field);
 }
 
+/** A row's attribute key mapped to the `TraceFilter` field it's facetable
+ * under, when there is one: a direct facet match (`db.namespace`, ...) or a
+ * known alias whose facet label differs from its field (`span.name` → the
+ * `name` field, `span.kind` → `kind`). */
+export function facetableField(key: string): string | undefined {
+  return (
+    facetField(key)?.field ?? FACET_FIELDS.find((f) => f.label === key)?.field
+  );
+}
+
 /**
  * Compile filters into a TraceQL selector for `/api/search?q=`. Filters on
  * fields that are not facetable are dropped rather than emitted as invalid

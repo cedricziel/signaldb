@@ -1,7 +1,11 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMemo, useRef, useState } from "react";
 import type { LogRow } from "../../api/loki";
-import { AttributeSummary, AttributeTable } from "../../components/AttributeTable";
+import {
+  AttributeSummary,
+  AttributeTable,
+  type AttributeRowAction,
+} from "../../components/AttributeTable";
 import { CopyValueButton } from "../../components/CopyValueButton";
 import { EmptyState } from "../../components/EmptyState";
 import { useSemantics } from "../../hooks/useSemantics";
@@ -9,15 +13,18 @@ import {
   readAttrDescriptions,
   writeAttrDescriptions,
 } from "../../lib/attrDescriptions";
+import { pivotRowActions } from "../../lib/attrPivots";
 import { summarizeAttributes, type SummaryField } from "../../lib/attrSummary";
 import type { LabelFilter } from "../../lib/filters";
 import { formatTimestamp } from "../../lib/time";
+import type { UpdateFn } from "../../lib/urlState";
 import { normalizeLevel } from "./Histogram";
 
 interface Props {
   rows: LogRow[];
   onAddFilter: (filter: LabelFilter) => void;
   onOpenTrace: (traceId: string) => void;
+  update: UpdateFn;
 }
 
 /**
@@ -66,7 +73,7 @@ export function rowKey(row: LogRow): string {
   return `${row.tsNs}|${spanId}|${traceId}|${canonicalEntries(row.labels)}|${canonicalEntries(row.metadata)}|${row.line}`;
 }
 
-export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
+export function LogList({ rows, onAddFilter, onOpenTrace, update }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [showDescriptions, setShowDescriptions] = useState(readAttrDescriptions);
@@ -132,6 +139,7 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
                   row={row}
                   onAddFilter={onAddFilter}
                   onOpenTrace={onOpenTrace}
+                  update={update}
                   showDescriptions={showDescriptions}
                   onToggleDescriptions={toggleDescriptions}
                 />
@@ -170,12 +178,14 @@ function LogDetail({
   row,
   onAddFilter,
   onOpenTrace,
+  update,
   showDescriptions,
   onToggleDescriptions,
 }: {
   row: LogRow;
   onAddFilter: (filter: LabelFilter) => void;
   onOpenTrace: (traceId: string) => void;
+  update: UpdateFn;
   showDescriptions: boolean;
   onToggleDescriptions: () => void;
 }) {
@@ -219,6 +229,8 @@ function LogDetail({
       <LogAttributes
         row={row}
         onAddFilter={onAddFilter}
+        onOpenTrace={onOpenTrace}
+        update={update}
         showDescriptions={showDescriptions}
       />
     </div>
@@ -228,10 +240,14 @@ function LogDetail({
 function LogAttributes({
   row,
   onAddFilter,
+  onOpenTrace,
+  update,
   showDescriptions,
 }: {
   row: LogRow;
   onAddFilter: (filter: LabelFilter) => void;
+  onOpenTrace: (traceId: string) => void;
+  update: UpdateFn;
   showDescriptions: boolean;
 }) {
   const labels = useMemo(() => sortedEntries(row.labels), [row.labels]);
@@ -241,15 +257,39 @@ function LogAttributes({
     [labels, metadata],
   );
   const semantics = useSemantics(keys);
+  // Every label/metadata value on the row, for `pivotRowActions`'s catalog
+  // pivot — it needs an entity's full identity, not just one row's key/value.
+  const bag = useMemo(
+    (): ReadonlyMap<string, string> => new Map([...labels, ...metadata]),
+    [labels, metadata],
+  );
   const [streamExpanded, setStreamExpanded] = useState(false);
+
+  const metadataActions = (k: string, v: string): AttributeRowAction[] => {
+    const actions = pivotRowActions(k, v, semantics.get(k), bag, "logs", update);
+    // trace_id carries no identifying entity role of its own, but the trace
+    // it names is always one click away — mirrors the `logdetail-actions`
+    // "View trace" button for the row that has one, as a per-row action for
+    // this specific field once the metadata table is open.
+    return k === "trace_id"
+      ? [
+          {
+            label: "open trace ↗",
+            ariaLabel: `Open trace ${v}`,
+            onClick: () => onOpenTrace(v),
+          },
+          ...actions,
+        ]
+      : actions;
+  };
 
   return (
     <>
       {metadata.length > 0 && (
         <>
           <div className="attrtable-section">This line</div>
-          {/* Shown without filter actions — the label-filter model compiles
-              to a stream selector, which is the wrong shape for a field that
+          {/* No filter/exclude actions — the label-filter model compiles to
+              a stream selector, which is the wrong shape for a field that
               varies per line. Filtering on these arrives with the Query IR
               migration, where the predicate is built server-side. */}
           <AttributeTable
@@ -258,6 +298,7 @@ function LogAttributes({
             layout="grid"
             showDescriptions={showDescriptions}
             scope="metadata"
+            actions={metadataActions}
           />
         </>
       )}
@@ -290,6 +331,7 @@ function LogAttributes({
                   ariaLabel: `Filter out ${k} = ${v}`,
                   onClick: () => onAddFilter({ label: k, op: "!=", value: v }),
                 },
+                ...pivotRowActions(k, v, semantics.get(k), bag, "logs", update),
               ]}
             />
           ) : (
