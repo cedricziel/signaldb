@@ -45,6 +45,9 @@ const TENANT_SELF_TOOLS: &[&str] = &[
     "tenant_create_tables",
     "tenant_list_table_schemas",
     "list_available_table_schemas",
+    "tenant_start_github_link",
+    "tenant_list_github_installations",
+    "tenant_remove_github_installation",
 ];
 
 /// The tenant tools that wrap the `authorize_tenant`-gated management API:
@@ -62,6 +65,9 @@ const TENANT_MANAGE_TOOLS: &[&str] = &[
     "tenant_upsert_membership",
     "tenant_remove_membership",
     "tenant_get_schema",
+    "tenant_start_github_link",
+    "tenant_list_github_installations",
+    "tenant_remove_github_installation",
 ];
 
 const SCHEMA_EXTRA_TOOLS: &[&str] = &["get_schema_registry", "validate_schema_registry"];
@@ -89,6 +95,7 @@ async fn destructive_and_read_only_tools_carry_the_right_annotations() {
         "tenant_delete_dataset",
         "tenant_revoke_api_key",
         "tenant_remove_membership",
+        "tenant_remove_github_installation",
     ];
     let read_only = [
         "list_tenants",
@@ -103,6 +110,7 @@ async fn destructive_and_read_only_tools_carry_the_right_annotations() {
         "tenant_list_table_schemas",
         "list_available_table_schemas",
         "get_schema_registry",
+        "tenant_list_github_installations",
     ];
 
     for name in destructive {
@@ -272,6 +280,25 @@ async fn behaviour(
         return (
             StatusCode::FORBIDDEN,
             axum::Json(serde_json::json!({"error": "forbidden"})),
+        )
+            .into_response();
+    }
+    // GitHub endpoints, mirroring the real router's behaviour with no
+    // `[github]` section configured: list always answers 200 with
+    // `configured: false`; start-link and remove answer 404 (see
+    // `router::endpoints::github`).
+    if path.ends_with("/github-installations") && method == axum::http::Method::GET {
+        return axum::Json(serde_json::json!({
+            "configured": false, "app_slug": null, "installations": []
+        }))
+        .into_response();
+    }
+    if (path.ends_with("/github-installations/link") && method == axum::http::Method::POST)
+        || (path.contains("/github-installations/") && method == axum::http::Method::DELETE)
+    {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": "GitHub integration is not configured"})),
         )
             .into_response();
     }
@@ -456,6 +483,21 @@ async fn destructive_tool_without_matching_confirm_is_refused() {
         tool_is_error(&reply),
         "mismatched confirm must be refused: {reply}"
     );
+
+    let reply = session
+        .call_tool(
+            "tenant_remove_github_installation",
+            serde_json::json!({"tenant_id": "acme", "installation_id": 42, "confirm": "7"}),
+        )
+        .await;
+    assert!(
+        tool_is_error(&reply),
+        "mismatched confirm must be refused: {reply}"
+    );
+    assert!(
+        tool_error_message(&reply).contains("confirm"),
+        "error must name the confirm requirement: {reply}"
+    );
 }
 
 #[tokio::test]
@@ -566,6 +608,51 @@ async fn tenant_info_returns_the_callers_tenant() {
     let text = tool_error_message(&reply);
     assert!(text.contains("\"tenant_id\""), "{text}");
     assert!(text.contains("acme"), "{text}");
+}
+
+/// `tenant_list_github_installations` always succeeds, even with GitHub
+/// integration unconfigured, reporting `configured: false` rather than an
+/// error (mirrors the real router: `router::endpoints::github::list_github_installations`).
+#[tokio::test]
+async fn tenant_list_github_installations_reports_unconfigured() {
+    let mut session = McpSession::open(app().await).await;
+    let reply = session
+        .call_tool(
+            "tenant_list_github_installations",
+            serde_json::json!({"tenant_id": "acme"}),
+        )
+        .await;
+    assert!(!tool_is_error(&reply), "list succeeds: {reply}");
+    let text = tool_error_message(&reply);
+    assert!(text.contains("\"configured\":false"), "{text}");
+    assert!(text.contains("\"installations\":[]"), "{text}");
+}
+
+/// `tenant_start_github_link` and `tenant_remove_github_installation` both
+/// 404 when GitHub integration is not configured, which surfaces as a
+/// resource-not-found tool error (`map_sdk_err`'s generic 404 mapping —
+/// unlike a 403, this isn't special-cased by `map_manage_err`).
+#[tokio::test]
+async fn github_tools_surface_the_routers_not_configured_404() {
+    let mut session = McpSession::open(app().await).await;
+
+    let reply = session
+        .call_tool(
+            "tenant_start_github_link",
+            serde_json::json!({"tenant_id": "acme"}),
+        )
+        .await;
+    assert!(tool_is_error(&reply), "404 must surface: {reply}");
+    assert!(tool_error_message(&reply).contains("not found"), "{reply}");
+
+    let reply = session
+        .call_tool(
+            "tenant_remove_github_installation",
+            serde_json::json!({"tenant_id": "acme", "installation_id": 42, "confirm": "42"}),
+        )
+        .await;
+    assert!(tool_is_error(&reply), "404 must surface: {reply}");
+    assert!(tool_error_message(&reply).contains("not found"), "{reply}");
 }
 
 #[tokio::test]
