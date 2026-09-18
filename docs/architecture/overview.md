@@ -355,6 +355,7 @@ whether the answer is window-scoped, and how stale the statistics behind it are.
   - `find_trace:{tenant_slug}:{dataset_slug}:{trace_id}[:{start}:{end}]` -- single trace lookup with optional unix-second time hints
   - `search_traces:{tenant_slug}:{dataset_slug}:{params}` -- trace search with filters
 - Uses `TableReference::full(tenant_slug, dataset_slug, "traces")` with slug validation to prevent SQL injection
+- The session runs under a `FairSpillPool` bounded by `[querier] memory_limit_mb`, and the scan feeds sorts in `[querier.datafusion] batch_size`-row batches for the same row-width reason the compactor's scan does; the monolith resolves an unset `memory_limit_mb` to min(50% of RAM, 4096 MiB) because it shares the process with ingest, while the standalone querier stays unbounded with a startup warning (#1359)
 
 ### Compactor
 

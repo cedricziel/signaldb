@@ -278,9 +278,15 @@ max_instances = 256
 # Querier resource limits — bound what a single query (or tenant) can do
 # to the shared querier process.
 #
-# Maximum memory for query execution, in MiB. When unset the memory pool
-# is UNBOUNDED (a startup warning is logged) and one heavy query can OOM
-# the process. Strongly recommended in production.
+# Maximum memory for query execution, in MiB. Three cases:
+#   - a positive value: bounded to that many MiB.
+#   - 0: explicitly UNBOUNDED (an opt-out), in either deployment mode.
+#   - unset: the standalone querier binary stays UNBOUNDED (a startup
+#     warning is logged), same as 0. The monolith (`signaldb` with no
+#     subcommand) instead resolves an unset value to a bounded default
+#     (min(50% of host RAM, 4096) MiB) before starting the querier, because
+#     an unbounded query pool there can OOM ingest running in the same
+#     process, not just itself.
 # memory_limit_mb = 4096
 #
 # Fraction of memory_limit_mb usable by query operators before they

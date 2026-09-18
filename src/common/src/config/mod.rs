@@ -1882,8 +1882,17 @@ impl Default for WriterConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QuerierConfig {
-    /// Maximum memory the query engine may use, in MiB. When unset the
-    /// memory pool is unbounded and the querier logs a startup warning.
+    /// Maximum memory the query engine may use, in MiB. Three cases:
+    ///
+    /// - `Some(n)` with `n > 0`: bounded to `n` MiB.
+    /// - `Some(0)`: explicitly unbounded (an operator opt-out), in either
+    ///   deployment mode.
+    /// - `None`: the standalone querier binary stays unbounded (with a
+    ///   startup warning) — same as `Some(0)`. The monolith instead
+    ///   resolves `None` to a bounded default before constructing the
+    ///   querier (`QuerierConfig::resolve_monolith_memory_limit`, #1359),
+    ///   because an unbounded query pool there can OOM ingest running in
+    ///   the same process, not just itself.
     pub memory_limit_mb: Option<u64>,
     /// Fraction of `memory_limit_mb` usable by query operators before
     /// they spill or fail (0.0–1.0).
@@ -1910,6 +1919,33 @@ pub struct QuerierConfig {
     /// DataFusion scan/pushdown tuning for the query engine. See
     /// `[querier.datafusion]` in `signaldb.dist.toml`.
     pub datafusion: QuerierDataFusionConfig,
+}
+
+impl QuerierConfig {
+    /// Resolve an unset `memory_limit_mb` to a bounded default for
+    /// monolithic mode, where an unbounded query pool is worse than in the
+    /// standalone querier: the same process also runs ingest, so a heavy
+    /// query can OOM ingest along with itself (#1359).
+    ///
+    /// `Some(_)` — bounded, or the explicit `Some(0)` unbounded opt-out — is
+    /// an operator choice and is left untouched; only `None` is resolved.
+    /// The standalone querier binary never calls this, so `None` there still
+    /// means unbounded (with the usual startup warning).
+    ///
+    /// The default is `min(50% of total_ram_bytes, 4096 MiB)`, floored at
+    /// 256 MiB so a small host still gets a working pool. Takes the host's
+    /// total RAM as a parameter (rather than reading it via `sysinfo`
+    /// itself) so the resolution is unit-testable without mocking the OS.
+    pub fn resolve_monolith_memory_limit(&mut self, total_ram_bytes: u64) {
+        if self.memory_limit_mb.is_some() {
+            return;
+        }
+        const MIB: u64 = 1024 * 1024;
+        const MAX_DEFAULT_MB: u64 = 4096;
+        const FLOOR_MB: u64 = 256;
+        let half_ram_mb = (total_ram_bytes / MIB) / 2;
+        self.memory_limit_mb = Some(half_ram_mb.clamp(FLOOR_MB, MAX_DEFAULT_MB));
+    }
 }
 
 impl Default for QuerierConfig {
@@ -2419,6 +2455,56 @@ mod tests {
             assert_eq!(config.querier.datafusion.batch_size, 256);
             Ok(())
         });
+    }
+
+    /// Table-driven over the three bands `resolve_monolith_memory_limit`
+    /// treats differently: below the floor, in range (half RAM), and above
+    /// the cap.
+    #[test]
+    fn querier_resolve_monolith_memory_limit_bands() {
+        let cases: &[(u64, u64)] = &[
+            // A tiny 256 MiB host: half (128 MiB) is below the floor.
+            (256 * 1024 * 1024, 256),
+            // An 8 GiB host: half is 4096 MiB, exactly the cap.
+            (8 * 1024 * 1024 * 1024, 4096),
+            // A 64 GiB host: half (32768 MiB) is well past the cap.
+            (64 * 1024 * 1024 * 1024, 4096),
+        ];
+        for &(total_ram_bytes, expected_mb) in cases {
+            let mut config = QuerierConfig::default();
+            assert_eq!(config.memory_limit_mb, None);
+            config.resolve_monolith_memory_limit(total_ram_bytes);
+            assert_eq!(
+                config.memory_limit_mb,
+                Some(expected_mb),
+                "total_ram_bytes={total_ram_bytes} should resolve to {expected_mb} MiB"
+            );
+        }
+    }
+
+    #[test]
+    fn querier_resolve_monolith_memory_limit_leaves_explicit_values_untouched() {
+        let mut config = QuerierConfig {
+            memory_limit_mb: Some(777),
+            ..QuerierConfig::default()
+        };
+        config.resolve_monolith_memory_limit(64 * 1024 * 1024 * 1024);
+        assert_eq!(
+            config.memory_limit_mb,
+            Some(777),
+            "an operator-set bounded limit must not be overridden"
+        );
+
+        let mut config = QuerierConfig {
+            memory_limit_mb: Some(0),
+            ..QuerierConfig::default()
+        };
+        config.resolve_monolith_memory_limit(64 * 1024 * 1024 * 1024);
+        assert_eq!(
+            config.memory_limit_mb,
+            Some(0),
+            "the explicit unbounded opt-out must not be overridden"
+        );
     }
 
     #[test]

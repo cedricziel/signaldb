@@ -283,7 +283,7 @@ Env: `SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__ENABLED`, `SIGNALDB__COMPACTOR__ORPHA
 
 ```toml
 [querier]
-memory_limit_mb = 4096                # Unset = unbounded (startup warning)
+memory_limit_mb = 4096                # Positive = bounded; 0 = explicitly unbounded; unset = standalone stays unbounded, monolith resolves to min(50% RAM, 4096)
 memory_pool_fraction = 0.8            # Fraction usable before spill/fail (0.0-1.0)
 parquet_metadata_cache_mb = 128       # Parquet footer cache budget; 0 disables. Separate from memory_limit_mb
 query_timeout = "60s"                 # Wall-clock timeout per Flight query

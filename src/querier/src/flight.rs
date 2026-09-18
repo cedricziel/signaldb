@@ -450,7 +450,7 @@ pub fn session_context_with_limits(limits: &QuerierConfig) -> SessionContext {
             .with_metadata_cache_limit((limits.parquet_metadata_cache_mb as usize) * 1024 * 1024),
     );
     match limits.memory_limit_mb {
-        Some(mb) => {
+        Some(mb) if mb > 0 => {
             builder = builder.with_memory_pool(common::datafusion_runtime::bounded_memory_pool(
                 (mb as usize) * 1024 * 1024,
                 limits.memory_pool_fraction,
@@ -461,9 +461,11 @@ pub fn session_context_with_limits(limits: &QuerierConfig) -> SessionContext {
                 "Querier memory pool configured"
             );
         }
-        None => {
+        // `Some(0)` is an explicit unbounded opt-out, same as `None` — see
+        // the `memory_limit_mb` doc comment for the three cases.
+        Some(_) | None => {
             tracing::warn!(
-                "Querier memory is UNBOUNDED ([querier].memory_limit_mb is not set); \
+                "Querier memory is UNBOUNDED ([querier].memory_limit_mb is unset or 0); \
                  a single heavy query can exhaust process memory"
             );
         }
@@ -2774,6 +2776,18 @@ mod tests {
         let ctx = session_context_with_limits(&QuerierConfig::default());
         let reservation = MemoryConsumer::new("test").register(&ctx.runtime_env().memory_pool);
         assert!(reservation.try_grow(10 * 1024 * 1024).is_ok());
+
+        // `Some(0)` is an explicit unbounded opt-out, same as `None`.
+        let ctx = session_context_with_limits(&QuerierConfig {
+            memory_limit_mb: Some(0),
+            memory_pool_fraction: 1.0,
+            ..QuerierConfig::default()
+        });
+        let reservation = MemoryConsumer::new("test").register(&ctx.runtime_env().memory_pool);
+        assert!(
+            reservation.try_grow(10 * 1024 * 1024).is_ok(),
+            "memory_limit_mb = Some(0) must mean unbounded, not a zero-size pool"
+        );
     }
 
     /// A shared querier must not let one heavy sort take the whole pool
