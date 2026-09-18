@@ -1288,13 +1288,11 @@ function SpanDetail({
           <input
             type="checkbox"
             checked={showDescriptions}
-            onChange={() =>
-              setShowDescriptions((current) => {
-                const next = !current;
-                writeAttrDescriptions(next);
-                return next;
-              })
-            }
+            onChange={() => {
+              const next = !showDescriptions;
+              writeAttrDescriptions(next);
+              setShowDescriptions(next);
+            }}
             aria-label="Show descriptions"
           />
           descriptions

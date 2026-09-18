@@ -79,11 +79,9 @@ export function LogList({ rows, onAddFilter, onOpenTrace, update }: Props) {
   const [expanded, setExpanded] = useState<string | null>(null);
   const [showDescriptions, setShowDescriptions] = useState(readAttrDescriptions);
   const toggleDescriptions = () => {
-    setShowDescriptions((current) => {
-      const next = !current;
-      writeAttrDescriptions(next);
-      return next;
-    });
+    const next = !showDescriptions;
+    writeAttrDescriptions(next);
+    setShowDescriptions(next);
   };
 
   const virtualizer = useVirtualizer({
