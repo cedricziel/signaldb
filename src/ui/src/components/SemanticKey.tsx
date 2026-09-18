@@ -295,11 +295,25 @@ function SemanticHover({
   };
   // Shift+Tab off the tooltip's first link returns focus to the trigger
   // rather than wherever the link would naturally precede in tab order.
+  // The tooltip is portaled to <body>, so native tab order would carry
+  // focus off to the end of the document from its last link; both edges
+  // hand focus back to the trigger instead, forward Tab closing the tip so
+  // the next Tab continues from the trigger's own position in the list.
   const onTipKeyDown = (e: ReactKeyboardEvent) => {
-    const firstLink = tipRef.current?.querySelector("a");
-    if (e.key === "Tab" && e.shiftKey && e.target === firstLink) {
+    if (e.key !== "Tab") return;
+    // React bubbles the portaled tooltip's events to the trigger, whose own
+    // Tab handler would otherwise send focus straight back into the tip.
+    e.stopPropagation();
+    const links = tipRef.current?.querySelectorAll("a") ?? [];
+    const firstLink = links[0];
+    const lastLink = links[links.length - 1];
+    if (e.shiftKey && e.target === firstLink) {
       e.preventDefault();
       triggerRef.current?.focus();
+    } else if (!e.shiftKey && e.target === lastLink) {
+      e.preventDefault();
+      triggerRef.current?.focus();
+      close();
     }
   };
 

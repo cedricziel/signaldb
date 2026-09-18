@@ -338,4 +338,17 @@ describe("SemanticKeyLabel tooltip keyboard access", () => {
     await userEvent.tab({ shift: true });
     expect(trigger).toHaveFocus();
   });
+
+  it("returns focus to the trigger and closes on Tab from the tooltip's last link", async () => {
+    const trigger = renderTrigger();
+    trigger.focus();
+    const tip = await screen.findByRole("tooltip");
+    await userEvent.tab();
+    const links = within(tip).getAllByRole("link");
+    links[links.length - 1]!.focus();
+
+    await userEvent.tab();
+    expect(trigger).toHaveFocus();
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+  });
 });
