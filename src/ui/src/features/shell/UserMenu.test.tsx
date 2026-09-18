@@ -110,6 +110,10 @@ describe("UserMenu", () => {
         "href",
         "/api-keys",
       );
+      expect(screen.getByRole("link", { name: /github/i })).toHaveAttribute(
+        "href",
+        "/integrations/github",
+      );
       expect(screen.getByText("Switch tenant")).toBeInTheDocument();
     });
   });
