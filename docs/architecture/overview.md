@@ -248,8 +248,13 @@ handlers): tenant admins link GitHub App installations to their tenant
 through `/api/v1/manage/tenants/{id}/github-installations` and the
 `GET /ui/github/callback` install redirect, and the router mints short-lived
 installation tokens from the deployment's App private key on demand (never
-persisted). Installations are catalog rows scoped per tenant. Operator-facing
-detail lives in [Connecting GitHub](../operations/github-app.md).
+persisted). Installations are catalog rows scoped per tenant. On top of that,
+`POST /api/v1/tenants/{id}/source-context` (`src/router/src/source_context.rs`,
+`src/router/src/endpoints/source_context.rs`) fetches the lines around a stack
+frame from those repositories through a per-file, TTL/LRU-bounded cache, and
+the Query IR `flamegraph` envelope carries per-frame `locations` so the
+Explore UI can offer it on profile frames. Operator-facing detail lives in
+[Connecting GitHub](../operations/github-app.md).
 
 **Tempo API Endpoints**:
 
