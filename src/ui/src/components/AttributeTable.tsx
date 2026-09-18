@@ -11,7 +11,7 @@
  * A group left with a single row folds into "Other" instead of earning a
  * heading of its own — see `foldSingletonGroups`.
  */
-import { Fragment } from "react";
+import { Fragment, useId } from "react";
 import { AttributeValue } from "./AttributeValue";
 import { SemanticKeyLabel } from "./SemanticKey";
 import type { AttributeSummaryResult } from "../lib/attrSummary";
@@ -48,31 +48,46 @@ export interface AttributeTableProps {
 
 const ENTITY_GLYPH = { identifying: "◆", descriptive: "○" } as const;
 
-/** The namespace/source shared by a titled group's rows, read off the first
- * resolved one — every row in a non-"Other" group resolved to the same
- * title, so it always has one. `null` for the untitled and "Other" groups,
- * whose rows never resolved at all. */
+/** The group's rows that resolved, in order — unresolved keys (the registry
+ * doesn't know them, or hasn't answered yet) drop out, since a heading fact
+ * can only ever be stated over what actually resolved. */
+function resolvedSemantics(
+  entries: readonly [string, unknown][],
+  semantics: SemanticsMap,
+): AttributeSemantics[] {
+  return entries
+    .map(([key]) => semantics.get(key))
+    .filter((sem): sem is AttributeSemantics => sem !== undefined);
+}
+
+/** The namespace/source shared by a titled group's rows, `null` unless every
+ * resolved row agrees on the same one — a group can hold rows from more than
+ * one namespace under one title, and a heading must not assert an origin
+ * only some of the rows actually have. */
 function groupNamespace(
   entries: readonly [string, unknown][],
   semantics: SemanticsMap,
 ): { namespace: string; source: string } | null {
-  for (const [key] of entries) {
-    const sem = semantics.get(key);
-    if (sem) return { namespace: sem.primary.namespace, source: sem.primary.source };
-  }
-  return null;
+  const resolved = resolvedSemantics(entries, semantics);
+  if (resolved.length === 0) return null;
+  const agreed = new Set(
+    resolved.map((sem) => `${sem.primary.namespace} ${sem.primary.source}`),
+  );
+  if (agreed.size !== 1) return null;
+  const { namespace, source } = resolved[0]!.primary;
+  return { namespace, source };
 }
 
 /** The entity every resolved row in the group agrees on, when there is one:
  * `null` if any resolved row carries no entity role, or the rows' entity
- * sets share nothing in common. */
+ * sets share nothing in common. The ◆ (identifying) glyph applies only when
+ * every resolved row identifies that entity; any row that merely describes
+ * it downgrades the whole group to ○ (descriptive). */
 function groupEntity(
   entries: readonly [string, unknown][],
   semantics: SemanticsMap,
 ): { entity: string; identifying: boolean } | null {
-  const resolved = entries
-    .map(([key]) => semantics.get(key))
-    .filter((sem): sem is AttributeSemantics => sem !== undefined);
+  const resolved = resolvedSemantics(entries, semantics);
   if (resolved.length === 0) return null;
   const roleSets = resolved.map(
     (sem) => new Set((sem.primary.entity_roles ?? []).map((r) => r.entity)),
@@ -84,7 +99,7 @@ function groupEntity(
   );
   if (common.length === 0) return null;
   const entity = common[0]!;
-  const identifying = resolved.some((sem) =>
+  const identifying = resolved.every((sem) =>
     (sem.primary.entity_roles ?? []).some(
       (r) => r.entity === entity && r.role === "identifying",
     ),
@@ -114,30 +129,30 @@ function AttributeRow({
       </dt>
       <dd>
         <AttributeValue value={value} label={`value for ${rowKey}`} />
-      </dd>
-      {actions.length > 0 && (
-        <span className="attrtable-actions">
-          {actions.map((action) => (
-            <button
-              key={action.label}
-              type="button"
-              aria-label={action.ariaLabel}
-              onClick={action.onClick}
-            >
-              {action.label}
-            </button>
-          ))}
-        </span>
-      )}
-      {showDescriptions && sem && (
-        <div className="attrtable-desc">
-          {plainBrief(sem.primary.brief)}
-          <span className="attrtable-desc-suffix">
-            {" "}
-            · {sem.primary.type} · {sem.primary.stability}
+        {actions.length > 0 && (
+          <span className="attrtable-actions">
+            {actions.map((action) => (
+              <button
+                key={action.ariaLabel}
+                type="button"
+                aria-label={action.ariaLabel}
+                onClick={action.onClick}
+              >
+                {action.label}
+              </button>
+            ))}
           </span>
-        </div>
-      )}
+        )}
+        {showDescriptions && sem && (
+          <div className="attrtable-desc">
+            {plainBrief(sem.primary.brief)}
+            <span className="attrtable-desc-suffix">
+              {" "}
+              · {sem.primary.type} · {sem.primary.stability}
+            </span>
+          </div>
+        )}
+      </dd>
     </div>
   );
 }
@@ -151,9 +166,10 @@ export function AttributeTable({
   scope,
 }: AttributeTableProps) {
   const groups = foldSingletonGroups(groupBySemanticTitle(entries, semantics));
+  const idBase = useId();
   return (
-    <dl className="attrtable" data-layout={layout}>
-      {groups.map((group) => {
+    <div className="attrtable" data-layout={layout}>
+      {groups.map((group, i) => {
         // "Other" mixes folded singletons with keys no registry knows, so
         // no namespace or entity holds for all of its rows.
         const titled = group.title !== null && group.title !== OTHER_TITLE;
@@ -161,10 +177,11 @@ export function AttributeTable({
           ? groupNamespace(group.entries, semantics)
           : null;
         const entity = titled ? groupEntity(group.entries, semantics) : null;
+        const headingId = group.title !== null ? `${idBase}-h${i}` : undefined;
         return (
           <Fragment key={group.title ?? ""}>
             {group.title && (
-              <div className="attrtable-group">
+              <div id={headingId} className="attrtable-group">
                 <span className="attrtable-title">{group.title}</span>
                 {namespace && (
                   <span className="attrtable-ns" data-source={namespace.source}>
@@ -179,21 +196,23 @@ export function AttributeTable({
                 )}
               </div>
             )}
-            {group.entries.map(([key, value]) => (
-              <AttributeRow
-                key={key}
-                rowKey={key}
-                value={value}
-                sem={semantics.get(key)}
-                showDescriptions={showDescriptions}
-                actions={actions?.(key, value) ?? []}
-                scope={scope}
-              />
-            ))}
+            <dl className="attrtable-list" aria-labelledby={headingId}>
+              {group.entries.map(([key, value]) => (
+                <AttributeRow
+                  key={key}
+                  rowKey={key}
+                  value={value}
+                  sem={semantics.get(key)}
+                  showDescriptions={showDescriptions}
+                  actions={actions?.(key, value) ?? []}
+                  scope={scope}
+                />
+              ))}
+            </dl>
           </Fragment>
         );
       })}
-    </dl>
+    </div>
   );
 }
 

@@ -220,7 +220,7 @@ describe("foldSingletonGroups", () => {
     ]);
   });
 
-  it("flattens to a single unheaded group when nothing but Other remains after folding", () => {
+  it("flattens to a single unheaded group, sorted by key, when nothing but Other remains after folding", () => {
     const groups = [
       g("Kubernetes", [["k8s.pod.uid", "p"]]),
       g("Service", [["service.name", "s"]]),
@@ -228,9 +228,9 @@ describe("foldSingletonGroups", () => {
     ];
     expect(foldSingletonGroups(groups)).toEqual([
       g(null, [
+        ["app.order.id", "1"],
         ["k8s.pod.uid", "p"],
         ["service.name", "s"],
-        ["app.order.id", "1"],
       ]),
     ]);
   });
@@ -238,5 +238,9 @@ describe("foldSingletonGroups", () => {
   it("passes through the already-flat untitled group unchanged", () => {
     const groups = [g<string>(null, [["app.order.id", "1"]])];
     expect(foldSingletonGroups(groups)).toEqual(groups);
+  });
+
+  it("returns [] for empty input", () => {
+    expect(foldSingletonGroups([])).toEqual([]);
   });
 });

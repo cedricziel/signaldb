@@ -136,13 +136,14 @@ export function groupBySemanticTitle<V>(
  *
  * When folding leaves no titled group besides "Other" standing, there is
  * nothing left worth a heading at all: this returns the single untitled
- * group `{ title: null, entries }` — every entry, in the order the input
- * groups were given — the same shape `groupBySemanticTitle` returns when
- * nothing resolved, so the caller renders one flat, unheaded list.
+ * group `{ title: null, entries }` holding the merged, key-sorted "Other"
+ * entries — the same shape `groupBySemanticTitle` returns when nothing
+ * resolved, so the caller renders one flat, unheaded list.
  */
 export function foldSingletonGroups<V>(
   groups: TitledGroup<V>[],
 ): TitledGroup<V>[] {
+  if (groups.length === 0) return [];
   const kept: TitledGroup<V>[] = [];
   let other: [string, V][] | undefined;
   for (const group of groups) {
@@ -159,6 +160,6 @@ export function foldSingletonGroups<V>(
     kept.push({ title: OTHER_TITLE, entries: other });
   }
   return kept.every((g) => g.title === OTHER_TITLE)
-    ? [{ title: null, entries: groups.flatMap((g) => g.entries) }]
+    ? [{ title: null, entries: kept.flatMap((g) => g.entries) }]
     : kept;
 }

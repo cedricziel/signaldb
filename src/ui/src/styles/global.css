@@ -969,7 +969,6 @@ th[aria-sort="descending"] .th-sort::after {
 /* ---------- attribute table (components/AttributeTable.tsx) ---------- */
 
 .attrtable {
-  margin: 0;
   display: flex;
   flex-direction: column;
   gap: 2px;
@@ -977,6 +976,15 @@ th[aria-sort="descending"] .th-sort::after {
 
 .attrtable[data-layout="grid"] {
   max-width: 720px;
+}
+
+/* One <dl> per group (see components/AttributeTable.tsx), stacked the same
+   way the single table-wide <dl> used to lay out its rows. */
+.attrtable-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
 }
 
 /* Facts shared by every row in a titled group, stated once instead of
@@ -1016,7 +1024,7 @@ th[aria-sort="descending"] .th-sort::after {
 
 .attrtable[data-layout="grid"] .attrtable-row {
   display: grid;
-  grid-template-columns: minmax(140px, 260px) minmax(0, 1fr) max-content;
+  grid-template-columns: minmax(140px, 260px) minmax(0, 1fr);
   gap: 0 14px;
   align-items: baseline;
   font-size: 11.5px;
@@ -1025,8 +1033,6 @@ th[aria-sort="descending"] .th-sort::after {
 .attrtable[data-layout="stacked"] .attrtable-row {
   display: flex;
   flex-direction: column;
-  position: relative;
-  padding-right: 56px;
   font-size: 11px;
 }
 
@@ -1036,10 +1042,24 @@ th[aria-sort="descending"] .th-sort::after {
   overflow-wrap: anywhere;
 }
 
+/* The value, the action strip, and (with the descriptions toggle on) the
+   brief line all live in `dd` now (see components/AttributeTable.tsx) — a
+   wrapping flex row rather than a grid cell, so the actions sit beside the
+   value instead of needing their own grid column or absolute position. */
 .attrtable-row dd {
   margin: 0;
   min-width: 0;
   overflow-wrap: anywhere;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 6px;
+}
+
+/* Actions pinned to the right edge of the value column, mirroring their old
+   dedicated grid column. */
+.attrtable[data-layout="grid"] .attrtable-row dd {
+  justify-content: space-between;
 }
 
 .attrtable[data-layout="stacked"] .attrtable-row dd {
@@ -1047,10 +1067,10 @@ th[aria-sort="descending"] .th-sort::after {
 }
 
 /* Plain-text brief, shown under a resolved row only with the descriptions
-   toggle on; spans every grid column so it doesn't fight the value column
-   for width. */
+   toggle on; forced onto its own line within `dd`'s wrapping flex row rather
+   than sharing one with the value/actions. */
 .attrtable-desc {
-  grid-column: 1 / -1;
+  flex-basis: 100%;
   font-family: var(--ui);
   font-size: 11px;
   color: var(--dim);
@@ -1061,16 +1081,11 @@ th[aria-sort="descending"] .th-sort::after {
   color: var(--faint);
 }
 
-.attrtable[data-layout="stacked"] .attrtable-actions {
-  position: absolute;
-  top: 0;
-  right: 0;
-}
-
 /* `opacity`, not `visibility: hidden` — the latter also drops the buttons
    from keyboard tab order and defeats a `:focus-within` reveal, so a
-   keyboard/touch user could never reach them; the <=900px override below
-   keeps them reachable without a hover at all. */
+   keyboard/touch user could never reach them; the override below keeps them
+   reachable without a hover at all, on a narrow viewport or any device that
+   reports no hover capability (touch). */
 .attrtable-actions {
   opacity: 0;
   display: inline-flex;
@@ -1084,7 +1099,7 @@ th[aria-sort="descending"] .th-sort::after {
   opacity: 1;
 }
 
-@media (max-width: 900px) {
+@media (max-width: 900px), (hover: none) {
   .attrtable-actions {
     opacity: 1;
   }
