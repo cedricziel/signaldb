@@ -1632,7 +1632,6 @@ fn unwrap_value(label: &str) -> Expr {
     cast(col(column), DataType::Float64)
 }
 
-/// The dedicated column a known label maps to.
 /// Record query demand (epic #737, #733) for every selector label that is
 /// not backed by a dedicated column — the keys that would benefit from
 /// materialization (or, if already materialized, from staying so).
@@ -1644,14 +1643,19 @@ fn record_attr_demand(query: &LogQuery, tenant_slug: &str, dataset_slug: &str) {
     }
 }
 
-fn column_for_label(label: &str) -> Option<&'static str> {
-    match label {
-        "service_name" | "service" | "job" => Some("service_name"),
-        "level" | "severity" | "detected_level" => Some("severity_text"),
-        "trace_id" => Some("trace_id"),
-        "span_id" => Some("span_id"),
-        _ => None,
-    }
+/// The dedicated column a well-known LogQL label maps to.
+///
+/// The one alias table lives in [`ql_ir::logql_label_field`], which maps a
+/// label to its *logical* field; this resolves that logical field to the
+/// *physical* column it materializes as (`service.name` is stored in the
+/// `service_name` column — every other logical field here already spells
+/// its column name). [`super::logql::log_query_filter_with_columns`] and
+/// friends import this rather than keeping their own copy.
+pub(crate) fn column_for_label(label: &str) -> Option<&'static str> {
+    ql_ir::logql_label_field(label).map(|field| match field {
+        "service.name" => "service_name",
+        other => other,
+    })
 }
 
 /// Read an attribute column's per-row documents as string key/value maps.
@@ -1703,6 +1707,15 @@ mod tests {
                 "LOG_FIELD_PAIRS[{i}]'s column half must equal LOG_COLUMNS[{i}]"
             );
         }
+    }
+
+    /// `column_for_label` backs `get_label_values`, `by` grouping,
+    /// `on`/`ignoring`, `label_replace`, `unwrap`, and attr-demand
+    /// recording, and `logql::label_expr` imports this same function — the
+    /// dotted OTel spelling must resolve here.
+    #[test]
+    fn column_for_label_resolves_dotted_service_name() {
+        assert_eq!(column_for_label("service.name"), Some("service_name"));
     }
 
     fn logs_schema() -> Arc<Schema> {

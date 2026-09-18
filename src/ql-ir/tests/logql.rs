@@ -49,6 +49,33 @@ fn stream_selector_labels_map_to_logical_fields() {
     }
 }
 
+/// `logql_label_field` is the one alias table both this crate's own
+/// lowering and the querier's `logs::column_for_label` read; every known
+/// alias — including the dotted `service.name` spelling — must resolve,
+/// and an unrecognised label must not.
+#[test]
+fn logql_label_field_resolves_every_known_alias() {
+    let cases: &[(&str, &str)] = &[
+        ("service_name", "service.name"),
+        ("service", "service.name"),
+        ("job", "service.name"),
+        ("service.name", "service.name"),
+        ("level", "severity_text"),
+        ("severity", "severity_text"),
+        ("detected_level", "severity_text"),
+        ("trace_id", "trace_id"),
+        ("span_id", "span_id"),
+    ];
+    for (label, field) in cases {
+        assert_eq!(
+            ql_ir::logql_label_field(label),
+            Some(*field),
+            "{label} should resolve to {field}"
+        );
+    }
+    assert_eq!(ql_ir::logql_label_field("k8s_namespace"), None);
+}
+
 /// The four matcher operators keep their meaning.
 #[test]
 fn matcher_operators_map_to_ir_comparisons() {

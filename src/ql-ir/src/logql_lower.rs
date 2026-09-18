@@ -130,27 +130,33 @@ fn matcher(m: &LabelMatcher) -> Result<Predicate, LowerError> {
     })
 }
 
-/// The logical field a LogQL label addresses.
+/// A well-known LogQL label's logical field, or `None` for anything else.
 ///
 /// Loki's stream labels are flat strings; SignalDB's logical namespace is
-/// OTel-dotted. The well-known ones are renamed, and anything else passes
-/// through bare so the resolver coalesces it across attribute containers —
-/// which is what Loki's own semantics imply.
-/// The same aliases `querier::query::logql::column_for_label` recognises —
-/// kept in step with it deliberately. That function maps to *physical*
-/// columns; this one maps to *logical* fields, so the targets differ by layer,
-/// but the set of labels being special-cased must not. `trace_id`/`span_id`
-/// are listed even though they pass through unchanged, so a future alias added
-/// on either side is visibly missing from the other.
-fn label_field(label: &str) -> String {
+/// OTel-dotted. This is the one table of LogQL label aliases: both this
+/// crate's [`label_field`] (which needs the *logical* field, for IR
+/// lowering) and the querier's `logs::column_for_label` (which needs the
+/// *physical* column that logical field materializes to) read it, so the
+/// set of labels being special-cased can't drift between the two layers.
+/// `trace_id`/`span_id` are listed even though they map to themselves, so a
+/// future alias added here is visibly a deliberate choice, not an omission.
+pub fn logql_label_field(label: &str) -> Option<&'static str> {
     match label {
-        "service_name" | "service" | "job" => "service.name",
-        "level" | "severity" | "detected_level" => "severity_text",
-        "trace_id" => "trace_id",
-        "span_id" => "span_id",
-        other => other,
+        "service_name" | "service" | "job" | "service.name" => Some("service.name"),
+        "level" | "severity" | "detected_level" => Some("severity_text"),
+        "trace_id" => Some("trace_id"),
+        "span_id" => Some("span_id"),
+        _ => None,
     }
-    .to_string()
+}
+
+/// The logical field a LogQL label addresses.
+///
+/// Anything not in [`logql_label_field`]'s table passes through bare so the
+/// resolver coalesces it across attribute containers — which is what Loki's
+/// own semantics imply.
+fn label_field(label: &str) -> String {
+    logql_label_field(label).unwrap_or(label).to_string()
 }
 
 /// A line filter matches the log body.
