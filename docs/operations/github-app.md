@@ -108,15 +108,16 @@ install page; pick the organization and the repositories, and GitHub sends
 the browser back to SignalDB, which records the installation and shows it
 in the list with the repositories it covers.
 
-The same surface exists on the HTTP API and the CLI:
+The same surface exists on the HTTP API, the CLI, and MCP:
 
-| Operation | HTTP (tenant management API) | CLI |
-| --- | --- | --- |
-| Start a link | `POST /api/v1/manage/tenants/{id}/github-installations/link` → `install_url` | `signaldb-cli tenant github link` |
-| List installations | `GET /api/v1/manage/tenants/{id}/github-installations` | `signaldb-cli tenant github list` |
-| Remove a link | `DELETE /api/v1/manage/tenants/{id}/github-installations/{installation_id}` | `signaldb-cli tenant github remove <installation_id>` |
+| Operation | HTTP (tenant management API) | CLI | MCP tool |
+| --- | --- | --- | --- |
+| Start a link | `POST /api/v1/manage/tenants/{id}/github-installations/link` → `install_url` | `signaldb-cli tenant github link` | `tenant_start_github_link` |
+| List installations | `GET /api/v1/manage/tenants/{id}/github-installations` | `signaldb-cli tenant github list` | `tenant_list_github_installations` |
+| Remove a link | `DELETE /api/v1/manage/tenants/{id}/github-installations/{installation_id}` | `signaldb-cli tenant github remove <installation_id>` | `tenant_remove_github_installation` |
 
-The CLI's `link` prints the install URL; open it in a browser where you are
+The CLI's `link` (and the MCP `tenant_start_github_link` tool) prints/returns
+the install URL; open it in a browser where you are
 signed in to SignalDB as an admin of that tenant, because the callback
 completes against your browser session (see below). Listing refreshes each
 installation's repository list from GitHub; if GitHub cannot be reached the

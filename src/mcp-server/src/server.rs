@@ -70,14 +70,16 @@
 //!     `tenant_list_api_keys` / `tenant_create_api_key` /
 //!     `tenant_update_api_key` / `tenant_revoke_api_key`,
 //!     `tenant_list_memberships` / `tenant_upsert_membership` /
-//!     `tenant_remove_membership`, `tenant_get_schema`. The router accepts
+//!     `tenant_remove_membership`, `tenant_get_schema`,
+//!     `tenant_start_github_link` / `tenant_list_github_installations` /
+//!     `tenant_remove_github_installation`. The router accepts
 //!     a human principal (browser session or OAuth access token) holding
 //!     the tenant-admin role or instance-admin flag, or an API key that
 //!     explicitly carries the `tenant:manage` scope. Ingest-only keys and
 //!     legacy unscoped keys get a clean access-denied error (management is
 //!     opt-in; `router::endpoints::management::authorize_tenant`). The
-//!     CLI's `tenant dataset|api-key|membership|schema` verbs reach the
-//!     same endpoints — see `signaldb_cli::commands::tenant_self`.
+//!     CLI's `tenant dataset|api-key|membership|schema|github` verbs reach
+//!     the same endpoints — see `signaldb_cli::commands::tenant_self`.
 //!
 //! Tools that delete or revoke carry the MCP destructive annotation and
 //! require a `confirm` argument equal to the identifier being destroyed;
@@ -1419,6 +1421,18 @@ struct TenantRemoveMembershipParams {
     /// User ID to remove.
     user_id: String,
     /// Must equal `user_id`, confirming the removal.
+    confirm: String,
+}
+
+/// Parameters for `tenant_remove_github_installation`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct TenantRemoveGithubInstallationParams {
+    /// The caller's own tenant. Must match the authenticated tenant.
+    tenant_id: String,
+    /// GitHub App installation ID to remove.
+    installation_id: i64,
+    /// Must equal `installation_id` as a string, confirming the removal.
     confirm: String,
 }
 
@@ -2917,6 +2931,74 @@ impl McpServer {
             .await
             .map_err(|e| map_manage_err(e, "tenant_remove_membership"))?;
         json_result(&serde_json::json!({ "removed": true, "user_id": p.user_id }))
+    }
+
+    #[tool(
+        description = "Start linking a GitHub App installation to the caller's own tenant (management API; tenant-admin session or an API key carrying `tenant:manage`). Returns `install_url` (GitHub's install page, carrying a single-use state token) and `expires_at`. The returned `install_url` must be opened in a browser that is signed in to SignalDB as an admin of this tenant — the callback that completes the link runs against that browser session, not this MCP session. The link expires at `expires_at`; call this tool again to get a fresh one."
+    )]
+    async fn tenant_start_github_link(
+        &self,
+        Parameters(p): Parameters<TenantOnlyParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant_id)?;
+        let client = self.scoped_router_client(&parts, &p.tenant_id, None)?;
+        let resp = client
+            .manage_start_github_link()
+            .tenant_id(&p.tenant_id)
+            .send()
+            .await
+            .map_err(|e| map_manage_err(e, "tenant_start_github_link"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "List the caller's own tenant's linked GitHub App installations (management API; tenant-admin session or an API key carrying `tenant:manage`). Reports whether GitHub integration is configured at all (`configured`), the App's URL slug, and each installation's covered repositories, whether its repository list is `stale`, and its GitHub-hosted `manage_url`.",
+        annotations(read_only_hint = true)
+    )]
+    async fn tenant_list_github_installations(
+        &self,
+        Parameters(p): Parameters<TenantOnlyParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant_id)?;
+        let client = self.scoped_router_client(&parts, &p.tenant_id, None)?;
+        let resp = client
+            .manage_list_github_installations()
+            .tenant_id(&p.tenant_id)
+            .send()
+            .await
+            .map_err(|e| map_manage_err(e, "tenant_list_github_installations"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Remove a linked GitHub App installation from the caller's own tenant; SignalDB stops minting tokens for it immediately (management API; tenant-admin session or an API key carrying `tenant:manage`). Requires `confirm` equal to `installation_id` (as a string).",
+        annotations(destructive_hint = true, read_only_hint = false)
+    )]
+    async fn tenant_remove_github_installation(
+        &self,
+        Parameters(p): Parameters<TenantRemoveGithubInstallationParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant_id)?;
+        require_confirm(
+            &p.confirm,
+            &p.installation_id.to_string(),
+            "installation_id",
+        )?;
+        let client = self.scoped_router_client(&parts, &p.tenant_id, None)?;
+        client
+            .manage_remove_github_installation()
+            .tenant_id(&p.tenant_id)
+            .installation_id(p.installation_id)
+            .send()
+            .await
+            .map_err(|e| map_manage_err(e, "tenant_remove_github_installation"))?;
+        json_result(&serde_json::json!({
+            "removed": true,
+            "installation_id": p.installation_id
+        }))
     }
 
     #[tool(
