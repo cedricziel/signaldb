@@ -13,6 +13,8 @@ sources:
   - src/router/src/endpoints/oauth.rs
   - src/router/src/endpoints/oidc.rs
   - src/router/src/oidc.rs
+  - src/router/src/github.rs
+  - src/router/src/endpoints/github.rs
   - src/router/src/read_scope.rs
   - src/signaldb-cli/src/commands/tenant_self.rs
   - src/mcp-server/src/server.rs
@@ -128,6 +130,28 @@ bootstrap planes: API keys, `admin_api_key`, and the CLI/config
 `user create --instance-admin` bootstrap authenticate regardless of IdP
 availability. An unreachable issuer degrades SSO (background retry) rather than
 stopping the instance, so break-glass holds across restarts too.
+
+### GitHub App installations (tenant-scoped, read-only; change: github-app-source-context)
+
+A **tenant-scoped, read-only credential that is never stored**. One GitHub App
+identity per deployment (`[github]`: app id, PEM private key, OAuth client
+id/secret); what is per tenant is the *installation* a tenant admin links
+(`github_installations` rows: installation id, org/user account, covered repo
+list, who linked it). `router::github::GitHubApp` signs an RS256 app JWT, mints
+an installation token on demand (process-local cache until ~5 minutes before
+GitHub's expiry) and never persists it. Linking (`POST
+/api/v1/manage/tenants/{id}/github-installations/link` → install URL carrying a
+single-use, tenant+admin-bound state token whose SHA-256 sits in
+`github_link_states`; `GET /ui/github/callback` requires the browser's
+`signaldb_session` to be the starting user or an admin of the state's tenant,
+exchanges GitHub's `code` for a user token, verifies the `installation_id` is
+in that user's `GET /user/installations`, refuses write-capable permissions,
+then `Catalog::complete_github_link` consumes the state and upserts the row in
+one transaction). Resolution of a repo to an installation only ever looks at
+the caller's own tenant (`find_github_installation_for_repository`). Removal
+(`DELETE .../github-installations/{id}`) also drops the cached token, so it is
+immediate. `src/router/src/endpoints/github.rs`, `src/router/src/github.rs`;
+operator guide `docs/operations/github-app.md`.
 
 **Read scopes.** OAuth scopes populate `TenantContext.api_key_scopes` and are
 enforced like API-key write scopes. `can_read(<signal>)` requires the matching

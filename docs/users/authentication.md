@@ -10,6 +10,7 @@ sources:
   - src/router/src/endpoints/management.rs
   - src/router/src/endpoints/oidc.rs
   - src/router/src/oidc.rs
+  - src/router/src/endpoints/github.rs
   - src/common/src/auth/session.rs
   - src/common/src/auth/mod.rs
   - src/common/src/bootstrap.rs
@@ -412,6 +413,16 @@ API-key automation creates tenants through the admin API
 | PUT    | `/api/v1/manage/tenants/{tenant_id}/memberships`        | `manage_upsert_membership` | `signaldb-cli tenant membership set <email> --role ...` / `tenant_upsert_membership` |
 | DELETE | `/api/v1/manage/tenants/{tenant_id}/memberships/{user}` | `manage_remove_membership` | `signaldb-cli tenant membership remove <user-id>` / `tenant_remove_membership`       |
 | GET    | `/api/v1/manage/schema`                                 | `manage_get_schema`        | `signaldb-cli tenant schema get` / `tenant_get_schema`                               |
+| POST   | `/api/v1/manage/tenants/{tenant_id}/github-installations/link` | `manage_start_github_link` | `signaldb-cli tenant github link`                                            |
+| GET    | `/api/v1/manage/tenants/{tenant_id}/github-installations` | `manage_list_github_installations` | `signaldb-cli tenant github list`                                    |
+| DELETE | `/api/v1/manage/tenants/{tenant_id}/github-installations/{installation_id}` | `manage_remove_github_installation` | `signaldb-cli tenant github remove <installation_id>` |
+
+The `github-installations` operations connect SignalDB's GitHub App to the
+tenant's repositories; they answer `404` until the operator configures
+`[github]`. Starting a link returns an install URL the admin opens in a
+browser signed in to SignalDB; GitHub redirects back to
+`/ui/github/callback`, which completes the link against that session. See
+[Connecting GitHub](../operations/github-app.md).
 
 Example — CI provisioning a dataset and an ingest key with a `tenant:manage`
 key (`--api-key`/`SIGNALDB_API_KEY`, `--tenant-id`/`SIGNALDB_TENANT_ID`):

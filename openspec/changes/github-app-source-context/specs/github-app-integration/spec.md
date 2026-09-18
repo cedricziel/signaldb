@@ -37,6 +37,20 @@ Before redirecting a tenant admin to GitHub's install flow, SignalDB SHALL gener
 - **WHEN** two link-completion requests race each other presenting the same valid, unused state token
 - **THEN** at most one installation record is created, and the losing request is rejected as if the token had already been consumed
 
+### Requirement: Session-bound link completion
+
+The link SHALL complete on the App's registered callback URL (`GET /ui/github/callback`), handled by the router, and SHALL require a valid SignalDB browser session. The session's user SHALL be the user who started the flow when the state token carries one; when the state token was issued to an API-key principal (no user), the session's user SHALL hold the admin role in the state's tenant or be an instance admin. A callback without a session, or with a session belonging to another user, SHALL be rejected without consuming the state token or writing any record, so that an install URL started by one party cannot be completed in another party's browser. On success the router SHALL redirect to the UI's GitHub page marking the link as completed; on any failure it SHALL redirect there with a generic error reason that does not disclose which check failed.
+
+#### Scenario: Callback in a foreign browser session is rejected
+
+- **WHEN** a callback carries a valid state token started by admin A but the browser's session belongs to user B
+- **THEN** the request is rejected, the state token stays unconsumed, and no installation record is created
+
+#### Scenario: Callback without a session is rejected
+
+- **WHEN** a callback carries a valid state token and installation id but no session cookie
+- **THEN** the request is rejected and no installation record is created
+
 ### Requirement: Installation ownership verification
 
 The state token proves which SignalDB admin and tenant initiated the flow, but the `installation_id` GitHub returns on the setup-URL redirect is browser-supplied and not otherwise authenticated. To close that gap, SignalDB's GitHub App SHALL enable user authorization during installation (the OAuth-on-install flow), and on the return redirect SignalDB SHALL exchange the callback `code` for a user-to-server GitHub access token, then verify that the callback's `installation_id` appears in that authenticated GitHub user's `GET /user/installations` response before writing any installation record. A failed code exchange, or an `installation_id` absent from that user's installations, SHALL be rejected and SHALL persist nothing. This binds the GitHub side of the link (the installation actually belongs to the authorizing GitHub user) the way the state token binds the SignalDB side (the request actually came from the admin who started the flow); neither check alone is sufficient. This requirement does not change the read-only permission scope in the `Read-only permission scope` requirement below — user authorization establishes identity, not repo access.
@@ -54,6 +68,11 @@ SignalDB's GitHub App SHALL be configured with only `contents:read` and `metadat
 
 - **WHEN** the GitHub App's configured permissions are inspected
 - **THEN** they include only `contents:read` and `metadata:read`, with no write-capable permission present
+
+#### Scenario: Installation with a write-capable permission is refused
+
+- **WHEN** the installation GitHub reports on the callback carries any permission at `write` or `admin` level
+- **THEN** the link is rejected and no installation record is created
 
 ### Requirement: In-memory, non-persisted access tokens
 

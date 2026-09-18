@@ -242,6 +242,15 @@ discovery hasn't (yet) succeeded — the config probe reports no SSO in that
 window too. Operator-facing detail lives in
 [Setting up SSO / OIDC login](../operations/oidc-sso.md).
 
+When `[github]` is configured, the router also hosts the **GitHub App
+integration** (`src/router/src/github.rs` client, `src/router/src/endpoints/github.rs`
+handlers): tenant admins link GitHub App installations to their tenant
+through `/api/v1/manage/tenants/{id}/github-installations` and the
+`GET /ui/github/callback` install redirect, and the router mints short-lived
+installation tokens from the deployment's App private key on demand (never
+persisted). Installations are catalog rows scoped per tenant. Operator-facing
+detail lives in [Connecting GitHub](../operations/github-app.md).
+
 **Tempo API Endpoints**:
 
 | Endpoint                                         | Status                                                                                   |
