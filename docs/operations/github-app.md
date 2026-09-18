@@ -6,6 +6,8 @@ sources:
   - src/common/src/config/mod.rs
   - src/router/src/github.rs
   - src/router/src/endpoints/github.rs
+  - src/router/src/source_context.rs
+  - src/router/src/endpoints/source_context.rs
   - src/common/src/catalog.rs
   - signaldb.dist.toml
 ---
@@ -83,6 +85,11 @@ private_key_path = "/run/secrets/github-app.pem"   # or inline: private_key = "-
 client_id = "Iv1.0123456789abcdef"
 client_secret = "<client-secret>"
 ```
+
+Two optional fields bound the source cache described under
+[Source context](#source-context): `snippet_cache_ttl` (default `10m`) and
+`snippet_cache_capacity` (default `1000` files, least-recently-used
+eviction; each entry is one fetched file of at most 512 KiB).
 
 Every field can also come from the environment with the double-underscore
 form, for example `SIGNALDB__GITHUB__APP_ID`,
@@ -169,6 +176,58 @@ Every failure lands the browser on `/integrations/github?github=error&reason=…
 with a generic reason (`state`, `session`, `forbidden`, `github`,
 `permissions`), never disclosing which check failed in detail; the router
 logs the specifics.
+
+## Source context
+
+Once a tenant has linked its repositories, any signed-in user (or a key
+that may read a signal) can ask for the source around a stack frame:
+
+```
+POST /api/v1/tenants/{id}/source-context
+{ "repository": "octo-org/api", "ref": "3f2a9c1", "path": "src/handler.rs", "line": 42, "context_lines": 8 }
+```
+
+The Explore UI does this behind a **View source** control on trace exception
+frames, Errors-view stacktrace frames, and profile frames whose file and
+line are known. The response is always `200`: either `status: "available"`
+with the snippet (the lines around `line`, the repository and ref that
+served it, and a link into GitHub), or `status: "unavailable"` with a
+`reason` (`not_configured`, `no_installation`, `not_found`, `not_a_file`,
+`too_large`, `undecodable`, `line_out_of_range`, `github_error`,
+`internal`). A frame whose source is unavailable simply shows no snippet;
+it never fails the trace, error, or profile view.
+
+Resolution rules:
+
+- `repository` may be `owner/name` or a GitHub URL. It is resolved only
+  against the caller's own tenant's installations; a repository another
+  tenant linked is indistinguishable from one nobody linked.
+- Omit `repository` and SignalDB probes the tenant's linked repositories
+  (the first 25) for the path, serving the first hit and naming it. This is
+  what makes lookups work for telemetry that carries no VCS attributes.
+- Omit `ref` and the repository's default branch is read; the response then
+  carries `"ref": null` and the UI labels the snippet as unpinned. The UI
+  passes a ref when the telemetry carries `vcs.ref.head.revision`,
+  `vcs.ref.head.name`, or a `service.version` that looks like a commit SHA.
+- Only regular files up to 512 KiB of valid UTF-8 are served; directories,
+  submodules, unresolved symlinks, binary and oversized files are
+  `unavailable`.
+
+Fetched files, and "unavailable" outcomes caused by the content itself,
+are cached per installation, repository, ref and path for
+`snippet_cache_ttl`, bounded by `snippet_cache_capacity`; every line window
+in a cached file is sliced locally, so the frames of one stacktrace that
+share a file cost one GitHub request. Removing a link evicts its entries at
+once. GitHub's per-installation rate limit (about 5,000 requests an hour)
+is therefore consumed once per distinct file per TTL, not once per view.
+
+`GET /api/v1/tenants/{id}/source-context` answers
+`{ "configured": bool, "linked": bool }` for the same callers; the Explore
+UI uses it to decide whether to offer **View source** at all, since the
+installation list itself is a management-only endpoint.
+
+Outside the Explore UI, `signaldb-cli tenant source-context` and the MCP
+tool `get_source_context` reach the same lookup.
 
 ## Verify
 

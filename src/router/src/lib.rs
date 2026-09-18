@@ -19,6 +19,7 @@ pub mod github;
 pub mod oidc;
 pub mod openapi;
 pub mod read_scope;
+pub mod source_context;
 pub mod ui;
 
 /// Mount prefixes for the Tempo/Loki/Prometheus/Pyroscope compatibility
@@ -66,6 +67,14 @@ pub trait RouterState: std::fmt::Debug + Clone + Send + Sync + 'static {
     fn github(&self) -> Option<&Arc<github::GitHubApp>> {
         None
     }
+    /// The source-context snippet-lookup service (change:
+    /// github-app-source-context). `None` under the same conditions as
+    /// [`Self::github`] — it wraps the same [`github::GitHubApp`]. Defaulted
+    /// so the trait stays satisfiable by any test state that doesn't care
+    /// about source context.
+    fn source_context(&self) -> Option<&Arc<source_context::SourceContextService>> {
+        None
+    }
 }
 
 /// Concrete [`RouterState`] holding the router's shared handles.
@@ -78,6 +87,7 @@ pub struct RouterAppState {
     schema_resolver: SchemaResolver,
     oidc: Option<Arc<oidc::OidcRuntime>>,
     github: Option<Arc<github::GitHubApp>>,
+    source_context: Option<Arc<source_context::SourceContextService>>,
 }
 
 impl std::fmt::Debug for RouterAppState {
@@ -89,6 +99,7 @@ impl std::fmt::Debug for RouterAppState {
             .field("authenticator", &"Authenticator")
             .field("oidc", &self.oidc.is_some())
             .field("github", &self.github.is_some())
+            .field("source_context", &self.source_context.is_some())
             .finish()
     }
 }
@@ -104,7 +115,7 @@ impl RouterAppState {
                 .with_mcp_resource(config.mcp.oauth.resource_url.clone()),
         );
         let oidc = spawn_oidc_runtime(&config);
-        let github = build_github_app(&config);
+        let (github, source_context) = build_github(&config);
 
         Self {
             schema_resolver: SchemaResolver::new(catalog.clone()),
@@ -114,6 +125,7 @@ impl RouterAppState {
             authenticator,
             oidc,
             github,
+            source_context,
         }
     }
 
@@ -132,7 +144,7 @@ impl RouterAppState {
                 .with_mcp_resource(config.mcp.oauth.resource_url.clone()),
         );
         let oidc = spawn_oidc_runtime(&config);
-        let github = build_github_app(&config);
+        let (github, source_context) = build_github(&config);
 
         Self {
             schema_resolver: SchemaResolver::new(catalog.clone()),
@@ -142,6 +154,7 @@ impl RouterAppState {
             authenticator,
             oidc,
             github,
+            source_context,
         }
     }
 }
@@ -154,22 +167,34 @@ fn spawn_oidc_runtime(config: &Configuration) -> Option<Arc<oidc::OidcRuntime>> 
     config.auth.oidc.clone().map(oidc::OidcRuntime::spawn)
 }
 
-/// Build the GitHub App client for a configured `[github]` section (change:
-/// github-app-source-context). `GitHubApp::new` fails only on a private key
-/// that can't be parsed; since [`common::config::GitHubAppConfig::validate`]
-/// already parses that key at config-validation time (startup), this should
-/// never fail in practice — but if it somehow does, this logs the failure
-/// and degrades to `None` rather than panicking: the GitHub endpoints then
-/// answer 404, same as when `[github]` is absent.
-fn build_github_app(config: &Configuration) -> Option<Arc<github::GitHubApp>> {
-    let github_config = config.github.clone()?;
-    match github::GitHubApp::new(github_config) {
-        Ok(app) => Some(Arc::new(app)),
+/// Build the GitHub App client, and the source-context service wrapping it,
+/// for a configured `[github]` section (change: github-app-source-context).
+/// `GitHubApp::new` fails only on a private key that can't be parsed; since
+/// [`common::config::GitHubAppConfig::validate`] already parses that key at
+/// config-validation time (startup), this should never fail in practice —
+/// but if it somehow does, this logs the failure and degrades both handles
+/// to `None` rather than panicking: the GitHub endpoints then answer 404,
+/// same as when `[github]` is absent. The two handles always agree (`Some`
+/// together or `None` together) because the second is built from the
+/// first — the one place that invariant needs to hold.
+fn build_github(
+    config: &Configuration,
+) -> (
+    Option<Arc<github::GitHubApp>>,
+    Option<Arc<source_context::SourceContextService>>,
+) {
+    let Some(github_config) = config.github.clone() else {
+        return (None, None);
+    };
+    let app = match github::GitHubApp::new(github_config) {
+        Ok(app) => Arc::new(app),
         Err(error) => {
             tracing::error!(%error, "[github] is configured but the GitHub App client failed to build; GitHub endpoints will answer 404");
-            None
+            return (None, None);
         }
-    }
+    };
+    let source_context = Arc::new(source_context::SourceContextService::new(app.clone()));
+    (Some(app), Some(source_context))
 }
 
 impl RouterState for RouterAppState {
@@ -199,6 +224,10 @@ impl RouterState for RouterAppState {
 
     fn github(&self) -> Option<&Arc<github::GitHubApp>> {
         self.github.as_ref()
+    }
+
+    fn source_context(&self) -> Option<&Arc<source_context::SourceContextService>> {
+        self.source_context.as_ref()
     }
 }
 
@@ -405,6 +434,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .nest(
             "/api/v1",
             endpoints::tenant::router()
+                .merge(endpoints::source_context::router::<S>())
                 .nest(
                     "/manage",
                     endpoints::management::router().merge(endpoints::github::manage_router::<S>()),

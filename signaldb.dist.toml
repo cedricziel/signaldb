@@ -726,6 +726,8 @@ default_tenant = "default"
 # api_url = "https://api.github.com"      # GitHub Enterprise Server: https://ghe.example.com/api/v3
 # web_url = "https://github.com"          # GitHub Enterprise Server: https://ghe.example.com
 # link_state_ttl = "10m"                  # how long "Connect" waits for GitHub's redirect back
+# snippet_cache_ttl = "10m"                # how long a fetched source-context snippet is cached
+# snippet_cache_capacity = 1000            # max distinct cached files, <=512 KiB each (LRU-evicted)
 
 # Environment variable examples:
 # SIGNALDB__MCP__ENABLED=true

@@ -379,7 +379,15 @@ pub(crate) async fn remove_github_installation<S: RouterState>(
     if !deleted {
         return error(StatusCode::NOT_FOUND, "GitHub installation not found");
     }
-    app.forget_installation(installation_id).await;
+    // The source-context service (present whenever `app` is, since both
+    // come from the same `Arc<GitHubApp>` — see `crate::build_github`)
+    // forgets the installation's own cached token in addition to its
+    // snippet cache entries; fall back to `app` directly on the off chance
+    // it isn't.
+    match state.source_context() {
+        Some(source_context) => source_context.forget_installation(installation_id).await,
+        None => app.forget_installation(installation_id).await,
+    }
     tracing::info!(tenant_id, installation_id, "GitHub installation removed");
     StatusCode::NO_CONTENT.into_response()
 }
@@ -632,8 +640,6 @@ mod tests {
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
-    use common::testing::GITHUB_TEST_PEM as TEST_PEM;
-
     const MANAGE_KEY: &str = "sdbk_acme_manage";
 
     fn tenant(id: &str) -> TenantConfig {
@@ -658,16 +664,7 @@ mod tests {
     }
 
     fn github_config(server: &MockServer) -> GitHubAppConfig {
-        GitHubAppConfig {
-            app_id: 4242,
-            app_slug: "signaldb-test".to_string(),
-            private_key: TEST_PEM.to_string(),
-            client_id: "test-client-id".to_string(),
-            client_secret: "test-client-secret".to_string(),
-            api_url: server.uri(),
-            web_url: server.uri(),
-            ..GitHubAppConfig::default()
-        }
+        common::testing::github_test_config(&server.uri())
     }
 
     /// Builds a test app with tenant `acme` (an admin user, a member user,
@@ -861,14 +858,7 @@ mod tests {
             })))
             .mount(server)
             .await;
-        Mock::given(method("POST"))
-            .and(path("/app/installations/777/access_tokens"))
-            .respond_with(ResponseTemplate::new(201).set_body_json(json!({
-                "token": "ghs_x",
-                "expires_at": (Utc::now() + chrono::Duration::hours(1)).to_rfc3339(),
-            })))
-            .mount(server)
-            .await;
+        crate::github::test_support::mount_installation_token(server, 777).await;
         Mock::given(method("GET"))
             .and(path("/installation/repositories"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({

@@ -44,6 +44,9 @@ thiserror.workspace = true
 # GitHub App JWT signing/minting client (change: github-app-source-context).
 jsonwebtoken.workspace = true
 reqwest.workspace = true
+# Bounded, LRU-evicting source-context snippet cache (change:
+# github-app-source-context).
+lru.workspace = true
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 [dev-dependencies]

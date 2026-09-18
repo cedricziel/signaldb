@@ -8,6 +8,8 @@ sources:
   - src/router/src/endpoints/session.rs
   - src/router/src/endpoints/github.rs
   - src/ui/src/features/integrations/**
+  - src/ui/src/components/SourceSnippet.tsx
+  - src/ui/src/lib/sourceLocation.ts
 ---
 
 # Explore UI
@@ -785,6 +787,21 @@ are collapsed and fetch their datasets lazily via `whoami(tenant_id)` on
 expansion. Until a tenant is resolved the shell sends no tenant-scoped
 `whoami` at all — a signed-in visitor landing on a bare URL is routed here
 by the session, never to the login page.
+
+### View source (GitHub)
+
+Wherever a stack frame's file and line are known — an exception event's
+stacktrace in the trace detail panel, an occurrence's stacktrace in the
+Errors view, or a profile frame whose file the profiler recorded — a
+**View source** control fetches the lines around that frame from the
+tenant's linked GitHub repositories (`POST
+/api/v1/tenants/{id}/source-context`) and shows them inline, naming the
+repository and the ref they came from; when the telemetry carries no
+commit, the repository's default branch is read and the snippet is
+labelled as unpinned. Frames whose file cannot be read from the
+stacktrace text, and frames whose source GitHub cannot serve, simply show
+no snippet. The control appears only when the tenant has linked at least
+one repository (see below).
 
 ### GitHub (`/integrations/github`)
 

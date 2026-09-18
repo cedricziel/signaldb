@@ -108,6 +108,8 @@ impl Modify for SecurityAddon {
         crate::endpoints::github::list_github_installations,
         crate::endpoints::github::remove_github_installation,
         crate::endpoints::github::callback,
+        crate::endpoints::source_context::source_context,
+        crate::endpoints::source_context::source_context_availability,
         crate::endpoints::session::whoami,
         crate::endpoints::oidc::start,
         crate::endpoints::oidc::callback,
@@ -206,6 +208,13 @@ impl Modify for SecurityAddon {
         crate::endpoints::github::GitHubLinkStartResponse,
         crate::endpoints::github::GitHubInstallationResponse,
         crate::endpoints::github::GitHubInstallationsResponse,
+        // Source-context snippet lookup (change: github-app-source-context)
+        crate::endpoints::source_context::SourceContextRequest,
+        crate::endpoints::source_context::SourceContextResponse,
+        crate::endpoints::source_context::SourceContextAvailability,
+        crate::endpoints::source_context::SourceContextStatus,
+        crate::source_context::SourceSnippet,
+        crate::source_context::UnavailableReason,
         common::schema::logical::LogicalType,
         common::schema::logical::Filterability,
         common::schema::logical::LogicalFieldKind,
@@ -269,6 +278,7 @@ impl Modify for SecurityAddon {
         crate::endpoints::query::HeatmapCell,
         crate::endpoints::query::HeatmapResult,
         crate::endpoints::query::QueryWarning,
+        common::profile::FrameLocation,
         // OAuth 2.1 connector consent DTOs
         crate::endpoints::oauth::ConsentDecision,
         crate::endpoints::oauth::ConsentDecisionResponse,
@@ -561,6 +571,8 @@ mod tests {
         "/api/v1/tenants/{tenant_id}/tables/create",
         "/api/v1/tenants/{tenant_id}/schemas",
         "/api/v1/schemas/available",
+        // endpoints/source_context.rs, mounted at /api/v1
+        "/api/v1/tenants/{tenant_id}/source-context",
         // endpoints/query.rs, mounted at /api/v1
         "/api/v1/query",
         // endpoints/discovery.rs, mounted alongside it
@@ -669,12 +681,13 @@ mod tests {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         // (file, mount prefix, Some(fn name) to scope extraction to one
         // function body when the file assembles more than one router).
-        let files_with_prefix: [(&str, &str, Option<&str>); 10] = [
+        let files_with_prefix: [(&str, &str, Option<&str>); 11] = [
             ("src/endpoints/tempo.rs", "/tempo", None),
             ("src/endpoints/logql.rs", "/loki", None),
             ("src/endpoints/promql.rs", "/prometheus", None),
             ("src/endpoints/ops.rs", "/api/v1/ops", None),
             ("src/endpoints/tenant.rs", "/api/v1", None),
+            ("src/endpoints/source_context.rs", "/api/v1", None),
             ("src/endpoints/query.rs", "/api/v1", None),
             ("src/endpoints/management.rs", "/api/v1/manage", None),
             ("src/endpoints/schema.rs", "/api/v1/schema", None),
@@ -822,6 +835,7 @@ mod tests {
             ("/api/v1/query/sources", "get"),
             ("/api/v1/whoami", "get"),
             ("/api/v1/connection", "get"),
+            ("/api/v1/tenants/{tenant_id}/source-context", "post"),
             ("/api/v1/admin/tenants/{tenant_id}/api-keys", "post"),
             ("/api/v1/admin/tenants/{tenant_id}/datasets", "post"),
         ];

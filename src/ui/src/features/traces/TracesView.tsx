@@ -12,6 +12,8 @@ import { ApiError } from "../../api/http";
 import { fetchTraceDetail } from "../../api/traceDetail";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
+import { SourceSnippet } from "../../components/SourceSnippet";
+import { StacktraceLines } from "../../components/StacktraceLines";
 import {
   STATUS_COLORS,
   STATUS_ORDER,
@@ -50,6 +52,8 @@ import {
 import { spanDetailWidth } from "../../lib/sidebarWidth";
 import { liveRefetchInterval } from "../../lib/live";
 import { goBackOr } from "../../lib/router";
+import { codeLocationFromAttributes, repositoryHints } from "../../lib/sourceLocation";
+import { useSourceContextEnabled } from "../../lib/useSourceContextEnabled";
 import { formatErrorRate } from "../../lib/vizFormat";
 import { TraceFacets } from "./TraceFacets";
 import { TraceVolumeAreaChart } from "./TraceVolumeAreaChart";
@@ -1068,6 +1072,7 @@ function TraceDetail({ state, update }: Props) {
                 kind={spanKinds[selectedRow.span.spanId]}
                 update={update}
                 traceFilters={state.traceFilters}
+                tenant={state.tenant}
               />
             </MobileSidebarDrawer>
           </>
@@ -1127,6 +1132,7 @@ function SpanDetail({
   kind,
   update,
   traceFilters,
+  tenant,
 }: {
   span: TempoSpan;
   traceId: string;
@@ -1136,6 +1142,7 @@ function SpanDetail({
   update: UpdateFn;
   /** The URL's raw trace filters, for the "+ filter" row action. */
   traceFilters: TraceFilter[];
+  tenant: string;
 }) {
   const groups = useMemo(
     () => groupSpanAttributes(span.attributes),
@@ -1177,6 +1184,21 @@ function SpanDetail({
   const resourceSummary = useMemo(
     () => summarizeAttributes(resourceEntries, RESOURCE_SUMMARY_FIELDS),
     [resourceEntries],
+  );
+  // The span's own `code.file.path`/`code.line.number` (or pre-1.30
+  // spelling), when the instrumentation recorded one — see
+  // docs/users/explore-ui.md's "View source (GitHub)".
+  // The wrapper label only makes sense when a snippet can actually be
+  // offered; `SourceSnippet` gates itself the same way (react-query dedupes
+  // the probe).
+  const sourceContextEnabled = useSourceContextEnabled(tenant);
+  const codeLocation = useMemo(
+    () => codeLocationFromAttributes(span.attributes),
+    [span.attributes],
+  );
+  const repoHints = useMemo(
+    () => repositoryHints(span.attributes),
+    [span.attributes],
   );
 
   const rowActions = (key: string, value: string): AttributeRowAction[] => {
@@ -1270,7 +1292,13 @@ function SpanDetail({
           <AttributeSection title="Events" />
           <ul className="span-events">
             {span.events.map((event, i) => (
-              <SpanEventItem key={i} event={event} spanStartNs={span.startNs} />
+              <SpanEventItem
+                key={i}
+                event={event}
+                spanStartNs={span.startNs}
+                hints={repoHints}
+                tenant={tenant}
+              />
             ))}
           </ul>
         </>
@@ -1281,6 +1309,18 @@ function SpanDetail({
           onToggle={toggleDescriptions}
         />
       </AttributeSection>
+      {codeLocation && sourceContextEnabled && (
+        <div className="span-code-location">
+          <span className="span-code-location-label">Code location</span>
+          <SourceSnippet
+            tenant={tenant}
+            repository={repoHints.repository}
+            gitRef={repoHints.ref}
+            path={codeLocation.path}
+            line={codeLocation.line}
+          />
+        </div>
+      )}
       {spanGroup ? (
         <AttributeTable
           entries={spanEntries}
@@ -1392,9 +1432,16 @@ function EventTime({
 function SpanEventItem({
   event,
   spanStartNs,
+  hints,
+  tenant,
 }: {
   event: SpanEventView;
   spanStartNs: string;
+  /** The span's own `vcs.*`/`service.version` hints for a "View source"
+   * lookup, computed once by `SpanDetail` (`repositoryHints`) rather than
+   * re-derived per event. */
+  hints: { repository?: string; ref?: string };
+  tenant: string;
 }) {
   const isException = event.name === "exception";
   if (isException) {
@@ -1439,6 +1486,11 @@ function SpanEventItem({
             <AttributeValue
               value={String(stacktrace)}
               label="value for exception.stacktrace"
+            />
+            <StacktraceLines
+              text={String(stacktrace)}
+              tenant={tenant}
+              hints={hints}
             />
           </div>
         )}

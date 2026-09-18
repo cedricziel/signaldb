@@ -443,7 +443,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"result":"flamegraph","window":{"start_ns":0,"end_ns":60},"flamegraph":{"names":["main"],"levels":[[0,10,10,0]],"total":10,"max_self":10,"truncated":false}}"#,
+                r#"{"result":"flamegraph","window":{"start_ns":0,"end_ns":60},"flamegraph":{"names":["main"],"levels":[[0,10,10,0]],"total":10,"max_self":10,"truncated":false,"locations":[null]}}"#,
             )
             .create_async()
             .await;

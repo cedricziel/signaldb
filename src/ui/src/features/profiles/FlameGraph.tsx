@@ -9,6 +9,8 @@ import {
   type PointerEvent,
 } from "react";
 import type { RenderResponse } from "../../api/pyroscope";
+import type { FrameLocation } from "../../api/gen";
+import { SourceSnippet } from "../../components/SourceSnippet";
 import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
 import {
   useRovingFocus,
@@ -54,6 +56,10 @@ interface HoverInfo {
   total: number;
   /** CSS colour of the frame's bar; top-table rows have none. */
   swatch?: string;
+  /** The frame's source location, when known — shown as `file:line` in the
+   * tooltip footer. No fetch happens on hover; this only reads the
+   * pre-fetched flamegraph-envelope `locations`. */
+  location?: FrameLocation;
 }
 
 /** Colour of a frame's bar, keyed by name; the root uses the accent. */
@@ -78,14 +84,26 @@ const FRAME_STYLE = new Map(
   ]),
 );
 
-function frameHoverInfo(frame: FlameFrame): HoverInfo {
+function frameHoverInfo(
+  frame: FlameFrame,
+  nameLocation?: Map<string, FrameLocation>,
+): HoverInfo {
   const isOther = frame.name === OTHER_FRAME_NAME;
   return {
     name: frame.name,
     self: frame.self,
     total: frame.total,
     swatch: isOther ? undefined : `var(${frameColor(frame)})`,
+    location: nameLocation?.get(frame.name),
   };
+}
+
+/** `file:line` for a tooltip footer, or `undefined` when the location is
+ * unknown (line 0 per the flamegraph envelope's convention). */
+function locationFooter(location: FrameLocation | undefined): string | undefined {
+  return location && location.line > 0
+    ? `${location.file}:${location.line}`
+    : undefined;
 }
 
 interface FlameRowsProps {
@@ -253,6 +271,13 @@ interface FlamePaneProps {
   unit: string;
   /** Shown above the toolbar; omitted for the single-flamegraph view. */
   title?: string;
+  /** Set when the caller's tenant can be served source context (see
+   * `useSourceContextEnabled`); enables the Top-functions Source column.
+   * `SourceSnippet` still decides per row, on top of a frame actually
+   * having a location. */
+  tenant?: string;
+  /** Function name → source location, built once by `FlameGraph`. */
+  nameLocation?: Map<string, FrameLocation>;
 }
 
 /**
@@ -261,7 +286,14 @@ interface FlamePaneProps {
  * of the diff view (independently fetched and zoomed, just placed side by
  * side), which only differ in their frame data.
  */
-export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
+export function FlamePane({
+  levels,
+  totalTicks,
+  unit,
+  title,
+  tenant,
+  nameLocation,
+}: FlamePaneProps) {
   const [zoomStack, setZoomStack] = useState<FlameFrame[]>([]);
   const [hovered, setHovered] = useState<FlameFrame | null>(null);
   const [highlight, setHighlight] = useState("");
@@ -383,20 +415,20 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
   const hoverFrame = useCallback(
     (frame: FlameFrame, e: PointerEvent<HTMLElement>) => {
       setHovered(frame);
-      setHoverInfo(frameHoverInfo(frame));
+      setHoverInfo(frameHoverInfo(frame, nameLocation));
       const index = frameIndex.get(frame);
       if (index !== undefined) roving.setActiveIndex(index);
       pointer.track(e);
     },
-    [pointer.track, frameIndex, roving.setActiveIndex],
+    [pointer.track, frameIndex, roving.setActiveIndex, nameLocation],
   );
   const focusFrame = useCallback(
     (frame: FlameFrame, e: FocusEvent<HTMLElement>) => {
       setHovered(frame);
-      setHoverInfo(frameHoverInfo(frame));
+      setHoverInfo(frameHoverInfo(frame, nameLocation));
       pointer.anchorTo(e.currentTarget);
     },
-    [pointer.anchorTo],
+    [pointer.anchorTo, nameLocation],
   );
 
   // Case-insensitive substring match, and the self-time share it covers —
@@ -559,31 +591,54 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
                   numeric
                 />
                 <th className="num">Total %</th>
+                {tenant && <th>Source</th>}
               </tr>
             </thead>
             <tbody>
-              {topRows.map((f) => (
-                <tr
-                  key={f.name}
-                  onClick={() => selectFunction(f.name)}
-                  onPointerMove={(e) => {
-                    setHoverInfo({ name: f.name, self: f.self, total: f.total });
-                    pointer.track(e);
-                  }}
-                  onPointerLeave={clearHover}
-                >
-                  <td>
-                    <button className="flame-top-open">{f.name}</button>
-                    {f.count > 1 && (
-                      <span className="flame-top-count"> ×{f.count}</span>
+              {topRows.map((f) => {
+                const location = nameLocation?.get(f.name);
+                return (
+                  <tr
+                    key={f.name}
+                    onClick={() => selectFunction(f.name)}
+                    onPointerMove={(e) => {
+                      setHoverInfo({
+                        name: f.name,
+                        self: f.self,
+                        total: f.total,
+                        location,
+                      });
+                      pointer.track(e);
+                    }}
+                    onPointerLeave={clearHover}
+                  >
+                    <td>
+                      <button className="flame-top-open">{f.name}</button>
+                      {f.count > 1 && (
+                        <span className="flame-top-count"> ×{f.count}</span>
+                      )}
+                    </td>
+                    <td className="num">{formatTicks(f.self, unit)}</td>
+                    <td className="num">{formatPct(f.self, totalTicks)}</td>
+                    <td className="num">{formatTicks(f.total, unit)}</td>
+                    <td className="num">{formatPct(f.total, totalTicks)}</td>
+                    {tenant && (
+                      <td
+                        className="flame-top-source"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {location && location.line > 0 && (
+                          <SourceSnippet
+                            tenant={tenant}
+                            path={location.file}
+                            line={location.line}
+                          />
+                        )}
+                      </td>
                     )}
-                  </td>
-                  <td className="num">{formatTicks(f.self, unit)}</td>
-                  <td className="num">{formatPct(f.self, totalTicks)}</td>
-                  <td className="num">{formatTicks(f.total, unit)}</td>
-                  <td className="num">{formatPct(f.total, totalTicks)}</td>
-                </tr>
-              ))}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           {topRows.length === 0 && (
@@ -615,6 +670,7 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
               value: `${formatTicks(hoverInfo.total, unit)} (${formatPct(hoverInfo.total, totalTicks)})`,
             },
           ]}
+          footer={locationFooter(hoverInfo.location)}
         />
       )}
     </div>
@@ -636,10 +692,37 @@ interface Props {
   render: RenderResponse;
   /** Unit of the selected profile type, e.g. "nanoseconds", for formatting. */
   unit: string;
+  /** Set when the caller's tenant can be served source context; enables
+   * the Top-functions table's Source column. `SourceSnippet` still decides
+   * per row. */
+  tenant?: string;
+  /** Per-name source location, parallel to `render.flamebearer.names` (see
+   * `FlamegraphFetch.locations`). */
+  locations?: Array<FrameLocation | null>;
 }
 
-export function FlameGraph({ render, unit }: Props) {
+export function FlameGraph({ render, unit, tenant, locations }: Props) {
   const fb = render.flamebearer;
   const levels = useMemo(() => decodeFlamebearer(fb), [fb]);
-  return <FlamePane levels={levels} totalTicks={fb.numTicks} unit={unit} />;
+  // Built once per (names, locations) pair — `names`/`locations` are
+  // index-aligned and names are already unique (the flamegraph envelope
+  // itself dedupes), so no need to guard against overwriting an entry.
+  const nameLocation = useMemo(() => {
+    const map = new Map<string, FrameLocation>();
+    if (!locations) return map;
+    fb.names.forEach((name, i) => {
+      const location = locations[i];
+      if (location) map.set(name, location);
+    });
+    return map;
+  }, [fb.names, locations]);
+  return (
+    <FlamePane
+      levels={levels}
+      totalTicks={fb.numTicks}
+      unit={unit}
+      tenant={tenant}
+      nameLocation={nameLocation}
+    />
+  );
 }

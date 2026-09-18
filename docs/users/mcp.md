@@ -37,6 +37,7 @@ these:
 | `get_trace`                | Fetch a single trace by ID (renders as a waterfall — see below).                                                                                                                                                                                                                                                      |
 | `search_trace_groups`      | The grouped RED-metrics view (count, error count, p50/p95 duration, last-seen per group) the UI's traces tab "group by" table shows, along `group_by` dimensions. No free-text query filter yet — use `query_ir` for scoped filtering or a custom aggregate.                                                          |
 | `get_profile`              | Fetch a single profile's flamegraph by ID (renders as an interactive flamegraph — see below).                                                                                                                                                                                                                         |
+| `get_source_context`       | Fetch a source-code snippet around a stack-frame location (`path`/`line`) through the tenant's linked GitHub App installation(s). `repository` may be omitted to probe by path alone; `ref` may be omitted for the default branch. `status: "unavailable"` with a `reason` is a normal answer, not an error.         |
 | `discover_attributes`      | List queryable attribute/label names, or the values for one. Signal-aware: `traces` (default, Tempo tags), `logs` (Loki labels), `metrics` (Prometheus labels), `profiles` (Pyroscope labels).                                                                                                                        |
 | `discover_metrics`         | List the distinct metric names visible to your tenant.                                                                                                                                                                                                                                                                |
 | `discover_fields`          | The queryable fields of a signal source, as logical dotted OTel names with type, `origin`, coverage and approximate cardinality. Answered from the schema registry and maintained statistics — reads no signal data.                                                                                                  |
@@ -611,6 +612,15 @@ range mode mirrors `signaldb query --promql|--logql ... --start ... --end
 signaldb-cli whoami
 signaldb-cli query --promql 'up' --start 0 --end 3600 --step 15s
 signaldb-cli query --trace-id 4bf92f3577b34da6a3ce929d0e0e4736
+```
+
+`get_source_context` mirrors `signaldb-cli tenant source-context` — a
+read tool, like `get_trace`/`get_profile`, so any valid key of the tenant
+works; it does not need `tenant:manage` despite living under the CLI's
+`tenant` verb group:
+
+```bash
+signaldb-cli tenant source-context --path src/main.rs --line 42 --api-key sk-your-key --tenant-id your-tenant
 ```
 
 The `tenant_*` tools mirror `signaldb-cli tenant`: `tenant_info` is `tenant

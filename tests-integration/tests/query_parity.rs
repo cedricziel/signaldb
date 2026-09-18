@@ -51,6 +51,10 @@ const EXCLUDED: &[(&str, &str)] = &[
         "github_callback",
         "browser redirect completing the GitHub App install flow, bound to the admin's session cookie (change: github-app-source-context) — no CLI command or MCP tool makes sense",
     ),
+    (
+        "source_context_availability",
+        "the Explore UI's read-level probe for whether to offer \"View source\" (change: github-app-source-context); the lookup itself already answers not_configured/no_installation, so no CLI or MCP surface is owed",
+    ),
 ];
 
 /// How an operation is reached through the CLI: either a subcommand path
@@ -240,6 +244,13 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
         "manage_remove_github_installation",
         CliSurface::Path(&["tenant", "github", "remove"]),
         "tenant_remove_github_installation",
+    ),
+    // ---- Source context (tenant self-service API; any valid key of the
+    // tenant that can read a signal, not `tenant:manage`) ----
+    (
+        "source_context",
+        CliSurface::Path(&["tenant", "source-context"]),
+        "get_source_context",
     ),
     // ---- Operational control ----
     (

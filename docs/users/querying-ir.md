@@ -6,6 +6,7 @@ sources:
   - src/router/src/endpoints/query.rs
   - src/query-ir/src/**
   - src/querier/src/query/ir_planner.rs
+  - src/common/src/profile/aggregation.rs
   - src/signaldb-cli/src/commands/query.rs
 ---
 
@@ -484,6 +485,7 @@ The response carries the Pyroscope flamebearer shape plus a truncation flag:
     "total": 100,
     "max_self": 70,
     "truncated": false,
+    "locations": [null, { "file": "src/main.rs", "line": 12 }, null],
   },
 }
 ```
@@ -494,7 +496,10 @@ from the end of the previous block on the same level. `truncated: true` means
 more than 1,000 profile rows matched — a row-count cap, not a response-size
 one — and the flamegraph was aggregated over only the first 1,000 of them;
 narrow the query to see the rest. `fields` is not valid on a `flamegraph`
-result, same as `series`.
+result, same as `series`. `locations` is parallel to `names`: `{file, line}` for the
+first frame seen under that name when the profiler recorded a source file,
+`null` otherwise — the Explore UI uses it to offer
+[View source](explore-ui.md#view-source-github) on profile frames.
 
 ## Metrics
 

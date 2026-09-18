@@ -1901,6 +1901,85 @@ describe("TracesView detail", () => {
       0,
     );
   });
+
+  describe("View source", () => {
+    // A frame carrying a recognizable `path:line` and one that doesn't, so a
+    // location-less line proves it gets no trigger.
+    const STACKTRACE =
+      "PaymentError: card declined\n    at src/handler.rs:42:9\n    at <anonymous>";
+
+    function traceWithStacktrace(stacktrace: string) {
+      const charge = TRACE_BODY.spanSets[0]!.spans[1]!;
+      return {
+        ...TRACE_BODY,
+        spanSets: [
+          {
+            matched: 2,
+            spans: [
+              TRACE_BODY.spanSets[0]!.spans[0]!,
+              {
+                ...charge,
+                events: [
+                  {
+                    ...charge.events![0]!,
+                    attributes: {
+                      ...charge.events![0]!.attributes,
+                      "exception.stacktrace": {
+                        key: "exception.stacktrace",
+                        value: { stringValue: stacktrace },
+                      },
+                    },
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      };
+    }
+
+    function availabilityRoute(configured: boolean, linked: boolean) {
+      return {
+        match: "/source-context",
+        method: "GET",
+        body: { configured, linked },
+      };
+    }
+
+    // The per-frame gating and location parsing are StacktraceLines'/
+    // SourceSnippet's own behavior (see their component tests); this only
+    // checks that TracesView wires the exception stacktrace into
+    // StacktraceLines with the right tenant so a trigger can appear at all.
+    it("shows a View source trigger once GitHub is linked", async () => {
+      stubFetchRoutes([
+        ...traceRoutes(traceWithStacktrace(STACKTRACE)),
+        availabilityRoute(true, true),
+      ]);
+      renderView({ trace: "t1cafe", tenant: "acme" });
+      await screen.findByText("card declined");
+
+      const triggers = await screen.findAllByRole("button", {
+        name: "View source",
+      });
+      expect(triggers).toHaveLength(1);
+      expect(triggers[0]).toHaveAttribute("title", "src/handler.rs:42");
+    });
+
+    it("shows no trigger when GitHub isn't linked for the tenant", async () => {
+      stubFetchRoutes([
+        ...traceRoutes(traceWithStacktrace(STACKTRACE)),
+        availabilityRoute(true, false),
+      ]);
+      renderView({ trace: "t1cafe", tenant: "acme" });
+      await screen.findByText("card declined");
+
+      await waitFor(() =>
+        expect(
+          screen.queryByRole("button", { name: "View source" }),
+        ).not.toBeInTheDocument(),
+      );
+    });
+  });
 });
 
 const VOLUME_BODY = {

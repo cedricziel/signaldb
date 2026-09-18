@@ -3020,6 +3020,136 @@
         ]
       }
     },
+    "/api/v1/tenants/{tenant_id}/source-context": {
+      "get": {
+        "tags": [
+          "github"
+        ],
+        "summary": "`GET /api/v1/tenants/{tenant_id}/source-context`",
+        "description": "Reports whether `[github]` is configured and whether the tenant has\nlinked any installation, so a read-only caller can decide to offer\nsource lookups without the management-scoped installation list.",
+        "operationId": "source_context_availability",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier (must match the authenticated tenant)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Whether source context can be served for this tenant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceContextAvailability"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requested tenant does not match the authenticated tenant, or the caller has no read access to any signal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "github"
+        ],
+        "summary": "`POST /api/v1/tenants/{tenant_id}/source-context`",
+        "description": "Resolves a repo/ref/file/line reference to a bounded, cached source\nsnippet through the tenant's linked GitHub App installation(s). `400` on\na malformed request (empty `path`, `line: 0`, or an unsafe path —\ncontaining a `..`, `.`, empty, or absolute segment — see\n`crate::source_context::SourceRequest::new`); `403` when the path tenant\ndoesn't match the caller's authenticated tenant, or the caller has no\nread access to any signal. Otherwise always `200`: an unconfigured\ndeployment, no covering installation, a missing file, or an out-of-range\nline all answer `status: \"unavailable\"` with a `reason`, never an error —\nthe surrounding trace or profile view must render without the source\npanel rather than fail.",
+        "operationId": "source_context",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier (must match the authenticated tenant)",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SourceContextRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Snippet lookup result (available or unavailable, never an error for a well-formed request)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SourceContextResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Empty path, line is zero, or an unsafe (traversal/absolute) path",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Requested tenant does not match the authenticated tenant, or the caller has no read access to any signal",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/v1/tenants/{tenant_id}/tables": {
       "get": {
         "tags": [
@@ -6159,7 +6289,8 @@
           "levels",
           "total",
           "max_self",
-          "truncated"
+          "truncated",
+          "locations"
         ],
         "properties": {
           "levels": {
@@ -6172,6 +6303,20 @@
               }
             },
             "description": "One entry per depth level; each level is a flat sequence of\n`[offset_delta, total, self, name_index]` quadruples."
+          },
+          "locations": {
+            "type": "array",
+            "items": {
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/components/schemas/FrameLocation"
+                }
+              ]
+            },
+            "description": "Source location for each entry in `names`, aligned by index; `None`\n(or the array is shorter than `names`) where unknown. See\n`common::profile::Flamegraph::locations`."
           },
           "max_self": {
             "type": "integer",
@@ -6193,6 +6338,25 @@
           "truncated": {
             "type": "boolean",
             "description": "`true` when more than `FLAMEGRAPH_PROFILE_CAP` (1,000) profile rows\nmatched — a row-count cap, not a byte-size one — and the flamegraph\nwas aggregated over only the first 1,000 of them."
+          }
+        }
+      },
+      "FrameLocation": {
+        "type": "object",
+        "description": "A function's source location, carried alongside a flamegraph name entry.",
+        "required": [
+          "file",
+          "line"
+        ],
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "Source file path, as reported by the profiler."
+          },
+          "line": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Line number within `file`; 0 means unknown."
           }
         }
       },
@@ -7853,6 +8017,167 @@
           }
         }
       },
+      "SourceContextAvailability": {
+        "type": "object",
+        "description": "Whether source context can be served for a tenant at all — the UI's\nread-level probe for showing or hiding \"View source\" (the installation\n*list* is a management-only endpoint that ordinary readers cannot call).",
+        "required": [
+          "configured",
+          "linked"
+        ],
+        "properties": {
+          "configured": {
+            "type": "boolean",
+            "description": "`[github]` is configured on this deployment."
+          },
+          "linked": {
+            "type": "boolean",
+            "description": "The tenant has linked at least one GitHub App installation."
+          }
+        }
+      },
+      "SourceContextRequest": {
+        "type": "object",
+        "description": "Request body for [`source_context`].",
+        "required": [
+          "path",
+          "line"
+        ],
+        "properties": {
+          "context_lines": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Lines of context on each side of `line`; defaults to\n[`DEFAULT_CONTEXT_LINES`] and is clamped to\n[`crate::source_context::MAX_CONTEXT_LINES`].",
+            "minimum": 0
+          },
+          "line": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The 1-based line number to center the snippet on.",
+            "minimum": 0
+          },
+          "path": {
+            "type": "string",
+            "description": "The file path within the repository."
+          },
+          "ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The ref (branch, tag, or commit SHA) to read the file at. Omit it to\nread the repository's default branch."
+          },
+          "repository": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`owner/name`, or a GitHub URL naming the repository (`https://github.com/owner/name`,\n`owner/name.git`, ...). Omit it to probe every repository covered by\nthe tenant's linked GitHub installations by path alone."
+          }
+        }
+      },
+      "SourceContextResponse": {
+        "type": "object",
+        "description": "Response body for [`source_context`]. Always `200` for a well-formed\nrequest, whether or not a snippet could be served.",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "reason": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/UnavailableReason",
+                "description": "Why no snippet was served; present only when `status` is\n`\"unavailable\"`."
+              }
+            ]
+          },
+          "snippet": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/SourceSnippet",
+                "description": "The resolved snippet; present only when `status` is `\"available\"`."
+              }
+            ]
+          },
+          "status": {
+            "$ref": "#/components/schemas/SourceContextStatus",
+            "description": "Whether a snippet was served."
+          }
+        }
+      },
+      "SourceContextStatus": {
+        "type": "string",
+        "description": "Whether [`source_context`] served a snippet.",
+        "enum": [
+          "available",
+          "unavailable"
+        ]
+      },
+      "SourceSnippet": {
+        "type": "object",
+        "description": "A bounded window of source lines around one line of one file, plus\nenough metadata to render and link to it.",
+        "required": [
+          "repository",
+          "path",
+          "line",
+          "start_line",
+          "lines",
+          "html_url",
+          "sha"
+        ],
+        "properties": {
+          "html_url": {
+            "type": "string",
+            "description": "GitHub's `html_url` for the file, with a `#L{line}` fragment."
+          },
+          "line": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The 1-based line number the snippet is centered on.",
+            "minimum": 0
+          },
+          "lines": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The window of source lines, `start_line..=start_line + lines.len() - 1`."
+          },
+          "path": {
+            "type": "string",
+            "description": "The file path within the repository."
+          },
+          "ref": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The ref the caller asked for; `None` means the repository's default\nbranch."
+          },
+          "repository": {
+            "type": "string",
+            "description": "The `\"owner/name\"` repository that served the snippet."
+          },
+          "sha": {
+            "type": "string",
+            "description": "The blob's `sha`, as GitHub reports it."
+          },
+          "start_line": {
+            "type": "integer",
+            "format": "int32",
+            "description": "The 1-based line number `lines[0]` corresponds to.",
+            "minimum": 0
+          }
+        }
+      },
       "Span": {
         "type": "object",
         "required": [
@@ -8201,6 +8526,21 @@
             "type": "string"
           }
         }
+      },
+      "UnavailableReason": {
+        "type": "string",
+        "description": "Why a lookup could not serve a snippet.",
+        "enum": [
+          "not_configured",
+          "no_installation",
+          "not_found",
+          "not_a_file",
+          "too_large",
+          "undecodable",
+          "line_out_of_range",
+          "github_error",
+          "internal"
+        ]
       },
       "UpdateApiKeyRequest": {
         "type": "object",

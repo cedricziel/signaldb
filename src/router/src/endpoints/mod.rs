@@ -14,6 +14,7 @@ pub mod pyroscope;
 pub mod query;
 pub mod schema;
 pub mod session;
+pub mod source_context;
 pub mod tempo;
 pub mod tenant;
 

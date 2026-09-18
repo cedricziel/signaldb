@@ -68,7 +68,12 @@ flowchart LR
   `manage_list_github_installations`, `manage_remove_github_installation`
   under `/api/v1/manage/tenants/{id}/github-installations`, plus the
   unauthenticated `GET /ui/github/callback` install redirect declared with an
-  empty security requirement — change: github-app-source-context), and
+  empty security requirement — change: github-app-source-context),
+  `endpoints/source_context.rs` (the stack-frame source lookup —
+  `source_context` on `POST /api/v1/tenants/{id}/source-context`, always
+  `200` with an available/unavailable status, and its `GET` sibling
+  `source_context_availability`; the tenant self-service prefix, not the
+  management one, since any signal reader may call it), and
   `endpoints/schema.rs` (the schema registry: `/api/v1/schema/registries`
   CRUD + `:validate`, and attribute/entity/metric resolution and prefix search
   under `/api/v1/schema/{attributes,entities,metrics}`; its resolved-definition

@@ -11,6 +11,7 @@ sources:
   - src/router/src/endpoints/oidc.rs
   - src/router/src/oidc.rs
   - src/router/src/endpoints/github.rs
+  - src/router/src/endpoints/source_context.rs
   - src/common/src/auth/session.rs
   - src/common/src/auth/mod.rs
   - src/common/src/bootstrap.rs
@@ -366,6 +367,8 @@ each is reachable through `signaldb-sdk`, not only raw HTTP:
 | POST   | `/api/v1/tenants/{tenant_id}/tables/create` | Creates the tenant's signal tables (see below)                                                                                                                                       | `create_tenant_tables`   | `signaldb-cli tenant table provision` / `tenant_create_tables`                   |
 | GET    | `/api/v1/tenants/{tenant_id}/schemas`       | The tenant's configured table schema types                                                                                                                                           | `list_tenant_schemas`    | `signaldb-cli tenant table schemas` / `tenant_list_table_schemas`                |
 | GET    | `/api/v1/schemas/available`                 | Every table schema type SignalDB can provision                                                                                                                                       | `list_available_schemas` | `signaldb-cli tenant table available-schemas` / `list_available_table_schemas`   |
+| POST   | `/api/v1/tenants/{tenant_id}/source-context` | Source snippet around a stack-frame location via the tenant's linked GitHub App installation(s); always `200`, `status: available\|unavailable` (see below) | `source_context`         | `signaldb-cli tenant source-context` / `get_source_context`                     |
+| GET    | `/api/v1/tenants/{tenant_id}/source-context` | Whether source context can be served at all (`configured`, `linked`); no dedicated CLI/MCP surface (see below) | `source_context_availability` | —                                                                           |
 
 `GET /tenants` and `GET /tenants/{tenant_id}` return only the caller's own
 tenant — a single-entry view — so both map to `signaldb-cli tenant show` and
@@ -423,6 +426,13 @@ tenant's repositories; they answer `404` until the operator configures
 browser signed in to SignalDB; GitHub redirects back to
 `/ui/github/callback`, which completes the link against that session. See
 [Connecting GitHub](../operations/github-app.md).
+
+`POST /api/v1/tenants/{tenant_id}/source-context` (`source_context`, and
+its `GET` sibling `source_context_availability` answering whether the
+tenant can be served at all) is the read side of that integration: any principal that may read a signal
+(a session, an OAuth token, or a key with a `<signal>:read` scope or no
+scopes) can fetch the source lines around a stack frame from the tenant's
+linked repositories; an ingest-only key is refused with `403`.
 
 Example — CI provisioning a dataset and an ingest key with a `tenant:manage`
 key (`--api-key`/`SIGNALDB_API_KEY`, `--tenant-id`/`SIGNALDB_TENANT_ID`):

@@ -31,6 +31,7 @@ const FLAMEGRAPH = {
     total: 10,
     max_self: 10,
     truncated: false,
+    locations: [null, { file: "src/main.rs", line: 12 }],
   },
 };
 
@@ -51,6 +52,7 @@ describe("fetchFlamegraph", () => {
     expect(result.render.flamebearer.names).toEqual(["total", "main"]);
     expect(result.render.flamebearer.numTicks).toBe(10);
     expect(result.truncated).toBe(false);
+    expect(result.locations).toEqual([null, { file: "src/main.rs", line: 12 }]);
 
     const req = fetchMock.mock.calls[0]?.[0] as Request;
     const body = await req.clone().json();

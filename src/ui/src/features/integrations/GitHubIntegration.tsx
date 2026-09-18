@@ -19,6 +19,7 @@ import { EmptyState } from "../../components/EmptyState";
 import { QueryError, whoamiQueryError } from "../../components/QueryError";
 import { navigateExternal } from "../../lib/navigateExternal";
 import { useOutletState } from "../../lib/outletState";
+import { sourceContextAvailabilityKey } from "../../lib/useSourceContextEnabled";
 import { useWhoami } from "../../lib/useWhoami";
 import "./GitHubIntegration.css";
 
@@ -79,6 +80,13 @@ function GitHubIntegrationBody({ who }: { who: WhoamiResponse }) {
   const installationsQueryKey = ["github-installations", tenant];
   const invalidateInstallations = () =>
     queryClient.invalidateQueries({ queryKey: installationsQueryKey });
+  // Linking/unlinking also changes what the read-level `useSourceContextEnabled`
+  // gate (a separately cached query, possibly fetched — and cached `false` —
+  // anywhere else in the app before this happened) answers for this tenant.
+  const invalidateSourceContextAvailability = () =>
+    queryClient.invalidateQueries({
+      queryKey: sourceContextAvailabilityKey(tenant),
+    });
 
   const installations = useQuery({
     queryKey: installationsQueryKey,
@@ -99,8 +107,10 @@ function GitHubIntegrationBody({ who }: { who: WhoamiResponse }) {
 
   useEffect(() => {
     if (!banner) return;
-    // The mount fetch above is already fresh (it runs after the callback
-    // redirect), so a `linked` banner needs no extra invalidation.
+    // The mount fetch above is already fresh for the installations list (it
+    // runs after the callback redirect), so only the source-context-availability
+    // probe needs an explicit invalidation on a `linked` banner.
+    if (banner.kind === "linked") void invalidateSourceContextAvailability();
     // Strip the callback params so a reload doesn't re-show the banner.
     const next = new URLSearchParams(searchParams);
     next.delete("github");
@@ -125,6 +135,7 @@ function GitHubIntegrationBody({ who }: { who: WhoamiResponse }) {
     onSuccess: () => {
       setError(null);
       void invalidateInstallations();
+      void invalidateSourceContextAvailability();
     },
     onError: (value) => setError(toErrorMessage(value)),
   });
