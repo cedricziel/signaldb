@@ -6,6 +6,6 @@
 pub mod aggregation;
 
 pub use aggregation::{
-    DiffFlamegraph, Flamegraph, aggregate_profiles_to_diff_flamegraph,
+    DiffFlamegraph, Flamegraph, FrameLocation, aggregate_profiles_to_diff_flamegraph,
     aggregate_profiles_to_flamegraph,
 };

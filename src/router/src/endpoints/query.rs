@@ -211,6 +211,10 @@ pub struct FlamegraphResult {
     /// matched — a row-count cap, not a byte-size one — and the flamegraph
     /// was aggregated over only the first 1,000 of them.
     pub truncated: bool,
+    /// Source location for each entry in `names`, aligned by index; `None`
+    /// (or the array is shorter than `names`) where unknown. See
+    /// `common::profile::Flamegraph::locations`.
+    pub locations: Vec<Option<common::profile::FrameLocation>>,
 }
 
 /// A non-fatal diagnostic about a query that still produced a result. A
@@ -730,25 +734,20 @@ fn to_flamegraph_result(batches: &[RecordBatch]) -> Result<FlamegraphResult, Api
                 "flamegraph result is missing truncated",
             )
         })?;
-    #[derive(Deserialize)]
-    struct Decoded {
-        names: Vec<String>,
-        levels: Vec<Vec<i64>>,
-        total: i64,
-        max_self: i64,
-    }
-    let decoded: Decoded = serde_json::from_str(json.value(0)).map_err(|e| {
-        ApiError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            format!("invalid flamegraph_json: {e}"),
-        )
-    })?;
+    let decoded: common::profile::Flamegraph =
+        serde_json::from_str(json.value(0)).map_err(|e| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("invalid flamegraph_json: {e}"),
+            )
+        })?;
     Ok(FlamegraphResult {
         names: decoded.names,
         levels: decoded.levels,
         total: decoded.total,
         max_self: decoded.max_self,
         truncated: truncated.value(0),
+        locations: decoded.locations,
     })
 }
 
@@ -1535,7 +1534,8 @@ mod tests {
             "names": ["total", "main", "foo"],
             "levels": [[0, 100, 0, 0], [0, 100, 30, 1, 0, 70, 70, 2]],
             "total": 100,
-            "max_self": 70
+            "max_self": 70,
+            "locations": [null, {"file": "src/main.rs", "line": 12}, null]
         })
         .to_string();
         let batch = RecordBatch::try_new(
@@ -1568,6 +1568,62 @@ mod tests {
         assert_eq!(flamegraph.total, 100);
         assert_eq!(flamegraph.max_self, 70);
         assert!(flamegraph.truncated);
+        assert_eq!(
+            flamegraph.locations,
+            vec![
+                None,
+                Some(common::profile::FrameLocation {
+                    file: "src/main.rs".to_string(),
+                    line: 12,
+                }),
+                None,
+            ]
+        );
+    }
+
+    /// A `flamegraph_json` batch encoded before `locations` existed (no such
+    /// key at all) decodes to an empty `Vec`, not an error — the field is
+    /// additive per the "Flamegraph envelope carries per-name locations"
+    /// decision.
+    #[test]
+    fn flamegraph_envelope_without_locations_field_decodes_to_empty_vec() {
+        use datafusion::arrow::array::{BooleanArray, RecordBatch, StringArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+        let flamegraph_json = serde_json::json!({
+            "names": ["total"],
+            "levels": [[0, 0, 0, 0]],
+            "total": 0,
+            "max_self": 0
+        })
+        .to_string();
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("flamegraph_json", DataType::Utf8, false),
+                Field::new("truncated", DataType::Boolean, false),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec![flamegraph_json])),
+                Arc::new(BooleanArray::from(vec![false])),
+            ],
+        )
+        .unwrap();
+        let document = serde_json::json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": "0", "to": "60" },
+            "result": "flamegraph", "pipeline": []
+        });
+        let response = build_envelope(
+            "flamegraph",
+            ResolvedWindow {
+                start_ns: 0,
+                end_ns: 60,
+            },
+            &[batch],
+            &document,
+        )
+        .unwrap();
+        let flamegraph = response.flamegraph.expect("flamegraph envelope is present");
+        assert_eq!(flamegraph.locations, Vec::new());
     }
 
     /// A flamegraph query that matches zero profile rows still carries
