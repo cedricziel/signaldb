@@ -432,7 +432,7 @@ describe("LogList semantic labels", () => {
     // dotted-underline key — no inline brief without the descriptions
     // toggle, see "adds the description line only with the toggle on".
     expect(
-      await screen.findByText("Kubernetes Attributes"),
+      await screen.findByText("Kubernetes"),
     ).toBeInTheDocument();
     expect(screen.getByText("otel")).toBeInTheDocument();
     expect(screen.getByText("Other")).toBeInTheDocument();
@@ -470,7 +470,7 @@ describe("LogList semantic labels", () => {
       <LogList rows={[semRow]} onAddFilter={() => {}} onOpenTrace={() => {}} update={vi.fn()} />,
     );
     await userEvent.click(screen.getByText("pod started"));
-    await screen.findByText("Kubernetes Attributes");
+    await screen.findByText("Kubernetes");
     expect(screen.queryByText(/The UID of the Pod\./)).not.toBeInTheDocument();
     await userEvent.click(screen.getByLabelText("Show descriptions"));
     expect(screen.getByText(/The UID of the Pod\./)).toBeInTheDocument();

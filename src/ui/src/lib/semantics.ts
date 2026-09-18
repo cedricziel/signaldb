@@ -18,8 +18,12 @@ export interface AttributeSemantics {
   alternatives: AttributeHit[];
   /** Semantic title: the group's display name or a humanized prefix. */
   title: string;
+  /** Plain-text form of `primary.brief` (see `plainBrief`) — rendering sites
+   * show this rather than stripping the markdown themselves. */
+  brief: string;
   /** Set when any hit deprecates the key; hits are never dropped, so a tenant
-   * re-describing a deprecated key does not hide the upstream deprecation. */
+   * re-describing a deprecated key does not hide the upstream deprecation.
+   * `note`, when present, is already plain text. */
   deprecated: DeprecatedInfo | null;
 }
 
@@ -43,8 +47,16 @@ export function humanizeNamespace(key: string): string {
     .join(" ");
 }
 
+/** Trailing suffix trimmed from a group's display name — "Kubernetes
+ * Attributes" reads as "Kubernetes" everywhere the title is shown (an
+ * attribute table heading, a sidebar group). */
+const ATTRIBUTES_SUFFIX = " Attributes";
+
 export function semanticTitle(hit: AttributeHit): string {
-  return hit.group_display_name || humanizeNamespace(hit.key);
+  const title = hit.group_display_name || humanizeNamespace(hit.key);
+  return title.endsWith(ATTRIBUTES_SUFFIX)
+    ? title.slice(0, -ATTRIBUTES_SUFFIX.length)
+    : title;
 }
 
 /**
@@ -73,17 +85,34 @@ export function semanticsFromResolution(
   const alternatives = res.hits.filter(
     (h) => h.namespace !== primary.namespace || h.version !== primary.version,
   );
-  const deprecated =
+  const deprecatedHit =
     primary.deprecated ??
     alternatives.find((h) => h.deprecated)?.deprecated ??
     null;
+  const deprecated = deprecatedHit
+    ? { ...deprecatedHit, note: plainBrief(deprecatedHit.note) }
+    : null;
   return {
     key: res.key,
     primary,
     alternatives,
     title: semanticTitle(primary),
+    brief: plainBrief(primary.brief),
     deprecated,
   };
+}
+
+/**
+ * `deprecated`'s badge text: `→ <renamed_to>` when the registry named a
+ * replacement, else the bare word "deprecated"; `null` when the key isn't
+ * deprecated at all, so callers can render nothing rather than an empty
+ * badge.
+ */
+export function deprecationLabel(
+  deprecated: DeprecatedInfo | null | undefined,
+): string | null {
+  if (!deprecated) return null;
+  return deprecated.renamed_to ? `→ ${deprecated.renamed_to}` : "deprecated";
 }
 
 export interface TitledGroup<V> {

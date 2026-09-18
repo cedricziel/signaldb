@@ -24,15 +24,6 @@ const LINE_LABELS = [
   "event.name",
 ];
 
-const ATTRIBUTES_SUFFIX = " Attributes";
-
-/** "Kubernetes Attributes" → "Kubernetes"; anything else is unchanged. */
-function displayTitle(title: string): string {
-  return title.endsWith(ATTRIBUTES_SUFFIX)
-    ? title.slice(0, -ATTRIBUTES_SUFFIX.length)
-    : title;
-}
-
 /** "Kubernetes" → "kubernetes"; non-alphanumerics collapse to a single "-". */
 function titleToId(title: string): string {
   return title.toLowerCase().replace(/[^a-z0-9]+/g, "-");
@@ -89,8 +80,8 @@ export function groupFields(
   groups.push(
     ...[...byTitle.entries()]
       .map(([title, group]) => ({
-        id: namespaceGroupId(displayTitle(title)),
-        title: displayTitle(title),
+        id: namespaceGroupId(title),
+        title,
         labels: [...group].sort(byLocale),
       }))
       .sort((a, b) => byLocale(a.title, b.title)),

@@ -75,7 +75,7 @@ describe("useSemantics", () => {
     await waitFor(() => expect(result.current.has("k8s.pod.uid")).toBe(true));
     const sem = result.current.get("k8s.pod.uid")!;
     expect(sem.primary.brief).toBe("The UID of the Pod.");
-    expect(sem.title).toBe("Kubernetes Attributes");
+    expect(sem.title).toBe("Kubernetes");
     expect(result.current.has("app.order.id")).toBe(false);
   });
 

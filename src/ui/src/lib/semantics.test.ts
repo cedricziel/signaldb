@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { AttributeHit, AttributeResolution } from "../api/gen";
 import {
+  deprecationLabel,
   foldSingletonGroups,
   groupBySemanticTitle,
   humanizeNamespace,
@@ -42,8 +43,14 @@ describe("humanizeNamespace", () => {
 describe("semanticTitle", () => {
   it("prefers the group display name", () => {
     expect(
+      semanticTitle(hit({ group_display_name: "Acme Service" })),
+    ).toBe("Acme Service");
+  });
+
+  it("strips a trailing ' Attributes' suffix", () => {
+    expect(
       semanticTitle(hit({ group_display_name: "Kubernetes Attributes" })),
-    ).toBe("Kubernetes Attributes");
+    ).toBe("Kubernetes");
   });
 
   it("falls back to the humanized namespace prefix", () => {
@@ -94,6 +101,48 @@ describe("semanticsFromResolution", () => {
       primary,
     });
     expect(sem?.deprecated?.renamed_to).toBe("k8s.pod.id");
+  });
+
+  it("plain-texts the primary's brief", () => {
+    const primary = hit({ brief: "Deprecated, use `db.system.name` instead." });
+    const sem = semanticsFromResolution({
+      key: "k8s.pod.uid",
+      hits: [primary],
+      primary,
+    });
+    expect(sem?.brief).toBe("Deprecated, use db.system.name instead.");
+  });
+
+  it("plain-texts the deprecation note", () => {
+    const primary = hit({
+      deprecated: {
+        renamed_to: "k8s.pod.id",
+        note: "See [the RFC](https://example.com) for details.",
+      },
+    });
+    const sem = semanticsFromResolution({
+      key: "k8s.pod.uid",
+      hits: [primary],
+      primary,
+    });
+    expect(sem?.deprecated?.note).toBe("See the RFC for details.");
+  });
+});
+
+describe("deprecationLabel", () => {
+  it("returns null when not deprecated", () => {
+    expect(deprecationLabel(null)).toBeNull();
+    expect(deprecationLabel(undefined)).toBeNull();
+  });
+
+  it("shows the replacement when the registry named one", () => {
+    expect(deprecationLabel({ renamed_to: "k8s.pod.id" })).toBe(
+      "→ k8s.pod.id",
+    );
+  });
+
+  it("falls back to the bare word when there is no replacement", () => {
+    expect(deprecationLabel({ reason: "obsolete" })).toBe("deprecated");
   });
 });
 

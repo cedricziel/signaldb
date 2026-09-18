@@ -1,10 +1,10 @@
 /**
  * Attribute-key labels enriched with schema-registry semantics.
  *
- * `SemanticKey` is the detail-row form (span/log attribute tables): the raw
- * key stays first and copyable; underneath sit the brief, the entity role
- * markers, and a deprecation marker, with the defining namespace tagged on
- * the right. `SemanticInfo` is the compact form for sidebars and facet
+ * `SemanticKeyLabel` is the detail-row form (span/log attribute tables): the
+ * raw key alone as the hover/focus trigger, struck through with its
+ * replacement when deprecated — everything else the registry knows lives in
+ * the tooltip. `SemanticInfo` is the compact form for sidebars and facet
  * headers: an info glyph that only appears when the registry knows the key.
  * Both open the same hover/focus tooltip. Without semantics they render
  * exactly what the raw key would — a plain text node, or nothing.
@@ -24,9 +24,11 @@ import {
 import { createPortal } from "react-dom";
 import { Link, useInRouterContext } from "react-router";
 import type { AttributeHit } from "../api/gen";
-import { plainBrief, type AttributeSemantics } from "../lib/semantics";
+import { deprecationLabel, type AttributeSemantics } from "../lib/semantics";
 
-const ROLE_GLYPH: Record<string, string> = {
+/** Entity-role glyph, shared by the tooltip's role list and
+ * `AttributeTable`'s group heading (◆ identifying, ○ descriptive). */
+export const ROLE_GLYPH: Record<string, string> = {
   identifying: "◆",
   descriptive: "○",
 };
@@ -85,7 +87,7 @@ export function SemanticTooltip({
         <HubLink to={attributeHref(primary)}>{registryLabel(primary)}</HubLink>
       </span>
       <span className="sem-tip-facts">{facts.join(" · ")}</span>
-      <span className="sem-tip-brief">{plainBrief(primary.brief)}</span>
+      <span className="sem-tip-brief">{semantics.brief}</span>
       {examples && <span className="sem-tip-examples">e.g. {examples}</span>}
       {primary.entity_roles && primary.entity_roles.length > 0 && (
         <span className="sem-tip-roles">
@@ -103,7 +105,7 @@ export function SemanticTooltip({
         <span className="sem-tip-deprecated">
           ⚠ deprecated
           {deprecated.renamed_to ? ` → ${deprecated.renamed_to}` : ""}
-          {deprecated.note ? ` — ${plainBrief(deprecated.note)}` : ""}
+          {deprecated.note ? ` — ${deprecated.note}` : ""}
         </span>
       )}
       {alternatives.length > 0 && (
@@ -335,50 +337,6 @@ function SemanticHover({
   );
 }
 
-interface SemanticKeyProps {
-  name: string;
-  semantics: AttributeSemantics | undefined;
-  /** Show the semantic title inline (when rows are not grouped by title). */
-  showTitle?: boolean;
-}
-
-/** Detail-row key label. Falls back to the bare key when unresolved. */
-export function SemanticKey({ name, semantics, showTitle }: SemanticKeyProps) {
-  if (!semantics) return <>{name}</>;
-  const { primary, deprecated } = semantics;
-  const roles = primary.entity_roles ?? [];
-  return (
-    <span className="semkey" data-deprecated={deprecated ? "" : undefined}>
-      <SemanticHover semantics={semantics} className="semkey-head">
-        <span className="semkey-name">{name}</span>
-        <span className="semkey-ns chip" data-source={primary.source}>
-          {primary.namespace}
-        </span>
-      </SemanticHover>
-      <span className="semkey-brief">{plainBrief(primary.brief)}</span>
-      {(showTitle || roles.length > 0 || deprecated) && (
-        <span className="semkey-meta">
-          {showTitle && <span className="semkey-title">{semantics.title}</span>}
-          {roles.map((r) => (
-            <span
-              className={`semkey-role semkey-role-${r.role}`}
-              key={`${r.namespace}/${r.entity}/${r.role}`}
-            >
-              {ROLE_GLYPH[r.role] ?? "·"} {r.role} · {r.entity}
-            </span>
-          ))}
-          {deprecated && (
-            <span className="semkey-dep">
-              ⚠ deprecated
-              {deprecated.renamed_to ? ` → ${deprecated.renamed_to}` : ""}
-            </span>
-          )}
-        </span>
-      )}
-    </span>
-  );
-}
-
 /** Key text with a `<wbr/>` after every `.` so a long dotted key (`cloud.
  * region`, `db.statement`) wraps at a dot instead of overflowing or relying
  * on an ellipsis — used by `SemanticKeyLabel` for both a resolved and a bare
@@ -418,16 +376,13 @@ export function SemanticKeyLabel({
   if (!semantics) return <DottedKey name={name} />;
   const { deprecated } = semantics;
   const text = <DottedKey name={name} />;
+  const depLabel = deprecationLabel(deprecated);
   return (
     <>
       <SemanticHover semantics={semantics} className="semkey-name" dataKnown>
         {deprecated ? <s>{text}</s> : text}
       </SemanticHover>
-      {deprecated && (
-        <span className="semkey-dep">
-          {deprecated.renamed_to ? `→ ${deprecated.renamed_to}` : "deprecated"}
-        </span>
-      )}
+      {depLabel && <span className="semkey-dep">{depLabel}</span>}
     </>
   );
 }

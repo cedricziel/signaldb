@@ -57,6 +57,18 @@ const OLD_KEY = {
   deprecated: { renamed_to: "cloud.region" },
 };
 
+const RETIRED_KEY = {
+  key: "retired.key",
+  brief: "A retired key with no replacement.",
+  type: "string",
+  group_id: "registry.retired",
+  group_display_name: "Cloud Attributes",
+  namespace: "otel",
+  version: "1.43.0",
+  source: "bundled",
+  deprecated: { reason: "no longer collected" },
+};
+
 /** Stub `/schema/attributes` resolving each key in `known` to its fixture,
  * and any other requested key to "unknown". */
 function stubResolve(known: Record<string, unknown>) {
@@ -281,5 +293,20 @@ describe("FieldSidebar", () => {
     expect(deprecatedHead).toHaveTextContent("1");
     expect(screen.getByText("old.key").tagName).toBe("S");
     expect(screen.getByText("→ cloud.region")).toBeInTheDocument();
+  });
+
+  it("shows the bare word 'deprecated' for a deprecated key with no replacement", async () => {
+    stubResolve({ "retired.key": RETIRED_KEY });
+    renderWithClient(
+      <FieldSidebar
+        labels={["retired.key"]}
+        range={RANGE}
+        rangeKey="1h"
+        onAddFilter={() => {}}
+      />,
+    );
+    await screen.findByRole("button", { name: /Deprecated/ });
+    expect(screen.getByText("retired.key").tagName).toBe("S");
+    expect(screen.getByText("deprecated")).toBeInTheDocument();
   });
 });

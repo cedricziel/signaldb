@@ -4,10 +4,12 @@
  * registry does not know remains suggestible — just without a description.
  */
 import type { AttributeHit } from "../api/gen";
+import { plainBrief } from "./semantics";
 
 export interface LabelSuggestion {
   key: string;
-  /** Registry brief; `null` for an observed-only key. */
+  /** Registry brief, already plain text (see `plainBrief`); `null` for an
+   * observed-only key. */
   brief: string | null;
   /** Defining namespace; `null` for an observed-only key. */
   namespace: string | null;
@@ -59,7 +61,7 @@ export function mergeLabelSuggestions(
     taken.add(hit.key);
     const suggestion: LabelSuggestion = {
       key: hit.key,
-      brief: hit.brief,
+      brief: plainBrief(hit.brief),
       namespace: hit.namespace,
       source: hit.source,
       deprecatedTo: hit.deprecated?.renamed_to ?? null,

@@ -5,7 +5,12 @@ import { SemanticInfo } from "../../components/SemanticKey";
 import { SidebarResizer } from "../../components/SidebarResizer";
 import { sidebarWidth } from "../../lib/sidebarWidth";
 import { useSemantics } from "../../hooks/useSemantics";
-import type { AttributeSemantics, SemanticsMap } from "../../lib/semantics";
+import {
+  deprecationLabel,
+  type AttributeSemantics,
+  type SemanticsMap,
+} from "../../lib/semantics";
+import { toggleInSet } from "../../lib/collections";
 import type { LabelFilter } from "../../lib/filters";
 import type { ResolvedRange } from "../../lib/time";
 import { groupFields, type FieldGroup } from "./fieldGroups";
@@ -51,14 +56,8 @@ export function FieldSidebar({ labels, range, rangeKey, onAddFilter }: Props) {
   // `groupFields` only ever emits the sentinel "all" group on its own.
   const flat = groups[0]?.id === "all";
 
-  const toggleGroup = (id: string) => {
-    setCollapsed((prev) => {
-      const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
-      return next;
-    });
-  };
+  const toggleGroup = (id: string) =>
+    setCollapsed((prev) => toggleInSet(prev, id));
 
   return (
     <aside className="sidebar" aria-label="Fields">
@@ -166,7 +165,7 @@ function FieldRow({
   rangeKey: string;
   onAddFilter: (filter: LabelFilter) => void;
 }) {
-  const renamedTo = semantics?.deprecated?.renamed_to;
+  const depLabel = deprecationLabel(semantics?.deprecated);
   return (
     <div>
       <div className="field-row">
@@ -179,7 +178,7 @@ function FieldRow({
           {semantics?.deprecated ? (
             <>
               <s>{label}</s>
-              {renamedTo && <span className="field-dep">→ {renamedTo}</span>}
+              {depLabel && <span className="field-dep">{depLabel}</span>}
             </>
           ) : (
             label

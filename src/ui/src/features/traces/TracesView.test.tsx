@@ -1402,7 +1402,7 @@ describe("TracesView detail", () => {
     // dotted-underline key — no inline brief without the descriptions
     // toggle (see the log-detail equivalent for that behavior).
     expect(
-      within(detail).getByText("Kubernetes Attributes"),
+      within(detail).getByText("Kubernetes"),
     ).toBeInTheDocument();
     expect(within(detail).getByText("otel")).toBeInTheDocument();
     expect(

@@ -81,7 +81,7 @@ describe("AttributeTable", () => {
       />,
     );
     const heading = screen
-      .getByText("Kubernetes Attributes")
+      .getByText("Kubernetes")
       .closest<HTMLElement>(".attrtable-group")!;
     expect(within(heading).getByText("otel")).toBeInTheDocument();
     expect(within(heading).getByText("◆ k8s.pod")).toBeInTheDocument();
@@ -205,7 +205,7 @@ describe("AttributeTable", () => {
     );
     const headings = [...container.querySelectorAll(".attrtable-group")];
     expect(headings.map((h) => h.querySelector(".attrtable-title")?.textContent)).toEqual([
-      "Kubernetes Attributes",
+      "Kubernetes",
       "Other",
     ]);
     const other = headings[1]!;
@@ -243,7 +243,7 @@ describe("AttributeTable", () => {
       />,
     );
     const heading = screen
-      .getByText("Kubernetes Attributes")
+      .getByText("Kubernetes")
       .closest<HTMLElement>(".attrtable-group")!;
     expect(within(heading).queryByText("otel")).toBeNull();
     expect(within(heading).queryByText("acme")).toBeNull();
@@ -285,7 +285,7 @@ describe("AttributeTable", () => {
       />,
     );
     const heading = screen
-      .getByText("Kubernetes Attributes")
+      .getByText("Kubernetes")
       .closest<HTMLElement>(".attrtable-group")!;
     expect(within(heading).getByText("○ k8s.pod")).toBeInTheDocument();
     expect(within(heading).queryByText("◆ k8s.pod")).toBeNull();
