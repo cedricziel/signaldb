@@ -1,12 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { lokiLabelValues } from "../../api/loki";
 import { SemanticInfo } from "../../components/SemanticKey";
 import { SidebarResizer } from "../../components/SidebarResizer";
 import { sidebarWidth } from "../../lib/sidebarWidth";
 import { useSemantics } from "../../hooks/useSemantics";
+import type { AttributeSemantics, SemanticsMap } from "../../lib/semantics";
 import type { LabelFilter } from "../../lib/filters";
 import type { ResolvedRange } from "../../lib/time";
+import { groupFields, type FieldGroup } from "./fieldGroups";
 
 interface Props {
   labels: string[];
@@ -16,17 +18,47 @@ interface Props {
 }
 
 /**
- * Fields panel v1: label names from the Loki labels endpoint, values on
- * expand. Presence/cardinality stats arrive with the native fields API.
+ * Fields panel: label names from the Loki labels endpoint, grouped by
+ * semantic title once the schema registry resolves them (flat and
+ * alphabetical until then), values on expand. Presence/cardinality stats
+ * arrive with the native fields API.
  */
 export function FieldSidebar({ labels, range, rangeKey, onAddFilter }: Props) {
   const [open, setOpen] = useState<string | null>(null);
   const [filterText, setFilterText] = useState("");
-
-  const visible = labels.filter((l) =>
-    l.toLowerCase().includes(filterText.toLowerCase()),
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(
+    () => new Set(),
   );
+
   const semantics = useSemantics(labels);
+  const groups = useMemo(
+    () => groupFields(labels, semantics),
+    [labels, semantics],
+  );
+
+  const needle = filterText.trim().toLowerCase();
+  const filtering = needle.length > 0;
+  const visibleGroups = filtering
+    ? groups
+        .map((g) => ({
+          ...g,
+          labels: g.title.toLowerCase().includes(needle)
+            ? g.labels
+            : g.labels.filter((l) => l.toLowerCase().includes(needle)),
+        }))
+        .filter((g) => g.labels.length > 0)
+    : groups;
+  // `groupFields` only ever emits the sentinel "all" group on its own.
+  const flat = groups[0]?.id === "all";
+
+  const toggleGroup = (id: string) => {
+    setCollapsed((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
 
   return (
     <aside className="sidebar" aria-label="Fields">
@@ -41,33 +73,129 @@ export function FieldSidebar({ labels, range, rangeKey, onAddFilter }: Props) {
         onChange={(e) => setFilterText(e.target.value)}
       />
       <div className="fieldlist">
-        {visible.length === 0 && (
+        {visibleGroups.length === 0 && (
           <div className="fieldlist-empty">No fields</div>
         )}
-        {visible.map((label) => (
-          <div key={label}>
-            <div className="field-row">
-              <button
-                className={`field ${open === label ? "open" : ""}`}
-                aria-expanded={open === label}
-                onClick={() => setOpen(open === label ? null : label)}
-              >
-                {label}
-              </button>
-              <SemanticInfo name={label} semantics={semantics.get(label)} />
-            </div>
-            {open === label && (
-              <FieldValues
-                label={label}
-                range={range}
-                rangeKey={rangeKey}
-                onAddFilter={onAddFilter}
-              />
-            )}
-          </div>
+        {visibleGroups.map((group) => (
+          <FieldGroupSection
+            key={group.id}
+            group={group}
+            flat={flat}
+            collapsed={!filtering && collapsed.has(group.id)}
+            onToggle={() => toggleGroup(group.id)}
+            semantics={semantics}
+            open={open}
+            setOpen={setOpen}
+            range={range}
+            rangeKey={rangeKey}
+            onAddFilter={onAddFilter}
+          />
         ))}
       </div>
     </aside>
+  );
+}
+
+function FieldGroupSection({
+  group,
+  flat,
+  collapsed,
+  onToggle,
+  semantics,
+  open,
+  setOpen,
+  range,
+  rangeKey,
+  onAddFilter,
+}: {
+  group: FieldGroup;
+  flat: boolean;
+  collapsed: boolean;
+  onToggle: () => void;
+  semantics: SemanticsMap;
+  open: string | null;
+  setOpen: (label: string | null) => void;
+  range: ResolvedRange;
+  rangeKey: string;
+  onAddFilter: (filter: LabelFilter) => void;
+}) {
+  return (
+    <div className={flat ? undefined : "fieldgroup"}>
+      {!flat && (
+        <button
+          className="fieldgroup-head"
+          aria-expanded={!collapsed}
+          onClick={onToggle}
+        >
+          <span aria-hidden="true">{collapsed ? "▸" : "▾"}</span>
+          {group.title}
+          <span className="fieldgroup-count">{group.labels.length}</span>
+        </button>
+      )}
+      {!collapsed &&
+        group.labels.map((label) => (
+          <FieldRow
+            key={label}
+            label={label}
+            semantics={semantics.get(label)}
+            open={open === label}
+            onToggle={() => setOpen(open === label ? null : label)}
+            range={range}
+            rangeKey={rangeKey}
+            onAddFilter={onAddFilter}
+          />
+        ))}
+    </div>
+  );
+}
+
+function FieldRow({
+  label,
+  semantics,
+  open,
+  onToggle,
+  range,
+  rangeKey,
+  onAddFilter,
+}: {
+  label: string;
+  semantics: AttributeSemantics | undefined;
+  open: boolean;
+  onToggle: () => void;
+  range: ResolvedRange;
+  rangeKey: string;
+  onAddFilter: (filter: LabelFilter) => void;
+}) {
+  const renamedTo = semantics?.deprecated?.renamed_to;
+  return (
+    <div>
+      <div className="field-row">
+        <button
+          className={`field ${open ? "open" : ""}`}
+          data-known={semantics ? "" : undefined}
+          aria-expanded={open}
+          onClick={onToggle}
+        >
+          {semantics?.deprecated ? (
+            <>
+              <s>{label}</s>
+              {renamedTo && <span className="field-dep">→ {renamedTo}</span>}
+            </>
+          ) : (
+            label
+          )}
+        </button>
+        <SemanticInfo name={label} semantics={semantics} />
+      </div>
+      {open && (
+        <FieldValues
+          label={label}
+          range={range}
+          rangeKey={rangeKey}
+          onAddFilter={onAddFilter}
+        />
+      )}
+    </div>
   );
 }
 

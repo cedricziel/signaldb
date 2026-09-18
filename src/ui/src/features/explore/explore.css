@@ -575,6 +575,60 @@
 
 .field-row .sem-info {
   padding-right: 10px;
+  opacity: 0;
+}
+
+.field-row:hover .sem-info,
+.field-row:focus-within .sem-info {
+  opacity: 1;
+}
+
+/* Group headers in the fields sidebar (semantic title, e.g. "Kubernetes"):
+   collapsible, with a field count. Absent for the flat fallback list (no
+   semantics resolved yet), which keeps the un-grouped layout/padding. */
+.fieldgroup-head {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--faint);
+}
+
+.fieldgroup-count {
+  margin-left: auto;
+  color: var(--faint);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.fieldgroup .field {
+  padding-left: 20px;
+}
+
+.fieldgroup .fieldvals {
+  padding-left: 20px;
+}
+
+/* Resolved key affordance: a dotted underline hints it has semantics before
+   the (otherwise hover/focus-only) info glyph appears. */
+.field[data-known] {
+  text-decoration: underline dotted;
+  text-decoration-color: var(--faint);
+  text-underline-offset: 2px;
+}
+
+.field-dep {
+  margin-left: 4px;
+  font-family: var(--ui);
+  font-size: 10px;
+  color: var(--warn-banner-text);
 }
 
 .field-row:hover {
