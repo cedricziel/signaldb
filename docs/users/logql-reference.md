@@ -75,8 +75,10 @@ form per table automatically.
 
 A label name may contain dots (`{k8s.pod.name="checkout-7c9f"}`,
 `| http.response.status_code >= 500`), so a query can name an attribute by
-its real OTel key. A dotted key resolves directly against the attribute
-maps by exact key — no materialization needed. The underscore spelling of
+its real OTel key. Apart from the well-known aliases in the table above
+(`service.name` reaches the `service_name` column), a dotted key resolves
+directly against the attribute maps by exact key — no materialization
+needed. The underscore spelling of
 the same attribute (`k8s_pod_name`) only resolves to that data once the
 label has been **materialized** (see below): both spellings sanitize to
 the identical `label_<key>` column, so either works once the column
