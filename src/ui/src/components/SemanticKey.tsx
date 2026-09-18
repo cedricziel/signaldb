@@ -17,6 +17,7 @@ import {
   useRef,
   useState,
   type CSSProperties,
+  type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent,
   type ReactNode,
 } from "react";
@@ -270,6 +271,36 @@ function SemanticHover({
     ? tipStyle(anchor, height, width)
     : { style: undefined, placement: "below" as Placement };
 
+  // Escape closes the tooltip without also collapsing whatever row/drawer
+  // the trigger sits in; Tab (no shift) steps into the tooltip's first link
+  // instead of leaving the trigger for whatever the DOM would reach next —
+  // the tooltip is portaled to <body>, so natural tab order can otherwise
+  // skip past it or land somewhere unrelated.
+  const onTriggerKeyDown = (e: ReactKeyboardEvent) => {
+    if (!anchor) return;
+    if (e.key === "Escape") {
+      e.stopPropagation();
+      close();
+      return;
+    }
+    if (e.key === "Tab" && !e.shiftKey) {
+      const link = tipRef.current?.querySelector("a");
+      if (link) {
+        e.preventDefault();
+        link.focus();
+      }
+    }
+  };
+  // Shift+Tab off the tooltip's first link returns focus to the trigger
+  // rather than wherever the link would naturally precede in tab order.
+  const onTipKeyDown = (e: ReactKeyboardEvent) => {
+    const firstLink = tipRef.current?.querySelector("a");
+    if (e.key === "Tab" && e.shiftKey && e.target === firstLink) {
+      e.preventDefault();
+      triggerRef.current?.focus();
+    }
+  };
+
   return (
     <span
       ref={triggerRef}
@@ -280,6 +311,7 @@ function SemanticHover({
       onMouseEnter={open}
       onMouseLeave={(e) => leaveTo(e, tipRef.current)}
       onFocus={open}
+      onKeyDown={onTriggerKeyDown}
     >
       {children}
       {anchor &&
@@ -292,6 +324,7 @@ function SemanticHover({
             data-placement={placement}
             style={style}
             onMouseLeave={(e) => leaveTo(e, triggerRef.current)}
+            onKeyDown={onTipKeyDown}
           >
             <HoverBridge placement={placement} />
             <SemanticTooltip semantics={semantics} />

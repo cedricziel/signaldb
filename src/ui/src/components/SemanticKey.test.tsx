@@ -310,3 +310,56 @@ describe("SemanticKey tooltip placement", () => {
     expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
   });
 });
+
+describe("SemanticKey tooltip keyboard access", () => {
+  function renderTrigger() {
+    render(
+      <MemoryRouter>
+        <SemanticKey name="service.name" semantics={semOf([hit({ key: "service.name" })])} />
+      </MemoryRouter>,
+    );
+    return screen
+      .getByText("service.name", { selector: ".semkey-name" })
+      .closest(".semkey-head") as HTMLElement;
+  }
+
+  it("shows the tooltip when the trigger receives focus", async () => {
+    const trigger = renderTrigger();
+    trigger.focus();
+    expect(await screen.findByRole("tooltip")).toBeInTheDocument();
+  });
+
+  it("hides the tooltip on Escape without letting the row/drawer also react", async () => {
+    const trigger = renderTrigger();
+    const onKeyDown = vi.fn();
+    document.body.addEventListener("keydown", onKeyDown);
+    trigger.focus();
+    await screen.findByRole("tooltip");
+
+    fireEvent.keyDown(trigger, { key: "Escape" });
+    expect(screen.queryByRole("tooltip")).not.toBeInTheDocument();
+    expect(onKeyDown).not.toHaveBeenCalled();
+    document.body.removeEventListener("keydown", onKeyDown);
+  });
+
+  it("moves focus to the tooltip's first link on Tab, keeping the tooltip open", async () => {
+    const trigger = renderTrigger();
+    trigger.focus();
+    const tip = await screen.findByRole("tooltip");
+
+    await userEvent.tab();
+    const link = within(tip).getByRole("link", { name: "otel@1.43.0" });
+    expect(link).toHaveFocus();
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+  });
+
+  it("returns focus to the trigger on Shift+Tab from the tooltip's first link", async () => {
+    const trigger = renderTrigger();
+    trigger.focus();
+    await screen.findByRole("tooltip");
+    await userEvent.tab();
+
+    await userEvent.tab({ shift: true });
+    expect(trigger).toHaveFocus();
+  });
+});
