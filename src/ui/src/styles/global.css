@@ -1053,13 +1053,14 @@ th[aria-sort="descending"] .th-sort::after {
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
-  gap: 6px;
 }
 
-/* Actions pinned to the right edge of the value column, mirroring their old
-   dedicated grid column. */
-.attrtable[data-layout="grid"] .attrtable-row dd {
-  justify-content: space-between;
+/* The value stretches across the cell so its copy button lines up at the
+   right edge from row to row instead of trailing each value's text. */
+.attrtable-row dd > .copy-value,
+.attrtable-row dd > .attribute-value {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .attrtable[data-layout="stacked"] .attrtable-row dd {
@@ -1071,6 +1072,7 @@ th[aria-sort="descending"] .th-sort::after {
    than sharing one with the value/actions. */
 .attrtable-desc {
   flex-basis: 100%;
+  margin-top: 2px;
   font-family: var(--ui);
   font-size: 11px;
   color: var(--dim);
@@ -1092,16 +1094,40 @@ th[aria-sort="descending"] .th-sort::after {
   align-items: center;
   gap: 6px;
   font-family: var(--ui);
+  /* Hidden, the strip takes no width, so it never wraps onto a line of its
+     own under the value and leaves a blank gap there; revealed, it grows to
+     its content and wraps below the value only when it does not fit beside
+     it. `max-width`, not `width: 0`, so the buttons keep their own size and
+     stay focusable. */
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  /* No spacing while hidden either: `dd` has no gap of its own, so a
+     zero-width strip always fits on the value's line. */
+  margin-left: 0;
+}
+
+/* Each button keeps its intrinsic width while the strip is clipped to zero,
+   otherwise its label would wrap letter by letter and stretch the row. */
+.attrtable-actions button {
+  flex: none;
+  white-space: nowrap;
 }
 
 .attrtable-row:hover .attrtable-actions,
 .attrtable-row:focus-within .attrtable-actions {
   opacity: 1;
+  max-width: none;
+  overflow: visible;
+  margin-left: 6px;
 }
 
 @media (max-width: 900px), (hover: none) {
   .attrtable-actions {
     opacity: 1;
+    max-width: none;
+    overflow: visible;
+    margin-left: 6px;
   }
 }
 
