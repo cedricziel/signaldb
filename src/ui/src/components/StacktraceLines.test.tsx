@@ -48,7 +48,7 @@ describe("StacktraceLines", () => {
       <StacktraceLines text={STACKTRACE} variant="error" />,
     );
     const wrapper = container.querySelector(".errors-stacktrace");
-    expect(wrapper?.tagName).toBe("PRE");
+    expect(wrapper?.tagName).toBe("DIV");
     expect(
       container.querySelector(".errors-stacktrace-header"),
     ).toBeInTheDocument();
@@ -124,5 +124,51 @@ describe("StacktraceLines", () => {
     );
     const body = await (postCall![0] as Request).clone().json();
     expect(body).toMatchObject({ repository: "acme/api", ref: "main" });
+  });
+
+  // Regression: the error variant's wrapper used to be a `<pre>` with `<div>`
+  // row children, and `SourceSnippet`'s own markup nested a `<pre>` inside a
+  // `<span>` — both invalid, and both silently flagged by React's dev-only
+  // `validateDOMNesting` warning (logged through `console.error`) rather
+  // than a rendering failure.
+  it("nests an opened SourceSnippet under the error variant without an invalid-DOM-nesting warning", async () => {
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    stubFetchRoutes([
+      availabilityRoute(),
+      {
+        match: "/source-context",
+        method: "POST",
+        body: {
+          status: "available",
+          snippet: {
+            repository: "acme/api",
+            ref: "main",
+            path: "src/handler.rs",
+            line: 42,
+            start_line: 41,
+            lines: ["fn handler() {", "    do_thing();", "}"],
+            html_url:
+              "https://github.com/acme/api/blob/main/src/handler.rs#L42",
+            sha: "deadbeef",
+          },
+        },
+      },
+    ]);
+    renderWithClient(
+      <StacktraceLines text={STACKTRACE} tenant="acme" variant="error" />,
+    );
+    const [trigger] = await screen.findAllByRole("button", {
+      name: "View source",
+    });
+    await userEvent.click(trigger!);
+    await screen.findByText("fn handler() {");
+
+    const nestingWarning = consoleError.mock.calls.some((call) =>
+      String(call[0]).includes("validateDOMNesting"),
+    );
+    expect(nestingWarning).toBe(false);
+    consoleError.mockRestore();
   });
 });

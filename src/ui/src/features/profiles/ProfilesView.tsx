@@ -19,7 +19,7 @@ import {
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
 import { SkeletonLines } from "../explore/Skeleton";
 import { TimeRangePicker } from "../shell/TimeRangePicker";
-import { FlameGraph, FlamePane } from "./FlameGraph";
+import { FlameGraph, FlamePane, useFrameLocations } from "./FlameGraph";
 import { decodeFlamebearer } from "../../lib/flamebearer";
 import "./profiles.css";
 import { useSourceContextEnabled } from "../../lib/useSourceContextEnabled";
@@ -330,6 +330,12 @@ function SingleRangeView({ state, update }: Props) {
 }
 
 function CompareView({ state, update }: Props) {
+  // Gated exactly like the single view (`SingleRangeView`): the Top-functions
+  // Source column only makes sense when snippets can be served, and hooks
+  // must be called unconditionally, so this reads the tenant's linked state
+  // once here rather than inside `ComparePane`.
+  const sourceContextEnabled = useSourceContextEnabled(state.tenant);
+  const tenant = sourceContextEnabled ? state.tenant : undefined;
   const selectors = useProfileSelectors(state);
   const { typesQuery, servicesQuery, selectedType, selectedTypeMeta, unit } =
     selectors;
@@ -390,26 +396,48 @@ function CompareView({ state, update }: Props) {
       )}
 
       <div className="profiles-compare">
-        <ComparePane title="Baseline" query={baselineQuery} unit={unit} />
-        <ComparePane title="Comparison" query={comparisonQuery} unit={unit} />
+        <ComparePane
+          title="Baseline"
+          query={baselineQuery}
+          unit={unit}
+          tenant={tenant}
+        />
+        <ComparePane
+          title="Comparison"
+          query={comparisonQuery}
+          unit={unit}
+          tenant={tenant}
+        />
       </div>
     </div>
   );
 }
 
+// A stable empty array while a pane has no data yet, so `useFrameLocations`'s
+// memo isn't invalidated by a fresh literal on every loading render.
+const NO_NAMES: string[] = [];
+
 function ComparePane({
   title,
   query,
   unit,
+  tenant,
 }: {
   title: string;
   query: ReturnType<
     typeof useQuery<Awaited<ReturnType<typeof fetchFlamegraph>>>
   >;
   unit: string;
+  /** Set when the caller's tenant can be served source context; enables the
+   * Top-functions Source column. `SourceSnippet` still decides per row. */
+  tenant?: string;
 }) {
   const fb = query.data?.render.flamebearer;
   const levels = useMemo(() => (fb ? decodeFlamebearer(fb) : []), [fb]);
+  const nameLocation = useFrameLocations(
+    fb?.names ?? NO_NAMES,
+    query.data?.locations,
+  );
 
   if (query.isFetching && !query.data) {
     return (
@@ -434,6 +462,8 @@ function ComparePane({
         totalTicks={query.data.render.flamebearer.numTicks}
         unit={unit}
         title={title}
+        tenant={tenant}
+        nameLocation={nameLocation}
       />
     </div>
   );

@@ -54,6 +54,20 @@ const FLAMEGRAPH = flamegraphBody({
   max_self: 80,
 });
 
+// Same frames as FLAMEGRAPH, plus a location for "main" — used by the
+// compare-mode Source-column tests below.
+const FLAMEGRAPH_WITH_LOCATIONS = flamegraphBody({
+  names: ["total", "main", "work"],
+  levels: [
+    [0, 100, 0, 0],
+    [0, 100, 20, 1],
+    [0, 80, 80, 2],
+  ],
+  total: 100,
+  max_self: 80,
+  locations: [null, { file: "src/main.rs", line: 10 }, null],
+});
+
 const DISCOVERY_ROUTES = [
   { match: "/pyroscope/profile-types", body: TYPES },
   { match: "/pyroscope/label-names", body: LABEL_NAMES },
@@ -415,6 +429,60 @@ describe("ProfilesView", () => {
       "Baseline",
       "Comparison",
     ]);
+  });
+
+  it("passes tenant and source locations to both compare panes' Top-functions tables once GitHub is linked", async () => {
+    stubFetchRoutes([
+      ...DISCOVERY_ROUTES,
+      { match: "/api/v1/query", body: FLAMEGRAPH_WITH_LOCATIONS },
+      {
+        match: "/source-context",
+        method: "GET",
+        body: { configured: true, linked: true },
+      },
+    ]);
+
+    renderWithClient(
+      <ProfilesView
+        state={state({ profileCompare: true, tenant: "acme" })}
+        update={vi.fn()}
+      />,
+    );
+    await screen.findAllByRole("button", { name: /work/ });
+
+    for (const tab of screen.getAllByRole("tab", { name: "Top functions" })) {
+      await userEvent.click(tab);
+    }
+    expect(
+      screen.getAllByRole("columnheader", { name: "Source" }),
+    ).toHaveLength(2);
+  });
+
+  it("omits the Source column in compare mode without the GitHub-linked gate", async () => {
+    stubFetchRoutes([
+      ...DISCOVERY_ROUTES,
+      { match: "/api/v1/query", body: FLAMEGRAPH_WITH_LOCATIONS },
+      {
+        match: "/source-context",
+        method: "GET",
+        body: { configured: false, linked: false },
+      },
+    ]);
+
+    renderWithClient(
+      <ProfilesView
+        state={state({ profileCompare: true, tenant: "acme" })}
+        update={vi.fn()}
+      />,
+    );
+    await screen.findAllByRole("button", { name: /work/ });
+
+    for (const tab of screen.getAllByRole("tab", { name: "Top functions" })) {
+      await userEvent.click(tab);
+    }
+    expect(
+      screen.queryAllByRole("columnheader", { name: "Source" }),
+    ).toHaveLength(0);
   });
 
   it("toggling Compare flips profileCompare in URL state", async () => {

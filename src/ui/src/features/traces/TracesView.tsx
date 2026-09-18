@@ -23,6 +23,7 @@ import {
 import { SignalHistogram } from "../explore/SignalHistogram";
 import { AttributeKeyInput } from "../../components/AttributeKeyInput";
 import { AttributeValue } from "../../components/AttributeValue";
+import { CopyValueButton } from "../../components/CopyValueButton";
 import {
   AttributeSection,
   AttributeSummary,
@@ -1483,7 +1484,7 @@ function SpanEventItem({
         )}
         {stacktrace !== undefined && String(stacktrace) !== "" && (
           <div className="span-event-trace">
-            <AttributeValue
+            <CopyValueButton
               value={String(stacktrace)}
               label="value for exception.stacktrace"
             />

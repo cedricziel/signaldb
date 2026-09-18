@@ -701,21 +701,31 @@ interface Props {
   locations?: Array<FrameLocation | null>;
 }
 
-export function FlameGraph({ render, unit, tenant, locations }: Props) {
-  const fb = render.flamebearer;
-  const levels = useMemo(() => decodeFlamebearer(fb), [fb]);
-  // Built once per (names, locations) pair — `names`/`locations` are
-  // index-aligned and names are already unique (the flamegraph envelope
-  // itself dedupes), so no need to guard against overwriting an entry.
-  const nameLocation = useMemo(() => {
+/** Function name → source location, built once per (`names`, `locations`)
+ * pair — they're index-aligned and names are already unique (the flamegraph
+ * envelope itself dedupes), so no need to guard against overwriting an
+ * entry. Shared by `FlameGraph` and `ProfilesView`'s compare-mode panes,
+ * which each fetch their own flamegraph but build the same kind of map from
+ * it. */
+export function useFrameLocations(
+  names: string[],
+  locations?: Array<FrameLocation | null>,
+): Map<string, FrameLocation> {
+  return useMemo(() => {
     const map = new Map<string, FrameLocation>();
     if (!locations) return map;
-    fb.names.forEach((name, i) => {
+    names.forEach((name, i) => {
       const location = locations[i];
       if (location) map.set(name, location);
     });
     return map;
-  }, [fb.names, locations]);
+  }, [names, locations]);
+}
+
+export function FlameGraph({ render, unit, tenant, locations }: Props) {
+  const fb = render.flamebearer;
+  const levels = useMemo(() => decodeFlamebearer(fb), [fb]);
+  const nameLocation = useFrameLocations(fb.names, locations);
   return (
     <FlamePane
       levels={levels}

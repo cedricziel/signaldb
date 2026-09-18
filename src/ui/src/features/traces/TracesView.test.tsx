@@ -1979,6 +1979,19 @@ describe("TracesView detail", () => {
         ).not.toBeInTheDocument(),
       );
     });
+
+    // Regression: the exception.stacktrace panel used to render the raw
+    // value through AttributeValue *and* StacktraceLines, so every frame
+    // line appeared twice.
+    it("renders each stacktrace frame line only once, not duplicated by the raw-value display", async () => {
+      stubFetchRoutes(traceRoutes(traceWithStacktrace(STACKTRACE)));
+      renderView({ trace: "t1cafe" });
+      await screen.findByText("card declined");
+
+      expect(
+        screen.getAllByText(/at src\/handler\.rs:42:9/),
+      ).toHaveLength(1);
+    });
   });
 });
 

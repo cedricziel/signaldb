@@ -26,15 +26,17 @@ interface Props {
   variant?: StacktraceVariant;
 }
 
+// Both variants wrap in a `<div>`: a `<pre>` may only contain phrasing
+// content and each row is a `<div>`; `.errors-stacktrace-line`'s own
+// `white-space: pre-wrap` reproduces the layout the error view had from
+// `<pre>`.
 const VARIANT = {
   trace: {
-    Wrapper: "div",
     wrapperClass: "span-event-trace-lines",
     prefix: "span-event-trace",
     textClass: "span-event-trace-text",
   },
   error: {
-    Wrapper: "pre",
     wrapperClass: "errors-stacktrace",
     prefix: "errors-stacktrace",
     textClass: undefined,
@@ -57,10 +59,10 @@ export function StacktraceLines({
       })),
     [text],
   );
-  const { Wrapper, wrapperClass, prefix, textClass } = VARIANT[variant];
+  const { wrapperClass, prefix, textClass } = VARIANT[variant];
 
   return (
-    <Wrapper className={className ?? wrapperClass}>
+    <div className={className ?? wrapperClass}>
       {lines.map((line, i) => (
         <div key={i} className={`${prefix}-line ${prefix}-${line.kind}`}>
           <span className={textClass}>{line.text}</span>
@@ -75,6 +77,6 @@ export function StacktraceLines({
           )}
         </div>
       ))}
-    </Wrapper>
+    </div>
   );
 }

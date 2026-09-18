@@ -65,7 +65,7 @@ export function SourceSnippet({
   if (!enabled) return null;
 
   return (
-    <span className="source-snippet-wrap">
+    <div className="source-snippet-wrap">
       <button
         type="button"
         className="btn btn-ghost source-snippet-trigger"
@@ -84,7 +84,7 @@ export function SourceSnippet({
           line={line}
         />
       )}
-    </span>
+    </div>
   );
 }
 
@@ -119,7 +119,7 @@ function SourceSnippetPanel({
   });
 
   return (
-    <span className="source-snippet-panel">
+    <div className="source-snippet-panel">
       {query.isPending && <span className="view-note">Loading source…</span>}
       {query.isError && (
         <span className="error-text">{toErrorMessage(query.error)}</span>
@@ -134,13 +134,13 @@ function SourceSnippetPanel({
       {query.data?.status === "available" && query.data.snippet && (
         <SnippetBody snippet={query.data.snippet} />
       )}
-    </span>
+    </div>
   );
 }
 
 function SnippetBody({ snippet }: { snippet: SourceSnippetResult }) {
   return (
-    <span className="source-snippet-body">
+    <div className="source-snippet-body">
       <span className="source-snippet-head">
         <a
           href={snippet.html_url}
@@ -156,17 +156,17 @@ function SnippetBody({ snippet }: { snippet: SourceSnippetResult }) {
           const lineNo = snippet.start_line + i;
           const current = lineNo === snippet.line;
           return (
-            <div
+            <span
               key={lineNo}
               className={`source-snippet-line${current ? " source-snippet-line-current" : ""}`}
               aria-current={current ? "true" : undefined}
             >
               <span className="source-snippet-lineno">{lineNo}</span>
               <span className="source-snippet-text">{text}</span>
-            </div>
+            </span>
           );
         })}
       </pre>
-    </span>
+    </div>
   );
 }

@@ -102,7 +102,9 @@ describe("SourceSnippet", () => {
 
     expect(screen.getByText("@main")).toBeInTheDocument();
 
-    const target = screen.getByText("do_thing();").closest("div")!;
+    const target = screen
+      .getByText("do_thing();")
+      .closest(".source-snippet-line") as HTMLElement;
     expect(target).toHaveAttribute("aria-current", "true");
     expect(within(target).getByText("42")).toBeInTheDocument();
     expect(screen.getByText("fn handler() {")).toBeInTheDocument();
