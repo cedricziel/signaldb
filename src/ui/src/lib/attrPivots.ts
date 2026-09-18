@@ -74,7 +74,7 @@ export function attributePivots(
       patch: {
         ...CROSS_SIGNAL_RESET,
         signal: "logs",
-        filters: [{ label: toLokiLabel(key), op: "=", value }],
+        filters: [{ label: key, op: "=", value }],
       },
     });
   }

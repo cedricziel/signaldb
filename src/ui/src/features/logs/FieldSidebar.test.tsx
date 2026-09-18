@@ -128,6 +128,33 @@ describe("FieldSidebar", () => {
     });
   });
 
+  it("adds a filter on the dotted key as spelled for a dotted field", async () => {
+    stubFetchRoutes([
+      {
+        match: "/loki/api/v1/label/k8s.pod.name/values",
+        body: { status: "success", data: ["web-1"] },
+      },
+    ]);
+    const onAddFilter = vi.fn();
+    renderWithClient(
+      <FieldSidebar
+        labels={["k8s.pod.name"]}
+        range={RANGE}
+        rangeKey="1h"
+        onAddFilter={onAddFilter}
+      />,
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "k8s.pod.name" }),
+    );
+    await userEvent.click(await screen.findByRole("button", { name: "web-1" }));
+    expect(onAddFilter).toHaveBeenCalledWith({
+      label: "k8s.pod.name",
+      op: "=",
+      value: "web-1",
+    });
+  });
+
   it("shows a failure note when values cannot load", async () => {
     stubFetchRoutes([
       { match: "/values", body: { error: "boom" }, status: 500 },

@@ -254,7 +254,6 @@ function LogAttributes({
     (): ReadonlyMap<string, string> => new Map([...labels, ...metadata]),
     [labels, metadata],
   );
-  const labelKeys = useMemo(() => new Set(labels.map(([k]) => k)), [labels]);
   // "This line" (per-line fields: trace_id/span_id, and metadata with no
   // resolved OTel entity role) vs "Resource · stream" (stream labels, plus
   // metadata the registry says identifies/describes an entity) — see
@@ -266,25 +265,21 @@ function LogAttributes({
   const [resourceExpanded, setResourceExpanded] = useState(false);
 
   const rowActions = (k: string, v: string): AttributeRowAction[] => {
-    // A stream label compiles to a LogQL stream selector; structured
-    // metadata varies per line, the wrong shape for that selector —
-    // filtering on it arrives with the Query IR migration, where the
-    // predicate is built server-side. So only an actual label gets
-    // +filter/-exclude, in either scope.
-    const filterActions: AttributeRowAction[] = labelKeys.has(k)
-      ? [
-          {
-            label: "+ filter",
-            ariaLabel: `Filter for ${k} = ${v}`,
-            onClick: () => onAddFilter({ label: k, op: "=", value: v }),
-          },
-          {
-            label: "− exclude",
-            ariaLabel: `Filter out ${k} = ${v}`,
-            onClick: () => onAddFilter({ label: k, op: "!=", value: v }),
-          },
-        ]
-      : [];
+    // Every row — a stream label or per-line metadata alike — compiles to a
+    // LogQL matcher on the attribute's own key; the querier resolves a
+    // dotted key directly against the attribute maps.
+    const filterActions: AttributeRowAction[] = [
+      {
+        label: "+ filter",
+        ariaLabel: `Filter for ${k} = ${v}`,
+        onClick: () => onAddFilter({ label: k, op: "=", value: v }),
+      },
+      {
+        label: "− exclude",
+        ariaLabel: `Filter out ${k} = ${v}`,
+        onClick: () => onAddFilter({ label: k, op: "!=", value: v }),
+      },
+    ];
     // trace_id carries no identifying entity role of its own, but the trace
     // it names is always one click away — mirrors the `logdetail-actions`
     // "View trace" button for the row that has one, as a per-row action for

@@ -5,6 +5,7 @@ import {
   compileSelector,
   filterFromParam,
   filterToParam,
+  isValidLogLabelName,
   MATCH_ALL_SELECTOR,
   upsertFilter,
   type LabelFilter,
@@ -44,6 +45,25 @@ describe("compileSelector", () => {
     expect(compileSelector([f("path", "=", 'a"b\\c')])).toBe(
       '{path="a\\"b\\\\c"}',
     );
+  });
+
+  it("compiles a dotted label name directly, without flattening", () => {
+    expect(compileSelector([f("k8s.pod.name", "=", "x")])).toBe(
+      '{k8s.pod.name="x"}',
+    );
+  });
+});
+
+describe("isValidLogLabelName", () => {
+  it("accepts dotted segments", () => {
+    expect(isValidLogLabelName("k8s.pod.name")).toBe(true);
+    expect(isValidLogLabelName("service_name")).toBe(true);
+  });
+
+  it("rejects double, leading, and trailing dots", () => {
+    expect(isValidLogLabelName("a..b")).toBe(false);
+    expect(isValidLogLabelName(".a")).toBe(false);
+    expect(isValidLogLabelName("a.")).toBe(false);
   });
 });
 
@@ -104,6 +124,11 @@ describe("filter URL params", () => {
 
   it("preserves empty values", () => {
     expect(filterFromParam("l|=|")).toEqual(f("l", "=", ""));
+  });
+
+  it("round-trips a dotted label", () => {
+    const filter = f("k8s.pod.name", "=", "x");
+    expect(filterFromParam(filterToParam(filter))).toEqual(filter);
   });
 });
 

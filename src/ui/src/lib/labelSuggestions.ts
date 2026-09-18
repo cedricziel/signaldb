@@ -33,10 +33,11 @@ export const LABEL_SUGGESTION_LIMIT = 12;
 const flat = (s: string) => s.toLowerCase().replace(/\./g, "_");
 
 /**
- * A dotted registry key (`service.name`) as the Loki label spelling
- * (`service_name`) a filter chip actually needs — labels are bare
- * identifiers (see `lib/filters.ts`'s `LABEL_RE`), so a suggestion picked
- * from the registry must be flattened before it lands in the chip form.
+ * A dotted registry key (`service.name`) underscore-flattened
+ * (`service_name`) — not the filter-chip spelling (a chip now keeps a
+ * dotted key as-is, see `lib/filters.ts`'s `isValidLogLabelName`); this
+ * stays in use as the id scheme the catalog and the entity sparkline key
+ * their Loki-label lookups by.
  */
 export function toLokiLabel(key: string): string {
   return key.replace(/\./g, "_");

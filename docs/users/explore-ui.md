@@ -32,11 +32,11 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
 - **Logs** — filter chips compiled to LogQL (with an "edit as text" escape
   hatch), a per-level volume histogram, a virtualized log list with
   per-attribute filter/exclude actions, a fields sidebar, and live tail.
-  The add-filter key box suggests schema-registry keys; picking a dotted
-  OTel key (`service.name`) inserts its Loki label spelling
-  (`service_name`), and a hand-typed key that isn't a valid label name
-  disables **Add** with an inline hint rather than failing silently. An
-  expanded row stays expanded while live tail prepends newer lines.
+  The add-filter key box suggests schema-registry keys; picking a registry
+  key filters on that key as spelled, dots included, and a hand-typed key
+  that is not a valid label name (letters, digits, `_` and `.`) disables
+  **Add** with an inline hint rather than failing silently. An expanded row
+  stays expanded while live tail prepends newer lines.
 - **Traces** — a facet sidebar and a span-volume chart stacked by span status
   sit above a group-first view: recent traces arrive grouped by root
   span name (or by service, any observed root-span/resource attribute, or
@@ -391,11 +391,9 @@ the registry's, not the wire format's: until the registry answers, every
 attribute sits under **This line**, and a key no registry knows stays
 there.
 
-Only the stream-label rows offer **+ filter** and **− exclude**. The other
-rows have no filter actions yet: the filter chips compile to a LogQL stream
-selector, which is the wrong shape for a field that varies line to line;
-filtering on them arrives with the Query IR migration, which builds the
-predicate server-side.
+Every row offers **+ filter** and **− exclude**, compiled to a LogQL matcher
+on the attribute's own key (see the [LogQL reference](logql-reference.md)'s
+label-resolution table).
 
 One limitation to know about: the Loki wire format carries these as one flat
 map, so the three OTel attribute scopes — resource, instrumentation scope, and

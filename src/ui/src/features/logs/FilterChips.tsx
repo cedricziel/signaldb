@@ -2,11 +2,10 @@ import { useState } from "react";
 import { AttributeKeyInput } from "../../components/AttributeKeyInput";
 import {
   FILTER_OPS,
-  isValidLabelName,
+  isValidLogLabelName,
   type FilterOp,
   type LabelFilter,
 } from "../../lib/filters";
-import { toLokiLabel } from "../../lib/labelSuggestions";
 
 interface Props {
   filters: LabelFilter[];
@@ -21,7 +20,7 @@ export function FilterChips({ filters, labels, onChange }: Props) {
   const [op, setOp] = useState<FilterOp>("=");
   const [value, setValue] = useState("");
 
-  const labelValid = isValidLabelName(label);
+  const labelValid = isValidLogLabelName(label);
 
   const submit = () => {
     if (!labelValid) return;
@@ -62,7 +61,7 @@ export function FilterChips({ filters, labels, onChange }: Props) {
           <AttributeKeyInput
             value={label}
             onChange={setLabel}
-            onPick={(key) => setLabel(toLokiLabel(key))}
+            onPick={setLabel}
             observed={labels}
             ariaLabel="Filter label"
             placeholder="label"
@@ -70,7 +69,7 @@ export function FilterChips({ filters, labels, onChange }: Props) {
           />
           {label !== "" && !labelValid && (
             <span className="chip-form-hint" role="status">
-              use letters, digits and _
+              use letters, digits, _ and .
             </span>
           )}
           <select
