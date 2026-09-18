@@ -1183,6 +1183,46 @@ impl Catalog {
                     rebuild_oauth_grant_table_sqlite_if_tenant_id_required(pool, table).await?;
                     backfill_oauth_grant_tenant_grants_sqlite(pool, table).await?;
                 }
+
+                // GitHub App installation linking (change:
+                // github-app-source-context).
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS github_link_states (
+                    state_hash TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    consumed_at TEXT
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS github_installations (
+                    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    installation_id INTEGER NOT NULL,
+                    account_login TEXT NOT NULL,
+                    account_type TEXT NOT NULL,
+                    account_id INTEGER NOT NULL,
+                    repositories TEXT NOT NULL,
+                    repositories_synced_at TEXT NOT NULL,
+                    linked_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+                    linked_by_github_login TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (tenant_id, installation_id)
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_github_link_states_expires ON github_link_states(expires_at)",
+                )
+                .execute(pool)
+                .await?;
             }
             Catalog::Postgres(pool) => {
                 // PostgreSQL schema
@@ -1571,6 +1611,46 @@ impl Catalog {
                     .await?;
                     backfill_oauth_grant_tenant_grants_postgres(pool, table).await?;
                 }
+
+                // GitHub App installation linking (change:
+                // github-app-source-context).
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS github_link_states (
+                    state_hash TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+                    created_at TIMESTAMPTZ NOT NULL,
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    consumed_at TIMESTAMPTZ
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS github_installations (
+                    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    installation_id BIGINT NOT NULL,
+                    account_login TEXT NOT NULL,
+                    account_type TEXT NOT NULL,
+                    account_id BIGINT NOT NULL,
+                    repositories TEXT NOT NULL,
+                    repositories_synced_at TIMESTAMPTZ NOT NULL,
+                    linked_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+                    linked_by_github_login TEXT,
+                    created_at TIMESTAMPTZ NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (tenant_id, installation_id)
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_github_link_states_expires ON github_link_states(expires_at)",
+                )
+                .execute(pool)
+                .await?;
             }
         }
 
@@ -5740,6 +5820,524 @@ impl Catalog {
         }
         Ok(deleted)
     }
+}
+
+// ── GitHub App installation linking (change: github-app-source-context) ───
+
+/// A single-use, expiring state token issued before redirecting a tenant
+/// admin to GitHub's install flow (change: github-app-source-context). Only
+/// `state_hash` (a sha256 hex digest of the opaque token) is stored — the
+/// raw token is never persisted, matching how OAuth authorization codes and
+/// tokens are stored by hash elsewhere in this module.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GitHubLinkStateRecord {
+    pub state_hash: String,
+    pub tenant_id: String,
+    /// `None` when the flow was started by an API-key principal rather than
+    /// a logged-in user.
+    pub user_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub consumed_at: Option<DateTime<Utc>>,
+}
+
+/// A linked GitHub App installation (change: github-app-source-context).
+/// `repositories` is the last-known set of "owner/name" full names the
+/// installation covers, refreshed by [`Catalog::update_github_installation_repositories`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitHubInstallationRecord {
+    pub tenant_id: String,
+    pub installation_id: i64,
+    pub account_login: String,
+    pub account_type: String,
+    pub account_id: i64,
+    pub repositories: Vec<String>,
+    pub repositories_synced_at: DateTime<Utc>,
+    pub linked_by_user_id: Option<String>,
+    pub linked_by_github_login: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// What a GitHub install-flow callback learned and wants stored, passed to
+/// [`Catalog::complete_github_link`] (change: github-app-source-context).
+#[derive(Debug, Clone)]
+pub struct NewGitHubInstallation {
+    pub installation_id: i64,
+    pub account_login: String,
+    pub account_type: String,
+    pub account_id: i64,
+    pub repositories: Vec<String>,
+    pub linked_by_user_id: Option<String>,
+    pub linked_by_github_login: Option<String>,
+}
+
+/// Outcome of [`Catalog::complete_github_link`] (change:
+/// github-app-source-context).
+#[derive(Debug, PartialEq, Eq)]
+pub enum GitHubLinkOutcome {
+    /// The state token was valid, unexpired, and unused; the installation
+    /// was created or refreshed for the tenant the state token names.
+    Linked(GitHubInstallationRecord),
+    /// The state token was missing, expired, or already consumed. Nothing
+    /// was written.
+    StateRejected,
+}
+
+impl Catalog {
+    /// Mint a link-flow state token record (change:
+    /// github-app-source-context). The caller generates the opaque token and
+    /// passes only its sha256 hex digest (`state_hash`); the raw token is
+    /// never persisted. `user_id` is `None` for an API-key-initiated flow.
+    pub async fn create_github_link_state(
+        &self,
+        state_hash: &str,
+        tenant_id: &str,
+        user_id: Option<&str>,
+        ttl: std::time::Duration,
+    ) -> Result<GitHubLinkStateRecord, sqlx::Error> {
+        let now = Utc::now();
+        let expires_at = now + chrono::Duration::from_std(ttl).unwrap_or(chrono::Duration::MAX);
+        match self {
+            Catalog::Sqlite(pool) => {
+                query(
+                    "INSERT INTO github_link_states (state_hash, tenant_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+                )
+                .bind(state_hash)
+                .bind(tenant_id)
+                .bind(user_id)
+                .bind(now.to_rfc3339())
+                .bind(expires_at.to_rfc3339())
+                .execute(pool)
+                .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query(
+                    "INSERT INTO github_link_states (state_hash, tenant_id, user_id, created_at, expires_at) VALUES ($1, $2, $3, $4, $5)",
+                )
+                .bind(state_hash)
+                .bind(tenant_id)
+                .bind(user_id)
+                .bind(now)
+                .bind(expires_at)
+                .execute(pool)
+                .await?;
+            }
+        }
+        Ok(GitHubLinkStateRecord {
+            state_hash: state_hash.to_string(),
+            tenant_id: tenant_id.to_string(),
+            user_id: user_id.map(str::to_owned),
+            created_at: now,
+            expires_at,
+            consumed_at: None,
+        })
+    }
+
+    /// Raw lookup of a link-state row by hash, regardless of expiry or
+    /// consumption (change: github-app-source-context). Callers use this to
+    /// choose *which* redirect error to show (expired vs. unknown vs.
+    /// already used); it is never the security check — that is
+    /// [`Catalog::complete_github_link`], which re-validates atomically.
+    pub async fn get_github_link_state(
+        &self,
+        state_hash: &str,
+    ) -> Result<Option<GitHubLinkStateRecord>, sqlx::Error> {
+        let cols = "state_hash, tenant_id, user_id, created_at, expires_at, consumed_at";
+        match self {
+            Catalog::Sqlite(pool) => {
+                let row = query(&format!(
+                    "SELECT {cols} FROM github_link_states WHERE state_hash = ?"
+                ))
+                .bind(state_hash)
+                .fetch_optional(pool)
+                .await?;
+                row.map(|r| {
+                    Ok::<_, sqlx::Error>(GitHubLinkStateRecord {
+                        state_hash: r.get("state_hash"),
+                        tenant_id: r.get("tenant_id"),
+                        user_id: r.get("user_id"),
+                        created_at: parse_rfc3339(r.get("created_at"))?,
+                        expires_at: parse_rfc3339(r.get("expires_at"))?,
+                        consumed_at: r
+                            .get::<Option<String>, _>("consumed_at")
+                            .map(|s| parse_rfc3339(&s))
+                            .transpose()?,
+                    })
+                })
+                .transpose()
+            }
+            Catalog::Postgres(pool) => {
+                let row = query(&format!(
+                    "SELECT {cols} FROM github_link_states WHERE state_hash = $1"
+                ))
+                .bind(state_hash)
+                .fetch_optional(pool)
+                .await?;
+                row.map(|r| {
+                    Ok::<_, sqlx::Error>(GitHubLinkStateRecord {
+                        state_hash: r.get("state_hash"),
+                        tenant_id: r.get("tenant_id"),
+                        user_id: r.get("user_id"),
+                        created_at: r.get("created_at"),
+                        expires_at: r.get("expires_at"),
+                        consumed_at: r.get("consumed_at"),
+                    })
+                })
+                .transpose()
+            }
+        }
+    }
+
+    /// Atomically validate, consume, and record a GitHub App installation
+    /// link (change: github-app-source-context). Consuming the state token
+    /// and creating/refreshing the installation row happen inside a single
+    /// transaction, so two concurrent completions presenting the same state
+    /// token cannot both succeed, and a state token is never left consumed
+    /// without a corresponding installation record.
+    ///
+    /// A missing, expired, or already-consumed `state_hash` yields
+    /// [`GitHubLinkOutcome::StateRejected`] with nothing written. Otherwise
+    /// the installation is upserted for the tenant the state token names
+    /// (keyed by `(tenant_id, installation_id)`), so completing a fresh
+    /// state token for an installation that is already linked refreshes the
+    /// row (e.g. after the admin added repos on GitHub) instead of failing.
+    pub async fn complete_github_link(
+        &self,
+        state_hash: &str,
+        installation: &NewGitHubInstallation,
+    ) -> Result<GitHubLinkOutcome, sqlx::Error> {
+        let now = Utc::now();
+        let repositories_json = serde_json::to_string(&installation.repositories)
+            .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize repositories: {e}")))?;
+        match self {
+            Catalog::Sqlite(pool) => {
+                let now_str = now.to_rfc3339();
+                let mut tx = pool.begin().await?;
+                let consumed = query(
+                    "UPDATE github_link_states SET consumed_at = ? \
+                     WHERE state_hash = ? AND consumed_at IS NULL AND expires_at > ? \
+                     RETURNING tenant_id",
+                )
+                .bind(&now_str)
+                .bind(state_hash)
+                .bind(&now_str)
+                .fetch_optional(&mut *tx)
+                .await?;
+                let Some(consumed_row) = consumed else {
+                    tx.rollback().await?;
+                    return Ok(GitHubLinkOutcome::StateRejected);
+                };
+                let tenant_id: String = consumed_row.get("tenant_id");
+
+                let row = query(&format!(
+                    "INSERT INTO github_installations ({GITHUB_INSTALLATION_COLUMNS}) \
+                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+                     ON CONFLICT (tenant_id, installation_id) DO UPDATE SET \
+                        account_login = excluded.account_login, \
+                        account_type = excluded.account_type, \
+                        account_id = excluded.account_id, \
+                        repositories = excluded.repositories, \
+                        repositories_synced_at = excluded.repositories_synced_at, \
+                        linked_by_user_id = excluded.linked_by_user_id, \
+                        linked_by_github_login = excluded.linked_by_github_login, \
+                        updated_at = excluded.updated_at \
+                     RETURNING {GITHUB_INSTALLATION_COLUMNS}"
+                ))
+                .bind(&tenant_id)
+                .bind(installation.installation_id)
+                .bind(&installation.account_login)
+                .bind(&installation.account_type)
+                .bind(installation.account_id)
+                .bind(&repositories_json)
+                .bind(&now_str)
+                .bind(&installation.linked_by_user_id)
+                .bind(&installation.linked_by_github_login)
+                .bind(&now_str)
+                .bind(&now_str)
+                .fetch_one(&mut *tx)
+                .await?;
+                let record = github_installation_from_sqlite_row(row)?;
+                tx.commit().await?;
+                Ok(GitHubLinkOutcome::Linked(record))
+            }
+            Catalog::Postgres(pool) => {
+                let mut tx = pool.begin().await?;
+                let consumed = query(
+                    "UPDATE github_link_states SET consumed_at = $1 \
+                     WHERE state_hash = $2 AND consumed_at IS NULL AND expires_at > $1 \
+                     RETURNING tenant_id",
+                )
+                .bind(now)
+                .bind(state_hash)
+                .fetch_optional(&mut *tx)
+                .await?;
+                let Some(consumed_row) = consumed else {
+                    tx.rollback().await?;
+                    return Ok(GitHubLinkOutcome::StateRejected);
+                };
+                let tenant_id: String = consumed_row.get("tenant_id");
+
+                let row = query(&format!(
+                    "INSERT INTO github_installations ({GITHUB_INSTALLATION_COLUMNS}) \
+                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10) \
+                     ON CONFLICT (tenant_id, installation_id) DO UPDATE SET \
+                        account_login = EXCLUDED.account_login, \
+                        account_type = EXCLUDED.account_type, \
+                        account_id = EXCLUDED.account_id, \
+                        repositories = EXCLUDED.repositories, \
+                        repositories_synced_at = EXCLUDED.repositories_synced_at, \
+                        linked_by_user_id = EXCLUDED.linked_by_user_id, \
+                        linked_by_github_login = EXCLUDED.linked_by_github_login, \
+                        updated_at = EXCLUDED.updated_at \
+                     RETURNING {GITHUB_INSTALLATION_COLUMNS}"
+                ))
+                .bind(&tenant_id)
+                .bind(installation.installation_id)
+                .bind(&installation.account_login)
+                .bind(&installation.account_type)
+                .bind(installation.account_id)
+                .bind(&repositories_json)
+                .bind(now)
+                .bind(&installation.linked_by_user_id)
+                .bind(&installation.linked_by_github_login)
+                .bind(now)
+                .fetch_one(&mut *tx)
+                .await?;
+                let record = github_installation_from_postgres_row(row)?;
+                tx.commit().await?;
+                Ok(GitHubLinkOutcome::Linked(record))
+            }
+        }
+    }
+
+    /// List a tenant's linked installations, ordered by account login then
+    /// installation id (change: github-app-source-context). Only ever looks
+    /// at rows for `tenant_id` — the tenant-isolation boundary for
+    /// installation resolution.
+    pub async fn list_github_installations(
+        &self,
+        tenant_id: &str,
+    ) -> Result<Vec<GitHubInstallationRecord>, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let rows = query(&format!(
+                    "SELECT {GITHUB_INSTALLATION_COLUMNS} FROM github_installations WHERE tenant_id = ? \
+                     ORDER BY account_login, installation_id"
+                ))
+                .bind(tenant_id)
+                .fetch_all(pool)
+                .await?;
+                rows.into_iter()
+                    .map(github_installation_from_sqlite_row)
+                    .collect()
+            }
+            Catalog::Postgres(pool) => {
+                let rows = query(&format!(
+                    "SELECT {GITHUB_INSTALLATION_COLUMNS} FROM github_installations WHERE tenant_id = $1 \
+                     ORDER BY account_login, installation_id"
+                ))
+                .bind(tenant_id)
+                .fetch_all(pool)
+                .await?;
+                rows.into_iter()
+                    .map(github_installation_from_postgres_row)
+                    .collect()
+            }
+        }
+    }
+
+    /// Look up one tenant's installation by id (change:
+    /// github-app-source-context). Scoped to `tenant_id` — an installation
+    /// id that belongs to another tenant is reported as not found.
+    pub async fn get_github_installation(
+        &self,
+        tenant_id: &str,
+        installation_id: i64,
+    ) -> Result<Option<GitHubInstallationRecord>, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let row = query(&format!(
+                    "SELECT {GITHUB_INSTALLATION_COLUMNS} FROM github_installations WHERE tenant_id = ? AND installation_id = ?"
+                ))
+                .bind(tenant_id)
+                .bind(installation_id)
+                .fetch_optional(pool)
+                .await?;
+                row.map(github_installation_from_sqlite_row).transpose()
+            }
+            Catalog::Postgres(pool) => {
+                let row = query(&format!(
+                    "SELECT {GITHUB_INSTALLATION_COLUMNS} FROM github_installations WHERE tenant_id = $1 AND installation_id = $2"
+                ))
+                .bind(tenant_id)
+                .bind(installation_id)
+                .fetch_optional(pool)
+                .await?;
+                row.map(github_installation_from_postgres_row).transpose()
+            }
+        }
+    }
+
+    /// Resolve which of `tenant_id`'s installations, if any, covers
+    /// `full_name` (an "owner/name" repo full name), case-insensitively
+    /// (change: github-app-source-context). Only ever considers
+    /// `tenant_id`'s own rows, so a repo covered only by another tenant's
+    /// installation resolves to `None` here.
+    pub async fn find_github_installation_for_repository(
+        &self,
+        tenant_id: &str,
+        full_name: &str,
+    ) -> Result<Option<GitHubInstallationRecord>, sqlx::Error> {
+        let installations = self.list_github_installations(tenant_id).await?;
+        Ok(installations.into_iter().find(|installation| {
+            installation
+                .repositories
+                .iter()
+                .any(|repo| repo.eq_ignore_ascii_case(full_name))
+        }))
+    }
+
+    /// Refresh the stored covered-repo list for one installation (change:
+    /// github-app-source-context). Returns whether a row matched
+    /// `(tenant_id, installation_id)`.
+    pub async fn update_github_installation_repositories(
+        &self,
+        tenant_id: &str,
+        installation_id: i64,
+        repositories: &[String],
+    ) -> Result<bool, sqlx::Error> {
+        let repositories_json = serde_json::to_string(repositories)
+            .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize repositories: {e}")))?;
+        let rows_affected = match self {
+            Catalog::Sqlite(pool) => {
+                let now_str = Utc::now().to_rfc3339();
+                query(
+                    "UPDATE github_installations SET repositories = ?, repositories_synced_at = ?, updated_at = ? \
+                     WHERE tenant_id = ? AND installation_id = ?",
+                )
+                .bind(&repositories_json)
+                .bind(&now_str)
+                .bind(&now_str)
+                .bind(tenant_id)
+                .bind(installation_id)
+                .execute(pool)
+                .await?
+                .rows_affected()
+            }
+            Catalog::Postgres(pool) => {
+                query(
+                    "UPDATE github_installations SET repositories = $1, repositories_synced_at = NOW(), updated_at = NOW() \
+                     WHERE tenant_id = $2 AND installation_id = $3",
+                )
+                .bind(&repositories_json)
+                .bind(tenant_id)
+                .bind(installation_id)
+                .execute(pool)
+                .await?
+                .rows_affected()
+            }
+        };
+        Ok(rows_affected > 0)
+    }
+
+    /// Remove a tenant's installation link (change:
+    /// github-app-source-context). Returns whether a row matched
+    /// `(tenant_id, installation_id)`.
+    pub async fn delete_github_installation(
+        &self,
+        tenant_id: &str,
+        installation_id: i64,
+    ) -> Result<bool, sqlx::Error> {
+        let rows_affected = match self {
+            Catalog::Sqlite(pool) => query(
+                "DELETE FROM github_installations WHERE tenant_id = ? AND installation_id = ?",
+            )
+            .bind(tenant_id)
+            .bind(installation_id)
+            .execute(pool)
+            .await?
+            .rows_affected(),
+            Catalog::Postgres(pool) => query(
+                "DELETE FROM github_installations WHERE tenant_id = $1 AND installation_id = $2",
+            )
+            .bind(tenant_id)
+            .bind(installation_id)
+            .execute(pool)
+            .await?
+            .rows_affected(),
+        };
+        Ok(rows_affected > 0)
+    }
+
+    /// Reap expired and already-consumed link-state rows (change:
+    /// github-app-source-context). Mirrors [`Catalog::delete_expired_oauth_grants`];
+    /// wiring a periodic reaper is a tracked follow-up. Returns the number
+    /// of rows deleted.
+    pub async fn delete_expired_github_link_states(&self) -> Result<u64, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let now = Utc::now().to_rfc3339();
+                Ok(
+                    query("DELETE FROM github_link_states WHERE expires_at < ? OR consumed_at IS NOT NULL")
+                        .bind(&now)
+                        .execute(pool)
+                        .await?
+                        .rows_affected(),
+                )
+            }
+            Catalog::Postgres(pool) => Ok(query(
+                "DELETE FROM github_link_states WHERE expires_at < NOW() OR consumed_at IS NOT NULL",
+            )
+            .execute(pool)
+            .await?
+            .rows_affected()),
+        }
+    }
+}
+
+/// Decode a SQLite `github_installations` row (RFC3339 TEXT timestamps).
+/// The `github_installations` columns every read and `RETURNING` clause
+/// selects, in the order the row-mapping helpers below expect.
+const GITHUB_INSTALLATION_COLUMNS: &str = "tenant_id, installation_id, account_login, \
+     account_type, account_id, repositories, repositories_synced_at, linked_by_user_id, \
+     linked_by_github_login, created_at, updated_at";
+
+fn github_installation_from_sqlite_row(
+    row: sqlx::sqlite::SqliteRow,
+) -> Result<GitHubInstallationRecord, sqlx::Error> {
+    Ok(GitHubInstallationRecord {
+        tenant_id: row.get("tenant_id"),
+        installation_id: row.get("installation_id"),
+        account_login: row.get("account_login"),
+        account_type: row.get("account_type"),
+        account_id: row.get("account_id"),
+        repositories: decode_json_vec(row.get("repositories"))?,
+        repositories_synced_at: parse_rfc3339(row.get("repositories_synced_at"))?,
+        linked_by_user_id: row.get("linked_by_user_id"),
+        linked_by_github_login: row.get("linked_by_github_login"),
+        created_at: parse_rfc3339(row.get("created_at"))?,
+        updated_at: parse_rfc3339(row.get("updated_at"))?,
+    })
+}
+
+/// Decode a PostgreSQL `github_installations` row (native `TIMESTAMPTZ`).
+fn github_installation_from_postgres_row(
+    row: sqlx::postgres::PgRow,
+) -> Result<GitHubInstallationRecord, sqlx::Error> {
+    Ok(GitHubInstallationRecord {
+        tenant_id: row.get("tenant_id"),
+        installation_id: row.get("installation_id"),
+        account_login: row.get("account_login"),
+        account_type: row.get("account_type"),
+        account_id: row.get("account_id"),
+        repositories: decode_json_vec(row.get("repositories"))?,
+        repositories_synced_at: row.get("repositories_synced_at"),
+        linked_by_user_id: row.get("linked_by_user_id"),
+        linked_by_github_login: row.get("linked_by_github_login"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    })
 }
 
 // ── Compactor lease management ────────────────────────────────────────────────
@@ -10445,5 +11043,377 @@ mod oauth_storage_tests {
                 .is_some()
         );
         assert_eq!(catalog.delete_expired_oauth_grants().await.unwrap(), 0);
+    }
+}
+
+#[cfg(test)]
+mod github_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// A catalog with two tenants (`acme`, `globex`) and one user, whose
+    /// ids the `github_link_states`/`github_installations` rows reference.
+    async fn catalog_with_two_tenants() -> (Catalog, String) {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", None, "database")
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant("globex", "Globex", None, "database")
+            .await
+            .unwrap();
+        let user = catalog
+            .create_user("admin@example.com", None, Some("phc"), false)
+            .await
+            .unwrap();
+        (catalog, user.id)
+    }
+
+    /// A ten-minute link state for `user_id` in `tenant_id`.
+    async fn link_state(catalog: &Catalog, state_hash: &str, tenant_id: &str, user_id: &str) {
+        catalog
+            .create_github_link_state(
+                state_hash,
+                tenant_id,
+                Some(user_id),
+                Duration::from_secs(600),
+            )
+            .await
+            .unwrap();
+    }
+
+    fn new_installation(installation_id: i64, repositories: &[&str]) -> NewGitHubInstallation {
+        NewGitHubInstallation {
+            installation_id,
+            account_login: "octo-org".to_string(),
+            account_type: "Organization".to_string(),
+            account_id: 42,
+            repositories: repositories.iter().map(|s| s.to_string()).collect(),
+            linked_by_user_id: None,
+            linked_by_github_login: Some("octocat".to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn link_state_and_installation_round_trip() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+
+        link_state(&catalog, "state-hash-1", "acme", &user_id).await;
+
+        let mut installation = new_installation(1001, &["octo-org/repo-a", "octo-org/repo-b"]);
+        installation.linked_by_user_id = Some(user_id.clone());
+
+        let outcome = catalog
+            .complete_github_link("state-hash-1", &installation)
+            .await
+            .unwrap();
+        let GitHubLinkOutcome::Linked(record) = outcome else {
+            panic!("expected Linked, got {outcome:?}");
+        };
+        assert_eq!(record.tenant_id, "acme");
+        assert_eq!(record.installation_id, 1001);
+        assert_eq!(record.account_login, "octo-org");
+        assert_eq!(record.account_type, "Organization");
+        assert_eq!(record.account_id, 42);
+        assert_eq!(
+            record.repositories,
+            vec!["octo-org/repo-a", "octo-org/repo-b"]
+        );
+        assert_eq!(record.linked_by_user_id.as_deref(), Some(user_id.as_str()));
+        assert_eq!(record.linked_by_github_login.as_deref(), Some("octocat"));
+
+        let listed = catalog.list_github_installations("acme").await.unwrap();
+        assert_eq!(listed, vec![record.clone()]);
+
+        let fetched = catalog
+            .get_github_installation("acme", 1001)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched, record);
+
+        let state = catalog
+            .get_github_link_state("state-hash-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.consumed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn tenant_isolation_is_case_insensitive_within_the_owning_tenant() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+
+        link_state(&catalog, "state-globex", "globex", &user_id).await;
+        catalog
+            .complete_github_link("state-globex", &new_installation(2002, &["octo/repo"]))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            catalog
+                .find_github_installation_for_repository("acme", "octo/repo")
+                .await
+                .unwrap(),
+            None,
+            "tenant acme has no installations at all"
+        );
+        let found = catalog
+            .find_github_installation_for_repository("globex", "Octo/Repo")
+            .await
+            .unwrap()
+            .expect("case-insensitive match on globex's own installation");
+        assert_eq!(found.installation_id, 2002);
+    }
+
+    #[tokio::test]
+    async fn state_token_is_single_use() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+        link_state(&catalog, "state-reuse", "acme", &user_id).await;
+
+        let first = catalog
+            .complete_github_link("state-reuse", &new_installation(3003, &["octo/repo"]))
+            .await
+            .unwrap();
+        assert!(matches!(first, GitHubLinkOutcome::Linked(_)));
+
+        let second = catalog
+            .complete_github_link("state-reuse", &new_installation(3003, &["octo/repo"]))
+            .await
+            .unwrap();
+        assert_eq!(second, GitHubLinkOutcome::StateRejected);
+
+        assert_eq!(
+            catalog
+                .list_github_installations("acme")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_state_is_rejected() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+        catalog
+            .create_github_link_state("state-expired", "acme", Some(&user_id), Duration::ZERO)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        let outcome = catalog
+            .complete_github_link("state-expired", &new_installation(4004, &["octo/repo"]))
+            .await
+            .unwrap();
+        assert_eq!(outcome, GitHubLinkOutcome::StateRejected);
+        assert!(
+            catalog
+                .list_github_installations("acme")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_state_hash_is_rejected() {
+        let (catalog, _user_id) = catalog_with_two_tenants().await;
+        let outcome = catalog
+            .complete_github_link("never-issued", &new_installation(5005, &["octo/repo"]))
+            .await
+            .unwrap();
+        assert_eq!(outcome, GitHubLinkOutcome::StateRejected);
+    }
+
+    #[tokio::test]
+    async fn concurrent_completions_produce_exactly_one_link() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+        link_state(&catalog, "state-race", "acme", &user_id).await;
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let catalog = catalog.clone();
+            handles.push(tokio::spawn(async move {
+                catalog
+                    .complete_github_link("state-race", &new_installation(6006, &["octo/repo"]))
+                    .await
+                    .unwrap()
+            }));
+        }
+
+        let mut linked_count = 0;
+        let mut rejected_count = 0;
+        for handle in handles {
+            match handle.await.unwrap() {
+                GitHubLinkOutcome::Linked(_) => linked_count += 1,
+                GitHubLinkOutcome::StateRejected => rejected_count += 1,
+            }
+        }
+        assert_eq!(
+            linked_count, 1,
+            "exactly one completion should win the race"
+        );
+        assert_eq!(rejected_count, 7);
+        assert_eq!(
+            catalog
+                .list_github_installations("acme")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn relinking_upserts_instead_of_failing() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+
+        link_state(&catalog, "state-first", "acme", &user_id).await;
+        let first = catalog
+            .complete_github_link("state-first", &new_installation(7007, &["octo/repo-a"]))
+            .await
+            .unwrap();
+        let GitHubLinkOutcome::Linked(first_record) = first else {
+            panic!("expected Linked");
+        };
+
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        link_state(&catalog, "state-second", "acme", &user_id).await;
+        let second = catalog
+            .complete_github_link(
+                "state-second",
+                &new_installation(7007, &["octo/repo-a", "octo/repo-b"]),
+            )
+            .await
+            .unwrap();
+        let GitHubLinkOutcome::Linked(second_record) = second else {
+            panic!("expected Linked");
+        };
+
+        assert_eq!(second_record.installation_id, first_record.installation_id);
+        assert_eq!(
+            second_record.repositories,
+            vec!["octo/repo-a", "octo/repo-b"]
+        );
+        assert!(second_record.updated_at >= first_record.updated_at);
+        assert_eq!(
+            catalog
+                .list_github_installations("acme")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn update_repositories_reports_whether_a_row_matched() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+        link_state(&catalog, "state-update", "acme", &user_id).await;
+        catalog
+            .complete_github_link("state-update", &new_installation(8008, &["octo/repo-a"]))
+            .await
+            .unwrap();
+
+        let updated = catalog
+            .update_github_installation_repositories(
+                "acme",
+                8008,
+                &["octo/repo-a".to_string(), "octo/repo-c".to_string()],
+            )
+            .await
+            .unwrap();
+        assert!(updated);
+        let record = catalog
+            .get_github_installation("acme", 8008)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.repositories, vec!["octo/repo-a", "octo/repo-c"]);
+
+        let unknown = catalog
+            .update_github_installation_repositories("acme", 9999, &["x/y".to_string()])
+            .await
+            .unwrap();
+        assert!(!unknown);
+    }
+
+    #[tokio::test]
+    async fn delete_installation_is_idempotent_and_empties_the_list() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+        link_state(&catalog, "state-delete", "acme", &user_id).await;
+        catalog
+            .complete_github_link("state-delete", &new_installation(9001, &["octo/repo"]))
+            .await
+            .unwrap();
+
+        assert!(
+            catalog
+                .delete_github_installation("acme", 9001)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !catalog
+                .delete_github_installation("acme", 9001)
+                .await
+                .unwrap()
+        );
+        assert!(
+            catalog
+                .list_github_installations("acme")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_expired_link_states_removes_consumed_and_expired_but_keeps_live() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+
+        // Consumed.
+        link_state(&catalog, "state-consumed", "acme", &user_id).await;
+        catalog
+            .complete_github_link("state-consumed", &new_installation(9101, &["octo/repo"]))
+            .await
+            .unwrap();
+
+        // Expired, never consumed.
+        catalog
+            .create_github_link_state("state-expired-only", "acme", Some(&user_id), Duration::ZERO)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        // Still live.
+        link_state(&catalog, "state-live", "acme", &user_id).await;
+
+        let removed = catalog.delete_expired_github_link_states().await.unwrap();
+        assert_eq!(removed, 2);
+        assert!(
+            catalog
+                .get_github_link_state("state-consumed")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            catalog
+                .get_github_link_state("state-expired-only")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            catalog
+                .get_github_link_state("state-live")
+                .await
+                .unwrap()
+                .is_some()
+        );
     }
 }

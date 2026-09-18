@@ -362,7 +362,7 @@ async fn list_session_memberships<S: RouterState>(
 /// a missing/invalid cookie — logout is a no-op then), so it keeps its own
 /// lookup rather than reusing this.
 #[allow(clippy::result_large_err)]
-async fn resolve_session_user<S: RouterState>(
+pub(crate) async fn resolve_session_user<S: RouterState>(
     state: &S,
     headers: &axum::http::HeaderMap,
 ) -> Result<(String, UserRecord, UserSessionRecord), Response> {

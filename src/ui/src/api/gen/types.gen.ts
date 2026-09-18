@@ -877,6 +877,75 @@ export type FlamegraphResult = {
 };
 
 /**
+ * One linked installation, as reported by [`list_github_installations`].
+ */
+export type GitHubInstallationResponse = {
+    account_login: string;
+    account_type: string;
+    /**
+     * RFC 3339 timestamp.
+     */
+    created_at: string;
+    installation_id: number;
+    linked_by_github_login?: string | null;
+    /**
+     * GitHub's own installation-settings page for this installation.
+     */
+    manage_url: string;
+    /**
+     * The installation's covered repositories, as `"owner/name"` full
+     * names.
+     */
+    repositories: Array<string>;
+    /**
+     * RFC 3339 timestamp of the last successful repository-list refresh.
+     */
+    repositories_synced_at: string;
+    /**
+     * `true` when the live GitHub refresh failed and `repositories` is the
+     * last successfully fetched copy rather than a fresh one.
+     */
+    stale: boolean;
+    /**
+     * RFC 3339 timestamp.
+     */
+    updated_at: string;
+};
+
+/**
+ * 200 response body for [`list_github_installations`].
+ */
+export type GitHubInstallationsResponse = {
+    /**
+     * The App's URL slug, present only when `configured`.
+     */
+    app_slug?: string | null;
+    /**
+     * `false` when `[github]` is absent (or failed to build) — the
+     * endpoint answers 200 rather than 404 so a caller can render "GitHub
+     * is not set up" without special-casing an error status.
+     */
+    configured: boolean;
+    installations: Array<GitHubInstallationResponse>;
+};
+
+/**
+ * 201 response body for [`start_github_link`].
+ */
+export type GitHubLinkStartResponse = {
+    /**
+     * RFC 3339 timestamp naming when the state token (and so this link
+     * attempt) expires.
+     */
+    expires_at: string;
+    /**
+     * GitHub's install page to redirect the admin's browser to. Carries
+     * the single-use state token as its `state` query parameter.
+     */
+    install_url: string;
+};
+
+/**
  * One tenant a credential's grant reaches, with its own dataset-set
  * restriction — the `whoami`/`/oauth/introspect` output shape (change:
  * mcp-multi-tenant-oauth-grants D4/D5). Mirrors
@@ -3031,6 +3100,183 @@ export type ManageDeleteDatasetResponses = {
 };
 
 export type ManageDeleteDatasetResponse = ManageDeleteDatasetResponses[keyof ManageDeleteDatasetResponses];
+
+export type ManageListGithubInstallationsData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/manage/tenants/{tenant_id}/github-installations';
+};
+
+export type ManageListGithubInstallationsErrors = {
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type ManageListGithubInstallationsError = ManageListGithubInstallationsErrors[keyof ManageListGithubInstallationsErrors];
+
+export type ManageListGithubInstallationsResponses = {
+    /**
+     * Linked GitHub installations
+     */
+    200: GitHubInstallationsResponse;
+};
+
+export type ManageListGithubInstallationsResponse = ManageListGithubInstallationsResponses[keyof ManageListGithubInstallationsResponses];
+
+export type ManageStartGithubLinkData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/manage/tenants/{tenant_id}/github-installations/link';
+};
+
+export type ManageStartGithubLinkErrors = {
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * GitHub integration is not configured
+     */
+    404: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type ManageStartGithubLinkError = ManageStartGithubLinkErrors[keyof ManageStartGithubLinkErrors];
+
+export type ManageStartGithubLinkResponses = {
+    /**
+     * Link flow started
+     */
+    201: GitHubLinkStartResponse;
+};
+
+export type ManageStartGithubLinkResponse = ManageStartGithubLinkResponses[keyof ManageStartGithubLinkResponses];
+
+export type ManageRemoveGithubInstallationData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+        /**
+         * GitHub installation identifier
+         */
+        installation_id: number;
+    };
+    query?: never;
+    url: '/api/v1/manage/tenants/{tenant_id}/github-installations/{installation_id}';
+};
+
+export type ManageRemoveGithubInstallationErrors = {
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * GitHub installation not found for this tenant, or GitHub integration is not configured
+     */
+    404: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type ManageRemoveGithubInstallationError = ManageRemoveGithubInstallationErrors[keyof ManageRemoveGithubInstallationErrors];
+
+export type ManageRemoveGithubInstallationResponses = {
+    /**
+     * Installation link removed
+     */
+    204: void;
+};
+
+export type ManageRemoveGithubInstallationResponse = ManageRemoveGithubInstallationResponses[keyof ManageRemoveGithubInstallationResponses];
 
 export type ManageListMembershipsData = {
     body?: never;
@@ -5412,6 +5658,37 @@ export type SearchTagsV2Responses = {
 };
 
 export type SearchTagsV2Response = SearchTagsV2Responses[keyof SearchTagsV2Responses];
+
+export type GithubCallbackData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * OAuth-on-install authorization code
+         */
+        code?: string;
+        /**
+         * The installation id GitHub reports
+         */
+        installation_id?: string;
+        /**
+         * GitHub's setup_action (install/update/request)
+         */
+        setup_action?: string;
+        /**
+         * The state token issued by the link-start endpoint
+         */
+        state?: string;
+    };
+    url: '/ui/github/callback';
+};
+
+export type GithubCallbackErrors = {
+    /**
+     * GitHub integration is not configured
+     */
+    404: unknown;
+};
 
 export type CurrentSessionData = {
     body?: never;

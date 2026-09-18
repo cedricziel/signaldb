@@ -16,6 +16,7 @@ import {
 import { App } from "./App";
 import { ConsentView } from "./features/consent/ConsentView";
 import { ExploreView } from "./features/explore/ExploreView";
+import { GitHubIntegrationRoute } from "./features/integrations/GitHubIntegrationRoute";
 import { ApiKeysRoute } from "./features/management/ApiKeysRoute";
 import { InstrumentationRoute } from "./features/management/InstrumentationRoute";
 import { ManagementRoute } from "./features/management/ManagementRoute";
@@ -87,6 +88,10 @@ export function routeElements() {
         <Route path="manage" element={<ManagementRoute />} />
         <Route path="select-tenant" element={<SelectTenantRoute />} />
         <Route path="api-keys" element={<ApiKeysRoute />} />
+        <Route
+          path="integrations/github"
+          element={<GitHubIntegrationRoute />}
+        />
         <Route path="instrumentation" element={<InstrumentationRoute />} />
         {schemaRoutes()}
         {/* Single-trace view is a route, not a `?trace=` param on /traces —

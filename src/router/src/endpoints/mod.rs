@@ -3,6 +3,7 @@ pub mod api_error;
 pub mod discovery;
 pub mod flight;
 mod flight_decode;
+pub mod github;
 pub mod logql;
 pub mod management;
 pub mod oauth;

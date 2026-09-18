@@ -151,6 +151,30 @@ max_ingest_requests_per_sec = 500
 max_query_requests_per_sec = 500
 ```
 
+#### GitHub App (`[github]`, change: github-app-source-context)
+
+Optional, top-level. Absent by default (no GitHub surface; the installation
+endpoints and `/ui/github/callback` answer 404). One App per deployment;
+tenants link their own installations at runtime. Full guide:
+`docs/operations/github-app.md`.
+
+```toml
+[github]
+app_id = 12345                                     # required; the App's numeric id
+app_slug = "signaldb"                              # required; github.com/apps/<slug>
+private_key_path = "/run/secrets/github-app.pem"   # or private_key = "-----BEGIN ..." (exactly one)
+client_id = "Iv1.0123456789abcdef"                 # required; OAuth client id (ownership check)
+client_secret = "..."                              # required
+api_url = "https://api.github.com"                 # GHES: https://ghe.example.com/api/v3
+web_url = "https://github.com"                     # GHES: https://ghe.example.com
+link_state_ttl = "10m"                             # link-flow state token lifetime
+```
+
+Env: `SIGNALDB__GITHUB__*`, e.g. `SIGNALDB__GITHUB__CLIENT_SECRET`. A partial
+section fails startup naming the setting (`GitHubAppConfig::validate`);
+`Debug` redacts the key and secret. The callback URL registered on the App is
+`{[public].api_url}/ui/github/callback`.
+
 #### SSO / OIDC login (`[auth.oidc]`, change: oidc-login)
 
 Optional single-provider OIDC relying-party config. Absent by default (no SSO

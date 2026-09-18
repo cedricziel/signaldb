@@ -47,6 +47,10 @@ const EXCLUDED: &[(&str, &str)] = &[
         "session_oidc_callback",
         "browser OIDC SSO redirect flow (change: oidc-login) — UI/HTTP-only, no CLI command or MCP tool makes sense",
     ),
+    (
+        "github_callback",
+        "browser redirect completing the GitHub App install flow, bound to the admin's session cookie (change: github-app-source-context) — no CLI command or MCP tool makes sense",
+    ),
 ];
 
 /// How an operation is reached through the CLI: either a subcommand path
@@ -220,6 +224,22 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
         "list_available_schemas",
         CliSurface::Path(&["tenant", "table", "available-schemas"]),
         "list_available_table_schemas",
+    ),
+    // ---- Tenant GitHub App installations (management API) ----
+    (
+        "manage_start_github_link",
+        CliSurface::Path(&["tenant", "github", "link"]),
+        "tenant_start_github_link",
+    ),
+    (
+        "manage_list_github_installations",
+        CliSurface::Path(&["tenant", "github", "list"]),
+        "tenant_list_github_installations",
+    ),
+    (
+        "manage_remove_github_installation",
+        CliSurface::Path(&["tenant", "github", "remove"]),
+        "tenant_remove_github_installation",
     ),
     // ---- Operational control ----
     (

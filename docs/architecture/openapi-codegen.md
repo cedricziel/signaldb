@@ -63,7 +63,12 @@ flowchart LR
   type them as `T | null` rather than optional — plus the SSO redirect
   endpoints `GET /ui/session/oidc/{start,callback}`, so the UI reads the
   SSO offering and the `granted_by` membership source through generated
-  types — change: oidc-login), and
+  types — change: oidc-login), `endpoints/github.rs` (the GitHub App
+  installation surface — `manage_start_github_link`,
+  `manage_list_github_installations`, `manage_remove_github_installation`
+  under `/api/v1/manage/tenants/{id}/github-installations`, plus the
+  unauthenticated `GET /ui/github/callback` install redirect declared with an
+  empty security requirement — change: github-app-source-context), and
   `endpoints/schema.rs` (the schema registry: `/api/v1/schema/registries`
   CRUD + `:validate`, and attribute/entity/metric resolution and prefix search
   under `/api/v1/schema/{attributes,entities,metrics}`; its resolved-definition

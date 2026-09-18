@@ -13,6 +13,8 @@ sources:
   - src/router/src/endpoints/oauth.rs
   - src/router/src/endpoints/oidc.rs
   - src/router/src/oidc.rs
+  - src/router/src/github.rs
+  - src/router/src/endpoints/github.rs
   - src/router/src/read_scope.rs
   - src/signaldb-cli/src/commands/tenant_self.rs
   - src/mcp-server/src/server.rs
@@ -128,6 +130,28 @@ bootstrap planes: API keys, `admin_api_key`, and the CLI/config
 `user create --instance-admin` bootstrap authenticate regardless of IdP
 availability. An unreachable issuer degrades SSO (background retry) rather than
 stopping the instance, so break-glass holds across restarts too.
+
+### GitHub App installations (tenant-scoped, read-only; change: github-app-source-context)
+
+A **tenant-scoped, read-only credential that is never stored**. One GitHub App
+identity per deployment (`[github]`: app id, PEM private key, OAuth client
+id/secret); what is per tenant is the *installation* a tenant admin links
+(`github_installations` rows: installation id, org/user account, covered repo
+list, who linked it). `router::github::GitHubApp` signs an RS256 app JWT, mints
+an installation token on demand (process-local cache until ~5 minutes before
+GitHub's expiry) and never persists it. Linking (`POST
+/api/v1/manage/tenants/{id}/github-installations/link` → install URL carrying a
+single-use, tenant+admin-bound state token whose SHA-256 sits in
+`github_link_states`; `GET /ui/github/callback` requires the browser's
+`signaldb_session` to be the starting user or an admin of the state's tenant,
+exchanges GitHub's `code` for a user token, verifies the `installation_id` is
+in that user's `GET /user/installations`, refuses write-capable permissions,
+then `Catalog::complete_github_link` consumes the state and upserts the row in
+one transaction). Resolution of a repo to an installation only ever looks at
+the caller's own tenant (`find_github_installation_for_repository`). Removal
+(`DELETE .../github-installations/{id}`) also drops the cached token, so it is
+immediate. `src/router/src/endpoints/github.rs`, `src/router/src/github.rs`;
+operator guide `docs/operations/github-app.md`.
 
 **Read scopes.** OAuth scopes populate `TenantContext.api_key_scopes` and are
 enforced like API-key write scopes. `can_read(<signal>)` requires the matching
@@ -413,20 +437,25 @@ create tenants through the admin API.
 | `/api/v1/manage/tenants/{id}/memberships`       | GET, PUT      | List / upsert a member's role                 | `manage_list_memberships`, `manage_upsert_membership` |
 | `/api/v1/manage/tenants/{id}/memberships/{uid}` | DELETE        | Remove a member                               | `manage_remove_membership`                            |
 | `/api/v1/manage/schema`                         | GET           | Logical + physical schema                     | `manage_get_schema`                                   |
+| `/api/v1/manage/tenants/{id}/github-installations/link` | POST  | Start linking a GitHub App installation       | `manage_start_github_link`                            |
+| `/api/v1/manage/tenants/{id}/github-installations` | GET        | List linked GitHub App installations          | `manage_list_github_installations`                    |
+| `/api/v1/manage/tenants/{id}/github-installations/{iid}` | DELETE | Remove a linked GitHub App installation     | `manage_remove_github_installation`                    |
 
 CLI (`signaldb_cli::commands::tenant_self`, API key with `tenant:manage`):
 `tenant dataset {list,create,delete}`, `tenant api-key {list,create,update,revoke}`,
-`tenant membership {list,set,remove}`, `tenant schema get`; destructive verbs
-take `--yes` or confirm on a TTY. MCP: `tenant_list_datasets`,
+`tenant membership {list,set,remove}`, `tenant schema get`,
+`tenant github {link,list,remove}`; destructive verbs take `--yes` or confirm
+on a TTY. MCP: `tenant_list_datasets`,
 `tenant_create_dataset`, `tenant_delete_dataset`, `tenant_list_api_keys`,
 `tenant_create_api_key`, `tenant_update_api_key`, `tenant_revoke_api_key`,
 `tenant_list_memberships`, `tenant_upsert_membership`,
-`tenant_remove_membership`, `tenant_get_schema` (a 403 surfaces the router's
-reason via `map_manage_err`). The whole-SDK parity check
-(`tests-integration/tests/query_parity.rs`) maps all of them; only the two
-OAuth consent endpoints and `manage_create_tenant` stay excluded. E2E:
-`tests-integration/tests/tenant_manage_clients.rs`. See `docs/users/mcp.md`
-and `docs/users/authentication.md#tenant-management-api`.
+`tenant_remove_membership`, `tenant_get_schema`, `tenant_start_github_link`,
+`tenant_list_github_installations`, `tenant_remove_github_installation` (a
+403 surfaces the router's reason via `map_manage_err`). The whole-SDK parity
+check (`tests-integration/tests/query_parity.rs`) maps all of them; only the
+two OAuth consent endpoints, `manage_create_tenant`, and the GitHub install
+callback stay excluded. E2E: `tests-integration/tests/tenant_manage_clients.rs`.
+See `docs/users/mcp.md` and `docs/users/authentication.md#tenant-management-api`.
 
 ## CLI Tool
 
@@ -440,7 +469,7 @@ ingest/query/mcp endpoints, headers, scopes, and OTel env vars —
 `schema:read`), `admin` (`tenant`/`api-key`/`dataset`, plus `schema`
 create/replace/delete/validate with a tenant key holding `schema:write`),
 `tenant` (`show`, `table`, and — with a `tenant:manage` key — `dataset`,
-`api-key`, `membership`, `schema`), `user`, `tui`,
+`api-key`, `membership`, `schema`, `github`), `user`, `tui`,
 `completions` (static shell scripts; dynamic tenant-ID completion for
 tenant-taking args via `COMPLETE=<shell> signaldb-cli` — queries the admin
 API like `admin tenant list`, silently empty when the backend is

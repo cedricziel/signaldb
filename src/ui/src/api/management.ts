@@ -29,7 +29,7 @@ import {
   type ManageSchemaResponse,
   type MembershipResponse,
 } from "./gen";
-import { type SdkResult, unwrapSdkResult } from "./http";
+import { type SdkResult, unwrapErrorEnvelope } from "./http";
 
 /** Ingestion scopes an API key may be granted. */
 export type IngestScope =
@@ -114,16 +114,8 @@ export type ManagedMembership = MembershipResponse;
 /** Logical + physical schema, as returned by the management API. */
 export type ManagedSchema = ManageSchemaResponse;
 
-function managementErrorMessage(error: unknown): string | undefined {
-  return (error as { error?: string } | undefined)?.error;
-}
-
 const unwrap = <T>(result: SdkResult<T>): T =>
-  unwrapSdkResult(
-    result,
-    (status) => `Management request failed (${status})`,
-    managementErrorMessage,
-  );
+  unwrapErrorEnvelope(result, "Management");
 
 export const listApiKeys = async (tenant: string): Promise<ManagedApiKey[]> =>
   unwrap(await manageListApiKeys({ path: { tenant_id: tenant } }));

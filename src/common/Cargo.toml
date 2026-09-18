@@ -78,6 +78,10 @@ url.workspace = true
 toml.workspace = true
 utoipa.workspace = true
 sha2 = "0.11"
+# Parses the `[github].private_key` PEM at config-validation time (change:
+# github-app-source-context) so a bad key fails startup rather than the
+# first token-mint attempt.
+rsa.workspace = true
 
 # Self-monitoring (OTLP dogfooding)
 opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "logs"] }

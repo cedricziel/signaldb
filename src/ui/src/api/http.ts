@@ -410,6 +410,17 @@ export function unwrapSdkResult<T>(
   return data as T;
 }
 
+/** {@link unwrapSdkResult} for the router's `{ error: string }` envelope
+ * (the management and GitHub surfaces): the envelope's message when it has
+ * one, else `"<what> request failed (<status>)"`. */
+export function unwrapErrorEnvelope<T>(result: SdkResult<T>, what: string): T {
+  return unwrapSdkResult(
+    result,
+    (status) => `${what} request failed (${status})`,
+    (error) => (error as { error?: string } | undefined)?.error,
+  );
+}
+
 /** Render a caught value as a display string, whether or not it's an Error. */
 export function toErrorMessage(value: unknown): string {
   return value instanceof Error ? value.message : String(value);

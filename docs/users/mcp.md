@@ -162,6 +162,9 @@ access-denied error naming the required scope rather than succeeding or
 | `tenant_list_memberships` / `tenant_upsert_membership` | List the caller's own tenant's memberships, or create/update a member's role.                                                                                                                |
 | `tenant_remove_membership`                             | Remove a member from the caller's own tenant. **Destructive**: requires `confirm` equal to `user_id`.                                                                                        |
 | `tenant_get_schema`                                    | The registered logical (client-visible) and physical (storage) schema for every signal source.                                                                                               |
+| `tenant_start_github_link`                             | Start linking a GitHub App installation. Returns an `install_url` to open in a browser signed in to SignalDB as an admin of this tenant, and its `expires_at`.                              |
+| `tenant_list_github_installations`                     | List the caller's own tenant's linked GitHub App installations, with their repositories.                                                                                                    |
+| `tenant_remove_github_installation`                    | Remove a linked GitHub App installation. **Destructive**: requires `confirm` equal to `installation_id`.                                                                                     |
 
 Destructive tools carry the MCP `destructiveHint` annotation; read-only tools
 carry `readOnlyHint` — a client that inspects `tools/list` annotations can
@@ -612,9 +615,9 @@ signaldb-cli query --trace-id 4bf92f3577b34da6a3ce929d0e0e4736
 
 The `tenant_*` tools mirror `signaldb-cli tenant`: `tenant_info` is `tenant
 show`, the table tools are `tenant table ...` (any valid key of the tenant),
-and the management tools are `tenant dataset|api-key|membership|schema ...`
-(a key carrying `tenant:manage`; destructive verbs prompt on a TTY unless
-`--yes`):
+and the management tools are
+`tenant dataset|api-key|membership|schema|github ...` (a key carrying
+`tenant:manage`; destructive verbs prompt on a TTY unless `--yes`):
 
 ```bash
 signaldb-cli tenant show --api-key sk-your-key --tenant-id your-tenant

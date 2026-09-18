@@ -1139,6 +1139,66 @@ pub mod types {
             Default::default()
         }
     }
+    ///One linked installation, as reported by [`list_github_installations`].
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct GitHubInstallationResponse {
+        pub account_login: ::std::string::String,
+        pub account_type: ::std::string::String,
+        ///RFC 3339 timestamp.
+        pub created_at: ::std::string::String,
+        pub installation_id: i64,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub linked_by_github_login: ::std::option::Option<::std::string::String>,
+        ///GitHub's own installation-settings page for this installation.
+        pub manage_url: ::std::string::String,
+        /**The installation's covered repositories, as `"owner/name"` full
+        names.*/
+        pub repositories: ::std::vec::Vec<::std::string::String>,
+        ///RFC 3339 timestamp of the last successful repository-list refresh.
+        pub repositories_synced_at: ::std::string::String,
+        /**`true` when the live GitHub refresh failed and `repositories` is the
+        last successfully fetched copy rather than a fresh one.*/
+        pub stale: bool,
+        ///RFC 3339 timestamp.
+        pub updated_at: ::std::string::String,
+    }
+    impl GitHubInstallationResponse {
+        pub fn builder() -> builder::GitHubInstallationResponse {
+            Default::default()
+        }
+    }
+    ///200 response body for [`list_github_installations`].
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct GitHubInstallationsResponse {
+        ///The App's URL slug, present only when `configured`.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub app_slug: ::std::option::Option<::std::string::String>,
+        /**`false` when `[github]` is absent (or failed to build) — the
+        endpoint answers 200 rather than 404 so a caller can render "GitHub
+        is not set up" without special-casing an error status.*/
+        pub configured: bool,
+        pub installations: ::std::vec::Vec<GitHubInstallationResponse>,
+    }
+    impl GitHubInstallationsResponse {
+        pub fn builder() -> builder::GitHubInstallationsResponse {
+            Default::default()
+        }
+    }
+    ///201 response body for [`start_github_link`].
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct GitHubLinkStartResponse {
+        /**RFC 3339 timestamp naming when the state token (and so this link
+        attempt) expires.*/
+        pub expires_at: ::std::string::String,
+        /**GitHub's install page to redirect the admin's browser to. Carries
+        the single-use state token as its `state` query parameter.*/
+        pub install_url: ::std::string::String,
+    }
+    impl GitHubLinkStartResponse {
+        pub fn builder() -> builder::GitHubLinkStartResponse {
+            Default::default()
+        }
+    }
     /**One tenant a credential's grant reaches, with its own dataset-set
     restriction — the `whoami`/`/oauth/introspect` output shape (change:
     mcp-multi-tenant-oauth-grants D4/D5). Mirrors
@@ -7268,6 +7328,309 @@ pub mod types {
                     names: Ok(value.names),
                     total: Ok(value.total),
                     truncated: Ok(value.truncated),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct GitHubInstallationResponse {
+            account_login: ::std::result::Result<::std::string::String, ::std::string::String>,
+            account_type: ::std::result::Result<::std::string::String, ::std::string::String>,
+            created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+            installation_id: ::std::result::Result<i64, ::std::string::String>,
+            linked_by_github_login: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            manage_url: ::std::result::Result<::std::string::String, ::std::string::String>,
+            repositories: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            repositories_synced_at:
+                ::std::result::Result<::std::string::String, ::std::string::String>,
+            stale: ::std::result::Result<bool, ::std::string::String>,
+            updated_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for GitHubInstallationResponse {
+            fn default() -> Self {
+                Self {
+                    account_login: Err("no value supplied for account_login".to_string()),
+                    account_type: Err("no value supplied for account_type".to_string()),
+                    created_at: Err("no value supplied for created_at".to_string()),
+                    installation_id: Err("no value supplied for installation_id".to_string()),
+                    linked_by_github_login: Ok(Default::default()),
+                    manage_url: Err("no value supplied for manage_url".to_string()),
+                    repositories: Err("no value supplied for repositories".to_string()),
+                    repositories_synced_at: Err(
+                        "no value supplied for repositories_synced_at".to_string()
+                    ),
+                    stale: Err("no value supplied for stale".to_string()),
+                    updated_at: Err("no value supplied for updated_at".to_string()),
+                }
+            }
+        }
+        impl GitHubInstallationResponse {
+            pub fn account_login<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.account_login = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for account_login: {e}"));
+                self
+            }
+            pub fn account_type<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.account_type = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for account_type: {e}"));
+                self
+            }
+            pub fn created_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.created_at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for created_at: {e}"));
+                self
+            }
+            pub fn installation_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.installation_id = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for installation_id: {e}")
+                });
+                self
+            }
+            pub fn linked_by_github_login<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.linked_by_github_login = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for linked_by_github_login: {e}")
+                });
+                self
+            }
+            pub fn manage_url<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.manage_url = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for manage_url: {e}"));
+                self
+            }
+            pub fn repositories<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.repositories = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for repositories: {e}"));
+                self
+            }
+            pub fn repositories_synced_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.repositories_synced_at = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for repositories_synced_at: {e}")
+                });
+                self
+            }
+            pub fn stale<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.stale = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for stale: {e}"));
+                self
+            }
+            pub fn updated_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.updated_at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for updated_at: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<GitHubInstallationResponse> for super::GitHubInstallationResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: GitHubInstallationResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    account_login: value.account_login?,
+                    account_type: value.account_type?,
+                    created_at: value.created_at?,
+                    installation_id: value.installation_id?,
+                    linked_by_github_login: value.linked_by_github_login?,
+                    manage_url: value.manage_url?,
+                    repositories: value.repositories?,
+                    repositories_synced_at: value.repositories_synced_at?,
+                    stale: value.stale?,
+                    updated_at: value.updated_at?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::GitHubInstallationResponse> for GitHubInstallationResponse {
+            fn from(value: super::GitHubInstallationResponse) -> Self {
+                Self {
+                    account_login: Ok(value.account_login),
+                    account_type: Ok(value.account_type),
+                    created_at: Ok(value.created_at),
+                    installation_id: Ok(value.installation_id),
+                    linked_by_github_login: Ok(value.linked_by_github_login),
+                    manage_url: Ok(value.manage_url),
+                    repositories: Ok(value.repositories),
+                    repositories_synced_at: Ok(value.repositories_synced_at),
+                    stale: Ok(value.stale),
+                    updated_at: Ok(value.updated_at),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct GitHubInstallationsResponse {
+            app_slug: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            configured: ::std::result::Result<bool, ::std::string::String>,
+            installations: ::std::result::Result<
+                ::std::vec::Vec<super::GitHubInstallationResponse>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for GitHubInstallationsResponse {
+            fn default() -> Self {
+                Self {
+                    app_slug: Ok(Default::default()),
+                    configured: Err("no value supplied for configured".to_string()),
+                    installations: Err("no value supplied for installations".to_string()),
+                }
+            }
+        }
+        impl GitHubInstallationsResponse {
+            pub fn app_slug<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.app_slug = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for app_slug: {e}"));
+                self
+            }
+            pub fn configured<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.configured = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for configured: {e}"));
+                self
+            }
+            pub fn installations<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::GitHubInstallationResponse>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.installations = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for installations: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<GitHubInstallationsResponse> for super::GitHubInstallationsResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: GitHubInstallationsResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    app_slug: value.app_slug?,
+                    configured: value.configured?,
+                    installations: value.installations?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::GitHubInstallationsResponse> for GitHubInstallationsResponse {
+            fn from(value: super::GitHubInstallationsResponse) -> Self {
+                Self {
+                    app_slug: Ok(value.app_slug),
+                    configured: Ok(value.configured),
+                    installations: Ok(value.installations),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct GitHubLinkStartResponse {
+            expires_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+            install_url: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for GitHubLinkStartResponse {
+            fn default() -> Self {
+                Self {
+                    expires_at: Err("no value supplied for expires_at".to_string()),
+                    install_url: Err("no value supplied for install_url".to_string()),
+                }
+            }
+        }
+        impl GitHubLinkStartResponse {
+            pub fn expires_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.expires_at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for expires_at: {e}"));
+                self
+            }
+            pub fn install_url<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.install_url = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for install_url: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<GitHubLinkStartResponse> for super::GitHubLinkStartResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: GitHubLinkStartResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    expires_at: value.expires_at?,
+                    install_url: value.install_url?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::GitHubLinkStartResponse> for GitHubLinkStartResponse {
+            fn from(value: super::GitHubLinkStartResponse) -> Self {
+                Self {
+                    expires_at: Ok(value.expires_at),
+                    install_url: Ok(value.install_url),
                 }
             }
         }
@@ -14130,6 +14493,66 @@ impl Client {
     pub fn manage_delete_dataset(&self) -> builder::ManageDeleteDataset<'_> {
         builder::ManageDeleteDataset::new(self)
     }
+    /**`GET /api/v1/manage/tenants/{tenant_id}/github-installations`
+
+    Always 200, even when `[github]` is unconfigured (`configured: false`).
+    When configured, refreshes each installation's repository list from
+    GitHub; a refresh failure falls back to the last stored list, marked
+    `stale: true`, rather than failing the whole request.
+
+    Sends a `GET` request to `/api/v1/manage/tenants/{tenant_id}/github-installations`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    ```ignore
+    let response = client.manage_list_github_installations()
+        .tenant_id(tenant_id)
+        .send()
+        .await;
+    ```*/
+    pub fn manage_list_github_installations(&self) -> builder::ManageListGithubInstallations<'_> {
+        builder::ManageListGithubInstallations::new(self)
+    }
+    /**`POST /api/v1/manage/tenants/{tenant_id}/github-installations/link`
+
+    Mints a single-use, tenant-and-admin-bound state token and returns the
+    GitHub install-flow URL carrying it. 404 when `[github]` is not
+    configured.
+
+    Sends a `POST` request to `/api/v1/manage/tenants/{tenant_id}/github-installations/link`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    ```ignore
+    let response = client.manage_start_github_link()
+        .tenant_id(tenant_id)
+        .send()
+        .await;
+    ```*/
+    pub fn manage_start_github_link(&self) -> builder::ManageStartGithubLink<'_> {
+        builder::ManageStartGithubLink::new(self)
+    }
+    /**`DELETE /api/v1/manage/tenants/{tenant_id}/github-installations/{installation_id}`
+
+    Removes the tenant's link and drops any cached installation token, so
+    token minting for that installation stops immediately (spec: "removal
+    takes effect immediately").
+
+    Sends a `DELETE` request to `/api/v1/manage/tenants/{tenant_id}/github-installations/{installation_id}`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    - `installation_id`: GitHub installation identifier
+    ```ignore
+    let response = client.manage_remove_github_installation()
+        .tenant_id(tenant_id)
+        .installation_id(installation_id)
+        .send()
+        .await;
+    ```*/
+    pub fn manage_remove_github_installation(&self) -> builder::ManageRemoveGithubInstallation<'_> {
+        builder::ManageRemoveGithubInstallation::new(self)
+    }
     /**Sends a `GET` request to `/api/v1/manage/tenants/{tenant_id}/memberships`
 
     Arguments:
@@ -14963,6 +15386,32 @@ impl Client {
     ```*/
     pub fn search_tags_v2(&self) -> builder::SearchTagsV2<'_> {
         builder::SearchTagsV2::new(self)
+    }
+    /**`GET /ui/github/callback`
+
+    The App's registered callback URL. See the module docs for the two
+    checks this performs and the redirect contract. Plain 404 (no redirect)
+    when `[github]` is not configured — there is nowhere safe to send the
+    browser back to in that case.
+
+    Sends a `GET` request to `/ui/github/callback`
+
+    Arguments:
+    - `code`: OAuth-on-install authorization code
+    - `installation_id`: The installation id GitHub reports
+    - `setup_action`: GitHub's setup_action (install/update/request)
+    - `state`: The state token issued by the link-start endpoint
+    ```ignore
+    let response = client.github_callback()
+        .code(code)
+        .installation_id(installation_id)
+        .setup_action(setup_action)
+        .state(state)
+        .send()
+        .await;
+    ```*/
+    pub fn github_callback(&self) -> builder::GithubCallback<'_> {
+        builder::GithubCallback::new(self)
     }
     /**GET /ui/session
 
@@ -17051,6 +17500,245 @@ pub mod builder {
                     ResponseValue::from_response(response).await?,
                 )),
                 409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::manage_list_github_installations`]
+
+    [`Client::manage_list_github_installations`]: super::Client::manage_list_github_installations*/
+    #[derive(Debug, Clone)]
+    pub struct ManageListGithubInstallations<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+    }
+    impl<'a> ManageListGithubInstallations<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/v1/manage/tenants/{tenant_id}/github-installations`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::GitHubInstallationsResponse>, Error<types::ManageError>>
+        {
+            let Self { client, tenant_id } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/manage/tenants/{}/github-installations",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "manage_list_github_installations",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::manage_start_github_link`]
+
+    [`Client::manage_start_github_link`]: super::Client::manage_start_github_link*/
+    #[derive(Debug, Clone)]
+    pub struct ManageStartGithubLink<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+    }
+    impl<'a> ManageStartGithubLink<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/manage/tenants/{tenant_id}/github-installations/link`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::GitHubLinkStartResponse>, Error<types::ManageError>>
+        {
+            let Self { client, tenant_id } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/manage/tenants/{}/github-installations/link",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "manage_start_github_link",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                201u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::manage_remove_github_installation`]
+
+    [`Client::manage_remove_github_installation`]: super::Client::manage_remove_github_installation*/
+    #[derive(Debug, Clone)]
+    pub struct ManageRemoveGithubInstallation<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+        installation_id: Result<i64, String>,
+    }
+    impl<'a> ManageRemoveGithubInstallation<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+                installation_id: Err("installation_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        pub fn installation_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<i64>,
+        {
+            self.installation_id = value
+                .try_into()
+                .map_err(|_| "conversion to `i64` for installation_id failed".to_string());
+            self
+        }
+        ///Sends a `DELETE` request to `/api/v1/manage/tenants/{tenant_id}/github-installations/{installation_id}`
+        pub async fn send(self) -> Result<ResponseValue<()>, Error<types::ManageError>> {
+            let Self {
+                client,
+                tenant_id,
+                installation_id,
+            } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let installation_id = installation_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/manage/tenants/{}/github-installations/{}",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+                encode_path(&installation_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .delete(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "manage_remove_github_installation",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                204u16 => Ok(ResponseValue::empty(response)),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 429u16 => Err(Error::ErrorResponse(
@@ -21100,6 +21788,112 @@ pub mod builder {
             }
         }
     }
+    /**Builder for [`Client::github_callback`]
+
+    [`Client::github_callback`]: super::Client::github_callback*/
+    #[derive(Debug, Clone)]
+    pub struct GithubCallback<'a> {
+        client: &'a super::Client,
+        code: Result<Option<::std::string::String>, String>,
+        installation_id: Result<Option<::std::string::String>, String>,
+        setup_action: Result<Option<::std::string::String>, String>,
+        state: Result<Option<::std::string::String>, String>,
+    }
+    impl<'a> GithubCallback<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                code: Ok(None),
+                installation_id: Ok(None),
+                setup_action: Ok(None),
+                state: Ok(None),
+            }
+        }
+        pub fn code<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.code = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for code failed".to_string()
+            });
+            self
+        }
+        pub fn installation_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.installation_id = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for installation_id failed".to_string()
+            });
+            self
+        }
+        pub fn setup_action<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.setup_action = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for setup_action failed".to_string()
+            });
+            self
+        }
+        pub fn state<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.state = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for state failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/ui/github/callback`
+        pub async fn send(self) -> Result<ResponseValue<ByteStream>, Error<()>> {
+            let Self {
+                client,
+                code,
+                installation_id,
+                setup_action,
+                state,
+            } = self;
+            let code = code.map_err(Error::InvalidRequest)?;
+            let installation_id = installation_id.map_err(Error::InvalidRequest)?;
+            let setup_action = setup_action.map_err(Error::InvalidRequest)?;
+            let state = state.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/ui/github/callback", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .query(&progenitor_client::QueryParam::new("code", &code))
+                .query(&progenitor_client::QueryParam::new(
+                    "installation_id",
+                    &installation_id,
+                ))
+                .query(&progenitor_client::QueryParam::new(
+                    "setup_action",
+                    &setup_action,
+                ))
+                .query(&progenitor_client::QueryParam::new("state", &state))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "github_callback",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200..=299 => Ok(ResponseValue::stream(response)),
+                404u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
     /**Builder for [`Client::current_session`]
 
     [`Client::current_session`]: super::Client::current_session*/
@@ -21349,6 +22143,7 @@ pub const OPERATIONS: &[&str] = &[
     "delete_tenant",
     "get_tenant",
     "get_tenant_self",
+    "github_callback",
     "list_api_keys",
     "list_available_schemas",
     "list_datasets",
@@ -21368,9 +22163,12 @@ pub const OPERATIONS: &[&str] = &[
     "manage_get_schema",
     "manage_list_api_keys",
     "manage_list_datasets",
+    "manage_list_github_installations",
     "manage_list_memberships",
+    "manage_remove_github_installation",
     "manage_remove_membership",
     "manage_revoke_api_key",
+    "manage_start_github_link",
     "manage_update_api_key",
     "manage_upsert_membership",
     "oauth_consent_context",

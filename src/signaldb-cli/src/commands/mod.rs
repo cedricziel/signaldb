@@ -32,50 +32,43 @@ pub(crate) fn format_dataset_restriction(ids: Option<&[String]>) -> String {
     }
 }
 
-/// Render `ID  NAME  SCOPES  DATASETS  ORIGINS` rows, column-aligned, shared
-/// by the admin and tenant `api-key list` human-readable output.
-pub(crate) fn format_api_key_table(rows: &[(String, String, String, String, String)]) -> String {
+/// Render five-column rows under `headers`, the first four columns padded
+/// to their widest value and the last left ragged; `empty` when there are no
+/// rows. Shared by the api-key and GitHub-installation list outputs.
+pub(crate) fn format_table(
+    headers: [&str; 5],
+    rows: &[(String, String, String, String, String)],
+    empty: &str,
+) -> String {
     if rows.is_empty() {
-        return "No API keys.".to_string();
+        return empty.to_string();
     }
 
-    let widths = [
-        rows.iter()
-            .map(|(v, ..)| v.len())
-            .chain(std::iter::once("ID".len()))
-            .max()
-            .unwrap_or(0),
-        rows.iter()
-            .map(|(_, v, ..)| v.len())
-            .chain(std::iter::once("NAME".len()))
-            .max()
-            .unwrap_or(0),
-        rows.iter()
-            .map(|(_, _, v, ..)| v.len())
-            .chain(std::iter::once("SCOPES".len()))
-            .max()
-            .unwrap_or(0),
-        rows.iter()
-            .map(|(_, _, _, v, _)| v.len())
-            .chain(std::iter::once("DATASETS".len()))
-            .max()
-            .unwrap_or(0),
+    let mut widths = [
+        headers[0].len(),
+        headers[1].len(),
+        headers[2].len(),
+        headers[3].len(),
     ];
+    for (a, b, c, d, _) in rows {
+        widths[0] = widths[0].max(a.len());
+        widths[1] = widths[1].max(b.len());
+        widths[2] = widths[2].max(c.len());
+        widths[3] = widths[3].max(d.len());
+    }
 
-    let mut out = format!(
-        "{:w0$}  {:w1$}  {:w2$}  {:w3$}  ORIGINS\n",
-        "ID",
-        "NAME",
-        "SCOPES",
-        "DATASETS",
-        w0 = widths[0],
-        w1 = widths[1],
-        w2 = widths[2],
-        w3 = widths[3]
-    );
-    for (id, name, scopes, datasets, origins) in rows {
+    let mut out = String::new();
+    for (a, b, c, d, e) in std::iter::once((
+        headers[0].to_string(),
+        headers[1].to_string(),
+        headers[2].to_string(),
+        headers[3].to_string(),
+        headers[4].to_string(),
+    ))
+    .chain(rows.iter().cloned())
+    {
         out.push_str(&format!(
-            "{id:w0$}  {name:w1$}  {scopes:w2$}  {datasets:w3$}  {origins}\n",
+            "{a:w0$}  {b:w1$}  {c:w2$}  {d:w3$}  {e}\n",
             w0 = widths[0],
             w1 = widths[1],
             w2 = widths[2],
@@ -83,6 +76,16 @@ pub(crate) fn format_api_key_table(rows: &[(String, String, String, String, Stri
         ));
     }
     out.trim_end().to_string()
+}
+
+/// Render `ID  NAME  SCOPES  DATASETS  ORIGINS` rows, shared by the admin and
+/// tenant `api-key list` human-readable output.
+pub(crate) fn format_api_key_table(rows: &[(String, String, String, String, String)]) -> String {
+    format_table(
+        ["ID", "NAME", "SCOPES", "DATASETS", "ORIGINS"],
+        rows,
+        "No API keys.",
+    )
 }
 
 /// SignalDB CLI — manage tenants, API keys, and datasets

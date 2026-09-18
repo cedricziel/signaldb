@@ -70,6 +70,8 @@ nav:
       - operations/binaries.md
       - operations/dokku.md
       - operations/truenas.md
+      - operations/oidc-sso.md
+      - operations/github-app.md
       - Compactor:
           - operations/compactor/phase3-configuration.md
           - operations/compactor/phase3-operations.md

@@ -246,6 +246,14 @@ sha2 = "0.11"
 # HTTP mock server for RP-flow tests against a fake IdP (discovery, JWKS,
 # token endpoint) — change: oidc-login.
 wiremock = "0.6"
+# Signs/verifies the GitHub App RS256 JWT (change: github-app-source-context);
+# `aws_lc_rs` selects the crate's `aws-lc-rs` backend, already in the tree,
+# over pulling in the `rust_crypto` backend's separate dependency stack.
+jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "aws_lc_rs"] }
+# Parses the GitHub App private key at config-validation time so a bad key
+# fails startup rather than the first mint attempt (change:
+# github-app-source-context).
+rsa = "0.9"
 
 # Dev dependencies
 pretty_assertions = "1.4"

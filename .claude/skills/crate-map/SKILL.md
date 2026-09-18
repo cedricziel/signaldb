@@ -110,6 +110,8 @@ This is the shared foundation. Key modules:
 | `endpoints/session.rs`   | `src/router/src/endpoints/session.rs`   | UI session login/logout (`/ui/session`), `/ui/session/config` login-surface probe, `/api/v1/whoami`                                                      |
 | `endpoints/oidc.rs`      | `src/router/src/endpoints/oidc.rs`      | OIDC SSO login handlers (`/ui/session/oidc/{start,callback}`); 404 when `[auth.oidc]` is unset                                                           |
 | `oidc.rs`                | `src/router/src/oidc.rs`                | OIDC relying-party runtime: background provider discovery, PKCE/state, token exchange, JIT provisioning + group-mapping sync                             |
+| `endpoints/github.rs`    | `src/router/src/endpoints/github.rs`    | GitHub App installation linking: `/api/v1/manage/tenants/{id}/github-installations{,/link,/{id}}` + the `/ui/github/callback` install redirect; 404 when `[github]` is unset |
+| `github.rs`              | `src/router/src/github.rs`              | GitHub App outbound client: RS256 app JWT, installation-token minting with an in-process cache, OAuth-on-install code exchange, installation/repo listing |
 | `endpoints/flight.rs`    | `src/router/src/endpoints/flight.rs`    | Router Flight service                                                                                                                                    |
 
 ## The `compactor` Crate

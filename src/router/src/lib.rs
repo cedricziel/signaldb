@@ -15,6 +15,7 @@ use std::sync::Arc;
 pub mod cli;
 pub mod discovery;
 pub mod endpoints;
+pub mod github;
 pub mod oidc;
 pub mod openapi;
 pub mod read_scope;
@@ -57,6 +58,14 @@ pub trait RouterState: std::fmt::Debug + Clone + Send + Sync + 'static {
     fn oidc(&self) -> Option<&Arc<oidc::OidcRuntime>> {
         None
     }
+    /// The GitHub App client (change: github-app-source-context). `None`
+    /// when `[github]` is absent, or when the configured private key failed
+    /// to parse — either way the GitHub management endpoints and the
+    /// install-flow callback answer 404. Defaulted so the trait stays
+    /// satisfiable by any test state that doesn't care about GitHub.
+    fn github(&self) -> Option<&Arc<github::GitHubApp>> {
+        None
+    }
 }
 
 /// Concrete [`RouterState`] holding the router's shared handles.
@@ -68,6 +77,7 @@ pub struct RouterAppState {
     authenticator: Arc<Authenticator>,
     schema_resolver: SchemaResolver,
     oidc: Option<Arc<oidc::OidcRuntime>>,
+    github: Option<Arc<github::GitHubApp>>,
 }
 
 impl std::fmt::Debug for RouterAppState {
@@ -78,6 +88,7 @@ impl std::fmt::Debug for RouterAppState {
             .field("config", &"Configuration")
             .field("authenticator", &"Authenticator")
             .field("oidc", &self.oidc.is_some())
+            .field("github", &self.github.is_some())
             .finish()
     }
 }
@@ -93,6 +104,7 @@ impl RouterAppState {
                 .with_mcp_resource(config.mcp.oauth.resource_url.clone()),
         );
         let oidc = spawn_oidc_runtime(&config);
+        let github = build_github_app(&config);
 
         Self {
             schema_resolver: SchemaResolver::new(catalog.clone()),
@@ -101,6 +113,7 @@ impl RouterAppState {
             config,
             authenticator,
             oidc,
+            github,
         }
     }
 
@@ -119,6 +132,7 @@ impl RouterAppState {
                 .with_mcp_resource(config.mcp.oauth.resource_url.clone()),
         );
         let oidc = spawn_oidc_runtime(&config);
+        let github = build_github_app(&config);
 
         Self {
             schema_resolver: SchemaResolver::new(catalog.clone()),
@@ -127,6 +141,7 @@ impl RouterAppState {
             config,
             authenticator,
             oidc,
+            github,
         }
     }
 }
@@ -137,6 +152,24 @@ impl RouterAppState {
 /// leaves the runtime in its `unavailable` state until a retry succeeds.
 fn spawn_oidc_runtime(config: &Configuration) -> Option<Arc<oidc::OidcRuntime>> {
     config.auth.oidc.clone().map(oidc::OidcRuntime::spawn)
+}
+
+/// Build the GitHub App client for a configured `[github]` section (change:
+/// github-app-source-context). `GitHubApp::new` fails only on a private key
+/// that can't be parsed; since [`common::config::GitHubAppConfig::validate`]
+/// already parses that key at config-validation time (startup), this should
+/// never fail in practice — but if it somehow does, this logs the failure
+/// and degrades to `None` rather than panicking: the GitHub endpoints then
+/// answer 404, same as when `[github]` is absent.
+fn build_github_app(config: &Configuration) -> Option<Arc<github::GitHubApp>> {
+    let github_config = config.github.clone()?;
+    match github::GitHubApp::new(github_config) {
+        Ok(app) => Some(Arc::new(app)),
+        Err(error) => {
+            tracing::error!(%error, "[github] is configured but the GitHub App client failed to build; GitHub endpoints will answer 404");
+            None
+        }
+    }
 }
 
 impl RouterState for RouterAppState {
@@ -162,6 +195,10 @@ impl RouterState for RouterAppState {
 
     fn oidc(&self) -> Option<&Arc<oidc::OidcRuntime>> {
         self.oidc.as_ref()
+    }
+
+    fn github(&self) -> Option<&Arc<github::GitHubApp>> {
+        self.github.as_ref()
     }
 }
 
@@ -350,6 +387,10 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         // OIDC SSO login (public; change: oidc-login) — 404s on every route
         // when `[auth.oidc]` is absent.
         .merge(endpoints::oidc::router::<S>())
+        // GitHub App install-flow callback (public; change:
+        // github-app-source-context) — 404s when `[github]` is absent (see
+        // `endpoints::github::callback`).
+        .merge(endpoints::github::callback_router::<S>())
         // OAuth 2.1 authorization-server endpoints (public: discovery + DCR are
         // unauthenticated by spec; empty unless mcp.oauth.enabled)
         .merge(oauth_routes)
@@ -364,7 +405,10 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .nest(
             "/api/v1",
             endpoints::tenant::router()
-                .nest("/manage", endpoints::management::router())
+                .nest(
+                    "/manage",
+                    endpoints::management::router().merge(endpoints::github::manage_router::<S>()),
+                )
                 .nest("/schema", endpoints::schema::router())
                 .route("/whoami", get(endpoints::session::whoami::<S>))
                 .route("/connection", get(endpoints::session::connection_info::<S>))

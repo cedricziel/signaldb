@@ -29,7 +29,7 @@ pub use validation::{
 /// [`password::hash_session_token`], and [`oauth::hash_oauth_token`], which
 /// all hash server-generated random values the same deterministic way so a
 /// presented credential can be looked up by hashing it.
-pub(crate) fn sha256_hex(credential: &str) -> String {
+pub fn sha256_hex(credential: &str) -> String {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     hasher.update(credential.as_bytes());
@@ -38,13 +38,14 @@ pub(crate) fn sha256_hex(credential: &str) -> String {
 
 /// Mint a prefixed, high-entropy opaque credential: `prefix` followed by
 /// `n_bytes` of OS randomness, URL-safe base64 without padding. Shared by
-/// [`password::generate_session_token`] and [`oauth::generate_oauth_token`].
+/// [`password::generate_session_token`], [`oauth::generate_oauth_token`] and
+/// the router's GitHub link-flow state tokens.
 ///
 /// # Panics
 ///
 /// Panics if the OS random number generator fails — a predictable credential
 /// would be a security vulnerability, and RNG failure is not recoverable here.
-pub(crate) fn generate_prefixed_token(prefix: &str, n_bytes: usize) -> String {
+pub fn generate_prefixed_token(prefix: &str, n_bytes: usize) -> String {
     use base64::Engine;
     use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use rand::TryRng;

@@ -6,6 +6,8 @@ sources:
   - src/ui/**
   - src/router/src/ui.rs
   - src/router/src/endpoints/session.rs
+  - src/router/src/endpoints/github.rs
+  - src/ui/src/features/integrations/**
 ---
 
 # Explore UI
@@ -730,6 +732,8 @@ Once signed in, a user menu appears in the top bar showing an avatar
 - **Send data** — opens the Instrumentation page (see below).
 - **API keys** — opens the API Keys page (see below); shown only to tenant
   admins and instance admins, the same rule as the **Manage** link.
+- **GitHub** — opens the GitHub integration page (see below); same
+  admin-only rule as **API keys**.
 - **Schema** — opens the Schema hub (see below).
 - **Docs** — opens the SignalDB documentation in a new tab.
 - **Switch tenant** — opens the Tenant Selection page (see below).
@@ -781,6 +785,22 @@ are collapsed and fetch their datasets lazily via `whoami(tenant_id)` on
 expansion. Until a tenant is resolved the shell sends no tenant-scoped
 `whoami` at all — a signed-in visitor landing on a bare URL is routed here
 by the session, never to the login page.
+
+### GitHub (`/integrations/github`)
+
+Tenant-admin-only page for connecting SignalDB's GitHub App to the
+repositories that produce the tenant's telemetry. **Connect GitHub** asks
+the server for an install URL (`POST
+/api/v1/manage/tenants/{id}/github-installations/link`) and sends the
+browser to GitHub's install page; after you pick an organization and
+repositories, GitHub brings you back to this page, which shows the linked
+installation with the repositories it covers, who linked it, a **Manage on
+GitHub** link, and a **Remove** action. The list refreshes each
+installation's repositories from GitHub on every load and marks an entry
+*stale* when GitHub could not be reached. When the operator has not
+configured the `[github]` section, the page explains that instead of
+offering **Connect**. Operator setup and the security model:
+[Connecting GitHub](../operations/github-app.md).
 
 ### API keys (`/api-keys`)
 

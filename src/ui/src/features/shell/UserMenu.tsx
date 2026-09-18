@@ -133,6 +133,16 @@ function UserMenuPopover({ who, role, canManage, onClose }: PopoverProps) {
               <span className="user-menu-hint">{who.tenant.id}</span>
             </Link>
           )}
+          {canManage && (
+            <Link
+              className="user-menu-item"
+              to="/integrations/github"
+              onClick={onClose}
+            >
+              <span>GitHub</span>
+              <span className="user-menu-hint">integration</span>
+            </Link>
+          )}
           <Link className="user-menu-item" to="/schema" onClick={onClose}>
             <span>Schema</span>
             <span className="user-menu-hint">conventions</span>

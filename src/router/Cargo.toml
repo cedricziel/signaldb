@@ -41,6 +41,9 @@ openidconnect.workspace = true
 hmac.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
+# GitHub App JWT signing/minting client (change: github-app-source-context).
+jsonwebtoken.workspace = true
+reqwest.workspace = true
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 [dev-dependencies]
@@ -52,6 +55,9 @@ tempfile.workspace = true
 common = { workspace = true, features = ["testing"] }
 # Fake IdP for the OIDC RP-flow tests (discovery, JWKS, token endpoint).
 wiremock.workspace = true
+# Derives the test public key from the GitHub App test PEM to verify the
+# minted JWT (change: github-app-source-context).
+rsa.workspace = true
 
 [package.metadata.cargo-machete]
 # workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
