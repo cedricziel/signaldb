@@ -52,7 +52,13 @@ export function semanticsFromResolution(
 ): AttributeSemantics | undefined {
   const primary = res.primary ?? res.hits[0];
   if (!primary) return undefined;
-  const alternatives = res.hits.filter((h) => h !== primary);
+  // The server clones the winning hit into `primary` (`hits.first().cloned()`
+  // in the schema registry), so after JSON round-tripping `hits[0]` and
+  // `primary` are distinct objects with equal fields — compare by identity
+  // (namespace + version), not by reference.
+  const alternatives = res.hits.filter(
+    (h) => h.namespace !== primary.namespace || h.version !== primary.version,
+  );
   const deprecated =
     primary.deprecated ??
     alternatives.find((h) => h.deprecated)?.deprecated ??

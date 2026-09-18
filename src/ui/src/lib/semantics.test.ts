@@ -66,6 +66,20 @@ describe("semanticsFromResolution", () => {
     expect(sem?.alternatives.map((h) => h.namespace)).toEqual(["otel"]);
   });
 
+  it("excludes the primary from alternatives even when the server sent a distinct clone of it", () => {
+    // Mirrors the server: `primary: hits.first().cloned()` clones the first
+    // hit, so after JSON round-tripping `hits[0]` and `primary` are distinct
+    // objects with equal fields, not the same reference.
+    const primary = hit();
+    const clonedIntoHits = { ...hit() };
+    const sem = semanticsFromResolution({
+      key: "k8s.pod.uid",
+      hits: [clonedIntoHits],
+      primary,
+    });
+    expect(sem?.alternatives).toEqual([]);
+  });
+
   it("flags deprecation from any hit, preferring the primary's rename", () => {
     const primary = hit({ brief: "ours", namespace: "acme" });
     const dep = hit({
