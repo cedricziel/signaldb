@@ -21,7 +21,7 @@ publish = false
 [package.metadata.cargo-machete]
 ignored = [
     "arrayvec", "arrow", "arrow-array", "arrow-schema", "async-compression",
-    "axum", "axum-core", "bigdecimal", "bitflags", "blake2", "chrono", "clap",
+    "aws-lc-rs", "axum", "axum-core", "bigdecimal", "bitflags", "blake2", "chrono", "clap",
     "clap_builder", "compression-codecs", "crc32fast", "datafusion",
     "datafusion-common", "datafusion-datasource", "datafusion-datasource-arrow",
     "datafusion-expr", "datafusion-functions", "datafusion-optimizer",
@@ -39,11 +39,11 @@ ignored = [
     "ring", "rmcp", "rustix", "rustls", "rustls-webpki", "semver", "serde",
     "serde_core", "serde_json", "sha2", "slab", "smallvec", "spin",
     "sqlparser", "stable_deref_trait", "subtle", "syn-7b89eefb6aaa9bf3",
-    "sync_wrapper", "thiserror", "tikv-jemalloc-sys", "time", "tokio",
-    "tokio-rustls", "tokio-stream", "tokio-util", "tonic", "tower",
+    "sync_wrapper", "thiserror", "tikv-jemalloc-sys", "time", "time-macros",
+    "tokio", "tokio-rustls", "tokio-stream", "tokio-util", "tonic", "tower",
     "tower-http", "tracing", "tracing-core", "tracing-log",
     "tracing-subscriber", "twox-hash", "url", "uuid", "winapi",
-    "windows-sys", "zerocopy",
+    "windows-sys", "zerocopy", "zeroize",
 ]
 
 # The parts of the file between the BEGIN HAKARI SECTION and END HAKARI SECTION comments
@@ -132,7 +132,7 @@ syn-7b89eefb6aaa9bf3 = { package = "syn", version = "3", features = ["extra-trai
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
 thiserror = { version = "2" }
-time = { version = "0.3", features = ["local-offset", "serde-well-known"] }
+time = { version = "0.3", features = ["local-offset", "macros", "serde-well-known"] }
 tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "net", "parking_lot", "process", "rt-multi-thread", "signal", "test-util"] }
 tokio-stream = { version = "0.1", features = ["fs", "net", "sync"] }
 tonic = { version = "0.14", features = ["gzip", "zstd"] }
@@ -146,6 +146,7 @@ twox-hash = { version = "2", default-features = false, features = ["xxhash32", "
 url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["js", "serde", "v1", "v4"] }
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
+zeroize = { version = "1", features = ["derive"] }
 
 [build-dependencies]
 arrayvec = { version = "0.7", default-features = false, features = ["std"] }
@@ -229,7 +230,8 @@ syn-7b89eefb6aaa9bf3 = { package = "syn", version = "3", features = ["extra-trai
 syn-f595c2ba2a3f28df = { package = "syn", version = "2", features = ["extra-traits", "fold", "full", "visit", "visit-mut"] }
 sync_wrapper = { version = "1", default-features = false, features = ["futures"] }
 thiserror = { version = "2" }
-time = { version = "0.3", features = ["local-offset", "serde-well-known"] }
+time = { version = "0.3", features = ["local-offset", "macros", "serde-well-known"] }
+time-macros = { version = "0.2", default-features = false, features = ["formatting", "parsing", "serde"] }
 tokio = { version = "1", features = ["fs", "io-std", "io-util", "macros", "net", "parking_lot", "process", "rt-multi-thread", "signal", "test-util"] }
 tokio-stream = { version = "0.1", features = ["fs", "net", "sync"] }
 tonic = { version = "0.14", features = ["gzip", "zstd"] }
@@ -243,8 +245,10 @@ twox-hash = { version = "2", default-features = false, features = ["xxhash32", "
 url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["js", "serde", "v1", "v4"] }
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
+zeroize = { version = "1", features = ["derive"] }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
+aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "native-tokio", "ring", "tls12", "webpki-tokio"] }
@@ -266,6 +270,7 @@ tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 
 [target.x86_64-unknown-linux-gnu.build-dependencies]
+aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "native-tokio", "ring", "tls12", "webpki-tokio"] }
@@ -287,6 +292,7 @@ tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 
 [target.x86_64-unknown-linux-musl.dependencies]
+aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "native-tokio", "ring", "tls12", "webpki-tokio"] }
@@ -308,6 +314,7 @@ tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 
 [target.x86_64-unknown-linux-musl.build-dependencies]
+aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "native-tokio", "ring", "tls12", "webpki-tokio"] }
@@ -329,6 +336,7 @@ tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 
 [target.aarch64-unknown-linux-gnu.dependencies]
+aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "native-tokio", "ring", "tls12", "webpki-tokio"] }
@@ -350,6 +358,7 @@ tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 
 [target.aarch64-unknown-linux-gnu.build-dependencies]
+aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "native-tokio", "ring", "tls12", "webpki-tokio"] }
@@ -371,6 +380,7 @@ tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 
 [target.aarch64-unknown-linux-musl.dependencies]
+aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "native-tokio", "ring", "tls12", "webpki-tokio"] }
@@ -392,6 +402,7 @@ tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 
 [target.aarch64-unknown-linux-musl.build-dependencies]
+aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "native-tokio", "ring", "tls12", "webpki-tokio"] }
@@ -413,6 +424,7 @@ tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 
 [target.aarch64-apple-darwin.dependencies]
+aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 errno = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
@@ -435,6 +447,7 @@ tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 
 [target.aarch64-apple-darwin.build-dependencies]
+aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 errno = { version = "0.3" }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
@@ -457,6 +470,7 @@ tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
 
 [target.x86_64-pc-windows-msvc.dependencies]
+aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "native-tokio", "ring", "tls12", "webpki-tokio"] }
@@ -471,6 +485,7 @@ winapi = { version = "0.3", default-features = false, features = ["cfg", "consol
 windows-sys = { version = "0.61", features = ["Wdk_Foundation", "Wdk_Storage_FileSystem", "Wdk_System_IO", "Win32_Networking_WinSock", "Win32_Security_Authentication_Identity", "Win32_Security_Credentials", "Win32_Security_Cryptography", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_Console", "Win32_System_IO", "Win32_System_LibraryLoader", "Win32_System_Memory", "Win32_System_Pipes", "Win32_System_SystemInformation", "Win32_System_SystemServices", "Win32_System_Threading", "Win32_System_WindowsProgramming", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Shell"] }
 
 [target.x86_64-pc-windows-msvc.build-dependencies]
+aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
 getrandom-468e82937335b1c9 = { package = "getrandom", version = "0.3", default-features = false, features = ["std"] }
 getrandom-9fbad63c4bcf4a8f = { package = "getrandom", version = "0.4", default-features = false, features = ["std", "sys_rng"] }
 hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc-rs", "http1", "http2", "native-tokio", "ring", "tls12", "webpki-tokio"] }

@@ -704,6 +704,29 @@ default_tenant = "default"
 # mcp_url = "https://signaldb.example.com/mcp"       # public MCP endpoint; falls back to
 #                                                     # [mcp.oauth].resource_url when unset
 
+# --- GitHub App integration (optional) --------------------------------------
+# Lets a tenant admin connect SignalDB's GitHub App to the repositories that
+# produce their telemetry (Explore UI → user menu → "GitHub", or
+# `signaldb-cli tenant github link`). One App identity serves the whole
+# deployment; each tenant links its own installations, which stay isolated
+# per tenant. SignalDB mints short-lived installation tokens from the private
+# key on demand and never stores a GitHub access token. Absent by default:
+# no GitHub surface is exposed. Full setup guide, including the App
+# registration (read-only `contents` + `metadata` permissions, "Request user
+# authorization (OAuth) during installation" enabled, callback URL
+# `https://<host>/ui/github/callback`): docs/operations/github-app.md
+# Env overrides use the double-underscore form, e.g.
+# SIGNALDB__GITHUB__CLIENT_SECRET (keep the secrets out of this file in prod).
+# [github]
+# app_id = 12345                          # required; the App's numeric id
+# app_slug = "signaldb"                   # required; github.com/apps/<slug>
+# private_key_path = "/run/secrets/github-app.pem"  # or inline `private_key = "-----BEGIN ..."`
+# client_id = "Iv1.0123456789abcdef"      # required; the App's OAuth client id
+# client_secret = "..."                   # required; the App's OAuth client secret
+# api_url = "https://api.github.com"      # GitHub Enterprise Server: https://ghe.example.com/api/v3
+# web_url = "https://github.com"          # GitHub Enterprise Server: https://ghe.example.com
+# link_state_ttl = "10m"                  # how long "Connect" waits for GitHub's redirect back
+
 # Environment variable examples:
 # SIGNALDB__MCP__ENABLED=true
 # SIGNALDB__MCP__BIND_ADDRESS=0.0.0.0:8228

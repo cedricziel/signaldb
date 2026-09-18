@@ -1105,6 +1105,196 @@ impl OidcConfig {
     }
 }
 
+/// GitHub App integration, parsed from `[github]` (change:
+/// github-app-source-context). Absent by default: no GitHub surface is
+/// exposed, `GET /ui/github/callback` and the tenant-management
+/// installation endpoints answer 404.
+///
+/// One GitHub App identity serves the whole deployment (design decision
+/// "one shared GitHub App identity, many tenant-scoped installations"); what
+/// is tenant-scoped — the installation ids and their covered repos — lives
+/// in the catalog. The private key and OAuth client secret are the two
+/// deploy-time secrets: SignalDB never persists a GitHub access token.
+///
+/// `app_id`/`app_slug`/`client_id`/`client_secret` default to empty so a
+/// partially filled section still parses — [`GitHubAppConfig::validate`]
+/// turns the gaps into a startup error naming the setting.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitHubAppConfig {
+    /// The App's numeric id (GitHub → Settings → Developer settings →
+    /// GitHub Apps → *App ID*). Signs the app-level JWT.
+    pub app_id: u64,
+    /// The App's URL slug (the `<slug>` in `https://github.com/apps/<slug>`).
+    /// Builds the install URL a tenant admin is sent to.
+    pub app_slug: String,
+    /// The App's private key, PEM-encoded (the `.pem` GitHub generates).
+    /// Alternatively point `private_key_path` at the file; exactly one of
+    /// the two must be set.
+    pub private_key: String,
+    /// Path to the PEM private key file, read once at startup. Convenient
+    /// for a mounted secret; mutually exclusive with `private_key`.
+    pub private_key_path: Option<String>,
+    /// The App's OAuth client id (*Client ID* on the App's settings page).
+    /// Exchanges the callback `code` for a user-to-server token so the
+    /// returned installation can be verified against the authorizing
+    /// GitHub user.
+    pub client_id: String,
+    /// The App's OAuth client secret (generate one on the App's settings
+    /// page). Keep it out of the TOML file in production and pass
+    /// `SIGNALDB__GITHUB__CLIENT_SECRET` instead.
+    pub client_secret: String,
+    /// GitHub REST API base URL. Override for GitHub Enterprise Server
+    /// (`https://ghe.example.com/api/v3`).
+    pub api_url: String,
+    /// GitHub web base URL: the install page and the OAuth token endpoint
+    /// hang off it. Override for GitHub Enterprise Server
+    /// (`https://ghe.example.com`).
+    pub web_url: String,
+    /// How long a link-flow state token stays valid between "Connect" and
+    /// GitHub's redirect back to the callback.
+    #[serde(with = "humantime_serde")]
+    pub link_state_ttl: Duration,
+}
+
+impl Default for GitHubAppConfig {
+    fn default() -> Self {
+        Self {
+            app_id: 0,
+            app_slug: String::new(),
+            private_key: String::new(),
+            private_key_path: None,
+            client_id: String::new(),
+            client_secret: String::new(),
+            api_url: "https://api.github.com".to_string(),
+            web_url: "https://github.com".to_string(),
+            link_state_ttl: Duration::from_secs(10 * 60),
+        }
+    }
+}
+
+/// Manual `Debug`: redacts the private key and client secret so neither can
+/// leak via `{:?}` logging (e.g. a config dump at startup).
+impl std::fmt::Debug for GitHubAppConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GitHubAppConfig")
+            .field("app_id", &self.app_id)
+            .field("app_slug", &self.app_slug)
+            .field("private_key", &"[redacted]")
+            .field("private_key_path", &self.private_key_path)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"[redacted]")
+            .field("api_url", &self.api_url)
+            .field("web_url", &self.web_url)
+            .field("link_state_ttl", &self.link_state_ttl)
+            .finish()
+    }
+}
+
+impl GitHubAppConfig {
+    /// Validate a configured `[github]` section. Called whenever the section
+    /// is present; an absent section needs no validation since it exposes
+    /// no GitHub surface at all. Returns a message naming the offending
+    /// setting on failure (bad configuration fails startup; only the
+    /// reachability of GitHub itself is deferred to request time).
+    pub fn validate(&self) -> Result<(), String> {
+        if self.app_id == 0 {
+            return Err("[github].app_id must be set to the GitHub App's numeric id".to_string());
+        }
+        if self.app_slug.is_empty()
+            || !self
+                .app_slug
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+        {
+            return Err(
+                "[github].app_slug must be the App's URL slug (letters, digits, '-', '_', '.')"
+                    .to_string(),
+            );
+        }
+        let has_inline = !self.private_key.trim().is_empty();
+        let has_path = self
+            .private_key_path
+            .as_deref()
+            .is_some_and(|p| !p.trim().is_empty());
+        match (has_inline, has_path) {
+            (false, false) => {
+                return Err(
+                    "[github].private_key or [github].private_key_path must be set".to_string(),
+                );
+            }
+            (true, true) => {
+                return Err(
+                    "[github].private_key and [github].private_key_path are mutually exclusive"
+                        .to_string(),
+                );
+            }
+            _ => {}
+        }
+        if has_inline && !self.private_key.contains("-----BEGIN") {
+            return Err("[github].private_key must be a PEM-encoded private key".to_string());
+        }
+        {
+            use rsa::pkcs1::DecodeRsaPrivateKey;
+            use rsa::pkcs8::DecodePrivateKey;
+            let pem = self.private_key_pem()?;
+            rsa::RsaPrivateKey::from_pkcs1_pem(&pem)
+                .or_else(|_| rsa::RsaPrivateKey::from_pkcs8_pem(&pem))
+                .map_err(|e| format!("[github].private_key is not a valid RSA private key: {e}"))?;
+        }
+        if self.client_id.trim().is_empty() {
+            return Err("[github].client_id must not be empty".to_string());
+        }
+        if self.client_secret.trim().is_empty() {
+            return Err("[github].client_secret must not be empty".to_string());
+        }
+        for (name, value) in [("api_url", &self.api_url), ("web_url", &self.web_url)] {
+            url::Url::parse(value)
+                .map_err(|e| format!("[github].{name} is not a valid URL: {e}"))?;
+        }
+        if self.link_state_ttl.is_zero() {
+            return Err("[github].link_state_ttl must be greater than zero".to_string());
+        }
+        Ok(())
+    }
+
+    /// The PEM private key: the inline value, else the contents of
+    /// `private_key_path`. Only meaningful after [`Self::validate`].
+    pub fn private_key_pem(&self) -> Result<String, String> {
+        if !self.private_key.trim().is_empty() {
+            return Ok(self.private_key.clone());
+        }
+        let path = self
+            .private_key_path
+            .as_deref()
+            .ok_or_else(|| "[github].private_key_path is not set".to_string())?;
+        std::fs::read_to_string(path)
+            .map_err(|e| format!("[github].private_key_path: cannot read {path}: {e}"))
+    }
+
+    /// `api_url` without a trailing slash, ready for path joining.
+    pub fn api_base(&self) -> &str {
+        self.api_url.trim_end_matches('/')
+    }
+
+    /// `web_url` without a trailing slash, ready for path joining.
+    pub fn web_base(&self) -> &str {
+        self.web_url.trim_end_matches('/')
+    }
+
+    /// The GitHub page that installs the App, carrying `state` so the
+    /// callback can tie the returned installation to the admin and tenant
+    /// that started the flow.
+    pub fn install_url(&self, state: &str) -> String {
+        let state: String = url::form_urlencoded::byte_serialize(state.as_bytes()).collect();
+        format!(
+            "{}/apps/{}/installations/new?state={state}",
+            self.web_base(),
+            self.app_slug
+        )
+    }
+}
+
 impl AuthConfig {
     /// Effective limits for `tenant_id`: the tenant's `limits` override
     /// when configured, otherwise `default_limits`. Tenants provisioned
@@ -1398,6 +1588,10 @@ pub struct Configuration {
     /// defaults suitable only for local development.
     #[serde(default)]
     pub public: PublicEndpointsConfig,
+    /// GitHub App integration (change: github-app-source-context). Absent
+    /// by default: no GitHub surface is exposed.
+    #[serde(default)]
+    pub github: Option<GitHubAppConfig>,
 }
 
 /// Public-facing endpoint URLs for this deployment, as reached from outside
@@ -1753,6 +1947,7 @@ impl Default for Configuration {
             acceptor: AcceptorConfig::default(),
             mcp: McpConfig::default(),
             public: PublicEndpointsConfig::default(),
+            github: None,
         }
     }
 }
@@ -2024,11 +2219,15 @@ impl Configuration {
 
     /// Configuration-wide invariants that must hold before a service starts,
     /// beyond what serde's field-level deserialization already checks.
-    /// Currently just `[auth.oidc]` (change: oidc-login); see
-    /// [`OidcConfig::validate`].
+    /// `[auth.oidc]` (change: oidc-login, see [`OidcConfig::validate`]) and
+    /// `[github]` (change: github-app-source-context, see
+    /// [`GitHubAppConfig::validate`]).
     pub fn validate(&self) -> Result<(), String> {
         if let Some(oidc) = &self.auth.oidc {
             oidc.validate()?;
+        }
+        if let Some(github) = &self.github {
+            github.validate()?;
         }
         Ok(())
     }
@@ -3310,6 +3509,176 @@ mod tests {
         let config = Configuration::default();
         assert!(config.auth.oidc.is_none());
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn github_config_absent_by_default() {
+        let config = Configuration::default();
+        assert!(config.github.is_none());
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn github_config_parses_from_toml_and_builds_install_url() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "signaldb.toml",
+                &format!(
+                    r#"
+                [github]
+                app_id = 12345
+                app_slug = "signaldb-dev"
+                private_key = '''{TEST_PEM}'''
+                client_id = "Iv1.abc"
+                client_secret = "s3cret"
+                web_url = "https://ghe.example.com/"
+                api_url = "https://ghe.example.com/api/v3"
+                link_state_ttl = "5m"
+                "#
+                ),
+            )?;
+            let config: Configuration = Figment::new()
+                .merge(Serialized::defaults(Configuration::default()))
+                .merge(figment::providers::Toml::file("signaldb.toml"))
+                .extract()?;
+
+            let github = config.github.clone().expect("[github] parsed");
+            assert_eq!(github.app_id, 12345);
+            assert_eq!(github.app_slug, "signaldb-dev");
+            assert_eq!(github.client_id, "Iv1.abc");
+            assert_eq!(github.link_state_ttl, Duration::from_secs(300));
+            assert_eq!(github.api_base(), "https://ghe.example.com/api/v3");
+            assert_eq!(
+                github.install_url("st-1"),
+                "https://ghe.example.com/apps/signaldb-dev/installations/new?state=st-1"
+            );
+            assert_eq!(config.validate(), Ok(()));
+            let dump = format!("{github:?}");
+            assert!(dump.contains("[redacted]"));
+            assert!(!dump.contains("s3cret"));
+            assert!(!dump.contains("BEGIN RSA"));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn github_config_defaults_point_at_github_com() {
+        let github = GitHubAppConfig::default();
+        assert_eq!(github.api_url, "https://api.github.com");
+        assert_eq!(github.web_url, "https://github.com");
+        assert_eq!(github.link_state_ttl, Duration::from_secs(600));
+    }
+
+    use crate::testing::GITHUB_TEST_PEM as TEST_PEM;
+
+    #[test]
+    fn github_config_validation_names_the_offending_setting() {
+        let valid = GitHubAppConfig {
+            app_id: 1,
+            app_slug: "signaldb".to_string(),
+            private_key: TEST_PEM.to_string(),
+            client_id: "Iv1.abc".to_string(),
+            client_secret: "secret".to_string(),
+            ..GitHubAppConfig::default()
+        };
+        assert_eq!(valid.validate(), Ok(()));
+
+        let cases: Vec<(GitHubAppConfig, &str)> = vec![
+            (
+                GitHubAppConfig {
+                    app_id: 0,
+                    ..valid.clone()
+                },
+                "[github].app_id",
+            ),
+            (
+                GitHubAppConfig {
+                    app_slug: String::new(),
+                    ..valid.clone()
+                },
+                "[github].app_slug",
+            ),
+            (
+                GitHubAppConfig {
+                    app_slug: "my app/../x".to_string(),
+                    ..valid.clone()
+                },
+                "[github].app_slug",
+            ),
+            (
+                GitHubAppConfig {
+                    private_key: String::new(),
+                    ..valid.clone()
+                },
+                "[github].private_key or [github].private_key_path",
+            ),
+            (
+                GitHubAppConfig {
+                    private_key_path: Some("/run/secrets/key.pem".to_string()),
+                    ..valid.clone()
+                },
+                "mutually exclusive",
+            ),
+            (
+                GitHubAppConfig {
+                    private_key: "not a pem".to_string(),
+                    ..valid.clone()
+                },
+                "PEM-encoded",
+            ),
+            (
+                GitHubAppConfig {
+                    private_key:
+                        "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----"
+                            .to_string(),
+                    ..valid.clone()
+                },
+                "not a valid RSA private key",
+            ),
+            (
+                GitHubAppConfig {
+                    client_id: String::new(),
+                    ..valid.clone()
+                },
+                "[github].client_id",
+            ),
+            (
+                GitHubAppConfig {
+                    client_secret: String::new(),
+                    ..valid.clone()
+                },
+                "[github].client_secret",
+            ),
+            (
+                GitHubAppConfig {
+                    api_url: "not a url".to_string(),
+                    ..valid.clone()
+                },
+                "[github].api_url",
+            ),
+            (
+                GitHubAppConfig {
+                    link_state_ttl: Duration::ZERO,
+                    ..valid.clone()
+                },
+                "[github].link_state_ttl",
+            ),
+        ];
+        for (config, expected) in cases {
+            let error = config.validate().expect_err("must be rejected");
+            assert!(
+                error.contains(expected),
+                "expected {expected:?} in {error:?}"
+            );
+        }
+
+        // A configured `[github]` section is validated as part of the whole
+        // configuration, so a bad one fails startup.
+        let config = Configuration {
+            github: Some(GitHubAppConfig { app_id: 0, ..valid }),
+            ..Configuration::default()
+        };
+        assert!(config.validate().is_err());
     }
 
     #[test]
