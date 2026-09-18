@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import type { AttributeHit, AttributeResolution } from "../api/gen";
 import {
+  foldSingletonGroups,
   groupBySemanticTitle,
   humanizeNamespace,
   plainBrief,
   semanticsFromResolution,
   semanticTitle,
+  type TitledGroup,
 } from "./semantics";
 
 const hit = (over: Partial<AttributeHit> = {}): AttributeHit => ({
@@ -159,5 +161,82 @@ describe("groupBySemanticTitle", () => {
       { title: "Service", entries: [["service.name", "s"]] },
       { title: "Other", entries: [["app.order.id", "1"]] },
     ]);
+  });
+});
+
+describe("foldSingletonGroups", () => {
+  const g = <V>(title: string | null, entries: [string, V][]): TitledGroup<V> => ({
+    title,
+    entries,
+  });
+
+  it("keeps a group with two or more entries as-is", () => {
+    const groups = [
+      g("Kubernetes", [
+        ["k8s.pod.uid", "p"],
+        ["k8s.pod.name", "n"],
+      ]),
+      g("Other", [["app.order.id", "1"]]),
+    ];
+    expect(foldSingletonGroups(groups)).toEqual(groups);
+  });
+
+  it("folds a singleton titled group into a new trailing Other, sorted by key", () => {
+    const groups = [
+      g("Kubernetes", [
+        ["k8s.pod.uid", "p"],
+        ["k8s.pod.name", "n"],
+      ]),
+      g("Service", [["service.name", "s"]]),
+    ];
+    expect(foldSingletonGroups(groups)).toEqual([
+      g("Kubernetes", [
+        ["k8s.pod.uid", "p"],
+        ["k8s.pod.name", "n"],
+      ]),
+      g("Other", [["service.name", "s"]]),
+    ]);
+  });
+
+  it("merges a folded singleton into an existing Other, interleaved alphabetically", () => {
+    const groups = [
+      g("Kubernetes", [
+        ["k8s.pod.uid", "p"],
+        ["k8s.pod.name", "n"],
+      ]),
+      g("Service", [["service.name", "s"]]),
+      g("Other", [["app.order.id", "1"], ["zzz.custom", "z"]]),
+    ];
+    expect(foldSingletonGroups(groups)).toEqual([
+      g("Kubernetes", [
+        ["k8s.pod.uid", "p"],
+        ["k8s.pod.name", "n"],
+      ]),
+      g("Other", [
+        ["app.order.id", "1"],
+        ["service.name", "s"],
+        ["zzz.custom", "z"],
+      ]),
+    ]);
+  });
+
+  it("flattens to a single unheaded group when nothing but Other remains after folding", () => {
+    const groups = [
+      g("Kubernetes", [["k8s.pod.uid", "p"]]),
+      g("Service", [["service.name", "s"]]),
+      g("Other", [["app.order.id", "1"]]),
+    ];
+    expect(foldSingletonGroups(groups)).toEqual([
+      g(null, [
+        ["k8s.pod.uid", "p"],
+        ["service.name", "s"],
+        ["app.order.id", "1"],
+      ]),
+    ]);
+  });
+
+  it("passes through the already-flat untitled group unchanged", () => {
+    const groups = [g<string>(null, [["app.order.id", "1"]])];
+    expect(foldSingletonGroups(groups)).toEqual(groups);
   });
 });

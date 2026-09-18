@@ -1,8 +1,9 @@
 import { useQuery } from "@tanstack/react-query";
-import { Fragment, useId, useMemo, useRef, useState } from "react";
+import { useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import {
   tempoSearchTags,
+  type AttrValue,
   type ProfileSummaryView,
   type SpanEventView,
   type TempoSpan,
@@ -21,10 +22,14 @@ import { SignalHistogram } from "../explore/SignalHistogram";
 import { AttributeKeyInput } from "../../components/AttributeKeyInput";
 import { AttributeValue } from "../../components/AttributeValue";
 import {
+  AttributeSummary,
+  AttributeTable,
+  type AttributeRowAction,
+} from "../../components/AttributeTable";
+import {
   MobileFiltersToggle,
   MobileSidebarDrawer,
 } from "../../components/MobileSidebarDrawer";
-import { SemanticKey } from "../../components/SemanticKey";
 import { SidebarResizer } from "../../components/SidebarResizer";
 import {
   useVizPointer,
@@ -33,8 +38,12 @@ import {
 } from "../../components/VizTooltip";
 import { useSemantics } from "../../hooks/useSemantics";
 import { useMobileSidebar } from "../../hooks/useMobileSidebar";
+import {
+  readAttrDescriptions,
+  writeAttrDescriptions,
+} from "../../lib/attrDescriptions";
+import { summarizeAttributes, type SummaryField } from "../../lib/attrSummary";
 import { spanDetailWidth } from "../../lib/sidebarWidth";
-import { groupBySemanticTitle } from "../../lib/semantics";
 import { liveRefetchInterval } from "../../lib/live";
 import { goBackOr } from "../../lib/router";
 import { formatErrorRate } from "../../lib/vizFormat";
@@ -42,6 +51,7 @@ import { TraceFacets } from "./TraceFacets";
 import { TraceVolumeAreaChart } from "./TraceVolumeAreaChart";
 import { TraceVolumeHeatmap } from "./TraceVolumeHeatmap";
 import {
+  FACET_FIELDS,
   KIND_VALUES,
   compileTraceQL,
   facetField,
@@ -1053,6 +1063,7 @@ function TraceDetail({ state, update }: Props) {
                 profiles={traceData.profiles}
                 kind={spanKinds[selectedRow.span.spanId]}
                 update={update}
+                traceFilters={state.traceFilters}
               />
             </MobileSidebarDrawer>
           </>
@@ -1075,12 +1086,79 @@ function TraceDetail({ state, update }: Props) {
   );
 }
 
+/** Collapsed Resource-section summary, in preference order — the first
+ * present spelling of each field wins, then `+ N more`; the SDK language and
+ * version are shown together as one `sdk go 1.28.0` entry. */
+const RESOURCE_SUMMARY_FIELDS: SummaryField[] = [
+  { keys: ["service.name"] },
+  { keys: ["service.namespace"] },
+  { keys: ["deployment.environment.name"] },
+  { keys: ["service.version"] },
+  { keys: ["k8s.pod.name"] },
+  { keys: ["k8s.node.name"] },
+  { keys: ["host.name"] },
+  { keys: ["cloud.region"] },
+  {
+    keys: ["telemetry.sdk.language", "telemetry.sdk.version"],
+    render: (found) => ({
+      key: "sdk",
+      value: [
+        found.get("telemetry.sdk.language"),
+        found.get("telemetry.sdk.version"),
+      ]
+        .filter(Boolean)
+        .join(" "),
+    }),
+  },
+];
+
+/** A row's attribute key mapped to the `TraceFilter` field it's facetable
+ * under, when there is one: a direct facet match (`db.namespace`, ...) or a
+ * known alias whose facet label differs from its field (`span.name` → the
+ * `name` field, `span.kind` → `kind`). */
+function facetableField(key: string): string | undefined {
+  return (
+    facetField(key)?.field ?? FACET_FIELDS.find((f) => f.label === key)?.field
+  );
+}
+
+function stringEntries(entries: [string, AttrValue][]): [string, string][] {
+  return entries.map(([k, v]) => [k, String(v)]);
+}
+
+/** Section head for a collapsible group (Scope, Resource): title plus a
+ * count, toggling `aria-expanded` on click. */
+function SectionToggle({
+  label,
+  count,
+  expanded,
+  onToggle,
+}: {
+  label: string;
+  count: number;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      className="span-detail-sec span-detail-sec-row span-detail-toggle"
+      aria-expanded={expanded}
+      onClick={onToggle}
+    >
+      <span>{label}</span>
+      <span className="attrtable-count">{count}</span>
+    </button>
+  );
+}
+
 function SpanDetail({
   span,
   traceId,
   profiles,
   kind,
   update,
+  traceFilters,
 }: {
   span: TempoSpan;
   traceId: string;
@@ -1088,6 +1166,8 @@ function SpanDetail({
   /** OTel span kind, when the IR row carried one. */
   kind: string | undefined;
   update: UpdateFn;
+  /** The URL's raw trace filters, for the "+ filter" row action. */
+  traceFilters: TraceFilter[];
 }) {
   const groups = useMemo(
     () => groupSpanAttributes(span.attributes),
@@ -1099,6 +1179,41 @@ function SpanDetail({
   );
   const semantics = useSemantics(attributeKeys);
   const spanProfiles = profiles.filter((p) => p.spanId === span.spanId);
+  const [showDescriptions, setShowDescriptions] = useState(readAttrDescriptions);
+  const [scopeExpanded, setScopeExpanded] = useState(false);
+  const [resourceExpanded, setResourceExpanded] = useState(false);
+
+  const spanGroup = groups.find((g) => g.label === "Span");
+  const scopeGroup = groups.find((g) => g.label === "Scope");
+  const resourceGroup = groups.find((g) => g.label === "Resource");
+
+  const rowActions = (key: string, value: string): AttributeRowAction[] => {
+    const actions: AttributeRowAction[] = [
+      {
+        label: "group by",
+        ariaLabel: `Group by ${key}`,
+        onClick: () => update({ groupBy: key, group: "" }),
+      },
+    ];
+    const field = facetableField(key);
+    if (field) {
+      actions.push({
+        label: "+ filter",
+        ariaLabel: `Filter for ${key} = ${value}`,
+        onClick: () =>
+          update(
+            {
+              trace: "",
+              traceFilters: upsertTraceFilter(traceFilters, { field, value }),
+              group: "",
+            },
+            { push: true },
+          ),
+      });
+    }
+    return actions;
+  };
+
   return (
     <aside className="span-detail" aria-label="Span details">
       <h4>{span.name}</h4>
@@ -1158,39 +1273,80 @@ function SpanDetail({
           </ul>
         </>
       )}
-      {groups.length === 0 && (
+      <div className="span-detail-sec span-detail-sec-row">
+        <span>Span</span>
+        <label className="attrtable-desc-toggle">
+          <input
+            type="checkbox"
+            checked={showDescriptions}
+            onChange={() =>
+              setShowDescriptions((current) => {
+                const next = !current;
+                writeAttrDescriptions(next);
+                return next;
+              })
+            }
+            aria-label="Show descriptions"
+          />
+          descriptions
+        </label>
+      </div>
+      {spanGroup ? (
+        <AttributeTable
+          entries={stringEntries(spanGroup.entries)}
+          semantics={semantics}
+          layout="stacked"
+          showDescriptions={showDescriptions}
+          actions={rowActions}
+        />
+      ) : (
+        <div className="view-note">No attributes recorded.</div>
+      )}
+      {scopeGroup && (
         <>
-          <div className="span-detail-sec">Attributes</div>
-          <div className="view-note">No attributes recorded.</div>
+          <SectionToggle
+            label="Scope"
+            count={scopeGroup.entries.length}
+            expanded={scopeExpanded}
+            onToggle={() => setScopeExpanded((current) => !current)}
+          />
+          {scopeExpanded && (
+            <AttributeTable
+              entries={stringEntries(scopeGroup.entries)}
+              semantics={semantics}
+              layout="stacked"
+              showDescriptions={showDescriptions}
+              actions={rowActions}
+            />
+          )}
         </>
       )}
-      {groups.map((group) => (
-        <div key={group.label}>
-          <div className="span-detail-sec">{group.label}</div>
-          {groupBySemanticTitle(group.entries, semantics).map((sub) => (
-            <Fragment key={sub.title ?? ""}>
-              {sub.title && (
-                <div className="span-detail-subsec">{sub.title}</div>
+      {resourceGroup && (
+        <>
+          <SectionToggle
+            label="Resource"
+            count={resourceGroup.entries.length}
+            expanded={resourceExpanded}
+            onToggle={() => setResourceExpanded((current) => !current)}
+          />
+          {resourceExpanded ? (
+            <AttributeTable
+              entries={stringEntries(resourceGroup.entries)}
+              semantics={semantics}
+              layout="stacked"
+              showDescriptions={showDescriptions}
+              actions={rowActions}
+            />
+          ) : (
+            <AttributeSummary
+              summary={summarizeAttributes(
+                stringEntries(resourceGroup.entries),
+                RESOURCE_SUMMARY_FIELDS,
               )}
-              <dl className="span-attrs">
-                {sub.entries.map(([k, v]) => (
-                  <div key={k}>
-                    <dt>
-                      <SemanticKey name={k} semantics={semantics.get(k)} />
-                    </dt>
-                    <dd>
-                      <AttributeValue
-                        value={String(v)}
-                        label={`value for ${k}`}
-                      />
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            </Fragment>
-          ))}
-        </div>
-      ))}
+            />
+          )}
+        </>
+      )}
     </aside>
   );
 }

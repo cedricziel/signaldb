@@ -1,13 +1,16 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Fragment, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { LogRow } from "../../api/loki";
-import { AttributeValue } from "../../components/AttributeValue";
+import { AttributeSummary, AttributeTable } from "../../components/AttributeTable";
 import { CopyValueButton } from "../../components/CopyValueButton";
 import { EmptyState } from "../../components/EmptyState";
-import { SemanticKey } from "../../components/SemanticKey";
 import { useSemantics } from "../../hooks/useSemantics";
+import {
+  readAttrDescriptions,
+  writeAttrDescriptions,
+} from "../../lib/attrDescriptions";
+import { summarizeAttributes, type SummaryField } from "../../lib/attrSummary";
 import type { LabelFilter } from "../../lib/filters";
-import { groupBySemanticTitle } from "../../lib/semantics";
 import { formatTimestamp } from "../../lib/time";
 import { normalizeLevel } from "./Histogram";
 
@@ -66,6 +69,14 @@ export function rowKey(row: LogRow): string {
 export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [showDescriptions, setShowDescriptions] = useState(readAttrDescriptions);
+  const toggleDescriptions = () => {
+    setShowDescriptions((current) => {
+      const next = !current;
+      writeAttrDescriptions(next);
+      return next;
+    });
+  };
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -117,34 +128,13 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
                 {traceId !== null && <span className="logrow-trace">⛓</span>}
               </button>
               {isOpen && (
-                <div className="logdetail">
-                  <div className="logdetail-actions">
-                    {traceId !== null && (
-                      <button
-                        className="act-primary btn btn-primary"
-                        onClick={() => onOpenTrace(traceId)}
-                      >
-                        View trace {traceId.slice(0, 8)}…
-                      </button>
-                    )}
-                    <CopyValueButton value={row.line} label="log message" />
-                    <button
-                      className="btn"
-                      onClick={() =>
-                        navigator.clipboard?.writeText(
-                          JSON.stringify(
-                            { ...row.labels, ...row.metadata, line: row.line },
-                            null,
-                            2,
-                          ),
-                        )
-                      }
-                    >
-                      Copy JSON
-                    </button>
-                  </div>
-                  <LogAttributes row={row} onAddFilter={onAddFilter} />
-                </div>
+                <LogDetail
+                  row={row}
+                  onAddFilter={onAddFilter}
+                  onOpenTrace={onOpenTrace}
+                  showDescriptions={showDescriptions}
+                  onToggleDescriptions={toggleDescriptions}
+                />
               )}
             </div>
           );
@@ -157,18 +147,92 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
 const sortedEntries = (bag: Record<string, string>): [string, string][] =>
   Object.entries(bag).sort(([a], [b]) => a.localeCompare(b));
 
+/** Preferred order for the collapsed stream/resource summary line — the
+ * first present spelling of each field, up to 8 pairs, then `+ N more`. */
+const STREAM_SUMMARY_FIELDS: SummaryField[] = [
+  { keys: ["service_name", "service.name"] },
+  { keys: ["service.namespace"] },
+  { keys: ["deployment.environment.name"] },
+  { keys: ["level"] },
+  { keys: ["k8s.pod.name"] },
+  { keys: ["host.name"] },
+  { keys: ["cloud.region"] },
+  { keys: ["container.image.name"] },
+];
+
 /**
- * The expanded row's attribute table: stream labels (with filter actions)
- * then per-line fields. Keys the schema registry knows carry their brief and
- * namespace and are grouped under their semantic title; a scope where
- * nothing resolved renders exactly as before.
+ * The expanded row's actions plus its attribute table: `THIS LINE` (per-line
+ * fields, always shown) then `STREAM · RESOURCE` (stream labels, collapsed
+ * behind a summary by default — there are usually dozens, identical across
+ * every line in the stream).
  */
-function LogAttributes({
+function LogDetail({
   row,
   onAddFilter,
+  onOpenTrace,
+  showDescriptions,
+  onToggleDescriptions,
 }: {
   row: LogRow;
   onAddFilter: (filter: LabelFilter) => void;
+  onOpenTrace: (traceId: string) => void;
+  showDescriptions: boolean;
+  onToggleDescriptions: () => void;
+}) {
+  const traceId = traceIdOf(row);
+  return (
+    <div className="logdetail">
+      <div className="logdetail-actions">
+        {traceId !== null && (
+          <button
+            className="act-primary btn btn-primary"
+            onClick={() => onOpenTrace(traceId)}
+          >
+            View trace {traceId.slice(0, 8)}…
+          </button>
+        )}
+        <CopyValueButton value={row.line} label="log message" />
+        <button
+          className="btn"
+          onClick={() =>
+            navigator.clipboard?.writeText(
+              JSON.stringify(
+                { ...row.labels, ...row.metadata, line: row.line },
+                null,
+                2,
+              ),
+            )
+          }
+        >
+          Copy JSON
+        </button>
+        <label className="attrtable-desc-toggle">
+          <input
+            type="checkbox"
+            checked={showDescriptions}
+            onChange={onToggleDescriptions}
+            aria-label="Show descriptions"
+          />
+          descriptions
+        </label>
+      </div>
+      <LogAttributes
+        row={row}
+        onAddFilter={onAddFilter}
+        showDescriptions={showDescriptions}
+      />
+    </div>
+  );
+}
+
+function LogAttributes({
+  row,
+  onAddFilter,
+  showDescriptions,
+}: {
+  row: LogRow;
+  onAddFilter: (filter: LabelFilter) => void;
+  showDescriptions: boolean;
 }) {
   const labels = useMemo(() => sortedEntries(row.labels), [row.labels]);
   const metadata = useMemo(() => sortedEntries(row.metadata), [row.metadata]);
@@ -177,59 +241,64 @@ function LogAttributes({
     [labels, metadata],
   );
   const semantics = useSemantics(keys);
+  const [streamExpanded, setStreamExpanded] = useState(false);
 
   return (
-    <dl className="attr-grid">
-      {groupBySemanticTitle(labels, semantics).map((group) => (
-        <Fragment key={`label:${group.title ?? ""}`}>
-          {group.title && <div className="attr-grid-title">{group.title}</div>}
-          {group.entries.map(([k, v]) => (
-            <div className="attr-row" data-scope="label" key={k}>
-              <dt>
-                <SemanticKey name={k} semantics={semantics.get(k)} />
-              </dt>
-              <dd>
-                <AttributeValue value={v} label={`value for ${k}`} />
-              </dd>
-              <span className="attr-actions">
-                <button
-                  aria-label={`Filter for ${k} = ${v}`}
-                  onClick={() => onAddFilter({ label: k, op: "=", value: v })}
-                >
-                  + filter
-                </button>
-                <button
-                  aria-label={`Filter out ${k} = ${v}`}
-                  onClick={() => onAddFilter({ label: k, op: "!=", value: v })}
-                >
-                  − exclude
-                </button>
-              </span>
-            </div>
-          ))}
-        </Fragment>
-      ))}
-      {/* Per-line fields: `trace_id`/`span_id` plus the row's log and
-          resource attributes. Shown without filter actions for now — the
-          label-filter model compiles to a stream selector, which is the
-          wrong shape for these. Filtering on them arrives with the Query IR
-          migration, where the predicate is built server-side. */}
-      {groupBySemanticTitle(metadata, semantics).map((group) => (
-        <Fragment key={`meta:${group.title ?? ""}`}>
-          {group.title && <div className="attr-grid-title">{group.title}</div>}
-          {group.entries.map(([k, v]) => (
-            <div className="attr-row" data-scope="metadata" key={k}>
-              <dt>
-                <SemanticKey name={k} semantics={semantics.get(k)} />
-              </dt>
-              <dd>
-                <AttributeValue value={v} label={`value for ${k}`} />
-              </dd>
-              <span className="attr-scope">per-line</span>
-            </div>
-          ))}
-        </Fragment>
-      ))}
-    </dl>
+    <>
+      {metadata.length > 0 && (
+        <>
+          <div className="attrtable-section">This line</div>
+          {/* Shown without filter actions — the label-filter model compiles
+              to a stream selector, which is the wrong shape for a field that
+              varies per line. Filtering on these arrives with the Query IR
+              migration, where the predicate is built server-side. */}
+          <AttributeTable
+            entries={metadata}
+            semantics={semantics}
+            layout="grid"
+            showDescriptions={showDescriptions}
+            scope="metadata"
+          />
+        </>
+      )}
+      {labels.length > 0 && (
+        <>
+          <button
+            type="button"
+            className="attrtable-section"
+            aria-expanded={streamExpanded}
+            onClick={() => setStreamExpanded((current) => !current)}
+          >
+            Stream · resource
+            <span className="attrtable-count">{labels.length} labels</span>
+          </button>
+          {streamExpanded ? (
+            <AttributeTable
+              entries={labels}
+              semantics={semantics}
+              layout="grid"
+              showDescriptions={showDescriptions}
+              scope="label"
+              actions={(k, v) => [
+                {
+                  label: "+ filter",
+                  ariaLabel: `Filter for ${k} = ${v}`,
+                  onClick: () => onAddFilter({ label: k, op: "=", value: v }),
+                },
+                {
+                  label: "− exclude",
+                  ariaLabel: `Filter out ${k} = ${v}`,
+                  onClick: () => onAddFilter({ label: k, op: "!=", value: v }),
+                },
+              ]}
+            />
+          ) : (
+            <AttributeSummary
+              summary={summarizeAttributes(labels, STREAM_SUMMARY_FIELDS)}
+            />
+          )}
+        </>
+      )}
+    </>
   );
 }

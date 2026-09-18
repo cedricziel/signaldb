@@ -316,6 +316,18 @@ select:focus-visible {
   white-space: nowrap;
 }
 
+/* Inside the attribute table a value wraps instead of ellipsizing — the row
+   already has a whole line to itself, so cutting it off there hides text an
+   ellipsis elsewhere (a log row's inline preview, say) has a real space
+   reason to trim. The >=200-char collapse/"More" threshold in
+   AttributeValue is unaffected: this only changes how the shown text (the
+   whole value, or its truncated preview) wraps within its own line. */
+.attrtable .copy-value-text {
+  overflow-wrap: anywhere;
+  white-space: normal;
+  text-overflow: clip;
+}
+
 .attribute-value {
   display: inline-block;
   min-width: 0;
@@ -464,9 +476,16 @@ select:focus-visible {
 .semkey-name {
   flex: 1 1 auto;
   min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
+}
+
+/* Dotted-underline affordance for a key resolved by the registry — set by
+   `SemanticKeyLabel` (components/AttributeTable.tsx's compact key form). */
+.semkey-name[data-known] {
+  text-decoration: underline dotted;
+  text-decoration-color: var(--faint);
+  text-underline-offset: 2px;
+  cursor: help;
 }
 
 .semkey[data-deprecated] .semkey-name {
@@ -519,6 +538,7 @@ select:focus-visible {
 }
 
 .semkey-dep {
+  margin-left: 6px;
   color: var(--warn-banner-text);
 }
 
@@ -944,4 +964,219 @@ th[aria-sort="descending"] .th-sort::after {
   gap: 6px;
   color: var(--dim);
   font-size: 12px;
+}
+
+/* ---------- attribute table (components/AttributeTable.tsx) ---------- */
+
+.attrtable {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.attrtable[data-layout="grid"] {
+  max-width: 720px;
+}
+
+/* Facts shared by every row in a titled group, stated once instead of
+   repeated per row: the title, the group's namespace, and (when every
+   resolved row agrees on one) the entity it describes. */
+.attrtable-group {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--ui);
+  margin: 8px 0 1px;
+}
+
+.attrtable-title {
+  font-size: 10.5px;
+  color: var(--dim);
+  font-weight: 600;
+}
+
+.attrtable-ns {
+  font-size: 9.5px;
+  color: var(--faint);
+}
+
+.attrtable-ns[data-source="custom"] {
+  color: var(--accent);
+}
+
+.attrtable-entity {
+  font-size: 9.5px;
+  color: var(--faint);
+}
+
+.attrtable-row {
+  font-family: var(--mono);
+}
+
+.attrtable[data-layout="grid"] .attrtable-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 260px) minmax(0, 1fr) max-content;
+  gap: 0 14px;
+  align-items: baseline;
+  font-size: 11.5px;
+}
+
+.attrtable[data-layout="stacked"] .attrtable-row {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  padding-right: 56px;
+  font-size: 11px;
+}
+
+.attrtable-row dt {
+  color: var(--dim);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.attrtable-row dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.attrtable[data-layout="stacked"] .attrtable-row dd {
+  padding-left: 10px;
+}
+
+/* Plain-text brief, shown under a resolved row only with the descriptions
+   toggle on; spans every grid column so it doesn't fight the value column
+   for width. */
+.attrtable-desc {
+  grid-column: 1 / -1;
+  font-family: var(--ui);
+  font-size: 11px;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+
+.attrtable-desc-suffix {
+  color: var(--faint);
+}
+
+.attrtable[data-layout="stacked"] .attrtable-actions {
+  position: absolute;
+  top: 0;
+  right: 0;
+}
+
+/* `opacity`, not `visibility: hidden` — the latter also drops the buttons
+   from keyboard tab order and defeats a `:focus-within` reveal, so a
+   keyboard/touch user could never reach them; the <=900px override below
+   keeps them reachable without a hover at all. */
+.attrtable-actions {
+  opacity: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--ui);
+}
+
+.attrtable-row:hover .attrtable-actions,
+.attrtable-row:focus-within .attrtable-actions {
+  opacity: 1;
+}
+
+@media (max-width: 900px) {
+  .attrtable-actions {
+    opacity: 1;
+  }
+}
+
+.attrtable-actions button {
+  font-size: 10px;
+  color: var(--faint);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 5px;
+}
+
+.attrtable-actions button:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* Section head above a titled block of an attribute table (LogList's "THIS
+   LINE"/"STREAM · RESOURCE", TracesView's "SPAN"/"SCOPE"/"RESOURCE") —
+   same treatment as .span-detail-sec. A collapsible section renders it as a
+   button carrying `aria-expanded`. */
+.attrtable-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 14px 0 6px;
+  font-family: var(--ui);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--faint);
+  font-weight: 650;
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+}
+
+button.attrtable-section {
+  cursor: pointer;
+}
+
+.attrtable-count {
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+/* Collapsed-section one-line preview (LogList's stream summary, TracesView's
+   resource summary): a row of `key value` parts (components/AttributeTable.
+   tsx's AttributeSummary) plus a trailing "+N more", wrapping as a group
+   rather than each part fighting for its own line. */
+.attrtable-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.attrtable-summary-kv {
+  display: inline-flex;
+  gap: 4px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attrtable-summary-k {
+  color: var(--dim);
+}
+
+.attrtable-summary-v {
+  color: var(--text);
+}
+
+.attrtable-summary-more {
+  color: var(--accent);
+}
+
+.attrtable-desc-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  font-family: var(--ui);
+  font-size: 11px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--faint);
 }

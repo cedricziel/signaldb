@@ -125,3 +125,40 @@ export function groupBySemanticTitle<V>(
   if (other.length > 0) groups.push({ title: OTHER_TITLE, entries: other });
   return groups;
 }
+
+/**
+ * Folds a titled group with exactly one entry into the trailing "Other"
+ * group (created if it doesn't already exist) — a heading over a single row
+ * reads as clutter, not structure. The "Other" group's entries are then
+ * sorted by key (`localeCompare`) so folded rows interleave alphabetically
+ * with the genuinely-unknown ones already there, rather than trailing after
+ * them in fold order.
+ *
+ * When folding leaves no titled group besides "Other" standing, there is
+ * nothing left worth a heading at all: this returns the single untitled
+ * group `{ title: null, entries }` — every entry, in the order the input
+ * groups were given — the same shape `groupBySemanticTitle` returns when
+ * nothing resolved, so the caller renders one flat, unheaded list.
+ */
+export function foldSingletonGroups<V>(
+  groups: TitledGroup<V>[],
+): TitledGroup<V>[] {
+  const kept: TitledGroup<V>[] = [];
+  let other: [string, V][] | undefined;
+  for (const group of groups) {
+    if (group.title === OTHER_TITLE) {
+      other = [...(other ?? []), ...group.entries];
+    } else if (group.title !== null && group.entries.length === 1) {
+      other = [...(other ?? []), group.entries[0]!];
+    } else {
+      kept.push(group);
+    }
+  }
+  if (other) {
+    other.sort(([a], [b]) => a.localeCompare(b));
+    kept.push({ title: OTHER_TITLE, entries: other });
+  }
+  return kept.every((g) => g.title === OTHER_TITLE)
+    ? [{ title: null, entries: groups.flatMap((g) => g.entries) }]
+    : kept;
+}

@@ -10,6 +10,7 @@
  * exactly what the raw key would — a plain text node, or nothing.
  */
 import {
+  Fragment,
   useEffect,
   useId,
   useLayoutEffect,
@@ -198,10 +199,15 @@ function SemanticHover({
   semantics,
   className,
   children,
+  dataKnown,
 }: {
   semantics: AttributeSemantics;
   className: string;
   children: ReactNode;
+  /** Marks the trigger `data-known` for a dotted-underline affordance
+   * (`AttributeTable`'s compact key label); other callers own their own
+   * visual treatment and omit it. */
+  dataKnown?: boolean;
 }) {
   const [anchor, setAnchor] = useState<DOMRect | null>(null);
   const [height, setHeight] = useState(TIP_HEIGHT_GUESS);
@@ -268,6 +274,7 @@ function SemanticHover({
     <span
       ref={triggerRef}
       className={className}
+      data-known={dataKnown ? "" : undefined}
       tabIndex={0}
       aria-describedby={anchor ? id : undefined}
       onMouseEnter={open}
@@ -336,6 +343,59 @@ export function SemanticKey({ name, semantics, showTitle }: SemanticKeyProps) {
         </span>
       )}
     </span>
+  );
+}
+
+/** Key text with a `<wbr/>` after every `.` so a long dotted key (`cloud.
+ * region`, `db.statement`) wraps at a dot instead of overflowing or relying
+ * on an ellipsis — used by `SemanticKeyLabel` for both a resolved and a bare
+ * key, so wrapping is consistent either way. */
+function DottedKey({ name }: { name: string }) {
+  const segments = name.split(".");
+  return (
+    <>
+      {segments.map((segment, i) => (
+        <Fragment key={i}>
+          {i > 0 && (
+            <>
+              .<wbr />
+            </>
+          )}
+          {segment}
+        </Fragment>
+      ))}
+    </>
+  );
+}
+
+/**
+ * Compact key label for attribute tables (`components/AttributeTable.tsx`):
+ * the bare key when unresolved; otherwise the key alone as the hover/focus
+ * tooltip trigger, struck through with its replacement when deprecated.
+ * Everything else the registry knows — brief, roles, namespace — lives in
+ * the tooltip, not stacked under the row.
+ */
+export function SemanticKeyLabel({
+  name,
+  semantics,
+}: {
+  name: string;
+  semantics: AttributeSemantics | undefined;
+}) {
+  if (!semantics) return <DottedKey name={name} />;
+  const { deprecated } = semantics;
+  const text = <DottedKey name={name} />;
+  return (
+    <>
+      <SemanticHover semantics={semantics} className="semkey-name" dataKnown>
+        {deprecated ? <s>{text}</s> : text}
+      </SemanticHover>
+      {deprecated && (
+        <span className="semkey-dep">
+          {deprecated.renamed_to ? `→ ${deprecated.renamed_to}` : "deprecated"}
+        </span>
+      )}
+    </>
   );
 }
 

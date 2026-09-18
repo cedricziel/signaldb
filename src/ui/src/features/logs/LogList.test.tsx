@@ -9,7 +9,13 @@ import { LogList, rowKey, traceIdOf } from "./LogList";
 afterEach(() => {
   resetSemanticsCache();
   vi.unstubAllGlobals();
+  localStorage.clear();
 });
+
+/** The stream/resource section is collapsed behind a summary by default;
+ * every test that reaches into it clicks the section head first. */
+const expandStream = () =>
+  userEvent.click(screen.getByRole("button", { name: /Stream · resource/ }));
 
 const row = (over: Partial<LogRow>): LogRow => ({
   tsNs: "1000000000",
@@ -78,6 +84,7 @@ describe("LogList", () => {
       <LogList rows={rows} onAddFilter={onAddFilter} onOpenTrace={() => {}} />,
     );
     await userEvent.click(screen.getByText("payment failed"));
+    await expandStream();
     expect(screen.getByText("trace_id")).toBeInTheDocument();
     await userEvent.click(
       screen.getByRole("button", {
@@ -106,16 +113,19 @@ describe("LogList", () => {
     );
 
     await userEvent.click(screen.getByText("hello"));
+    await expandStream();
 
     expect(
-      [...container.querySelectorAll(".attr-row[data-scope='label'] dt")].map(
-        (element) => element.textContent,
-      ),
+      [
+        ...container.querySelectorAll(".attrtable-row[data-scope='label'] dt"),
+      ].map((element) => element.textContent),
     ).toEqual(["alpha", "zebra"]);
     expect(
-      [...container.querySelectorAll(".attr-row[data-scope='metadata'] dt")].map(
-        (element) => element.textContent,
-      ),
+      [
+        ...container.querySelectorAll(
+          ".attrtable-row[data-scope='metadata'] dt",
+        ),
+      ].map((element) => element.textContent),
     ).toEqual(["beta", "omega"]);
   });
 
@@ -125,6 +135,7 @@ describe("LogList", () => {
       <LogList rows={rows} onAddFilter={onAddFilter} onOpenTrace={() => {}} />,
     );
     await userEvent.click(screen.getByText("payment failed"));
+    await expandStream();
     await userEvent.click(
       screen.getByRole("button", { name: "Filter out level = error" }),
     );
@@ -158,6 +169,7 @@ describe("LogList", () => {
       <LogList rows={rows} onAddFilter={() => {}} onOpenTrace={() => {}} />,
     );
     await userEvent.click(screen.getByText("request handled"));
+    await expandStream();
     expect(screen.getByText("service_name")).toBeInTheDocument();
 
     const prepended: LogRow[] = [
@@ -248,7 +260,7 @@ describe("LogList structured metadata", () => {
     expect(screen.getByText("abc123")).toBeInTheDocument();
   });
 
-  it("marks metadata as per-line so it is not mistaken for a stream label", async () => {
+  it("renders metadata under This line and stream labels under Stream · resource, so metadata is not mistaken for a stream label", async () => {
     render(
       <LogList
         rows={[metaRow]}
@@ -257,11 +269,32 @@ describe("LogList structured metadata", () => {
       />,
     );
     await userEvent.click(screen.getByText("checkout timed out"));
-    const spanRow = screen.getByText("span_id").closest(".attr-row");
-    expect(spanRow).toHaveAttribute("data-scope", "metadata");
+    const thisLine = screen.getByText("This line");
+    const streamToggle = screen.getByRole("button", {
+      name: /Stream · resource/,
+    });
+    const spanRow = screen.getByText("span_id").closest(".attrtable-row")!;
+    // Metadata sits between the "This line" heading and the stream toggle,
+    // not after it — under "This line", not "Stream · resource".
     expect(
-      screen.getByText("service_name").closest(".attr-row"),
-    ).toHaveAttribute("data-scope", "label");
+      thisLine.compareDocumentPosition(spanRow) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    expect(
+      spanRow.compareDocumentPosition(streamToggle) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+
+    await expandStream();
+    const serviceRow = screen
+      .getByText("service_name")
+      .closest(".attrtable-row")!;
+    // The stream label renders after the toggle it expanded from, under
+    // "Stream · resource".
+    expect(
+      streamToggle.compareDocumentPosition(serviceRow) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
   });
 
   // Structured metadata varies per line, so a stream selector cannot match it.
@@ -274,6 +307,7 @@ describe("LogList structured metadata", () => {
       />,
     );
     await userEvent.click(screen.getByText("checkout timed out"));
+    await expandStream();
     expect(
       screen.queryByRole("button", { name: "Filter for span_id = def456" }),
     ).toBeNull();
@@ -296,6 +330,7 @@ describe("LogList structured metadata", () => {
     );
 
     await userEvent.click(screen.getByText("checkout timed out"));
+    await expandStream();
     await userEvent.click(
       screen.getByRole("button", { name: "Copy value for service_name" }),
     );
@@ -344,10 +379,23 @@ describe("LogList semantic labels", () => {
     version: "1.43.0",
     source: "bundled",
   };
+  // A second Kubernetes key alongside k8s.pod.uid: a titled group left with
+  // only one row folds into "Other" (see foldSingletonGroups) rather than
+  // keeping its own heading, so these tests need two resolved rows in the
+  // group to exercise the heading.
+  const podName = {
+    ...podUid,
+    key: "k8s.pod.name",
+    brief: "The name of the Pod.",
+  };
   const semRow = row({
     line: "pod started",
     labels: { service_name: "api" },
-    metadata: { "k8s.pod.uid": "275ecb36", "app.order.id": "o-1" },
+    metadata: {
+      "k8s.pod.uid": "275ecb36",
+      "k8s.pod.name": "web-1",
+      "app.order.id": "o-1",
+    },
   });
 
   it("enriches known per-line keys and leaves unknown ones bare", async () => {
@@ -358,6 +406,7 @@ describe("LogList semantic labels", () => {
           hits: [],
           resolutions: [
             { key: "k8s.pod.uid", hits: [podUid], primary: podUid },
+            { key: "k8s.pod.name", hits: [podName], primary: podName },
             { key: "app.order.id", hits: [] },
             { key: "service_name", hits: [] },
           ],
@@ -368,19 +417,51 @@ describe("LogList semantic labels", () => {
       <LogList rows={[semRow]} onAddFilter={() => {}} onOpenTrace={() => {}} />,
     );
     await userEvent.click(screen.getByText("pod started"));
-    expect(await screen.findByText("The UID of the Pod.")).toBeInTheDocument();
-    expect(screen.getByText("Kubernetes Attributes")).toBeInTheDocument();
+    // Enrichment shows on the group heading (title + namespace, once) and a
+    // dotted-underline key — no inline brief without the descriptions
+    // toggle, see "adds the description line only with the toggle on".
+    expect(
+      await screen.findByText("Kubernetes Attributes"),
+    ).toBeInTheDocument();
     expect(screen.getByText("otel")).toBeInTheDocument();
     expect(screen.getByText("Other")).toBeInTheDocument();
+    expect(screen.queryByText("The UID of the Pod.")).not.toBeInTheDocument();
+    const podKey = screen.getByText("k8s.pod.uid", { selector: ".semkey-name" });
+    expect(podKey).toHaveAttribute("data-known", "");
     // Unknown key: bare text, as before.
     const orderDt = [
-      ...container.querySelectorAll(".attr-row[data-scope='metadata'] dt"),
+      ...container.querySelectorAll(".attrtable-row[data-scope='metadata'] dt"),
     ].find((el) => el.textContent === "app.order.id");
     expect(orderDt).toBeDefined();
     // The label scope had nothing resolvable: no title, bare key.
+    await expandStream();
     expect(
-      container.querySelector(".attr-row[data-scope='label'] dt")!.textContent,
+      container.querySelector(".attrtable-row[data-scope='label'] dt")!
+        .textContent,
     ).toBe("service_name");
+  });
+
+  it("adds the description line only with the descriptions toggle on", async () => {
+    stubFetchRoutes([
+      {
+        match: "/api/v1/schema/attributes",
+        body: {
+          hits: [],
+          resolutions: [
+            { key: "k8s.pod.uid", hits: [podUid], primary: podUid },
+            { key: "k8s.pod.name", hits: [podName], primary: podName },
+          ],
+        },
+      },
+    ]);
+    render(
+      <LogList rows={[semRow]} onAddFilter={() => {}} onOpenTrace={() => {}} />,
+    );
+    await userEvent.click(screen.getByText("pod started"));
+    await screen.findByText("Kubernetes Attributes");
+    expect(screen.queryByText(/The UID of the Pod\./)).not.toBeInTheDocument();
+    await userEvent.click(screen.getByLabelText("Show descriptions"));
+    expect(screen.getByText(/The UID of the Pod\./)).toBeInTheDocument();
   });
 
   it("shows raw keys and no error when the registry fails", async () => {
@@ -395,11 +476,115 @@ describe("LogList semantic labels", () => {
       <LogList rows={[semRow]} onAddFilter={() => {}} onOpenTrace={() => {}} />,
     );
     await userEvent.click(screen.getByText("pod started"));
+    await expandStream();
     await new Promise((r) => setTimeout(r, 60));
     expect(screen.queryByText(/boom/)).not.toBeInTheDocument();
+    // "This line" (metadata) renders before the stream section, so the
+    // metadata keys come first in document order.
     expect(
-      [...container.querySelectorAll(".attr-row dt")].map((el) => el.textContent),
-    ).toEqual(["service_name", "app.order.id", "k8s.pod.uid"]);
+      [...container.querySelectorAll(".attrtable-row dt")].map(
+        (el) => el.textContent,
+      ),
+    ).toEqual(["app.order.id", "k8s.pod.name", "k8s.pod.uid", "service_name"]);
+  });
+});
+
+describe("LogList stream/resource section", () => {
+  const bigRow = row({
+    line: "many labels",
+    labels: {
+      service_name: "checkout",
+      level: "info",
+      "cloud.region": "us-east-1",
+      zone: "a",
+      pod: "checkout-7",
+    },
+    metadata: { trace_id: "abc123" },
+  });
+
+  it("is collapsed behind a one-line summary by default and expands on click", async () => {
+    render(
+      <LogList rows={[bigRow]} onAddFilter={() => {}} onOpenTrace={() => {}} />,
+    );
+    await userEvent.click(screen.getByText("many labels"));
+
+    const toggle = screen.getByRole("button", { name: /Stream · resource/ });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(
+      screen.getByText("service_name", { selector: ".attrtable-summary-k" }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("checkout", { selector: ".attrtable-summary-v" }),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("checkout-7")).not.toBeInTheDocument();
+
+    await userEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByText("checkout-7")).toBeInTheDocument();
+  });
+
+  it("renders per-line fields above the stream section", async () => {
+    render(
+      <LogList rows={[bigRow]} onAddFilter={() => {}} onOpenTrace={() => {}} />,
+    );
+    await userEvent.click(screen.getByText("many labels"));
+    const thisLine = screen.getByText("This line");
+    const stream = screen.getByRole("button", { name: /Stream · resource/ });
+    expect(
+      thisLine.compareDocumentPosition(stream) &
+        Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+  });
+
+  it("persists the descriptions toggle across an unmount/remount", async () => {
+    stubFetchRoutes([
+      {
+        match: "/api/v1/schema/attributes",
+        body: {
+          hits: [],
+          resolutions: [
+            {
+              key: "cloud.region",
+              hits: [
+                {
+                  key: "cloud.region",
+                  brief: "The geographic region.",
+                  type: "string",
+                  group_id: "registry.cloud",
+                  group_display_name: "Cloud",
+                  namespace: "otel",
+                  version: "1.43.0",
+                  source: "bundled",
+                },
+              ],
+              primary: {
+                key: "cloud.region",
+                brief: "The geographic region.",
+                type: "string",
+                group_id: "registry.cloud",
+                group_display_name: "Cloud",
+                namespace: "otel",
+                version: "1.43.0",
+                source: "bundled",
+              },
+            },
+          ],
+        },
+      },
+    ]);
+    const { unmount } = render(
+      <LogList rows={[bigRow]} onAddFilter={() => {}} onOpenTrace={() => {}} />,
+    );
+    await userEvent.click(screen.getByText("many labels"));
+    await userEvent.click(screen.getByLabelText("Show descriptions"));
+    expect(localStorage.getItem("signaldb.ui.attrDescriptions")).toBe("1");
+    unmount();
+
+    render(
+      <LogList rows={[bigRow]} onAddFilter={() => {}} onOpenTrace={() => {}} />,
+    );
+    await userEvent.click(screen.getByText("many labels"));
+    expect(screen.getByLabelText("Show descriptions")).toBeChecked();
   });
 });
 
