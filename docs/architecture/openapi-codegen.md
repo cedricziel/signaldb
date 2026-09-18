@@ -70,8 +70,9 @@ flowchart LR
   unauthenticated `GET /ui/github/callback` install redirect declared with an
   empty security requirement — change: github-app-source-context),
   `endpoints/source_context.rs` (the stack-frame source lookup —
-  `source_context` on `POST /api/v1/tenants/{id}/source-context`, always
-  `200` with an available/unavailable status, and its `GET` sibling
+  `source_context` on `POST /api/v1/tenants/{id}/source-context`, `200`
+  with an available/unavailable status for any well-formed authorized
+  request, and its `GET` sibling
   `source_context_availability`; the tenant self-service prefix, not the
   management one, since any signal reader may call it), and
   `endpoints/schema.rs` (the schema registry: `/api/v1/schema/registries`
