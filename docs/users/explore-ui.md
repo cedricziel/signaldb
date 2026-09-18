@@ -63,13 +63,19 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   status, without changing the selection. The span
   panel lists that span's events, giving exceptions an error treatment that
   surfaces the message, type, and stacktrace, followed by its attributes —
-  split into **Span**, **Scope**, and **Resource** sections (a section with
-  nothing in it is omitted) and sorted alphabetically,
-  with the sub-header compiling service name, namespace, deployment
-  environment, and version from the resource attributes that carry them. A
-  value over ~200 characters (a Rust `Debug` dump, a stack trace) collapses
-  behind a "More" toggle rather than flooding the panel; the copy button
-  always copies the untruncated value. Open-by-ID works from any level.
+  the **Span** section open, then **Scope** and **Resource** collapsed
+  behind a one-line summary (service, namespace, environment, version, pod,
+  node, host, region, SDK, plus `+N more`) since a span's resource
+  attributes repeat on every span of that service; a section with nothing
+  in it is omitted and rows sort alphabetically. The sub-header compiles
+  service name, namespace, deployment environment, and version from the
+  resource attributes that carry them. Hovering a row offers **group by**
+  (the group table regroups by that attribute) and, for attributes the
+  facet sidebar knows, **+ filter**, which returns to the list narrowed to
+  that value. A value over ~200 characters (a Rust `Debug` dump, a stack
+  trace) collapses behind a "More" toggle rather than flooding the panel;
+  the copy button always copies the untruncated value. Open-by-ID works
+  from any level.
 - **Metrics** — a visual query builder (metric picker, tag filters,
   aggregation, and range functions, all populated from label metadata) with
   multi-query formulas for ratios, plus a "PromQL" tab as the raw escape
@@ -120,7 +126,15 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
 - **Correlation** — log rows with a `trace_id` open the trace waterfall;
   the span panel links back to logs filtered by that trace, and, for a span
   with a linked profile, offers a "Profile: `<sample type>` →" button that
-  opens that exact profile's flame graph. Each of these pivots is a history
+  opens that exact profile's flame graph. Beyond those, any attribute the
+  [schema registry](schema-registry.md) marks as _identifying_ an entity
+  (`service.name`, `k8s.pod.name`, `host.name`, …) is itself a pivot: its
+  row in the span panel offers **logs ↗** (the log list filtered to that
+  value), its row in an expanded log line offers **traces ↗** (the trace
+  list narrowed by the matching facet), and both offer **catalog ↗** when
+  the row carries every attribute that identifies the entity, opening that
+  entity's page. See [What an attribute key means](#what-an-attribute-key-means).
+  Each of these pivots is a history
   entry: browser Back returns to the list you came from with its filters
   intact, and the waterfall's "← traces" control steps back the same way
   (to the log list when the trace was opened from a log row).
@@ -360,14 +374,26 @@ detail line and highlight search still operate on the real name.
 
 ### Reading a log line
 
-Selecting a log line expands it. Alongside the stream labels it lists the
-line's **per-line fields**: the trace context (`trace_id`, `span_id`, with a
-link through to the trace) and the log and resource attributes the record
-actually carried. Attributes appear per line, so two lines in the same stream
-show their own values rather than a shared set.
+Selecting a log line expands it. **This line** comes first: the trace
+context (`trace_id`, `span_id`; the `trace_id` row and the "View trace"
+button both open the trace) and the attributes that describe the record
+itself (`code.*`, `http.*`, `event.name`, an application's own keys).
+Attributes appear per line, so two lines in the same stream show their own
+values rather than a shared set. Below it, **Resource · stream** holds what
+describes the emitter rather than the line — the stream labels
+(`service_name`, `level`) and every attribute the
+[schema registry](schema-registry.md) ties to an entity (`service.*`,
+`host.*`, `k8s.*`, `cloud.*`, `container.*`, `telemetry.sdk.*`, …), the
+same thirty-odd values on every line of the stream — collapsed behind a
+one-line summary (service, namespace, environment, level, pod, host,
+region, image, then `+N more`); expand it for the full table. The split is
+the registry's, not the wire format's: until the registry answers, every
+attribute sits under **This line**, and a key no registry knows stays
+there.
 
-These have no filter/exclude actions yet. The filter chips compile to a LogQL
-stream selector, which is the wrong shape for a field that varies line to line;
+Only the stream-label rows offer **+ filter** and **− exclude**. The other
+rows have no filter actions yet: the filter chips compile to a LogQL stream
+selector, which is the wrong shape for a field that varies line to line;
 filtering on them arrives with the Query IR migration, which builds the
 predicate server-side.
 
@@ -382,24 +408,43 @@ are not shown at all. Storage keeps all three separate; see the
 Wherever the UI shows an attribute key as a label — the expanded log line, the
 span-detail attribute table, the logs field sidebar, the trace facet headers,
 and the filter chip's key suggestions — it resolves the key through the
-[schema registry](schema-registry.md) for the active tenant and shows what the
-key means next to it. A known key keeps its raw spelling (still copyable) and
-gains its description, the defining namespace (`otel`, or a custom registry's
-name), the entity it identifies or describes, and a `deprecated → <new key>`
-marker when the convention renamed it; rows in the detail panels are grouped
-under the owning group's title (for example "Kubernetes Attributes"), with keys
-no registry knows listed under "Other" exactly as before. Hovering a key, or
-the info glyph beside a sidebar entry or facet header, opens the full
-definition — type, stability, examples, and every other registry that also
-defines the key, so a tenant's own definition never hides the upstream one.
+[schema registry](schema-registry.md) for the active tenant. A known key
+keeps its raw spelling (still copyable) and gains a dotted underline; the row
+itself shows only the key and its value. Hovering or focusing the key, or the
+info glyph that appears beside a sidebar entry or facet header, opens the
+full definition — description, type, stability, examples, the defining
+registry, the entity the key identifies or describes, and every other
+registry that also defines the key, so a tenant's own definition never hides
+the upstream one. A **descriptions** checkbox on the detail panels (remembered
+in the browser) switches to a reading mode that adds each known key's
+one-line description under its row.
+
+Rows in the detail panels are grouped under the owning registry group's title
+(for example "Kubernetes", from the registry group "Kubernetes Attributes"); the heading states once what every row
+in the group shares — the defining namespace (`otel`, or a custom registry's
+name, highlighted) and the entity the group describes (◆ when it identifies
+it, ○ when it merely describes it). A group with a single row is folded into
+the trailing "Other" group alongside keys no registry knows, so a short list
+does not become a stack of one-row headings, and a list where nothing forms a
+group renders flat. A key the convention deprecated is struck through with its
+replacement inline (`http.method → http.request.method`).
+
+The logs field sidebar uses the same titles: a pinned **Line** group (level,
+service, event name) first, then one collapsible group per registry family
+(Kubernetes, Cloud, Host, …) with its count, then **Deprecated** keys with
+their replacements, then **Other**; the filter box matches group titles as
+well as keys and shows every match expanded.
 
 Resolution runs in the background and is cached for the session: rows render
 at once with the raw key and pick up the semantics when they arrive, and an
 unavailable registry endpoint just leaves the keys bare, with no error in the
 panel. Typing in the filter chip's key input merges the registry's prefix
-search (each suggestion with its description) with the labels observed in the
-current data, so an observed key the registry does not know remains
-suggestible — marked "seen", without a description.
+search (each suggestion with its one-line description, and a namespace tag
+only for a custom registry's key) with the labels observed in the current
+data, so an observed key the registry does not know remains suggestible —
+marked "seen", without a description. Deprecated keys sort after current
+ones and show their replacement, though picking one still filters on the
+deprecated spelling.
 
 ### Narrowing traces
 
