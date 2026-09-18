@@ -64,8 +64,15 @@ export function summarizeAttributes(
       if (value !== undefined) found.set(key, value);
     }
     if (found.size === 0) continue;
-    for (const key of found.keys()) used.add(key);
-    parts.push((field.render ?? defaultRender)(found));
+    if (field.render) {
+      for (const key of found.keys()) used.add(key);
+      parts.push(field.render(found));
+    } else {
+      // Only the first present spelling is shown, so an alternate spelling
+      // that is also present still counts toward `more`.
+      used.add(found.keys().next().value!);
+      parts.push(defaultRender(found));
+    }
   }
   return { parts, more: entries.length - used.size };
 }

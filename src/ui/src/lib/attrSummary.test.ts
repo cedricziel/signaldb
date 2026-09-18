@@ -41,6 +41,17 @@ describe("summarizeAttributes", () => {
     });
   });
 
+  it("counts an alternate spelling the default render hides toward more", () => {
+    const entries: [string, string][] = [
+      ["service_name", "checkout"],
+      ["service.name", "checkout"],
+    ];
+    expect(summarizeAttributes(entries, FIELDS)).toEqual({
+      parts: [{ key: "service_name", value: "checkout" }],
+      more: 1,
+    });
+  });
+
   it("combines a multi-key field into one part via its render function", () => {
     const entries: [string, string][] = [
       ["telemetry.sdk.language", "go"],
