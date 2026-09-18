@@ -3,6 +3,7 @@ pub mod completions;
 pub mod dataset;
 pub mod discover;
 pub mod ops;
+pub mod processors;
 pub mod profiles;
 pub mod query;
 pub mod schema;
@@ -134,6 +135,11 @@ enum Commands {
         #[command(subcommand)]
         action: profiles::ProfilesAction,
     },
+    /// Tenant OTTL processors: list, get, validate, and dry-run test
+    Processors {
+        #[command(subcommand)]
+        action: processors::ProcessorsAction,
+    },
     /// Administrative operations (tenants, API keys, datasets, schema registries)
     Admin {
         #[command(subcommand)]
@@ -247,6 +253,11 @@ enum AdminAction {
         #[command(subcommand)]
         action: schema::AdminSchemaAction,
     },
+    /// Manage tenant OTTL processors (tenant API key with `processors:write`)
+    Processors {
+        #[command(subcommand)]
+        action: processors::AdminProcessorsAction,
+    },
 }
 
 impl Cli {
@@ -276,6 +287,10 @@ impl Cli {
             return action.run().await;
         }
 
+        if let Commands::Processors { action } = self.command {
+            return action.run().await;
+        }
+
         // The `tenant` group and `whoami` authenticate with a tenant API key
         // (management API / `/api/v1/whoami`), like `discover` and `schema`
         // above — never the instance admin key `admin` uses.
@@ -298,6 +313,15 @@ impl Cli {
         // instance admin key the other `admin` nouns use.
         if let Commands::Admin {
             action: AdminAction::Schema { action },
+        } = self.command
+        {
+            return action.run().await;
+        }
+
+        // Processor management authenticates with a tenant API key carrying
+        // `processors:write`, not the instance admin key.
+        if let Commands::Admin {
+            action: AdminAction::Processors { action },
         } = self.command
         {
             return action.run().await;
@@ -357,6 +381,7 @@ impl Cli {
                 AdminAction::ApiKey { action } => action.run(&client).await,
                 AdminAction::Dataset { action } => action.run(&client).await,
                 AdminAction::Schema { .. } => unreachable!(),
+                AdminAction::Processors { .. } => unreachable!(),
             },
             Commands::User { action } => action.run(&client).await,
             Commands::Ops { .. } => unreachable!(),
@@ -364,6 +389,7 @@ impl Cli {
             Commands::Discover { .. } => unreachable!(),
             Commands::Schema { .. } => unreachable!(),
             Commands::Profiles { .. } => unreachable!(),
+            Commands::Processors { .. } => unreachable!(),
             Commands::Completions { .. } => unreachable!(),
             Commands::Tui { .. } => unreachable!(),
             Commands::Tenant { .. } => unreachable!(),
