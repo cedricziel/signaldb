@@ -310,6 +310,7 @@ pub fn throttle_of(err: &(dyn std::error::Error + 'static)) -> Option<Throttled>
     probe!(
         (),
         crate::types::ApiError,
+        crate::types::ApiErrorBody,
         crate::types::ManageError,
         crate::types::SchemaError,
     );
@@ -319,7 +320,13 @@ pub fn throttle_of(err: &(dyn std::error::Error + 'static)) -> Option<Throttled>
 /// The generated error payload types [`throttle_of`] can see through. Kept
 /// next to the macro call above so the drift test can compare it with the
 /// generated file.
-pub const KNOWN_ERROR_TYPES: &[&str] = &["()", "ApiError", "ManageError", "SchemaError"];
+pub const KNOWN_ERROR_TYPES: &[&str] = &[
+    "()",
+    "ApiError",
+    "ApiErrorBody",
+    "ManageError",
+    "SchemaError",
+];
 
 fn failure_of(result: &reqwest::Result<reqwest::Response>) -> Option<Failure> {
     match result {
