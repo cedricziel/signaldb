@@ -120,13 +120,20 @@ export function AttributeKeyInput({
               onClick={() => pick(s.key)}
             >
               <span className="chip-suggest-head">
-                <span className="chip-suggest-key">{s.key}</span>
-                {s.namespace && (
+                <span className="chip-suggest-key">
+                  {s.deprecated ? <s>{s.key}</s> : s.key}
+                </span>
+                {s.source === "custom" && (
                   <span className="chip-suggest-ns chip">{s.namespace}</span>
+                )}
+                {s.deprecated && (
+                  <span className="chip-suggest-dep">
+                    {s.deprecatedTo ? `→ ${s.deprecatedTo}` : "deprecated"}
+                  </span>
                 )}
                 {s.seen && <span className="chip-suggest-seen">● seen</span>}
               </span>
-              {s.brief && (
+              {!s.deprecated && s.brief && (
                 <span className="chip-suggest-brief">
                   {plainBrief(s.brief)}
                 </span>

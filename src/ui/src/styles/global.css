@@ -882,6 +882,16 @@ th[aria-sort="descending"] .th-sort::after {
 .chip-suggest-brief {
   font-size: 11px;
   color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.chip-suggest-dep {
+  color: var(--warn-banner-text);
+  font-size: 10px;
+  font-family: var(--ui);
 }
 
 /* ---------- dialog (components/Dialog.tsx) ---------- */

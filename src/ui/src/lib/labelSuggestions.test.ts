@@ -2,7 +2,11 @@ import { describe, expect, it } from "vitest";
 import type { AttributeHit } from "../api/gen";
 import { mergeLabelSuggestions, toLokiLabel } from "./labelSuggestions";
 
-const hit = (key: string, brief: string): AttributeHit => ({
+const hit = (
+  key: string,
+  brief: string,
+  over: Partial<AttributeHit> = {},
+): AttributeHit => ({
   key,
   brief,
   type: "string",
@@ -10,6 +14,7 @@ const hit = (key: string, brief: string): AttributeHit => ({
   namespace: "otel",
   version: "1.43.0",
   source: "bundled",
+  ...over,
 });
 
 describe("mergeLabelSuggestions", () => {
@@ -27,16 +32,61 @@ describe("mergeLabelSuggestions", () => {
         key: "http.request.method",
         brief: "HTTP request method.",
         namespace: "otel",
+        source: "bundled",
+        deprecatedTo: null,
+        deprecated: false,
         seen: true,
       },
       {
         key: "http.response.status_code",
         brief: "HTTP response status code.",
         namespace: "otel",
+        source: "bundled",
+        deprecatedTo: null,
+        deprecated: false,
         seen: false,
       },
-      { key: "http.retries", brief: null, namespace: null, seen: true },
+      {
+        key: "http.retries",
+        brief: null,
+        namespace: null,
+        source: null,
+        deprecatedTo: null,
+        deprecated: false,
+        seen: true,
+      },
     ]);
+  });
+
+  it("orders non-deprecated registry hits before deprecated ones, each keeping the server's order", () => {
+    const out = mergeLabelSuggestions(
+      "http.",
+      [
+        hit("http.status_code", "Deprecated.", {
+          deprecated: { renamed_to: "http.response.status_code" },
+        }),
+        hit("http.request.method", "HTTP request method."),
+        hit("http.host", "Deprecated.", { deprecated: { reason: "old" } }),
+        hit("http.response.status_code", "HTTP response status code."),
+      ],
+      [],
+    );
+    expect(out.map((s) => s.key)).toEqual([
+      "http.request.method",
+      "http.response.status_code",
+      "http.status_code",
+      "http.host",
+    ]);
+    expect(out.map((s) => s.deprecated)).toEqual([
+      false,
+      false,
+      true,
+      true,
+    ]);
+    expect(
+      out.find((s) => s.key === "http.status_code")?.deprecatedTo,
+    ).toBe("http.response.status_code");
+    expect(out.find((s) => s.key === "http.host")?.deprecatedTo).toBeNull();
   });
 
   it("matches observed underscore-flattened labels against a dotted prefix", () => {

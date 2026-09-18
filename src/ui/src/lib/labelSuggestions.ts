@@ -11,6 +11,14 @@ export interface LabelSuggestion {
   brief: string | null;
   /** Defining namespace; `null` for an observed-only key. */
   namespace: string | null;
+  /** Registry source (`"bundled"`, `"custom"`, ...); `null` for an
+   * observed-only key. */
+  source: string | null;
+  /** Replacement key when the registry deprecates this one in favor of
+   * another; `null` when there is none (or the key isn't deprecated). */
+  deprecatedTo: string | null;
+  /** True when the registry marks this key deprecated. */
+  deprecated: boolean;
   /** True when the key was observed in the current data. */
   seen: boolean;
 }
@@ -41,22 +49,38 @@ export function mergeLabelSuggestions(
   if (!p) return [];
   const fp = flat(p);
   const observedSet = new Set(observed);
-  const out: LabelSuggestion[] = [];
   const taken = new Set<string>();
+  // Non-deprecated hits sort before deprecated ones; each block otherwise
+  // keeps the server's precedence order.
+  const current: LabelSuggestion[] = [];
+  const deprecated: LabelSuggestion[] = [];
   for (const hit of hits) {
     if (taken.has(hit.key)) continue;
     taken.add(hit.key);
-    out.push({
+    const suggestion: LabelSuggestion = {
       key: hit.key,
       brief: hit.brief,
       namespace: hit.namespace,
+      source: hit.source,
+      deprecatedTo: hit.deprecated?.renamed_to ?? null,
+      deprecated: hit.deprecated != null,
       seen: observedSet.has(hit.key),
-    });
+    };
+    (suggestion.deprecated ? deprecated : current).push(suggestion);
   }
+  const out = [...current, ...deprecated];
   for (const label of observed) {
     if (taken.has(label) || !flat(label).startsWith(fp)) continue;
     taken.add(label);
-    out.push({ key: label, brief: null, namespace: null, seen: true });
+    out.push({
+      key: label,
+      brief: null,
+      namespace: null,
+      source: null,
+      deprecatedTo: null,
+      deprecated: false,
+      seen: true,
+    });
   }
   return out.slice(0, LABEL_SUGGESTION_LIMIT);
 }
