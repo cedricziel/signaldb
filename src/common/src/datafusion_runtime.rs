@@ -63,6 +63,67 @@ pub fn bounded_memory_pool(limit_bytes: usize, fraction: f64) -> Arc<dyn MemoryP
     ))
 }
 
+/// The scan/sort shape a DataFusion session runs under: bounded so an
+/// `ExternalSorter`'s unspillable per-batch reservation fits the memory pool
+/// it runs against, whether that pool belongs to the compactor or the
+/// querier (issues #1064, #1359).
+///
+/// `ExternalSorter` reserves roughly twice an incoming batch's bytes the
+/// moment the batch arrives, and that reservation cannot spill — with
+/// nothing accumulated yet there is nothing to write out. DataFusion's batch
+/// size is counted in *rows*, so its own default of 8192 is only safe for
+/// narrow rows: wide rows (profile payloads, JSON attribute blobs) turn a
+/// single batch into a reservation several times the pool.
+#[derive(Clone, Copy, Debug)]
+pub struct ScanShape {
+    /// Row count of the batches a scan feeds downstream. `0` leaves
+    /// DataFusion's own default (8192 rows) in place.
+    pub batch_size: usize,
+    /// DataFusion partition fan-out. `0` leaves DataFusion's own default
+    /// (available parallelism) in place.
+    pub target_partitions: usize,
+    /// Memory a spilling sort holds back so its spill merge can run
+    /// (`datafusion.execution.sort_spill_reservation_bytes`). Headroom taken
+    /// out of the pool, not added to it; `0` means none, which DataFusion
+    /// permits.
+    pub sort_spill_reservation_bytes: usize,
+}
+
+impl ScanShape {
+    /// Build a `ScanShape` from config values expressed in MiB, owning the
+    /// MiB-to-bytes conversion so callers don't repeat it.
+    pub fn from_mb(
+        batch_size: usize,
+        target_partitions: usize,
+        sort_spill_reservation_mb: u64,
+    ) -> Self {
+        Self {
+            batch_size,
+            target_partitions,
+            sort_spill_reservation_bytes: sort_spill_reservation_mb as usize * 1024 * 1024,
+        }
+    }
+
+    /// Apply this shape to a `SessionConfig`. `batch_size` and
+    /// `target_partitions` of `0` are left at DataFusion's own default —
+    /// `with_target_partitions` panics on zero, and a zero batch size would
+    /// stall the scan — while the sort-spill reservation is always applied
+    /// (`0` is a valid, if inadvisable, DataFusion setting).
+    pub fn apply(
+        &self,
+        mut config: datafusion::prelude::SessionConfig,
+    ) -> datafusion::prelude::SessionConfig {
+        config = config.with_sort_spill_reservation_bytes(self.sort_spill_reservation_bytes);
+        if self.target_partitions > 0 {
+            config = config.with_target_partitions(self.target_partitions);
+        }
+        if self.batch_size > 0 {
+            config = config.with_batch_size(self.batch_size);
+        }
+        config
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -172,6 +233,73 @@ mod tests {
         assert!(
             consumer.try_grow(MB).is_err(),
             "the fraction must bound the pool, not just annotate it"
+        );
+    }
+
+    /// `0` for `batch_size`/`target_partitions` must land on DataFusion's own
+    /// defaults, not merely some other positive value —
+    /// `with_target_partitions` panics on zero, so `apply` must not forward
+    /// it blindly.
+    #[test]
+    fn scan_shape_zero_batch_size_and_target_partitions_is_auto() {
+        let default_config = datafusion::prelude::SessionConfig::new();
+        let shape = ScanShape {
+            batch_size: 0,
+            target_partitions: 0,
+            sort_spill_reservation_bytes: 0,
+        };
+
+        let config = shape.apply(datafusion::prelude::SessionConfig::new());
+
+        assert_eq!(config.batch_size(), default_config.batch_size());
+        assert_eq!(
+            config.target_partitions(),
+            default_config.target_partitions()
+        );
+    }
+
+    /// Positive `batch_size`/`target_partitions` must be honored exactly.
+    #[test]
+    fn scan_shape_honors_configured_batch_size_and_target_partitions() {
+        let shape = ScanShape {
+            batch_size: 256,
+            target_partitions: 3,
+            sort_spill_reservation_bytes: 0,
+        };
+
+        let config = shape.apply(datafusion::prelude::SessionConfig::new());
+
+        assert_eq!(config.batch_size(), 256);
+        assert_eq!(config.target_partitions(), 3);
+    }
+
+    /// `from_mb` must own the MiB-to-bytes conversion for
+    /// `sort_spill_reservation_bytes` while passing `batch_size`/
+    /// `target_partitions` through unchanged.
+    #[test]
+    fn scan_shape_from_mb_converts_reservation_to_bytes() {
+        let shape = ScanShape::from_mb(256, 3, 32);
+
+        assert_eq!(shape.batch_size, 256);
+        assert_eq!(shape.target_partitions, 3);
+        assert_eq!(shape.sort_spill_reservation_bytes, 32 * MB);
+    }
+
+    /// The sort-spill reservation is always applied, including `0` — the
+    /// escape hatch is only for `batch_size`/`target_partitions`.
+    #[test]
+    fn scan_shape_always_applies_the_sort_spill_reservation() {
+        let shape = ScanShape {
+            batch_size: 0,
+            target_partitions: 0,
+            sort_spill_reservation_bytes: 32 * MB,
+        };
+
+        let config = shape.apply(datafusion::prelude::SessionConfig::new());
+
+        assert_eq!(
+            config.options().execution.sort_spill_reservation_bytes,
+            32 * MB
         );
     }
 }
