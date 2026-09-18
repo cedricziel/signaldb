@@ -9,11 +9,12 @@
 //!   tenant)
 //! - `signaldb-cli tenant dataset list|create|delete`,
 //!   `tenant api-key list|create|update|revoke`,
-//!   `tenant membership list|set|remove`, `tenant schema get` — the tenant
-//!   management API (`/api/v1/manage/...`), which requires the key to carry
-//!   the explicit `tenant:manage` scope. Ingest-only keys and legacy unscoped
-//!   keys are refused by the router with `403`; the CLI surfaces that error
-//!   and exits non-zero (see `router::endpoints::management::authorize_tenant`).
+//!   `tenant membership list|set|remove`, `tenant schema get`,
+//!   `tenant github link|list|remove` — the tenant management API
+//!   (`/api/v1/manage/...`), which requires the key to carry the explicit
+//!   `tenant:manage` scope. Ingest-only keys and legacy unscoped keys are
+//!   refused by the router with `403`; the CLI surfaces that error and exits
+//!   non-zero (see `router::endpoints::management::authorize_tenant`).
 //!
 //! These mirror the MCP server's `tenant_*` tools. Destructive verbs
 //! (`dataset delete`, `api-key revoke`, `membership remove`) ask for
@@ -27,8 +28,8 @@ use std::io::{IsTerminal, Write as _};
 
 use clap::{ArgAction, Args, Subcommand};
 use signaldb_sdk::types::{
-    ManageApiKeyResponse, ManageCreateApiKeyRequest, ManageCreateDatasetRequest,
-    ManageUpdateApiKeyRequest, MembershipRole, UpsertMembershipRequest,
+    GitHubInstallationResponse, ManageApiKeyResponse, ManageCreateApiKeyRequest,
+    ManageCreateDatasetRequest, ManageUpdateApiKeyRequest, MembershipRole, UpsertMembershipRequest,
 };
 
 use super::discover::ConnectArgs;
@@ -66,6 +67,11 @@ pub enum TenantSelfAction {
         #[command(subcommand)]
         action: TableAction,
     },
+    /// Link, list, or remove GitHub App installations (needs `tenant:manage`)
+    Github {
+        #[command(subcommand)]
+        action: GithubAction,
+    },
 }
 
 impl TenantSelfAction {
@@ -86,6 +92,7 @@ impl TenantSelfAction {
             TenantSelfAction::Membership { action } => action.run().await,
             TenantSelfAction::Schema { action } => action.run().await,
             TenantSelfAction::Table { action } => action.run().await,
+            TenantSelfAction::Github { action } => action.run().await,
         }
     }
 }
@@ -608,6 +615,159 @@ impl TableAction {
                     .send()
                     .await;
                 print_json_response(v.map(|r| r.into_inner()), "list_available_schemas")
+            }
+        }
+    }
+}
+
+/// `tenant github link|list` connection args plus the output-format toggle.
+#[derive(Args)]
+pub struct GithubOutputArgs {
+    #[command(flatten)]
+    connect: ConnectArgs,
+    /// Print raw JSON instead of the human-readable output
+    #[arg(long)]
+    json: bool,
+}
+
+/// `signaldb-cli tenant github <verb>` — the caller's own GitHub App
+/// installations through the management API (`tenant:manage`).
+#[derive(Subcommand)]
+pub enum GithubAction {
+    /// Start linking a GitHub App installation: prints the install URL to
+    /// open in a browser signed in to SignalDB as an admin of this tenant
+    Link(GithubOutputArgs),
+    /// List the linked installations and the repositories they cover
+    List(GithubOutputArgs),
+    /// Remove a linked installation (SignalDB stops minting tokens for it immediately)
+    Remove {
+        /// GitHub installation ID to remove
+        installation_id: i64,
+        #[command(flatten)]
+        confirm: ConfirmArgs,
+        #[command(flatten)]
+        connect: ConnectArgs,
+    },
+}
+
+/// Render `INSTALLATION  ACCOUNT  REPOSITORIES  SYNCED  LINKED BY` rows,
+/// column-aligned.
+fn format_github_installation_table(installations: &[GitHubInstallationResponse]) -> String {
+    let rows: Vec<(String, String, String, String, String)> = installations
+        .iter()
+        .map(|i| {
+            let synced = if i.stale {
+                format!("{} (stale)", i.repositories_synced_at)
+            } else {
+                i.repositories_synced_at.clone()
+            };
+            let linked_by = i
+                .linked_by_github_login
+                .as_deref()
+                .map(|login| format!("@{login}"))
+                .unwrap_or_else(|| "-".to_string());
+            (
+                i.installation_id.to_string(),
+                format!("{} ({})", i.account_login, i.account_type),
+                format_repositories(&i.repositories),
+                synced,
+                linked_by,
+            )
+        })
+        .collect();
+    crate::commands::format_table(
+        [
+            "INSTALLATION",
+            "ACCOUNT",
+            "REPOSITORIES",
+            "SYNCED",
+            "LINKED BY",
+        ],
+        &rows,
+        "No GitHub installations linked.",
+    )
+}
+
+/// Render a repository list as `<count>: <first three>, …` (no ellipsis when
+/// there are three or fewer).
+fn format_repositories(repositories: &[String]) -> String {
+    let shown: Vec<&str> = repositories.iter().take(3).map(String::as_str).collect();
+    let mut out = format!("{}: {}", repositories.len(), shown.join(", "));
+    if repositories.len() > 3 {
+        out.push_str(", …");
+    }
+    out
+}
+
+impl GithubAction {
+    pub async fn run(self) -> anyhow::Result<()> {
+        match self {
+            GithubAction::Link(GithubOutputArgs { connect, json }) => {
+                let tenant_id = require_tenant_id(&connect)?;
+                let v = connect
+                    .build_client()?
+                    .manage_start_github_link()
+                    .tenant_id(tenant_id)
+                    .send()
+                    .await
+                    .map_err(|e| anyhow::Error::new(e).context("manage_start_github_link failed"))?
+                    .into_inner();
+                if json {
+                    crate::commands::print_json(&v)?;
+                } else {
+                    println!(
+                        "Open this URL in a browser where you are signed in to SignalDB as an admin of tenant {tenant_id}:\n\n  {}\n\nThe link expires at {}. After GitHub redirects back, run `signaldb-cli tenant github list` to see the installation.",
+                        v.install_url, v.expires_at
+                    );
+                }
+                Ok(())
+            }
+            GithubAction::List(GithubOutputArgs { connect, json }) => {
+                let tenant_id = require_tenant_id(&connect)?;
+                let v = connect
+                    .build_client()?
+                    .manage_list_github_installations()
+                    .tenant_id(tenant_id)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        anyhow::Error::new(e).context("manage_list_github_installations failed")
+                    })?
+                    .into_inner();
+                if json {
+                    crate::commands::print_json(&v)?;
+                } else if !v.configured {
+                    println!(
+                        "GitHub integration is not configured on this server ([github] section)."
+                    );
+                } else {
+                    println!("{}", format_github_installation_table(&v.installations));
+                }
+                Ok(())
+            }
+            GithubAction::Remove {
+                installation_id,
+                confirm,
+                connect,
+            } => {
+                let tenant_id = require_tenant_id(&connect)?;
+                confirm_destructive(
+                    &confirm,
+                    "remove GitHub installation",
+                    &installation_id.to_string(),
+                )?;
+                connect
+                    .build_client()?
+                    .manage_remove_github_installation()
+                    .tenant_id(tenant_id)
+                    .installation_id(installation_id)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        anyhow::Error::new(e).context("manage_remove_github_installation failed")
+                    })?;
+                println!("GitHub installation {installation_id} removed.");
+                Ok(())
             }
         }
     }
@@ -1460,5 +1620,177 @@ mod tests {
 
         assert!(rendered.contains("https://a.example, https://b.example"));
         assert!(rendered.contains("unrestricted"));
+    }
+
+    #[test]
+    fn github_subcommands_parse() {
+        assert!(TestCli::try_parse_from(["tenant", "github", "link"]).is_ok());
+        assert!(TestCli::try_parse_from(["tenant", "github", "list"]).is_ok());
+        assert!(TestCli::try_parse_from(["tenant", "github", "remove", "42", "--yes"]).is_ok());
+        // Removal needs an installation id.
+        assert!(TestCli::try_parse_from(["tenant", "github", "remove"]).is_err());
+    }
+
+    fn sample_installation(
+        overrides: impl FnOnce(&mut GitHubInstallationResponse),
+    ) -> GitHubInstallationResponse {
+        let mut installation: GitHubInstallationResponse = serde_json::from_str(
+            r#"{
+                "account_login": "octo",
+                "account_type": "Organization",
+                "created_at": "2026-01-01T00:00:00Z",
+                "installation_id": 1,
+                "manage_url": "https://github.com/organizations/octo/settings/installations/1",
+                "repositories": ["octo/api"],
+                "repositories_synced_at": "2026-01-01T00:00:00Z",
+                "stale": false,
+                "updated_at": "2026-01-01T00:00:00Z"
+            }"#,
+        )
+        .unwrap();
+        overrides(&mut installation);
+        installation
+    }
+
+    #[test]
+    fn format_github_installation_table_reports_empty_state() {
+        assert_eq!(
+            format_github_installation_table(&[]),
+            "No GitHub installations linked."
+        );
+    }
+
+    #[test]
+    fn format_github_installation_table_renders_one_org_row() {
+        let installation = sample_installation(|_| {});
+
+        let rendered = format_github_installation_table(&[installation]);
+
+        assert!(rendered.starts_with("INSTALLATION"));
+        assert!(rendered.contains("ACCOUNT"));
+        assert!(rendered.contains("REPOSITORIES"));
+        assert!(rendered.contains("SYNCED"));
+        assert!(rendered.contains("LINKED BY"));
+        assert!(rendered.contains('1'));
+        assert!(rendered.contains("octo (Organization)"));
+        assert!(rendered.contains("1: octo/api"));
+        assert!(rendered.contains("2026-01-01T00:00:00Z"));
+        assert!(!rendered.contains("stale"));
+        assert!(rendered.trim_end().ends_with('-'), "{rendered}");
+    }
+
+    #[test]
+    fn format_github_installation_table_marks_stale_rows() {
+        let installation = sample_installation(|installation| installation.stale = true);
+
+        let rendered = format_github_installation_table(&[installation]);
+
+        assert!(rendered.contains("(stale)"));
+    }
+
+    #[test]
+    fn format_github_installation_table_truncates_more_than_three_repositories() {
+        let installation = sample_installation(|installation| {
+            installation.repositories = vec![
+                "octo/api".to_string(),
+                "octo/web".to_string(),
+                "octo/worker".to_string(),
+                "octo/docs".to_string(),
+            ];
+            installation.linked_by_github_login = Some("alice".to_string());
+        });
+
+        let rendered = format_github_installation_table(&[installation]);
+
+        assert!(rendered.contains("4: octo/api, octo/web, octo/worker, …"));
+        assert!(!rendered.contains("octo/docs"));
+        assert!(rendered.contains("@alice"));
+    }
+
+    #[tokio::test]
+    async fn github_link_requires_tenant_id() {
+        let result = GithubAction::Link(GithubOutputArgs {
+            connect: ConnectArgs {
+                url: "http://127.0.0.1:1".to_string(),
+                api_key: Some("sk-test".to_string()),
+                tenant_id: None,
+                dataset_id: None,
+            },
+            json: false,
+        })
+        .run()
+        .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn github_link_prints_the_install_url() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock(
+                "POST",
+                "/api/v1/manage/tenants/acme/github-installations/link",
+            )
+            .match_header("authorization", "Bearer sk-test")
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"install_url":"https://github.com/apps/signaldb/installations/new?state=abc","expires_at":"2026-01-01T00:10:00Z"}"#,
+            )
+            .create_async()
+            .await;
+
+        GithubAction::Link(GithubOutputArgs {
+            connect: connect_acme(&server),
+            json: false,
+        })
+        .run()
+        .await
+        .expect("link succeeds");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn github_list_reports_unconfigured_server() {
+        let mut server = mockito::Server::new_async().await;
+        server
+            .mock("GET", "/api/v1/manage/tenants/acme/github-installations")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(r#"{"configured":false,"installations":[]}"#)
+            .create_async()
+            .await;
+
+        GithubAction::List(GithubOutputArgs {
+            connect: connect_acme(&server),
+            json: false,
+        })
+        .run()
+        .await
+        .expect("list succeeds");
+    }
+
+    #[tokio::test]
+    async fn github_remove_hits_the_delete_endpoint() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock(
+                "DELETE",
+                "/api/v1/manage/tenants/acme/github-installations/42",
+            )
+            .match_header("authorization", "Bearer sk-test")
+            .with_status(204)
+            .create_async()
+            .await;
+
+        GithubAction::Remove {
+            installation_id: 42,
+            confirm: ConfirmArgs { yes: true },
+            connect: connect_acme(&server),
+        }
+        .run()
+        .await
+        .expect("remove succeeds");
+        mock.assert_async().await;
     }
 }
