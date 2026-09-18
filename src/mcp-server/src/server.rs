@@ -1519,6 +1519,180 @@ struct ListSchemaRegistriesParams {
     tenant: String,
 }
 
+// ---- Tenant OTTL processor parameters (tenant credential) ----
+
+/// Parameters for `list_processors`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ListProcessorsParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+}
+
+/// Parameters for `get_processor`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct GetProcessorParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Processor name.
+    name: String,
+}
+
+/// Parameters for `validate_processor`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ValidateProcessorParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Signal the statements target: `traces`, `logs`, or `metrics`.
+    signal: String,
+    /// OTTL statements to compile (the supported subset: `set`/`keep_keys`/
+    /// `delete_key` editors over resource/scope/record attributes, guarded
+    /// by `where`; see the telemetry-processors spec for the exact
+    /// grammar). Nothing is stored.
+    statements: Vec<String>,
+}
+
+/// Parameters for `test_processor`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct TestProcessorParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Signal the payload contains: `traces`, `logs`, or `metrics`.
+    signal: String,
+    /// Dataset to test against, or omit for the tenant-wide processor set.
+    #[serde(default)]
+    dataset: Option<String>,
+    /// Processors to apply, in order. Omit to use the tenant's stored
+    /// processors for `signal`/`dataset` instead.
+    #[serde(default)]
+    processors: Option<Vec<ProcessorSpecParam>>,
+    /// The OTLP export request (OTLP/JSON) to run the processors against.
+    /// Never touches the WAL or catalog.
+    payload: serde_json::Value,
+}
+
+/// One processor definition inline in a `test_processor` call — mirrors the
+/// router's `ProcessorSpec` request body.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ProcessorSpecParam {
+    name: String,
+    #[serde(default)]
+    dataset: Option<String>,
+    signal: String,
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    priority: Option<i32>,
+    #[serde(default)]
+    error_mode: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+    statements: Vec<String>,
+}
+
+impl From<ProcessorSpecParam> for signaldb_sdk::types::ProcessorSpec {
+    fn from(p: ProcessorSpecParam) -> Self {
+        signaldb_sdk::types::ProcessorSpec {
+            name: p.name,
+            dataset: p.dataset,
+            signal: p.signal,
+            enabled: p.enabled,
+            priority: p.priority,
+            error_mode: p.error_mode,
+            description: p.description,
+            statements: p.statements,
+        }
+    }
+}
+
+/// Parameters for `create_processor` and `replace_processor`, which share
+/// the same fields (a replace additionally scopes by the existing `name`
+/// in the path, taken from this same `name` field).
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct WriteProcessorParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Processor name.
+    name: String,
+    /// Signal the processor applies to: `traces`, `logs`, or `metrics`.
+    signal: String,
+    /// Dataset the processor applies to, or omit for a tenant-wide rule.
+    #[serde(default)]
+    dataset: Option<String>,
+    /// OTTL statements to compile and store (the supported subset: `set`/
+    /// `keep_keys`/`delete_key` editors over resource/scope/record
+    /// attributes, guarded by `where`; see the telemetry-processors spec).
+    /// Rejected up front if any statement fails to compile.
+    statements: Vec<String>,
+    /// Evaluation priority (lower runs first). Defaults to 100.
+    #[serde(default)]
+    priority: Option<i32>,
+    /// `"ignore"` (default) or `"propagate"`: how a per-record OTTL error
+    /// is handled at apply time.
+    #[serde(default)]
+    error_mode: Option<String>,
+    /// Whether the processor is active. Defaults to `true`.
+    #[serde(default)]
+    enabled: Option<bool>,
+    /// Human-readable description.
+    #[serde(default)]
+    description: Option<String>,
+}
+
+impl From<&WriteProcessorParams> for signaldb_sdk::types::ProcessorSpec {
+    fn from(p: &WriteProcessorParams) -> Self {
+        signaldb_sdk::types::ProcessorSpec {
+            name: p.name.clone(),
+            dataset: p.dataset.clone(),
+            signal: p.signal.clone(),
+            enabled: p.enabled,
+            priority: p.priority,
+            error_mode: p.error_mode.clone(),
+            description: p.description.clone(),
+            statements: p.statements.clone(),
+        }
+    }
+}
+
+/// Parameters for `delete_processor`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct DeleteProcessorParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Processor name to delete.
+    name: String,
+}
+
 #[tool_router]
 impl McpServer {
     /// Construct a handler that forwards to `router_base_url`, bounding each
@@ -3458,6 +3632,161 @@ impl McpServer {
             .map_err(|e| map_schema_err(e, "validate_schema_registry"))?;
         json_result(&resp.into_inner())
     }
+
+    #[tool(
+        description = "List your tenant's OTTL processors (tenant-wide and per-dataset editors that rewrite resource/scope/record attributes on traces/logs/metrics at ingest). Each row carries a compiled `status`. Requires the `processors:read` scope.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_processors(
+        &self,
+        Parameters(p): Parameters<ListProcessorsParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, None)?;
+        let resp = client
+            .processors_list()
+            .send()
+            .await
+            .map_err(|e| map_processor_err(e, "list_processors"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Fetch one of your tenant's OTTL processors by name, including its compiled `status`. Requires the `processors:read` scope.",
+        annotations(read_only_hint = true)
+    )]
+    async fn get_processor(
+        &self,
+        Parameters(p): Parameters<GetProcessorParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, None)?;
+        let resp = client
+            .processors_get()
+            .name(&p.name)
+            .send()
+            .await
+            .map_err(|e| map_processor_err(e, "get_processor"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Compile a set of OTTL statements for `signal` without storing anything — the supported subset is `set`/`keep_keys`/`delete_key` editors over resource/scope/record attributes, guarded by `where` (see the telemetry-processors spec). Returns positional compile errors, if any. Requires the `processors:read` scope.",
+        annotations(read_only_hint = true)
+    )]
+    async fn validate_processor(
+        &self,
+        Parameters(p): Parameters<ValidateProcessorParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, None)?;
+        let resp = client
+            .processors_validate()
+            .body(signaldb_sdk::types::ValidateRequest {
+                signal: p.signal,
+                statements: p.statements,
+            })
+            .send()
+            .await
+            .map_err(|e| map_processor_err(e, "validate_processor"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Dry-run OTTL processors against an inline OTLP/JSON payload — never touches the WAL or catalog, and never stores anything. Pass `processors` to test specific definitions, or omit it to use your tenant's stored processors for `signal`/`dataset`. Requires the `processors:read` scope.",
+        annotations(read_only_hint = true)
+    )]
+    async fn test_processor(
+        &self,
+        Parameters(p): Parameters<TestProcessorParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, None)?;
+        let resp = client
+            .processors_test()
+            .body(signaldb_sdk::types::TestRequest {
+                signal: p.signal,
+                dataset: p.dataset,
+                processors: p
+                    .processors
+                    .map(|ps| ps.into_iter().map(Into::into).collect()),
+                payload: p.payload,
+            })
+            .send()
+            .await
+            .map_err(|e| map_processor_err(e, "test_processor"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Create an OTTL processor for your tenant — statements are compiled and rejected up front if invalid. Once created, it applies to new ingest within the processor cache's reload interval (`applies_within_seconds` in the response), never retroactively. Requires the `processors:write` scope.",
+        annotations(destructive_hint = false)
+    )]
+    async fn create_processor(
+        &self,
+        Parameters(p): Parameters<WriteProcessorParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, None)?;
+        let spec: signaldb_sdk::types::ProcessorSpec = (&p).into();
+        let resp = client
+            .processors_create()
+            .body(spec)
+            .send()
+            .await
+            .map_err(|e| map_processor_err(e, "create_processor"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Replace an existing OTTL processor (by `name`) with a new definition — statements are compiled and rejected up front if invalid. The replacement applies to new ingest within the processor cache's reload interval (`applies_within_seconds` in the response), never retroactively. Requires the `processors:write` scope.",
+        annotations(destructive_hint = false)
+    )]
+    async fn replace_processor(
+        &self,
+        Parameters(p): Parameters<WriteProcessorParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, None)?;
+        let spec: signaldb_sdk::types::ProcessorSpec = (&p).into();
+        let resp = client
+            .processors_replace()
+            .name(&p.name)
+            .body(spec)
+            .send()
+            .await
+            .map_err(|e| map_processor_err(e, "replace_processor"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Delete an OTTL processor from your tenant by name. The deletion takes effect for new ingest within the processor cache's reload interval, never retroactively. Requires the `processors:write` scope.",
+        annotations(destructive_hint = true, read_only_hint = false)
+    )]
+    async fn delete_processor(
+        &self,
+        Parameters(p): Parameters<DeleteProcessorParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, None)?;
+        client
+            .processors_delete()
+            .name(&p.name)
+            .send()
+            .await
+            .map_err(|e| map_processor_err(e, "delete_processor"))?;
+        json_result(&serde_json::json!({
+            "deleted": true,
+            "name": p.name,
+        }))
+    }
 }
 
 impl McpServer {
@@ -4114,6 +4443,43 @@ fn map_schema_err(
             .errors
             .iter()
             .map(|e| format!("{}: {}", e.path, e.message))
+            .collect();
+        message.push_str(" [");
+        message.push_str(&details.join("; "));
+        message.push(']');
+    }
+    let mapped = match status {
+        400 | 422 => ErrorData::invalid_params(message, None),
+        401 => ErrorData::invalid_request(
+            format!("{what}: credential expired or was revoked; re-authenticate the session"),
+            None,
+        ),
+        403 | 409 => ErrorData::invalid_request(message, None),
+        404 => ErrorData::resource_not_found(message, None),
+        _ => ErrorData::internal_error(message, None),
+    };
+    with_http_status(mapped, status)
+}
+
+/// Map a processors-API error to an MCP error, keeping the router's typed
+/// body (`error` plus positional compile `errors`) in the message so a model
+/// can fix an invalid OTTL statement; other failures fall back to
+/// [`map_sdk_err`].
+fn map_processor_err(
+    err: signaldb_sdk::Error<signaldb_sdk::types::ProcessorError>,
+    what: &str,
+) -> ErrorData {
+    let signaldb_sdk::Error::ErrorResponse(response) = err else {
+        return map_sdk_err(err.into_untyped(), what);
+    };
+    let status = response.status().as_u16();
+    let body = response.into_inner();
+    let mut message = format!("{what}: {}", body.error);
+    if !body.errors.is_empty() {
+        let details: Vec<String> = body
+            .errors
+            .iter()
+            .map(|e| format!("statement {}: {}", e.statement, e.message))
             .collect();
         message.push_str(" [");
         message.push_str(&details.join("; "));
