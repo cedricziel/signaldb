@@ -12,10 +12,10 @@ afterEach(() => {
   localStorage.clear();
 });
 
-/** The stream/resource section is collapsed behind a summary by default;
+/** The resource/stream section is collapsed behind a summary by default;
  * every test that reaches into it clicks the section head first. */
-const expandStream = () =>
-  userEvent.click(screen.getByRole("button", { name: /Stream · resource/ }));
+const expandResource = () =>
+  userEvent.click(screen.getByRole("button", { name: /Resource · stream/ }));
 
 const row = (over: Partial<LogRow>): LogRow => ({
   tsNs: "1000000000",
@@ -49,16 +49,16 @@ describe("traceIdOf", () => {
 });
 
 describe("LogList", () => {
+  // Only service_name/level as labels, trace_id as per-line metadata —
+  // mirrors what a real row actually carries (see router's
+  // `batches_to_streams`).
   const rows: LogRow[] = [
     row({
       tsNs: "3000000000",
       tsMs: 3000,
       line: "payment failed",
-      labels: {
-        level: "error",
-        service_name: "payments",
-        trace_id: "cafe1234beef",
-      },
+      labels: { level: "error", service_name: "payments" },
+      metadata: { trace_id: "cafe1234beef" },
     }),
     row({
       tsNs: "2000000000",
@@ -84,8 +84,10 @@ describe("LogList", () => {
       <LogList rows={rows} onAddFilter={onAddFilter} onOpenTrace={() => {}} update={vi.fn()} />,
     );
     await userEvent.click(screen.getByText("payment failed"));
-    await expandStream();
+    // trace_id is per-line metadata: visible under "This line" without
+    // expanding the resource section.
     expect(screen.getByText("trace_id")).toBeInTheDocument();
+    await expandResource();
     await userEvent.click(
       screen.getByRole("button", {
         name: "Filter for service_name = payments",
@@ -114,18 +116,18 @@ describe("LogList", () => {
     );
 
     await userEvent.click(screen.getByText("hello"));
-    await expandStream();
+    await expandResource();
 
+    // Labels (zebra, alpha) land in the resource scope; unresolved metadata
+    // (omega, beta) stays on the line.
     expect(
       [
-        ...container.querySelectorAll(".attrtable-row[data-scope='label'] dt"),
+        ...container.querySelectorAll(".attrtable-row[data-scope='resource'] dt"),
       ].map((element) => element.textContent),
     ).toEqual(["alpha", "zebra"]);
     expect(
       [
-        ...container.querySelectorAll(
-          ".attrtable-row[data-scope='metadata'] dt",
-        ),
+        ...container.querySelectorAll(".attrtable-row[data-scope='line'] dt"),
       ].map((element) => element.textContent),
     ).toEqual(["beta", "omega"]);
   });
@@ -136,7 +138,7 @@ describe("LogList", () => {
       <LogList rows={rows} onAddFilter={onAddFilter} onOpenTrace={() => {}} update={vi.fn()} />,
     );
     await userEvent.click(screen.getByText("payment failed"));
-    await expandStream();
+    await expandResource();
     await userEvent.click(
       screen.getByRole("button", { name: "Filter out level = error" }),
     );
@@ -170,7 +172,7 @@ describe("LogList", () => {
       <LogList rows={rows} onAddFilter={() => {}} onOpenTrace={() => {}} update={vi.fn()} />,
     );
     await userEvent.click(screen.getByText("request handled"));
-    await expandStream();
+    await expandResource();
     expect(screen.getByText("service_name")).toBeInTheDocument();
 
     const prepended: LogRow[] = [
@@ -263,7 +265,7 @@ describe("LogList structured metadata", () => {
     expect(screen.getByText("abc123")).toBeInTheDocument();
   });
 
-  it("renders metadata under This line and stream labels under Stream · resource, so metadata is not mistaken for a stream label", async () => {
+  it("renders metadata under This line and stream labels under Resource · stream, so metadata is not mistaken for a stream label", async () => {
     render(
       <LogList
         rows={[metaRow]}
@@ -274,29 +276,29 @@ describe("LogList structured metadata", () => {
     );
     await userEvent.click(screen.getByText("checkout timed out"));
     const thisLine = screen.getByText("This line");
-    const streamToggle = screen.getByRole("button", {
-      name: /Stream · resource/,
+    const resourceToggle = screen.getByRole("button", {
+      name: /Resource · stream/,
     });
     const spanRow = screen.getByText("span_id").closest(".attrtable-row")!;
-    // Metadata sits between the "This line" heading and the stream toggle,
-    // not after it — under "This line", not "Stream · resource".
+    // Metadata sits between the "This line" heading and the resource
+    // toggle, not after it — under "This line", not "Resource · stream".
     expect(
       thisLine.compareDocumentPosition(spanRow) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
     expect(
-      spanRow.compareDocumentPosition(streamToggle) &
+      spanRow.compareDocumentPosition(resourceToggle) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
 
-    await expandStream();
+    await expandResource();
     const serviceRow = screen
       .getByText("service_name")
       .closest(".attrtable-row")!;
     // The stream label renders after the toggle it expanded from, under
-    // "Stream · resource".
+    // "Resource · stream".
     expect(
-      streamToggle.compareDocumentPosition(serviceRow) &
+      resourceToggle.compareDocumentPosition(serviceRow) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
@@ -312,7 +314,7 @@ describe("LogList structured metadata", () => {
       />,
     );
     await userEvent.click(screen.getByText("checkout timed out"));
-    await expandStream();
+    await expandResource();
     expect(
       screen.queryByRole("button", { name: "Filter for span_id = def456" }),
     ).toBeNull();
@@ -336,7 +338,7 @@ describe("LogList structured metadata", () => {
     );
 
     await userEvent.click(screen.getByText("checkout timed out"));
-    await expandStream();
+    await expandResource();
     await userEvent.click(
       screen.getByRole("button", { name: "Copy value for service_name" }),
     );
@@ -389,7 +391,9 @@ describe("LogList semantic labels", () => {
   // A second Kubernetes key alongside k8s.pod.uid: a titled group left with
   // only one row folds into "Other" (see foldSingletonGroups) rather than
   // keeping its own heading, so these tests need two resolved rows in the
-  // group to exercise the heading.
+  // group to exercise the heading. Neither carries an entity role, so both
+  // stay in the "This line" scope regardless of resolution (see
+  // logScopes.ts) — no need to expand the resource section to see them.
   const podName = {
     ...podUid,
     key: "k8s.pod.name",
@@ -435,15 +439,16 @@ describe("LogList semantic labels", () => {
     expect(screen.queryByText("The UID of the Pod.")).not.toBeInTheDocument();
     const podKey = screen.getByText("k8s.pod.uid", { selector: ".semkey-name" });
     expect(podKey).toHaveAttribute("data-known", "");
-    // Unknown key: bare text, as before.
+    // Unknown key: bare text, as before — still under "This line", it has
+    // no entity role.
     const orderDt = [
-      ...container.querySelectorAll(".attrtable-row[data-scope='metadata'] dt"),
+      ...container.querySelectorAll(".attrtable-row[data-scope='line'] dt"),
     ].find((el) => el.textContent === "app.order.id");
     expect(orderDt).toBeDefined();
-    // The label scope had nothing resolvable: no title, bare key.
-    await expandStream();
+    // The resource scope had nothing resolvable: no title, bare key.
+    await expandResource();
     expect(
-      container.querySelector(".attrtable-row[data-scope='label'] dt")!
+      container.querySelector(".attrtable-row[data-scope='resource'] dt")!
         .textContent,
     ).toBe("service_name");
   });
@@ -483,10 +488,10 @@ describe("LogList semantic labels", () => {
       <LogList rows={[semRow]} onAddFilter={() => {}} onOpenTrace={() => {}} update={vi.fn()} />,
     );
     await userEvent.click(screen.getByText("pod started"));
-    await expandStream();
+    await expandResource();
     await new Promise((r) => setTimeout(r, 60));
     expect(screen.queryByText(/boom/)).not.toBeInTheDocument();
-    // "This line" (metadata) renders before the stream section, so the
+    // "This line" (metadata) renders before the resource section, so the
     // metadata keys come first in document order.
     expect(
       [...container.querySelectorAll(".attrtable-row dt")].map(
@@ -496,7 +501,7 @@ describe("LogList semantic labels", () => {
   });
 });
 
-describe("LogList stream/resource section", () => {
+describe("LogList resource/stream section", () => {
   const bigRow = row({
     line: "many labels",
     labels: {
@@ -515,7 +520,7 @@ describe("LogList stream/resource section", () => {
     );
     await userEvent.click(screen.getByText("many labels"));
 
-    const toggle = screen.getByRole("button", { name: /Stream · resource/ });
+    const toggle = screen.getByRole("button", { name: /Resource · stream/ });
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(
       screen.getByText("service_name", { selector: ".attrtable-summary-k" }),
@@ -530,15 +535,15 @@ describe("LogList stream/resource section", () => {
     expect(screen.getByText("checkout-7")).toBeInTheDocument();
   });
 
-  it("renders per-line fields above the stream section", async () => {
+  it("renders per-line fields above the resource section", async () => {
     render(
       <LogList rows={[bigRow]} onAddFilter={() => {}} onOpenTrace={() => {}} update={vi.fn()} />,
     );
     await userEvent.click(screen.getByText("many labels"));
     const thisLine = screen.getByText("This line");
-    const stream = screen.getByRole("button", { name: /Stream · resource/ });
+    const resource = screen.getByRole("button", { name: /Resource · stream/ });
     expect(
-      thisLine.compareDocumentPosition(stream) &
+      thisLine.compareDocumentPosition(resource) &
         Node.DOCUMENT_POSITION_FOLLOWING,
     ).toBeTruthy();
   });
@@ -642,6 +647,9 @@ describe("LogList entity pivots", () => {
       />,
     );
     await userEvent.click(screen.getByText("pod started"));
+    // k8s.pod.name carries an identifying entity role, so once the registry
+    // answers it moves into the (collapsed-by-default) resource section.
+    await expandResource();
 
     await userEvent.click(
       await screen.findByRole("button", {
@@ -654,6 +662,8 @@ describe("LogList entity pivots", () => {
         trace: "",
         search: "",
         group: "",
+        filters: [],
+        raw: "",
         traceFilters: [{ field: "k8s.pod.name", value: "web-1" }],
       },
       { push: true },
@@ -667,6 +677,10 @@ describe("LogList entity pivots", () => {
         signal: "catalog",
         trace: "",
         group: "",
+        search: "",
+        traceFilters: [],
+        filters: [],
+        raw: "",
         catalogEntity: "k8s_pod",
         catalogPrimary: "web-1prod",
         catalogSecondary: "",
@@ -674,6 +688,7 @@ describe("LogList entity pivots", () => {
       { push: true },
     );
 
+    // trace_id has no entity role of its own, so it stays under "This line".
     await userEvent.click(
       screen.getByRole("button", { name: "Open trace abc123" }),
     );

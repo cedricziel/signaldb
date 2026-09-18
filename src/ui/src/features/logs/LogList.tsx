@@ -19,6 +19,7 @@ import type { LabelFilter } from "../../lib/filters";
 import { formatTimestamp } from "../../lib/time";
 import type { UpdateFn } from "../../lib/urlState";
 import { normalizeLevel } from "./Histogram";
+import { splitLogScopes } from "./logScopes";
 
 interface Props {
   rows: LogRow[];
@@ -263,80 +264,96 @@ function LogAttributes({
     (): ReadonlyMap<string, string> => new Map([...labels, ...metadata]),
     [labels, metadata],
   );
-  const [streamExpanded, setStreamExpanded] = useState(false);
+  const labelKeys = useMemo(() => new Set(labels.map(([k]) => k)), [labels]);
+  // "This line" (per-line fields: trace_id/span_id, and metadata with no
+  // resolved OTel entity role) vs "Resource · stream" (stream labels, plus
+  // metadata the registry says identifies/describes an entity) — see
+  // logScopes.ts for why the split isn't simply labels-vs-metadata.
+  const scopes = useMemo(
+    () => splitLogScopes(labels, metadata, semantics),
+    [labels, metadata, semantics],
+  );
+  const [resourceExpanded, setResourceExpanded] = useState(false);
 
-  const metadataActions = (k: string, v: string): AttributeRowAction[] => {
-    const actions = pivotRowActions(k, v, semantics.get(k), bag, "logs", update);
+  const rowActions = (k: string, v: string): AttributeRowAction[] => {
+    // A stream label compiles to a LogQL stream selector; structured
+    // metadata varies per line, the wrong shape for that selector —
+    // filtering on it arrives with the Query IR migration, where the
+    // predicate is built server-side. So only an actual label gets
+    // +filter/-exclude, in either scope.
+    const filterActions: AttributeRowAction[] = labelKeys.has(k)
+      ? [
+          {
+            label: "+ filter",
+            ariaLabel: `Filter for ${k} = ${v}`,
+            onClick: () => onAddFilter({ label: k, op: "=", value: v }),
+          },
+          {
+            label: "− exclude",
+            ariaLabel: `Filter out ${k} = ${v}`,
+            onClick: () => onAddFilter({ label: k, op: "!=", value: v }),
+          },
+        ]
+      : [];
     // trace_id carries no identifying entity role of its own, but the trace
     // it names is always one click away — mirrors the `logdetail-actions`
     // "View trace" button for the row that has one, as a per-row action for
-    // this specific field once the metadata table is open.
-    return k === "trace_id"
-      ? [
-          {
-            label: "open trace ↗",
-            ariaLabel: `Open trace ${v}`,
-            onClick: () => onOpenTrace(v),
-          },
-          ...actions,
-        ]
-      : actions;
+    // this specific field.
+    const openTrace: AttributeRowAction[] =
+      k === "trace_id"
+        ? [
+            {
+              label: "open trace ↗",
+              ariaLabel: `Open trace ${v}`,
+              onClick: () => onOpenTrace(v),
+            },
+          ]
+        : [];
+    return [
+      ...filterActions,
+      ...openTrace,
+      ...pivotRowActions(k, v, semantics.get(k), bag, "logs", update),
+    ];
   };
 
   return (
     <>
-      {metadata.length > 0 && (
+      {scopes.line.length > 0 && (
         <>
           <div className="attrtable-section">This line</div>
-          {/* No filter/exclude actions — the label-filter model compiles to
-              a stream selector, which is the wrong shape for a field that
-              varies per line. Filtering on these arrives with the Query IR
-              migration, where the predicate is built server-side. */}
           <AttributeTable
-            entries={metadata}
+            entries={scopes.line}
             semantics={semantics}
             layout="grid"
             showDescriptions={showDescriptions}
-            scope="metadata"
-            actions={metadataActions}
+            scope="line"
+            actions={rowActions}
           />
         </>
       )}
-      {labels.length > 0 && (
+      {scopes.resource.length > 0 && (
         <>
           <button
             type="button"
             className="attrtable-section"
-            aria-expanded={streamExpanded}
-            onClick={() => setStreamExpanded((current) => !current)}
+            aria-expanded={resourceExpanded}
+            onClick={() => setResourceExpanded((current) => !current)}
           >
-            Stream · resource
-            <span className="attrtable-count">{labels.length} labels</span>
+            Resource · stream
+            <span className="attrtable-count">{scopes.resource.length} fields</span>
           </button>
-          {streamExpanded ? (
+          {resourceExpanded ? (
             <AttributeTable
-              entries={labels}
+              entries={scopes.resource}
               semantics={semantics}
               layout="grid"
               showDescriptions={showDescriptions}
-              scope="label"
-              actions={(k, v) => [
-                {
-                  label: "+ filter",
-                  ariaLabel: `Filter for ${k} = ${v}`,
-                  onClick: () => onAddFilter({ label: k, op: "=", value: v }),
-                },
-                {
-                  label: "− exclude",
-                  ariaLabel: `Filter out ${k} = ${v}`,
-                  onClick: () => onAddFilter({ label: k, op: "!=", value: v }),
-                },
-                ...pivotRowActions(k, v, semantics.get(k), bag, "logs", update),
-              ]}
+              scope="resource"
+              actions={rowActions}
             />
           ) : (
             <AttributeSummary
-              summary={summarizeAttributes(labels, STREAM_SUMMARY_FIELDS)}
+              summary={summarizeAttributes(scopes.resource, STREAM_SUMMARY_FIELDS)}
             />
           )}
         </>
