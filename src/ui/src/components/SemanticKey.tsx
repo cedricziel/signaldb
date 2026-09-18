@@ -22,7 +22,7 @@ import {
 import { createPortal } from "react-dom";
 import { Link, useInRouterContext } from "react-router";
 import type { AttributeHit } from "../api/gen";
-import type { AttributeSemantics } from "../lib/semantics";
+import { plainBrief, type AttributeSemantics } from "../lib/semantics";
 
 const ROLE_GLYPH: Record<string, string> = {
   identifying: "◆",
@@ -83,7 +83,7 @@ export function SemanticTooltip({
         <HubLink to={attributeHref(primary)}>{registryLabel(primary)}</HubLink>
       </span>
       <span className="sem-tip-facts">{facts.join(" · ")}</span>
-      <span className="sem-tip-brief">{primary.brief}</span>
+      <span className="sem-tip-brief">{plainBrief(primary.brief)}</span>
       {examples && <span className="sem-tip-examples">e.g. {examples}</span>}
       {primary.entity_roles && primary.entity_roles.length > 0 && (
         <span className="sem-tip-roles">
@@ -101,7 +101,7 @@ export function SemanticTooltip({
         <span className="sem-tip-deprecated">
           ⚠ deprecated
           {deprecated.renamed_to ? ` → ${deprecated.renamed_to}` : ""}
-          {deprecated.note ? ` — ${deprecated.note}` : ""}
+          {deprecated.note ? ` — ${plainBrief(deprecated.note)}` : ""}
         </span>
       )}
       {alternatives.length > 0 && (
@@ -315,7 +315,7 @@ export function SemanticKey({ name, semantics, showTitle }: SemanticKeyProps) {
           {primary.namespace}
         </span>
       </SemanticHover>
-      <span className="semkey-brief">{primary.brief}</span>
+      <span className="semkey-brief">{plainBrief(primary.brief)}</span>
       {(showTitle || roles.length > 0 || deprecated) && (
         <span className="semkey-meta">
           {showTitle && <span className="semkey-title">{semantics.title}</span>}

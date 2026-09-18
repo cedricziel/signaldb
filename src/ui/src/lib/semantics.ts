@@ -47,6 +47,20 @@ export function semanticTitle(hit: AttributeHit): string {
   return hit.group_display_name || humanizeNamespace(hit.key);
 }
 
+/**
+ * Registry briefs and deprecation notes carry markdown (`[label](url)`
+ * links, `` `code` `` spans); rendering sites here show plain text, so this
+ * strips the markup down to readable words rather than showing it verbatim.
+ */
+export function plainBrief(text: string | null | undefined): string {
+  if (!text) return "";
+  return text
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")
+    .replace(/`+/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 export function semanticsFromResolution(
   res: AttributeResolution,
 ): AttributeSemantics | undefined {

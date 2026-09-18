@@ -1,6 +1,7 @@
 import { useId, useMemo, useState } from "react";
 import { useAttributeSearch } from "../hooks/useSemantics";
 import { mergeLabelSuggestions } from "../lib/labelSuggestions";
+import { plainBrief } from "../lib/semantics";
 
 /**
  * Attribute/label key combobox: registry prefix hits (key, brief, namespace)
@@ -125,7 +126,11 @@ export function AttributeKeyInput({
                 )}
                 {s.seen && <span className="chip-suggest-seen">● seen</span>}
               </span>
-              {s.brief && <span className="chip-suggest-brief">{s.brief}</span>}
+              {s.brief && (
+                <span className="chip-suggest-brief">
+                  {plainBrief(s.brief)}
+                </span>
+              )}
             </li>
           ))}
         </ul>

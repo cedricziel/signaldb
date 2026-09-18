@@ -3,6 +3,7 @@ import type { AttributeHit, AttributeResolution } from "../api/gen";
 import {
   groupBySemanticTitle,
   humanizeNamespace,
+  plainBrief,
   semanticsFromResolution,
   semanticTitle,
 } from "./semantics";
@@ -91,6 +92,33 @@ describe("semanticsFromResolution", () => {
       primary,
     });
     expect(sem?.deprecated?.renamed_to).toBe("k8s.pod.id");
+  });
+});
+
+describe("plainBrief", () => {
+  it("strips a markdown link down to its label", () => {
+    expect(
+      plainBrief(
+        "[HTTP response status code](https://tools.ietf.org/html/rfc7231#section-6).",
+      ),
+    ).toBe("HTTP response status code.");
+  });
+
+  it("removes backticks, including nested runs", () => {
+    expect(plainBrief("Deprecated, use `db.system.name` instead.")).toBe(
+      "Deprecated, use db.system.name instead.",
+    );
+    expect(plainBrief("``nested`` backticks")).toBe("nested backticks");
+  });
+
+  it("collapses whitespace runs and trims", () => {
+    expect(plainBrief("  a   b\n\tc  ")).toBe("a b c");
+  });
+
+  it("returns an empty string for empty or missing input", () => {
+    expect(plainBrief("")).toBe("");
+    expect(plainBrief(null)).toBe("");
+    expect(plainBrief(undefined)).toBe("");
   });
 });
 
