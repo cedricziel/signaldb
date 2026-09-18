@@ -22,8 +22,10 @@ import { SignalHistogram } from "../explore/SignalHistogram";
 import { AttributeKeyInput } from "../../components/AttributeKeyInput";
 import { AttributeValue } from "../../components/AttributeValue";
 import {
+  AttributeSection,
   AttributeSummary,
   AttributeTable,
+  DescriptionsToggle,
   type AttributeRowAction,
 } from "../../components/AttributeTable";
 import {
@@ -38,12 +40,13 @@ import {
 } from "../../components/VizTooltip";
 import { useSemantics } from "../../hooks/useSemantics";
 import { useMobileSidebar } from "../../hooks/useMobileSidebar";
-import {
-  readAttrDescriptions,
-  writeAttrDescriptions,
-} from "../../lib/attrDescriptions";
+import { useAttrDescriptions } from "../../lib/attrDescriptions";
 import { pivotRowActions } from "../../lib/attrPivots";
-import { summarizeAttributes, type SummaryField } from "../../lib/attrSummary";
+import {
+  RESOURCE_IDENTITY_FIELDS,
+  summarizeAttributes,
+  type SummaryField,
+} from "../../lib/attrSummary";
 import { spanDetailWidth } from "../../lib/sidebarWidth";
 import { liveRefetchInterval } from "../../lib/live";
 import { goBackOr } from "../../lib/router";
@@ -1089,16 +1092,16 @@ function TraceDetail({ state, update }: Props) {
 
 /** Collapsed Resource-section summary, in preference order — the first
  * present spelling of each field wins, then `+ N more`; the SDK language and
- * version are shown together as one `sdk go 1.28.0` entry. */
+ * version are shown together as one `sdk go 1.28.0` entry. Built from the
+ * shared resource-identity fields (`lib/attrSummary.ts`) plus the service
+ * version (ahead of the pod/host/region identity fields), the k8s node, and
+ * the sdk pair (trailing). */
 const RESOURCE_SUMMARY_FIELDS: SummaryField[] = [
-  { keys: ["service.name"] },
-  { keys: ["service.namespace"] },
-  { keys: ["deployment.environment.name"] },
+  ...RESOURCE_IDENTITY_FIELDS.slice(0, 3),
   { keys: ["service.version"] },
-  { keys: ["k8s.pod.name"] },
+  RESOURCE_IDENTITY_FIELDS[3]!,
   { keys: ["k8s.node.name"] },
-  { keys: ["host.name"] },
-  { keys: ["cloud.region"] },
+  ...RESOURCE_IDENTITY_FIELDS.slice(4),
   {
     keys: ["telemetry.sdk.language", "telemetry.sdk.version"],
     render: (found) => ({
@@ -1115,32 +1118,6 @@ const RESOURCE_SUMMARY_FIELDS: SummaryField[] = [
 
 function stringEntries(entries: [string, AttrValue][]): [string, string][] {
   return entries.map(([k, v]) => [k, String(v)]);
-}
-
-/** Section head for a collapsible group (Scope, Resource): title plus a
- * count, toggling `aria-expanded` on click. */
-function SectionToggle({
-  label,
-  count,
-  expanded,
-  onToggle,
-}: {
-  label: string;
-  count: number;
-  expanded: boolean;
-  onToggle: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      className="span-detail-sec span-detail-sec-row span-detail-toggle"
-      aria-expanded={expanded}
-      onClick={onToggle}
-    >
-      <span>{label}</span>
-      <span className="attrtable-count">{count}</span>
-    </button>
-  );
 }
 
 function SpanDetail({
@@ -1178,13 +1155,29 @@ function SpanDetail({
     [groups],
   );
   const spanProfiles = profiles.filter((p) => p.spanId === span.spanId);
-  const [showDescriptions, setShowDescriptions] = useState(readAttrDescriptions);
+  const [showDescriptions, toggleDescriptions] = useAttrDescriptions();
   const [scopeExpanded, setScopeExpanded] = useState(false);
   const [resourceExpanded, setResourceExpanded] = useState(false);
 
   const spanGroup = groups.find((g) => g.label === "Span");
   const scopeGroup = groups.find((g) => g.label === "Scope");
   const resourceGroup = groups.find((g) => g.label === "Resource");
+  const spanEntries = useMemo(
+    () => (spanGroup ? stringEntries(spanGroup.entries) : []),
+    [spanGroup],
+  );
+  const scopeEntries = useMemo(
+    () => (scopeGroup ? stringEntries(scopeGroup.entries) : []),
+    [scopeGroup],
+  );
+  const resourceEntries = useMemo(
+    () => (resourceGroup ? stringEntries(resourceGroup.entries) : []),
+    [resourceGroup],
+  );
+  const resourceSummary = useMemo(
+    () => summarizeAttributes(resourceEntries, RESOURCE_SUMMARY_FIELDS),
+    [resourceEntries],
+  );
 
   const rowActions = (key: string, value: string): AttributeRowAction[] => {
     const actions: AttributeRowAction[] = [
@@ -1274,7 +1267,7 @@ function SpanDetail({
       ))}
       {span.events.length > 0 && (
         <>
-          <div className="span-detail-sec">Events</div>
+          <AttributeSection title="Events" />
           <ul className="span-events">
             {span.events.map((event, i) => (
               <SpanEventItem key={i} event={event} spanStartNs={span.startNs} />
@@ -1282,25 +1275,15 @@ function SpanDetail({
           </ul>
         </>
       )}
-      <div className="span-detail-sec span-detail-sec-row">
-        <span>Span</span>
-        <label className="attrtable-desc-toggle">
-          <input
-            type="checkbox"
-            checked={showDescriptions}
-            onChange={() => {
-              const next = !showDescriptions;
-              writeAttrDescriptions(next);
-              setShowDescriptions(next);
-            }}
-            aria-label="Show descriptions"
-          />
-          descriptions
-        </label>
-      </div>
+      <AttributeSection title="Span">
+        <DescriptionsToggle
+          checked={showDescriptions}
+          onToggle={toggleDescriptions}
+        />
+      </AttributeSection>
       {spanGroup ? (
         <AttributeTable
-          entries={stringEntries(spanGroup.entries)}
+          entries={spanEntries}
           semantics={semantics}
           layout="stacked"
           showDescriptions={showDescriptions}
@@ -1311,15 +1294,15 @@ function SpanDetail({
       )}
       {scopeGroup && (
         <>
-          <SectionToggle
-            label="Scope"
+          <AttributeSection
+            title="Scope"
             count={scopeGroup.entries.length}
             expanded={scopeExpanded}
             onToggle={() => setScopeExpanded((current) => !current)}
           />
           {scopeExpanded && (
             <AttributeTable
-              entries={stringEntries(scopeGroup.entries)}
+              entries={scopeEntries}
               semantics={semantics}
               layout="stacked"
               showDescriptions={showDescriptions}
@@ -1330,27 +1313,22 @@ function SpanDetail({
       )}
       {resourceGroup && (
         <>
-          <SectionToggle
-            label="Resource"
+          <AttributeSection
+            title="Resource"
             count={resourceGroup.entries.length}
             expanded={resourceExpanded}
             onToggle={() => setResourceExpanded((current) => !current)}
           />
           {resourceExpanded ? (
             <AttributeTable
-              entries={stringEntries(resourceGroup.entries)}
+              entries={resourceEntries}
               semantics={semantics}
               layout="stacked"
               showDescriptions={showDescriptions}
               actions={rowActions}
             />
           ) : (
-            <AttributeSummary
-              summary={summarizeAttributes(
-                stringEntries(resourceGroup.entries),
-                RESOURCE_SUMMARY_FIELDS,
-              )}
-            />
+            <AttributeSummary summary={resourceSummary} />
           )}
         </>
       )}

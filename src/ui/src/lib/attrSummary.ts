@@ -34,6 +34,22 @@ function defaultRender(found: ReadonlyMap<string, string>): SummaryPart {
   return { key, value };
 }
 
+/**
+ * The process/resource identity fields every curated summary list leads
+ * with — `LogList.tsx`'s `STREAM_SUMMARY_FIELDS` and `TracesView.tsx`'s
+ * `RESOURCE_SUMMARY_FIELDS` each splice their own extra fields (`level`,
+ * `service.version`, the sdk pair, ...) around this shared spine rather than
+ * repeating it.
+ */
+export const RESOURCE_IDENTITY_FIELDS: SummaryField[] = [
+  { keys: ["service_name", "service.name"] },
+  { keys: ["service.namespace"] },
+  { keys: ["deployment.environment.name"] },
+  { keys: ["k8s.pod.name"] },
+  { keys: ["host.name"] },
+  { keys: ["cloud.region"] },
+];
+
 export function summarizeAttributes(
   entries: readonly [string, string][],
   fields: readonly SummaryField[],

@@ -2,19 +2,22 @@ import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMemo, useRef, useState } from "react";
 import type { LogRow } from "../../api/loki";
 import {
+  AttributeSection,
   AttributeSummary,
   AttributeTable,
+  DescriptionsToggle,
   type AttributeRowAction,
 } from "../../components/AttributeTable";
 import { CopyValueButton } from "../../components/CopyValueButton";
 import { EmptyState } from "../../components/EmptyState";
 import { useSemantics } from "../../hooks/useSemantics";
-import {
-  readAttrDescriptions,
-  writeAttrDescriptions,
-} from "../../lib/attrDescriptions";
+import { useAttrDescriptions } from "../../lib/attrDescriptions";
 import { pivotRowActions } from "../../lib/attrPivots";
-import { summarizeAttributes, type SummaryField } from "../../lib/attrSummary";
+import {
+  RESOURCE_IDENTITY_FIELDS,
+  summarizeAttributes,
+  type SummaryField,
+} from "../../lib/attrSummary";
 import type { LabelFilter } from "../../lib/filters";
 import { formatTimestamp } from "../../lib/time";
 import type { UpdateFn } from "../../lib/urlState";
@@ -77,12 +80,7 @@ export function rowKey(row: LogRow): string {
 export function LogList({ rows, onAddFilter, onOpenTrace, update }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
-  const [showDescriptions, setShowDescriptions] = useState(readAttrDescriptions);
-  const toggleDescriptions = () => {
-    const next = !showDescriptions;
-    writeAttrDescriptions(next);
-    setShowDescriptions(next);
-  };
+  const [showDescriptions, toggleDescriptions] = useAttrDescriptions();
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -155,15 +153,14 @@ const sortedEntries = (bag: Record<string, string>): [string, string][] =>
   Object.entries(bag).sort(([a], [b]) => a.localeCompare(b));
 
 /** Preferred order for the collapsed stream/resource summary line — the
- * first present spelling of each field, up to 8 pairs, then `+ N more`. */
+ * first present spelling of each field, up to 8 pairs, then `+ N more`.
+ * Built from the shared resource-identity fields (`lib/attrSummary.ts`) plus
+ * `level` (ahead of the pod/host/region identity fields) and the container
+ * image (trailing). */
 const STREAM_SUMMARY_FIELDS: SummaryField[] = [
-  { keys: ["service_name", "service.name"] },
-  { keys: ["service.namespace"] },
-  { keys: ["deployment.environment.name"] },
+  ...RESOURCE_IDENTITY_FIELDS.slice(0, 3),
   { keys: ["level"] },
-  { keys: ["k8s.pod.name"] },
-  { keys: ["host.name"] },
-  { keys: ["cloud.region"] },
+  ...RESOURCE_IDENTITY_FIELDS.slice(3),
   { keys: ["container.image.name"] },
 ];
 
@@ -215,15 +212,10 @@ function LogDetail({
         >
           Copy JSON
         </button>
-        <label className="attrtable-desc-toggle">
-          <input
-            type="checkbox"
-            checked={showDescriptions}
-            onChange={onToggleDescriptions}
-            aria-label="Show descriptions"
-          />
-          descriptions
-        </label>
+        <DescriptionsToggle
+          checked={showDescriptions}
+          onToggle={onToggleDescriptions}
+        />
       </div>
       <LogAttributes
         row={row}
@@ -314,11 +306,16 @@ function LogAttributes({
     ];
   };
 
+  const resourceSummary = useMemo(
+    () => summarizeAttributes(scopes.resource, STREAM_SUMMARY_FIELDS),
+    [scopes.resource],
+  );
+
   return (
     <>
       {scopes.line.length > 0 && (
         <>
-          <div className="attrtable-section">This line</div>
+          <AttributeSection title="This line" />
           <AttributeTable
             entries={scopes.line}
             semantics={semantics}
@@ -331,15 +328,12 @@ function LogAttributes({
       )}
       {scopes.resource.length > 0 && (
         <>
-          <button
-            type="button"
-            className="attrtable-section"
-            aria-expanded={resourceExpanded}
-            onClick={() => setResourceExpanded((current) => !current)}
-          >
-            Resource · stream
-            <span className="attrtable-count">{scopes.resource.length} fields</span>
-          </button>
+          <AttributeSection
+            title="Resource · stream"
+            count={`${scopes.resource.length} fields`}
+            expanded={resourceExpanded}
+            onToggle={() => setResourceExpanded((current) => !current)}
+          />
           {resourceExpanded ? (
             <AttributeTable
               entries={scopes.resource}
@@ -350,9 +344,7 @@ function LogAttributes({
               actions={rowActions}
             />
           ) : (
-            <AttributeSummary
-              summary={summarizeAttributes(scopes.resource, STREAM_SUMMARY_FIELDS)}
-            />
+            <AttributeSummary summary={resourceSummary} />
           )}
         </>
       )}

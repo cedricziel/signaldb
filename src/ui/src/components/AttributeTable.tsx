@@ -11,15 +11,14 @@
  * A group left with a single row folds into "Other" instead of earning a
  * heading of its own — see `foldSingletonGroups`.
  */
-import { Fragment, useId } from "react";
+import { Fragment, useId, useMemo, type ReactNode } from "react";
 import { AttributeValue } from "./AttributeValue";
-import { SemanticKeyLabel } from "./SemanticKey";
+import { ROLE_GLYPH, SemanticKeyLabel } from "./SemanticKey";
 import type { AttributeSummaryResult } from "../lib/attrSummary";
 import {
   foldSingletonGroups,
   groupBySemanticTitle,
   OTHER_TITLE,
-  plainBrief,
   type AttributeSemantics,
   type SemanticsMap,
 } from "../lib/semantics";
@@ -34,7 +33,7 @@ export interface AttributeTableProps {
   /** Key/value pairs, already sorted by the caller. */
   entries: [string, string][];
   semantics: SemanticsMap;
-  /** Wide key|value grid vs narrow key-over-value (see AttributeTable.css
+  /** Wide key|value grid vs narrow key-over-value (see the `.attrtable`
    * rules for each in styles/global.css). */
   layout: "grid" | "stacked";
   /** Reading-mode toggle, owned by the caller (see lib/attrDescriptions.ts):
@@ -45,8 +44,6 @@ export interface AttributeTableProps {
   /** `data-scope` on every row, for callers that style/query by it. */
   scope?: string;
 }
-
-const ENTITY_GLYPH = { identifying: "◆", descriptive: "○" } as const;
 
 /** The group's rows that resolved, in order — unresolved keys (the registry
  * doesn't know them, or hasn't answered yet) drop out, since a heading fact
@@ -65,10 +62,8 @@ function resolvedSemantics(
  * one namespace under one title, and a heading must not assert an origin
  * only some of the rows actually have. */
 function groupNamespace(
-  entries: readonly [string, unknown][],
-  semantics: SemanticsMap,
+  resolved: readonly AttributeSemantics[],
 ): { namespace: string; source: string } | null {
-  const resolved = resolvedSemantics(entries, semantics);
   if (resolved.length === 0) return null;
   const agreed = new Set(
     resolved.map((sem) => `${sem.primary.namespace} ${sem.primary.source}`),
@@ -84,10 +79,8 @@ function groupNamespace(
  * every resolved row identifies that entity; any row that merely describes
  * it downgrades the whole group to ○ (descriptive). */
 function groupEntity(
-  entries: readonly [string, unknown][],
-  semantics: SemanticsMap,
+  resolved: readonly AttributeSemantics[],
 ): { entity: string; identifying: boolean } | null {
-  const resolved = resolvedSemantics(entries, semantics);
   if (resolved.length === 0) return null;
   const roleSets = resolved.map(
     (sem) => new Set((sem.primary.entity_roles ?? []).map((r) => r.entity)),
@@ -145,7 +138,7 @@ function AttributeRow({
         )}
         {showDescriptions && sem && (
           <div className="attrtable-desc">
-            {plainBrief(sem.primary.brief)}
+            {sem.brief}
             <span className="attrtable-desc-suffix">
               {" "}
               · {sem.primary.type} · {sem.primary.stability}
@@ -165,7 +158,10 @@ export function AttributeTable({
   actions,
   scope,
 }: AttributeTableProps) {
-  const groups = foldSingletonGroups(groupBySemanticTitle(entries, semantics));
+  const groups = useMemo(
+    () => foldSingletonGroups(groupBySemanticTitle(entries, semantics)),
+    [entries, semantics],
+  );
   const idBase = useId();
   return (
     <div className="attrtable" data-layout={layout}>
@@ -173,10 +169,11 @@ export function AttributeTable({
         // "Other" mixes folded singletons with keys no registry knows, so
         // no namespace or entity holds for all of its rows.
         const titled = group.title !== null && group.title !== OTHER_TITLE;
-        const namespace = titled
-          ? groupNamespace(group.entries, semantics)
-          : null;
-        const entity = titled ? groupEntity(group.entries, semantics) : null;
+        const resolved = titled
+          ? resolvedSemantics(group.entries, semantics)
+          : [];
+        const namespace = titled ? groupNamespace(resolved) : null;
+        const entity = titled ? groupEntity(resolved) : null;
         const headingId = group.title !== null ? `${idBase}-h${i}` : undefined;
         return (
           <Fragment key={group.title ?? ""}>
@@ -190,7 +187,7 @@ export function AttributeTable({
                 )}
                 {entity && (
                   <span className="attrtable-entity">
-                    {ENTITY_GLYPH[entity.identifying ? "identifying" : "descriptive"]}{" "}
+                    {ROLE_GLYPH[entity.identifying ? "identifying" : "descriptive"]}{" "}
                     {entity.entity}
                   </span>
                 )}
@@ -239,5 +236,74 @@ export function AttributeSummary({
         <span className="attrtable-summary-more">+{summary.more} more</span>
       )}
     </div>
+  );
+}
+
+/**
+ * The "show descriptions" reading-mode checkbox — a controlled component;
+ * pair it with `lib/attrDescriptions.ts`'s `useAttrDescriptions` for the
+ * persisted on/off state it toggles.
+ */
+export function DescriptionsToggle({
+  checked,
+  onToggle,
+}: {
+  checked: boolean;
+  onToggle: () => void;
+}) {
+  return (
+    <label className="attrtable-desc-toggle">
+      <input
+        type="checkbox"
+        checked={checked}
+        onChange={onToggle}
+        aria-label="Show descriptions"
+      />
+      descriptions
+    </label>
+  );
+}
+
+/**
+ * Section head above a titled block of an attribute table (LogList's "This
+ * line"/"Resource · stream", TracesView's "Span"/"Scope"/"Resource"/
+ * "Events"): a plain `<div>` when `onToggle` is omitted, a `<button
+ * aria-expanded>` when the section collapses. `count` renders in its own
+ * `.attrtable-count` span; further `children` (e.g. `DescriptionsToggle`)
+ * render at the trailing edge.
+ */
+export function AttributeSection({
+  title,
+  count,
+  expanded,
+  onToggle,
+  children,
+}: {
+  title: string;
+  count?: ReactNode;
+  expanded?: boolean;
+  onToggle?: () => void;
+  children?: ReactNode;
+}) {
+  const content = (
+    <>
+      <span>{title}</span>
+      {count !== undefined && (
+        <span className="attrtable-count">{count}</span>
+      )}
+      {children}
+    </>
+  );
+  return onToggle ? (
+    <button
+      type="button"
+      className="attrtable-section"
+      aria-expanded={expanded}
+      onClick={onToggle}
+    >
+      {content}
+    </button>
+  ) : (
+    <div className="attrtable-section">{content}</div>
   );
 }
