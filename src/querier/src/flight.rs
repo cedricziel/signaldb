@@ -401,11 +401,15 @@ pub struct QuerierFlightService {
 }
 
 /// Build the querier's SessionConfig with DataFusion scan/pushdown options
-/// from `[querier.datafusion]` applied. Only mutates `SessionConfig` options;
-/// it deliberately leaves `create_default_catalog_and_schema` untouched — the
-/// per-request session builder (`session_for_request`) relies on the default
-/// catalog behavior of the shared context and disables it itself when
-/// cloning state.
+/// from `[querier.datafusion]` applied, plus the shared
+/// [`common::datafusion_runtime::ScanShape`] (batch size, partition fan-out,
+/// sort-spill reservation) that keeps the querier's `ExternalSorter`
+/// reservations inside its memory pool — the same shape the compactor
+/// applies, so the two cannot drift apart on it (#1359). Only mutates
+/// `SessionConfig` options; it deliberately leaves
+/// `create_default_catalog_and_schema` untouched — the per-request session
+/// builder (`session_for_request`) relies on the default catalog behavior of
+/// the shared context and disables it itself when cloning state.
 ///
 /// Public so ordering tests can plan against the querier's real session
 /// options rather than DataFusion's defaults: whether a scan's declared
@@ -419,7 +423,12 @@ pub fn session_config_from(limits: &QuerierConfig) -> SessionConfig {
         limits.datafusion.split_file_groups_by_statistics;
     options.execution.parquet.pushdown_filters = limits.datafusion.pushdown_filters;
     options.execution.parquet.reorder_filters = limits.datafusion.reorder_filters;
-    config
+    let shape = common::datafusion_runtime::ScanShape::from_mb(
+        limits.datafusion.batch_size,
+        limits.datafusion.target_partitions,
+        limits.datafusion.sort_spill_reservation_mb,
+    );
+    shape.apply(config)
 }
 
 /// Build a SessionContext whose RuntimeEnv enforces the configured memory
@@ -441,7 +450,7 @@ pub fn session_context_with_limits(limits: &QuerierConfig) -> SessionContext {
             .with_metadata_cache_limit((limits.parquet_metadata_cache_mb as usize) * 1024 * 1024),
     );
     match limits.memory_limit_mb {
-        Some(mb) => {
+        Some(mb) if mb > 0 => {
             builder = builder.with_memory_pool(common::datafusion_runtime::bounded_memory_pool(
                 (mb as usize) * 1024 * 1024,
                 limits.memory_pool_fraction,
@@ -452,9 +461,11 @@ pub fn session_context_with_limits(limits: &QuerierConfig) -> SessionContext {
                 "Querier memory pool configured"
             );
         }
-        None => {
+        // `Some(0)` is an explicit unbounded opt-out, same as `None` — see
+        // the `memory_limit_mb` doc comment for the three cases.
+        Some(_) | None => {
             tracing::warn!(
-                "Querier memory is UNBOUNDED ([querier].memory_limit_mb is not set); \
+                "Querier memory is UNBOUNDED ([querier].memory_limit_mb is unset or 0); \
                  a single heavy query can exhaust process memory"
             );
         }
@@ -2346,7 +2357,7 @@ fn querier_error_to_status(
             too_many @ crate::query::error::QuerierError::TooManyGroups { .. } => {
                 Status::invalid_argument(too_many.to_string())
             }
-            other => Status::internal(format!("{signal} query failed: {other:?}")),
+            other => Status::internal(format!("{signal} query failed: {other}")),
         })
     }
 }
@@ -2359,7 +2370,7 @@ fn trace_error_to_status(
 ) -> impl Fn(crate::query::error::QuerierError) -> Status {
     move |e| {
         common_error_status(e)
-            .unwrap_or_else(|other| Status::internal(format!("{context} failed: {other:?}")))
+            .unwrap_or_else(|other| Status::internal(format!("{context} failed: {other}")))
     }
 }
 
@@ -2710,6 +2721,7 @@ mod tests {
                 split_file_groups_by_statistics: false,
                 pushdown_filters: false,
                 reorder_filters: false,
+                ..common::config::QuerierDataFusionConfig::default()
             },
             ..QuerierConfig::default()
         };
@@ -2718,6 +2730,31 @@ mod tests {
         assert!(!options.execution.split_file_groups_by_statistics);
         assert!(!options.execution.parquet.pushdown_filters);
         assert!(!options.execution.parquet.reorder_filters);
+    }
+
+    /// `session_config_from` must wire `[querier.datafusion]`'s scan-shape
+    /// knobs onto the resulting `SessionConfig` — the semantics of each knob
+    /// (defaulting behavior of `0`, the memory reasoning) are the shared
+    /// `ScanShape`'s own responsibility and are covered by its unit tests in
+    /// `common::datafusion_runtime`.
+    #[test]
+    fn session_wires_scan_shape_from_config() {
+        let limits = QuerierConfig {
+            datafusion: common::config::QuerierDataFusionConfig {
+                batch_size: 256,
+                target_partitions: 3,
+                sort_spill_reservation_mb: 32,
+                ..common::config::QuerierDataFusionConfig::default()
+            },
+            ..QuerierConfig::default()
+        };
+        let ctx = session_config_from(&limits);
+        assert_eq!(ctx.batch_size(), 256);
+        assert_eq!(ctx.target_partitions(), 3);
+        assert_eq!(
+            ctx.options().execution.sort_spill_reservation_bytes,
+            32 * 1024 * 1024
+        );
     }
 
     #[test]
@@ -2739,6 +2776,18 @@ mod tests {
         let ctx = session_context_with_limits(&QuerierConfig::default());
         let reservation = MemoryConsumer::new("test").register(&ctx.runtime_env().memory_pool);
         assert!(reservation.try_grow(10 * 1024 * 1024).is_ok());
+
+        // `Some(0)` is an explicit unbounded opt-out, same as `None`.
+        let ctx = session_context_with_limits(&QuerierConfig {
+            memory_limit_mb: Some(0),
+            memory_pool_fraction: 1.0,
+            ..QuerierConfig::default()
+        });
+        let reservation = MemoryConsumer::new("test").register(&ctx.runtime_env().memory_pool);
+        assert!(
+            reservation.try_grow(10 * 1024 * 1024).is_ok(),
+            "memory_limit_mb = Some(0) must mean unbounded, not a zero-size pool"
+        );
     }
 
     /// A shared querier must not let one heavy sort take the whole pool

@@ -2100,8 +2100,17 @@ impl Default for WriterConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QuerierConfig {
-    /// Maximum memory the query engine may use, in MiB. When unset the
-    /// memory pool is unbounded and the querier logs a startup warning.
+    /// Maximum memory the query engine may use, in MiB. Three cases:
+    ///
+    /// - `Some(n)` with `n > 0`: bounded to `n` MiB.
+    /// - `Some(0)`: explicitly unbounded (an operator opt-out), in either
+    ///   deployment mode.
+    /// - `None`: the standalone querier binary stays unbounded (with a
+    ///   startup warning) — same as `Some(0)`. The monolith instead
+    ///   resolves `None` to a bounded default before constructing the
+    ///   querier (`QuerierConfig::resolve_monolith_memory_limit`, #1359),
+    ///   because an unbounded query pool there can OOM ingest running in
+    ///   the same process, not just itself.
     pub memory_limit_mb: Option<u64>,
     /// Fraction of `memory_limit_mb` usable by query operators before
     /// they spill or fail (0.0–1.0).
@@ -2128,6 +2137,33 @@ pub struct QuerierConfig {
     /// DataFusion scan/pushdown tuning for the query engine. See
     /// `[querier.datafusion]` in `signaldb.dist.toml`.
     pub datafusion: QuerierDataFusionConfig,
+}
+
+impl QuerierConfig {
+    /// Resolve an unset `memory_limit_mb` to a bounded default for
+    /// monolithic mode, where an unbounded query pool is worse than in the
+    /// standalone querier: the same process also runs ingest, so a heavy
+    /// query can OOM ingest along with itself (#1359).
+    ///
+    /// `Some(_)` — bounded, or the explicit `Some(0)` unbounded opt-out — is
+    /// an operator choice and is left untouched; only `None` is resolved.
+    /// The standalone querier binary never calls this, so `None` there still
+    /// means unbounded (with the usual startup warning).
+    ///
+    /// The default is `min(50% of total_ram_bytes, 4096 MiB)`, floored at
+    /// 256 MiB so a small host still gets a working pool. Takes the host's
+    /// total RAM as a parameter (rather than reading it via `sysinfo`
+    /// itself) so the resolution is unit-testable without mocking the OS.
+    pub fn resolve_monolith_memory_limit(&mut self, total_ram_bytes: u64) {
+        if self.memory_limit_mb.is_some() {
+            return;
+        }
+        const MIB: u64 = 1024 * 1024;
+        const MAX_DEFAULT_MB: u64 = 4096;
+        const FLOOR_MB: u64 = 256;
+        let half_ram_mb = (total_ram_bytes / MIB) / 2;
+        self.memory_limit_mb = Some(half_ram_mb.clamp(FLOOR_MB, MAX_DEFAULT_MB));
+    }
 }
 
 impl Default for QuerierConfig {
@@ -2168,6 +2204,49 @@ pub struct QuerierDataFusionConfig {
     /// Reorder pushed-down filters so cheap, selective predicates are
     /// evaluated first. Only meaningful when `pushdown_filters` is enabled.
     pub reorder_filters: bool,
+
+    /// Row count of the batches a query scan feeds downstream (e.g. into a
+    /// sort).
+    ///
+    /// The querier sorts over the same wide-row tables the compactor
+    /// compacts — see [`CompactorConfig::scan_batch_size`] for why an
+    /// unbounded row count turns a wide-row batch into a multi-gigabyte,
+    /// unspillable `ExternalSorter` reservation (issue #1359, the querier
+    /// analogue of #1064).
+    ///
+    /// `0` restores DataFusion's default (8192 rows).
+    ///
+    /// Default: 1024.
+    /// Env: SIGNALDB__QUERIER__DATAFUSION__BATCH_SIZE
+    pub batch_size: usize,
+
+    /// DataFusion partition fan-out for the query scan.
+    ///
+    /// Unlike the compactor, queries are latency-sensitive interactive
+    /// requests, so the default leaves DataFusion's own fan-out
+    /// (available parallelism) in place rather than trading it away for a
+    /// smaller memory ceiling. Lower it to bound how many concurrent
+    /// `ExternalSorter`s divide a single query's share of `memory_limit_mb`,
+    /// mirroring `[compactor].target_partitions`.
+    ///
+    /// `0` restores DataFusion's default (available parallelism).
+    ///
+    /// Default: 0.
+    /// Env: SIGNALDB__QUERIER__DATAFUSION__TARGET_PARTITIONS
+    pub target_partitions: usize,
+
+    /// Memory in MB each spilling sort holds back so its spill merge can run
+    /// (`datafusion.execution.sort_spill_reservation_bytes`).
+    ///
+    /// This is headroom taken out of `memory_limit_mb`, not added to it; see
+    /// [`CompactorConfig::sort_spill_reservation_mb`] for the same knob on
+    /// the compaction side.
+    ///
+    /// `0` means no headroom at all, which DataFusion permits.
+    ///
+    /// Default: 10 MB (DataFusion's default).
+    /// Env: SIGNALDB__QUERIER__DATAFUSION__SORT_SPILL_RESERVATION_MB
+    pub sort_spill_reservation_mb: u64,
 }
 
 impl Default for QuerierDataFusionConfig {
@@ -2176,6 +2255,9 @@ impl Default for QuerierDataFusionConfig {
             split_file_groups_by_statistics: true,
             pushdown_filters: true,
             reorder_filters: true,
+            batch_size: 1024,
+            target_partitions: 0,
+            sort_spill_reservation_mb: default_sort_spill_reservation_mb(),
         }
     }
 }
@@ -2534,6 +2616,19 @@ mod tests {
     }
 
     #[test]
+    fn querier_datafusion_scan_shape_defaults() {
+        // batch_size mirrors the compactor's own default (1024, below
+        // DataFusion's 8192) since the querier sorts the same wide-row
+        // tables; target_partitions stays at DataFusion's own default (0)
+        // because queries are latency-sensitive, unlike background
+        // compaction.
+        let config = Configuration::default();
+        assert_eq!(config.querier.datafusion.batch_size, 1024);
+        assert_eq!(config.querier.datafusion.target_partitions, 0);
+        assert_eq!(config.querier.datafusion.sort_spill_reservation_mb, 10);
+    }
+
+    #[test]
     fn querier_datafusion_options_parse_from_toml() {
         Jail::expect_with(|jail| {
             jail.create_file(
@@ -2543,6 +2638,9 @@ mod tests {
                 split_file_groups_by_statistics = false
                 pushdown_filters = false
                 reorder_filters = false
+                batch_size = 256
+                target_partitions = 4
+                sort_spill_reservation_mb = 32
                 "#,
             )?;
             let config: Configuration = Figment::new()
@@ -2552,6 +2650,9 @@ mod tests {
             assert!(!config.querier.datafusion.split_file_groups_by_statistics);
             assert!(!config.querier.datafusion.pushdown_filters);
             assert!(!config.querier.datafusion.reorder_filters);
+            assert_eq!(config.querier.datafusion.batch_size, 256);
+            assert_eq!(config.querier.datafusion.target_partitions, 4);
+            assert_eq!(config.querier.datafusion.sort_spill_reservation_mb, 32);
             Ok(())
         });
     }
@@ -2565,6 +2666,7 @@ mod tests {
             );
             jail.set_env("SIGNALDB__QUERIER__DATAFUSION__PUSHDOWN_FILTERS", "false");
             jail.set_env("SIGNALDB__QUERIER__DATAFUSION__REORDER_FILTERS", "false");
+            jail.set_env("SIGNALDB__QUERIER__DATAFUSION__BATCH_SIZE", "256");
             let config: Configuration = Figment::new()
                 .merge(Serialized::defaults(Configuration::default()))
                 .merge(Env::prefixed("SIGNALDB__").split("__"))
@@ -2572,8 +2674,59 @@ mod tests {
             assert!(!config.querier.datafusion.split_file_groups_by_statistics);
             assert!(!config.querier.datafusion.pushdown_filters);
             assert!(!config.querier.datafusion.reorder_filters);
+            assert_eq!(config.querier.datafusion.batch_size, 256);
             Ok(())
         });
+    }
+
+    /// Table-driven over the three bands `resolve_monolith_memory_limit`
+    /// treats differently: below the floor, in range (half RAM), and above
+    /// the cap.
+    #[test]
+    fn querier_resolve_monolith_memory_limit_bands() {
+        let cases: &[(u64, u64)] = &[
+            // A tiny 256 MiB host: half (128 MiB) is below the floor.
+            (256 * 1024 * 1024, 256),
+            // An 8 GiB host: half is 4096 MiB, exactly the cap.
+            (8 * 1024 * 1024 * 1024, 4096),
+            // A 64 GiB host: half (32768 MiB) is well past the cap.
+            (64 * 1024 * 1024 * 1024, 4096),
+        ];
+        for &(total_ram_bytes, expected_mb) in cases {
+            let mut config = QuerierConfig::default();
+            assert_eq!(config.memory_limit_mb, None);
+            config.resolve_monolith_memory_limit(total_ram_bytes);
+            assert_eq!(
+                config.memory_limit_mb,
+                Some(expected_mb),
+                "total_ram_bytes={total_ram_bytes} should resolve to {expected_mb} MiB"
+            );
+        }
+    }
+
+    #[test]
+    fn querier_resolve_monolith_memory_limit_leaves_explicit_values_untouched() {
+        let mut config = QuerierConfig {
+            memory_limit_mb: Some(777),
+            ..QuerierConfig::default()
+        };
+        config.resolve_monolith_memory_limit(64 * 1024 * 1024 * 1024);
+        assert_eq!(
+            config.memory_limit_mb,
+            Some(777),
+            "an operator-set bounded limit must not be overridden"
+        );
+
+        let mut config = QuerierConfig {
+            memory_limit_mb: Some(0),
+            ..QuerierConfig::default()
+        };
+        config.resolve_monolith_memory_limit(64 * 1024 * 1024 * 1024);
+        assert_eq!(
+            config.memory_limit_mb,
+            Some(0),
+            "the explicit unbounded opt-out must not be overridden"
+        );
     }
 
     #[test]

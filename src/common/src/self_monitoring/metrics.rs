@@ -104,6 +104,17 @@ fn sample_resources(sys: &mut sysinfo::System, pid: Option<sysinfo::Pid>) -> Res
     }
 }
 
+/// Total physical RAM on the host, in bytes.
+///
+/// Used by monolith startup to size a default `[querier].memory_limit_mb`
+/// (issue #1359) without every caller repeating the `sysinfo` idiom
+/// [`sample_resources`] already owns.
+pub fn total_system_memory_bytes() -> u64 {
+    let mut sys = sysinfo::System::new();
+    sys.refresh_memory();
+    sys.total_memory()
+}
+
 pub fn register_system_metrics(
     meter_provider: &SdkMeterProvider,
     service_name: &str,

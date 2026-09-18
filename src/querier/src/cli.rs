@@ -132,6 +132,9 @@ pub async fn run(common: &CommonArgs, args: Args) -> anyhow::Result<()> {
         query_timeout = ?config.querier.query_timeout,
         max_sql_rows = config.querier.max_sql_rows,
         max_search_limit = config.querier.max_search_limit,
+        batch_size = config.querier.datafusion.batch_size,
+        sort_spill_reservation_mb = config.querier.datafusion.sort_spill_reservation_mb,
+        target_partitions = config.querier.datafusion.target_partitions,
         "Querier resource limits"
     );
     let flight_service = QuerierFlightService::new_with_catalog_manager(

@@ -12,9 +12,15 @@ Sequenced per design D6: deadline + resource envelope first (small, ship immedia
 ## 2. Resource fairness with bounded defaults (D5, #941)
 
 - [ ] 2.1 Tests: concurrent small query completes while a heavy query saturates the pool (fairness); pool exhaustion yields resource-exhausted error, not OOM; default config boots with bounded memory + per-tenant concurrency visible in startup logs
-- [ ] 2.2 Swap `GreedyMemoryPool` → `FairSpillPool`; enable spill configuration
+- [x] 2.2 Swap `GreedyMemoryPool` → `FairSpillPool`; enable spill configuration
 - [ ] 2.3 Bounded defaults: `memory_limit_mb = min(50% RAM, 4096)`, `max_concurrent_queries_per_tenant = 8`; explicit unlimited opt-out; release-note BREAKING defaults; benchmark before/after
-- [ ] 2.4 Expose `target_partitions`/`batch_size` under `[querier.datafusion]` (monolithic-mode oversubscription fix)
+  - Note (#1359): the monolith half landed — `signaldb` (no subcommand) now
+    resolves an unset `[querier].memory_limit_mb` to `min(50% RAM, 4096)`
+    MiB via `QuerierConfig::resolve_monolith_memory_limit`, with an explicit
+    `0` staying unbounded. The standalone `querier` binary still defaults to
+    unbounded when unset; `max_concurrent_queries_per_tenant` defaulting to
+    `8` (vs. today's unset/unlimited) remains open.
+- [x] 2.4 Expose `target_partitions`/`batch_size` under `[querier.datafusion]` (monolithic-mode oversubscription fix)
 
 ## 3. Snapshot pinning (D4, #949)
 

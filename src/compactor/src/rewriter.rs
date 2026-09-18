@@ -892,17 +892,12 @@ impl ParquetRewriter {
     fn compaction_session_config(
         compactor: &common::config::CompactorConfig,
     ) -> datafusion::prelude::SessionConfig {
-        let mut config = datafusion::prelude::SessionConfig::new()
-            .with_sort_spill_reservation_bytes(
-                compactor.sort_spill_reservation_mb as usize * 1024 * 1024,
-            );
-        if compactor.target_partitions > 0 {
-            config = config.with_target_partitions(compactor.target_partitions);
-        }
-        if compactor.scan_batch_size > 0 {
-            config = config.with_batch_size(compactor.scan_batch_size);
-        }
-        config
+        let shape = common::datafusion_runtime::ScanShape::from_mb(
+            compactor.scan_batch_size,
+            compactor.target_partitions,
+            compactor.sort_spill_reservation_mb,
+        );
+        shape.apply(datafusion::prelude::SessionConfig::new())
     }
 
     /// Predicate selecting exactly the rows of one hour partition.

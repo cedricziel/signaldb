@@ -309,13 +309,18 @@ Env: `SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__ENABLED`, `SIGNALDB__COMPACTOR__ORPHA
 
 ```toml
 [querier]
-memory_limit_mb = 4096                # Unset = unbounded (startup warning)
+memory_limit_mb = 4096                # Positive = bounded; 0 = explicitly unbounded; unset = standalone stays unbounded, monolith resolves to min(50% RAM, 4096)
 memory_pool_fraction = 0.8            # Fraction usable before spill/fail (0.0-1.0)
 parquet_metadata_cache_mb = 128       # Parquet footer cache budget; 0 disables. Separate from memory_limit_mb
 query_timeout = "60s"                 # Wall-clock timeout per Flight query
 max_sql_rows = 1000000                # Row cap for raw SQL over Flight
 max_search_limit = 1000               # Upper bound for client `limit` on /api/search
 max_concurrent_queries_per_tenant = 8 # Unset = unlimited
+
+[querier.datafusion]
+batch_size = 1024                # Scan batch row count; 0 = DataFusion default (8192). Bounds ExternalSorter's unspillable per-batch reservation (#1359)
+target_partitions = 0             # Scan fan-out; 0 = DataFusion default (available parallelism)
+sort_spill_reservation_mb = 10     # Headroom a spilling sort holds back for its merge, taken out of memory_limit_mb
 ```
 
 ### Writer (Commit Coalescing)

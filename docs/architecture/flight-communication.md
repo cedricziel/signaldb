@@ -181,7 +181,12 @@ would otherwise have to perform. Whether that ordering survives from the scan to
 the physical plan depends on the options and optimizer rules actually in force,
 so the function is public and the ordering tests plan against it rather than
 against a session of their own — a rule that quietly dropped the ordering would
-break no result, it would only make queries slow again.
+break no result, it would only make queries slow again. The same section also
+carries the query's scan shape (`batch_size`, `target_partitions`,
+`sort_spill_reservation_mb`) — the shared
+`common::datafusion_runtime::ScanShape` the compactor applies too, so a
+sort's unspillable per-batch reservation stays inside whatever memory pool
+the querier is running under (#1359).
 
 The standalone querier binary additionally serves Tempo's `tempopb.Querier`
 gRPC protocol on the same port as Flight (see the
