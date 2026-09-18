@@ -326,6 +326,28 @@ pushdown_filters = true
 # Evaluate cheap, selective predicates first; only meaningful when
 # pushdown_filters is enabled.
 reorder_filters = true
+#
+# Row count of the batches a query scan feeds downstream (e.g. into a
+# sort). The querier sorts over the same wide-row tables the compactor
+# compacts: DataFusion's ExternalSorter reserves ~2x an incoming batch's
+# bytes the instant it arrives, and that reservation cannot spill, so
+# DataFusion's own 8192-row default is only safe for narrow rows (#1359,
+# the querier analogue of #1064). 0 restores DataFusion's default.
+batch_size = 1024
+#
+# DataFusion partition fan-out for the query scan. Unlike the compactor,
+# queries are latency-sensitive, so this defaults to DataFusion's own
+# fan-out (available parallelism) rather than trading it away for a
+# smaller memory ceiling. Lower it to bound how many concurrent
+# ExternalSorters divide a query's share of memory_limit_mb. 0 restores
+# DataFusion's default.
+target_partitions = 0
+#
+# Memory in MB each spilling sort holds back so its spill merge can run
+# (datafusion.execution.sort_spill_reservation_bytes). Headroom taken out
+# of memory_limit_mb, not added to it. 0 means no headroom, which
+# DataFusion permits.
+sort_spill_reservation_mb = 10
 
 [writer]
 # Writer commit-coalescing policy — how the writer batches ingested data

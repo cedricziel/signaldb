@@ -1950,6 +1950,49 @@ pub struct QuerierDataFusionConfig {
     /// Reorder pushed-down filters so cheap, selective predicates are
     /// evaluated first. Only meaningful when `pushdown_filters` is enabled.
     pub reorder_filters: bool,
+
+    /// Row count of the batches a query scan feeds downstream (e.g. into a
+    /// sort).
+    ///
+    /// The querier sorts over the same wide-row tables the compactor
+    /// compacts — see [`CompactorConfig::scan_batch_size`] for why an
+    /// unbounded row count turns a wide-row batch into a multi-gigabyte,
+    /// unspillable `ExternalSorter` reservation (issue #1359, the querier
+    /// analogue of #1064).
+    ///
+    /// `0` restores DataFusion's default (8192 rows).
+    ///
+    /// Default: 1024.
+    /// Env: SIGNALDB__QUERIER__DATAFUSION__BATCH_SIZE
+    pub batch_size: usize,
+
+    /// DataFusion partition fan-out for the query scan.
+    ///
+    /// Unlike the compactor, queries are latency-sensitive interactive
+    /// requests, so the default leaves DataFusion's own fan-out
+    /// (available parallelism) in place rather than trading it away for a
+    /// smaller memory ceiling. Lower it to bound how many concurrent
+    /// `ExternalSorter`s divide a single query's share of `memory_limit_mb`,
+    /// mirroring `[compactor].target_partitions`.
+    ///
+    /// `0` restores DataFusion's default (available parallelism).
+    ///
+    /// Default: 0.
+    /// Env: SIGNALDB__QUERIER__DATAFUSION__TARGET_PARTITIONS
+    pub target_partitions: usize,
+
+    /// Memory in MB each spilling sort holds back so its spill merge can run
+    /// (`datafusion.execution.sort_spill_reservation_bytes`).
+    ///
+    /// This is headroom taken out of `memory_limit_mb`, not added to it; see
+    /// [`CompactorConfig::sort_spill_reservation_mb`] for the same knob on
+    /// the compaction side.
+    ///
+    /// `0` means no headroom at all, which DataFusion permits.
+    ///
+    /// Default: 10 MB (DataFusion's default).
+    /// Env: SIGNALDB__QUERIER__DATAFUSION__SORT_SPILL_RESERVATION_MB
+    pub sort_spill_reservation_mb: u64,
 }
 
 impl Default for QuerierDataFusionConfig {
@@ -1958,6 +2001,9 @@ impl Default for QuerierDataFusionConfig {
             split_file_groups_by_statistics: true,
             pushdown_filters: true,
             reorder_filters: true,
+            batch_size: 1024,
+            target_partitions: 0,
+            sort_spill_reservation_mb: default_sort_spill_reservation_mb(),
         }
     }
 }
@@ -2312,6 +2358,19 @@ mod tests {
     }
 
     #[test]
+    fn querier_datafusion_scan_shape_defaults() {
+        // batch_size mirrors the compactor's own default (1024, below
+        // DataFusion's 8192) since the querier sorts the same wide-row
+        // tables; target_partitions stays at DataFusion's own default (0)
+        // because queries are latency-sensitive, unlike background
+        // compaction.
+        let config = Configuration::default();
+        assert_eq!(config.querier.datafusion.batch_size, 1024);
+        assert_eq!(config.querier.datafusion.target_partitions, 0);
+        assert_eq!(config.querier.datafusion.sort_spill_reservation_mb, 10);
+    }
+
+    #[test]
     fn querier_datafusion_options_parse_from_toml() {
         Jail::expect_with(|jail| {
             jail.create_file(
@@ -2321,6 +2380,9 @@ mod tests {
                 split_file_groups_by_statistics = false
                 pushdown_filters = false
                 reorder_filters = false
+                batch_size = 256
+                target_partitions = 4
+                sort_spill_reservation_mb = 32
                 "#,
             )?;
             let config: Configuration = Figment::new()
@@ -2330,6 +2392,9 @@ mod tests {
             assert!(!config.querier.datafusion.split_file_groups_by_statistics);
             assert!(!config.querier.datafusion.pushdown_filters);
             assert!(!config.querier.datafusion.reorder_filters);
+            assert_eq!(config.querier.datafusion.batch_size, 256);
+            assert_eq!(config.querier.datafusion.target_partitions, 4);
+            assert_eq!(config.querier.datafusion.sort_spill_reservation_mb, 32);
             Ok(())
         });
     }
@@ -2343,6 +2408,7 @@ mod tests {
             );
             jail.set_env("SIGNALDB__QUERIER__DATAFUSION__PUSHDOWN_FILTERS", "false");
             jail.set_env("SIGNALDB__QUERIER__DATAFUSION__REORDER_FILTERS", "false");
+            jail.set_env("SIGNALDB__QUERIER__DATAFUSION__BATCH_SIZE", "256");
             let config: Configuration = Figment::new()
                 .merge(Serialized::defaults(Configuration::default()))
                 .merge(Env::prefixed("SIGNALDB__").split("__"))
@@ -2350,6 +2416,7 @@ mod tests {
             assert!(!config.querier.datafusion.split_file_groups_by_statistics);
             assert!(!config.querier.datafusion.pushdown_filters);
             assert!(!config.querier.datafusion.reorder_filters);
+            assert_eq!(config.querier.datafusion.batch_size, 256);
             Ok(())
         });
     }
