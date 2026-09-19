@@ -60,7 +60,7 @@ axum = { version = "0.8" }
 axum-core = { version = "0.5", default-features = false, features = ["tracing"] }
 bigdecimal = { version = "0.4", features = ["serde"] }
 bitflags = { version = "2", default-features = false, features = ["serde", "std"] }
-blake2 = { version = "0.10" }
+blake2 = { version = "0.11" }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env", "unstable-ext"] }
 clap_builder = { version = "4", default-features = false, features = ["color", "env", "help", "std", "suggestions", "unstable-ext", "usage"] }
@@ -158,7 +158,7 @@ axum = { version = "0.8" }
 axum-core = { version = "0.5", default-features = false, features = ["tracing"] }
 bigdecimal = { version = "0.4", features = ["serde"] }
 bitflags = { version = "2", default-features = false, features = ["serde", "std"] }
-blake2 = { version = "0.10" }
+blake2 = { version = "0.11" }
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env", "unstable-ext"] }
 clap_builder = { version = "4", default-features = false, features = ["color", "env", "help", "std", "suggestions", "unstable-ext", "usage"] }
