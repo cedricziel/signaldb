@@ -423,6 +423,26 @@ max_drain_bytes_per_cycle = 268435456 # 256 MiB
 # and retry next cycle, never dead-lettered.
 group_commit_timeout = "120s"
 
+[processors]
+# Tenant OTTL processors (change: tenant-ottl-processors) — per-tenant
+# ingest-time transform rules, compiled and cached by a per-tenant
+# `ProcessorRegistry`.
+#
+# How often a stale cache entry is refreshed from the catalog. Also the
+# cross-process propagation bound for a write to /api/v1/processors,
+# surfaced to API callers as `applies_within_seconds`.
+reload_interval = "30s"
+#
+# Maximum request body accepted by POST /api/v1/processors:test.
+test_payload_max_bytes = 1048576 # 1 MiB
+#
+# Maximum number of OTTL statements a single processor may carry.
+max_statements = 200
+#
+# Maximum length of a regex literal in an OTTL statement, enforced at
+# compile time.
+max_regex_len = 2048
+
 [acceptor]
 # Acceptor transport limits. One value drives both the OTLP/HTTP request
 # body limit (all ingest routes: /v1/traces, /v1/logs, /v1/metrics,

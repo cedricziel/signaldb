@@ -31,6 +31,7 @@ testcontainers-modules = { workspace = true, optional = true }
 anyhow.workspace = true
 schema-model = { path = "../schema-model" }
 query-ir = { path = "../query-ir" }
+ottl.workspace = true
 
 datafusion.workspace = true
 serde.workspace = true
@@ -157,6 +158,12 @@ required-features = ["testing"]
 # `testing::start_container_with_retry`, gated on `testing-containers`.
 [[test]]
 name = "catalog_integration"
+required-features = ["testing-containers"]
+
+# Same reasoning again: `processors_store_postgres` starts Postgres through
+# `testing::start_container_with_retry`, gated on `testing-containers`.
+[[test]]
+name = "processors_store_postgres"
 required-features = ["testing-containers"]
 
 # Reaches `common::testing::install_global_tracing_fallback`, gated on the

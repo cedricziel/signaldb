@@ -267,7 +267,12 @@ async fn setup_services() -> TestServices {
         wal_config.clone(),
         wal_config,
     ));
-    let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager);
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        Arc::new(Catalog::new("sqlite::memory:").await.unwrap()),
+        &common::config::ProcessorsConfig::default(),
+    ));
+    let trace_handler =
+        TraceHandler::new(flight_transport.clone(), wal_manager, processor_registry);
     let acceptor_service = TraceAcceptorService::new(trace_handler);
     let acceptor_service_with_auth =
         TraceServiceServer::with_interceptor(acceptor_service, |mut req: tonic::Request<()>| {

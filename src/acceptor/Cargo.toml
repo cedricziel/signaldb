@@ -9,6 +9,7 @@ testing = []
 
 [dependencies]
 common.workspace = true
+ottl.workspace = true
 prost.workspace = true
 
 datafusion.workspace = true

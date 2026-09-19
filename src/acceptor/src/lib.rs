@@ -65,6 +65,7 @@ pub struct AcceptorResources {
     pub authenticator: Arc<Authenticator>,
     pub rate_limiter: Arc<common::ratelimit::TenantRateLimiter>,
     pub storage_usage: Arc<common::storage_usage::StorageUsageTracker>,
+    pub processor_registry: Arc<common::processors::ProcessorRegistry>,
 }
 
 /// Initialize shared resources for acceptor services
@@ -76,6 +77,7 @@ pub async fn init_acceptor_resources(
     // Keep a copy for the storage usage refresher, which needs the full
     // configuration to open the Iceberg catalog.
     let full_config = config.clone();
+    let processors_config = full_config.processors.clone();
 
     // Initialize service bootstrap for catalog-based discovery
     let service_bootstrap = ServiceBootstrap::new(config, ServiceType::Acceptor, advertise_addr)
@@ -184,6 +186,13 @@ pub async fn init_acceptor_resources(
         );
     }
 
+    // Tenant OTTL processors (change: tenant-ottl-processors): compiled and
+    // cached per tenant, refreshed on the configured TTL.
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        catalog.clone(),
+        &processors_config,
+    ));
+
     // Create Authenticator for multi-tenant authentication
     let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 
@@ -195,6 +204,7 @@ pub async fn init_acceptor_resources(
         authenticator,
         rate_limiter,
         storage_usage,
+        processor_registry,
     })
 }
 
@@ -224,13 +234,18 @@ pub async fn serve_otlp_grpc(
         authenticator,
         rate_limiter,
         storage_usage,
+        processor_registry,
     } = config.resources;
 
     // Set up OTLP/gRPC services with handler pattern and WAL Manager
     // integration. Authentication is a single tower layer applied once
     // around the whole server below (crate::middleware::GrpcAuthLayer),
     // not a per-service interceptor.
-    let log_handler = LogHandler::new(flight_transport.clone(), wal_manager.clone());
+    let log_handler = LogHandler::new(
+        flight_transport.clone(),
+        wal_manager.clone(),
+        processor_registry.clone(),
+    );
     let log_service = LogAcceptorService::new(log_handler)
         .with_rate_limiter(rate_limiter.clone())
         .with_storage_quota(storage_usage.clone());
@@ -239,7 +254,11 @@ pub async fn serve_otlp_grpc(
         .accept_compressed(CompressionEncoding::Zstd)
         .max_decoding_message_size(max_decoding_message_size);
 
-    let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager.clone());
+    let trace_handler = TraceHandler::new(
+        flight_transport.clone(),
+        wal_manager.clone(),
+        processor_registry.clone(),
+    );
     let trace_service = TraceAcceptorService::new(trace_handler)
         .with_rate_limiter(rate_limiter.clone())
         .with_storage_quota(storage_usage.clone());
@@ -248,7 +267,11 @@ pub async fn serve_otlp_grpc(
         .accept_compressed(CompressionEncoding::Zstd)
         .max_decoding_message_size(max_decoding_message_size);
 
-    let metrics_handler = MetricsHandler::new(flight_transport.clone(), wal_manager.clone());
+    let metrics_handler = MetricsHandler::new(
+        flight_transport.clone(),
+        wal_manager.clone(),
+        processor_registry.clone(),
+    );
     let metrics_service = MetricsAcceptorService::new(metrics_handler)
         .with_rate_limiter(rate_limiter.clone())
         .with_storage_quota(storage_usage.clone());
@@ -871,6 +894,7 @@ pub struct HttpAcceptorConfig {
     pub authenticator: Arc<Authenticator>,
     pub rate_limiter: Arc<common::ratelimit::TenantRateLimiter>,
     pub storage_usage: Arc<common::storage_usage::StorageUsageTracker>,
+    pub processor_registry: Arc<common::processors::ProcessorRegistry>,
     /// Maximum decoded request body size, in bytes, for every OTLP/HTTP and
     /// Prometheus remote_write route. From `[acceptor].max_request_body_bytes`,
     /// shared with the gRPC side's `max_decoding_message_size`.
@@ -925,18 +949,21 @@ pub async fn serve_otlp_http(
     let trace_handler = Arc::new(TraceHandler::new(
         config.flight_transport.clone(),
         config.wal_manager.clone(),
+        config.processor_registry.clone(),
     ));
 
     // Create log handler with shared resources (same WAL + Flight path as gRPC)
     let log_handler = Arc::new(LogHandler::new(
         config.flight_transport.clone(),
         config.wal_manager.clone(),
+        config.processor_registry.clone(),
     ));
 
     // Create metrics handler with shared resources (same WAL + Flight path as gRPC)
     let metrics_handler = Arc::new(MetricsHandler::new(
         config.flight_transport.clone(),
         config.wal_manager.clone(),
+        config.processor_registry.clone(),
     ));
 
     // Build combined router with health, traces, logs, metrics, Prometheus,

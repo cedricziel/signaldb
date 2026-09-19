@@ -1079,6 +1079,35 @@ impl Catalog {
                 .execute(pool)
                 .await?;
 
+                // Tenant OTTL processors (change: tenant-ottl-processors,
+                // design D3). `dataset` is the dataset *name* (nullable for
+                // tenant-wide rules), matching what `TenantContext.dataset_id`
+                // carries and `api_keys.dataset_ids` stores. The composite FK
+                // relies on `datasets`' `UNIQUE(tenant_id, name)` and the
+                // SQLite pool's `PRAGMA foreign_keys = ON` so a dataset
+                // delete cascades here with no extra code.
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS processors (
+                    tenant_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    dataset TEXT,
+                    signal TEXT NOT NULL,
+                    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    priority INTEGER NOT NULL DEFAULT 100,
+                    error_mode TEXT NOT NULL DEFAULT 'ignore',
+                    description TEXT,
+                    statements TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (tenant_id, name),
+                    FOREIGN KEY (tenant_id, dataset) REFERENCES datasets(tenant_id, name) ON DELETE CASCADE,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+
                 // OAuth 2.1 authorization-server tables (change: mcp-oauth-dcr).
                 // Dynamically-registered clients, single-use authorization
                 // codes, and opaque access/refresh tokens (stored as hashes).
@@ -1505,6 +1534,31 @@ impl Catalog {
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     PRIMARY KEY (tenant_id, namespace, version)
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+
+                // Tenant OTTL processors (change: tenant-ottl-processors,
+                // design D3). See the SQLite branch above for the FK
+                // rationale.
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS processors (
+                    tenant_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    dataset TEXT,
+                    signal TEXT NOT NULL,
+                    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    priority INTEGER NOT NULL DEFAULT 100,
+                    error_mode TEXT NOT NULL DEFAULT 'ignore',
+                    description TEXT,
+                    statements TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (tenant_id, name),
+                    FOREIGN KEY (tenant_id, dataset) REFERENCES datasets(tenant_id, name) ON DELETE CASCADE,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
                 )"#,
                 )
                 .execute(pool)
@@ -8138,6 +8192,52 @@ mod multi_tenancy_tests {
 
         let datasets = catalog.get_datasets("nonexistent").await.unwrap();
         assert!(datasets.is_empty());
+    }
+
+    /// Deleting a tenant must also remove its tenant-wide processors
+    /// (`dataset = NULL`), which the composite `(tenant_id, dataset)` FK
+    /// to `datasets` never covers, as well as its dataset-scoped ones —
+    /// otherwise a reused tenant id would silently inherit stale
+    /// transforms.
+    #[tokio::test]
+    async fn deleting_tenant_cascades_tenant_wide_and_dataset_scoped_processors() {
+        use crate::processors::ProcessorSpec;
+
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", None, "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "default").await.unwrap();
+
+        let tenant_wide = ProcessorSpec {
+            name: "tenant-wide".to_string(),
+            dataset: None,
+            signal: "traces".to_string(),
+            enabled: true,
+            priority: 100,
+            error_mode: "ignore".to_string(),
+            description: None,
+            statements: vec![r#"set(attributes["k"], "v")"#.to_string()],
+        };
+        let dataset_scoped = ProcessorSpec {
+            name: "dataset-scoped".to_string(),
+            dataset: Some("default".to_string()),
+            ..tenant_wide.clone()
+        };
+        catalog
+            .insert_processor("acme", &tenant_wide)
+            .await
+            .unwrap();
+        catalog
+            .insert_processor("acme", &dataset_scoped)
+            .await
+            .unwrap();
+        assert_eq!(catalog.list_processors("acme").await.unwrap().len(), 2);
+
+        assert!(catalog.delete_tenant("acme").await.unwrap());
+
+        assert!(catalog.list_processors("acme").await.unwrap().is_empty());
     }
 }
 

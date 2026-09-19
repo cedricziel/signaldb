@@ -298,7 +298,19 @@ async fn test_acceptor_writer_flow() {
         wal_config.clone(),
         wal_config,
     ));
-    let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager.clone());
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        Arc::new(
+            common::catalog::Catalog::new("sqlite::memory:")
+                .await
+                .unwrap(),
+        ),
+        &common::config::ProcessorsConfig::default(),
+    ));
+    let trace_handler = TraceHandler::new(
+        flight_transport.clone(),
+        wal_manager.clone(),
+        processor_registry,
+    );
     let acceptor_service = TraceAcceptorService::new(trace_handler);
 
     // Start acceptor service on a random port

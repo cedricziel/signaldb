@@ -737,6 +737,7 @@ Once signed in, a user menu appears in the top bar showing an avatar
 - **GitHub** — opens the GitHub integration page (see below); same
   admin-only rule as **API keys**.
 - **Schema** — opens the Schema hub (see below).
+- **Processors** — opens the Processors page (see below).
 - **Docs** — opens the SignalDB documentation in a new tab.
 - **Switch tenant** — opens the Tenant Selection page (see below).
 - **Sign out** — deletes the session, clears the query cache, and
@@ -897,6 +898,24 @@ views:
 - **Storage** (`/schema/storage`, instance admins only) — the logical
   (query-facing) field model and the resolved physical storage schema
   per signal source, as before.
+
+### Processors (`/processors`)
+
+Lists the tenant's [OTTL telemetry processors](processors.md): name, signal,
+dataset, enabled state, priority, status (`ok`/`invalid`), and last update, a
+disabled processor visually distinct from an enabled one. Tenant admins can
+create, edit, enable/disable, and delete processors here; other members see
+the page read-only. The editor takes name, description, signal, a dataset
+picker (the tenant's datasets, plus "all datasets"), enabled, priority, error
+mode, and statements (one per line); on blur, or an explicit **Validate**
+action, it calls `:validate` and annotates each failing line with its
+message and column — Save is disabled while any error is present. A
+**Test** panel, preloaded with a sample OTLP JSON payload for the selected
+signal and editable, submits the current (unsaved) processor to `:test` and
+renders a before/after diff of the payload plus per-statement match and
+error counts. After a successful save the editor shows an "applies within
+N seconds" hint, matching `[processors].reload_interval`. Everything goes
+through the generated TypeScript client.
 
 Tenant admins also get **New** / **Upload registry** on the Conventions
 tab and **Edit** on custom registries: a source editor over the

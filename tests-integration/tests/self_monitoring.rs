@@ -87,6 +87,10 @@ async fn self_monitoring_export_lands_in_system_wal() {
     assert!(config.auth.tenants.iter().any(|t| t.id == "_system"));
 
     let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        catalog.clone(),
+        &common::config::ProcessorsConfig::default(),
+    ));
     let authenticator = Arc::new(Authenticator::new(config.auth.clone(), catalog));
 
     let bootstrap = ServiceBootstrap::new(
@@ -105,7 +109,8 @@ async fn self_monitoring_export_lands_in_system_wal() {
         wal_config(&temp_dir, "profiles"),
     ));
 
-    let trace_handler = TraceHandler::new(flight_transport, wal_manager.clone());
+    let trace_handler =
+        TraceHandler::new(flight_transport, wal_manager.clone(), processor_registry);
     let service = TraceAcceptorService::new(trace_handler);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -225,7 +230,16 @@ async fn anti_loop_guard_prevents_reinstrumentation_of_system_requests() {
             wal_config(&temp_dir, "metrics"),
             wal_config(&temp_dir, "profiles"),
         ));
-        let service = TraceAcceptorService::new(TraceHandler::new(flight_transport, wal_manager));
+        let processor_catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+            processor_catalog,
+            &common::config::ProcessorsConfig::default(),
+        ));
+        let service = TraceAcceptorService::new(TraceHandler::new(
+            flight_transport,
+            wal_manager,
+            processor_registry,
+        ));
 
         let subscriber = tracing_subscriber::registry().with(
             CountingLayer(counter.clone()).with_filter(common::self_monitoring::OtelExportFilter),

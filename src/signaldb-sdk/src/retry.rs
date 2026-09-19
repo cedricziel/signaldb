@@ -312,6 +312,7 @@ pub fn throttle_of(err: &(dyn std::error::Error + 'static)) -> Option<Throttled>
         crate::types::ApiError,
         crate::types::ApiErrorBody,
         crate::types::ManageError,
+        crate::types::ProcessorError,
         crate::types::SchemaError,
     );
     None
@@ -325,6 +326,7 @@ pub const KNOWN_ERROR_TYPES: &[&str] = &[
     "ApiError",
     "ApiErrorBody",
     "ManageError",
+    "ProcessorError",
     "SchemaError",
 ];
 

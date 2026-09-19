@@ -142,9 +142,17 @@ async fn setup_logs_test() -> (axum::Router, Arc<WalManager>, TempDir) {
     let storage_usage =
         Arc::new(common::storage_usage::StorageUsageTracker::from_auth_config(&auth_config));
 
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        catalog.clone(),
+        &common::config::ProcessorsConfig::default(),
+    ));
     let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 
-    let log_handler = Arc::new(LogHandler::new(flight_transport, wal_manager.clone()));
+    let log_handler = Arc::new(LogHandler::new(
+        flight_transport,
+        wal_manager.clone(),
+        processor_registry,
+    ));
 
     let app = logs_http_router(authenticator, log_handler, rate_limiter, storage_usage);
 

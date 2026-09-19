@@ -81,7 +81,8 @@ pub struct ListTenantsResponse {
 /// `scopes` is required and non-empty: a key's permissions are always
 /// explicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,
 /// `profiles:write`, `traces:read`, `logs:read`, `metrics:read`,
-/// `profiles:read`, `schema:read`, `schema:write`.
+/// `profiles:read`, `schema:read`, `schema:write`, `processors:read`,
+/// `processors:write`.
 ///
 /// The legacy singular `dataset_id` field is not accepted here (removed in
 /// the multi-dataset-key-restriction change): a request body carrying it is

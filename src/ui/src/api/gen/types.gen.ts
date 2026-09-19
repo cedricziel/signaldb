@@ -410,7 +410,8 @@ export type CostMode = 'metadata' | 'sampled_scan' | 'none';
  * `scopes` is required and non-empty: a key's permissions are always
  * explicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,
  * `profiles:write`, `traces:read`, `logs:read`, `metrics:read`,
- * `profiles:read`, `schema:read`, `schema:write`.
+ * `profiles:read`, `schema:read`, `schema:write`, `processors:read`,
+ * `processors:write`.
  *
  * The legacy singular `dataset_id` field is not accepted here (removed in
  * the multi-dataset-key-restriction change): a request body carrying it is
@@ -1388,6 +1389,82 @@ export type OtlpHttpPaths = {
 };
 
 /**
+ * Error body for the processors API.
+ */
+export type ProcessorError = {
+    error: string;
+    /**
+     * Positional compile errors (422 only).
+     */
+    errors?: Array<StatementError>;
+};
+
+export type ProcessorListResponse = {
+    processors: Array<ProcessorResponse>;
+};
+
+/**
+ * A stored processor row.
+ */
+export type ProcessorRecord = {
+    /**
+     * RFC3339 timestamp, as stored (`StoredRegistry` follows the same
+     * string-typed convention for the same reason: one dialect-agnostic
+     * decode path in the store, see `row_to_record`).
+     */
+    created_at: string;
+    /**
+     * The dataset *name* this processor applies to, or `None` for a
+     * tenant-wide rule.
+     */
+    dataset?: string | null;
+    description?: string | null;
+    enabled: boolean;
+    error_mode: string;
+    name: string;
+    priority: number;
+    signal: string;
+    statements: Array<string>;
+    tenant_id: string;
+    updated_at: string;
+};
+
+/**
+ * A processor row plus its compiled status.
+ */
+export type ProcessorResponse = ProcessorRecord & {
+    /**
+     * `"invalid"` when the stored statements currently fail to compile
+     * (skipped at apply time, never blocking ingest); `"ok"` otherwise.
+     */
+    status: string;
+};
+
+/**
+ * Caller-supplied processor definition, without tenant scoping or
+ * timestamps — the body of a create/replace request.
+ */
+export type ProcessorSpec = {
+    dataset?: string | null;
+    description?: string | null;
+    enabled?: boolean;
+    error_mode?: string;
+    name: string;
+    priority?: number;
+    signal: string;
+    statements: Array<string>;
+};
+
+/**
+ * Every write response carries the cross-process propagation bound for the
+ * change: the `ProcessorRegistry` cache TTL, in seconds.
+ */
+export type ProcessorWriteResponse = ProcessorRecord & {
+    applies_within_seconds: number;
+    status: string;
+};
+
+/**
  * Summary of a stored profile linked to a trace, without the bulky
  * stack/sample payloads.
  */
@@ -1811,6 +1888,15 @@ export type SpanSet = {
 };
 
 /**
+ * One compile error, positioned to a statement and (where known) a column.
+ */
+export type StatementError = {
+    column?: number | null;
+    message: string;
+    statement: number;
+};
+
+/**
  * API response for table information
  */
 export type TableInfo = {
@@ -1928,6 +2014,36 @@ export type TenantSelfListResponse = {
      * List of tenants
      */
     tenants: Array<TenantInfo>;
+};
+
+export type TestRequest = {
+    dataset?: string | null;
+    /**
+     * The OTLP export request (OTLP/JSON), for `signal`.
+     */
+    payload: unknown;
+    /**
+     * Processors to apply, in the given order; when omitted, the tenant's
+     * stored processors for `signal`/`dataset` are used instead.
+     */
+    processors?: Array<ProcessorSpec> | null;
+    signal: string;
+};
+
+export type TestResponse = {
+    payload: unknown;
+    statements: Array<TestStatementResult>;
+};
+
+export type TestStatementResult = {
+    errors: number;
+    index: number;
+    matched: number;
+    /**
+     * Name of the processor this statement belongs to, so results from
+     * multiple processors (each restarting `index` at 0) can be told apart.
+     */
+    processor: string;
 };
 
 /**
@@ -2081,6 +2197,15 @@ export type UserResponse = {
      * Whether the user is an instance administrator.
      */
     instance_admin: boolean;
+};
+
+export type ValidateRequest = {
+    signal: string;
+    statements: Array<string>;
+};
+
+export type ValidateResponse = {
+    errors?: Array<StatementError>;
 };
 
 /**
@@ -3679,6 +3804,391 @@ export type OpsCompactStatusResponses = {
      */
     200: unknown;
 };
+
+export type ProcessorsListData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/processors';
+};
+
+export type ProcessorsListErrors = {
+    /**
+     * Missing processors:read scope
+     */
+    403: ProcessorError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type ProcessorsListError = ProcessorsListErrors[keyof ProcessorsListErrors];
+
+export type ProcessorsListResponses = {
+    /**
+     * This tenant's processors
+     */
+    200: ProcessorListResponse;
+};
+
+export type ProcessorsListResponse = ProcessorsListResponses[keyof ProcessorsListResponses];
+
+export type ProcessorsCreateData = {
+    body: ProcessorSpec;
+    path?: never;
+    query?: never;
+    url: '/api/v1/processors';
+};
+
+export type ProcessorsCreateErrors = {
+    /**
+     * Unparseable body
+     */
+    400: ProcessorError;
+    /**
+     * Missing processors:write scope
+     */
+    403: ProcessorError;
+    /**
+     * Processor already exists
+     */
+    409: ProcessorError;
+    /**
+     * Invalid spec or unknown dataset
+     */
+    422: ProcessorError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type ProcessorsCreateError = ProcessorsCreateErrors[keyof ProcessorsCreateErrors];
+
+export type ProcessorsCreateResponses = {
+    /**
+     * Processor created
+     */
+    201: ProcessorWriteResponse;
+};
+
+export type ProcessorsCreateResponse = ProcessorsCreateResponses[keyof ProcessorsCreateResponses];
+
+export type ProcessorsDeleteData = {
+    body?: never;
+    path: {
+        /**
+         * Processor name
+         */
+        name: string;
+    };
+    query?: never;
+    url: '/api/v1/processors/{name}';
+};
+
+export type ProcessorsDeleteErrors = {
+    /**
+     * Missing processors:write scope
+     */
+    403: ProcessorError;
+    /**
+     * No such processor
+     */
+    404: ProcessorError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type ProcessorsDeleteError = ProcessorsDeleteErrors[keyof ProcessorsDeleteErrors];
+
+export type ProcessorsDeleteResponses = {
+    /**
+     * Processor deleted
+     */
+    204: void;
+};
+
+export type ProcessorsDeleteResponse = ProcessorsDeleteResponses[keyof ProcessorsDeleteResponses];
+
+export type ProcessorsGetData = {
+    body?: never;
+    path: {
+        /**
+         * Processor name
+         */
+        name: string;
+    };
+    query?: never;
+    url: '/api/v1/processors/{name}';
+};
+
+export type ProcessorsGetErrors = {
+    /**
+     * Missing processors:read scope
+     */
+    403: ProcessorError;
+    /**
+     * No such processor
+     */
+    404: ProcessorError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type ProcessorsGetError = ProcessorsGetErrors[keyof ProcessorsGetErrors];
+
+export type ProcessorsGetResponses = {
+    /**
+     * The processor
+     */
+    200: ProcessorResponse;
+};
+
+export type ProcessorsGetResponse = ProcessorsGetResponses[keyof ProcessorsGetResponses];
+
+export type ProcessorsReplaceData = {
+    body: ProcessorSpec;
+    path: {
+        /**
+         * Processor name
+         */
+        name: string;
+    };
+    query?: never;
+    url: '/api/v1/processors/{name}';
+};
+
+export type ProcessorsReplaceErrors = {
+    /**
+     * Unparseable body
+     */
+    400: ProcessorError;
+    /**
+     * Missing processors:write scope
+     */
+    403: ProcessorError;
+    /**
+     * No such processor (PUT never upserts)
+     */
+    404: ProcessorError;
+    /**
+     * Invalid spec or unknown dataset
+     */
+    422: ProcessorError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type ProcessorsReplaceError = ProcessorsReplaceErrors[keyof ProcessorsReplaceErrors];
+
+export type ProcessorsReplaceResponses = {
+    /**
+     * Processor replaced
+     */
+    200: ProcessorWriteResponse;
+};
+
+export type ProcessorsReplaceResponse = ProcessorsReplaceResponses[keyof ProcessorsReplaceResponses];
+
+export type ProcessorsTestData = {
+    body: TestRequest;
+    path?: never;
+    query?: never;
+    url: '/api/v1/processors:test';
+};
+
+export type ProcessorsTestErrors = {
+    /**
+     * Unparseable body or payload
+     */
+    400: ProcessorError;
+    /**
+     * Missing processors:read scope
+     */
+    403: ProcessorError;
+    /**
+     * Payload exceeds processors.test_payload_max_bytes
+     */
+    413: ProcessorError;
+    /**
+     * Inline processors failed to compile
+     */
+    422: ProcessorError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type ProcessorsTestError = ProcessorsTestErrors[keyof ProcessorsTestErrors];
+
+export type ProcessorsTestResponses = {
+    /**
+     * The transformed payload and per-statement counts
+     */
+    200: TestResponse;
+};
+
+export type ProcessorsTestResponse = ProcessorsTestResponses[keyof ProcessorsTestResponses];
+
+export type ProcessorsValidateData = {
+    body: ValidateRequest;
+    path?: never;
+    query?: never;
+    url: '/api/v1/processors:validate';
+};
+
+export type ProcessorsValidateErrors = {
+    /**
+     * Unparseable body
+     */
+    400: ProcessorError;
+    /**
+     * Missing processors:read scope
+     */
+    403: ProcessorError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type ProcessorsValidateError = ProcessorsValidateErrors[keyof ProcessorsValidateErrors];
+
+export type ProcessorsValidateResponses = {
+    /**
+     * Validation outcome; nothing is stored
+     */
+    200: ValidateResponse;
+};
+
+export type ProcessorsValidateResponse = ProcessorsValidateResponses[keyof ProcessorsValidateResponses];
 
 export type QueryIrData = {
     body: QueryIrRequest;

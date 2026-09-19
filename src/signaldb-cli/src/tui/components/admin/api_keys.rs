@@ -81,7 +81,7 @@ impl ApiKeysPanel {
             creating: false,
             name_input: TextInput::with_placeholder("Key name"),
             scopes_input: TextInput::with_placeholder(
-                "traces:write logs:write metrics:write profiles:write schema:read schema:write",
+                "traces:write logs:write metrics:write profiles:write schema:read schema:write processors:read processors:write",
             ),
             dataset_input: TextInput::with_placeholder("optional dataset"),
             focus: CreateField::Name,

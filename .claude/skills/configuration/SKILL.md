@@ -484,6 +484,18 @@ cpu_sample_rate = 100                 # Hz
 memory_profiling = false              # Needs `jemalloc-profiling` build feature
 ```
 
+### Processors (Tenant OTTL Processors)
+
+```toml
+[processors]
+reload_interval = "30s"            # ProcessorRegistry per-tenant cache TTL; cross-process propagation delay
+test_payload_max_bytes = 1048576   # 1 MiB cap on :test's inline OTLP JSON payload
+max_statements = 200               # Compiled-program statement cap per processor
+max_regex_len = 2048               # Max regex pattern source length in bytes (compiled size is capped separately at 1 MiB via regex::RegexBuilder::size_limit)
+```
+
+Env: `SIGNALDB__PROCESSORS__RELOAD_INTERVAL`, `SIGNALDB__PROCESSORS__TEST_PAYLOAD_MAX_BYTES`, `SIGNALDB__PROCESSORS__MAX_STATEMENTS`, `SIGNALDB__PROCESSORS__MAX_REGEX_LEN` (double-underscore form). Optional section; all fields default as shown. See `docs/users/processors.md`.
+
 ### Tenants (Per-Tenant Schema Overrides)
 
 ```toml

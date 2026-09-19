@@ -132,8 +132,16 @@ async fn setup_traces_test() -> (axum::Router, TempDir) {
     ));
     let storage_usage =
         Arc::new(common::storage_usage::StorageUsageTracker::from_auth_config(&auth_config));
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        catalog.clone(),
+        &common::config::ProcessorsConfig::default(),
+    ));
     let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
-    let trace_handler = Arc::new(TraceHandler::new(flight_transport, wal_manager));
+    let trace_handler = Arc::new(TraceHandler::new(
+        flight_transport,
+        wal_manager,
+        processor_registry,
+    ));
 
     let app = traces_http_router(authenticator, trace_handler, rate_limiter, storage_usage);
     (app, temp_dir)

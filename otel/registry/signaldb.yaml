@@ -333,3 +333,18 @@ groups:
       - ref: error.type
         brief: The compactor's retry classification of the failure.
         examples: ["conflict", "resource_exhausted", "validation"]
+
+  - id: registry.signaldb.processors
+    type: attribute_group
+    display_name: SignalDB Telemetry Processor Attributes
+    brief: Per-tenant OTTL processor application at ingest.
+    attributes:
+      - id: signaldb.signal
+        type: string
+        stability: development
+        brief: The OTLP signal a processor set was applied to.
+        examples: ["traces", "logs", "metrics"]
+      - id: signaldb.processors.count
+        type: int
+        stability: development
+        brief: Number of processors matched and applied to the request.

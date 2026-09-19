@@ -1,0 +1,20 @@
+[package]
+name = "ottl"
+version = "0.1.0"
+edition = "2024"
+description = "Bounded in-house OTTL (OpenTelemetry Transformation Language) subset: parser, compiler, evaluator"
+license = "AGPL-3.0"
+
+[dependencies]
+pest.workspace = true
+pest_derive.workspace = true
+regex.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+opentelemetry-proto.workspace = true
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
+[package.metadata.cargo-machete]
+# workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
+ignored = ["workspace-hack"]

@@ -70,6 +70,7 @@ impl Modify for SecurityAddon {
         (name = "session", description = "Browser session login for the embedded UI"),
         (name = "schema", description = "Schema registry: semantic-convention registries, attribute/entity/metric resolution"),
         (name = "github", description = "GitHub App installations linked to a tenant"),
+        (name = "processors", description = "Tenant OTTL processors applied at ingest"),
     ),
     paths(
         crate::endpoints::admin::list_tenants,
@@ -163,6 +164,13 @@ impl Modify for SecurityAddon {
         crate::endpoints::schema::resolve_entity,
         crate::endpoints::schema::search_metrics,
         crate::endpoints::schema::resolve_metric,
+        crate::endpoints::processors::list_processors,
+        crate::endpoints::processors::create_processor,
+        crate::endpoints::processors::validate_processor,
+        crate::endpoints::processors::get_processor,
+        crate::endpoints::processors::replace_processor,
+        crate::endpoints::processors::delete_processor,
+        crate::endpoints::processors::test_processor,
     ),
     components(schemas(
         // signaldb-api admin DTOs
@@ -294,6 +302,18 @@ impl Modify for SecurityAddon {
         crate::endpoints::schema::AttributeResolution,
         crate::endpoints::schema::EntityResolution,
         crate::endpoints::schema::MetricResolution,
+        common::processors::ProcessorRecord,
+        common::processors::ProcessorSpec,
+        crate::endpoints::processors::ProcessorError,
+        crate::endpoints::processors::StatementError,
+        crate::endpoints::processors::ProcessorResponse,
+        crate::endpoints::processors::ProcessorListResponse,
+        crate::endpoints::processors::ProcessorWriteResponse,
+        crate::endpoints::processors::ValidateRequest,
+        crate::endpoints::processors::ValidateResponse,
+        crate::endpoints::processors::TestRequest,
+        crate::endpoints::processors::TestResponse,
+        crate::endpoints::processors::TestStatementResult,
         common::schema_registry::RegistrySource,
         common::schema_registry::RegistrySummary,
         common::schema_registry::ValidationReport,
@@ -596,6 +616,11 @@ mod tests {
         "/api/v1/schema/entities/{name}",
         "/api/v1/schema/metrics",
         "/api/v1/schema/metrics/{name}",
+        // endpoints/processors.rs, merged at /api/v1
+        "/api/v1/processors",
+        "/api/v1/processors:validate",
+        "/api/v1/processors:test",
+        "/api/v1/processors/{name}",
     ];
 
     /// Routes registered by the auto-extracted files (see
@@ -681,7 +706,7 @@ mod tests {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         // (file, mount prefix, Some(fn name) to scope extraction to one
         // function body when the file assembles more than one router).
-        let files_with_prefix: [(&str, &str, Option<&str>); 11] = [
+        let files_with_prefix: [(&str, &str, Option<&str>); 12] = [
             ("src/endpoints/tempo.rs", "/tempo", None),
             ("src/endpoints/logql.rs", "/loki", None),
             ("src/endpoints/promql.rs", "/prometheus", None),
@@ -691,6 +716,7 @@ mod tests {
             ("src/endpoints/query.rs", "/api/v1", None),
             ("src/endpoints/management.rs", "/api/v1/manage", None),
             ("src/endpoints/schema.rs", "/api/v1/schema", None),
+            ("src/endpoints/processors.rs", "/api/v1", None),
             ("src/endpoints/pyroscope.rs", "/pyroscope", Some("router")),
             (
                 "src/endpoints/pyroscope.rs",

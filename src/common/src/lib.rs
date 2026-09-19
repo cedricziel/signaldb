@@ -14,6 +14,7 @@ pub mod flight;
 pub mod iceberg;
 pub mod model;
 pub mod parquet_metadata_cache;
+pub mod processors;
 pub mod profile;
 /// The query IR lives in its own leaf crate (`serde` only) so a document can be
 /// built and validated without linking the query engine. Re-exported here

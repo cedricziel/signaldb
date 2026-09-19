@@ -225,7 +225,20 @@ async fn setup_test_services() -> TestServices {
         wal_config.clone(), // metrics config
         wal_config.clone(), // profiles config
     ));
-    let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager.clone());
+    let processor_catalog = Arc::new(
+        Catalog::new(config.discovery.as_ref().unwrap().dsn.as_str())
+            .await
+            .expect("catalog"),
+    );
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        processor_catalog,
+        &common::config::ProcessorsConfig::default(),
+    ));
+    let trace_handler = TraceHandler::new(
+        flight_transport.clone(),
+        wal_manager.clone(),
+        processor_registry,
+    );
     let acceptor_service = TraceAcceptorService::new(trace_handler);
     let acceptor_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let acceptor_addr = acceptor_listener.local_addr().unwrap();
@@ -1329,7 +1342,20 @@ async fn setup_multi_tenant_test_services() -> TestServices {
 
     // Create acceptor with gRPC authentication interceptor
     // This injects tenant context from gRPC metadata into request extensions
-    let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager.clone());
+    let processor_catalog = Arc::new(
+        Catalog::new(config.discovery.as_ref().unwrap().dsn.as_str())
+            .await
+            .expect("catalog"),
+    );
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        processor_catalog,
+        &common::config::ProcessorsConfig::default(),
+    ));
+    let trace_handler = TraceHandler::new(
+        flight_transport.clone(),
+        wal_manager.clone(),
+        processor_registry,
+    );
     let acceptor_service = TraceAcceptorService::new(trace_handler);
 
     // Add authentication interceptor that extracts tenant from gRPC metadata

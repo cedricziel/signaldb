@@ -68,6 +68,17 @@ pub const SCHEMA_WRITE_SCOPE: &str = "schema:write";
 /// Both schema-registry scopes.
 pub const SCHEMA_SCOPES: [&str; 2] = [SCHEMA_READ_SCOPE, SCHEMA_WRITE_SCOPE];
 
+/// Scope granting read access to tenant OTTL processors (list/get/validate/
+/// test). A read scope: OAuth grants it by default.
+pub const PROCESSORS_READ_SCOPE: &str = "processors:read";
+
+/// Scope granting mutation of tenant OTTL processors (create/replace/
+/// delete). Never OAuth-grantable.
+pub const PROCESSORS_WRITE_SCOPE: &str = "processors:write";
+
+/// Both processor scopes.
+pub const PROCESSORS_SCOPES: [&str; 2] = [PROCESSORS_READ_SCOPE, PROCESSORS_WRITE_SCOPE];
+
 /// Per-signal ingest scopes enforced by the acceptor; a key carrying
 /// `<signal>:write` may ingest that signal (see [`TenantContext::can_ingest`]).
 pub const INGEST_SCOPES: [&str; 4] = [
@@ -90,12 +101,13 @@ pub const SIGNAL_READ_SCOPES: [&str; 4] =
 /// grantable through OAuth consent. A token or key carrying `<signal>:read`
 /// may read that signal (see [`TenantContext::can_read`]); `schema:read`
 /// covers the schema registry.
-pub const READ_SCOPES: [&str; 5] = [
+pub const READ_SCOPES: [&str; 6] = [
     SIGNAL_READ_SCOPES[0],
     SIGNAL_READ_SCOPES[1],
     SIGNAL_READ_SCOPES[2],
     SIGNAL_READ_SCOPES[3],
     SCHEMA_READ_SCOPE,
+    PROCESSORS_READ_SCOPE,
 ];
 
 /// Scope granting an API key self-management of the tenant it belongs to
@@ -109,7 +121,7 @@ pub const TENANT_MANAGE_SCOPE: &str = "tenant:manage";
 /// SCHEMA_SCOPES ∪ {TENANT_MANAGE_SCOPE}`. Every key-management surface
 /// (admin API, management API, CLI, MCP, UI) accepts exactly these; see
 /// [`validate_scopes`].
-pub const API_KEY_SCOPES: [&str; 11] = [
+pub const API_KEY_SCOPES: [&str; 13] = [
     "metrics:write",
     "logs:write",
     "traces:write",
@@ -120,6 +132,8 @@ pub const API_KEY_SCOPES: [&str; 11] = [
     "profiles:read",
     SCHEMA_READ_SCOPE,
     SCHEMA_WRITE_SCOPE,
+    PROCESSORS_READ_SCOPE,
+    PROCESSORS_WRITE_SCOPE,
     TENANT_MANAGE_SCOPE,
 ];
 
@@ -316,6 +330,24 @@ impl TenantContext {
     /// shape as [`can_ingest`](Self::can_ingest) with [`SCHEMA_WRITE_SCOPE`].
     pub fn can_write_schema(&self) -> bool {
         self.can_manage_tenant() && self.has_scope_or_unrestricted(SCHEMA_WRITE_SCOPE)
+    }
+
+    /// Whether this principal may read tenant OTTL processors.
+    ///
+    /// Any membership role may read; a legacy key with no explicit scopes is
+    /// unrestricted; explicit scopes must contain [`PROCESSORS_READ_SCOPE`].
+    pub fn can_read_processors(&self) -> bool {
+        self.has_scope_or_unrestricted(PROCESSORS_READ_SCOPE)
+    }
+
+    /// Whether this principal may create, replace, validate, or delete
+    /// tenant OTTL processors.
+    ///
+    /// Sessions need tenant Admin or instance-admin; keys follow the same
+    /// shape as [`can_ingest`](Self::can_ingest) with
+    /// [`PROCESSORS_WRITE_SCOPE`].
+    pub fn can_write_processors(&self) -> bool {
+        self.can_manage_tenant() && self.has_scope_or_unrestricted(PROCESSORS_WRITE_SCOPE)
     }
 
     fn has_scope_or_unrestricted(&self, required: &str) -> bool {
@@ -698,6 +730,71 @@ mod scoped_authorization_tests {
     }
 
     #[test]
+    fn processors_read_scope_allows_only_processors_reads() {
+        let reader = context(Some(vec![PROCESSORS_READ_SCOPE.into()]));
+        assert!(reader.can_read_processors());
+        assert!(!reader.can_write_processors());
+        assert!(!reader.can_read("traces"));
+    }
+
+    #[test]
+    fn processors_write_scope_allows_writes_but_not_reads() {
+        let writer = context(Some(vec![PROCESSORS_WRITE_SCOPE.into()]));
+        assert!(writer.can_write_processors());
+        assert!(!writer.can_read_processors());
+    }
+
+    #[test]
+    fn ingest_only_key_cannot_touch_processors() {
+        let ingest = context(Some(vec!["traces:write".into()]));
+        assert!(!ingest.can_read_processors());
+        assert!(!ingest.can_write_processors());
+    }
+
+    #[test]
+    fn legacy_unscoped_keys_have_full_processors_access() {
+        let legacy = context(None);
+        assert!(legacy.can_read_processors());
+        assert!(legacy.can_write_processors());
+    }
+
+    #[test]
+    fn sessions_read_processors_with_any_role_and_write_only_as_admin() {
+        use crate::catalog::MembershipRole;
+        for (role, may_write) in [
+            (MembershipRole::Viewer, false),
+            (MembershipRole::Member, false),
+            (MembershipRole::Admin, true),
+        ] {
+            let session =
+                context(None).with_user("user-1".into(), role, false, Some("session-1".into()));
+            assert!(
+                session.can_read_processors(),
+                "{role:?} must read processors"
+            );
+            assert_eq!(session.can_write_processors(), may_write, "{role:?} write");
+        }
+        let instance_admin = context(None).with_user(
+            "root".into(),
+            MembershipRole::Viewer,
+            true,
+            Some("session-2".into()),
+        );
+        assert!(instance_admin.can_read_processors());
+        assert!(instance_admin.can_write_processors());
+    }
+
+    #[test]
+    fn processors_read_is_a_read_scope_but_processors_write_is_not() {
+        assert!(READ_SCOPES.contains(&PROCESSORS_READ_SCOPE));
+        assert!(!READ_SCOPES.contains(&PROCESSORS_WRITE_SCOPE));
+        assert_eq!(
+            PROCESSORS_SCOPES,
+            [PROCESSORS_READ_SCOPE, PROCESSORS_WRITE_SCOPE]
+        );
+    }
+
+    #[test]
     fn tenant_manage_is_a_key_scope_but_never_oauth_grantable() {
         assert!(API_KEY_SCOPES.contains(&TENANT_MANAGE_SCOPE));
         assert!(!READ_SCOPES.contains(&TENANT_MANAGE_SCOPE));
@@ -739,6 +836,7 @@ mod scoped_authorization_tests {
             .iter()
             .chain(READ_SCOPES.iter())
             .chain(SCHEMA_SCOPES.iter())
+            .chain(PROCESSORS_SCOPES.iter())
             .chain(std::iter::once(&TENANT_MANAGE_SCOPE))
         {
             assert!(API_KEY_SCOPES.contains(scope), "{scope} missing");
@@ -748,6 +846,7 @@ mod scoped_authorization_tests {
                 INGEST_SCOPES.contains(&scope)
                     || READ_SCOPES.contains(&scope)
                     || SCHEMA_SCOPES.contains(&scope)
+                    || PROCESSORS_SCOPES.contains(&scope)
                     || scope == TENANT_MANAGE_SCOPE,
                 "{scope} is not in any family"
             );

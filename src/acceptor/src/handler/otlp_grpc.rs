@@ -12,18 +12,22 @@ use anyhow::Context;
 use common::auth::TenantContext;
 use common::flight::conversion::otlp_traces_to_arrow;
 use common::flight::transport::InMemoryFlightTransport;
+use common::processors::ProcessorRegistry;
 use common::wal::{WalOperation, record_batch_to_bytes};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 
 use super::WalManager;
 use super::forward::forward_batch_to_writer;
 use super::ingest_error::IngestError;
+use super::processors_apply::apply_trace_processors;
 
 pub struct TraceHandler {
     /// Flight transport for forwarding telemetry
     flight_transport: Arc<InMemoryFlightTransport>,
     /// WAL manager for multi-tenant WAL isolation
     wal_manager: Arc<WalManager>,
+    /// Tenant OTTL processors (change: tenant-ottl-processors)
+    processor_registry: Arc<ProcessorRegistry>,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -64,10 +68,12 @@ impl TraceHandler {
     pub fn new(
         flight_transport: Arc<InMemoryFlightTransport>,
         wal_manager: Arc<WalManager>,
+        processor_registry: Arc<ProcessorRegistry>,
     ) -> Self {
         Self {
             flight_transport,
             wal_manager,
+            processor_registry,
         }
     }
 
@@ -89,13 +95,15 @@ impl TraceHandler {
     pub async fn handle_grpc_otlp_traces(
         &self,
         tenant_context: &TenantContext,
-        request: ExportTraceServiceRequest,
+        mut request: ExportTraceServiceRequest,
     ) -> Result<(), IngestError> {
         tracing::debug!(
             tenant_id = %tenant_context.tenant_id,
             dataset_id = %tenant_context.dataset_id,
             "Handling OTLP trace request"
         );
+
+        apply_trace_processors(&self.processor_registry, tenant_context, &mut request).await?;
 
         // Get tenant/dataset-specific WAL
         let wal = self

@@ -241,6 +241,24 @@ pub fn job_span(job_kind: &str, tenant_id: &str, dataset_id: &str, table: Option
     span
 }
 
+/// INTERNAL span for applying a tenant's OTTL processors to one ingest
+/// request (change: tenant-ottl-processors, design D9). Bounded fields
+/// only: tenancy, the signal, and how many processors matched.
+pub fn processors_apply_span(tenant_id: &str, dataset_id: &str, signal: &str) -> Span {
+    tracing::info_span!(
+        "processors.apply",
+        otel.name = "processors.apply",
+        otel.kind = "internal",
+        otel.status_code = Empty,
+        otel.status_message = Empty,
+        error.r#type = Empty,
+        signaldb.tenant.id = %tenant_id,
+        signaldb.dataset.id = %dataset_id,
+        signaldb.signal = %signal,
+        signaldb.processors.count = Empty,
+    )
+}
+
 /// INTERNAL span for one MCP tool call, per the MCP semantic conventions
 /// (now maintained in the GenAI conventions repository): named
 /// `{mcp.method.name} {gen_ai.tool.name}`, i.e. `tools/call {tool}`, and

@@ -2019,6 +2019,452 @@
         ]
       }
     },
+    "/api/v1/processors": {
+      "get": {
+        "tags": [
+          "processors"
+        ],
+        "operationId": "processors_list",
+        "responses": {
+          "200": {
+            "description": "This tenant's processors",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorListResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing processors:read scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "processors"
+        ],
+        "operationId": "processors_create",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessorSpec"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Processor created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorWriteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unparseable body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing processors:write scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Processor already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid spec or unknown dataset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/processors/{name}": {
+      "get": {
+        "tags": [
+          "processors"
+        ],
+        "operationId": "processors_get",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Processor name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The processor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing processors:read scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such processor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "processors"
+        ],
+        "operationId": "processors_replace",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Processor name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProcessorSpec"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Processor replaced",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorWriteResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unparseable body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing processors:write scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such processor (PUT never upserts)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid spec or unknown dataset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "processors"
+        ],
+        "operationId": "processors_delete",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Processor name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Processor deleted"
+          },
+          "403": {
+            "description": "Missing processors:write scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such processor",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/processors:test": {
+      "post": {
+        "tags": [
+          "processors"
+        ],
+        "operationId": "processors_test",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The transformed payload and per-statement counts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unparseable body or payload",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing processors:read scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorError"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Payload exceeds processors.test_payload_max_bytes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Inline processors failed to compile",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/processors:validate": {
+      "post": {
+        "tags": [
+          "processors"
+        ],
+        "operationId": "processors_validate",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ValidateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Validation outcome; nothing is stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidateResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Unparseable body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing processors:read scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProcessorError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/v1/query": {
       "post": {
         "tags": [
@@ -5524,7 +5970,7 @@
       },
       "CreateApiKeyRequest": {
         "type": "object",
-        "description": "Request body for creating a new API key.\n\n`scopes` is required and non-empty: a key's permissions are always\nexplicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,\n`profiles:write`, `traces:read`, `logs:read`, `metrics:read`,\n`profiles:read`, `schema:read`, `schema:write`.\n\nThe legacy singular `dataset_id` field is not accepted here (removed in\nthe multi-dataset-key-restriction change): a request body carrying it is\nrejected with a validation error rather than silently ignored, since\ndropping it would create an unrestricted key when the caller asked for a\nrestricted one.",
+        "description": "Request body for creating a new API key.\n\n`scopes` is required and non-empty: a key's permissions are always\nexplicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,\n`profiles:write`, `traces:read`, `logs:read`, `metrics:read`,\n`profiles:read`, `schema:read`, `schema:write`, `processors:read`,\n`processors:write`.\n\nThe legacy singular `dataset_id` field is not accepted here (removed in\nthe multi-dataset-key-restriction change): a request body carrying it is\nrejected with a validation error rather than silently ignored, since\ndropping it would create an unrestricted key when the caller asked for a\nrestricted one.",
         "required": [
           "scopes"
         ],
@@ -7450,6 +7896,191 @@
           }
         }
       },
+      "ProcessorError": {
+        "type": "object",
+        "description": "Error body for the processors API.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          },
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StatementError"
+            },
+            "description": "Positional compile errors (422 only)."
+          }
+        }
+      },
+      "ProcessorListResponse": {
+        "type": "object",
+        "required": [
+          "processors"
+        ],
+        "properties": {
+          "processors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/ProcessorResponse"
+            }
+          }
+        }
+      },
+      "ProcessorRecord": {
+        "type": "object",
+        "description": "A stored processor row.",
+        "required": [
+          "tenant_id",
+          "name",
+          "signal",
+          "enabled",
+          "priority",
+          "error_mode",
+          "statements",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "created_at": {
+            "type": "string",
+            "description": "RFC3339 timestamp, as stored (`StoredRegistry` follows the same\nstring-typed convention for the same reason: one dialect-agnostic\ndecode path in the store, see `row_to_record`)."
+          },
+          "dataset": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The dataset *name* this processor applies to, or `None` for a\ntenant-wide rule."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "error_mode": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "signal": {
+            "type": "string"
+          },
+          "statements": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "tenant_id": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string"
+          }
+        }
+      },
+      "ProcessorResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ProcessorRecord"
+          },
+          {
+            "type": "object",
+            "required": [
+              "status"
+            ],
+            "properties": {
+              "status": {
+                "type": "string",
+                "description": "`\"invalid\"` when the stored statements currently fail to compile\n(skipped at apply time, never blocking ingest); `\"ok\"` otherwise."
+              }
+            }
+          }
+        ],
+        "description": "A processor row plus its compiled status."
+      },
+      "ProcessorSpec": {
+        "type": "object",
+        "description": "Caller-supplied processor definition, without tenant scoping or\ntimestamps — the body of a create/replace request.",
+        "required": [
+          "name",
+          "signal",
+          "statements"
+        ],
+        "properties": {
+          "dataset": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "enabled": {
+            "type": "boolean"
+          },
+          "error_mode": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "priority": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "signal": {
+            "type": "string"
+          },
+          "statements": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ProcessorWriteResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/ProcessorRecord"
+          },
+          {
+            "type": "object",
+            "required": [
+              "status",
+              "applies_within_seconds"
+            ],
+            "properties": {
+              "applies_within_seconds": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              },
+              "status": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "Every write response carries the cross-process propagation bound for the\nchange: the `ProcessorRegistry` cache TTL, in seconds."
+      },
       "ProfileSummary": {
         "type": "object",
         "description": "Summary of a stored profile linked to a trace, without the bulky\nstack/sample payloads.",
@@ -8286,6 +8917,30 @@
           }
         }
       },
+      "StatementError": {
+        "type": "object",
+        "description": "One compile error, positioned to a statement and (where known) a column.",
+        "required": [
+          "statement",
+          "message"
+        ],
+        "properties": {
+          "column": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "message": {
+            "type": "string"
+          },
+          "statement": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
       "TableInfo": {
         "type": "object",
         "description": "API response for table information",
@@ -8447,6 +9102,82 @@
               "$ref": "#/components/schemas/TenantInfo"
             },
             "description": "List of tenants"
+          }
+        }
+      },
+      "TestRequest": {
+        "type": "object",
+        "required": [
+          "signal",
+          "payload"
+        ],
+        "properties": {
+          "dataset": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "payload": {
+            "description": "The OTLP export request (OTLP/JSON), for `signal`."
+          },
+          "processors": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ProcessorSpec"
+            },
+            "description": "Processors to apply, in the given order; when omitted, the tenant's\nstored processors for `signal`/`dataset` are used instead."
+          },
+          "signal": {
+            "type": "string"
+          }
+        }
+      },
+      "TestResponse": {
+        "type": "object",
+        "required": [
+          "payload",
+          "statements"
+        ],
+        "properties": {
+          "payload": {},
+          "statements": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TestStatementResult"
+            }
+          }
+        }
+      },
+      "TestStatementResult": {
+        "type": "object",
+        "required": [
+          "processor",
+          "index",
+          "matched",
+          "errors"
+        ],
+        "properties": {
+          "errors": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "index": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "matched": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "processor": {
+            "type": "string",
+            "description": "Name of the processor this statement belongs to, so results from\nmultiple processors (each restarting `index` at 0) can be told apart."
           }
         }
       },
@@ -8656,6 +9387,35 @@
           "instance_admin": {
             "type": "boolean",
             "description": "Whether the user is an instance administrator."
+          }
+        }
+      },
+      "ValidateRequest": {
+        "type": "object",
+        "required": [
+          "signal",
+          "statements"
+        ],
+        "properties": {
+          "signal": {
+            "type": "string"
+          },
+          "statements": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "ValidateResponse": {
+        "type": "object",
+        "properties": {
+          "errors": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/StatementError"
+            }
           }
         }
       },
@@ -8984,6 +9744,10 @@
     {
       "name": "github",
       "description": "GitHub App installations linked to a tenant"
+    },
+    {
+      "name": "processors",
+      "description": "Tenant OTTL processors applied at ingest"
     }
   ]
 }

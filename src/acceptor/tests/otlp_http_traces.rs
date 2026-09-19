@@ -17,7 +17,7 @@ use common::auth::Authenticator;
 use common::config::Configuration;
 use common::flight::transport::InMemoryFlightTransport;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use common::wal::{WalConfig, WalOperation};
+use common::wal::{WalConfig, WalOperation, bytes_to_record_batch};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value};
 use opentelemetry_proto::tonic::resource::v1::Resource;
@@ -152,13 +152,147 @@ async fn setup_traces_test_with_limits(
     let storage_usage =
         Arc::new(common::storage_usage::StorageUsageTracker::from_auth_config(&auth_config));
 
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        catalog.clone(),
+        &common::config::ProcessorsConfig::default(),
+    ));
     let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 
-    let trace_handler = Arc::new(TraceHandler::new(flight_transport, wal_manager.clone()));
+    let trace_handler = Arc::new(TraceHandler::new(
+        flight_transport,
+        wal_manager.clone(),
+        processor_registry,
+    ));
 
     let app = traces_http_router(authenticator, trace_handler, rate_limiter, storage_usage);
 
     (app, wal_manager, temp_dir)
+}
+
+/// [`setup_traces_test`], but with `specs` inserted as tenant-wide trace
+/// processors before the handler is built — change: tenant-ottl-processors,
+/// task 3.1. Also returns the WAL's decoded record batches so a test can
+/// inspect the transformed payload that actually reached the WAL.
+async fn setup_traces_test_with_processors(
+    specs: Vec<common::processors::ProcessorSpec>,
+) -> (axum::Router, Arc<WalManager>, TempDir) {
+    let temp_dir = TempDir::new().unwrap();
+
+    let catalog_db_path = temp_dir.path().join("catalog.db");
+    let catalog_dsn = format!("sqlite://{}", catalog_db_path.display());
+
+    let mut config = Configuration::default();
+    config.discovery = Some(common::config::DiscoveryConfig {
+        dsn: catalog_dsn.clone(),
+        heartbeat_interval: Duration::from_secs(30),
+        poll_interval: Duration::from_secs(60),
+        ttl: Duration::from_secs(300),
+    });
+    config.schema = common::config::SchemaConfig {
+        catalog_type: "sql".to_string(),
+        catalog_uri: catalog_dsn,
+        default_schemas: common::config::DefaultSchemas::default(),
+        materialized_labels: Default::default(),
+    };
+    config.auth = common::config::AuthConfig {
+        admin_api_key: None,
+        internal_service_key: None,
+        oidc: None,
+        default_limits: common::config::TenantLimits::default(),
+        storage_usage_refresh_interval: Duration::from_secs(60),
+        tenants: vec![common::config::TenantConfig {
+            id: TEST_TENANT.to_string(),
+            slug: TEST_TENANT.to_string(),
+            name: "Test Tenant".to_string(),
+            default_dataset: Some(TEST_DATASET.to_string()),
+            datasets: vec![common::config::DatasetConfig {
+                id: TEST_DATASET.to_string(),
+                slug: TEST_DATASET.to_string(),
+                is_default: true,
+                storage: None,
+            }],
+            api_keys: vec![common::config::ApiKeyConfig {
+                key: TEST_API_KEY.to_string(),
+                name: Some("Test Key".to_string()),
+            }],
+            schema_config: None,
+            limits: None,
+        }],
+        dataset_restriction_rollout_complete: false,
+    };
+
+    let service_bootstrap = ServiceBootstrap::new(
+        config.clone(),
+        ServiceType::Acceptor,
+        "127.0.0.1:4317".to_string(),
+    )
+    .await
+    .expect("Failed to initialize service bootstrap");
+
+    let catalog = Arc::new(service_bootstrap.catalog().clone());
+    let auth_config = service_bootstrap.config().auth.clone();
+
+    // `ServiceBootstrap::new` doesn't sync config-declared tenants into the
+    // `tenants` table itself (the real binary's startup path does, via
+    // `sync_config_tenants`); `processors.tenant_id` now has a `FOREIGN
+    // KEY ... REFERENCES tenants(id)` (finding 2), so `TEST_TENANT` must
+    // exist there before `insert_processor` below.
+    catalog
+        .sync_config_tenants(&auth_config)
+        .await
+        .expect("failed to sync config tenants");
+
+    for spec in specs {
+        catalog
+            .insert_processor(TEST_TENANT, &spec)
+            .await
+            .expect("failed to insert test processor");
+    }
+
+    let flight_transport = Arc::new(InMemoryFlightTransport::new(service_bootstrap));
+
+    let wal_dir = temp_dir.path().join("wal");
+    let wal_manager = Arc::new(WalManager::new(
+        WalConfig::with_defaults(wal_dir.clone()),
+        WalConfig::with_defaults(wal_dir.clone()),
+        WalConfig::with_defaults(wal_dir.clone()),
+        WalConfig::with_defaults(wal_dir),
+    ));
+
+    let rate_limiter = Arc::new(common::ratelimit::TenantRateLimiter::from_auth_config(
+        &auth_config,
+    ));
+    let storage_usage =
+        Arc::new(common::storage_usage::StorageUsageTracker::from_auth_config(&auth_config));
+
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        catalog.clone(),
+        &common::config::ProcessorsConfig::default(),
+    ));
+    let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
+
+    let trace_handler = Arc::new(TraceHandler::new(
+        flight_transport,
+        wal_manager.clone(),
+        processor_registry,
+    ));
+
+    let app = traces_http_router(authenticator, trace_handler, rate_limiter, storage_usage);
+
+    (app, wal_manager, temp_dir)
+}
+
+fn redact_processor(error_mode: &str) -> common::processors::ProcessorSpec {
+    common::processors::ProcessorSpec {
+        name: "redact-name".to_string(),
+        dataset: None,
+        signal: "traces".to_string(),
+        enabled: true,
+        priority: 100,
+        error_mode: error_mode.to_string(),
+        description: None,
+        statements: vec![r#"set(name, "redacted")"#.to_string()],
+    }
 }
 
 /// Count WAL entries recorded for the test tenant's traces WAL.
@@ -389,4 +523,122 @@ async fn otlp_http_traces_rate_limited_carries_retry_after_and_limit_headers() {
         Some("1")
     );
     assert_eq!(traces_wal_entry_count(&wal_manager).await, 1);
+}
+
+// Tenant OTTL processors (change: tenant-ottl-processors, task 3.1): the
+// transform must run on the decoded OTLP request before the WAL append, so
+// only the transformed payload is ever persisted.
+
+/// Decode the span "name" values recorded in the tenant's traces WAL, in
+/// WAL order.
+async fn wal_span_names(wal_manager: &WalManager) -> Vec<String> {
+    use datafusion::arrow::array::{Array, StringArray};
+
+    let wal = wal_manager
+        .get_wal(TEST_TENANT, TEST_DATASET, "traces")
+        .await
+        .expect("Failed to open traces WAL");
+    let mut names = Vec::new();
+    for entry in wal.get_entries().await.expect("Failed to read WAL entries") {
+        if !matches!(entry.operation, WalOperation::WriteTraces) {
+            continue;
+        }
+        let bytes = wal
+            .read_entry_data(&entry)
+            .await
+            .expect("Failed to read WAL entry data");
+        let batch = bytes_to_record_batch(&bytes).expect("Failed to decode record batch");
+        let name_col = batch
+            .column_by_name("name")
+            .expect("record batch has a name column")
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .expect("name column is a StringArray");
+        for i in 0..name_col.len() {
+            names.push(name_col.value(i).to_string());
+        }
+    }
+    names
+}
+
+#[tokio::test]
+async fn processor_transform_runs_before_wal_append() {
+    let (app, wal_manager, _temp_dir) =
+        setup_traces_test_with_processors(vec![redact_processor("ignore")]).await;
+
+    let body = sample_trace_request().encode_to_vec();
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/traces")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header("Authorization", format!("Bearer {TEST_API_KEY}"))
+        .header("X-Tenant-ID", TEST_TENANT)
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let names = wal_span_names(&wal_manager).await;
+    assert_eq!(
+        names,
+        vec!["redacted".to_string()],
+        "the WAL must only ever see the transformed span name, never the \
+         original `test-span`"
+    );
+}
+
+#[tokio::test]
+async fn zero_processor_tenant_is_byte_identical() {
+    // No processors inserted: the WAL must see the untransformed request,
+    // exactly like `otlp_http_traces_protobuf_with_auth_lands_in_wal`.
+    let (app, wal_manager, _temp_dir) = setup_traces_test_with_processors(vec![]).await;
+
+    let body = sample_trace_request().encode_to_vec();
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/traces")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header("Authorization", format!("Bearer {TEST_API_KEY}"))
+        .header("X-Tenant-ID", TEST_TENANT)
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let names = wal_span_names(&wal_manager).await;
+    assert_eq!(names, vec!["test-span".to_string()]);
+}
+
+#[tokio::test]
+async fn propagate_error_mode_rejects_and_writes_nothing_to_wal() {
+    // `int()` on a body that already holds a string span name is a runtime
+    // type error; `propagate` must reject the whole export before any WAL
+    // write.
+    let mut processor = redact_processor("propagate");
+    processor.statements = vec![r#"set(name, Int(name))"#.to_string()];
+    let (app, wal_manager, _temp_dir) = setup_traces_test_with_processors(vec![processor]).await;
+
+    let body = sample_trace_request().encode_to_vec();
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/traces")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header("Authorization", format!("Bearer {TEST_API_KEY}"))
+        .header("X-Tenant-ID", TEST_TENANT)
+        .body(Body::from(body))
+        .unwrap();
+
+    let response = app.oneshot(request).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "a propagate-mode processor error must reject the export as Invalid"
+    );
+    assert_eq!(
+        traces_wal_entry_count(&wal_manager).await,
+        0,
+        "nothing must reach the WAL when a propagate-mode processor rejects the export"
+    );
 }
