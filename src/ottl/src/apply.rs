@@ -28,6 +28,30 @@ pub enum ErrorMode {
     Propagate,
 }
 
+/// The error naming an unrecognized `error_mode` string. Kept as a plain
+/// string rather than a richer type since it only ever surfaces as a
+/// validation message to the caller.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+#[error("error_mode `{0}` must be one of ignore, silent, propagate")]
+pub struct ParseErrorModeError(pub String);
+
+impl std::str::FromStr for ErrorMode {
+    type Err = ParseErrorModeError;
+
+    /// The single source of truth for the string form of `ErrorMode`, used
+    /// both to validate a processor at write time and to interpret a stored
+    /// value at apply time — an unrecognized string is always an error here,
+    /// never silently treated as `Ignore`.
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "ignore" => Ok(Self::Ignore),
+            "silent" => Ok(Self::Silent),
+            "propagate" => Ok(Self::Propagate),
+            other => Err(ParseErrorModeError(other.to_string())),
+        }
+    }
+}
+
 /// Per-statement counters returned by `apply_*`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct StatementStats {
@@ -103,20 +127,14 @@ impl Frame for TraceFrame<'_> {
             ScalarTarget::ScopeVersion => Value::String(self.scope.version.clone()),
             ScalarTarget::SpanName => Value::String(self.span.name.clone()),
             ScalarTarget::SpanKind => Value::Int(i64::from(self.span.kind)),
-            ScalarTarget::StatusCode => Value::Int(i64::from(
-                self.span
-                    .status
-                    .as_ref()
-                    .map(|s| s.code)
-                    .unwrap_or_default(),
-            )),
-            ScalarTarget::StatusMessage => Value::String(
-                self.span
-                    .status
-                    .as_ref()
-                    .map(|s| s.message.clone())
-                    .unwrap_or_default(),
-            ),
+            ScalarTarget::StatusCode => match self.span.status.as_ref() {
+                Some(status) => Value::Int(i64::from(status.code)),
+                None => Value::Nil,
+            },
+            ScalarTarget::StatusMessage => match self.span.status.as_ref() {
+                Some(status) => Value::String(status.message.clone()),
+                None => Value::Nil,
+            },
             _ => Value::Nil,
         }
     }
@@ -126,8 +144,8 @@ impl Frame for TraceFrame<'_> {
             ScalarTarget::ScopeName => self.scope.name = coerce_string(value)?,
             ScalarTarget::ScopeVersion => self.scope.version = coerce_string(value)?,
             ScalarTarget::SpanName => self.span.name = coerce_string(value)?,
-            ScalarTarget::SpanKind => self.span.kind = coerce_int(value)? as i32,
-            ScalarTarget::StatusCode => self.status_mut().code = coerce_int(value)? as i32,
+            ScalarTarget::SpanKind => self.span.kind = coerce_i32(value)?,
+            ScalarTarget::StatusCode => self.status_mut().code = coerce_i32(value)?,
             ScalarTarget::StatusMessage => self.status_mut().message = coerce_string(value)?,
             other => return Err(format!("{other:?} is not writable for traces")),
         }
@@ -177,7 +195,7 @@ impl Frame for LogFrame<'_> {
             ScalarTarget::ScopeName => self.scope.name = coerce_string(value)?,
             ScalarTarget::ScopeVersion => self.scope.version = coerce_string(value)?,
             ScalarTarget::LogSeverityText => self.log.severity_text = coerce_string(value)?,
-            ScalarTarget::LogSeverityNumber => self.log.severity_number = coerce_int(value)? as i32,
+            ScalarTarget::LogSeverityNumber => self.log.severity_number = coerce_i32(value)?,
             ScalarTarget::LogBody => {
                 self.log.body = Some(Value::String(coerce_string(value)?).into_any_value())
             }
@@ -241,15 +259,20 @@ fn coerce_string(value: Value) -> Result<String, String> {
     match value {
         Value::String(s) => Ok(s),
         Value::Nil => Ok(String::new()),
-        other => Err(format!("expected a string, got {other:?}")),
+        other => Err(format!("expected a string, got a {}", other.type_name())),
     }
 }
 
 fn coerce_int(value: Value) -> Result<i64, String> {
     match value {
         Value::Int(i) => Ok(i),
-        other => Err(format!("expected an int, got {other:?}")),
+        other => Err(format!("expected an int, got a {}", other.type_name())),
     }
+}
+
+fn coerce_i32(value: Value) -> Result<i32, String> {
+    let i = coerce_int(value)?;
+    i32::try_from(i).map_err(|_| format!("{i} does not fit in i32"))
 }
 
 impl CompiledProgram {
@@ -270,7 +293,11 @@ impl CompiledProgram {
                         scope: &mut scope,
                         span,
                     };
-                    run_program(self, &mut frame, mode, &mut report)?;
+                    if let Err(err) = run_program(self, &mut frame, mode, &mut report) {
+                        ss.scope = Some(scope);
+                        rs.resource = Some(resource);
+                        return Err(err);
+                    }
                 }
                 ss.scope = Some(scope);
             }
@@ -296,7 +323,11 @@ impl CompiledProgram {
                         scope: &mut scope,
                         log,
                     };
-                    run_program(self, &mut frame, mode, &mut report)?;
+                    if let Err(err) = run_program(self, &mut frame, mode, &mut report) {
+                        sl.scope = Some(scope);
+                        rl.resource = Some(resource);
+                        return Err(err);
+                    }
                 }
                 sl.scope = Some(scope);
             }
@@ -362,7 +393,11 @@ impl CompiledProgram {
                             unit: &mut *unit,
                             datapoint_attributes: attrs,
                         };
-                        run_program(self, &mut frame, mode, &mut report)?;
+                        if let Err(err) = run_program(self, &mut frame, mode, &mut report) {
+                            sm.scope = Some(scope);
+                            rm.resource = Some(resource);
+                            return Err(err);
+                        }
                     }
                 }
                 sm.scope = Some(scope);

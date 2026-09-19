@@ -226,6 +226,16 @@ async fn setup_metrics_test_with_processors(
     let catalog = Arc::new(service_bootstrap.catalog().clone());
     let auth_config = service_bootstrap.config().auth.clone();
 
+    // `ServiceBootstrap::new` doesn't sync config-declared tenants into the
+    // `tenants` table itself (the real binary's startup path does, via
+    // `sync_config_tenants`); `processors.tenant_id` now has a `FOREIGN
+    // KEY ... REFERENCES tenants(id)` (finding 2), so `TEST_TENANT` must
+    // exist there before `insert_processor` below.
+    catalog
+        .sync_config_tenants(&auth_config)
+        .await
+        .expect("failed to sync config tenants");
+
     for spec in specs {
         catalog
             .insert_processor(TEST_TENANT, &spec)

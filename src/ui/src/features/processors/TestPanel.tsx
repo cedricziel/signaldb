@@ -1,5 +1,5 @@
 import { useMutation } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { testProcessor, type ProcessorSpec, type TestResponse } from "./api";
 import { diffLines } from "./lineDiff";
 import { SAMPLE_PAYLOADS } from "./samples";
@@ -25,6 +25,15 @@ export function TestPanel({ signal, dataset, spec }: Props) {
   const [result, setResult] = useState<TestResponse | null>(null);
   const [before, setBefore] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  // The signal is chosen in the parent editor; when it changes, the sample
+  // payload (and any stale result from the previous signal) should reset
+  // rather than silently mismatch the new signal on the next dry run.
+  useEffect(() => {
+    setPayloadText(JSON.stringify(SAMPLE_PAYLOADS[signal], null, 2));
+    setResult(null);
+    setError(null);
+  }, [signal]);
 
   const run = useMutation({
     mutationFn: async () => {

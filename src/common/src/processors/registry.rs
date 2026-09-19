@@ -111,8 +111,12 @@ impl ProcessorRegistry {
     /// The current entry, loading or refreshing it as needed. On a reload
     /// failure the previous entry (if any) keeps serving and the error is
     /// logged, never propagated to the caller — a catalog hiccup must not
-    /// block ingest.
-    async fn entry(&self, tenant_id: &str) -> Arc<Entry> {
+    /// block ingest. On a *first* load failure for a tenant (no cached
+    /// entry to fall back to) the error is propagated: caching an empty
+    /// program list here would make `for_request` silently report "no
+    /// processors configured" for a tenant that may have redaction rules
+    /// configured, letting unredacted data reach the WAL.
+    async fn entry(&self, tenant_id: &str) -> Result<Arc<Entry>, StoreError> {
         // `DashMap::get` returns a `Ref` holding the shard's lock; extract the
         // owned `Arc` and let the `Ref` drop immediately (a `let` binding
         // reused via shadowing would otherwise keep it alive until this
@@ -121,7 +125,7 @@ impl ProcessorRegistry {
         let cached: Option<Arc<Entry>> = self.cache.get(tenant_id).map(|r| r.clone());
         if let Some(existing) = cached {
             if existing.loaded_at.elapsed() <= self.ttl {
-                return existing;
+                return Ok(existing);
             }
             // Stale: serialize reloads through the entry's own mutex so
             // concurrent callers don't all hit the catalog.
@@ -133,7 +137,7 @@ impl ProcessorRegistry {
                 if let Some(refreshed) = refreshed
                     && refreshed.loaded_at.elapsed() <= self.ttl
                 {
-                    return refreshed;
+                    return Ok(refreshed);
                 }
                 self.load(tenant_id).await
             };
@@ -145,24 +149,23 @@ impl ProcessorRegistry {
                         reload: AsyncMutex::new(()),
                     });
                     self.cache.insert(tenant_id.to_string(), entry.clone());
-                    entry
+                    Ok(entry)
                 }
                 Err(err) => {
                     tracing::warn!(tenant = %tenant_id, error = %err, "failed to reload tenant processors; keeping stale cache");
-                    existing
+                    Ok(existing)
                 }
             }
         } else {
             // First access for this tenant: no per-entry mutex exists yet,
             // so use a coarse tenant-keyed lock via `DashMap::entry` to
-            // avoid a duplicate load on a cold-start stampede.
-            let programs = match self.load(tenant_id).await {
-                Ok(programs) => programs,
-                Err(err) => {
-                    tracing::warn!(tenant = %tenant_id, error = %err, "failed to load tenant processors; caching empty set");
-                    Vec::new()
-                }
-            };
+            // avoid a duplicate load on a cold-start stampede. A failure
+            // here has no stale entry to fall back to, so it must be
+            // surfaced to the caller rather than cached as an empty
+            // program list (see doc comment above).
+            let programs = self.load(tenant_id).await.inspect_err(|err| {
+                tracing::warn!(tenant = %tenant_id, error = %err, "failed to load tenant processors on first access; rejecting request");
+            })?;
             let entry = Arc::new(Entry {
                 loaded_at: Instant::now(),
                 programs,
@@ -172,23 +175,30 @@ impl ProcessorRegistry {
             // across the `await` above, so instead race on plain `insert`
             // and let whichever caller wins be the source of truth; a
             // duplicate cold-start load is harmless and rare.
-            self.cache
+            Ok(self
+                .cache
                 .entry(tenant_id.to_string())
                 .or_insert_with(|| entry)
-                .clone()
+                .clone())
         }
     }
 
     /// Every enabled processor visible to a request against `dataset` for
     /// `signal`, in D3 order: tenant-wide first, then `priority` ascending,
     /// then `name` ascending.
+    ///
+    /// Returns `Err` only when this is the tenant's first access and the
+    /// catalog load fails — callers must reject the request rather than
+    /// treat that as "zero processors configured" (see `entry`'s doc
+    /// comment). A reload failure on an already-cached tenant keeps
+    /// serving the stale programs and cannot produce an `Err` here.
     pub async fn for_request(
         &self,
         tenant_id: &str,
         dataset: &str,
         signal: &str,
-    ) -> Vec<Arc<CompiledProcessor>> {
-        let entry = self.entry(tenant_id).await;
+    ) -> Result<Vec<Arc<CompiledProcessor>>, StoreError> {
+        let entry = self.entry(tenant_id).await?;
         let mut matching: Vec<Arc<CompiledProcessor>> = entry
             .programs
             .iter()
@@ -207,7 +217,7 @@ impl ProcessorRegistry {
                 .then_with(|| a.record.priority.cmp(&b.record.priority))
                 .then_with(|| a.record.name.cmp(&b.record.name))
         });
-        matching
+        Ok(matching)
     }
 
     /// Drop the cached entry for `tenant_id` so the next `for_request` call
@@ -215,12 +225,6 @@ impl ProcessorRegistry {
     /// mutation.
     pub fn invalidate(&self, tenant_id: &str) {
         self.cache.remove(tenant_id);
-    }
-
-    /// Number of catalog list calls this registry has made, for tests only.
-    #[cfg(test)]
-    fn ttl(&self) -> Duration {
-        self.ttl
     }
 }
 
@@ -237,6 +241,20 @@ mod tests {
         let catalog = Catalog::new(temp.uri())
             .await
             .expect("failed to create catalog");
+        // `processors.tenant_id` now has a `FOREIGN KEY ... REFERENCES
+        // tenants(id)` (finding 2: tenant-wide processors must cascade on
+        // tenant deletion), so every test tenant referenced by `spec()`
+        // must exist first. Tests that also call `upsert_tenant`/
+        // `create_dataset` themselves rely on `upsert_tenant` being an
+        // idempotent upsert.
+        catalog
+            .upsert_tenant("acme", "Acme", None, "database")
+            .await
+            .expect("upsert acme tenant");
+        catalog
+            .upsert_tenant("other-tenant", "Other Tenant", None, "database")
+            .await
+            .expect("upsert other-tenant tenant");
         (temp, Arc::new(catalog))
     }
 
@@ -264,7 +282,10 @@ mod tests {
     async fn empty_tenant_caches_cheaply() {
         let (_temp, catalog) = catalog().await;
         let registry = ProcessorRegistry::new(catalog, &ProcessorsConfig::default());
-        let result = registry.for_request("acme", "default", "traces").await;
+        let result = registry
+            .for_request("acme", "default", "traces")
+            .await
+            .expect("for_request");
         assert!(result.is_empty());
     }
 
@@ -281,14 +302,18 @@ mod tests {
             .expect("insert");
 
         let registry = ProcessorRegistry::new(catalog, &ProcessorsConfig::default());
-        let traces = registry.for_request("acme", "default", "traces").await;
+        let traces = registry
+            .for_request("acme", "default", "traces")
+            .await
+            .expect("for_request");
         assert_eq!(traces.len(), 1);
         assert_eq!(traces[0].record.name, "redact");
 
         // Unrelated tenant is unaffected and cheap.
         let other = registry
             .for_request("other-tenant", "default", "traces")
-            .await;
+            .await
+            .expect("for_request");
         assert!(other.is_empty());
     }
 
@@ -317,7 +342,10 @@ mod tests {
             .expect("insert");
 
         let registry = ProcessorRegistry::new(catalog, &ProcessorsConfig::default());
-        let ordered = registry.for_request("acme", "default", "traces").await;
+        let ordered = registry
+            .for_request("acme", "default", "traces")
+            .await
+            .expect("for_request");
         let names: Vec<&str> = ordered.iter().map(|p| p.record.name.as_str()).collect();
         assert_eq!(
             names,
@@ -342,11 +370,15 @@ mod tests {
             .expect("insert");
 
         let registry = ProcessorRegistry::new(catalog, &ProcessorsConfig::default());
-        let matches_default = registry.for_request("acme", "default", "traces").await;
+        let matches_default = registry
+            .for_request("acme", "default", "traces")
+            .await
+            .expect("for_request");
         assert_eq!(matches_default.len(), 1);
         let matches_other = registry
             .for_request("acme", "other-dataset", "traces")
-            .await;
+            .await
+            .expect("for_request");
         assert!(matches_other.is_empty());
     }
 
@@ -361,7 +393,10 @@ mod tests {
             .expect("insert");
 
         let registry = ProcessorRegistry::new(catalog, &ProcessorsConfig::default());
-        let result = registry.for_request("acme", "default", "traces").await;
+        let result = registry
+            .for_request("acme", "default", "traces")
+            .await
+            .expect("for_request");
         assert_eq!(result.len(), 1);
         assert!(result[0].program.is_none());
     }
@@ -375,6 +410,7 @@ mod tests {
             registry
                 .for_request("acme", "default", "traces")
                 .await
+                .expect("for_request")
                 .is_empty()
         );
 
@@ -384,7 +420,10 @@ mod tests {
             .expect("insert");
         tokio::time::sleep(Duration::from_millis(20)).await;
 
-        let result = registry.for_request("acme", "default", "traces").await;
+        let result = registry
+            .for_request("acme", "default", "traces")
+            .await
+            .expect("for_request");
         assert_eq!(result.len(), 1);
     }
 
@@ -397,6 +436,7 @@ mod tests {
             registry
                 .for_request("acme", "default", "traces")
                 .await
+                .expect("for_request")
                 .is_empty()
         );
 
@@ -408,7 +448,10 @@ mod tests {
         // still be returned.
         registry.invalidate("acme");
 
-        let result = registry.for_request("acme", "default", "traces").await;
+        let result = registry
+            .for_request("acme", "default", "traces")
+            .await
+            .expect("for_request");
         assert_eq!(result.len(), 1);
     }
 
@@ -425,9 +468,11 @@ mod tests {
             &config_with_ttl(Duration::from_millis(1)),
         ));
         // Prime the cache, then let it go stale.
-        registry.for_request("acme", "default", "traces").await;
+        registry
+            .for_request("acme", "default", "traces")
+            .await
+            .expect("for_request");
         tokio::time::sleep(Duration::from_millis(10)).await;
-        assert!(registry.ttl() > Duration::ZERO);
 
         let hits = Arc::new(AtomicUsize::new(0));
         let mut handles = Vec::new();
@@ -435,7 +480,10 @@ mod tests {
             let registry = registry.clone();
             let hits = hits.clone();
             handles.push(tokio::spawn(async move {
-                let result = registry.for_request("acme", "default", "traces").await;
+                let result = registry
+                    .for_request("acme", "default", "traces")
+                    .await
+                    .expect("for_request");
                 hits.fetch_add(1, Ordering::SeqCst);
                 assert_eq!(result.len(), 1);
             }));
@@ -444,5 +492,69 @@ mod tests {
             h.await.expect("task panicked");
         }
         assert_eq!(hits.load(Ordering::SeqCst), 8);
+    }
+
+    /// Forces the next `list_processors` catalog call to fail by dropping
+    /// the underlying table, simulating a network blip/DB hiccup.
+    async fn break_processors_table(catalog: &Catalog) {
+        match catalog {
+            Catalog::Sqlite(pool) => {
+                sqlx::query("DROP TABLE processors")
+                    .execute(pool)
+                    .await
+                    .expect("drop table");
+            }
+            Catalog::Postgres(pool) => {
+                sqlx::query("DROP TABLE processors")
+                    .execute(pool)
+                    .await
+                    .expect("drop table");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn first_load_failure_is_surfaced_as_error() {
+        let (_temp, catalog) = catalog().await;
+        break_processors_table(&catalog).await;
+
+        let registry = ProcessorRegistry::new(catalog, &ProcessorsConfig::default());
+        // No cached entry exists yet, so a catalog failure must be
+        // surfaced rather than silently cached as an empty program list
+        // (which would make the acceptor apply nothing and WAL-persist
+        // unredacted data for a tenant that may have redaction rules).
+        let result = registry.for_request("acme", "default", "traces").await;
+        assert!(result.is_err(), "expected first-load failure to propagate");
+    }
+
+    #[tokio::test]
+    async fn reload_failure_on_cached_tenant_keeps_serving_stale_programs() {
+        let (_temp, catalog) = catalog().await;
+        catalog
+            .insert_processor("acme", &spec("redact", "traces", None, 100))
+            .await
+            .expect("insert");
+
+        let registry =
+            ProcessorRegistry::new(catalog.clone(), &config_with_ttl(Duration::from_millis(1)));
+        // Prime the cache with a successful load.
+        let primed = registry
+            .for_request("acme", "default", "traces")
+            .await
+            .expect("first load should succeed");
+        assert_eq!(primed.len(), 1);
+
+        // Let the entry go stale, then break the catalog so the reload
+        // fails; the stale, previously-loaded programs must still be
+        // served successfully (design D5 stale-while-revalidate).
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        break_processors_table(&catalog).await;
+
+        let stale = registry
+            .for_request("acme", "default", "traces")
+            .await
+            .expect("stale entry should keep serving despite reload failure");
+        assert_eq!(stale.len(), 1);
+        assert_eq!(stale[0].record.name, "redact");
     }
 }

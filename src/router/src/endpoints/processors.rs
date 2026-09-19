@@ -575,15 +575,27 @@ pub async fn test_processor<S: RouterState>(
         Some(specs) => {
             let mut programs = Vec::with_capacity(specs.len());
             for spec in specs {
-                match ottl::compile(signal, &spec.statements, &limits) {
-                    Ok(program) => {
-                        let mode = match spec.error_mode.as_str() {
-                            "propagate" => ottl::ErrorMode::Propagate,
-                            "silent" => ottl::ErrorMode::Silent,
-                            _ => ottl::ErrorMode::Ignore,
-                        };
-                        programs.push((spec.name, program, mode));
+                if spec.signal != req.signal {
+                    return error(
+                        StatusCode::UNPROCESSABLE_ENTITY,
+                        format!(
+                            "processor `{}` signal `{}` does not match test signal `{}`",
+                            spec.name, spec.signal, req.signal
+                        ),
+                    );
+                }
+                let mode = match spec.error_mode.parse::<ottl::ErrorMode>() {
+                    Ok(mode) => mode,
+                    Err(e) => {
+                        return compile_errors(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            format!("processor `{}`: {e}", spec.name),
+                            Vec::new(),
+                        );
                     }
+                };
+                match ottl::compile(signal, &spec.statements, &limits) {
+                    Ok(program) => programs.push((spec.name, program, mode)),
                     Err(errs) => {
                         return compile_errors(
                             StatusCode::UNPROCESSABLE_ENTITY,
@@ -597,19 +609,34 @@ pub async fn test_processor<S: RouterState>(
         }
         None => {
             let signal_str = req.signal.as_str();
-            let compiled = state
+            let compiled = match state
                 .processor_registry()
                 .for_request(&ctx.tenant_id, dataset, signal_str)
-                .await;
+                .await
+            {
+                Ok(compiled) => compiled,
+                Err(e) => {
+                    return error(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        format!(
+                            "failed to load processors for tenant `{}`: {e}",
+                            ctx.tenant_id
+                        ),
+                    );
+                }
+            };
             compiled
                 .iter()
                 .filter_map(|p| {
                     let program = p.program.clone()?;
-                    let mode = match p.record.error_mode.as_str() {
-                        "propagate" => ottl::ErrorMode::Propagate,
-                        "silent" => ottl::ErrorMode::Silent,
-                        _ => ottl::ErrorMode::Ignore,
-                    };
+                    // Stored rows are validated at write time; an
+                    // unparseable value here can only come from drift, so
+                    // fail open to `Ignore` rather than reject the request.
+                    let mode = p
+                        .record
+                        .error_mode
+                        .parse()
+                        .unwrap_or(ottl::ErrorMode::Ignore);
                     Some((p.record.name.clone(), program, mode))
                 })
                 .collect()
@@ -628,9 +655,15 @@ pub async fn test_processor<S: RouterState>(
                     );
                 }
             };
-            for (_name, program, mode) in &programs {
-                if let Ok(report) = program.apply_traces(&mut req, *mode) {
-                    push_stats(&mut stats, &report);
+            for (name, program, mode) in &programs {
+                match program.apply_traces(&mut req, *mode) {
+                    Ok(report) => push_stats(&mut stats, &report),
+                    Err(e) => {
+                        return error(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            format!("processor `{name}` failed: {e}"),
+                        );
+                    }
                 }
             }
             match serde_json::to_value(&req) {
@@ -648,9 +681,15 @@ pub async fn test_processor<S: RouterState>(
                     );
                 }
             };
-            for (_name, program, mode) in &programs {
-                if let Ok(report) = program.apply_logs(&mut req, *mode) {
-                    push_stats(&mut stats, &report);
+            for (name, program, mode) in &programs {
+                match program.apply_logs(&mut req, *mode) {
+                    Ok(report) => push_stats(&mut stats, &report),
+                    Err(e) => {
+                        return error(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            format!("processor `{name}` failed: {e}"),
+                        );
+                    }
                 }
             }
             match serde_json::to_value(&req) {
@@ -668,9 +707,15 @@ pub async fn test_processor<S: RouterState>(
                     );
                 }
             };
-            for (_name, program, mode) in &programs {
-                if let Ok(report) = program.apply_metrics(&mut req, *mode) {
-                    push_stats(&mut stats, &report);
+            for (name, program, mode) in &programs {
+                match program.apply_metrics(&mut req, *mode) {
+                    Ok(report) => push_stats(&mut stats, &report),
+                    Err(e) => {
+                        return error(
+                            StatusCode::UNPROCESSABLE_ENTITY,
+                            format!("processor `{name}` failed: {e}"),
+                        );
+                    }
                 }
             }
             match serde_json::to_value(&req) {
@@ -1221,6 +1266,27 @@ mod tests {
         })
     }
 
+    fn traces_payload_with_int_attr(key: &str, value: i64) -> Value {
+        json!({
+            "resourceSpans": [{
+                "resource": {"attributes": []},
+                "scopeSpans": [{
+                    "scope": {},
+                    "spans": [{
+                        "traceId": "0102030405060708090a0b0c0d0e0f10",
+                        "spanId": "0102030405060708",
+                        "name": "GET /checkout",
+                        "startTimeUnixNano": "1",
+                        "endTimeUnixNano": "2",
+                        "attributes": [
+                            {"key": key, "value": {"intValue": value.to_string()}}
+                        ]
+                    }]
+                }]
+            }]
+        })
+    }
+
     #[tokio::test]
     async fn test_endpoint_runs_inline_processors_and_never_writes() {
         let app = app().await;
@@ -1297,6 +1363,64 @@ mod tests {
         let statements = body["statements"].as_array().unwrap();
         assert_eq!(statements.len(), 1);
         assert_eq!(statements[0]["matched"], 1);
+    }
+
+    #[tokio::test]
+    async fn test_endpoint_returns_422_when_propagate_mode_errors() {
+        let app = app().await;
+        // `count` is an int; assigning it to `name` (a string field) requires
+        // coercion that fails, and isn't guarded by a `where`, so it errors on
+        // every span. With `error_mode: propagate` that error must abort the
+        // test and surface as a 422 naming the failing processor, not a 200
+        // with partial stats.
+        let (status, body) = call(
+            &app,
+            Auth::Key("sk-read", "acme"),
+            "POST",
+            "/api/v1/processors:test",
+            Some(json!({
+                "signal": "traces",
+                "processors": [{
+                    "name": "bad-processor",
+                    "signal": "traces",
+                    "statements": [r#"set(name, attributes["count"])"#],
+                    "error_mode": "propagate",
+                }],
+                "payload": traces_payload_with_int_attr("count", 42),
+            })),
+        )
+        .await;
+        assert_eq!(status, 422, "{body}");
+        assert!(
+            body["error"].as_str().unwrap().contains("bad-processor"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_endpoint_rejects_inline_processor_signal_mismatch() {
+        let app = app().await;
+        let (status, body) = call(
+            &app,
+            Auth::Key("sk-read", "acme"),
+            "POST",
+            "/api/v1/processors:test",
+            Some(json!({
+                "signal": "traces",
+                "processors": [{
+                    "name": "wrong-signal",
+                    "signal": "logs",
+                    "statements": [redact_url()],
+                }],
+                "payload": traces_payload("alice@example.com", "https://example.com/checkout?token=abc"),
+            })),
+        )
+        .await;
+        assert_eq!(status, 422, "{body}");
+        let error = body["error"].as_str().unwrap();
+        assert!(error.contains("wrong-signal"), "{body}");
+        assert!(error.contains("logs"), "{body}");
+        assert!(error.contains("traces"), "{body}");
     }
 
     #[tokio::test]

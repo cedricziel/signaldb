@@ -15,6 +15,21 @@ pub enum Value {
 }
 
 impl Value {
+    /// The value's type name, used in error messages instead of its content —
+    /// error text must never interpolate the value itself, since OTTL is often
+    /// used to redact sensitive telemetry data.
+    pub fn type_name(&self) -> &'static str {
+        match self {
+            Value::String(_) => "String",
+            Value::Int(_) => "Int",
+            Value::Double(_) => "Double",
+            Value::Bool(_) => "Bool",
+            Value::Bytes(_) => "Bytes",
+            Value::List(_) => "List",
+            Value::Nil => "Nil",
+        }
+    }
+
     pub fn from_any_value(value: &AnyValue) -> Value {
         match &value.value {
             None => Value::Nil,

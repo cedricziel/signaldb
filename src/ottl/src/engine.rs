@@ -107,8 +107,11 @@ fn eval_converter(frame: &mut dyn Frame, conv: &Converter) -> Result<Value, Stri
                     .trim()
                     .parse::<i64>()
                     .map(Value::Int)
-                    .map_err(|_| format!("Int(): `{s}` is not an integer")),
-                other => Err(format!("Int(): cannot convert {other:?} to int")),
+                    .map_err(|_| "Int(): string value is not an integer".to_string()),
+                other => Err(format!(
+                    "Int(): cannot convert a {} to int",
+                    other.type_name()
+                )),
             }
         }
         Converter::Double(v) => {
@@ -120,15 +123,21 @@ fn eval_converter(frame: &mut dyn Frame, conv: &Converter) -> Result<Value, Stri
                     .trim()
                     .parse::<f64>()
                     .map(Value::Double)
-                    .map_err(|_| format!("Double(): `{s}` is not a number")),
-                other => Err(format!("Double(): cannot convert {other:?} to double")),
+                    .map_err(|_| "Double(): string value is not a number".to_string()),
+                other => Err(format!(
+                    "Double(): cannot convert a {} to double",
+                    other.type_name()
+                )),
             }
         }
         Converter::Len(v) => match eval_expr(frame, v)? {
             Value::String(s) => Ok(Value::Int(s.chars().count() as i64)),
             Value::List(items) => Ok(Value::Int(items.len() as i64)),
             Value::Bytes(b) => Ok(Value::Int(b.len() as i64)),
-            other => Err(format!("Len(): unsupported value {other:?}")),
+            other => Err(format!(
+                "Len(): unsupported value of type {}",
+                other.type_name()
+            )),
         },
         Converter::Sha256(v) => {
             let text = eval_expr(frame, v)?.to_display_string();
@@ -404,6 +413,9 @@ fn as_f64(v: &Value) -> Option<f64> {
 }
 
 fn numeric_cmp(lhs: &Value, rhs: &Value) -> Option<std::cmp::Ordering> {
+    if let (Value::Int(a), Value::Int(b)) = (lhs, rhs) {
+        return Some(a.cmp(b));
+    }
     as_f64(lhs)
         .zip(as_f64(rhs))
         .and_then(|(a, b)| a.partial_cmp(&b))
@@ -411,6 +423,7 @@ fn numeric_cmp(lhs: &Value, rhs: &Value) -> Option<std::cmp::Ordering> {
 
 fn values_eq(lhs: &Value, rhs: &Value) -> bool {
     match (lhs, rhs) {
+        (Value::Int(a), Value::Int(b)) => a == b,
         (Value::Int(_) | Value::Double(_), Value::Int(_) | Value::Double(_)) => {
             as_f64(lhs).zip(as_f64(rhs)).is_some_and(|(a, b)| a == b)
         }

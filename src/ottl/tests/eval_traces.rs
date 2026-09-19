@@ -14,6 +14,16 @@ fn kv(key: &str, value: &str) -> KeyValue {
     }
 }
 
+fn kv_int(key: &str, value: i64) -> KeyValue {
+    KeyValue {
+        key: key.to_string(),
+        value: Some(AnyValue {
+            value: Some(any_value::Value::IntValue(value)),
+        }),
+        ..Default::default()
+    }
+}
+
 fn attr_str<'a>(attrs: &'a [KeyValue], key: &str) -> Option<&'a str> {
     attrs
         .iter()
@@ -249,6 +259,136 @@ fn dollar_dollar_replacement_ports_verbatim_from_collector_configs() {
     // `$$` -> literal `$`; the following `1` is plain text, not part of a group ref.
     // `$2` is a real capture-group reference.
     assert_eq!(attr_str(&span.attributes, "v"), Some("$1-b"));
+}
+
+#[test]
+fn absent_status_reads_as_nil_and_ne_nil_is_true() {
+    let program = compile(
+        Signal::Traces,
+        &[r#"set(attributes["had_status"], "yes") where span.status.code != nil"#.to_string()],
+        &Limits::default(),
+    )
+    .expect("compiles");
+    let mut req = one_span_request(vec![]);
+    let report = program
+        .apply_traces(&mut req, ErrorMode::Propagate)
+        .expect("applies");
+    // Absent status must read as Nil, not the default code (0), so `!= nil` is false.
+    assert_eq!(report.statements[0].matched, 0);
+    let span = &req.resource_spans[0].scope_spans[0].spans[0];
+    assert_eq!(attr_str(&span.attributes, "had_status"), None);
+}
+
+#[test]
+fn span_kind_out_of_i32_range_errors_instead_of_wrapping() {
+    let program = compile(
+        Signal::Traces,
+        &[r#"set(span.kind, 9999999999)"#.to_string()],
+        &Limits::default(),
+    )
+    .expect("compiles");
+    let mut req = one_span_request(vec![]);
+    let err = program
+        .apply_traces(&mut req, ErrorMode::Propagate)
+        .unwrap_err();
+    assert!(
+        err.message.contains("does not fit in i32"),
+        "unexpected message: {}",
+        err.message
+    );
+    // The span's kind must be untouched, not silently wrapped.
+    let span = &req.resource_spans[0].scope_spans[0].spans[0];
+    assert_eq!(span.kind, 0);
+}
+
+#[test]
+fn conversion_error_message_contains_no_telemetry_value() {
+    let secret = "super-secret-user-data-should-not-leak";
+    let program = compile(
+        Signal::Traces,
+        &[format!(r#"set(attributes["n"], Int("{secret}"))"#)],
+        &Limits::default(),
+    )
+    .expect("compiles");
+    let mut req = one_span_request(vec![]);
+    let err = program
+        .apply_traces(&mut req, ErrorMode::Propagate)
+        .unwrap_err();
+    assert!(
+        !err.message.contains(secret),
+        "error message leaked the value: {}",
+        err.message
+    );
+}
+
+#[test]
+fn propagate_error_leaves_resource_and_scope_intact() {
+    let program = compile(
+        Signal::Traces,
+        &[r#"set(span.kind, 9999999999)"#.to_string()],
+        &Limits::default(),
+    )
+    .expect("compiles");
+    let mut req = ExportTraceServiceRequest {
+        resource_spans: vec![ResourceSpans {
+            resource: Some(Resource {
+                attributes: vec![kv("service.name", "svc")],
+                ..Default::default()
+            }),
+            scope_spans: vec![ScopeSpans {
+                scope: Some(InstrumentationScope {
+                    name: "my-scope".to_string(),
+                    ..Default::default()
+                }),
+                spans: vec![Span {
+                    name: "GET /x".to_string(),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+            ..Default::default()
+        }],
+    };
+    program
+        .apply_traces(&mut req, ErrorMode::Propagate)
+        .unwrap_err();
+    let rs = &req.resource_spans[0];
+    let resource = rs.resource.as_ref().expect("resource restored, not None");
+    assert_eq!(attr_str(&resource.attributes, "service.name"), Some("svc"));
+    let scope = rs.scope_spans[0]
+        .scope
+        .as_ref()
+        .expect("scope restored, not None");
+    assert_eq!(scope.name, "my-scope");
+}
+
+#[test]
+fn large_distinct_int64_attributes_compare_unequal_despite_f64_rounding() {
+    // Both values round to the same f64 (2^53 + 1 is not representable), so a
+    // comparison that coerces through f64 first would wrongly call them equal.
+    let a: i64 = 9_007_199_254_740_993;
+    let b: i64 = 9_007_199_254_740_992;
+    assert_eq!(
+        a as f64, b as f64,
+        "precondition: f64 rounds these together"
+    );
+
+    let program = compile(
+        Signal::Traces,
+        &[
+            r#"set(attributes["equal"], "yes") where attributes["a"] == attributes["b"]"#
+                .to_string(),
+        ],
+        &Limits::default(),
+    )
+    .expect("compiles");
+    let mut req = one_span_request(vec![kv_int("a", a), kv_int("b", b)]);
+    let report = program
+        .apply_traces(&mut req, ErrorMode::Propagate)
+        .expect("applies");
+    assert_eq!(report.statements[0].matched, 0);
+    let span = &req.resource_spans[0].scope_spans[0].spans[0];
+    assert_eq!(attr_str(&span.attributes, "equal"), None);
 }
 
 #[test]

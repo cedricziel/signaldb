@@ -46,12 +46,10 @@ fn validate_signal(signal: &str) -> Result<(), StoreError> {
 }
 
 fn validate_error_mode(error_mode: &str) -> Result<(), StoreError> {
-    match error_mode {
-        "ignore" | "silent" | "propagate" => Ok(()),
-        other => Err(StoreError::Invalid(format!(
-            "error_mode `{other}` must be one of ignore, silent, propagate"
-        ))),
-    }
+    error_mode
+        .parse::<ottl::ErrorMode>()
+        .map(|_| ())
+        .map_err(|e| StoreError::Invalid(e.to_string()))
 }
 
 fn validate_spec(spec: &ProcessorSpec) -> Result<(), StoreError> {

@@ -423,11 +423,16 @@ impl AppMetrics {
 /// Record one tenant-OTTL-processor statement evaluation outcome
 /// (`applied`, `error`, or `skipped`), labelled by tenant and processor
 /// name. Bounded by tenant count × processor count, both small.
-pub fn record_processor_statement(tenant_id: &str, processor: &str, outcome: &'static str) {
+pub fn record_processor_statement(
+    tenant_id: &str,
+    processor: &str,
+    outcome: &'static str,
+    count: u64,
+) {
     use opentelemetry::KeyValue;
 
     app_metrics().processors_statements.add(
-        1,
+        count,
         &[
             KeyValue::new("tenant", tenant_id.to_owned()),
             KeyValue::new("processor", processor.to_owned()),

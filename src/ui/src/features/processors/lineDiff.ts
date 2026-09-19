@@ -16,6 +16,16 @@ export function diffLines(before: string, after: string): DiffLine[] {
   const b = after.split("\n");
   const n = a.length;
   const m = b.length;
+  // Guard against pathological input: the DP matrix below is O(n*m) cells,
+  // which can freeze the tab for a large pasted payload. Fall back to a
+  // cheap linear diff (all removed, then all added) past this threshold.
+  const maxCells = 1_000_000;
+  if (n * m > maxCells) {
+    const result: DiffLine[] = [];
+    for (const line of a) result.push({ kind: "removed", text: line });
+    for (const line of b) result.push({ kind: "added", text: line });
+    return result;
+  }
   // dp[i][j] = length of the LCS of a[i:] and b[j:]
   const dp: number[][] = Array.from({ length: n + 1 }, () =>
     new Array<number>(m + 1).fill(0),

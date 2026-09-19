@@ -80,11 +80,6 @@ export const SCOPE_GROUPS: ReadonlyArray<{
         scope: "schema:write",
         description: "Create, replace, validate, and delete custom registries",
       },
-    ],
-  },
-  {
-    name: "Processors",
-    scopes: [
       {
         scope: "processors:read",
         description:

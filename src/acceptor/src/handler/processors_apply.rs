@@ -31,13 +31,13 @@ use super::ingest_error::IngestError;
 fn record_report(tenant_id: &str, processor_name: &str, report: &ApplyReport) {
     for stats in &report.statements {
         if stats.matched > 0 {
-            record_processor_statement(tenant_id, processor_name, "applied");
+            record_processor_statement(tenant_id, processor_name, "applied", stats.matched);
         }
         if stats.errors > 0 {
-            record_processor_statement(tenant_id, processor_name, "error");
+            record_processor_statement(tenant_id, processor_name, "error", stats.errors);
         }
         if stats.matched == 0 && stats.errors == 0 {
-            record_processor_statement(tenant_id, processor_name, "skipped");
+            record_processor_statement(tenant_id, processor_name, "skipped", 1);
         }
     }
 }
@@ -59,7 +59,17 @@ macro_rules! apply_processors {
                     &tenant_context.dataset_id,
                     $signal,
                 )
-                .await;
+                .await
+                .map_err(|err| {
+                    // No cached entry to fall back to: fail closed rather
+                    // than silently applying zero processors, which would
+                    // let unredacted data reach the WAL for a tenant that
+                    // may have redaction rules configured.
+                    IngestError::Unavailable(anyhow::anyhow!(
+                        "failed to load processors for tenant `{}`: {err}",
+                        tenant_context.tenant_id
+                    ))
+                })?;
             if processors.is_empty() {
                 return Ok(());
             }
@@ -96,11 +106,22 @@ where
         // Failed to compile; skipped, never blocks ingest.
         return Ok(());
     };
-    let error_mode = match processor.record.error_mode.as_str() {
-        "propagate" => ottl::ErrorMode::Propagate,
-        "silent" => ottl::ErrorMode::Silent,
-        _ => ottl::ErrorMode::Ignore,
-    };
+    let error_mode = processor
+        .record
+        .error_mode
+        .parse::<ottl::ErrorMode>()
+        .unwrap_or_else(|e| {
+            // Stored rows are validated at write time (`store.rs`), so this
+            // only fires on a value written outside that path; fail open to
+            // `Ignore` (never blocks ingest) but make the drift visible.
+            tracing::warn!(
+                tenant_id = %tenant_context.tenant_id,
+                processor = %processor.record.name,
+                error = %e,
+                "stored processor has an unrecognized error_mode; treating as ignore"
+            );
+            ottl::ErrorMode::Ignore
+        });
     match request.apply(program, error_mode) {
         Ok(report) => {
             record_report(&tenant_context.tenant_id, &processor.record.name, &report);

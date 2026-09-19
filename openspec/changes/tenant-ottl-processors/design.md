@@ -181,7 +181,7 @@ PUT    /processors/{name}               replace (full document)
 DELETE /processors/{name}               delete → 204
 POST   /processors:validate             body: ProcessorSpec → ValidationReport
 POST   /processors:test                 body: { processors?: [ProcessorSpec] | null (use stored),
-                                                dataset_id?, signal, payload: OTLP JSON }
+                                                dataset?, signal, payload: OTLP JSON }
                                          → { payload, statements: [{index, matched, errors}] }
 ```
 
@@ -243,7 +243,7 @@ minute.
 
 ## Open Questions
 
-- Should `dataset_id = NULL` be allowed to be *overridden off* per dataset
+- Should `dataset = NULL` be allowed to be *overridden off* per dataset
   (an `exclude_datasets` list)? Deferred; a dataset-scoped `set` can undo a
   tenant-wide one in most cases.
 - Profiles context: revisit when the Collector defines it.

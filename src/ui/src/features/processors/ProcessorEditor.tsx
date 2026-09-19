@@ -90,24 +90,41 @@ function EditorForm({
   );
   const [errors, setErrors] = useState<StatementError[]>([]);
   const [validatedText, setValidatedText] = useState<string | null>(null);
+  const [validatedSignal, setValidatedSignal] = useState<Signal | null>(null);
   const [appliesWithin, setAppliesWithin] = useState<number | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
 
-  const statementLines = useMemo(
-    () => statementsText.split("\n").filter((line) => line.trim() !== ""),
-    [statementsText],
-  );
+  // `statementLines` drops blank lines before sending statements to the
+  // validate/save endpoints (the server addresses statements by index into
+  // this filtered list). `statementLineNumbers[i]` is the 0-based line in
+  // `statementsText` that `statementLines[i]` came from, so a server error
+  // for filtered index `i` can be annotated on the right textarea line even
+  // when blank lines precede it.
+  const { statementLines, statementLineNumbers } = useMemo(() => {
+    const lines = statementsText.split("\n");
+    const filtered: string[] = [];
+    const lineNumbers: number[] = [];
+    lines.forEach((line, lineNumber) => {
+      if (line.trim() !== "") {
+        filtered.push(line);
+        lineNumbers.push(lineNumber);
+      }
+    });
+    return { statementLines: filtered, statementLineNumbers: lineNumbers };
+  }, [statementsText]);
 
   const validation = useMutation({
     mutationFn: () => validateProcessor(signal, statementLines),
     onSuccess: (result) => {
       setErrors(result);
       setValidatedText(statementsText);
+      setValidatedSignal(signal);
     },
     onError: (e) => setSaveError(toErrorMessage(e)),
   });
 
-  const statementsCurrent = validatedText === statementsText;
+  const statementsCurrent =
+    validatedText === statementsText && validatedSignal === signal;
   const isValidated = statementsCurrent && errors.length === 0;
 
   const buildSpec = (): ProcessorSpec => ({
@@ -245,9 +262,10 @@ function EditorForm({
           {statementLines.map((_line, index) => {
             const err = errorForLine(index);
             if (!err) return null;
+            const lineNumber = statementLineNumbers[index] ?? index;
             return (
               <li key={index} className="error-text" role="alert">
-                Line {index + 1}
+                Line {lineNumber + 1}
                 {err.column != null ? `, column ${err.column}` : ""}:{" "}
                 {err.message}
               </li>
