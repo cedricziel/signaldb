@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.4.1](https://github.com/cedricziel/signaldb/compare/signaldb-bin-v0.4.0...signaldb-bin-v0.4.1) (2026-09-19)
+
+
+### Features
+
+* per-API-key allowed origins for browser (CORS) ingestion ([#1548](https://github.com/cedricziel/signaldb/issues/1548)) ([6e966dd](https://github.com/cedricziel/signaldb/commit/6e966ddaf2740e3648583223828c6af715b6d331))
+* per-tenant, per-dataset OTTL telemetry processors ([#1603](https://github.com/cedricziel/signaldb/issues/1603)) ([2fc1022](https://github.com/cedricziel/signaldb/commit/2fc102232b1d925418b02e68393af8917184016e))
+
+
+### Bug Fixes
+
+* **querier:** bound the scan batch, spill reservation and monolith memory pool ([#1602](https://github.com/cedricziel/signaldb/issues/1602)) ([edc1947](https://github.com/cedricziel/signaldb/commit/edc19477c0dc49d8b09ac54934e55cb153d6f9da))
+
 ## [0.4.0](https://github.com/cedricziel/signaldb/compare/signaldb-bin-v0.3.0...signaldb-bin-v0.4.0) (2026-09-12)
 
 

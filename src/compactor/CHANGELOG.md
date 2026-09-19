@@ -5,6 +5,13 @@ All notable changes to the SignalDB Compactor Service will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1](https://github.com/cedricziel/signaldb/compare/compactor-v0.4.0...compactor-v0.4.1) (2026-09-19)
+
+
+### Bug Fixes
+
+* **querier:** bound the scan batch, spill reservation and monolith memory pool ([#1602](https://github.com/cedricziel/signaldb/issues/1602)) ([edc1947](https://github.com/cedricziel/signaldb/commit/edc19477c0dc49d8b09ac54934e55cb153d6f9da))
+
 ## [0.4.0](https://github.com/cedricziel/signaldb/compare/compactor-v0.3.0...compactor-v0.4.0) (2026-09-12)
 
 
