@@ -483,7 +483,11 @@ on a TTY. MCP: `tenant_list_datasets`,
 `tenant_list_memberships`, `tenant_upsert_membership`,
 `tenant_remove_membership`, `tenant_get_schema`, `tenant_start_github_link`,
 `tenant_list_github_installations`, `tenant_remove_github_installation` (a
-403 surfaces the router's reason via `map_manage_err`). The whole-SDK parity
+403 surfaces the router's reason via `map_manage_err`). A multi-tenant OAuth
+credential has no default tenant, so every tenant-aware MCP tool takes the
+tenant (`tenant_id`/`tenant`) and forwards it as `X-Tenant-ID`;
+`connection_info` takes it as an optional `tenant` (required for a
+multi-tenant credential) plus an optional `dataset`. The whole-SDK parity
 check (`tests-integration/tests/query_parity.rs`) maps all of them; only the
 two OAuth consent endpoints, `manage_create_tenant`, and the GitHub install
 callback stay excluded. E2E: `tests-integration/tests/tenant_manage_clients.rs`.

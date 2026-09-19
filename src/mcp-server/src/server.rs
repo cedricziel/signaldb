@@ -301,6 +301,19 @@ impl SearchTraceGroupsParams {
     }
 }
 
+/// Parameters for `connection_info`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ConnectionInfoParams {
+    /// Tenant to fill into the returned headers and env vars. Required for a
+    /// multi-tenant OAuth credential (pick one of `server_info`'s granted
+    /// tenants); a single-tenant credential needs none.
+    tenant: Option<String>,
+    /// Dataset to fill into the returned headers and env vars. Defaults to
+    /// the credential's own dataset.
+    dataset: Option<String>,
+}
+
 /// Parameters for `list_api_keys`.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
@@ -1333,13 +1346,11 @@ struct RevokeApiKeyParams {
 // ---- Tenant self-management tool parameters (management API; the caller's
 // own tenant credential) ----
 
-/// Parameters for `tenant_info`, `tenant_list_datasets`,
-/// `tenant_list_api_keys`, `tenant_list_memberships`, `tenant_list_tables`,
-/// `tenant_create_tables`, `tenant_list_table_schemas`.
+/// Parameters for the tenant self-management tools that take only a tenant.
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct TenantOnlyParams {
-    /// The caller's own tenant. Must match the authenticated tenant.
+    /// The tenant to act on. Must be a tenant the credential is granted.
     tenant_id: String,
 }
 
@@ -1863,15 +1874,32 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Return everything needed to send data to and query this SignalDB deployment: public OTLP gRPC/HTTP endpoints, Prometheus remote-write, the query API base, required headers with your tenant and dataset filled in, the API-key scopes ingest needs, and ready-to-paste OTEL_EXPORTER_* env vars. Call this first when configuring or auto-instrumenting an application; then mint an ingest credential with `tenant_create_api_key` (scopes traces:write, logs:write, metrics:write, profiles:write) and substitute it for `<api-key>`.",
+        description = "Return everything needed to send data to and query this SignalDB deployment: public OTLP gRPC/HTTP endpoints, Prometheus remote-write, the query API base, required headers with your tenant and dataset filled in, the API-key scopes ingest needs, and ready-to-paste OTEL_EXPORTER_* env vars. A multi-tenant credential must pass `tenant` (one of its granted tenants); `dataset` is optional. Call this first when configuring or auto-instrumenting an application; then mint an ingest credential with `tenant_create_api_key` (scopes traces:write, logs:write, metrics:write, profiles:write) and substitute it for `<api-key>`.",
         annotations(read_only_hint = true)
     )]
     async fn connection_info(
         &self,
+        Parameters(p): Parameters<ConnectionInfoParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        let resp = self
-            .router_client(&parts, None)?
+        let client = match p.tenant.as_deref() {
+            Some(tenant) => {
+                check_tenant_scope(&parts, tenant)?;
+                self.scoped_router_client(&parts, tenant, p.dataset.as_deref())?
+            }
+            // A multi-tenant credential has no default tenant to resolve
+            // the response's headers against, and any one of its tenants
+            // would be a wrong guess — ask for one instead of letting the
+            // router reject the call.
+            None if parts.extensions.get::<audit::CallerTenants>().is_some() => {
+                return Err(ErrorData::invalid_params(
+                    "`tenant` is required: this credential spans more than one tenant (see `server_info` for the granted tenants)",
+                    None,
+                ));
+            }
+            None => self.router_client(&parts, p.dataset.as_deref())?,
+        };
+        let resp = client
             .connection_info()
             .send()
             .await
@@ -3244,20 +3272,11 @@ impl McpServer {
     )]
     async fn tenant_get_schema(
         &self,
+        Parameters(p): Parameters<TenantOnlyParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        // Unlike every other tool in this management-API family, this one
-        // takes no tenant argument at all — it relies entirely on the
-        // router resolving "the caller's own tenant" from the credential.
-        // That has no answer for a multi-tenant OAuth credential (no
-        // X-Tenant-ID to fall back on, and the per-tenant schema
-        // configuration this reports can genuinely differ between granted
-        // tenants, so no single one of them is a safe default to guess).
-        // Left unfixed: this tool is not yet usable by a multi-tenant OAuth
-        // credential; needs a `tenant_id` argument added, which changes its
-        // schema for every caller (out of scope here — see change
-        // mcp-multi-tenant-oauth-grants task group 5 review notes).
-        let client = self.router_client(&parts, None)?;
+        check_tenant_scope(&parts, &p.tenant_id)?;
+        let client = self.scoped_router_client(&parts, &p.tenant_id, None)?;
         let resp = client
             .manage_get_schema()
             .send()
@@ -6183,6 +6202,132 @@ mod tests {
         assert!(
             request.to_lowercase().contains("x-tenant-id: acme"),
             "expected the first granted tenant used as the anchor: {request}"
+        );
+    }
+
+    const CONNECTION_BODY: &str = r#"{
+        "tenant_id": "acme", "dataset_id": "production", "public_endpoints_configured": false,
+        "headers": {"authorization": "Bearer <api-key>", "x-tenant-id": "acme", "x-dataset-id": "production"},
+        "ingest": {
+            "otlp_grpc": {"url": "http://localhost:4317", "authority": "localhost:4317", "tls": false, "protocol": "grpc", "signals": ["traces"]},
+            "otlp_http": {"url": "http://localhost:4318", "tls": false, "protocol": "http/protobuf", "paths": {"traces": "/v1/traces", "logs": "/v1/logs", "metrics": "/v1/metrics", "profiles": "/v1development/profiles"}},
+            "prometheus_remote_write": "http://localhost:4318/api/v1/write"
+        },
+        "query": {"api_url": "http://localhost:3000", "query_ir": "/api/v1/query", "openapi": "/api/v1/openapi.json",
+                  "compat": {"tempo": "/tempo/api", "loki": "/loki/api/v1", "prometheus": "/prometheus/api/v1", "pyroscope": "/pyroscope"}},
+        "required_scopes": {"ingest": ["traces:write"], "query": ["traces:read"]},
+        "otel_env": {"OTEL_EXPORTER_OTLP_ENDPOINT": "http://localhost:4317", "OTEL_EXPORTER_OTLP_PROTOCOL": "grpc", "OTEL_EXPORTER_OTLP_HEADERS": "x"},
+        "notes": []
+    }"#;
+
+    /// `connection_info` passed no tenant, so a multi-tenant OAuth credential
+    /// (no `X-Tenant-ID` to fall back on) always drew a router 400.
+    #[tokio::test]
+    async fn connection_info_forwards_selected_tenant_and_dataset() {
+        let (base_url, router) =
+            mock_capturing_router("GET /api/v1/connection", 200, CONNECTION_BODY).await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+        let parts = multi_tenant_parts(vec![
+            unrestricted_grant("acme"),
+            unrestricted_grant("globex"),
+        ]);
+
+        server
+            .connection_info(
+                Parameters(ConnectionInfoParams {
+                    tenant: Some("globex".to_string()),
+                    dataset: Some("apps".to_string()),
+                }),
+                Extension(parts),
+            )
+            .await
+            .expect("a granted tenant succeeds for a multi-tenant credential");
+
+        let request = router
+            .await
+            .expect("mock router task panicked")
+            .to_lowercase();
+        assert!(request.contains("x-tenant-id: globex"), "got {request}");
+        assert!(request.contains("x-dataset-id: apps"), "got {request}");
+    }
+
+    #[tokio::test]
+    async fn connection_info_asks_a_multi_tenant_credential_to_name_a_tenant() {
+        // No mock router needed: the missing tenant must be caught before any
+        // request is sent.
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+        let parts = multi_tenant_parts(vec![
+            unrestricted_grant("acme"),
+            unrestricted_grant("globex"),
+        ]);
+
+        let err = server
+            .connection_info(
+                Parameters(ConnectionInfoParams {
+                    tenant: None,
+                    dataset: None,
+                }),
+                Extension(parts),
+            )
+            .await
+            .expect_err("a multi-tenant credential must name a tenant");
+
+        assert!(err.message.contains("`tenant`"), "got {}", err.message);
+    }
+
+    #[tokio::test]
+    async fn connection_info_rejects_a_tenant_outside_a_multi_tenant_grant() {
+        let server = McpServer::new(
+            "http://router.invalid".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+        let parts = multi_tenant_parts(vec![unrestricted_grant("acme")]);
+
+        let err = server
+            .connection_info(
+                Parameters(ConnectionInfoParams {
+                    tenant: Some("initech".to_string()),
+                    dataset: None,
+                }),
+                Extension(parts),
+            )
+            .await
+            .expect_err("a tenant outside the grant set must be rejected");
+
+        assert!(err.message.contains("initech"), "got {}", err.message);
+    }
+
+    #[tokio::test]
+    async fn tenant_get_schema_forwards_the_selected_tenant_for_a_multi_tenant_credential() {
+        let (base_url, router) = mock_capturing_router(
+            "GET /api/v1/manage/schema",
+            200,
+            r#"{"logical":[],"logical_schema_version":"1","physical":[]}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+        let parts = multi_tenant_parts(vec![
+            unrestricted_grant("acme"),
+            unrestricted_grant("globex"),
+        ]);
+
+        server
+            .tenant_get_schema(
+                Parameters(TenantOnlyParams {
+                    tenant_id: "globex".to_string(),
+                }),
+                Extension(parts),
+            )
+            .await
+            .expect("a granted tenant succeeds for a multi-tenant credential");
+
+        let request = router.await.expect("mock router task panicked");
+        assert!(
+            request.to_lowercase().contains("x-tenant-id: globex"),
+            "expected the selected tenant forwarded as X-Tenant-ID: {request}"
         );
     }
 
