@@ -49,40 +49,49 @@ export function TestPanel({ signal, dataset, spec }: Props) {
     // keep this effect scoped to `signal` changes only.
   }, [signal]);
 
-  const run = useMutation({
-    mutationFn: async () => {
-      const revision = bumpRevision();
-      const submittedPayload = payloadText;
-      const payload = JSON.parse(payloadText) as unknown;
-      const response = await testProcessor({
+  type RunVariables = { revision: number; submittedPayload: string };
+
+  const run = useMutation<TestResponse, Error, RunVariables>({
+    mutationFn: async ({ submittedPayload }) => {
+      const payload = JSON.parse(submittedPayload) as unknown;
+      return testProcessor({
         signal,
         dataset,
         processors: [spec],
         payload,
       });
-      return { response, revision, submittedPayload };
     },
-    onSuccess: ({ response, revision, submittedPayload }) => {
+    onSuccess: (response, { revision, submittedPayload }) => {
       if (revision !== revisionRef.current) return;
       setResult(response);
       setBefore(submittedPayload);
       setError(null);
     },
-    onError: (e) => {
-      // The mutation's own error path (thrown before the revision/payload
-      // pair is captured, e.g. a JSON.parse failure) has no revision to
-      // check against, so it always applies — that mirrors a synchronous
-      // validation failure on the current input, never a superseded one.
+    onError: (e, { revision }) => {
+      if (revision !== revisionRef.current) return;
       setResult(null);
       setError(toErrorMessage(e));
     },
   });
+
+  const runTest = () => {
+    const revision = bumpRevision();
+    run.mutate({ revision, submittedPayload: payloadText });
+  };
 
   const resetSample = () => {
     bumpRevision();
     setPayloadText(JSON.stringify(SAMPLE_PAYLOADS[signal], null, 2));
     setResult(null);
     setError(null);
+  };
+
+  const editPayload = (text: string) => {
+    // Editing while a request is in flight must invalidate it too, or a
+    // response for the pre-edit text can land after the edit and be
+    // rendered as if it belonged to the text now in the textarea.
+    bumpRevision();
+    setPayloadText(text);
   };
 
   const afterText = result ? JSON.stringify(result.payload, null, 2) : null;
@@ -101,13 +110,13 @@ export function TestPanel({ signal, dataset, spec }: Props) {
         id="processors-test-payload"
         className="processors-test-textarea"
         value={payloadText}
-        onChange={(e) => setPayloadText(e.target.value)}
+        onChange={(e) => editPayload(e.target.value)}
         rows={12}
       />
       <button
         type="button"
         className="btn btn-primary"
-        onClick={() => run.mutate()}
+        onClick={runTest}
         disabled={run.isPending}
       >
         Run test

@@ -44,14 +44,16 @@ fn get_attr(map: &[KeyValue], key: &str) -> Value {
         .unwrap_or(Value::Nil)
 }
 
+/// Sets `key` to `value`, first removing every existing entry for `key`
+/// rather than updating only the first match. OTLP's wire format doesn't
+/// enforce unique attribute keys, so a payload can carry the same sensitive
+/// key twice; updating only the first occurrence would leave the second
+/// one's original (unredacted) value in place. Canonicalizing to at most
+/// one entry per key also means a later `get_attr` never has a stale
+/// duplicate to disagree with.
 fn set_attr(map: &mut Vec<KeyValue>, key: &str, value: Value) {
-    if value.is_nil() {
-        map.retain(|kv| kv.key != key);
-        return;
-    }
-    if let Some(existing) = map.iter_mut().find(|kv| kv.key == key) {
-        existing.value = Some(value.into_any_value());
-    } else {
+    map.retain(|kv| kv.key != key);
+    if !value.is_nil() {
         map.push(KeyValue {
             key: key.to_string(),
             value: Some(value.into_any_value()),

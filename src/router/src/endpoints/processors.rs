@@ -277,7 +277,7 @@ fn signal_of(signal: &str) -> Result<ottl::Signal, Box<Response>> {
         (status = 200, description = "This tenant's processors", body = ProcessorListResponse),
         (status = 403, description = "Missing processors:read scope", body = ProcessorError),
     ),
-    security(("bearer" = []))
+    security(("bearerAuth" = []))
 )]
 pub async fn list_processors<S: RouterState>(
     State(state): State<S>,
@@ -316,7 +316,7 @@ pub async fn list_processors<S: RouterState>(
         (status = 409, description = "Processor already exists", body = ProcessorError),
         (status = 422, description = "Invalid spec or unknown dataset", body = ProcessorError),
     ),
-    security(("bearer" = []))
+    security(("bearerAuth" = []))
 )]
 pub async fn create_processor<S: RouterState>(
     State(state): State<S>,
@@ -364,7 +364,7 @@ pub async fn create_processor<S: RouterState>(
         (status = 400, description = "Unparseable body", body = ProcessorError),
         (status = 403, description = "Missing processors:read scope", body = ProcessorError),
     ),
-    security(("bearer" = []))
+    security(("bearerAuth" = []))
 )]
 pub async fn validate_processor<S: RouterState>(
     State(state): State<S>,
@@ -404,7 +404,7 @@ pub async fn validate_processor<S: RouterState>(
         (status = 403, description = "Missing processors:read scope", body = ProcessorError),
         (status = 404, description = "No such processor", body = ProcessorError),
     ),
-    security(("bearer" = []))
+    security(("bearerAuth" = []))
 )]
 pub async fn get_processor<S: RouterState>(
     State(state): State<S>,
@@ -442,7 +442,7 @@ pub async fn get_processor<S: RouterState>(
         (status = 404, description = "No such processor (PUT never upserts)", body = ProcessorError),
         (status = 422, description = "Invalid spec or unknown dataset", body = ProcessorError),
     ),
-    security(("bearer" = []))
+    security(("bearerAuth" = []))
 )]
 pub async fn replace_processor<S: RouterState>(
     State(state): State<S>,
@@ -491,7 +491,7 @@ pub async fn replace_processor<S: RouterState>(
         (status = 403, description = "Missing processors:write scope", body = ProcessorError),
         (status = 404, description = "No such processor", body = ProcessorError),
     ),
-    security(("bearer" = []))
+    security(("bearerAuth" = []))
 )]
 pub async fn delete_processor<S: RouterState>(
     State(state): State<S>,
@@ -544,7 +544,7 @@ fn write_response<S: RouterState>(state: &S, record: ProcessorRecord) -> Process
         (status = 413, description = "Payload exceeds processors.test_payload_max_bytes", body = ProcessorError),
         (status = 422, description = "Inline processors failed to compile", body = ProcessorError),
     ),
-    security(("bearer" = []))
+    security(("bearerAuth" = []))
 )]
 pub async fn test_processor<S: RouterState>(
     State(state): State<S>,
@@ -619,13 +619,11 @@ pub async fn test_processor<S: RouterState>(
             {
                 Ok(compiled) => compiled,
                 Err(e) => {
-                    return error(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        format!(
-                            "failed to load processors for tenant `{}`: {e}",
-                            ctx.tenant_id
-                        ),
-                    );
+                    // Never echo the underlying error to the caller: a
+                    // `StoreError::Database` can carry backend diagnostics
+                    // (e.g. a connection string). It's already logged here.
+                    tracing::error!(tenant_id = %ctx.tenant_id, error = %e, "failed to load processors");
+                    return error(StatusCode::SERVICE_UNAVAILABLE, "failed to load processors");
                 }
             };
             compiled

@@ -145,8 +145,14 @@ impl Frame for TraceFrame<'_> {
             ScalarTarget::ScopeVersion => self.scope.version = coerce_string(value)?,
             ScalarTarget::SpanName => self.span.name = coerce_string(value)?,
             ScalarTarget::SpanKind => self.span.kind = coerce_i32(value)?,
-            ScalarTarget::StatusCode => self.status_mut().code = coerce_i32(value)?,
-            ScalarTarget::StatusMessage => self.status_mut().message = coerce_string(value)?,
+            ScalarTarget::StatusCode => {
+                let code = coerce_i32(value)?;
+                self.status_mut().code = code;
+            }
+            ScalarTarget::StatusMessage => {
+                let message = coerce_string(value)?;
+                self.status_mut().message = message;
+            }
             other => return Err(format!("{other:?} is not writable for traces")),
         }
         Ok(())

@@ -354,9 +354,14 @@ export const opsCompactStatus = <ThrowOnError extends boolean = false>(options?:
     ...options
 });
 
-export const processorsList = <ThrowOnError extends boolean = false>(options?: Options<ProcessorsListData, ThrowOnError>): RequestResult<ProcessorsListResponses, ProcessorsListErrors, ThrowOnError> => (options?.client ?? client).get<ProcessorsListResponses, ProcessorsListErrors, ThrowOnError>({ url: '/api/v1/processors', ...options });
+export const processorsList = <ThrowOnError extends boolean = false>(options?: Options<ProcessorsListData, ThrowOnError>): RequestResult<ProcessorsListResponses, ProcessorsListErrors, ThrowOnError> => (options?.client ?? client).get<ProcessorsListResponses, ProcessorsListErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/processors',
+    ...options
+});
 
 export const processorsCreate = <ThrowOnError extends boolean = false>(options: Options<ProcessorsCreateData, ThrowOnError>): RequestResult<ProcessorsCreateResponses, ProcessorsCreateErrors, ThrowOnError> => (options.client ?? client).post<ProcessorsCreateResponses, ProcessorsCreateErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/v1/processors',
     ...options,
     headers: {
@@ -365,11 +370,20 @@ export const processorsCreate = <ThrowOnError extends boolean = false>(options: 
     }
 });
 
-export const processorsDelete = <ThrowOnError extends boolean = false>(options: Options<ProcessorsDeleteData, ThrowOnError>): RequestResult<ProcessorsDeleteResponses, ProcessorsDeleteErrors, ThrowOnError> => (options.client ?? client).delete<ProcessorsDeleteResponses, ProcessorsDeleteErrors, ThrowOnError>({ url: '/api/v1/processors/{name}', ...options });
+export const processorsDelete = <ThrowOnError extends boolean = false>(options: Options<ProcessorsDeleteData, ThrowOnError>): RequestResult<ProcessorsDeleteResponses, ProcessorsDeleteErrors, ThrowOnError> => (options.client ?? client).delete<ProcessorsDeleteResponses, ProcessorsDeleteErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/processors/{name}',
+    ...options
+});
 
-export const processorsGet = <ThrowOnError extends boolean = false>(options: Options<ProcessorsGetData, ThrowOnError>): RequestResult<ProcessorsGetResponses, ProcessorsGetErrors, ThrowOnError> => (options.client ?? client).get<ProcessorsGetResponses, ProcessorsGetErrors, ThrowOnError>({ url: '/api/v1/processors/{name}', ...options });
+export const processorsGet = <ThrowOnError extends boolean = false>(options: Options<ProcessorsGetData, ThrowOnError>): RequestResult<ProcessorsGetResponses, ProcessorsGetErrors, ThrowOnError> => (options.client ?? client).get<ProcessorsGetResponses, ProcessorsGetErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
+    url: '/api/v1/processors/{name}',
+    ...options
+});
 
 export const processorsReplace = <ThrowOnError extends boolean = false>(options: Options<ProcessorsReplaceData, ThrowOnError>): RequestResult<ProcessorsReplaceResponses, ProcessorsReplaceErrors, ThrowOnError> => (options.client ?? client).put<ProcessorsReplaceResponses, ProcessorsReplaceErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/v1/processors/{name}',
     ...options,
     headers: {
@@ -379,6 +393,7 @@ export const processorsReplace = <ThrowOnError extends boolean = false>(options:
 });
 
 export const processorsTest = <ThrowOnError extends boolean = false>(options: Options<ProcessorsTestData, ThrowOnError>): RequestResult<ProcessorsTestResponses, ProcessorsTestErrors, ThrowOnError> => (options.client ?? client).post<ProcessorsTestResponses, ProcessorsTestErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/v1/processors:test',
     ...options,
     headers: {
@@ -388,6 +403,7 @@ export const processorsTest = <ThrowOnError extends boolean = false>(options: Op
 });
 
 export const processorsValidate = <ThrowOnError extends boolean = false>(options: Options<ProcessorsValidateData, ThrowOnError>): RequestResult<ProcessorsValidateResponses, ProcessorsValidateErrors, ThrowOnError> => (options.client ?? client).post<ProcessorsValidateResponses, ProcessorsValidateErrors, ThrowOnError>({
+    security: [{ scheme: 'bearer', type: 'http' }],
     url: '/api/v1/processors:validate',
     ...options,
     headers: {
