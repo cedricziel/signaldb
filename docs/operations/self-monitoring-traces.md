@@ -146,6 +146,12 @@ flowchart LR
 
 - **WAL fan-in**: the writer's batch span **links** to every distinct
   source ingest trace (one link per origin, never a parent).
+- **Telemetry processors**: the acceptor wraps applying a tenant's matching
+  OTTL processors in one INTERNAL `processors.apply` span
+  (`signaldb.tenant.id`, `signaldb.dataset.id`, `signaldb.signal`,
+  `signaldb.processors.count`), plus per-statement counters for statements
+  applied and errored and a counter of requests rejected by
+  `error_mode: propagate` — see `docs/users/processors.md`.
 - **MCP tool calls** (the `signaldb-mcp` sidecar, when its
   `[self_monitoring]` is enabled): every `tools/call` runs in one INTERNAL
   span named `tools/call {tool}` (`mcp.method.name=tools/call`,

@@ -157,8 +157,15 @@ reload: tokio::sync::Mutex<()> }`. `for_request(tenant, dataset, signal) ->
 Vec<Arc<CompiledProcessor>>` returns the filtered, ordered subset (per tenant
 the list is small). An entry older than `ttl` is reloaded **synchronously** on
 the next access; the per-entry mutex stops concurrent requests stampeding the
-catalog, and if the reload fails the old programs keep serving and the error
-is logged. No background task: the cost is one small SELECT per tenant per
+catalog, and if a **reload** (an already-cached tenant) fails the old
+programs keep serving and the error is logged. A tenant's **first** load
+failing is different: there is no known-good program set to fall back to, so
+`for_request` returns an error instead of caching an empty list — an empty
+successful load (a tenant with zero processors) and a failed load are never
+conflated, since silently proceeding with zero processors on a load failure
+would bypass any redaction the tenant configured. Callers (the acceptor
+handlers) reject the export in that case rather than ingest unredacted data.
+No background task: the cost is one small SELECT per tenant per
 interval, in the style of `SchemaResolver`'s DashMap cache (the acceptor
 already holds `TenantRateLimiter` and `StorageUsageTracker` the same way).
 Writes through the same process call `invalidate(tenant)`; the router's write
@@ -191,6 +198,15 @@ on existing name, 422 with
 `:test` payload is capped at `[processors].test_payload_max_bytes` (1 MiB) and
 never touches the WAL. Nested under `/api/v1` next to `/schema`, so it
 inherits the tenant auth layer and rate limiting.
+
+`:test` is also 422, with a plain `error` message (no `errors` array), for
+two execution-time cases distinct from a compile failure: an inline
+processor whose statements run under `error_mode: propagate` and raise a
+runtime error, and an inline processor whose own `signal` does not match the
+request's `signal` (checked before compiling it). Each `statements` entry
+also carries the owning `processor`'s name, since every processor's
+statement indices restart at 0 and a multi-processor `:test` call would
+otherwise return ambiguous duplicate indices.
 
 ### D7 — Scopes
 

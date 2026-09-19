@@ -3055,6 +3055,9 @@ pub mod types {
         pub errors: i64,
         pub index: u64,
         pub matched: i64,
+        /**Name of the processor this statement belongs to, so results from
+        multiple processors (each restarting `index` at 0) can be told apart.*/
+        pub processor: ::std::string::String,
     }
     impl TestStatementResult {
         pub fn builder() -> builder::TestStatementResult {
@@ -15140,6 +15143,7 @@ pub mod types {
             errors: ::std::result::Result<i64, ::std::string::String>,
             index: ::std::result::Result<u64, ::std::string::String>,
             matched: ::std::result::Result<i64, ::std::string::String>,
+            processor: ::std::result::Result<::std::string::String, ::std::string::String>,
         }
         impl ::std::default::Default for TestStatementResult {
             fn default() -> Self {
@@ -15147,6 +15151,7 @@ pub mod types {
                     errors: Err("no value supplied for errors".to_string()),
                     index: Err("no value supplied for index".to_string()),
                     matched: Err("no value supplied for matched".to_string()),
+                    processor: Err("no value supplied for processor".to_string()),
                 }
             }
         }
@@ -15181,6 +15186,16 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for matched: {e}"));
                 self
             }
+            pub fn processor<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.processor = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for processor: {e}"));
+                self
+            }
         }
         impl ::std::convert::TryFrom<TestStatementResult> for super::TestStatementResult {
             type Error = super::error::ConversionError;
@@ -15191,6 +15206,7 @@ pub mod types {
                     errors: value.errors?,
                     index: value.index?,
                     matched: value.matched?,
+                    processor: value.processor?,
                 })
             }
         }
@@ -15200,6 +15216,7 @@ pub mod types {
                     errors: Ok(value.errors),
                     index: Ok(value.index),
                     matched: Ok(value.matched),
+                    processor: Ok(value.processor),
                 }
             }
         }

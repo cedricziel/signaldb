@@ -9155,6 +9155,7 @@
       "TestStatementResult": {
         "type": "object",
         "required": [
+          "processor",
           "index",
           "matched",
           "errors"
@@ -9173,6 +9174,10 @@
             "type": "integer",
             "format": "int64",
             "minimum": 0
+          },
+          "processor": {
+            "type": "string",
+            "description": "Name of the processor this statement belongs to, so results from\nmultiple processors (each restarting `index` at 0) can be told apart."
           }
         }
       },

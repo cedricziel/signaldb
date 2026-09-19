@@ -93,5 +93,5 @@ export const TEST_RESPONSE = {
       },
     ],
   },
-  statements: [{ index: 0, matched: 1, errors: 0 }],
+  statements: [{ processor: "redact-emails", index: 0, matched: 1, errors: 0 }],
 };

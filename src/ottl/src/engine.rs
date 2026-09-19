@@ -101,7 +101,14 @@ fn eval_converter(frame: &mut dyn Frame, conv: &Converter) -> Result<Value, Stri
             let value = eval_expr(frame, v)?;
             match &value {
                 Value::Int(i) => Ok(Value::Int(*i)),
-                Value::Double(d) => Ok(Value::Int(*d as i64)),
+                Value::Double(d) => {
+                    if !d.is_finite() || *d < i64::MIN as f64 || *d >= i64::MAX as f64 {
+                        return Err(
+                            "Int(): double value is not a finite in-range integer".to_string()
+                        );
+                    }
+                    Ok(Value::Int(*d as i64))
+                }
                 Value::Bool(b) => Ok(Value::Int(i64::from(*b))),
                 Value::String(s) => s
                     .trim()

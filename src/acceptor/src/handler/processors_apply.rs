@@ -79,7 +79,7 @@ macro_rules! apply_processors {
                 &tenant_context.dataset_id,
                 $signal,
             );
-            span.record("signaldb.processors.count", processors.len());
+            span.record("signaldb.processors.count", processors.len() as i64);
 
             async {
                 for processor in &processors {

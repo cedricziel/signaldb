@@ -2039,6 +2039,11 @@ export type TestStatementResult = {
     errors: number;
     index: number;
     matched: number;
+    /**
+     * Name of the processor this statement belongs to, so results from
+     * multiple processors (each restarting `index` at 0) can be told apart.
+     */
+    processor: string;
 };
 
 /**

@@ -147,6 +147,9 @@ pub struct TestResponse {
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct TestStatementResult {
+    /// Name of the processor this statement belongs to, so results from
+    /// multiple processors (each restarting `index` at 0) can be told apart.
+    pub processor: String,
     pub index: usize,
     pub matched: u64,
     pub errors: u64,
@@ -657,7 +660,7 @@ pub async fn test_processor<S: RouterState>(
             };
             for (name, program, mode) in &programs {
                 match program.apply_traces(&mut req, *mode) {
-                    Ok(report) => push_stats(&mut stats, &report),
+                    Ok(report) => push_stats(&mut stats, name, &report),
                     Err(e) => {
                         return error(
                             StatusCode::UNPROCESSABLE_ENTITY,
@@ -683,7 +686,7 @@ pub async fn test_processor<S: RouterState>(
             };
             for (name, program, mode) in &programs {
                 match program.apply_logs(&mut req, *mode) {
-                    Ok(report) => push_stats(&mut stats, &report),
+                    Ok(report) => push_stats(&mut stats, name, &report),
                     Err(e) => {
                         return error(
                             StatusCode::UNPROCESSABLE_ENTITY,
@@ -709,7 +712,7 @@ pub async fn test_processor<S: RouterState>(
             };
             for (name, program, mode) in &programs {
                 match program.apply_metrics(&mut req, *mode) {
-                    Ok(report) => push_stats(&mut stats, &report),
+                    Ok(report) => push_stats(&mut stats, name, &report),
                     Err(e) => {
                         return error(
                             StatusCode::UNPROCESSABLE_ENTITY,
@@ -735,9 +738,10 @@ pub async fn test_processor<S: RouterState>(
 /// Accumulates one program's `ApplyReport` into the flat, cross-processor
 /// statement result list `:test` returns (each processor's statements are
 /// appended in program order).
-fn push_stats(out: &mut Vec<TestStatementResult>, report: &ottl::ApplyReport) {
+fn push_stats(out: &mut Vec<TestStatementResult>, processor: &str, report: &ottl::ApplyReport) {
     for (i, s) in report.statements.iter().enumerate() {
         out.push(TestStatementResult {
+            processor: processor.to_string(),
             index: i,
             matched: s.matched,
             errors: s.errors,

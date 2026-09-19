@@ -59,7 +59,7 @@ describe("TestPanel", () => {
     stubFetchRoutes([
       {
         match: "/api/v1/processors:test",
-        body: { payload: { a: 1 }, statements: [{ index: 0, matched: 1, errors: 0 }] },
+        body: { payload: { a: 1 }, statements: [{ processor: "p", index: 0, matched: 1, errors: 0 }] },
       },
     ]);
     const { rerender } = renderWithRerenderableClient(
