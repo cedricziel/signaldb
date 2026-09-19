@@ -329,6 +329,42 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
         CliSurface::Path(&["schema", "metric", "search"]),
         "search_schema",
     ),
+    // ---- Telemetry processors ----
+    (
+        "processors_list",
+        CliSurface::Path(&["processors", "list"]),
+        "list_processors",
+    ),
+    (
+        "processors_get",
+        CliSurface::Path(&["processors", "get"]),
+        "get_processor",
+    ),
+    (
+        "processors_validate",
+        CliSurface::Path(&["processors", "validate"]),
+        "validate_processor",
+    ),
+    (
+        "processors_test",
+        CliSurface::Path(&["processors", "test"]),
+        "test_processor",
+    ),
+    (
+        "processors_create",
+        CliSurface::Path(&["admin", "processors", "create"]),
+        "create_processor",
+    ),
+    (
+        "processors_replace",
+        CliSurface::Path(&["admin", "processors", "replace"]),
+        "replace_processor",
+    ),
+    (
+        "processors_delete",
+        CliSurface::Path(&["admin", "processors", "delete"]),
+        "delete_processor",
+    ),
     // ---- Query languages (also covered by the language-specific assertions
     // below) ----
     ("search", CliSurface::QueryFlag("traceql"), "search_traces"),

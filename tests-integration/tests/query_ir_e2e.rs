@@ -166,6 +166,15 @@ async fn setup() -> TestServices {
     )
     .await
     .unwrap();
+    // `ServiceBootstrap::new` does not itself register config-defined tenants
+    // in the `tenants` table (unlike the real binary's startup path); the
+    // processors table's `FOREIGN KEY (tenant_id) REFERENCES tenants(id)`
+    // needs a real row to insert against.
+    acceptor_bootstrap
+        .catalog()
+        .sync_config_tenants(&config.auth)
+        .await
+        .expect("sync config tenants");
     let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
 
     // Writer Flight service with background WAL processing.
