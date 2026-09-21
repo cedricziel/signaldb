@@ -1,4 +1,5 @@
 import { Link } from "react-router";
+import { RefreshButton } from "../shell/RefreshButton";
 import { TimeRangePicker } from "../shell/TimeRangePicker";
 import { CatalogView } from "../catalog/CatalogView";
 import { ErrorsView } from "../errors/ErrorsView";
@@ -76,6 +77,7 @@ export function ExploreView({ state, update }: Props) {
             range={state.range}
             onChange={(range) => update({ range })}
           />
+          <RefreshButton />
           <button
             className="livebtn btn"
             aria-pressed={liveDisabled ? false : state.live}

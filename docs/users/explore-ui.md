@@ -147,6 +147,11 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   single-window Profiles. It is disabled,
   with a tooltip saying why, on Catalog, Errors, and Query, and whenever the
   time range is absolute — a fixed window has nothing to tail.
+- **Refresh** — the button beside the time picker re-runs the current view's
+  queries on demand, and a relative range moves its "now" forward. The icon
+  spins while any of them is loading (including Live polls, so it turns almost
+  continuously with Live on); with reduced motion set it dims instead. Sign-in
+  state and other lookups that don't depend on the time range are left alone.
 - Every view is a URL: each signal has its own path (`/catalog`, `/logs`,
   `/traces`, `/metrics`, `/profiles`, `/query`), with time range, filters, and
   selection in query parameters alongside it — so views are separately
@@ -815,7 +820,7 @@ repositories, GitHub brings you back to this page, which shows the linked
 installation with the repositories it covers, who linked it, a **Manage on
 GitHub** link, and a **Remove** action. The list refreshes each
 installation's repositories from GitHub on every load and marks an entry
-*stale* when GitHub could not be reached. When the operator has not
+_stale_ when GitHub could not be reached. When the operator has not
 configured the `[github]` section, the page explains that instead of
 offering **Connect**. Operator setup and the security model:
 [Connecting GitHub](../operations/github-app.md).
