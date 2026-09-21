@@ -30,7 +30,7 @@ ignored = [
     "form_urlencoded", "futures-channel", "futures-executor", "futures-io",
     "futures-task", "futures-util", "generic-array",
     "getrandom-468e82937335b1c9", "hashbrown-3575ec1268b04181", "hyper",
-    "hyper-rustls", "hyper-util", "indexmap", "itertools", "lazy_static",
+    "hyper-rustls", "hyper-util", "indexmap", "itertools", "itertools-582f2526e08bb6a0", "lazy_static",
     "libc", "log", "memchr", "miniz_oxide", "mio", "num-bigint", "num-iter",
     "num-traits", "object", "object_store", "once_cell", "opentelemetry",
     "opentelemetry-proto", "opentelemetry_sdk", "petgraph", "proc-macro2",
@@ -93,7 +93,8 @@ hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17" }
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "server-auto", "service"] }
 indexmap = { version = "2", features = ["serde"] }
-itertools = { version = "0.14" }
+itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
+itertools-93f6ce9d446188ac = { package = "itertools", version = "0.10" }
 lazy_static = { version = "1", default-features = false, features = ["spin_no_std"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
 memchr = { version = "2" }
@@ -193,7 +194,8 @@ hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17" }
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "server-auto", "service"] }
 indexmap = { version = "2", features = ["serde"] }
-itertools = { version = "0.14" }
+itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
+itertools-93f6ce9d446188ac = { package = "itertools", version = "0.10" }
 lazy_static = { version = "1", default-features = false, features = ["spin_no_std"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
 memchr = { version = "2" }
