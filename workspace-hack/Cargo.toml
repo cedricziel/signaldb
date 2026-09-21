@@ -43,7 +43,7 @@ ignored = [
     "tokio", "tokio-rustls", "tokio-stream", "tokio-util", "tonic", "tower",
     "tower-http", "tracing", "tracing-core", "tracing-log",
     "tracing-subscriber", "twox-hash", "url", "uuid", "winapi",
-    "windows-sys", "zerocopy", "zeroize",
+    "windows-sys", "zerocopy", "zeroize", "zstd", "zstd-safe",
 ]
 
 # The parts of the file between the BEGIN HAKARI SECTION and END HAKARI SECTION comments
