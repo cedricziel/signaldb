@@ -43,7 +43,7 @@ ignored = [
     "tokio", "tokio-rustls", "tokio-stream", "tokio-util", "tonic", "tower",
     "tower-http", "tracing", "tracing-core", "tracing-log",
     "tracing-subscriber", "twox-hash", "url", "uuid", "winapi",
-    "windows-sys", "zerocopy", "zeroize",
+    "windows-sys", "zerocopy", "zeroize", "zstd", "zstd-safe",
 ]
 
 # The parts of the file between the BEGIN HAKARI SECTION and END HAKARI SECTION comments
@@ -147,6 +147,8 @@ url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["js", "serde", "v1", "v4"] }
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 zeroize = { version = "1", features = ["derive"] }
+zstd = { version = "0.14" }
+zstd-safe = { version = "8", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
 
 [build-dependencies]
 arrayvec = { version = "0.7", default-features = false, features = ["std"] }
@@ -246,6 +248,8 @@ url = { version = "2", features = ["serde"] }
 uuid = { version = "1", features = ["js", "serde", "v1", "v4"] }
 zerocopy = { version = "0.8", default-features = false, features = ["derive", "simd"] }
 zeroize = { version = "1", features = ["derive"] }
+zstd = { version = "0.14" }
+zstd-safe = { version = "8", default-features = false, features = ["arrays", "legacy", "std", "zdict_builder"] }
 
 [target.x86_64-unknown-linux-gnu.dependencies]
 aws-lc-rs = { version = "1", features = ["prebuilt-nasm"] }
