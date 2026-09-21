@@ -9807,6 +9807,8 @@ dependencies = [
  "windows-sys 0.61.2",
  "zerocopy",
  "zeroize",
+ "zstd 0.14.0",
+ "zstd-safe 8.0.0",
 ]
 
 [[package]]
