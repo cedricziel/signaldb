@@ -30,7 +30,7 @@ ignored = [
     "form_urlencoded", "futures-channel", "futures-executor", "futures-io",
     "futures-task", "futures-util", "generic-array",
     "getrandom-468e82937335b1c9", "hashbrown-3575ec1268b04181", "hyper",
-    "hyper-rustls", "hyper-util", "indexmap", "itertools", "lazy_static",
+    "hyper-rustls", "hyper-util", "indexmap", "itertools", "itertools-582f2526e08bb6a0", "lazy_static",
     "libc", "log", "memchr", "miniz_oxide", "mio", "num-bigint", "num-iter",
     "num-traits", "object", "object_store", "once_cell", "opentelemetry",
     "opentelemetry-proto", "opentelemetry_sdk", "petgraph", "proc-macro2",
