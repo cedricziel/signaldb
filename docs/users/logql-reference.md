@@ -100,6 +100,13 @@ back to the JSON substring match for that label. Because the promoted value
 is also kept in the attribute JSON, label discovery (`/labels`,
 `/label/{name}/values`) is unchanged.
 
+Two distinct label keys can sanitize to the same `label_<key>` column name
+(see the dotted-vs-underscore example above); the writer resolves that by
+suffixing the later key's column (`label_<key>_2`). As an interim guard
+(#1533), a query against either colliding key currently falls back to the
+attribute-map extraction path rather than risk reading the wrong key's
+column; full per-key resolution of the collision is still open.
+
 Series identity (in `/series` results and bare range aggregations such as
 `count_over_time(...)` with no vector wrapper) is the `service_name` and
 `level` labels. A vector aggregation with no `by` clause —
