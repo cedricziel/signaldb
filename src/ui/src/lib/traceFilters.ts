@@ -1,15 +1,16 @@
 /**
- * Facet definitions and TraceQL compilation for the traces tab.
+ * Facet definitions for the traces tab, and their compilation to Query IR
+ * `where` stages (`filterStages`).
  *
  * Facet value counts (see api/traceFacets.ts) are a Query IR aggregate, so
  * the backend can enumerate any attribute exactly — `/api/search/tags`'s old
  * hardcoded three-name list (#1073) is no longer the constraint. This list
- * is a curated set with a defined TraceQL selector and quoting rule per
- * field, not an enumeration limit; add an entry when a field gets a UI
- * treatment (a facet sidebar row, a catalog drill-down), not speculatively.
+ * is a curated set with a defined logical field per facet, not an
+ * enumeration limit; add an entry when a field gets a UI treatment (a facet
+ * sidebar row, a catalog drill-down), not speculatively.
  */
 
-import { escapeQuotedString, upsertBy } from "./collections";
+import { upsertBy } from "./collections";
 
 export interface TraceFilter {
   field: string;
@@ -31,10 +32,6 @@ export interface FacetField {
   label: string;
   /** Logical field the Query IR aggregates by to count values. */
   irField: string;
-  /** TraceQL left-hand side, scoped where the tag is not intrinsic. */
-  selector: string;
-  /** Intrinsic enums are bare in TraceQL; everything else is quoted. */
-  quoted: boolean;
   /**
    * Several values may be selected at once (compiled to one `in`); the
    * sidebar lists `values` as a fixed set rather than only what the data
@@ -70,41 +67,30 @@ export const FACET_FIELDS: FacetField[] = [
     field: "service.name",
     label: "service.name",
     irField: "service.name",
-    selector: "resource.service.name",
-    quoted: true,
   },
   {
     field: "name",
     label: "span.name",
     irField: "span.name",
-    selector: "name",
-    quoted: true,
   },
   {
     field: "status",
     label: "status",
     irField: "status.code",
-    selector: "status",
-    quoted: false,
   },
   {
     field: "kind",
     label: "span.kind",
     irField: "span_kind",
-    selector: "kind",
-    quoted: false,
     multi: true,
     values: KIND_VALUES,
   },
   {
-    // A span attribute (db client spans set it directly, not on the
-    // resource), so the selector is `span.`-scoped, not `resource.`-scoped
-    // like service.name above.
+    // A span attribute: db client spans set it directly, not on the
+    // resource.
     field: "db.namespace",
     label: "db.namespace",
     irField: "db.namespace",
-    selector: "span.db.namespace",
-    quoted: true,
   },
   {
     // Same reasoning as db.namespace: messaging client instrumentation sets
@@ -112,8 +98,6 @@ export const FACET_FIELDS: FacetField[] = [
     field: "messaging.destination.name",
     label: "messaging.destination.name",
     irField: "messaging.destination.name",
-    selector: "span.messaging.destination.name",
-    quoted: true,
   },
   {
     // Unlike db.namespace/messaging.*, these describe the process emitting
@@ -123,43 +107,31 @@ export const FACET_FIELDS: FacetField[] = [
     field: "host.name",
     label: "host.name",
     irField: "host.name",
-    selector: "resource.host.name",
-    quoted: true,
   },
   {
     field: "k8s.pod.name",
     label: "k8s.pod.name",
     irField: "k8s.pod.name",
-    selector: "resource.k8s.pod.name",
-    quoted: true,
   },
   {
     field: "k8s.namespace.name",
     label: "k8s.namespace.name",
     irField: "k8s.namespace.name",
-    selector: "resource.k8s.namespace.name",
-    quoted: true,
   },
   {
     field: "k8s.node.name",
     label: "k8s.node.name",
     irField: "k8s.node.name",
-    selector: "resource.k8s.node.name",
-    quoted: true,
   },
   {
     field: "container.name",
     label: "container.name",
     irField: "container.name",
-    selector: "resource.container.name",
-    quoted: true,
   },
   {
     field: "process.pid",
     label: "process.pid",
     irField: "process.pid",
-    selector: "resource.process.pid",
-    quoted: true,
   },
 ];
 
@@ -174,24 +146,6 @@ export function facetableField(key: string): string | undefined {
 }
 
 /**
- * Compile filters into a TraceQL selector for `/api/search?q=`. Filters on
- * fields that are not facetable are dropped rather than emitted as invalid
- * TraceQL. An empty set compiles to "" — the caller omits `q` entirely.
- */
-export function compileTraceQL(filters: TraceFilter[]): string {
-  const terms = groupByFacet(filters).flatMap(({ facet, values, absent }) => {
-    const eq = (v: string) =>
-      `${facet.selector} = ${facet.quoted ? `"${escapeQuotedString(v)}"` : v}`;
-    const parts: string[] = [];
-    if (absent) parts.push(`${facet.selector} = nil`);
-    if (values.length === 1) parts.push(eq(values[0]!));
-    else if (values.length > 1) parts.push(`(${values.map(eq).join(" || ")})`);
-    return parts;
-  });
-  return terms.length === 0 ? "" : `{ ${terms.join(" && ")} }`;
-}
-
-/**
  * Filters grouped by facet, in first-seen order; unknown fields dropped.
  * `absent` (an `op: "absent"` filter was present) is tracked separately from
  * `values` (every `eq`/`in` value for the field) since a field's absence and
@@ -200,8 +154,7 @@ export function compileTraceQL(filters: TraceFilter[]): string {
 function groupByFacet(
   filters: TraceFilter[],
 ): { facet: FacetField; values: string[]; absent: boolean }[] {
-  const groups: { facet: FacetField; values: string[]; absent: boolean }[] =
-    [];
+  const groups: { facet: FacetField; values: string[]; absent: boolean }[] = [];
   for (const f of filters) {
     const facet = facetField(f.field);
     if (!facet) continue;

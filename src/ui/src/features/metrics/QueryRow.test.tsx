@@ -3,7 +3,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
-import { buildPromQL, emptyQuery, type MetricQuery } from "./buildPromQL";
+import { emptyQuery, type MetricQuery } from "./metricQuery";
 import { QueryRow } from "./QueryRow";
 
 const RANGE = { fromMs: 1_000_000, toMs: 2_000_000 };
@@ -12,47 +12,114 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** QueryRow is controlled; hold its state and surface the compiled PromQL. */
+/** QueryRow is controlled; hold its state and surface it as JSON so
+ * assertions can check the structured query the row produced. */
 function Harness() {
   const [query, setQuery] = useState<MetricQuery>(emptyQuery("a"));
   return (
     <>
       <QueryRow query={query} range={RANGE} onChange={setQuery} />
-      <output data-testid="promql">{buildPromQL(query)}</output>
+      <output data-testid="query">{JSON.stringify(query)}</output>
     </>
   );
 }
 
+function metadataWindow() {
+  return { result: "metadata", window: { start_ns: 0, end_ns: 0 } };
+}
+
+function valuesBody(values: string[]) {
+  return {
+    ...metadataWindow(),
+    metadata: {
+      kind: "values",
+      truncated: false,
+      cost: {
+        mode: "metadata",
+        window_scoped: false,
+        sampled: false,
+        approximate: false,
+      },
+      values: values.map((v) => ({ value: v, origin: "registry" })),
+    },
+  };
+}
+
+function fieldsBody(
+  entries: Array<{
+    name: string;
+    cardinality?: { estimate: number; at_least: boolean } | null;
+  }>,
+) {
+  return {
+    ...metadataWindow(),
+    metadata: {
+      kind: "fields",
+      truncated: false,
+      cost: {
+        mode: "metadata",
+        window_scoped: false,
+        sampled: false,
+        approximate: false,
+      },
+      fields: entries.map((e) => ({
+        name: e.name,
+        type: "string",
+        filterable: true,
+        origin: "declared",
+        cardinality: e.cardinality ?? null,
+      })),
+    },
+  };
+}
+
+/** Every Query IR document QueryRow submits is a POST to the same
+ * `/api/v1/query` URL, so discovery routes match on the pipeline shape. */
+function isDescribeFields(body: unknown): boolean {
+  const b = body as { pipeline?: Array<{ describe?: { target?: string } }> };
+  return b.pipeline?.[0]?.describe?.target === "fields";
+}
+function isDescribeValues(field: string) {
+  return (body: unknown): boolean => {
+    const b = body as {
+      pipeline?: Array<{ describe?: { target?: string; field?: string } }>;
+    };
+    return (
+      b.pipeline?.[0]?.describe?.target === "values" &&
+      b.pipeline[0]?.describe?.field === field
+    );
+  };
+}
+
 function stubMetadata() {
   stubFetchRoutes([
-    { match: /label\/__name__\/values/, body: metaBody(["http_reqs", "up"]) },
-    { match: /\/labels\?/, body: metaBody(["service", "host"]) },
-    { match: /label\/service\/values/, body: metaBody(["checkout"]) },
     {
-      match: /label_stats/,
-      body: {
-        status: "success",
-        data: [
-          {
-            name: "service",
-            distinct_estimate: 12,
-            presence: 1,
-            capped: false,
-          },
-          {
-            name: "k8s.pod",
-            distinct_estimate: 10000,
-            presence: 0.9,
-            capped: true,
-          },
-        ],
-      },
+      match: "/api/v1/query",
+      bodyMatch: isDescribeValues("metric.name"),
+      body: valuesBody(["http_reqs", "up"]),
+    },
+    {
+      match: "/api/v1/query",
+      bodyMatch: isDescribeFields,
+      body: fieldsBody([
+        { name: "service", cardinality: { estimate: 12, at_least: false } },
+        {
+          name: "k8s.pod",
+          cardinality: { estimate: 10000, at_least: true },
+        },
+        { name: "host", cardinality: null },
+      ]),
+    },
+    {
+      match: "/api/v1/query",
+      bodyMatch: isDescribeValues("service"),
+      body: valuesBody(["checkout"]),
     },
   ]);
 }
 
-const metaBody = (data: string[]) => ({ status: "success", data });
-const promql = () => screen.getByTestId("promql").textContent;
+const query = (): MetricQuery =>
+  JSON.parse(screen.getByTestId("query").textContent ?? "{}") as MetricQuery;
 
 describe("QueryRow", () => {
   it("builds a query step by step from the visual controls", async () => {
@@ -61,21 +128,49 @@ describe("QueryRow", () => {
     const user = userEvent.setup();
 
     await user.type(screen.getByLabelText("Metric"), "http_reqs");
-    expect(promql()).toBe("http_reqs");
+    expect(query().metric).toBe("http_reqs");
 
     await user.click(screen.getByRole("button", { name: "Add filter" }));
     await user.type(screen.getByLabelText("Filter label"), "service");
     await user.type(screen.getByLabelText("Filter value"), "checkout");
-    expect(promql()).toBe('http_reqs{service="checkout"}');
+    expect(query().filters).toEqual([
+      { label: "service", op: "=", value: "checkout" },
+    ]);
 
     await user.selectOptions(screen.getByLabelText("Aggregation"), "sum");
     await user.type(screen.getByLabelText("Group by"), "service");
-    expect(promql()).toBe('sum by (service)(http_reqs{service="checkout"})');
+    expect(query().agg).toEqual({ op: "sum", by: ["service"] });
 
     await user.selectOptions(screen.getByLabelText("Function"), "rate");
-    expect(promql()).toBe(
-      'sum by (service)(rate(http_reqs{service="checkout"}[5m]))',
-    );
+    expect(query().range).toEqual({ fn: "rate" });
+  });
+
+  it("a selected range function exposes window and across, and clearing the function drops them", async () => {
+    stubMetadata();
+    renderWithClient(<Harness />);
+    const user = userEvent.setup();
+
+    expect(screen.queryByLabelText("Window")).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Function"), "rate");
+    await user.type(screen.getByLabelText("Window"), "5m");
+    await user.selectOptions(screen.getByLabelText("Across"), "avg");
+    expect(query().range).toEqual({ fn: "rate", window: "5m", across: "avg" });
+
+    await user.selectOptions(screen.getByLabelText("Function"), "");
+    expect(query().range).toBeUndefined();
+    expect(screen.queryByLabelText("Window")).not.toBeInTheDocument();
+  });
+
+  it("switching between range functions keeps window/across", async () => {
+    stubMetadata();
+    renderWithClient(<Harness />);
+    const user = userEvent.setup();
+
+    await user.selectOptions(screen.getByLabelText("Function"), "rate");
+    await user.type(screen.getByLabelText("Window"), "1m");
+    await user.selectOptions(screen.getByLabelText("Function"), "irate");
+    expect(query().range).toEqual({ fn: "irate", window: "1m" });
   });
 
   it("carries the full metric and group-by text in a title, for when either overflows", async () => {
@@ -108,13 +203,15 @@ describe("QueryRow", () => {
     await user.click(screen.getByRole("button", { name: "Add filter" }));
     await user.type(screen.getByLabelText("Filter label"), "service");
     await user.type(screen.getByLabelText("Filter value"), "checkout");
-    expect(promql()).toBe('up{service="checkout"}');
+    expect(query().filters).toEqual([
+      { label: "service", op: "=", value: "checkout" },
+    ]);
 
     await user.click(screen.getByRole("button", { name: "Remove filter" }));
-    expect(promql()).toBe("up");
+    expect(query().filters).toEqual([]);
   });
 
-  it("populates the metric picker from the __name__ endpoint", async () => {
+  it("populates the metric picker from discovery.metricNames", async () => {
     stubMetadata();
     renderWithClient(<Harness />);
     // Datalist <option>s aren't exposed as ARIA options; assert via the DOM.

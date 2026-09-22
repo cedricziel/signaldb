@@ -455,6 +455,14 @@ impl InferCtx<'_> {
             out_cols.push(out);
         }
 
+        if agg.step.is_none() && agg.aggs.iter().any(|a| a.func.is_range_fn()) {
+            return Err(IrError::Invalid(
+                "a per-series range function ('rate'/'increase'/'irate'/'*_over_time') requires \
+                 `step`"
+                    .to_string(),
+            ));
+        }
+
         match &agg.step {
             Some(step) => {
                 let step_ns = parse_duration_ns(step).ok_or_else(|| IrError::Coercion {
@@ -701,6 +709,60 @@ impl InferCtx<'_> {
                 a.func.as_str()
             )));
         }
+        if a.func.is_range_fn() && !matches!(self.source, "metrics" | "metrics_histogram") {
+            return Err(IrError::IllegalStage {
+                stage: "aggregate".to_string(),
+                reason: format!(
+                    "'{}' is only valid on the metrics/metrics_histogram sources, not '{}'",
+                    a.func.as_str(),
+                    self.source
+                ),
+            });
+        }
+        if let Some(across) = a.across {
+            if !a.func.is_range_fn() {
+                return Err(IrError::Invalid(format!(
+                    "`across` is only valid on a per-series range function, not '{}'",
+                    a.func.as_str()
+                )));
+            }
+            if self.ir_version < 7 {
+                return Err(IrError::Invalid(format!(
+                    "aggregate `across` requires irVersion 7 (document declares {})",
+                    self.ir_version
+                )));
+            }
+            if !across.is_across_reducer() {
+                return Err(IrError::Invalid(format!(
+                    "`across` must be one of sum/avg/min/max/count, got '{}'",
+                    across.as_str()
+                )));
+            }
+        }
+        if let Some(window) = &a.window {
+            if !a.func.is_range_fn() {
+                return Err(IrError::Invalid(format!(
+                    "`window` is only valid on a per-series range function, not '{}'",
+                    a.func.as_str()
+                )));
+            }
+            if self.ir_version < 7 {
+                return Err(IrError::Invalid(format!(
+                    "aggregate `window` requires irVersion 7 (document declares {})",
+                    self.ir_version
+                )));
+            }
+            let window_ns = parse_duration_ns(window).ok_or_else(|| IrError::Coercion {
+                field: "window".to_string(),
+                value: window.clone(),
+                target: ValueType::DurationNs.to_string(),
+            })?;
+            if window_ns <= 0 {
+                return Err(IrError::Invalid(
+                    "aggregate `window` must be > 0".to_string(),
+                ));
+            }
+        }
         if a.func.min_ir_version() > self.ir_version {
             return Err(IrError::Invalid(format!(
                 "aggregate '{}' requires irVersion {} (document declares {})",
@@ -756,7 +818,19 @@ impl InferCtx<'_> {
         // inherent lack of a declared type earns the pass.
         if matches!(
             a.func,
-            AggFn::Sum | AggFn::Avg | AggFn::Quantile | AggFn::Stddev | AggFn::Stdvar
+            AggFn::Sum
+                | AggFn::Avg
+                | AggFn::Quantile
+                | AggFn::Stddev
+                | AggFn::Stdvar
+                | AggFn::Rate
+                | AggFn::Increase
+                | AggFn::Irate
+                | AggFn::AvgOverTime
+                | AggFn::MinOverTime
+                | AggFn::MaxOverTime
+                | AggFn::SumOverTime
+                | AggFn::CountOverTime
         ) && let Some(t) = &of_type
             && !is_numeric(t)
             && !(*t == ValueType::String && of_advisory)
@@ -769,10 +843,23 @@ impl InferCtx<'_> {
 
         let out_ty = match a.func {
             AggFn::Count => ValueType::Int64,
-            AggFn::Avg | AggFn::Quantile | AggFn::Stddev | AggFn::Stdvar => ValueType::Float64,
-            AggFn::Sum | AggFn::Min | AggFn::Max | AggFn::First | AggFn::Last => {
-                of_type.unwrap_or(ValueType::Float64)
-            }
+            AggFn::Avg
+            | AggFn::Quantile
+            | AggFn::Stddev
+            | AggFn::Stdvar
+            | AggFn::Rate
+            | AggFn::Increase
+            | AggFn::Irate
+            | AggFn::AvgOverTime
+            | AggFn::CountOverTime => ValueType::Float64,
+            AggFn::Sum
+            | AggFn::Min
+            | AggFn::Max
+            | AggFn::First
+            | AggFn::Last
+            | AggFn::MinOverTime
+            | AggFn::MaxOverTime
+            | AggFn::SumOverTime => of_type.unwrap_or(ValueType::Float64),
         };
         // A divided aggregate is fractional whatever it divided: a count per
         // 300 seconds is not an Int64.
@@ -2084,13 +2171,13 @@ mod tests {
 
     #[test]
     fn an_unsupported_version_still_reports_the_range() {
-        let err = validate_json(describe_doc(6, json!({ "target": "fields" }))).unwrap_err();
+        let err = validate_json(describe_doc(8, json!({ "target": "fields" }))).unwrap_err();
         assert!(
             matches!(
                 err,
                 IrError::UnsupportedVersion {
-                    found: 6,
-                    max: 5,
+                    found: 8,
+                    max: 7,
                     ..
                 }
             ),
@@ -2222,5 +2309,239 @@ mod tests {
             validate_describe(&doc, &SourceRegistry::core()).is_err(),
             "only introspection documents take the discovery path"
         );
+    }
+
+    // Task 4.1 — counter rate (D4).
+
+    fn metrics_resolver() -> InMemoryResolver {
+        InMemoryResolver::new()
+            .with_column("metrics", "metric.name", "metric_name", ValueType::String)
+            .with_column("metrics", "metric.value", "value", ValueType::Float64)
+            .with_column("metrics", "service.name", "service_name", ValueType::String)
+    }
+
+    fn rate_doc(func: &str, source: &str, step: Option<&str>) -> serde_json::Value {
+        let mut agg = json!({
+            "by": ["metric.name"],
+            "aggs": [{ "fn": func, "of": "metric.value", "as": "r" }]
+        });
+        if let Some(step) = step {
+            agg["step"] = json!(step);
+        }
+        json!({
+            "irVersion": 6, "from": source, "range": { "from": "now-1h", "to": "now" },
+            "result": "series",
+            "pipeline": [{ "aggregate": agg }]
+        })
+    }
+
+    #[test]
+    fn rate_and_increase_over_metrics_with_step_infer_series() {
+        for func in ["rate", "increase"] {
+            let v = validate_json_with(rate_doc(func, "metrics", Some("30s")), &metrics_resolver())
+                .unwrap();
+            match v.terminal {
+                RelationType::Series(s) => {
+                    assert_eq!(s.value, ValueType::Float64);
+                    assert_eq!(s.step_ns, 30_000_000_000);
+                }
+                other => panic!("{func}: expected series, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn rate_requires_step() {
+        let err =
+            validate_json_with(rate_doc("rate", "metrics", None), &metrics_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("requires `step`")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rate_rejects_non_metric_sources() {
+        let mut d = rate_doc("rate", "logs", Some("30s"));
+        // `logs_resolver` has no `metric.name`; use an existing numeric field
+        // so the source check, not field resolution, is what fires.
+        d["pipeline"][0]["aggregate"]["by"] = json!([]);
+        d["pipeline"][0]["aggregate"]["aggs"][0]["of"] = json!("severity_number");
+        let err = validate_json_with(d, &logs_resolver()).unwrap_err();
+        match &err {
+            IrError::IllegalStage { stage, .. } => assert_eq!(stage, "aggregate"),
+            other => panic!("got {other:?}"),
+        }
+        assert!(format!("{err}").contains("metrics"), "{err}");
+    }
+
+    #[test]
+    fn rate_on_metrics_histogram_is_accepted_by_source_check() {
+        // The source restriction passes for metrics_histogram; `of` still
+        // needs a numeric field, which `metric.value` is not on this source
+        // (only bucket columns), so this exercises the source gate alone by
+        // aggregating a numeric column that does exist.
+        let resolver = metrics_histogram_resolver().with_column(
+            "metrics_histogram",
+            "count",
+            "count",
+            ValueType::Int64,
+        );
+        let mut d = rate_doc("increase", "metrics_histogram", Some("1m"));
+        d["pipeline"][0]["aggregate"]["aggs"][0]["of"] = json!("count");
+        let v = validate_json_with(d, &resolver).unwrap();
+        assert!(matches!(v.terminal, RelationType::Series(_)));
+    }
+
+    #[test]
+    fn rate_requires_ir_version_6() {
+        let mut d = rate_doc("rate", "metrics", Some("30s"));
+        d["irVersion"] = json!(5);
+        let err = validate_json_with(d, &metrics_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 6")),
+            "got {err:?}"
+        );
+    }
+
+    // v7: irate / *_over_time, `across`, `window`.
+
+    fn v7_rate_doc(func: &str, source: &str, step: Option<&str>) -> serde_json::Value {
+        let mut d = rate_doc(func, source, step);
+        d["irVersion"] = json!(7);
+        d
+    }
+
+    #[test]
+    fn irate_and_over_time_fns_require_ir_version_7() {
+        for func in [
+            "irate",
+            "avg_over_time",
+            "min_over_time",
+            "max_over_time",
+            "sum_over_time",
+            "count_over_time",
+        ] {
+            let mut d = v7_rate_doc(func, "metrics", Some("30s"));
+            let v = validate_json_with(d.clone(), &metrics_resolver()).unwrap();
+            assert!(
+                matches!(v.terminal, RelationType::Series(_)),
+                "{func}: expected series"
+            );
+
+            d["irVersion"] = json!(6);
+            let err = validate_json_with(d, &metrics_resolver()).unwrap_err();
+            assert!(
+                matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 7")),
+                "{func}: got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn irate_and_over_time_fns_require_step() {
+        for func in ["irate", "avg_over_time"] {
+            let err = validate_json_with(v7_rate_doc(func, "metrics", None), &metrics_resolver())
+                .unwrap_err();
+            assert!(
+                matches!(err, IrError::Invalid(ref m) if m.contains("requires `step`")),
+                "{func}: got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn irate_and_over_time_fns_reject_non_metric_sources() {
+        let d = json!({
+            "irVersion": 7, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "series",
+            "pipeline": [{ "aggregate": {
+                "by": [],
+                "aggs": [{ "fn": "irate", "of": "severity_number", "as": "r" }],
+                "step": "30s"
+            } }]
+        });
+        let err = validate_json_with(d, &logs_resolver()).unwrap_err();
+        assert!(matches!(err, IrError::IllegalStage { ref stage, .. } if stage == "aggregate"));
+    }
+
+    #[test]
+    fn across_reducer_requires_ir_version_7_and_a_range_fn() {
+        let mut d = v7_rate_doc("rate", "metrics", Some("30s"));
+        d["pipeline"][0]["aggregate"]["aggs"][0]["across"] = json!("avg");
+        let v = validate_json_with(d, &metrics_resolver()).unwrap();
+        assert!(matches!(v.terminal, RelationType::Series(_)));
+
+        // Below v7: rejected even though `rate` itself only needs v6.
+        let mut d6 = rate_doc("rate", "metrics", Some("30s"));
+        d6["pipeline"][0]["aggregate"]["aggs"][0]["across"] = json!("avg");
+        let err = validate_json_with(d6, &metrics_resolver()).unwrap_err();
+        assert!(matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 7")));
+
+        // `across` on a non-range-fn aggregate is rejected.
+        let mut plain = json!({
+            "irVersion": 7, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [{ "aggregate": {
+                "by": [], "aggs": [{ "fn": "count", "as": "n", "across": "avg" }]
+            } }]
+        });
+        let err = validate_json(plain.clone()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("across")),
+            "got {err:?}"
+        );
+        plain["irVersion"] = json!(7);
+    }
+
+    #[test]
+    fn across_reducer_rejects_unknown_function() {
+        let mut d = v7_rate_doc("rate", "metrics", Some("30s"));
+        d["pipeline"][0]["aggregate"]["aggs"][0]["across"] = json!("quantile");
+        let err = validate_json_with(d, &metrics_resolver()).unwrap_err();
+        assert!(matches!(err, IrError::Invalid(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn window_requires_ir_version_7_and_a_range_fn() {
+        let mut d = v7_rate_doc("rate", "metrics", Some("30s"));
+        d["pipeline"][0]["aggregate"]["aggs"][0]["window"] = json!("5m");
+        let v = validate_json_with(d, &metrics_resolver()).unwrap();
+        assert!(matches!(v.terminal, RelationType::Series(_)));
+
+        let mut d6 = rate_doc("rate", "metrics", Some("30s"));
+        d6["pipeline"][0]["aggregate"]["aggs"][0]["window"] = json!("5m");
+        let err = validate_json_with(d6, &metrics_resolver()).unwrap_err();
+        assert!(matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 7")));
+
+        let mut plain = json!({
+            "irVersion": 7, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [{ "aggregate": {
+                "by": [], "aggs": [{ "fn": "count", "as": "n", "window": "5m" }]
+            } }]
+        });
+        let err = validate_json(plain.clone()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("window")),
+            "got {err:?}"
+        );
+        plain["irVersion"] = json!(7);
+    }
+
+    #[test]
+    fn window_rejects_bad_duration() {
+        let mut d = v7_rate_doc("rate", "metrics", Some("30s"));
+        d["pipeline"][0]["aggregate"]["aggs"][0]["window"] = json!("not-a-duration");
+        let err = validate_json_with(d, &metrics_resolver()).unwrap_err();
+        assert!(matches!(err, IrError::Coercion { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn window_less_than_step_is_allowed() {
+        let mut d = v7_rate_doc("avg_over_time", "metrics", Some("1m"));
+        d["pipeline"][0]["aggregate"]["aggs"][0]["window"] = json!("10s");
+        let v = validate_json_with(d, &metrics_resolver()).unwrap();
+        assert!(matches!(v.terminal, RelationType::Series(_)));
     }
 }

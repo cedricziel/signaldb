@@ -259,6 +259,8 @@ fn lower_metric_query(q: &MetricQuery, from: &str, to: &str) -> Result<Document,
             divisor,
             as_name: "value".to_string(),
             scope: None,
+            across: None,
+            window: None,
         }],
     }));
 

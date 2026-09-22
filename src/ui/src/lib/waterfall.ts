@@ -1,7 +1,7 @@
 // Pure waterfall geometry: order spans depth-first by start time and compute
 // per-span offsets as fractions of the trace duration.
 
-import type { TempoSpan } from "../api/tempo";
+import type { TempoSpan } from "../api/traceTypes";
 
 export interface WaterfallRow {
   span: TempoSpan;

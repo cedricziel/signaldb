@@ -1,7 +1,7 @@
 // Align Prometheus series onto a shared time axis for uPlot, which wants
 // columnar data: [timestamps, series1, series2, …] with null gaps.
 
-import type { PromSeries } from "../api/prom";
+import type { PromSeries } from "../api/ir/metrics";
 
 export type AlignedData = [number[], ...(number | null)[][]];
 

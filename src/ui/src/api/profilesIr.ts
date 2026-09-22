@@ -1,14 +1,13 @@
 // Flamegraph data for the Profiles tab, exclusively over the native Query IR
 // API — mirrors the mcp-server's `get_profile` tool, which submits the same
 // `flamegraph`-enveloped `profiles` query shape. Discovery (which services,
-// sample types, or attribute keys/values exist) has no Query IR equivalent
-// yet, so that stays on the Pyroscope-compat endpoints in api/pyroscope.ts;
+// sample types, or attribute keys/values exist) is api/ir/discovery.ts;
 // this module is the only thing that actually renders a flamegraph.
 
 import { runIrQuery } from "./queryIr";
 import { ApiError } from "./http";
 import { msToNanos, type ResolvedRange } from "../lib/time";
-import type { RenderResponse } from "./pyroscope";
+import type { RenderResponse } from "./profileTypes";
 import type { FrameLocation } from "./gen";
 
 /** An additional attribute matcher beyond service/sample-type — the field

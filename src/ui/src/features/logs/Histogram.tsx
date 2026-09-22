@@ -3,7 +3,7 @@
  * (normalisation, stacking order, colours) and nothing else. All rendering,
  * scaling, and interaction lives in `SignalHistogram`.
  */
-import type { HistogramSeries } from "../../api/loki";
+import type { HistogramSeries } from "../../api/ir/logs";
 import type { Scale } from "../explore/scale";
 import { SignalHistogram, type VolumeSeries } from "../explore/SignalHistogram";
 

@@ -23,9 +23,15 @@ queries over `logs`, `traces`, profile summaries, and metrics**. The `metrics`
 source covers the scalar-value case — group/filter a metric by name and
 attributes, aggregate, bucket by `step` — the same as every other source. The
 `metrics_histogram` source plus the `histogram_quantile` stage cover
-percentile-over-buckets. `rate`/`irate`/`increase` and cross-series arithmetic
-stay PromQL-only for now. Cross-signal correlation and structural trace
-matching are separate, later capabilities (see [Roadmap](#roadmap)).
+percentile-over-buckets, and the `rate`/`increase`/`irate`/`*_over_time`
+per-series range functions cover counter rates and windowed reductions (see
+[Counter rate](#counter-rate-rateincrease-v6) and
+[More range functions](#more-range-functions-across-and-window-v7)).
+Arithmetic across several queries' results — formulas — is a separate
+multi-query document shape (see
+[Formulas](#formulas-cross-query-arithmetic-d5)). Cross-signal correlation and
+structural trace matching are separate, later capabilities (see
+[Roadmap](#roadmap)).
 
 ## The endpoint
 
@@ -288,6 +294,88 @@ function it divided returns an integer.
 `divisor` composes with [scoping](#scoping-an-aggregate-to-a-subset): an
 aggregate may narrow which records it consumes _and_ report the result per
 unit, which is how you ask for the error rate rather than the overall rate.
+
+### Counter rate: `rate`/`increase` (v6)
+
+`rate` and `increase` are aggregate functions for a monotonic counter (a
+metrics `sum` with cumulative temporality), legal only with `step` set and
+only on the `metrics`/`metrics_histogram` sources:
+
+```jsonc
+{
+  "aggregate": {
+    "by": ["metric.name", "service.name"],
+    "aggs": [
+      { "fn": "rate", "of": "metric.value", "as": "requests_per_second" },
+    ],
+    "step": "30s",
+  },
+}
+```
+
+Both are computed per **individual series** — `metric.name` plus its natural
+label set (`service.name` and every promoted attribute), the same identity
+PromQL's `rate()`/`increase()` partition by — not per `by` group: two series
+sharing a `by` value never take a delta across each other, even though the
+`by` grouping still folds their (independently computed) deltas together in
+the output. Ordered by timestamp, a drop between two consecutive samples of
+one series is treated as a counter reset, contributing the later sample's own
+value (counted from zero) rather than a negative delta — the same rule
+PromQL applies, without extrapolation. `increase` is the summed delta over
+the step window; `rate` divides that by the window width in seconds. Both
+always produce a `Float64` series.
+
+A `step` aggregate still allows exactly one aggregate output, so `rate`/
+`increase` cannot share a stage with another aggregate function.
+
+### More range functions, `across`, and `window` (v7)
+
+`rate`/`increase` belong to a wider family of **per-series range
+functions** — every one legal only with `step` set and only on the
+`metrics`/`metrics_histogram` sources, computed per individual series exactly
+as `rate`/`increase` are:
+
+- `irate` — instantaneous per-second rate from the **last two** samples in
+  the window, counter-reset aware like `rate`, but reacting to the most
+  recent pair rather than averaging over the whole window (PromQL's
+  `irate()`).
+- `avg_over_time`, `min_over_time`, `max_over_time`, `sum_over_time`,
+  `count_over_time` — the corresponding reduction over the raw values seen in
+  the window, no counter-reset logic (these apply to gauges as much as
+  counters).
+
+Two more fields on the aggregate, both `irVersion` 7:
+
+- **`across`** — the reducer that folds each `by` group's per-series values
+  into one value per step: `sum` (default — the `rate`/`increase`
+  behaviour), `avg`, `min`, `max`, or `count`. This is what `avg by
+(service.name) (rate(...))` needs: `by: ["service.name"], aggs: [{ "fn":
+"rate", ..., "across": "avg" }]`.
+- **`window`** — the lookback window each step's value is computed over,
+  independent of `step`: each step's value uses samples in the window ending
+  at that sample, evaluated at the sample closest to the step's own point in
+  time. Defaults to `step` (today's behaviour — `rate`/`increase` without a
+  `window` are unchanged). A `window` narrower than `step` is legal — PromQL
+  allows the same, and it simply means samples in the gap between windows are
+  never counted.
+
+```jsonc
+{
+  "aggregate": {
+    "by": ["service.name"],
+    "aggs": [
+      {
+        "fn": "rate",
+        "of": "metric.value",
+        "as": "requests_per_second",
+        "across": "avg",
+        "window": "5m",
+      },
+    ],
+    "step": "1m",
+  },
+}
+```
 
 ### Scoping an aggregate to a subset
 
@@ -560,9 +648,12 @@ This is what makes an OTel-native dotted metric name — like
 queryable at all: PromQL's grammar can't lex a dot in a bare metric-name
 identifier, so the same query over `/prometheus/api/v1/query_range` 400s
 before it reaches the querier. The IR's field resolution has no such
-restriction. `rate`/`irate`/`increase` and cross-series arithmetic stay
-PromQL-only until they have an IR pipeline-stage equivalent — the explore
-UI's Metrics tab keeps its PromQL escape hatch for those.
+restriction. `rate`/`increase`/`irate`/`*_over_time` over `metrics` are
+aggregate functions (see
+[Counter rate](#counter-rate-rateincrease-v6) and
+[More range functions](#more-range-functions-across-and-window-v7));
+cross-series arithmetic stays PromQL-only until it has an HTTP surface of its
+own.
 
 ## Histograms
 
@@ -629,9 +720,11 @@ completely different source shape. Neither is a substitute for the other:
 `histogram_quantile` needs pre-bucketed histogram data; `aggregate`'s
 `quantile` needs raw numeric samples.
 
-`histogram_fraction()` (the CDF-inverse of `histogram_quantile()`) and
-`rate`/`irate`/`increase` over `metrics_histogram` have no IR stage yet — stay
-on PromQL for those (see [Roadmap](#roadmap)).
+`rate`/`increase` over `metrics_histogram` work the same as over `metrics`
+(see [Counter rate](#counter-rate-rateincrease-v6)) — the source restriction
+is on the aggregate function, not the stage. `histogram_fraction()` (the
+CDF-inverse of `histogram_quantile()`) has no IR stage yet — stay on PromQL
+for that (see [Roadmap](#roadmap)).
 
 ### Heatmap envelope (IR v2)
 
@@ -670,6 +763,76 @@ use bucket zero; values at or above the final bound use the final overflow
 bucket. Missing cells inside the declared window are zero. The server accepts
 at most 32 y-axis bounds and rejects non-positive steps or non-increasing
 bounds before execution.
+
+## Formulas: cross-query arithmetic (D5)
+
+A formula computes arithmetic across the `series` results of several named
+queries in **one** request — an error ratio, a percentage, a difference —
+rather than in the client. Instead of the single-document shape
+(`{irVersion, from, range, result, pipeline}`), `POST /api/v1/query` accepts
+a **multi-query document**, recognized by its `queries` key:
+
+```jsonc
+{
+  "queries": {
+    "errors": {
+      "irVersion": 1,
+      "from": "traces",
+      "range": { "from": "now-1h", "to": "now" },
+      "result": "series",
+      "pipeline": [
+        { "where": { "field": "status.code", "op": "eq", "value": "Error" } },
+        {
+          "aggregate": {
+            "by": ["service.name"],
+            "aggs": [{ "fn": "count", "as": "n" }],
+            "step": "1m",
+          },
+        },
+      ],
+    },
+    "total": {
+      "irVersion": 1,
+      "from": "traces",
+      "range": { "from": "now-1h", "to": "now" },
+      "result": "series",
+      "pipeline": [
+        {
+          "aggregate": {
+            "by": ["service.name"],
+            "aggs": [{ "fn": "count", "as": "n" }],
+            "step": "1m",
+          },
+        },
+      ],
+    },
+  },
+  "formulas": [{ "name": "error_ratio", "expr": "errors / total" }],
+  "result": "series",
+}
+```
+
+Every named query must declare `result: "series"` — a formula document has
+no other shape. `expr` is `+ - * /` over numeric constants, the request's own
+query names, and parentheses, standard precedence, left-associative.
+
+Each inner query executes exactly like a standalone single-document request
+(its own Flight ticket, its own `metrics`/`traces`/... source), all under one
+server clock stamp; every query's source needs the matching read scope before
+any of them run. Once every inner query has returned, each formula is
+evaluated by joining its referenced queries' series on an **identical label
+set and timestamp**:
+
+- a series present in one operand's result but missing from another's
+  contributes nothing to the output — no error, just no series for that
+  label set;
+- a point whose divisor is zero is dropped from the output series, not an
+  error;
+- a numeric constant broadcasts across every series it meets (`a * 100`).
+
+The response is an ordinary `series` envelope. Each output series' `labels`
+carries the joined labels plus a `formula` key naming which formula produced
+it, so a request with several formulas stays distinguishable in one response.
 
 ## Discovery — what can I query?
 
@@ -904,10 +1067,13 @@ so it is designed and reviewed on its own risk profile:
   [Discovery](#discovery-what-can-i-query).
 - **cross-signal correlate** — a `correlate` join stage (the IR becomes a DAG).
 - **structural traces** — a `match` stage + a `trace` result envelope.
-- **metrics: counters and rates** — a `rate`/`irate`/`increase` stage
-  equivalent (counter delta over a window) and cross-series arithmetic
-  (formulas). The scalar-value case (gauge/sum, plain aggregation) and
-  histogram quantiles already work today — see above.
+
+`rate`/`increase`/`irate`/`*_over_time` (counter delta and windowed
+reductions over a window — see
+[Counter rate](#counter-rate-rateincrease-v6) and
+[More range functions](#more-range-functions-across-and-window-v7)) and
+cross-query formulas (see
+[Formulas](#formulas-cross-query-arithmetic-d5)) already work today.
 
 Also deferred: the compatibility dialects lowering _into_ the IR (one engine),
 and full attribute promotion. None of these change the document shape defined

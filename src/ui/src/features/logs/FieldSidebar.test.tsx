@@ -7,6 +7,32 @@ import { FieldSidebar } from "./FieldSidebar";
 
 const RANGE = { fromMs: 0, toMs: 1000 };
 
+/** A `describe: values` stub route for `field`, matched by the request body
+ * (the URL alone can't distinguish one describe request from another). */
+function describeValuesRoute(field: string, values: string[]) {
+  return {
+    match: "/api/v1/query",
+    bodyMatch: (b: unknown) =>
+      (b as { pipeline?: { describe?: { field?: string } }[] }).pipeline?.[0]
+        ?.describe?.field === field,
+    body: {
+      result: "metadata",
+      window: { start_ns: 0, end_ns: 1 },
+      metadata: {
+        kind: "values",
+        truncated: false,
+        cost: {
+          mode: "metadata",
+          window_scoped: false,
+          sampled: false,
+          approximate: false,
+        },
+        values: values.map((value) => ({ value, origin: "statistics" })),
+      },
+    },
+  };
+}
+
 afterEach(() => {
   vi.unstubAllGlobals();
   resetSemanticsCache();
@@ -104,12 +130,7 @@ describe("FieldSidebar", () => {
   });
 
   it("loads values on expand and adds a filter on click", async () => {
-    stubFetchRoutes([
-      {
-        match: "/loki/api/v1/label/level/values",
-        body: { status: "success", data: ["error", "info"] },
-      },
-    ]);
+    stubFetchRoutes([describeValuesRoute("level", ["error", "info"])]);
     const onAddFilter = vi.fn();
     renderWithClient(
       <FieldSidebar
@@ -129,12 +150,7 @@ describe("FieldSidebar", () => {
   });
 
   it("adds a filter on the dotted key as spelled for a dotted field", async () => {
-    stubFetchRoutes([
-      {
-        match: "/loki/api/v1/label/k8s.pod.name/values",
-        body: { status: "success", data: ["web-1"] },
-      },
-    ]);
+    stubFetchRoutes([describeValuesRoute("k8s.pod.name", ["web-1"])]);
     const onAddFilter = vi.fn();
     renderWithClient(
       <FieldSidebar
@@ -144,9 +160,7 @@ describe("FieldSidebar", () => {
         onAddFilter={onAddFilter}
       />,
     );
-    await userEvent.click(
-      screen.getByRole("button", { name: "k8s.pod.name" }),
-    );
+    await userEvent.click(screen.getByRole("button", { name: "k8s.pod.name" }));
     await userEvent.click(await screen.findByRole("button", { name: "web-1" }));
     expect(onAddFilter).toHaveBeenCalledWith({
       label: "k8s.pod.name",
@@ -157,7 +171,7 @@ describe("FieldSidebar", () => {
 
   it("shows a failure note when values cannot load", async () => {
     stubFetchRoutes([
-      { match: "/values", body: { error: "boom" }, status: 500 },
+      { match: "/api/v1/query", body: { error: "boom" }, status: 500 },
     ]);
     renderWithClient(
       <FieldSidebar

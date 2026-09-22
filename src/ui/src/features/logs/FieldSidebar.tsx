@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
-import { lokiLabelValues } from "../../api/loki";
+import { values as describeValues } from "../../api/ir/discovery";
 import { SemanticInfo } from "../../components/SemanticKey";
 import { SidebarResizer } from "../../components/SidebarResizer";
 import { sidebarWidth } from "../../lib/sidebarWidth";
@@ -210,8 +210,8 @@ function FieldValues({
   onAddFilter: (filter: LabelFilter) => void;
 }) {
   const { data, isPending, isError } = useQuery({
-    queryKey: ["loki-label-values", label, rangeKey],
-    queryFn: () => lokiLabelValues(label, range),
+    queryKey: ["ir-log-field-values", label, rangeKey],
+    queryFn: () => describeValues("logs", label, range),
     staleTime: 30_000,
   });
 
@@ -223,7 +223,10 @@ function FieldValues({
 
   return (
     <div className="fieldvals">
-      {data.map((value) => (
+      {data.some((v) => v.partial) && (
+        <div className="fieldvals-note">partial list</div>
+      )}
+      {data.map(({ value }) => (
         <button
           key={value}
           className="fieldval"

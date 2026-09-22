@@ -2,12 +2,12 @@ import { useQuery } from "@tanstack/react-query";
 import { useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import {
-  tempoSearchTags,
   type AttrValue,
   type ProfileSummaryView,
   type SpanEventView,
   type TempoSpan,
-} from "../../api/tempo";
+} from "../../api/traceTypes";
+import { fields as describeFields } from "../../api/ir/discovery";
 import { ApiError } from "../../api/http";
 import { fetchTraceDetail } from "../../api/traceDetail";
 import { EmptyState } from "../../components/EmptyState";
@@ -52,7 +52,10 @@ import {
 import { spanDetailWidth } from "../../lib/sidebarWidth";
 import { liveRefetchInterval } from "../../lib/live";
 import { goBackOr } from "../../lib/router";
-import { codeLocationFromAttributes, repositoryHints } from "../../lib/sourceLocation";
+import {
+  codeLocationFromAttributes,
+  repositoryHints,
+} from "../../lib/sourceLocation";
 import { useSourceContextEnabled } from "../../lib/useSourceContextEnabled";
 import { formatErrorRate } from "../../lib/vizFormat";
 import { TraceFacets } from "./TraceFacets";
@@ -60,10 +63,10 @@ import { TraceVolumeAreaChart } from "./TraceVolumeAreaChart";
 import { TraceVolumeHeatmap } from "./TraceVolumeHeatmap";
 import {
   KIND_VALUES,
-  compileTraceQL,
   facetField,
   facetableField,
   removeTraceFilter,
+  traceFilterToParam,
   upsertTraceFilter,
   withDefaultTraceFilters,
   type TraceFilter,
@@ -167,6 +170,13 @@ function plural(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 
+/** A stable string for a filter set, used only as a react-query cache key
+ * (the queries below take `filters` directly — see api/traceGroups.ts,
+ * api/traceGroupMembers.ts — this just tells the cache when they changed). */
+function filterCacheKey(filters: TraceFilter[]): string {
+  return filters.map(traceFilterToParam).join(",");
+}
+
 export function TracesView({ state, update }: Props) {
   if (state.trace !== "") {
     return <TraceDetail state={state} update={update} />;
@@ -184,7 +194,7 @@ function TraceSearch({ state, update }: Props) {
   // view): the default kinds apply on read, and every update writes the
   // full, explicit set back.
   const filters = withDefaultTraceFilters(state.traceFilters);
-  const traceql = compileTraceQL(filters);
+  const filterKey = filterCacheKey(filters);
   const dims = parseGroupBy(state.groupBy);
 
   const resolvedForStep = resolveRange(state.range, Date.now());
@@ -194,13 +204,13 @@ function TraceSearch({ state, update }: Props) {
   // does follow the filters, so the chart describes what the table shows.
   const refetchInterval = liveRefetchInterval(state.live);
   const volume = useQuery({
-    queryKey: ["trace-volume", rangeKey, step, traceql],
+    queryKey: ["trace-volume", rangeKey, step, filterKey],
     queryFn: () =>
       fetchTraceVolume(resolveRange(state.range, Date.now()), step, filters),
     refetchInterval,
   });
   const latencyHeatmap = useQuery({
-    queryKey: ["trace-latency", rangeKey, step, traceql],
+    queryKey: ["trace-latency", rangeKey, step, filterKey],
     queryFn: () =>
       fetchTraceLatencyHeatmap(
         resolveRange(state.range, Date.now()),
@@ -375,7 +385,7 @@ function TraceSearch({ state, update }: Props) {
             <GroupList
               dims={dims}
               filters={filters}
-              traceql={traceql}
+              filterKey={filterKey}
               timeRange={state.range}
               rangeKey={rangeKey}
               grain={state.grain}
@@ -481,8 +491,9 @@ function CustomDimensionInput({
 }) {
   const [value, setValue] = useState("");
   const tags = useQuery({
-    queryKey: ["trace-tag-names", rangeKey],
-    queryFn: () => tempoSearchTags(range),
+    queryKey: ["ir-trace-fields", rangeKey],
+    queryFn: () =>
+      describeFields("traces", range).then((fs) => fs.map((f) => f.name)),
     staleTime: 60_000,
   });
 
@@ -551,7 +562,7 @@ function GrainToggle({
 function GroupList({
   dims,
   filters,
-  traceql,
+  filterKey,
   timeRange,
   rangeKey,
   grain,
@@ -561,7 +572,7 @@ function GroupList({
 }: {
   dims: string[];
   filters: TraceFilter[];
-  traceql: string;
+  filterKey: string;
   timeRange: TimeRange;
   rangeKey: string;
   grain: GroupGrain;
@@ -582,7 +593,7 @@ function GroupList({
       rangeKey,
       dims.join(","),
       grain,
-      traceql,
+      filterKey,
       sort.key,
       sort.dir,
     ],
@@ -623,7 +634,7 @@ function GroupList({
       "trace-window-total",
       rangeKey,
       grain,
-      traceql,
+      filterKey,
       resolvedRange?.fromMs,
       resolvedRange?.toMs,
     ],
@@ -761,8 +772,8 @@ function GroupList({
       {done && !unresolved && groups.length === 0 && rootGrainOnly && (
         <EmptyState title="No groups in this range">
           Trace grain only inspects each trace's root span, and one of the
-          active filters is on a field that only appears on a child span.
-          Switch to span grain to see it.
+          active filters is on a field that only appears on a child span. Switch
+          to span grain to see it.
         </EmptyState>
       )}
       {done && !unresolved && groups.length === 0 && !rootGrainOnly && (
@@ -794,7 +805,7 @@ function GroupDetail({
   // kinds apply. Both the key and the drill-in members query must agree
   // with the group table on what "this group" means.
   const filters = withDefaultTraceFilters(state.traceFilters);
-  const traceql = compileTraceQL(filters);
+  const filterKey = filterCacheKey(filters);
   const dims = parseGroupBy(state.groupBy);
   const values = parseCompositeKey(state.group, dims);
 
@@ -808,7 +819,7 @@ function GroupDetail({
       dims.join(","),
       values.join(KEY_SEP),
       state.grain,
-      traceql,
+      filterKey,
       state.limit,
     ],
     // Resolved fresh on every fetch, not once per render — a live refetch of
@@ -914,10 +925,9 @@ function TraceDetail({ state, update }: Props) {
           <>
             <h3>Trace not found</h3>
             <p>
-              <code>{state.trace}</code> wasn&rsquo;t found in the selected
-              time window or the last 30 days. Trace storage is scoped by
-              time — if you know roughly when it happened, widen the range
-              and try again.
+              <code>{state.trace}</code> wasn&rsquo;t found in the selected time
+              window or the last 30 days. Trace storage is scoped by time — if
+              you know roughly when it happened, widen the range and try again.
             </p>
           </>
         ) : (
@@ -1244,7 +1254,9 @@ function SpanDetail({
       <div className="span-detail-sub">
         {kind && <span className={`kind-chip ${kindClass(kind)}`}>{kind}</span>}
         {describeService(span.serviceName, span.attributes)}
-        {span.status === "error" && <em className="tmeta-err error-text"> · error</em>}
+        {span.status === "error" && (
+          <em className="tmeta-err error-text"> · error</em>
+        )}
       </div>
       <button
         className="act-primary btn btn-primary"

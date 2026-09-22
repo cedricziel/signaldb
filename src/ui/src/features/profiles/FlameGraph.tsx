@@ -8,7 +8,7 @@ import {
   type FocusEvent,
   type PointerEvent,
 } from "react";
-import type { RenderResponse } from "../../api/pyroscope";
+import type { RenderResponse } from "../../api/profileTypes";
 import type { FrameLocation } from "../../api/gen";
 import { SourceSnippet } from "../../components/SourceSnippet";
 import { useVizPointer, VizTooltip } from "../../components/VizTooltip";

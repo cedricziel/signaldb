@@ -11,7 +11,7 @@ import type {
   SpanEventView,
   TempoSpan,
   TempoTrace,
-} from "./tempo";
+} from "./traceTypes";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 
 /** Lookback for the retry when the trace is outside the viewer's range: a
