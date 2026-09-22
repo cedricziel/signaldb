@@ -4,6 +4,7 @@
 // from a story/meta decorator, and always call the returned `restore()` on
 // cleanup so one story's stub can't leak `fetch` into the next.
 import { client as generatedClient } from "../api/gen/client.gen";
+import type { WhoamiResponse } from "../api/session";
 
 export type JsonRoute = {
   match: string | RegExp;
@@ -168,5 +169,44 @@ export function describeFieldsResponse(names: string[]) {
         origin: "declared",
       })),
     },
+  };
+}
+
+/** A `GET /api/v1/whoami` response for "alice@example.com" in "acme" —
+ * shared by every story that stubs the top bar's tenant/user context
+ * (`TopBar`, `Pages/App Shell`). */
+export function sampleWhoami(
+  overrides: Partial<WhoamiResponse> = {},
+): WhoamiResponse {
+  return {
+    user: {
+      id: "user-1",
+      email: "alice@example.com",
+      display_name: "Alice",
+      is_instance_admin: false,
+    },
+    memberships: [{ tenant_id: "acme", role: "admin" }],
+    tenant: { id: "acme", slug: "acme", name: "Acme Corp" },
+    datasets: [
+      { id: "production", slug: "production", is_default: true },
+      { id: "staging", slug: "staging", is_default: false },
+    ],
+    default_dataset: "production",
+    ...overrides,
+  };
+}
+
+/** The matching `GET /ui/session` response for {@link sampleWhoami} — same
+ * user/tenant/memberships, the shape `currentSession()` returns. */
+export function sampleCurrentSession(
+  who: WhoamiResponse,
+  extra: Record<string, unknown> = {},
+) {
+  return {
+    user: who.user,
+    tenant: who.tenant.id,
+    dataset: who.default_dataset,
+    memberships: who.memberships,
+    ...extra,
   };
 }

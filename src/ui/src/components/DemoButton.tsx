@@ -4,8 +4,11 @@
 // than navigating to an IdP.
 
 import { useState } from "react";
-import { toErrorMessage } from "../../api/http";
-import { createSession, type SessionResult } from "../../api/session";
+import { toErrorMessage } from "../api/http";
+import { createSession, type SessionResult } from "../api/session";
+// Own the stylesheet its classes come from rather than relying on a caller
+// (LoginMethods) to have loaded it.
+import "../features/shell/LoginPanel.css";
 
 interface Props {
   username: string;

@@ -6,9 +6,9 @@
 import { useEffect, useRef } from "react";
 import type { LoginConfigResponse, SessionResult } from "../../api/session";
 import { CHECKING_LOGIN_OPTIONS_HINT } from "../../lib/useLoginConfig";
-import { DemoButton } from "./DemoButton";
-import { PasswordForm } from "./PasswordForm";
-import { SsoButton } from "./SsoButton";
+import { DemoButton } from "../../components/DemoButton";
+import { PasswordForm } from "../../components/PasswordForm";
+import { SsoButton } from "../../components/SsoButton";
 
 interface Props {
   /** `undefined` while the login-configuration probe is still in flight —

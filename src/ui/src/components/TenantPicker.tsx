@@ -2,7 +2,10 @@
 // of one (design decision 2, the shared context step). Rendered by
 // LoginRoute.
 
-import type { SessionMembership } from "../../api/session";
+import type { SessionMembership } from "../api/session";
+// Own the stylesheet its classes come from rather than relying on the
+// caller (LoginRoute) to have loaded it.
+import "../features/shell/LoginPanel.css";
 
 interface Props {
   memberships: SessionMembership[];

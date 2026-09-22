@@ -8,6 +8,11 @@ import { useMemo } from "react";
 import { SourceSnippet } from "./SourceSnippet";
 import { extractFrameLocation } from "../lib/sourceLocation";
 import { parseStacktraceLines } from "../lib/stacktrace";
+// Own both variants' stylesheets rather than relying on a parent
+// (TracesView for `.span-event-trace-*`, ErrorsView for `.errors-stacktrace-*`)
+// to have loaded them.
+import "../features/traces/traces.css";
+import "../features/errors/errors.css";
 
 export type StacktraceVariant = "trace" | "error";
 
