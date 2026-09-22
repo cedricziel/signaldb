@@ -244,7 +244,6 @@ impl SourcePlan {
                     ("trace.id", "trace_id"),
                     ("span.id", "span_id"),
                     ("resource.identity", "resource_identity"),
-                    ("profile.type", "sample_type"),
                 ],
             }),
             "metrics" => Some(SourcePlan {
@@ -4243,22 +4242,6 @@ mod tests {
                 .sum::<usize>(),
             2
         );
-    }
-
-    /// discovery task 2.3 — `profile.type` resolves to the `sample_type`
-    /// column, so a describe-values picker and a `where`/`fields` predicate
-    /// both address it by its logical name.
-    #[tokio::test]
-    async fn profile_type_resolves_to_sample_type() {
-        let svc = IrService::new(profiles_ctx());
-        let d = doc(serde_json::json!({
-            "irVersion": 1, "from": "profiles", "range": { "from": 0, "to": 1000 },
-            "result": "rows", "fields": ["profile.type"],
-            "pipeline": [{ "where": { "field": "profile.type", "op": "eq", "value": "cpu" } }]
-        }));
-        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
-        let batches = df.collect().await.unwrap();
-        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 2);
     }
 
     /// profile-payload-access task 2.1 — flamegraph envelope end-to-end.
