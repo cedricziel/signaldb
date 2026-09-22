@@ -27,7 +27,6 @@ use common::discovery::{
 use common::query_ir::{Describe, DescribeTarget, Document, SourceRegistry};
 use common::schema::logical::LogicalSchema;
 use common::self_monitoring::spans::discovery_span;
-use common::tenant_api::TenantApi;
 use tracing::Instrument;
 
 use super::api_error::ApiError;
@@ -202,9 +201,13 @@ async fn tenant_tables<S: RouterState>(
     state: &S,
     ctx: &TenantContext,
 ) -> Result<Vec<String>, ApiError> {
-    let mut api = TenantApi::new(state.config().clone())
-        .with_tenant_source(std::sync::Arc::new(state.catalog().clone()));
-    let listing = api.list_tables(&ctx.tenant_id).await.map_err(|error| {
+    let listing = async {
+        crate::tenant_api(state)
+            .await?
+            .list_tables(&ctx.tenant_id)
+            .await
+    };
+    let listing = listing.await.map_err(|error| {
         tracing::error!(?error, "failed to list tenant tables for source discovery");
         ApiError::new(
             axum::http::StatusCode::SERVICE_UNAVAILABLE,
@@ -1053,6 +1056,31 @@ mod tests {
             span_attr(span, "signaldb.discovery.source"),
             None,
             "the sources listing names no single source"
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_sources_listings_reuse_one_catalog_manager() {
+        use crate::RouterState;
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let state = RouterAppState::new(catalog, Configuration::default());
+        let ctx = ctx_for("acme", None);
+        let cell = state
+            .catalog_manager_cell()
+            .expect("app state shares a manager");
+        assert!(cell.get().is_none(), "built lazily, not at startup");
+
+        let _ =
+            super::query_sources(State(state.clone()), TenantContextExtractor(ctx.clone())).await;
+        let first = cell
+            .get()
+            .cloned()
+            .expect("first listing builds the manager");
+        let _ = super::query_sources(State(state.clone()), TenantContextExtractor(ctx)).await;
+
+        assert!(
+            std::sync::Arc::ptr_eq(&first, cell.get().unwrap()),
+            "the second listing must reuse the manager, not open a new pool"
         );
     }
 }
