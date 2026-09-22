@@ -142,11 +142,23 @@ back to SignalDB, so `link`/`tenant_start_github_link` has nothing to
 complete against. The attach endpoint is the way out of that dead end: it
 attaches a tenant to an `installation_id` you already know (read it off
 another tenant's linked-installations list, or off GitHub's own installation
-settings URL) without going through the install flow again. It trusts the
-caller's own `tenant:manage` grant as authorization, consistent with the
-rest of the management API, and re-runs the same read-only-permission check
-the install flow does, refusing an installation that carries any
-write-capable permission.
+settings URL) without going through the install flow again, and re-runs the
+same read-only-permission check the install flow does, refusing an
+installation that carries any write-capable permission.
+
+Unlike every other operation in the table above, attach requires
+**instance-admin** — a tenant's own `tenant:manage` grant is not enough.
+The install flow's security rests on two independent checks (see
+[How linking is secured](#how-linking-is-secured)): the state token proves
+which tenant asked, and GitHub's own `code` exchange proves the browser
+belongs to a user who actually controls the installation being linked.
+Attach has no OAuth code to check ownership with, so without the
+instance-admin gate a tenant admin could attach — and, through
+[source context](#source-context), read the private repository list and
+file contents of — any other org that happens to have installed this
+deployment's App, not just their own. Requiring instance-admin keeps
+attach an operator-level escape hatch (the same principal who already
+holds the App's private key) rather than a cross-tenant disclosure path.
 
 Re-running the install flow for an installation that is already linked (for
 example after adding repositories on GitHub) refreshes the stored record
@@ -182,6 +194,13 @@ Two independent checks bind each link, and neither alone is enough:
   and checks that the returned `installation_id` appears in that user's own
   `GET /user/installations`. A guessed or learned installation id from
   another organization is rejected and nothing is written.
+
+The `attach` endpoint (see [Connect a tenant](#connect-a-tenant)) only keeps
+the SignalDB-side half of this: it has no user `code` to exchange, so it
+cannot re-derive the GitHub-side ownership check above. That is exactly why
+it requires instance-admin rather than a tenant's own `tenant:manage`
+grant — a guessed or learned installation id from another organization
+_would_ otherwise be attachable, unlike through the OAuth flow.
 
 An installation whose permissions include any write-capable permission is
 refused at link time, so a mis-registered App cannot grant SignalDB more

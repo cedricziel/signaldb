@@ -822,8 +822,13 @@ GitHub** link, and a **Remove** action. The list refreshes each
 installation's repositories from GitHub on every load and marks an entry
 _stale_ when GitHub could not be reached. When the operator has not
 configured the `[github]` section, the page explains that instead of
-offering **Connect**. Operator setup and the security model:
-[Connecting GitHub](../operations/github-app.md).
+offering **Connect**. Next to **Connect GitHub** a **Link existing
+installation** field takes a numeric installation id and attaches it
+directly (`POST .../github-installations/attach`), with no OAuth redirect —
+this is the way to link a second tenant to a GitHub account that already
+has the App installed, since GitHub then skips the consent screen and
+**Connect GitHub** has nothing to complete. Operator setup and the security
+model: [Connecting GitHub](../operations/github-app.md).
 
 ### API keys (`/api-keys`)
 

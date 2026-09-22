@@ -137,7 +137,7 @@ stopping the instance, so break-glass holds across restarts too.
 
 A **tenant-scoped, read-only credential that is never stored**. One GitHub App
 identity per deployment (`[github]`: app id, PEM private key, OAuth client
-id/secret); what is per tenant is the *installation* a tenant admin links
+id/secret); what is per tenant is the _installation_ a tenant admin links
 (`github_installations` rows: installation id, org/user account, covered repo
 list, who linked it). `router::github::GitHubApp` signs an RS256 app JWT, mints
 an installation token on demand (process-local cache until ~5 minutes before
@@ -149,11 +149,23 @@ single-use, tenant+admin-bound state token whose SHA-256 sits in
 exchanges GitHub's `code` for a user token, verifies the `installation_id` is
 in that user's `GET /user/installations`, refuses write-capable permissions,
 then `Catalog::complete_github_link` consumes the state and upserts the row in
-one transaction). Resolution of a repo to an installation only ever looks at
-the caller's own tenant (`find_github_installation_for_repository`). Removal
-(`DELETE .../github-installations/{id}`) also drops the cached token, so it is
-immediate. `src/router/src/endpoints/github.rs`, `src/router/src/github.rs`;
-operator guide `docs/operations/github-app.md`.
+one transaction). GitHub allows only one App installation per account, so a
+second tenant on the same account can't complete that flow — GitHub skips
+the consent screen and never redirects back. `POST
+.../github-installations/attach` (change:
+github-installation-direct-attach) is the escape hatch: it takes a raw
+`installation_id` and attaches it via `Catalog::attach_github_installation`
+(same upsert, no state token), re-verifying the installation and its
+permissions through the App's own JWT (`GitHubApp::installation`) rather
+than a user token. Unlike every other tenant-management endpoint, attach
+requires **instance-admin** (`ctx.is_instance_admin`), not just
+`tenant:manage` — with no user `code` to verify ownership, a tenant-level
+grant would let a tenant admin attach, and so read via source context, any
+other org's installation of this App. Resolution of a repo to an installation only ever looks
+at the caller's own tenant (`find_github_installation_for_repository`).
+Removal (`DELETE .../github-installations/{id}`) also drops the cached
+token, so it is immediate. `src/router/src/endpoints/github.rs`,
+`src/router/src/github.rs`; operator guide `docs/operations/github-app.md`.
 
 **Source context (the read side).** `POST /api/v1/tenants/{id}/source-context`
 (`src/router/src/endpoints/source_context.rs`, service in
@@ -459,29 +471,32 @@ OAuth-consent cases). `get_schema` uses the same rule (it used to require
 `is_instance_admin`). `create_tenant` stays `is_instance_admin`-only; keys
 create tenants through the admin API.
 
-| Endpoint                                        | Methods       | Description                                   | SDK operation                                         |
-| ----------------------------------------------- | ------------- | --------------------------------------------- | ----------------------------------------------------- |
-| `/api/v1/manage/tenants`                        | POST          | Create a tenant (instance-admin session only) | `manage_create_tenant`                                |
-| `/api/v1/manage/tenants/{id}/datasets`          | GET, POST     | List/create datasets                          | `manage_list_datasets`, `manage_create_dataset`       |
-| `/api/v1/manage/tenants/{id}/datasets/{name}`   | DELETE        | Delete a dataset by name                      | `manage_delete_dataset`                               |
-| `/api/v1/manage/tenants/{id}/api-keys`          | GET, POST     | List/create API keys                          | `manage_list_api_keys`, `manage_create_api_key`       |
-| `/api/v1/manage/tenants/{id}/api-keys/{key_id}` | DELETE, PATCH | Revoke / update an API key                    | `manage_revoke_api_key`, `manage_update_api_key`      |
-| `/api/v1/manage/tenants/{id}/memberships`       | GET, PUT      | List / upsert a member's role                 | `manage_list_memberships`, `manage_upsert_membership` |
-| `/api/v1/manage/tenants/{id}/memberships/{uid}` | DELETE        | Remove a member                               | `manage_remove_membership`                            |
-| `/api/v1/manage/schema`                         | GET           | Logical + physical schema                     | `manage_get_schema`                                   |
-| `/api/v1/manage/tenants/{id}/github-installations/link` | POST  | Start linking a GitHub App installation       | `manage_start_github_link`                            |
-| `/api/v1/manage/tenants/{id}/github-installations` | GET        | List linked GitHub App installations          | `manage_list_github_installations`                    |
-| `/api/v1/manage/tenants/{id}/github-installations/{iid}` | DELETE | Remove a linked GitHub App installation     | `manage_remove_github_installation`                    |
+| Endpoint                                                  | Methods       | Description                                                                                       | SDK operation                                         |
+| --------------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `/api/v1/manage/tenants`                                  | POST          | Create a tenant (instance-admin session only)                                                     | `manage_create_tenant`                                |
+| `/api/v1/manage/tenants/{id}/datasets`                    | GET, POST     | List/create datasets                                                                              | `manage_list_datasets`, `manage_create_dataset`       |
+| `/api/v1/manage/tenants/{id}/datasets/{name}`             | DELETE        | Delete a dataset by name                                                                          | `manage_delete_dataset`                               |
+| `/api/v1/manage/tenants/{id}/api-keys`                    | GET, POST     | List/create API keys                                                                              | `manage_list_api_keys`, `manage_create_api_key`       |
+| `/api/v1/manage/tenants/{id}/api-keys/{key_id}`           | DELETE, PATCH | Revoke / update an API key                                                                        | `manage_revoke_api_key`, `manage_update_api_key`      |
+| `/api/v1/manage/tenants/{id}/memberships`                 | GET, PUT      | List / upsert a member's role                                                                     | `manage_list_memberships`, `manage_upsert_membership` |
+| `/api/v1/manage/tenants/{id}/memberships/{uid}`           | DELETE        | Remove a member                                                                                   | `manage_remove_membership`                            |
+| `/api/v1/manage/schema`                                   | GET           | Logical + physical schema                                                                         | `manage_get_schema`                                   |
+| `/api/v1/manage/tenants/{id}/github-installations/link`   | POST          | Start linking a GitHub App installation                                                           | `manage_start_github_link`                            |
+| `/api/v1/manage/tenants/{id}/github-installations`        | GET           | List linked GitHub App installations                                                              | `manage_list_github_installations`                    |
+| `/api/v1/manage/tenants/{id}/github-installations/{iid}`  | DELETE        | Remove a linked GitHub App installation                                                           | `manage_remove_github_installation`                   |
+| `/api/v1/manage/tenants/{id}/github-installations/attach` | POST          | Attach an installation that already exists (instance-admin only, not `tenant:manage` — see above) | `manage_attach_github_installation`                   |
 
 CLI (`signaldb_cli::commands::tenant_self`, API key with `tenant:manage`):
 `tenant dataset {list,create,delete}`, `tenant api-key {list,create,update,revoke}`,
 `tenant membership {list,set,remove}`, `tenant schema get`,
-`tenant github {link,list,remove}`; destructive verbs take `--yes` or confirm
+`tenant github {link,list,remove}` (no CLI verb for `attach` yet); destructive
+verbs take `--yes` or confirm
 on a TTY. MCP: `tenant_list_datasets`,
 `tenant_create_dataset`, `tenant_delete_dataset`, `tenant_list_api_keys`,
 `tenant_create_api_key`, `tenant_update_api_key`, `tenant_revoke_api_key`,
 `tenant_list_memberships`, `tenant_upsert_membership`,
 `tenant_remove_membership`, `tenant_get_schema`, `tenant_start_github_link`,
+`tenant_attach_github_installation`,
 `tenant_list_github_installations`, `tenant_remove_github_installation` (a
 403 surfaces the router's reason via `map_manage_err`). A multi-tenant OAuth
 credential has no default tenant, so every tenant-aware MCP tool takes the

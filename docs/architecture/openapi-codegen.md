@@ -65,8 +65,12 @@ flowchart LR
   SSO offering and the `granted_by` membership source through generated
   types — change: oidc-login), `endpoints/github.rs` (the GitHub App
   installation surface — `manage_start_github_link`,
-  `manage_list_github_installations`, `manage_remove_github_installation`
-  under `/api/v1/manage/tenants/{id}/github-installations`, plus the
+  `manage_list_github_installations`, `manage_remove_github_installation`,
+  `manage_attach_github_installation` (attaches an installation that already
+  exists on GitHub directly, for when a second tenant on the same GitHub
+  account can't complete the OAuth install flow — change:
+  github-installation-direct-attach) under
+  `/api/v1/manage/tenants/{id}/github-installations`, plus the
   unauthenticated `GET /ui/github/callback` install redirect declared with an
   empty security requirement — change: github-app-source-context),
   `endpoints/source_context.rs` (the stack-frame source lookup —
