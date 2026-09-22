@@ -6396,7 +6396,12 @@ const GITHUB_INSTALLATION_COLUMNS: &str = "tenant_id, installation_id, account_l
 /// [`Catalog::complete_github_link`] and [`Catalog::attach_github_installation`]
 /// — the two entry points that create or refresh a `github_installations` row,
 /// one via a state token and one direct. Kept as a single definition so the
-/// two can never drift apart.
+/// two can never drift apart. `linked_by_github_login` is `COALESCE`d
+/// against the existing row rather than blindly overwritten: `attach`
+/// never obtains a GitHub user token (it never learns a login), so an
+/// attach over a row `complete_github_link` OAuth-verified must not erase
+/// that verified login — only a fresh non-null login (from a real OAuth
+/// completion) may replace it.
 fn github_installation_upsert_sqlite_sql() -> String {
     format!(
         "INSERT INTO github_installations ({GITHUB_INSTALLATION_COLUMNS}) \
@@ -6408,7 +6413,7 @@ fn github_installation_upsert_sqlite_sql() -> String {
             repositories = excluded.repositories, \
             repositories_synced_at = excluded.repositories_synced_at, \
             linked_by_user_id = excluded.linked_by_user_id, \
-            linked_by_github_login = excluded.linked_by_github_login, \
+            linked_by_github_login = COALESCE(excluded.linked_by_github_login, github_installations.linked_by_github_login), \
             updated_at = excluded.updated_at \
          RETURNING {GITHUB_INSTALLATION_COLUMNS}"
     )
@@ -6426,7 +6431,7 @@ fn github_installation_upsert_postgres_sql() -> String {
             repositories = EXCLUDED.repositories, \
             repositories_synced_at = EXCLUDED.repositories_synced_at, \
             linked_by_user_id = EXCLUDED.linked_by_user_id, \
-            linked_by_github_login = EXCLUDED.linked_by_github_login, \
+            linked_by_github_login = COALESCE(EXCLUDED.linked_by_github_login, github_installations.linked_by_github_login), \
             updated_at = EXCLUDED.updated_at \
          RETURNING {GITHUB_INSTALLATION_COLUMNS}"
     )
@@ -11699,6 +11704,42 @@ mod github_tests {
                 .await
                 .unwrap(),
             Some(globex_record)
+        );
+    }
+
+    /// Attach never obtains a GitHub user token, so it always passes
+    /// `linked_by_github_login: None` — this must not erase a login that
+    /// `complete_github_link`'s OAuth flow already verified for the same
+    /// row. Regression test for the `COALESCE` in the shared upsert SQL.
+    #[tokio::test]
+    async fn attach_installation_preserves_an_oauth_verified_github_login() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+        link_state(&catalog, "state-hash-preserve", "acme", &user_id).await;
+        let mut oauth_installation = new_installation(20004, &["octo-org/repo-a"]);
+        oauth_installation.linked_by_user_id = Some(user_id.clone());
+        oauth_installation.linked_by_github_login = Some("octocat".to_string());
+        let outcome = catalog
+            .complete_github_link("state-hash-preserve", &oauth_installation)
+            .await
+            .unwrap();
+        let GitHubLinkOutcome::Linked(linked) = outcome else {
+            panic!("expected Linked, got {outcome:?}");
+        };
+        assert_eq!(linked.linked_by_github_login.as_deref(), Some("octocat"));
+
+        let mut attach_installation =
+            new_installation(20004, &["octo-org/repo-a", "octo-org/repo-b"]);
+        attach_installation.linked_by_user_id = None;
+        attach_installation.linked_by_github_login = None;
+        let attached = catalog
+            .attach_github_installation("acme", &attach_installation)
+            .await
+            .unwrap();
+
+        assert_eq!(attached.linked_by_github_login.as_deref(), Some("octocat"));
+        assert_eq!(
+            attached.repositories,
+            vec!["octo-org/repo-a", "octo-org/repo-b"]
         );
     }
 }

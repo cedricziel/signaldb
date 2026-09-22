@@ -82,7 +82,10 @@
 //!     the tenant-admin role or instance-admin flag, or an API key that
 //!     explicitly carries the `tenant:manage` scope. Ingest-only keys and
 //!     legacy unscoped keys get a clean access-denied error (management is
-//!     opt-in; `router::endpoints::management::authorize_tenant`). The
+//!     opt-in; `router::endpoints::management::authorize_tenant`).
+//!     `tenant_attach_github_installation` is the one exception: it
+//!     requires instance-admin specifically, not just `tenant:manage` —
+//!     see its own tool description. The
 //!     CLI's `tenant dataset|api-key|membership|schema|github` verbs reach
 //!     the same endpoints — see `signaldb_cli::commands::tenant_self`.
 //!
@@ -3231,7 +3234,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Attach a GitHub App installation that already exists (e.g. linked to another tenant on the same GitHub account) to the caller's own tenant directly, without the OAuth install flow (management API; tenant-admin session or an API key carrying `tenant:manage`). GitHub allows only one App installation per account, so once one tenant has linked it, GitHub's install-flow URL for a second tenant skips straight to its own installation-management page instead of redirecting back to SignalDB — this tool is the fix for that dead end. Re-runs the same read-only-permission check the install flow performs and refuses an installation carrying any write-capable permission.",
+        description = "Attach a GitHub App installation that already exists (e.g. linked to another tenant on the same GitHub account) to the caller's own tenant directly, without the OAuth install flow. Requires instance-admin — a `tenant:manage` grant alone is NOT enough, because this path skips the OAuth flow's GitHub-side ownership check (there is no user token to verify the installation actually belongs to an account the caller controls), so a lower grant would let any tenant admin attach, and so read the source of, any other org that installed this deployment's App. GitHub allows only one App installation per account, so once one tenant has linked it, GitHub's install-flow URL for a second tenant skips straight to its own installation-management page instead of redirecting back to SignalDB — this tool is the instance-admin's fix for that dead end. Re-runs the same read-only-permission check the install flow performs and refuses an installation carrying any write-capable permission.",
         annotations(read_only_hint = false)
     )]
     async fn tenant_attach_github_installation(

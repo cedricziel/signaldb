@@ -56,7 +56,9 @@ use serde::{Deserialize, Serialize};
 use crate::github::GitHubError;
 
 use crate::RouterState;
-use crate::endpoints::management::{ManageError, authorize_tenant, error};
+use crate::endpoints::management::{
+    ManageError, authorize_instance_admin, authorize_tenant, error,
+};
 use crate::endpoints::session;
 use crate::github::write_permissions;
 
@@ -415,10 +417,16 @@ pub(crate) async fn remove_github_installation<S: RouterState>(
 /// App installation per account, so once one tenant has linked it, GitHub's
 /// install-flow URL for a second tenant skips straight to its own
 /// installation-management page instead of redirecting back here; this
-/// endpoint is the escape hatch. Authorization is the caller's own
-/// `tenant:manage` grant (checked by [`authorize_tenant`]) — there is no
-/// state token to bind to, unlike [`start_github_link`]'s flow. The same
-/// read-only-permission check the OAuth callback performs is re-run here.
+/// endpoint is the escape hatch. Unlike [`start_github_link`]'s flow, there
+/// is no user token to check the installation's `installation_id` against
+/// — GitHub only scopes [`crate::github::GitHubApp::installation`] to *an*
+/// installation of this App, not to any account the caller controls. A
+/// `tenant:manage` grant is therefore not enough authorization on its own
+/// (it would let a tenant admin attach, and so read the source of, any
+/// other org that installed this deployment's App); this endpoint requires
+/// `ctx.is_instance_admin`, the same principal that already holds the
+/// App's private key. The same read-only-permission check the OAuth
+/// callback performs is re-run here.
 #[utoipa::path(
     post,
     path = "/api/v1/manage/tenants/{tenant_id}/github-installations/attach",
@@ -429,7 +437,7 @@ pub(crate) async fn remove_github_installation<S: RouterState>(
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 201, description = "Installation attached", body = GitHubInstallationResponse),
-        (status = 403, description = "Tenant administrator role or tenant:manage scope required and the tenant must match the caller, or the installation carries a write-capable permission", body = ManageError),
+        (status = 403, description = "Instance administrator required, or the installation carries a write-capable permission", body = ManageError),
         (status = 404, description = "GitHub integration is not configured, or the installation was not found on GitHub", body = ManageError),
         (status = 500, description = "Internal error", body = ManageError),
         (status = 502, description = "GitHub request failed", body = ManageError),
@@ -442,6 +450,21 @@ pub(crate) async fn attach_github_installation<S: RouterState>(
     Json(body): Json<AttachGitHubInstallationRequest>,
 ) -> Response {
     if let Err((status, message)) = authorize_tenant(&ctx, &tenant_id) {
+        return error(status, message);
+    }
+    // Unlike the other three handlers in this file, attach skips the
+    // OAuth flow's GitHub-side ownership check (the callback verifies
+    // `installation_id` against the authorizing GitHub user's own
+    // `/user/installations`; attach only re-verifies the id exists for
+    // *this App*, not that the caller has any relationship to the account
+    // behind it). A `tenant:manage` grant on `tenant_id` is therefore not
+    // enough on its own — it would let any tenant admin attach, and so
+    // read the private repository list and source of, any other org that
+    // installed this deployment's App. Require instance-admin, the same
+    // principal that already holds the App's private key and can create
+    // tenants (`management::create_tenant`, which shares this same
+    // `authorize_instance_admin` check).
+    if let Err((status, message)) = authorize_instance_admin(&ctx) {
         return error(status, message);
     }
     let Some(app) = state.github() else {
@@ -457,8 +480,12 @@ pub(crate) async fn attach_github_installation<S: RouterState>(
             return error(StatusCode::NOT_FOUND, "GitHub installation not found");
         }
         Err(github_error) => {
-            tracing::warn!(error = %github_error, tenant_id, installation_id = body.installation_id, "GitHub installation lookup failed");
-            return error(StatusCode::BAD_GATEWAY, "GitHub request failed");
+            return attach_github_error_response(
+                github_error,
+                &tenant_id,
+                body.installation_id,
+                "installation lookup",
+            );
         }
     };
 
@@ -479,8 +506,12 @@ pub(crate) async fn attach_github_installation<S: RouterState>(
     let repositories = match app.installation_repositories(body.installation_id).await {
         Ok(repositories) => repositories,
         Err(github_error) => {
-            tracing::warn!(error = %github_error, tenant_id, installation_id = body.installation_id, "GitHub repository listing failed");
-            return error(StatusCode::BAD_GATEWAY, "GitHub request failed");
+            return attach_github_error_response(
+                github_error,
+                &tenant_id,
+                body.installation_id,
+                "repository listing",
+            );
         }
     };
 
@@ -512,6 +543,7 @@ pub(crate) async fn attach_github_installation<S: RouterState>(
         tenant_id,
         installation_id = body.installation_id,
         account = %record.account_login,
+        user_id = ctx.user_id.as_deref(),
         "GitHub installation attached"
     );
     let manage_url = installation_manage_url(
@@ -536,6 +568,37 @@ pub(crate) async fn attach_github_installation<S: RouterState>(
         }),
     )
         .into_response()
+}
+
+/// Maps a [`GitHubError`] from either of [`attach_github_installation`]'s
+/// two outbound calls to a response: a broken App JWT/config is this
+/// deployment's fault (500), anything else is GitHub's (502). `during`
+/// names the call for the log line (`"installation lookup"` or
+/// `"repository listing"`).
+fn attach_github_error_response(
+    github_error: GitHubError,
+    tenant_id: &str,
+    installation_id: i64,
+    during: &str,
+) -> Response {
+    match github_error {
+        GitHubError::Config(_) | GitHubError::Jwt(_) => {
+            tracing::error!(
+                tenant_id,
+                installation_id,
+                during,
+                "GitHub App JWT signing failed"
+            );
+            error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to attach GitHub installation",
+            )
+        }
+        github_error => {
+            tracing::warn!(error = %github_error, tenant_id, installation_id, during, "GitHub call failed");
+            error(StatusCode::BAD_GATEWAY, "GitHub request failed")
+        }
+    }
 }
 
 /// Query parameters GitHub appends to the install-flow callback redirect
@@ -857,6 +920,19 @@ mod tests {
             .upsert_tenant_membership(&member.id, "acme", MembershipRole::Member)
             .await
             .unwrap();
+        // Instance-admin, no tenant membership needed — `can_manage_tenant`
+        // short-circuits on `is_instance_admin`. Used by the attach tests,
+        // which require instance-admin rather than mere `tenant:manage`
+        // (see `attach_github_installation`'s doc comment for why).
+        catalog
+            .create_user(
+                "superadmin@example.com",
+                Some("Super Admin"),
+                Some(&hash),
+                true,
+            )
+            .await
+            .unwrap();
         let app = create_router(RouterAppState::new(catalog.clone(), config));
         (app, catalog, admin.id, member.id)
     }
@@ -888,10 +964,22 @@ mod tests {
         uri: &str,
         credential: Credential<'_>,
     ) -> (StatusCode, Value) {
+        call_manage_as(app, method_, uri, "acme", credential).await
+    }
+
+    /// Like [`call_manage`] but for an explicit `tenant_id` rather than the
+    /// hard-coded `"acme"`, for tests that need to call a second tenant.
+    async fn call_manage_as(
+        app: &axum::Router,
+        method_: axum::http::Method,
+        uri: &str,
+        tenant_id: &str,
+        credential: Credential<'_>,
+    ) -> (StatusCode, Value) {
         let mut builder = Request::builder()
             .method(method_)
             .uri(uri)
-            .header("x-tenant-id", "acme");
+            .header("x-tenant-id", tenant_id);
         builder = match credential {
             Credential::ApiKey(key) => builder.header("authorization", format!("Bearer {key}")),
             Credential::Cookie(cookie) => builder.header(header::COOKIE, cookie),
@@ -1617,10 +1705,10 @@ mod tests {
         let server = MockServer::start().await;
         mount_attach_happy_path_mocks(&server, 777).await;
         let (app, _catalog, _admin_id, _member_id) = test_app(Some(github_config(&server))).await;
-        let admin_cookie = login(&app, "admin@example.com").await;
+        let super_cookie = login(&app, "superadmin@example.com").await;
 
         let (status, body) =
-            call_attach(&app, "acme", Credential::Cookie(admin_cookie.clone()), 777).await;
+            call_attach(&app, "acme", Credential::Cookie(super_cookie.clone()), 777).await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
         assert_eq!(body["installation_id"], 777);
         assert_eq!(body["account_login"], "octo-org");
@@ -1638,7 +1726,7 @@ mod tests {
             &app,
             axum::http::Method::GET,
             "/api/v1/manage/tenants/acme/github-installations",
-            Credential::Cookie(admin_cookie),
+            Credential::Cookie(super_cookie),
         )
         .await;
         assert_eq!(status, StatusCode::OK);
@@ -1652,9 +1740,9 @@ mod tests {
         let server = MockServer::start().await;
         mount_installation_lookup(&server, 777, json!({ "contents": "write" })).await;
         let (app, catalog, _admin_id, _member_id) = test_app(Some(github_config(&server))).await;
-        let admin_cookie = login(&app, "admin@example.com").await;
+        let super_cookie = login(&app, "superadmin@example.com").await;
 
-        let (status, _) = call_attach(&app, "acme", Credential::Cookie(admin_cookie), 777).await;
+        let (status, _) = call_attach(&app, "acme", Credential::Cookie(super_cookie), 777).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
         assert!(
             catalog
@@ -1674,10 +1762,25 @@ mod tests {
             .mount(&server)
             .await;
         let (app, _catalog, _admin_id, _member_id) = test_app(Some(github_config(&server))).await;
-        let admin_cookie = login(&app, "admin@example.com").await;
+        let super_cookie = login(&app, "superadmin@example.com").await;
 
-        let (status, _) = call_attach(&app, "acme", Credential::Cookie(admin_cookie), 777).await;
+        let (status, _) = call_attach(&app, "acme", Credential::Cookie(super_cookie), 777).await;
         assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn attach_github_upstream_failure_is_bad_gateway() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/app/installations/777"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+        let (app, _catalog, _admin_id, _member_id) = test_app(Some(github_config(&server))).await;
+        let super_cookie = login(&app, "superadmin@example.com").await;
+
+        let (status, _) = call_attach(&app, "acme", Credential::Cookie(super_cookie), 777).await;
+        assert_eq!(status, StatusCode::BAD_GATEWAY);
     }
 
     #[tokio::test]
@@ -1691,23 +1794,41 @@ mod tests {
         assert_eq!(status, StatusCode::FORBIDDEN);
     }
 
+    /// The security-relevant regression test: a `tenant:manage` grant (a
+    /// tenant-admin session here) is not enough to attach — attach skips
+    /// the OAuth flow's GitHub-side ownership check, so it requires
+    /// instance-admin (see `attach_github_installation`'s doc comment).
+    /// Without this gate, any tenant admin could attach — and so read the
+    /// source of — any other org that installed this deployment's App.
     #[tokio::test]
-    async fn attach_without_github_configured_is_not_found() {
-        let (app, _catalog, _admin_id, _member_id) = test_app(None).await;
+    async fn attach_tenant_admin_without_instance_admin_is_forbidden() {
+        let server = MockServer::start().await;
+        mount_attach_happy_path_mocks(&server, 777).await;
+        let (app, catalog, _admin_id, _member_id) = test_app(Some(github_config(&server))).await;
         let admin_cookie = login(&app, "admin@example.com").await;
 
-        let (status, _) = call_attach(&app, "acme", Credential::Cookie(admin_cookie), 777).await;
-        assert_eq!(status, StatusCode::NOT_FOUND);
+        let (status, body) = call_attach(&app, "acme", Credential::Cookie(admin_cookie), 777).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(body["error"], "Instance administrator required");
+        assert!(
+            catalog
+                .list_github_installations("acme")
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
+    /// Same regression as above, for a `tenant:manage`-scoped API key
+    /// rather than a session — the same grant the rest of the management
+    /// API accepts is deliberately *not* sufficient here.
     #[tokio::test]
-    async fn attach_same_installation_to_two_tenants_succeeds_independently() {
+    async fn attach_tenant_manage_api_key_without_instance_admin_is_forbidden() {
         const GLOBEX_MANAGE_KEY: &str = "sdbk_globex_manage";
 
         let server = MockServer::start().await;
         mount_attach_happy_path_mocks(&server, 777).await;
         let (app, catalog, _admin_id, _member_id) = test_app(Some(github_config(&server))).await;
-        let admin_cookie = login(&app, "admin@example.com").await;
         catalog
             .upsert_scoped_api_key(
                 "globex",
@@ -1721,30 +1842,62 @@ mod tests {
             .await
             .unwrap();
 
-        let (status, _) = call_attach(&app, "acme", Credential::Cookie(admin_cookie), 777).await;
+        let (status, _) =
+            call_attach(&app, "globex", Credential::ApiKey(GLOBEX_MANAGE_KEY), 777).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(
+            catalog
+                .list_github_installations("globex")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_without_github_configured_is_not_found() {
+        let (app, _catalog, _admin_id, _member_id) = test_app(None).await;
+        let super_cookie = login(&app, "superadmin@example.com").await;
+
+        let (status, _) = call_attach(&app, "acme", Credential::Cookie(super_cookie), 777).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn attach_same_installation_to_two_tenants_succeeds_independently() {
+        let server = MockServer::start().await;
+        mount_attach_happy_path_mocks(&server, 777).await;
+        let (app, _catalog, _admin_id, _member_id) = test_app(Some(github_config(&server))).await;
+        let super_cookie = login(&app, "superadmin@example.com").await;
+
+        let (status, _) =
+            call_attach(&app, "acme", Credential::Cookie(super_cookie.clone()), 777).await;
         assert_eq!(status, StatusCode::CREATED);
 
-        // `globex` gets its own `tenant:manage`-scoped key, independent of
-        // acme's admin session — attaching the same installation id to it
-        // must succeed on its own.
-        let (status, body) =
-            call_attach(&app, "globex", Credential::ApiKey(GLOBEX_MANAGE_KEY), 777).await;
+        // The same instance-admin attaches the same installation id to a
+        // second tenant — independent of the first, since only the
+        // instance admin (who already holds the App's own credentials) may
+        // attach at all; see the two forbidden tests above for why a
+        // per-tenant `tenant:manage` grant cannot self-serve this.
+        let (status, body) = call_attach(
+            &app,
+            "globex",
+            Credential::Cookie(super_cookie.clone()),
+            777,
+        )
+        .await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
         assert_eq!(body["installation_id"], 777);
 
-        let request = Request::builder()
-            .method(axum::http::Method::GET)
-            .uri("/api/v1/manage/tenants/globex/github-installations")
-            .header("x-tenant-id", "globex")
-            .header("authorization", format!("Bearer {GLOBEX_MANAGE_KEY}"))
-            .body(Body::empty())
-            .unwrap();
-        let response = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
-            .await
-            .unwrap();
-        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let (status, body) = call_manage_as(
+            &app,
+            axum::http::Method::GET,
+            "/api/v1/manage/tenants/globex/github-installations",
+            "globex",
+            Credential::Cookie(super_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
         let installations = body["installations"].as_array().unwrap();
         assert_eq!(installations.len(), 1);
         assert_eq!(installations[0]["installation_id"], 777);

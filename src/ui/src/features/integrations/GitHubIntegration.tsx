@@ -222,32 +222,38 @@ function GitHubIntegrationBody({ who }: { who: WhoamiResponse }) {
               repositories; GitHub brings you back here.
             </p>
 
-            <form className="github-attach-form" onSubmit={handleAttach}>
-              <input
-                type="number"
-                inputMode="numeric"
-                min="1"
-                placeholder="Installation ID"
-                aria-label="GitHub installation ID"
-                value={attachInstallationId}
-                onChange={(event) =>
-                  setAttachInstallationId(event.target.value)
-                }
-              />
-              <button
-                type="submit"
-                className="btn"
-                disabled={
-                  attachMutation.isPending || !attachInstallationId.trim()
-                }
-              >
-                Link existing installation
-              </button>
-            </form>
-            <p className="github-connect-note">
-              Already installed on this GitHub account for another tenant?
-              Attach that installation id here instead of reconnecting.
-            </p>
+            {who.user?.is_instance_admin && (
+              <>
+                <form className="github-attach-form" onSubmit={handleAttach}>
+                  <input
+                    type="number"
+                    inputMode="numeric"
+                    min="1"
+                    placeholder="Installation ID"
+                    aria-label="GitHub installation ID"
+                    value={attachInstallationId}
+                    onChange={(event) =>
+                      setAttachInstallationId(event.target.value)
+                    }
+                  />
+                  <button
+                    type="submit"
+                    className="btn"
+                    disabled={
+                      attachMutation.isPending || !attachInstallationId.trim()
+                    }
+                  >
+                    Link existing installation
+                  </button>
+                </form>
+                <p className="github-connect-note">
+                  Already installed on this GitHub account for another tenant?
+                  Attach that installation id here instead of reconnecting —
+                  instance-admin only, since this path skips GitHub's ownership
+                  check.
+                </p>
+              </>
+            )}
           </section>
 
           <section className="github-installations">

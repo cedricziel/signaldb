@@ -67,6 +67,14 @@ const WHOAMI_NON_ADMIN = {
   memberships: [{ tenant_id: "acme", role: "viewer" }],
 };
 
+// The attach form is instance-admin-gated (the router requires it too: a
+// `tenant:manage` grant alone is not enough, since attach skips the OAuth
+// flow's GitHub-side ownership check — see docs/operations/github-app.md).
+const WHOAMI_INSTANCE_ADMIN = {
+  ...WHOAMI_ADMIN,
+  user: { ...WHOAMI_ADMIN.user, is_instance_admin: true },
+};
+
 const NOT_CONFIGURED = {
   configured: false,
   app_slug: null,
@@ -204,9 +212,22 @@ describe("GitHubIntegration page", () => {
     expect(postCall).toBeDefined();
   });
 
+  it("Link existing installation is hidden for a tenant admin who is not instance-admin", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: INSTALLATIONS_PATH, method: "GET", body: CONFIGURED_EMPTY },
+    ]);
+    renderGitHubIntegration();
+
+    await screen.findByRole("button", { name: "Connect GitHub" });
+    expect(
+      screen.queryByLabelText("GitHub installation ID"),
+    ).not.toBeInTheDocument();
+  });
+
   it("Link existing installation calls the attach endpoint and refetches", async () => {
     const fetchMock = stubFetchRoutes([
-      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: "/api/v1/whoami", body: WHOAMI_INSTANCE_ADMIN },
       { match: INSTALLATIONS_PATH, method: "GET", body: CONFIGURED_EMPTY },
       {
         match: `${INSTALLATIONS_PATH}/attach`,
