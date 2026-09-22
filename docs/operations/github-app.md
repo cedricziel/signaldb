@@ -122,7 +122,7 @@ The same surface exists on the HTTP API, the CLI, and MCP:
 | Start a link                    | `POST /api/v1/manage/tenants/{id}/github-installations/link` → `install_url`      | `signaldb-cli tenant github link`                     | `tenant_start_github_link`          |
 | List installations              | `GET /api/v1/manage/tenants/{id}/github-installations`                            | `signaldb-cli tenant github list`                     | `tenant_list_github_installations`  |
 | Remove a link                   | `DELETE /api/v1/manage/tenants/{id}/github-installations/{installation_id}`       | `signaldb-cli tenant github remove <installation_id>` | `tenant_remove_github_installation` |
-| Attach an existing installation | `POST /api/v1/manage/tenants/{id}/github-installations/attach` → the installation | (not added to the CLI in this change)                 | `tenant_attach_github_installation` |
+| Attach an existing installation | `POST /api/v1/manage/tenants/{id}/github-installations/attach` → the installation | `signaldb-cli tenant github attach <installation_id>` | `tenant_attach_github_installation` |
 
 The CLI's `link` (and the MCP `tenant_start_github_link` tool) prints/returns
 the install URL; open it in a browser where you are

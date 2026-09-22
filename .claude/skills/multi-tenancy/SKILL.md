@@ -486,10 +486,11 @@ create tenants through the admin API.
 | `/api/v1/manage/tenants/{id}/github-installations/{iid}`  | DELETE        | Remove a linked GitHub App installation                                                           | `manage_remove_github_installation`                   |
 | `/api/v1/manage/tenants/{id}/github-installations/attach` | POST          | Attach an installation that already exists (instance-admin only, not `tenant:manage` — see above) | `manage_attach_github_installation`                   |
 
-CLI (`signaldb_cli::commands::tenant_self`, API key with `tenant:manage`):
+CLI (`signaldb_cli::commands::tenant_self`, API key with `tenant:manage` —
+except `tenant github attach`, which needs instance-admin like its endpoint):
 `tenant dataset {list,create,delete}`, `tenant api-key {list,create,update,revoke}`,
 `tenant membership {list,set,remove}`, `tenant schema get`,
-`tenant github {link,list,remove}` (no CLI verb for `attach` yet); destructive
+`tenant github {link,list,attach,remove}`; destructive
 verbs take `--yes` or confirm
 on a TTY. MCP: `tenant_list_datasets`,
 `tenant_create_dataset`, `tenant_delete_dataset`, `tenant_list_api_keys`,
