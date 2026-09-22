@@ -7,6 +7,7 @@
 import "./client";
 
 import {
+  manageAttachGithubInstallation,
   manageListGithubInstallations,
   manageRemoveGithubInstallation,
   manageStartGithubLink,
@@ -32,15 +33,28 @@ const unwrap = <T>(result: SdkResult<T>): T =>
 export const listGithubInstallations = async (
   tenant: string,
 ): Promise<GithubInstallations> =>
-  unwrap(
-    await manageListGithubInstallations({ path: { tenant_id: tenant } }),
-  );
+  unwrap(await manageListGithubInstallations({ path: { tenant_id: tenant } }));
 
 /** `POST /api/v1/manage/tenants/{id}/github-installations/link`: mints a
  * single-use install link for this tenant/admin. Follow `install_url` to
  * hand the browser to GitHub's install flow. */
 export const startGithubLink = async (tenant: string) =>
   unwrap(await manageStartGithubLink({ path: { tenant_id: tenant } }));
+
+/** `POST /api/v1/manage/tenants/{id}/github-installations/attach`: attaches
+ * an installation that already exists for this GitHub App — e.g. one
+ * already linked to another tenant on the same account — directly, with no
+ * OAuth install flow. */
+export const attachGithubInstallation = async (
+  tenant: string,
+  installationId: number,
+): Promise<GithubInstallation> =>
+  unwrap(
+    await manageAttachGithubInstallation({
+      path: { tenant_id: tenant },
+      body: { installation_id: installationId },
+    }),
+  );
 
 /** `DELETE /api/v1/manage/tenants/{id}/github-installations/{id}`: removes
  * the link immediately (SignalDB stops using it); the App stays installed on

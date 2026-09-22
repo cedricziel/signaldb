@@ -178,7 +178,8 @@ describe("GitHubIntegration page", () => {
         match: `${INSTALLATIONS_PATH}/link`,
         method: "POST",
         body: {
-          install_url: "https://github.com/apps/signaldb/installations/new?state=abc",
+          install_url:
+            "https://github.com/apps/signaldb/installations/new?state=abc",
           expires_at: "2026-09-01T00:10:00Z",
         },
         status: 201,
@@ -201,6 +202,49 @@ describe("GitHubIntegration page", () => {
       .filter((req): req is Request => req instanceof Request)
       .find((req) => req.url.includes("/link") && req.method === "POST");
     expect(postCall).toBeDefined();
+  });
+
+  it("Link existing installation calls the attach endpoint and refetches", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: INSTALLATIONS_PATH, method: "GET", body: CONFIGURED_EMPTY },
+      {
+        match: `${INSTALLATIONS_PATH}/attach`,
+        method: "POST",
+        body: ONE_INSTALLATION.installations[0],
+        status: 201,
+      },
+    ]);
+    renderGitHubIntegration();
+
+    const input = await screen.findByLabelText("GitHub installation ID");
+    await userEvent.type(input, "42");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Link existing installation" }),
+    );
+
+    await waitFor(() => {
+      const postCall = fetchMock.mock.calls
+        .map((call) => call[0])
+        .filter((req): req is Request => req instanceof Request)
+        .find((req) => req.url.includes("/attach") && req.method === "POST");
+      expect(postCall).toBeDefined();
+    });
+    await waitFor(() => expect(input).toHaveValue(null));
+
+    await waitFor(() => {
+      const getCalls = fetchMock.mock.calls
+        .map((call) => call[0])
+        .filter((req): req is Request => req instanceof Request)
+        .filter(
+          (req) =>
+            req.method === "GET" &&
+            req.url.includes("github-installations") &&
+            !req.url.includes("/attach"),
+        );
+      // Initial load + refetch after attach.
+      expect(getCalls.length).toBeGreaterThanOrEqual(2);
+    });
   });
 
   it("Remove confirms then DELETEs and refetches", async () => {
@@ -253,7 +297,9 @@ describe("GitHubIntegration page", () => {
       { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
       { match: INSTALLATIONS_PATH, body: CONFIGURED_EMPTY },
     ]);
-    renderGitHubIntegration("/integrations/github?github=linked&installation_id=777");
+    renderGitHubIntegration(
+      "/integrations/github?github=linked&installation_id=777",
+    );
 
     expect(
       await screen.findByText("GitHub installation 777 linked."),

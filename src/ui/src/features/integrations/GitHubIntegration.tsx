@@ -7,6 +7,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
 import { Navigate, useSearchParams } from "react-router";
 import {
+  attachGithubInstallation,
   listGithubInstallations,
   removeGithubInstallation,
   startGithubLink,
@@ -97,7 +98,10 @@ function GitHubIntegrationBody({ who }: { who: WhoamiResponse }) {
   const [banner] = useState<CallbackBanner | null>(() => {
     const github = searchParams.get("github");
     if (github === "linked") {
-      return { kind: "linked", installationId: searchParams.get("installation_id") };
+      return {
+        kind: "linked",
+        installationId: searchParams.get("installation_id"),
+      };
     }
     if (github === "error") {
       return { kind: "error", reason: searchParams.get("reason") };
@@ -140,13 +144,33 @@ function GitHubIntegrationBody({ who }: { who: WhoamiResponse }) {
     onError: (value) => setError(toErrorMessage(value)),
   });
 
+  const [attachInstallationId, setAttachInstallationId] = useState("");
+  const attachMutation = useMutation({
+    mutationFn: (installationId: number) =>
+      attachGithubInstallation(tenant, installationId),
+    onSuccess: () => {
+      setError(null);
+      setAttachInstallationId("");
+      void invalidateInstallations();
+      void invalidateSourceContextAvailability();
+    },
+    onError: (value) => setError(toErrorMessage(value)),
+  });
+
+  const handleAttach = (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const installationId = Number.parseInt(attachInstallationId, 10);
+    if (!attachInstallationId.trim() || Number.isNaN(installationId)) return;
+    attachMutation.mutate(installationId);
+  };
+
   return (
     <div className="github-page">
       <h1 className="github-title">GitHub</h1>
       <p className="github-subtitle">
         Connecting lets SignalDB read the repositories that produce{" "}
-        <strong>{tenant}</strong>'s telemetry — read-only, and no GitHub
-        token is ever stored.
+        <strong>{tenant}</strong>'s telemetry — read-only, and no GitHub token
+        is ever stored.
       </p>
 
       {error && (
@@ -173,8 +197,8 @@ function GitHubIntegrationBody({ who }: { who: WhoamiResponse }) {
 
       {installations.data && !installations.data.configured && (
         <EmptyState title="GitHub is not configured on this server">
-          Set the <code>[github]</code> section in the server config to
-          enable this integration — see{" "}
+          Set the <code>[github]</code> section in the server config to enable
+          this integration — see{" "}
           <a href={GITHUB_DOCS_URL} target="_blank" rel="noopener noreferrer">
             the GitHub App docs
           </a>
@@ -196,6 +220,33 @@ function GitHubIntegrationBody({ who }: { who: WhoamiResponse }) {
             <p className="github-connect-note">
               You&apos;ll be sent to GitHub to pick the organization and
               repositories; GitHub brings you back here.
+            </p>
+
+            <form className="github-attach-form" onSubmit={handleAttach}>
+              <input
+                type="number"
+                inputMode="numeric"
+                min="1"
+                placeholder="Installation ID"
+                aria-label="GitHub installation ID"
+                value={attachInstallationId}
+                onChange={(event) =>
+                  setAttachInstallationId(event.target.value)
+                }
+              />
+              <button
+                type="submit"
+                className="btn"
+                disabled={
+                  attachMutation.isPending || !attachInstallationId.trim()
+                }
+              >
+                Link existing installation
+              </button>
+            </form>
+            <p className="github-connect-note">
+              Already installed on this GitHub account for another tenant?
+              Attach that installation id here instead of reconnecting.
             </p>
           </section>
 
