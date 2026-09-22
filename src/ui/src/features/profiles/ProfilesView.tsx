@@ -13,7 +13,7 @@ import {
 } from "../../lib/time";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
 import { SkeletonLines } from "../explore/Skeleton";
-import { TimeRangePicker } from "../shell/TimeRangePicker";
+import { TimeRangePicker } from "../../components/TimeRangePicker";
 import { FlameGraph, FlamePane } from "./FlameGraph";
 import { decodeFlamebearer } from "../../lib/flamebearer";
 import "./profiles.css";

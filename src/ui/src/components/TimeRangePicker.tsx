@@ -1,8 +1,7 @@
-import {
-  RANGE_PRESETS,
-  formatRangeLabel,
-  type TimeRange,
-} from "../../lib/time";
+import { RANGE_PRESETS, formatRangeLabel, type TimeRange } from "../lib/time";
+// `.time-picker` lives in the explore views' shared stylesheet; own the
+// import rather than relying on a parent to have loaded it.
+import "../features/explore/explore.css";
 
 interface Props {
   range: TimeRange;

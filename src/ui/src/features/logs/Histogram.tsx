@@ -5,7 +5,7 @@
  */
 import type { HistogramSeries } from "../../api/ir/logs";
 import type { Scale } from "../explore/scale";
-import { SignalHistogram, type VolumeSeries } from "../explore/SignalHistogram";
+import { SignalHistogram, type VolumeSeries } from "../../components/SignalHistogram";
 
 /** Stacking order bottom-to-top; anything else lands in "other". */
 const LEVEL_ORDER = ["debug", "info", "warn", "error", "other"];

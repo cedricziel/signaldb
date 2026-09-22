@@ -19,9 +19,14 @@ import {
 } from "../../lib/time";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
 import { FieldSidebar } from "./FieldSidebar";
-import { FilterChips } from "./FilterChips";
+import { FilterChips } from "../../components/FilterChips";
 import { Histogram } from "./Histogram";
 import { LogList } from "./LogList";
+// Shared explore-view chrome (`.logsview`, `.querybar`, `.logs-body`, the
+// mobile drawer, ...) — normally loaded once via ExploreView, but this view
+// depends on those classnames directly, so it owns the import too rather
+// than assuming a parent already loaded it.
+import "../explore/explore.css";
 
 interface Props {
   state: ExploreState;

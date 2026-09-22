@@ -1,9 +1,9 @@
 import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { resetSemanticsCache } from "../../hooks/useSemantics";
-import type { LabelFilter } from "../../lib/filters";
-import { stubFetchRoutes } from "../../test/render";
+import { resetSemanticsCache } from "../hooks/useSemantics";
+import type { LabelFilter } from "../lib/filters";
+import { stubFetchRoutes } from "../test/render";
 import { FilterChips } from "./FilterChips";
 
 afterEach(() => {
@@ -133,7 +133,9 @@ describe("FilterChips", () => {
 
     // Observed labels show at once; registry hits merge in when they land.
     await screen.findByText("HTTP request method.");
-    const list = screen.getByRole("listbox", { name: "Attribute key suggestions" });
+    const list = screen.getByRole("listbox", {
+      name: "Attribute key suggestions",
+    });
     const options = within(list).getAllByRole("option");
     expect(options.map((o) => o.getAttribute("data-key"))).toEqual([
       "http.request.method",
@@ -171,11 +173,17 @@ describe("FilterChips", () => {
       },
     ]);
     render(
-      <FilterChips filters={[]} labels={["level", "line"]} onChange={() => {}} />,
+      <FilterChips
+        filters={[]}
+        labels={["level", "line"]}
+        onChange={() => {}}
+      />,
     );
     await userEvent.click(screen.getByRole("button", { name: "+ filter" }));
     await userEvent.type(screen.getByLabelText("Filter label"), "le");
-    const list = await screen.findByRole("listbox", { name: "Attribute key suggestions" });
+    const list = await screen.findByRole("listbox", {
+      name: "Attribute key suggestions",
+    });
     expect(
       within(list)
         .getAllByRole("option")

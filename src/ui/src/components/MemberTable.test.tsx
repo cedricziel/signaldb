@@ -1,7 +1,7 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { MemberTable } from "./MemberTable";
-import type { TraceGroupMember } from "../../api/traceGroupMembers";
+import type { TraceGroupMember } from "../api/traceGroupMembers";
 
 function member(
   traceId: string,
@@ -66,7 +66,9 @@ describe("MemberTable", () => {
         onOpenTrace={vi.fn()}
       />,
     );
-    expect(screen.getByRole("status")).toHaveTextContent("No spans in this range");
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "No spans in this range",
+    );
   });
 
   it("renders rows and the identity column's header label", () => {

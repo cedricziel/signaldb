@@ -1,11 +1,16 @@
 import { useState } from "react";
-import { AttributeKeyInput } from "../../components/AttributeKeyInput";
+import { AttributeKeyInput } from "./AttributeKeyInput";
 import {
   FILTER_OPS,
   isValidLogLabelName,
   type FilterOp,
   type LabelFilter,
-} from "../../lib/filters";
+} from "../lib/filters";
+// The chip/chip-form classnames below live in the explore views' shared
+// stylesheet — every current caller (LogsView, TraceFacets, ...) already
+// loads it via ExploreView, but this component's own markup depends on it
+// too, so it owns the import rather than relying on an ambient parent.
+import "../features/explore/explore.css";
 
 interface Props {
   filters: LabelFilter[];
@@ -96,7 +101,11 @@ export function FilterChips({ filters, labels, onChange }: Props) {
           >
             Add
           </button>
-          <button type="button" className="btn" onClick={() => setAdding(false)}>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setAdding(false)}
+          >
             Cancel
           </button>
         </form>

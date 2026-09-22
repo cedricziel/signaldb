@@ -23,7 +23,10 @@ function withoutPwaPlugin(plugins: PluginOption[]): PluginOption[] {
 }
 
 const config: StorybookConfig = {
-  stories: ["../src/components/**/*.stories.tsx"],
+  stories: [
+    "../src/components/**/*.stories.tsx",
+    "../src/features/**/*.stories.tsx",
+  ],
   addons: [
     "@chromatic-com/storybook",
     "@storybook/addon-vitest",
