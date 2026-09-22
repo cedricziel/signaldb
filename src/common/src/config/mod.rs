@@ -1652,7 +1652,7 @@ impl Default for DemoConfig {
             enabled: false,
             tenant_id: String::new(),
             dataset_id: None,
-            username: "demo".to_string(),
+            username: "demo@example.com".to_string(),
             password: "demo".to_string(),
         }
     }
@@ -4271,7 +4271,7 @@ mod tests {
         config.demo.enabled = true;
         config.demo.tenant_id = "demo".to_string();
         assert!(config.validate().is_ok());
-        assert_eq!(config.demo.username, "demo");
+        assert_eq!(config.demo.username, "demo@example.com");
         assert_eq!(config.demo.password, "demo");
     }
 

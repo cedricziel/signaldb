@@ -97,7 +97,7 @@ the headers, for browsers using the [embedded explore UI](explore-ui.md):
 ### Demo account
 
 When an instance runs with `[demo] enabled = true`, a shared read-only login
-(default `demo` / `demo`) signs in as a Viewer of the demo tenant. It can run
+(default `demo@example.com` / `demo`) signs in as a Viewer of the demo tenant. It can run
 queries but every request that would change something returns 403. See
 [Demo mode](../operations/demo-mode.md).
 
