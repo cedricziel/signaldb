@@ -4,12 +4,22 @@ import { MemoryRouter } from "react-router";
 import { testQueryClient } from "../../lib/queryClient";
 import { DEFAULT_STATE } from "../../lib/urlState";
 import {
-  emptyMatrix,
-  logsResponse,
+  describeFieldsResponse,
+  emptyIrSeries,
+  irLogRowsResponse,
+  irLogVolumeResponse,
   type JsonRoute,
 } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { LogsView } from "./LogsView";
+
+const isRowsQuery = (b: unknown) =>
+  (b as { result?: string }).result === "rows";
+const isSeriesQuery = (b: unknown) =>
+  (b as { result?: string }).result === "series";
+const isFieldsQuery = (b: unknown) =>
+  (b as { pipeline?: { describe?: { target?: string } }[] }).pipeline?.[0]
+    ?.describe?.target === "fields";
 
 const SERVICES = [
   "checkout",
@@ -32,61 +42,65 @@ const MESSAGES: Record<string, string[]> = {
   shipping: ["label created", "shipment dispatched", "delivery confirmed"],
 };
 
+// A fixed instant (2023-11-14T22:13:20Z), not `Date.now()` — every row and
+// bucket below is offset from this constant, so the story is deterministic
+// regardless of when or where it renders.
 const BASE_NS = 1_700_000_000_000_000_000n;
+const BASE_MS = 1_700_000_000_000;
 
 function buildLogRows(count: number) {
-  const rows: { tsNs: string; line: string; labels: Record<string, string> }[] =
-    [];
-  for (let i = 0; i < count; i++) {
+  return Array.from({ length: count }, (_, i) => {
     const service = SERVICES[i % SERVICES.length]!;
     const level = LEVELS[i % LEVELS.length]!;
     const messages = MESSAGES[service]!;
-    const line = messages[i % messages.length]!;
-    rows.push({
+    return {
       tsNs: (BASE_NS - BigInt(i) * 1_000_000_000n).toString(),
-      line,
-      labels: { level, service_name: service },
-    });
-  }
-  return rows;
+      body: messages[i % messages.length]!,
+      serviceName: service,
+      severityText: level,
+    };
+  });
 }
+
+function buildVolume() {
+  const uniqueLevels = [...new Set(LEVELS)];
+  return uniqueLevels.map((level) => ({
+    level,
+    points: Array.from({ length: 12 }, (_, i): [number, number] => [
+      (BASE_MS - i * 60_000) * 1_000_000,
+      3 + ((i + level.length) % 5),
+    ]),
+  }));
+}
+
+const fieldsRoute: JsonRoute = {
+  match: "/api/v1/query",
+  bodyMatch: isFieldsQuery,
+  body: describeFieldsResponse(["severity_text", "service.name"]),
+};
 
 const populatedRoutes: JsonRoute[] = [
   {
-    match: /query_range.*direction=backward/,
-    body: logsResponse(buildLogRows(20)),
+    match: "/api/v1/query",
+    bodyMatch: isRowsQuery,
+    body: irLogRowsResponse(buildLogRows(20)),
   },
   {
-    match: /query_range.*step=/,
-    body: {
-      status: "success",
-      data: {
-        resultType: "matrix",
-        result: LEVELS.filter((l, i, arr) => arr.indexOf(l) === i).map(
-          (level) => ({
-            metric: { level },
-            values: Array.from({ length: 12 }, (_, i) => [
-              1_700_000_000 - i * 60,
-              String(3 + ((i + level.length) % 5)),
-            ]),
-          }),
-        ),
-      },
-    },
+    match: "/api/v1/query",
+    bodyMatch: isSeriesQuery,
+    body: irLogVolumeResponse(buildVolume()),
   },
-  {
-    match: "/loki/api/v1/labels",
-    body: { status: "success", data: ["level", "service_name"] },
-  },
+  fieldsRoute,
 ];
 
 const emptyRoutes: JsonRoute[] = [
-  { match: /query_range.*direction=backward/, body: logsResponse([]) },
-  { match: /query_range.*step=/, body: emptyMatrix },
   {
-    match: "/loki/api/v1/labels",
-    body: { status: "success", data: ["level", "service_name"] },
+    match: "/api/v1/query",
+    bodyMatch: isRowsQuery,
+    body: irLogRowsResponse([]),
   },
+  { match: "/api/v1/query", bodyMatch: isSeriesQuery, body: emptyIrSeries },
+  fieldsRoute,
 ];
 
 function LogsPage({ routes }: { routes: JsonRoute[] }) {
