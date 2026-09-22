@@ -1619,6 +1619,54 @@ pub struct Configuration {
     /// tenant-ottl-processors).
     #[serde(default)]
     pub processors: ProcessorsConfig,
+    /// Public read-only demo account (change: demo-mode). Disabled by
+    /// default; when enabled, the router provisions a Viewer-only user and
+    /// an HTTP middleware refuses every non-read request from it.
+    #[serde(default)]
+    pub demo: DemoConfig,
+}
+
+/// Public read-only demo account (change: demo-mode).
+///
+/// When `enabled`, the router provisions (at startup, and idempotently on
+/// every restart) a local user with email `username` whose password is
+/// re-hashed from `password` and whose only tenant membership is a `local`
+/// Viewer row on `tenant_id`. An HTTP middleware then refuses every
+/// non-read request the demo session sends, on top of the ordinary
+/// `MembershipRole::Viewer` write denial — see `docs/operations/demo-mode.md`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct DemoConfig {
+    pub enabled: bool,
+    /// Tenant the demo user is a Viewer of. Required when `enabled`.
+    pub tenant_id: String,
+    /// Dataset the Explore UI pre-selects for the demo user, if any.
+    pub dataset_id: Option<String>,
+    pub username: String,
+    pub password: String,
+}
+
+impl Default for DemoConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tenant_id: String::new(),
+            dataset_id: None,
+            username: "demo".to_string(),
+            password: "demo".to_string(),
+        }
+    }
+}
+
+impl DemoConfig {
+    /// `enabled` without a `tenant_id` is a startup error: the middleware
+    /// and provisioning both need a tenant to scope the account to.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.enabled && self.tenant_id.trim().is_empty() {
+            return Err("[demo].tenant_id is required when [demo].enabled is true".to_string());
+        }
+        Ok(())
+    }
 }
 
 /// Tenant OTTL processor limits and the `ProcessorRegistry` reload cadence
@@ -2007,6 +2055,7 @@ impl Default for Configuration {
             public: PublicEndpointsConfig::default(),
             github: None,
             processors: ProcessorsConfig::default(),
+            demo: DemoConfig::default(),
         }
     }
 }
@@ -2370,6 +2419,7 @@ impl Configuration {
         if let Some(github) = &self.github {
             github.validate()?;
         }
+        self.demo.validate()?;
         Ok(())
     }
 
@@ -4186,5 +4236,54 @@ mod tests {
         });
         let err = config.validate().unwrap_err();
         assert!(err.contains("disable_password_login"));
+    }
+
+    #[test]
+    fn demo_disabled_by_default() {
+        assert!(!DemoConfig::default().enabled);
+        assert!(Configuration::default().validate().is_ok());
+    }
+
+    #[test]
+    fn demo_enabled_without_tenant_id_fails_validation() {
+        let mut config = Configuration::default();
+        config.demo.enabled = true;
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("tenant_id"));
+    }
+
+    #[test]
+    fn demo_enabled_with_tenant_id_validates() {
+        let mut config = Configuration::default();
+        config.demo.enabled = true;
+        config.demo.tenant_id = "demo".to_string();
+        assert!(config.validate().is_ok());
+        assert_eq!(config.demo.username, "demo");
+        assert_eq!(config.demo.password, "demo");
+    }
+
+    #[test]
+    fn demo_config_parses_from_toml() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "signaldb.toml",
+                r#"
+                [demo]
+                enabled = true
+                tenant_id = "demo"
+                dataset_id = "otel-demo"
+                username = "visitor"
+                password = "letmein"
+                "#,
+            )?;
+            let config = Configuration::load_from_path(std::path::Path::new("signaldb.toml"))
+                .expect("valid demo config must load");
+            assert!(config.demo.enabled);
+            assert_eq!(config.demo.tenant_id, "demo");
+            assert_eq!(config.demo.dataset_id.as_deref(), Some("otel-demo"));
+            assert_eq!(config.demo.username, "visitor");
+            assert_eq!(config.demo.password, "letmein");
+            Ok(())
+        });
     }
 }
