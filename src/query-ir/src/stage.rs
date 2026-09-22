@@ -29,6 +29,14 @@ pub enum AggFn {
     /// The latest value in the group by the source's time column
     /// (`irVersion` 5).
     Last,
+    /// Per-second rate of a monotonic counter over the `step` window,
+    /// counter-reset aware. Only legal on `metrics`/`metrics_histogram` with
+    /// `step` set (`irVersion` 6).
+    Rate,
+    /// The counter's total increase over the `step` window, counter-reset
+    /// aware — `rate` without the division by the window width (`irVersion`
+    /// 6).
+    Increase,
 }
 
 impl AggFn {
@@ -49,6 +57,7 @@ impl AggFn {
         match self {
             AggFn::Count | AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max | AggFn::Quantile => 1,
             AggFn::Stddev | AggFn::Stdvar | AggFn::First | AggFn::Last => 5,
+            AggFn::Rate | AggFn::Increase => 6,
         }
     }
 
@@ -64,6 +73,8 @@ impl AggFn {
             AggFn::Stdvar => "stdvar",
             AggFn::First => "first",
             AggFn::Last => "last",
+            AggFn::Rate => "rate",
+            AggFn::Increase => "increase",
         }
     }
 }

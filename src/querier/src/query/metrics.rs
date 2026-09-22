@@ -2672,7 +2672,7 @@ fn apply_topk(batches: Vec<RecordBatch>, spec: TopKSpec) -> Result<Vec<RecordBat
 /// zero) instead of `cur - prev`. Shared by `rate`/`increase` (summed over
 /// every consecutive pair in the window) and `irate` (applied to just the
 /// last two samples).
-fn reset_corrected_delta(cur: Expr, prev: Expr) -> Result<Expr, QuerierError> {
+pub(crate) fn reset_corrected_delta(cur: Expr, prev: Expr) -> Result<Expr, QuerierError> {
     when(cur.clone().lt(prev.clone()), cur.clone())
         .otherwise(cur - prev)
         .map_err(QuerierError::QueryFailed)

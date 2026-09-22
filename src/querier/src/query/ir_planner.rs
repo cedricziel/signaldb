@@ -50,6 +50,7 @@ use datafusion::functions::string::expr_fn::contains;
 use datafusion::functions_aggregate::expr_fn::{
     approx_percentile_cont, avg, count, first_value, last_value, max, min, stddev_pop, sum, var_pop,
 };
+use datafusion::functions_window::expr_fn::lag;
 use datafusion::logical_expr::SortExpr;
 use datafusion::logical_expr::TableProviderFilterPushDown;
 use datafusion::logical_expr::{
@@ -1490,6 +1491,18 @@ impl Lowering<'_> {
         df: DataFrame,
         agg: &Aggregate,
     ) -> Result<DataFrame, QuerierError> {
+        use common::query_ir::AggFn;
+        // `rate`/`increase` are computed per series from the raw ordered
+        // samples (a window function), not from a plain aggregate
+        // expression — `validate` guarantees this is the aggregate's only
+        // output when either is present, so no other agg can share this
+        // stage with it.
+        if let (Some(step), [a]) = (&agg.step, agg.aggs.as_slice())
+            && matches!(a.func, AggFn::Rate | AggFn::Increase)
+        {
+            return self.lower_rate_aggregate(df, agg, a, step);
+        }
+
         // Group expressions: each `by` field, aliased to a safe identifier.
         let mut group_exprs = Vec::new();
         let mut new_col_of = HashMap::new();
@@ -1537,6 +1550,100 @@ impl Lowering<'_> {
             return df.sort(sort).map_err(QuerierError::QueryFailed);
         }
         Ok(df)
+    }
+
+    /// `rate`/`increase`: walk the samples ordered by time within each
+    /// series (the `by` labels), accumulate the counter-reset-aware delta
+    /// between consecutive samples (`super::metrics::reset_corrected_delta`
+    /// — the same Prometheus rule the PromQL compat path uses), then sum
+    /// those per-pair contributions into each `step` bucket. `rate` divides
+    /// the bucket's total by the window width in seconds; `increase` is the
+    /// total itself.
+    fn lower_rate_aggregate(
+        &mut self,
+        df: DataFrame,
+        agg: &Aggregate,
+        a: &common::query_ir::Agg,
+        step: &str,
+    ) -> Result<DataFrame, QuerierError> {
+        use common::query_ir::AggFn;
+
+        let step_ns = common::query_ir::parse_duration_ns(step)
+            .ok_or_else(|| QuerierError::InvalidInput(format!("invalid step duration '{step}'")))?;
+        let of = a.of.as_deref().ok_or_else(|| {
+            QuerierError::InvalidInput(format!(
+                "aggregate '{}' requires an `of` field",
+                a.func.as_str()
+            ))
+        })?;
+        let value_f64 = cast(self.value_expr(of)?, DataType::Float64);
+
+        let mut partition = Vec::with_capacity(agg.by.len());
+        for by in &agg.by {
+            partition.push(self.value_expr(by)?);
+        }
+        let order = vec![SortExpr::new(col(self.source.time_col), true, true)];
+        let prev_value = lag(value_f64.clone(), Some(1), None)
+            .partition_by(partition)
+            .order_by(order)
+            .build()
+            .map_err(QuerierError::QueryFailed)?
+            .alias("__rate_prev");
+        let df = df
+            .window(vec![prev_value])
+            .map_err(QuerierError::QueryFailed)?;
+
+        // The first sample in a series has no previous value; it contributes
+        // nothing, matching how a NULL delta is simply ignored by `sum`.
+        let contribution =
+            datafusion::logical_expr::when(col("__rate_prev").is_null(), lit(0.0f64))
+                .otherwise(super::metrics::reset_corrected_delta(
+                    value_f64,
+                    col("__rate_prev"),
+                )?)
+                .map_err(QuerierError::QueryFailed)?;
+
+        let stride = lit(ScalarValue::IntervalMonthDayNano(Some(
+            IntervalMonthDayNano::new(0, 0, step_ns),
+        )));
+        let origin = lit(ScalarValue::TimestampNanosecond(Some(0), None));
+        let ts_ns = cast(
+            col(self.source.time_col),
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+        );
+        let mut group_exprs = vec![date_bin(stride, ts_ns, origin).alias("bucket")];
+        let mut new_col_of = HashMap::new();
+        for by in &agg.by {
+            let alias = safe_ident(by);
+            group_exprs.push(self.value_expr(by)?.alias(alias.clone()));
+            new_col_of.insert(by.clone(), alias);
+        }
+        const TOTAL: &str = "__rate_total";
+        let df = df
+            .aggregate(group_exprs, vec![sum(contribution).alias(TOTAL)])
+            .map_err(QuerierError::QueryFailed)?;
+
+        let value_expr = match a.func {
+            AggFn::Increase => ident(TOTAL),
+            AggFn::Rate => ident(TOTAL) / lit(step_ns as f64 / 1_000_000_000.0),
+            _ => unreachable!("only rate/increase reach lower_rate_aggregate"),
+        };
+        let mut select = vec![col("bucket")];
+        for by in &agg.by {
+            select.push(ident(safe_ident(by)));
+        }
+        select.push(value_expr.alias(a.as_name.clone()));
+        let df = df.select(select).map_err(QuerierError::QueryFailed)?;
+
+        new_col_of.insert(a.as_name.clone(), a.as_name.clone());
+        self.aggregated = true;
+        self.col_of = new_col_of;
+        self.series_shaped = true;
+        let mut sort = vec![col("bucket").sort(true, false)];
+        for by in &agg.by {
+            sort.push(ident(safe_ident(by)).sort(true, false));
+        }
+        df.sort(sort).map_err(QuerierError::QueryFailed)
     }
 
     fn lower_heatmap(
@@ -1884,6 +1991,15 @@ impl Lowering<'_> {
                 self.value_expr(a.of.as_deref().unwrap_or_default())?,
                 vec![SortExpr::new(col(self.source.time_col), true, true)],
             ),
+            // Intercepted in `lower_aggregate` before reaching `agg_expr` —
+            // computed from a window over the raw samples, not a plain
+            // aggregate expression.
+            AggFn::Rate | AggFn::Increase => {
+                return Err(QuerierError::InvalidInput(format!(
+                    "aggregate '{}' must be lowered by lower_rate_aggregate",
+                    a.func.as_str()
+                )));
+            }
         };
 
         // A scoping predicate narrows this aggregate alone, as a per-aggregate
@@ -3199,8 +3315,138 @@ mod tests {
         ctx
     }
 
+    /// One counter series (`requests`) at 10, 20, 5, 15, all inside one 30s
+    /// step bucket: 20-10=10, 5-20 is a reset (contributes 5), 15-5=10 — the
+    /// D4 design scenario (`increase` 25, `rate` 25/30 per second).
+    fn rate_ctx() -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+            map_field_named("attributes"),
+            map_field_named("resource_attributes"),
+        ]));
+        let n = 4;
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![
+                    0i64,
+                    10_000_000_000,
+                    20_000_000_000,
+                    29_000_000_000,
+                ])),
+                Arc::new(StringArray::from(vec!["svc"; n])),
+                Arc::new(StringArray::from(vec!["requests"; n])),
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 5.0, 15.0])),
+                build_map(&vec![&[] as &[(&str, &str)]; n]),
+                build_map(&vec![&[] as &[(&str, &str)]; n]),
+            ],
+        )
+        .unwrap();
+
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("metrics_gauge".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
     fn doc(v: serde_json::Value) -> Document {
         serde_json::from_value(v).unwrap()
+    }
+
+    // Task 4.1 — counter rate (D4): reset scenario from the design doc.
+    #[tokio::test]
+    async fn increase_and_rate_across_a_reset() {
+        for (func, expected) in [("increase", 25.0), ("rate", 25.0 / 30.0)] {
+            let svc = IrService::new(rate_ctx());
+            let d = doc(serde_json::json!({
+                "irVersion": 6, "from": "metrics",
+                "range": { "from": 0, "to": 30_000_000_000i64 },
+                "result": "series",
+                "pipeline": [{ "aggregate": {
+                    "by": ["metric.name"],
+                    "aggs": [{ "fn": func, "of": "metric.value", "as": "r" }],
+                    "step": "30s"
+                } }]
+            }));
+            let (df, _) = svc
+                .plan(&d, "t", "d", 0)
+                .await
+                .unwrap()
+                .expect("source table is registered");
+            let batches = df.collect().await.unwrap();
+            let batch = batches.iter().find(|b| b.num_rows() > 0).expect("one row");
+            assert_eq!(batch.num_rows(), 1, "{func}: one bucket, one series");
+            let value = batch
+                .column_by_name("r")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .unwrap()
+                .value(0);
+            assert!(
+                (value - expected).abs() < 1e-9,
+                "{func}: expected {expected}, got {value}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn rate_rejects_a_document_declaring_less_than_ir_version_6() {
+        let svc = IrService::new(rate_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 5, "from": "metrics", "range": { "from": 0, "to": 30_000_000_000i64 },
+            "result": "series",
+            "pipeline": [{ "aggregate": {
+                "by": ["metric.name"],
+                "aggs": [{ "fn": "rate", "of": "metric.value", "as": "r" }],
+                "step": "30s"
+            } }]
+        }));
+        let err = svc.plan(&d, "t", "d", 0).await.expect_err("rejected");
+        assert!(format!("{err}").contains("irVersion 6"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn rate_rejects_a_non_metric_source() {
+        let svc = IrService::new(logs_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 6, "from": "logs", "range": { "from": 0, "to": 30_000_000_000i64 },
+            "result": "series",
+            "pipeline": [{ "aggregate": {
+                "by": [],
+                "aggs": [{ "fn": "rate", "of": "severity_number", "as": "r" }],
+                "step": "30s"
+            } }]
+        }));
+        let err = svc.plan(&d, "t", "d", 0).await.expect_err("rejected");
+        assert!(format!("{err}").contains("metrics"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn rate_rejects_missing_step() {
+        let svc = IrService::new(rate_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 6, "from": "metrics", "range": { "from": 0, "to": 30_000_000_000i64 },
+            "result": "table",
+            "pipeline": [{ "aggregate": {
+                "by": ["metric.name"],
+                "aggs": [{ "fn": "rate", "of": "metric.value", "as": "r" }]
+            } }]
+        }));
+        let err = svc.plan(&d, "t", "d", 0).await.expect_err("rejected");
+        assert!(format!("{err}").contains("requires `step`"), "{err}");
     }
 
     // Task 4.1 — from(logs)+where+aggregate(step) lowers to the expected plan.

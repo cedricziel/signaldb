@@ -455,6 +455,17 @@ impl InferCtx<'_> {
             out_cols.push(out);
         }
 
+        if agg.step.is_none()
+            && agg
+                .aggs
+                .iter()
+                .any(|a| matches!(a.func, AggFn::Rate | AggFn::Increase))
+        {
+            return Err(IrError::Invalid(
+                "aggregate 'rate'/'increase' requires `step`".to_string(),
+            ));
+        }
+
         match &agg.step {
             Some(step) => {
                 let step_ns = parse_duration_ns(step).ok_or_else(|| IrError::Coercion {
@@ -701,6 +712,18 @@ impl InferCtx<'_> {
                 a.func.as_str()
             )));
         }
+        if matches!(a.func, AggFn::Rate | AggFn::Increase)
+            && !matches!(self.source, "metrics" | "metrics_histogram")
+        {
+            return Err(IrError::IllegalStage {
+                stage: "aggregate".to_string(),
+                reason: format!(
+                    "'{}' is only valid on the metrics/metrics_histogram sources, not '{}'",
+                    a.func.as_str(),
+                    self.source
+                ),
+            });
+        }
         if a.func.min_ir_version() > self.ir_version {
             return Err(IrError::Invalid(format!(
                 "aggregate '{}' requires irVersion {} (document declares {})",
@@ -756,7 +779,13 @@ impl InferCtx<'_> {
         // inherent lack of a declared type earns the pass.
         if matches!(
             a.func,
-            AggFn::Sum | AggFn::Avg | AggFn::Quantile | AggFn::Stddev | AggFn::Stdvar
+            AggFn::Sum
+                | AggFn::Avg
+                | AggFn::Quantile
+                | AggFn::Stddev
+                | AggFn::Stdvar
+                | AggFn::Rate
+                | AggFn::Increase
         ) && let Some(t) = &of_type
             && !is_numeric(t)
             && !(*t == ValueType::String && of_advisory)
@@ -769,7 +798,12 @@ impl InferCtx<'_> {
 
         let out_ty = match a.func {
             AggFn::Count => ValueType::Int64,
-            AggFn::Avg | AggFn::Quantile | AggFn::Stddev | AggFn::Stdvar => ValueType::Float64,
+            AggFn::Avg
+            | AggFn::Quantile
+            | AggFn::Stddev
+            | AggFn::Stdvar
+            | AggFn::Rate
+            | AggFn::Increase => ValueType::Float64,
             AggFn::Sum | AggFn::Min | AggFn::Max | AggFn::First | AggFn::Last => {
                 of_type.unwrap_or(ValueType::Float64)
             }
@@ -2084,13 +2118,13 @@ mod tests {
 
     #[test]
     fn an_unsupported_version_still_reports_the_range() {
-        let err = validate_json(describe_doc(6, json!({ "target": "fields" }))).unwrap_err();
+        let err = validate_json(describe_doc(7, json!({ "target": "fields" }))).unwrap_err();
         assert!(
             matches!(
                 err,
                 IrError::UnsupportedVersion {
-                    found: 6,
-                    max: 5,
+                    found: 7,
+                    max: 6,
                     ..
                 }
             ),
@@ -2221,6 +2255,99 @@ mod tests {
         assert!(
             validate_describe(&doc, &SourceRegistry::core()).is_err(),
             "only introspection documents take the discovery path"
+        );
+    }
+
+    // Task 4.1 — counter rate (D4).
+
+    fn metrics_resolver() -> InMemoryResolver {
+        InMemoryResolver::new()
+            .with_column("metrics", "metric.name", "metric_name", ValueType::String)
+            .with_column("metrics", "metric.value", "value", ValueType::Float64)
+            .with_column("metrics", "service.name", "service_name", ValueType::String)
+    }
+
+    fn rate_doc(func: &str, source: &str, step: Option<&str>) -> serde_json::Value {
+        let mut agg = json!({
+            "by": ["metric.name"],
+            "aggs": [{ "fn": func, "of": "metric.value", "as": "r" }]
+        });
+        if let Some(step) = step {
+            agg["step"] = json!(step);
+        }
+        json!({
+            "irVersion": 6, "from": source, "range": { "from": "now-1h", "to": "now" },
+            "result": "series",
+            "pipeline": [{ "aggregate": agg }]
+        })
+    }
+
+    #[test]
+    fn rate_and_increase_over_metrics_with_step_infer_series() {
+        for func in ["rate", "increase"] {
+            let v = validate_json_with(rate_doc(func, "metrics", Some("30s")), &metrics_resolver())
+                .unwrap();
+            match v.terminal {
+                RelationType::Series(s) => {
+                    assert_eq!(s.value, ValueType::Float64);
+                    assert_eq!(s.step_ns, 30_000_000_000);
+                }
+                other => panic!("{func}: expected series, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn rate_requires_step() {
+        let err =
+            validate_json_with(rate_doc("rate", "metrics", None), &metrics_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("requires `step`")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rate_rejects_non_metric_sources() {
+        let mut d = rate_doc("rate", "logs", Some("30s"));
+        // `logs_resolver` has no `metric.name`; use an existing numeric field
+        // so the source check, not field resolution, is what fires.
+        d["pipeline"][0]["aggregate"]["by"] = json!([]);
+        d["pipeline"][0]["aggregate"]["aggs"][0]["of"] = json!("severity_number");
+        let err = validate_json_with(d, &logs_resolver()).unwrap_err();
+        match &err {
+            IrError::IllegalStage { stage, .. } => assert_eq!(stage, "aggregate"),
+            other => panic!("got {other:?}"),
+        }
+        assert!(format!("{err}").contains("metrics"), "{err}");
+    }
+
+    #[test]
+    fn rate_on_metrics_histogram_is_accepted_by_source_check() {
+        // The source restriction passes for metrics_histogram; `of` still
+        // needs a numeric field, which `metric.value` is not on this source
+        // (only bucket columns), so this exercises the source gate alone by
+        // aggregating a numeric column that does exist.
+        let resolver = metrics_histogram_resolver().with_column(
+            "metrics_histogram",
+            "count",
+            "count",
+            ValueType::Int64,
+        );
+        let mut d = rate_doc("increase", "metrics_histogram", Some("1m"));
+        d["pipeline"][0]["aggregate"]["aggs"][0]["of"] = json!("count");
+        let v = validate_json_with(d, &resolver).unwrap();
+        assert!(matches!(v.terminal, RelationType::Series(_)));
+    }
+
+    #[test]
+    fn rate_requires_ir_version_6() {
+        let mut d = rate_doc("rate", "metrics", Some("30s"));
+        d["irVersion"] = json!(5);
+        let err = validate_json_with(d, &metrics_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 6")),
+            "got {err:?}"
         );
     }
 }
