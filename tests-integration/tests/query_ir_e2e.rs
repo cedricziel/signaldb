@@ -135,8 +135,6 @@ pub(crate) async fn setup() -> TestServices {
     let storage_path = temp_dir.path().join("storage");
     std::fs::create_dir_all(&storage_path).unwrap();
     let storage_dsn = format!("file://{}", storage_path.display());
-    let object_store =
-        common::storage::create_object_store_from_dsn(&storage_dsn).expect("object store");
 
     let catalog_db_path = temp_dir.path().join("catalog.db");
     let catalog_dsn = format!("sqlite://{}", catalog_db_path.display());
@@ -191,7 +189,6 @@ pub(crate) async fn setup() -> TestServices {
     );
     let writer_service = IcebergWriterFlightService::new(
         catalog_manager.clone(),
-        object_store,
         writer_wal,
         &common::config::WriterConfig::default(),
     );

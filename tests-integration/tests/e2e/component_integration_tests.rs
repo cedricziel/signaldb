@@ -258,7 +258,6 @@ async fn test_acceptor_writer_flow() {
     precreate_namespace(&writer_catalog_manager).await;
     let writer_service = IcebergWriterFlightService::new(
         writer_catalog_manager,
-        object_store.clone(),
         writer_wal.clone(),
         &common::config::WriterConfig::default(),
     );
@@ -637,7 +636,6 @@ async fn test_direct_acceptor_writer_flight() {
     precreate_namespace(&writer_catalog_manager).await;
     let writer_service = IcebergWriterFlightService::new(
         writer_catalog_manager,
-        object_store.clone(),
         writer_wal.clone(),
         &common::config::WriterConfig::default(),
     );
