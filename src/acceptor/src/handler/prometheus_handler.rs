@@ -41,12 +41,6 @@ use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequ
 use super::WalManager;
 use super::forward::forward_batch_to_writer;
 
-/// Content type for Prometheus remote_write requests
-pub const PROMETHEUS_CONTENT_TYPE: &str = "application/x-protobuf";
-
-/// Content encoding for Prometheus remote_write (snappy compression)
-pub const PROMETHEUS_CONTENT_ENCODING: &str = "snappy";
-
 /// Header indicating remote_write protocol version
 pub const HEADER_REMOTE_WRITE_VERSION: &str = "X-Prometheus-Remote-Write-Version";
 

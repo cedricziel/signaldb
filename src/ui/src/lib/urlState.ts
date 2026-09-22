@@ -6,7 +6,12 @@ import { useCallback } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 import { DEFAULT_SCALE, isScale, type Scale } from "../features/explore/scale";
 import { DEFAULT_ENTITY_TYPE } from "../features/catalog/entityTypes";
-import { filterFromParam, filterToParam, type LabelFilter } from "./filters";
+import {
+  filterFromParam,
+  filterToParam,
+  logFilterFromParam,
+  type LabelFilter,
+} from "./filters";
 import {
   traceFilterFromParam,
   traceFilterToParam,
@@ -55,15 +60,13 @@ export interface ExploreState {
    * the same window, so a shared link must carry it.
    */
   grain: GroupGrain;
-  /** PromQL expression for the metrics view. */
-  promql: string;
   /**
-   * The metrics builder's single query, JSON-encoded, when the last Run was
-   * within the minimal metrics IR source's coverage (see api/metricsIr.ts) —
-   * "" when the last run used the PromQL escape hatch (or a builder query
-   * outside that coverage, which falls back to `promql` too). Only one of
-   * `metricQuery`/`promql` is ever set at a time, so a reload can tell which
-   * path produced the chart on screen.
+   * The metrics builder's queries and formula, JSON-encoded, as of the last
+   * Run — "" before the first run. Everything the builder can express now
+   * compiles to the Query IR (see api/ir/metrics.ts), so this is the only
+   * metrics-view query state; there is no PromQL escape hatch. A bookmarked
+   * `?promql=` link from before this change is not upgraded — it now starts
+   * from an empty builder, same as any other unrecognized param.
    */
   metricQuery: string;
   /** Profile type id (e.g. `cpu:nanoseconds`) — "" auto-picks the first. */
@@ -134,7 +137,6 @@ export const DEFAULT_STATE: ExploreState = {
   group: "",
   groupBy: DEFAULT_GROUP_BY,
   grain: DEFAULT_GRAIN,
-  promql: "",
   metricQuery: "",
   querySource: "logs",
   queryResult: "rows",
@@ -279,7 +281,7 @@ export function parseExploreState(search: string): ExploreState {
     range: parseRangeParam(p.get("range")),
     filters: p
       .getAll("f")
-      .map(filterFromParam)
+      .map(logFilterFromParam)
       .filter((f): f is LabelFilter => f !== null),
     search: p.get("q") ?? "",
     raw: p.get("raw") ?? "",
@@ -295,16 +297,12 @@ export function parseExploreState(search: string): ExploreState {
     group: p.get("group") ?? "",
     groupBy: p.get("groupBy") || DEFAULT_GROUP_BY,
     grain: grainFromParam(p.get("grain")),
-    // Only one of `promql`/`metricQuery` is ever kept (see MetricQuery's own
-    // doc comment): a hand-edited or stale link carrying both is not a state
-    // the app itself produces, so `mq` wins and `promql` is dropped rather
-    // than resurrecting a PromQL run alongside a builder one.
-    //
-    // Defensive JSON parsing of the encoded MetricQuery happens where it's
-    // consumed (features/metrics/MetricsView.tsx's parseMetricQuery) — a
+    // Defensive JSON parsing of the encoded builder state happens where it's
+    // consumed (features/metrics/metricQuery.ts's parseBuilderState) — a
     // malformed value degrades to an unseeded builder there, same as any
-    // other malformed param degrading to its default here.
-    promql: p.get("mq") ? "" : (p.get("promql") ?? ""),
+    // other malformed param degrading to its default here. A legacy
+    // `?promql=` link is simply unrecognized now, same as any other dropped
+    // param.
     metricQuery: p.get("mq") ?? "",
     querySource: querySourceFromParam(p.get("qsrc")),
     queryResult: queryResultFromParam(p.get("qres")),
@@ -383,11 +381,7 @@ export function buildSearch(state: ExploreState): string {
   if (state.group) p.set("group", state.group);
   if (state.groupBy !== DEFAULT_GROUP_BY) p.set("groupBy", state.groupBy);
   if (state.grain !== DEFAULT_GRAIN) p.set("grain", state.grain);
-  // Only one of `promql`/`metricQuery` is ever serialized, mirroring
-  // `parseExploreState`'s own precedence — `mq` wins when a caller somehow
-  // holds both.
   if (state.metricQuery) p.set("mq", state.metricQuery);
-  else if (state.promql) p.set("promql", state.promql);
   if (state.querySource !== DEFAULT_STATE.querySource) {
     p.set("qsrc", state.querySource);
   }

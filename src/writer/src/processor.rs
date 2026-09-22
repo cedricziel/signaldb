@@ -514,12 +514,10 @@ impl WalProcessor {
     /// costs metadata size, and losing the guarded commit to a concurrent
     /// writer is the guard working.
     ///
-    /// Known scope limit: a table that no live writer commits to any more —
-    /// a tenant that stopped reporting entirely — is never swept by anyone,
-    /// so its markers stay. Growth is bounded for active tables, which is
-    /// where markers actually accumulate; sweeping the dormant remainder
-    /// needs a pass that iterates the whole table universe (the signal-table
-    /// reconciler already does), tracked separately.
+    /// A table that no live writer commits to any more — a tenant that
+    /// stopped reporting entirely — is never swept here; the signal-table
+    /// reconciler covers it instead, since it already walks every registered
+    /// tenant/dataset table on its own interval (#1345).
     async fn retire_stale_markers_if_due(&self) {
         if self.wal_marker_retention.is_zero() {
             return;

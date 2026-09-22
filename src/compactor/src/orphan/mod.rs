@@ -56,4 +56,4 @@ pub mod metrics;
 pub use cleaner::{DeletionResult, OrphanCleaner};
 pub use config::OrphanCleanupConfig;
 pub use detector::{OrphanCandidate, OrphanDetector};
-pub use metrics::{OrphanMetrics, SkipReason};
+pub use metrics::OrphanMetrics;

@@ -554,7 +554,15 @@ logs = ["team", "region"]
   own still requires schema evolution (`add_label_columns`), which nothing
   triggers automatically for `[schema.materialized_labels]` (see below) —
   reconciliation makes a config-set change _safe_, not a substitute for
-  actually promoting the new key.
+  actually promoting the new key. Matching is by provenance, not name: each
+  materialized `label_<key>` column carries its origin key in Arrow field
+  metadata (`LABEL_ORIGIN_KEY_METADATA`, `schema_transform.rs`), stamped
+  when the column is built and surviving the Arrow IPC round trip WAL
+  persistence uses, so `LabelColumnReconciliation::apply` resolves a
+  batch's columns by that stamped key rather than by name — immune to a
+  column-name collision between config generations (#1534). A WAL entry
+  written before this change carries no such metadata and falls back to
+  the original name-based guard described above.
 
 - **Population** (writer): each row's value is taken from its **resource**,
   then **scope**, then **record** attributes (first non-null wins); the value

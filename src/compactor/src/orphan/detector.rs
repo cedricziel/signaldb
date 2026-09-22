@@ -34,7 +34,7 @@
 
 use crate::iceberg::{LiveFileSet, ManifestReader};
 use crate::orphan::config::OrphanCleanupConfig;
-use crate::orphan::metrics::{OrphanMetrics, SkipReason};
+use crate::orphan::metrics::{OrphanMetrics, SKIP_REASON_LIVE_FILES_THRESHOLD_EXCEEDED};
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use common::catalog_manager::CatalogManager;
@@ -232,13 +232,12 @@ impl OrphanDetector {
                     signaldb.table = %table_name,
                     signaldb.job.estimated_live_files = estimated_live_files as i64,
                     signaldb.job.live_files_threshold = self.config.max_live_files_threshold as i64,
-                    signaldb.job.skip_reason = SkipReason::LiveFilesThresholdExceeded.as_str(),
+                    signaldb.job.skip_reason = SKIP_REASON_LIVE_FILES_THRESHOLD_EXCEEDED,
                     "Skipping orphan cleanup: estimated live file count exceeds threshold. \
                      Run snapshot expiration first to reduce file counts, or raise \
                      max_live_files_threshold if memory allows."
                 );
-                self.metrics
-                    .record_cleanup_skipped(SkipReason::LiveFilesThresholdExceeded);
+                self.metrics.record_cleanup_skipped();
                 return Ok(None);
             }
         }

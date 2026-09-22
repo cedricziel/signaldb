@@ -1,11 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
-import {
-  pyroscopeLabelNames,
-  pyroscopeLabelValues,
-  pyroscopeProfileTypes,
-  pyroscopeServices,
-} from "../../api/pyroscope";
+import { fields, profileTypes, values } from "../../api/ir/discovery";
 import { fetchFlamegraph, fetchFlamegraphById } from "../../api/profilesIr";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
@@ -18,7 +13,7 @@ import {
 } from "../../lib/time";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
 import { SkeletonLines } from "../explore/Skeleton";
-import { TimeRangePicker } from "../shell/TimeRangePicker";
+import { TimeRangePicker } from "../../components/TimeRangePicker";
 import { FlameGraph, FlamePane } from "./FlameGraph";
 import { decodeFlamebearer } from "../../lib/flamebearer";
 import "./profiles.css";
@@ -45,24 +40,33 @@ function useProfileSelectors(state: ExploreState) {
   const rangeKey = rangeScopeKey(state);
 
   const typesQuery = useQuery({
-    queryKey: ["pyro-types", rangeKey],
-    queryFn: () => pyroscopeProfileTypes(resolveRange(state.range, Date.now())),
+    queryKey: ["ir-profile-types", rangeKey],
+    queryFn: () => profileTypes(resolveRange(state.range, Date.now())),
   });
   const servicesQuery = useQuery({
-    queryKey: ["pyro-services", rangeKey],
-    queryFn: () => pyroscopeServices(resolveRange(state.range, Date.now())),
+    queryKey: ["ir-profile-services", rangeKey],
+    queryFn: () =>
+      values(
+        "profiles",
+        "service.name",
+        resolveRange(state.range, Date.now()),
+      ).then((vs) => vs.map((v) => v.value)),
   });
   const labelNamesQuery = useQuery({
-    queryKey: ["pyro-labelnames", rangeKey],
-    queryFn: () => pyroscopeLabelNames(resolveRange(state.range, Date.now())),
+    queryKey: ["ir-profile-labelnames", rangeKey],
+    queryFn: () =>
+      fields("profiles", resolveRange(state.range, Date.now())).then((fs) =>
+        fs.map((f) => f.name).filter((n) => n !== "service.name"),
+      ),
   });
   const labelValuesQuery = useQuery({
-    queryKey: ["pyro-labelvalues", state.profileMatcherLabel, rangeKey],
+    queryKey: ["ir-profile-labelvalues", state.profileMatcherLabel, rangeKey],
     queryFn: () =>
-      pyroscopeLabelValues(
+      values(
+        "profiles",
         state.profileMatcherLabel,
         resolveRange(state.range, Date.now()),
-      ),
+      ).then((vs) => vs.map((v) => v.value)),
     enabled: state.profileMatcherLabel !== "",
   });
 
@@ -455,7 +459,7 @@ function SingleProfileView({ state, update }: Props) {
   // key would otherwise mislabel a sample type this tenant never registered.
   const typesQuery = useQuery({
     queryKey: ["pyro-types-for-unit", rangeScopeKey(state)],
-    queryFn: () => pyroscopeProfileTypes(resolveRange(range, Date.now())),
+    queryFn: () => profileTypes(resolveRange(range, Date.now())),
     enabled: profileUnit === "" && profileType !== "",
   });
   const unit =
@@ -483,9 +487,7 @@ function SingleProfileView({ state, update }: Props) {
       {renderQuery.isFetching && !renderQuery.data && (
         <SkeletonLines lines={12} />
       )}
-      {renderQuery.data && (
-        <FlameGraph render={renderQuery.data} unit={unit} />
-      )}
+      {renderQuery.data && <FlameGraph render={renderQuery.data} unit={unit} />}
     </div>
   );
 }

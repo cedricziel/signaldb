@@ -77,6 +77,22 @@
   filter: brightness(1.06);
 }
 
+.login-demo {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.login-demo-button {
+  width: 100%;
+}
+
+.login-demo-hint {
+  font-size: 11px;
+  color: var(--faint);
+}
+
 .login-divider {
   display: flex;
   align-items: center;

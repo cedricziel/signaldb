@@ -620,6 +620,16 @@ export type DatasetTables = {
 };
 
 /**
+ * The demo account's credentials, returned by `login_config` only when
+ * `[demo].enabled` is true (change: demo-mode) so the login page can offer
+ * an "Explore the demo" shortcut.
+ */
+export type DemoLoginConfig = {
+    password: string;
+    username: string;
+};
+
+/**
  * Deprecation info in resolved form.
  */
 export type DeprecatedInfo = {
@@ -1096,6 +1106,7 @@ export type LogicalType = 'string' | 'bool' | 'int64' | 'float64' | 'timestamp_n
  * may offer. `oidc` is `null` until an OIDC provider is configured.
  */
 export type LoginConfigResponse = {
+    demo: null | DemoLoginConfig;
     oidc: null | OidcLoginConfig;
     password_enabled: boolean;
 };
@@ -1356,6 +1367,25 @@ export type MetricSearchResponse = {
 };
 
 /**
+ * A multi-query document (D5): several named IR queries — each required to
+ * declare `result: "series"` — plus formulas evaluated over their results
+ * after every inner query has run. Series join on an identical label set
+ * and timestamp; a formula input missing a series present in another
+ * contributes nothing to the join, and a zero divisor drops the point,
+ * rather than either erroring.
+ */
+export type MultiQueryIrRequest = {
+    formulas: Array<QueryFormula>;
+    queries: {
+        [key: string]: QueryIrRequest;
+    };
+    /**
+     * Always `"series"` — a formula document has no other shape.
+     */
+    result: string;
+};
+
+/**
  * A single-sign-on provider offered by the login-configuration probe.
  */
 export type OidcLoginConfig = {
@@ -1515,6 +1545,20 @@ export type QualifiedEntityRole = {
 };
 
 /**
+ * One named formula in a [`MultiQueryIrRequest`] (D5): arithmetic
+ * (`+ - * /`, numeric constants, parentheses) over the request's own query
+ * names, e.g. `"errors / total"`.
+ */
+export type QueryFormula = {
+    expr: string;
+    /**
+     * The formula's identity: tags each output series' `labels` under the
+     * `formula` key, so a request with several formulas stays distinguishable.
+     */
+    name: string;
+};
+
+/**
  * A versioned Query IR request document.
  *
  * The `pipeline` stages are opaque JSON objects at the HTTP boundary — the
@@ -1547,6 +1591,14 @@ export type QueryIrRequest = {
      */
     result: string;
 };
+
+/**
+ * The `POST /api/v1/query` request body: either a single IR document or a
+ * [`MultiQueryIrRequest`], discriminated by the presence of `queries` — a
+ * document without it is a single [`QueryIrRequest`], so an ordinary
+ * request needs no wrapper key.
+ */
+export type QueryIrRequestBody = MultiQueryIrRequest | QueryIrRequest;
 
 /**
  * The single canonical response contract. `result` discriminates which fields
@@ -1746,6 +1798,12 @@ export type SessionUser = {
     display_name?: string | null;
     email: string;
     id: string;
+    /**
+     * True when this is the `[demo]` read-only account (change:
+     * demo-mode), so the UI can show a "read-only" badge and hide
+     * mutating navigation without hardcoding the demo username.
+     */
+    is_demo: boolean;
     is_instance_admin: boolean;
 };
 
@@ -4266,7 +4324,7 @@ export type ProcessorsValidateResponses = {
 export type ProcessorsValidateResponse = ProcessorsValidateResponses[keyof ProcessorsValidateResponses];
 
 export type QueryIrData = {
-    body: QueryIrRequest;
+    body: QueryIrRequestBody;
     path?: never;
     query?: never;
     url: '/api/v1/query';
@@ -4281,6 +4339,10 @@ export type QueryIrErrors = {
      * Missing or invalid credentials
      */
     401: unknown;
+    /**
+     * Missing read scope for a queried source
+     */
+    403: unknown;
     /**
      * The JSON envelope every query-surface error responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a

@@ -17,13 +17,28 @@ sources:
 SignalDB ships a built-in explore UI for the service catalog, logs, traces,
 metrics, profiles, and errors, plus a native [Query IR](querying-ir.md) tab,
 served by the router at its **root** (`http://<router>:3000/`, as a SPA
-fallback behind the API routes). The logs tab consumes the Loki-compatible
-API that Grafana uses, and the metrics tab the Prometheus-compatible one, so
-what they show is equally queryable from Grafana — with one exception: a
-single builder row with no range function and no formula runs on the Query IR
-(see [Building metric queries](#building-metric-queries)). The other tabs read
-their data through the Query IR; only their attribute and label pickers still
-use the Tempo and Pyroscope discovery endpoints. It also hosts the OAuth
+fallback behind the API routes). The logs tab reads rows, its volume
+histogram, and its field/value pickers through the Query IR — the field
+sidebar and the add-filter chip's key/value boxes come from the IR's
+`describe` stage ([Discovery](querying-ir.md#discovery--what-can-i-query)),
+not the Loki-compatible API, so a bookmarked URL from before this only
+resolves its two Loki-spelled chips (`level`, `service_name`) to their IR
+equivalents (`severity_text`, `service.name`) on load. The traces tab's facet
+key picker is likewise `describe: fields` on `traces`, replacing the Tempo
+tag-name endpoint, and trace search itself (the list, the group table, the
+volume chart) is a Query IR read on `traces` — root spans, filtered by the
+same `where` tree the facet chips compile to. The metrics builder's metric,
+label, and value pickers are `describe: metricNames`/`fields`/`values` on
+`metrics`, with per-label cardinality read off the field's own
+`cardinality` estimate; running the query itself is a Query IR read too —
+every builder row, including `rate`/`increase` and multi-query formulas,
+compiles to the IR rather than PromQL (see [Building metric
+queries](#building-metric-queries)). The profiles tab's
+type/service/attribute pickers are Query IR discovery too: profile types are
+an `aggregate` by sample/period type and unit on `profiles`, services and
+attribute keys/values are `describe: fields`/`values`. Any `describe:
+values` answer that isn't a free, exact, declared set (a statistics sketch
+or a sampled scan) is marked "partial list" in the picker. It also hosts the OAuth
 connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
 
 ![Explore UI logs view: virtualized log list with level colors, a volume histogram with bucket-width and log-scale controls, and the fields sidebar](../assets/screenshots/explore-logs.png)
@@ -33,14 +48,19 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
 - **Catalog** — a service/infrastructure catalog discovered by querying the
   ingested telemetry for OTel semantic-convention resource attributes, not
   from a fixed inventory. See [The catalog](#the-catalog).
-- **Logs** — filter chips compiled to LogQL (with an "edit as text" escape
-  hatch), a per-level volume histogram, a virtualized log list with
-  per-attribute filter/exclude actions, a fields sidebar, and live tail.
-  The add-filter key box suggests schema-registry keys; picking a registry
-  key filters on that key as spelled, dots included, and a hand-typed key
-  that is not a valid label name (letters, digits, `_` and `.`) disables
-  **Add** with an inline hint rather than failing silently. An expanded row
-  stays expanded while live tail prepends newer lines.
+- **Logs** — filter chips compiled to a Query IR `where` predicate tree, a
+  per-severity volume histogram (an IR `aggregate` on `severity_text` with
+  `step`), a virtualized log list with per-attribute filter/exclude actions,
+  a fields sidebar, and live tail (the same IR queries, polled). There is no
+  raw-query editor for logs — the [Query IR tab](querying-ir.md) is the text
+  escape hatch. The add-filter key box suggests schema-registry keys; picking
+  a registry key filters on that key as spelled, dots included, and a
+  hand-typed key that is not a valid label name (letters, digits, `_` and
+  `.`) disables **Add** with an inline hint rather than failing silently. An
+  expanded row stays expanded while live tail prepends newer lines. The
+  expanded row shows the log's resource, scope, and log attributes as
+  separate groups, matching how the IR keeps those OTel scopes apart — the
+  same key can appear in more than one group.
 - **Traces** — a facet sidebar and a span-volume chart stacked by span status
   sit above a group-first view: recent traces arrive grouped by root
   span name (or by service, any observed root-span/resource attribute, or
@@ -81,9 +101,10 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   the copy button always copies the untruncated value. Open-by-ID works
   from any level.
 - **Metrics** — a visual query builder (metric picker, tag filters,
-  aggregation, and range functions, all populated from label metadata) with
-  multi-query formulas for ratios, plus a "PromQL" tab as the raw escape
-  hatch. See [Building metric queries](#building-metric-queries).
+  aggregation, and the `rate`/`increase` counter-rate functions, all
+  populated from label metadata) with multi-query formulas for ratios —
+  every builder row compiles to the [Query IR](querying-ir.md), with no raw
+  PromQL editor. See [Building metric queries](#building-metric-queries).
 - **Profiles** — a flame graph of stored profiles, filtered by service,
   profile type, and (optionally) any discovered attribute. Click a frame to
   zoom into its subtree; a breadcrumb (`root › ... › frame`) tracks the path
@@ -156,10 +177,12 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   `/traces`, `/metrics`, `/profiles`, `/query`), with time range, filters, and
   selection in query parameters alongside it — so views are separately
   navigable and can be bookmarked, shared, and revisited with the browser
-  back/forward buttons. A metrics builder run is carried as `?mq=` (the
-  builder query itself) rather than only as compiled PromQL, so reloading or
-  sharing the link restores the builder and keeps a dotted OTel metric name
-  on the Query IR path. When Back or Forward re-seeds the builder from the
+  back/forward buttons. A metrics builder run is carried as `?mq=` — the
+  builder's rows and formula, JSON-encoded — so reloading or sharing the link
+  restores the builder and re-runs the same IR query, dotted OTel metric
+  names included. (A link from before the builder moved onto the IR carried
+  a raw `?promql=` string instead; that param is no longer read.) When Back
+  or Forward re-seeds the builder from the
   URL, the formula box is cleared with it, so a formula never refers to
   query letters that are no longer there. The tenant/dataset context rides along as
   `?tenant=&dataset=`; links that omit it (the user menu, deep links inside
@@ -393,32 +416,30 @@ detail line and highlight search still operate on the real name.
 
 ### Reading a log line
 
-Selecting a log line expands it. **This line** comes first: the trace
-context (`trace_id`, `span_id`; the `trace_id` row and the "View trace"
-button both open the trace) and the attributes that describe the record
-itself (`code.*`, `http.*`, `event.name`, an application's own keys).
-Attributes appear per line, so two lines in the same stream show their own
-values rather than a shared set. Below it, **Resource · stream** holds what
-describes the emitter rather than the line — the stream labels
-(`service_name`, `level`) and every attribute the
-[schema registry](schema-registry.md) ties to an entity (`service.*`,
-`host.*`, `k8s.*`, `cloud.*`, `container.*`, `telemetry.sdk.*`, …), the
-same thirty-odd values on every line of the stream — collapsed behind a
-one-line summary (service, namespace, environment, level, pod, host,
-region, image, then `+N more`); expand it for the full table. The split is
-the registry's, not the wire format's: until the registry answers, every
-attribute sits under **This line**, and a key no registry knows stays
-there.
+Selecting a log line expands it into the three attribute scopes the Query IR
+keeps apart (see [Addressing an attribute scope](querying-ir.md#addressing-an-attribute-scope)),
+in this order:
 
-Every row offers **+ filter** and **− exclude**, compiled to a LogQL matcher
-on the attribute's own key (see the [LogQL reference](logql-reference.md)'s
-label-resolution table).
+- **This line** — the trace context (`trace_id`, `span_id`; the `trace_id`
+  row and the "View trace" button both open the trace) and the log record's
+  own attributes (`code.*`, `http.*`, `event.name`, an application's own
+  keys). Always shown, even when empty.
+- **Scope** — the instrumentation scope's attributes, when the record
+  carried any; omitted otherwise.
+- **Resource** — `service.name` plus every resource attribute
+  (`service.*`, `host.*`, `k8s.*`, `cloud.*`, `container.*`,
+  `telemetry.sdk.*`, …), the same values on every line the resource
+  emitted — collapsed behind a one-line summary (service, namespace,
+  environment, pod, host, region, image, then `+N more`); expand it for the
+  full table.
 
-One limitation to know about: the Loki wire format carries these as one flat
-map, so the three OTel attribute scopes — resource, instrumentation scope, and
-the log record — are merged in this view, and instrumentation-scope attributes
-are not shown at all. Storage keeps all three separate; see the
-[Query IR reference](querying-ir.md) to query them individually today.
+The same key can appear in more than one group with a different value —
+each group shows its own copy rather than merging them, so a
+`service.name` log attribute and the resource's `service.name` are both
+visible.
+
+Every row offers **+ filter** and **− exclude**, compiled to an IR `where`
+predicate on the attribute's own key.
 
 ### What an attribute key means
 
@@ -474,14 +495,15 @@ table shows. Filters live in the URL, so a narrowed view is shareable.
 
 Facets currently cover `service.name`, `span.name`, `status`, and `span.kind`,
 plus a curated set of common resource/span identity attributes (`host.name`,
-the `k8s.*` fields, `db.namespace`, …) — a defined TraceQL selector and
-quoting rule per field, not an enumeration limit; a facet for another
+the `k8s.*` fields, `db.namespace`, …) — a defined logical field per facet,
+not an enumeration limit; a facet for another
 attribute is a UI addition, not a backend one. To slice by any other
 attribute today, use the "Group by attribute" custom dimension field below
 the group table: it now suggests the attribute keys actually observed in
-the current window (merged with schema-registry hits), backed by the same
-tag-discovery API that also powers `/api/search/tags` and the MCP/CLI
-`discover` surfaces ([#1073](https://github.com/cedricziel/signaldb/issues/1073)).
+the current window (merged with schema-registry hits), backed by the Query
+IR's `describe: fields` on `traces` — the same discovery stage that
+replaced `/api/search/tags`
+([#1073](https://github.com/cedricziel/signaldb/issues/1073)).
 
 Both the facet sidebar and the traces' span-detail panel are resizable: drag
 the handle on the sidebar's trailing edge. The facet/field sidebar's width is
@@ -596,32 +618,47 @@ thin band rather than rounding away.
 
 ![Explore UI trace waterfall with span details and a link to correlated logs](../assets/screenshots/explore-traces.png)
 
-![Explore UI metrics view charting a PromQL query, one series per service, with the Builder and PromQL tabs](../assets/screenshots/explore-metrics.png)
+![Explore UI metrics view charting a builder query, one series per service](../assets/screenshots/explore-metrics.png)
 
 ![Explore UI profiles flame graph with the highlight box narrowing a CPU profile to SignalDB's own frames](../assets/screenshots/explore-profiles.png)
 
 ## Building metric queries
 
-The metrics view opens on a **visual builder** so you don't have to hand-write
-PromQL. A query row reads left to right as a sentence:
+The metrics view is a **visual builder** over the [Query IR](querying-ir.md)
+`metrics` source — there is no raw-query editor here (for hand-written
+queries against any source, including `metrics`, use the [Query IR
+tab](querying-ir.md), or query PromQL-compatible tools like Grafana directly
+against [`/prometheus/api/v1`](querying-promql.md)). A query row reads left
+to right as a sentence:
 
 ```
-[ a ]  metric ▾   from ⟨ filters ⟩   avg by ⟨ group ⟩   function ▾
+[ a ]  metric ▾   from ⟨ filters ⟩   avg by ⟨ group ⟩   function ▾   window   across ▾
 ```
 
-- **Metric** — type or pick a metric name; suggestions come from the
-  Prometheus `__name__` label for the current time range.
+- **Metric** — type or pick a metric name; suggestions come from the Query
+  IR's discovery stage (`describe: metricNames` on `metrics`) for the
+  current time range.
 - **from** — add tag filters (`+ filter`). Label names and their values are
-  suggested from the metadata endpoints, so you filter on what exists rather
-  than guessing. Each filter has an operator (`=`, `!=`, `=~`, `!~`).
+  suggested from the same Query IR discovery stage (`describe:
+fields`/`values`), so you filter on what exists rather than guessing. Each
+  filter has an operator (`=`, `!=`, `=~`, `!~`).
 - **aggregation** — choose a space aggregation (`sum`/`avg`/`min`/`max`/
   `count`) and an optional comma-separated **group by** to get one series per
   tag value.
-- **function** — an optional range function (`rate`, `irate`, `increase`, or
-  an `*_over_time` rollup) with a lookback window (default `5m`).
+- **function** — an optional per-series range function: `rate`/`increase`
+  (see [Counter rate](querying-ir.md#counter-rate-rateincrease-v6)), `irate`,
+  or `avg_over_time`/`min_over_time`/`max_over_time`/`sum_over_time`/
+  `count_over_time` (see
+  [More range functions](querying-ir.md#more-range-functions-across-and-window-v7)).
+- **window** — an optional lookback window (`5m`, `30s`, …) for the selected
+  function, independent of the chart's own step width. Left blank, it
+  defaults to the step, which is today's behaviour.
+- **across** — how the function's per-series values fold into each group
+  (`sum`/`avg`/`min`/`max`/`count`, default `sum`) — this is what `avg by
+(service) (rate(...))` needs.
 
-Labels are annotated with their approximate value count (from
-[`/label_stats`](querying-promql.md#label-cardinality)), and grouping by a
+Labels are annotated with their approximate value count (the `cardinality`
+estimate `describe: fields` reports for each one), and grouping by a
 high-cardinality label — one that would explode into thousands of series, like
 a pod or trace id — shows a `⚠` warning before you run it.
 
@@ -630,40 +667,27 @@ width, and the row wraps onto a second line once its parts no longer fit,
 so a long dotted metric name is neither clipped nor cut off without an
 ellipsis; each box also carries its full value as a title.
 
-A live preview shows the compiled PromQL beneath the row; **Run** charts it.
-Series take one of twelve colours in order; past twelve, the colours repeat
-with a different dash pattern, so two series sharing a hue are still
-distinguishable in the chart and the legend.
-For a single query row with no range function and no formula, Run queries the
-[Query IR](querying-ir.md) `metrics` source instead of PromQL — same builder,
-same preview, no visible difference, except a dotted OTel-native metric name
-(e.g. `signaldb.wal.entries_processed`) now works, where PromQL's grammar
-can't lex it. Adding a second query row (even without a formula), a range
-function, or a formula all fall back to PromQL, unchanged.
+**Run** compiles the row to an IR document and charts it — a dotted
+OTel-native metric name (e.g. `signaldb.wal.entries_processed`) works
+directly, where PromQL's grammar can't even lex it. Series take one of
+twelve colours in order; past twelve, the colours repeat with a different
+dash pattern, so two series sharing a hue are still distinguishable in the
+chart and the legend.
 
 ### Formulas across multiple queries
 
 Add more rows with **+ query** — each gets a letter (`a`, `b`, …) — and combine
-them in the **formula** box. Single letters are substituted with each query's
-compiled expression, so a ratio like an error rate is:
+them in the **formula** box, e.g. an error rate:
 
 ```
 formula:  (a / b) * 100
 ```
 
-with `a` = `sum(rate(http_server_errors[1m]))` and `b` =
-`sum(rate(http_server_requests[1m]))`. PromQL function names are left
-untouched. With no formula, the first row is charted on its own.
-
-### Editing the raw PromQL
-
-The **PromQL** tab is the escape hatch for anything the builder doesn't cover.
-Switching to it seeds the box with the query the builder compiled, so you can
-start visually and finish by hand. (Editing raw PromQL back into the builder
-is not supported yet.) The same PromQL runs unchanged in Grafana or against
-the [`/prometheus/api/v1` endpoints](querying-promql.md). Unlike the builder's
-default path, this tab always uses PromQL — a dotted OTel-native metric name
-typed here directly will still 400, same as any other PromQL client.
+A formula compiles the whole builder to a single multi-query IR request (see
+[Formulas](querying-ir.md#formulas-cross-query-arithmetic-d5)): every row
+becomes its own named query and the querier evaluates the expression over
+their joined results server-side, in one round trip. With no formula, the
+first row is charted on its own.
 
 ## Signing in
 
@@ -738,6 +762,10 @@ context — you stay on the page you are on (a signal view, the Schema hub,
 
 In development the Vite proxy injects credentials from `.env.local`
 instead, so no sign-in is needed.
+
+On a demo instance the login page also shows an **Explore the demo** button
+that signs in with the shared read-only account; the header then carries a
+"Demo · read-only" badge and settings and admin actions are hidden.
 
 ## User menu
 

@@ -442,6 +442,19 @@ mcp_url = "https://signaldb.example.com/mcp"     # falls back to [mcp.oauth].res
 
 Env: `SIGNALDB__PUBLIC__OTLP_GRPC_URL`, `SIGNALDB__PUBLIC__OTLP_HTTP_URL`, `SIGNALDB__PUBLIC__API_URL`, `SIGNALDB__PUBLIC__MCP_URL`. Trailing slashes are trimmed; `https` scheme marks the endpoint as TLS in the response.
 
+### Demo Mode
+
+```toml
+[demo]
+enabled = true
+tenant_id = "demo"        # required when enabled
+dataset_id = "otel-demo"  # optional
+username = "demo@example.com" # default
+password = "demo"         # default
+```
+
+Provisions a read-only (Viewer) login at startup, resetting its password and role each start; a router middleware 403s every non-read request from its session. See `docs/operations/demo-mode.md`.
+
 ### Self-Monitoring (Dogfooding)
 
 ```toml

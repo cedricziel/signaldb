@@ -16,6 +16,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use common::CatalogManager;
@@ -47,6 +48,11 @@ pub struct ReconcilePassSummary {
 pub struct TableReconciler {
     catalog_manager: Arc<CatalogManager>,
     ensured: Mutex<HashSet<(String, String, String)>>,
+    /// Retention for the dormant-table marker sweep (see
+    /// [`Self::retire_stale_markers`]). Zero disables it, same
+    /// convention as the writer's own commit-path sweep.
+    wal_marker_retention: Duration,
+    started_at: Instant,
 }
 
 impl TableReconciler {
@@ -54,7 +60,21 @@ impl TableReconciler {
         Self {
             catalog_manager,
             ensured: Mutex::new(HashSet::new()),
+            wal_marker_retention: Duration::ZERO,
+            started_at: Instant::now(),
         }
+    }
+
+    /// Enable the dormant-table marker sweep (#1345): every registered
+    /// tenant/dataset table is walked here regardless of whether any cached
+    /// [`crate::storage::IcebergTableWriter`] still commits to it, so a table
+    /// that has gone dormant still has its stale WAL idempotency markers
+    /// retired. Cadence comes from the reconcile pass itself
+    /// (`[writer].table_reconcile_interval`); there is no separate sweep
+    /// interval to throttle.
+    pub fn with_marker_retention(mut self, retention: Duration) -> Self {
+        self.wal_marker_retention = retention;
+        self
     }
 
     /// Run one pass over the tenant registry.
@@ -70,10 +90,13 @@ impl TableReconciler {
             .context("Failed to enumerate tenants for table reconciliation")?;
 
         let mut summary = ReconcilePassSummary::default();
+        let mut sweep_targets: Vec<(String, String, Vec<String>)> = Vec::new();
         for tenant in tenants {
             let expected = self.catalog_manager.enabled_table_names(&tenant.id);
 
             for dataset in datasets_of(&tenant) {
+                sweep_targets.push((tenant.id.clone(), dataset.clone(), expected.clone()));
+
                 if self.is_converged(&tenant.id, &dataset, &expected).await {
                     summary.datasets_skipped += 1;
                     continue;
@@ -96,7 +119,82 @@ impl TableReconciler {
             }
         }
 
+        self.retire_stale_markers(&sweep_targets).await;
+
         Ok(summary)
+    }
+
+    /// Retire stale WAL idempotency markers on every table named in
+    /// `targets`.
+    ///
+    /// This is the dormant-table counterpart to
+    /// `WalProcessor::retire_stale_markers_if_due`, which only sweeps tables
+    /// this process still has a cached [`crate::storage::IcebergTableWriter`]
+    /// for. A table nothing writes to anymore never gets a cached writer, so
+    /// it is only ever reachable here, by walking the tenant/dataset registry
+    /// directly (#1345).
+    ///
+    /// The reconciler holds no WAL writer id of its own to protect, so
+    /// nothing is exempted by id — only the retention/undated-marker rules in
+    /// `stale_marker_keys` decide what is safe to remove. Failures are
+    /// logged and never abort the pass; an unretired marker just stays until
+    /// the next one.
+    async fn retire_stale_markers(&self, targets: &[(String, String, Vec<String>)]) {
+        if self.wal_marker_retention.is_zero() {
+            return;
+        }
+
+        let process_outlived_retention = self.started_at.elapsed() >= self.wal_marker_retention;
+        let own_writer_ids = HashSet::new();
+        let mut retired = 0usize;
+
+        for (tenant_id, dataset_id, tables) in targets {
+            for table_name in tables {
+                let table = match self
+                    .catalog_manager
+                    .ensure_table(tenant_id, dataset_id, table_name)
+                    .await
+                {
+                    Ok(table) => table,
+                    Err(e) => {
+                        tracing::debug!(
+                            tenant_id = %tenant_id,
+                            dataset_id = %dataset_id,
+                            table = %table_name,
+                            error = %e,
+                            "Could not load table to sweep its WAL markers this pass"
+                        );
+                        continue;
+                    }
+                };
+
+                match crate::storage::retire_stale_markers_on(
+                    self.catalog_manager.catalog(),
+                    &table,
+                    &own_writer_ids,
+                    self.wal_marker_retention,
+                    process_outlived_retention,
+                )
+                .await
+                {
+                    Ok(count) => retired += count,
+                    Err(e) => tracing::debug!(
+                        tenant_id = %tenant_id,
+                        dataset_id = %dataset_id,
+                        table = %table_name,
+                        error = %e,
+                        "Could not retire stale WAL markers this pass; they stay until the next one"
+                    ),
+                }
+            }
+        }
+
+        if retired > 0 {
+            tracing::info!(
+                retired,
+                "Retired WAL idempotency markers from dormant tables during a reconcile pass"
+            );
+        }
     }
 
     /// Whether every enabled table for this dataset was already confirmed.
@@ -397,6 +495,60 @@ mod tests {
                 tables_failed: 0,
             },
             "a converged dataset must not be re-checked against the catalog"
+        );
+    }
+
+    // Issue #1345 — a table that no live `IcebergTableWriter` commits to
+    // anymore (a dormant tenant/dataset) is still walked by the reconciler,
+    // so its stale markers are retired even though nothing ever writes to it
+    // again.
+    #[tokio::test]
+    async fn retires_stale_markers_on_a_table_no_writer_commits_to_anymore() {
+        use crate::storage::WAL_MARKER_PREFIX;
+        use iceberg_rust::catalog::commit::{CommitTable, TableUpdate};
+
+        let manager = Arc::new(
+            CatalogManager::new(config_with(vec![config_tenant("dormant", &["production"])]))
+                .await
+                .unwrap(),
+        );
+
+        let retention = Duration::from_secs(30 * 24 * 3600);
+        let reconciler = TableReconciler::new(manager.clone()).with_marker_retention(retention);
+        reconciler.run_pass().await.unwrap();
+
+        let identifier = manager.build_table_identifier("dormant", "production", "traces");
+        let now = common::wal::unix_now_secs();
+        let ancient = now - 60 * 24 * 3600;
+        manager
+            .catalog()
+            .update_table(CommitTable {
+                identifier: identifier.clone(),
+                requirements: Vec::new(),
+                updates: vec![TableUpdate::SetProperties {
+                    updates: std::collections::HashMap::from([
+                        (format!("{WAL_MARKER_PREFIX}gone"), format!("t={ancient}:")),
+                        (format!("{WAL_MARKER_PREFIX}live"), format!("t={now}:")),
+                    ]),
+                }],
+            })
+            .await
+            .unwrap();
+
+        reconciler.run_pass().await.unwrap();
+
+        let tabular = manager.catalog().load_tabular(&identifier).await.unwrap();
+        let iceberg_rust::catalog::tabular::Tabular::Table(table) = tabular else {
+            panic!("expected a table");
+        };
+        let properties = &table.metadata().properties;
+        assert!(
+            !properties.contains_key(&format!("{WAL_MARKER_PREFIX}gone")),
+            "a stale marker on a dormant table must be retired by the reconciler"
+        );
+        assert!(
+            properties.contains_key(&format!("{WAL_MARKER_PREFIX}live")),
+            "a marker committed within the window is still idempotency evidence"
         );
     }
 

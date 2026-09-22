@@ -11,7 +11,7 @@ import type { HeatmapResult, QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 import { filterStages, type TraceFilter } from "../lib/traceFilters";
-import type { VolumeSeries } from "../features/explore/SignalHistogram";
+import type { VolumeSeries } from "../components/SignalHistogram";
 export type TraceLatencyHeatmap = HeatmapResult & {
   window: { start_ns: number; end_ns: number };
 };

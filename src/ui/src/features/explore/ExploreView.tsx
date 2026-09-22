@@ -1,6 +1,6 @@
 import { Link } from "react-router";
 import { RefreshButton } from "../shell/RefreshButton";
-import { TimeRangePicker } from "../shell/TimeRangePicker";
+import { TimeRangePicker } from "../../components/TimeRangePicker";
 import { CatalogView } from "../catalog/CatalogView";
 import { ErrorsView } from "../errors/ErrorsView";
 import { LogsView } from "../logs/LogsView";

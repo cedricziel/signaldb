@@ -7,7 +7,7 @@
 // same panel with no code change.
 import { useQuery } from "@tanstack/react-query";
 import { fetchEntityMetricSeries } from "../../api/entityMetricSeries";
-import { irSeriesToPromSeries } from "../../api/metricsIr";
+import { irSeriesToPromSeries } from "../../api/ir/metrics";
 import { pinsKey, type EntityPin } from "../../api/catalog";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";

@@ -443,7 +443,9 @@ export const processorsValidate = <ThrowOnError extends boolean = false>(options
 });
 
 /**
- * Submit a native Query IR document.
+ * Submit a native Query IR document — either a single query or a
+ * multi-query formula document (D5, [`MultiQueryIrRequest`]), discriminated
+ * by the presence of `queries`.
  */
 export const queryIr = <ThrowOnError extends boolean = false>(options: Options<QueryIrData, ThrowOnError>): RequestResult<QueryIrResponses, QueryIrErrors, ThrowOnError> => (options.client ?? client).post<QueryIrResponses, QueryIrErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],

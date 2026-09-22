@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link } from "react-router";
 import { DEFAULT_DATASET, DEFAULT_TENANT } from "../../api/http";
-import { useWhoami } from "../../lib/useWhoami";
+import { useIsDemo, useWhoami } from "../../lib/useWhoami";
 import { crossSignalSearch, type ExploreState } from "../../lib/urlState";
 import { UserMenu } from "./UserMenu";
 import "./TopBar.css";
@@ -13,6 +13,7 @@ interface Props {
 
 export function TopBar({ state, update }: Props) {
   const { canManage } = useWhoami(state);
+  const isDemo = useIsDemo();
   return (
     <header className="topbar">
       <Link className="topbar-mark" to={`/logs${crossSignalSearch(state)}`}>
@@ -35,6 +36,11 @@ export function TopBar({ state, update }: Props) {
       </Link>
       <span className="topbar-sep">/</span>
       <TenantSelector state={state} update={update} />
+      {isDemo && (
+        <span className="demo-badge" title="Read-only public demo account">
+          Demo · read-only
+        </span>
+      )}
       <span style={{ flex: 1 }} />
       {canManage && (
         <Link className="manage-trigger" to="/manage">
@@ -91,9 +97,7 @@ function TenantSelector({ state, update }: Props) {
           update({
             tenant,
             dataset:
-              tenant === who.tenant.id
-                ? String(data.get("dataset") ?? "")
-                : "",
+              tenant === who.tenant.id ? String(data.get("dataset") ?? "") : "",
           });
           setEditing(false);
         }}

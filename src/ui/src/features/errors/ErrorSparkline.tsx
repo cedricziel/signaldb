@@ -8,7 +8,7 @@ import {
   bucketizeSeries,
   padBuckets,
   type VolumeSeries,
-} from "../explore/SignalHistogram";
+} from "../../components/SignalHistogram";
 import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
 import { formatTimeBucket, formatValue } from "../../lib/vizFormat";
 

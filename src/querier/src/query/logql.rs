@@ -204,7 +204,7 @@ fn label_expr(
         return column_expr(column, op, value);
     }
     let materialized = materialized_column_name(name);
-    if ctx.materialized.contains(&materialized) {
+    if common::schema::is_materialized_and_unambiguous(&materialized, &ctx.materialized) {
         return materialized_label_expr(&materialized, op, value);
     }
     let base = if ctx.map_attrs {

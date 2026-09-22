@@ -760,6 +760,19 @@ pub mod types {
             Default::default()
         }
     }
+    /**The demo account's credentials, returned by `login_config` only when
+    `[demo].enabled` is true (change: demo-mode) so the login page can offer
+    an "Explore the demo" shortcut.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct DemoLoginConfig {
+        pub password: ::std::string::String,
+        pub username: ::std::string::String,
+    }
+    impl DemoLoginConfig {
+        pub fn builder() -> builder::DemoLoginConfig {
+            Default::default()
+        }
+    }
     ///Deprecation info in resolved form.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Default)]
     pub struct DeprecatedInfo {
@@ -1498,6 +1511,10 @@ pub mod types {
     may offer. `oidc` is `null` until an OIDC provider is configured.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct LoginConfigResponse {
+        /**Always serialized, `null` unless `[demo].enabled` is true (change:
+        demo-mode) — not an omittable field.*/
+        #[serde(deserialize_with = "::std::option::Option::deserialize")]
+        pub demo: ::std::option::Option<DemoLoginConfig>,
         /**Always serialized, `null` until an OIDC provider is configured — not
         an omittable field.*/
         #[serde(deserialize_with = "::std::option::Option::deserialize")]
@@ -1967,6 +1984,24 @@ pub mod types {
             Default::default()
         }
     }
+    /**A multi-query document (D5): several named IR queries — each required to
+    declare `result: "series"` — plus formulas evaluated over their results
+    after every inner query has run. Series join on an identical label set
+    and timestamp; a formula input missing a series present in another
+    contributes nothing to the join, and a zero divisor drops the point,
+    rather than either erroring.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct MultiQueryIrRequest {
+        pub formulas: ::std::vec::Vec<QueryFormula>,
+        pub queries: ::std::collections::HashMap<::std::string::String, QueryIrRequest>,
+        ///Always `"series"` — a formula document has no other shape.
+        pub result: ::std::string::String,
+    }
+    impl MultiQueryIrRequest {
+        pub fn builder() -> builder::MultiQueryIrRequest {
+            Default::default()
+        }
+    }
     ///A single-sign-on provider offered by the login-configuration probe.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct OidcLoginConfig {
@@ -2219,6 +2254,21 @@ pub mod types {
             Default::default()
         }
     }
+    /**One named formula in a [`MultiQueryIrRequest`] (D5): arithmetic
+    (`+ - * /`, numeric constants, parentheses) over the request's own query
+    names, e.g. `"errors / total"`.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct QueryFormula {
+        pub expr: ::std::string::String,
+        /**The formula's identity: tags each output series' `labels` under the
+        `formula` key, so a request with several formulas stays distinguishable.*/
+        pub name: ::std::string::String,
+    }
+    impl QueryFormula {
+        pub fn builder() -> builder::QueryFormula {
+            Default::default()
+        }
+    }
     /**A versioned Query IR request document.
 
     The `pipeline` stages are opaque JSON objects at the HTTP boundary — the
@@ -2246,6 +2296,26 @@ pub mod types {
     impl QueryIrRequest {
         pub fn builder() -> builder::QueryIrRequest {
             Default::default()
+        }
+    }
+    /**The `POST /api/v1/query` request body: either a single IR document or a
+    [`MultiQueryIrRequest`], discriminated by the presence of `queries` — a
+    document without it is a single [`QueryIrRequest`], so an ordinary
+    request needs no wrapper key.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(untagged)]
+    pub enum QueryIrRequestBody {
+        MultiQueryIrRequest(MultiQueryIrRequest),
+        QueryIrRequest(QueryIrRequest),
+    }
+    impl ::std::convert::From<MultiQueryIrRequest> for QueryIrRequestBody {
+        fn from(value: MultiQueryIrRequest) -> Self {
+            Self::MultiQueryIrRequest(value)
+        }
+    }
+    impl ::std::convert::From<QueryIrRequest> for QueryIrRequestBody {
+        fn from(value: QueryIrRequest) -> Self {
+            Self::QueryIrRequest(value)
         }
     }
     /**The single canonical response contract. `result` discriminates which fields
@@ -2593,6 +2663,10 @@ pub mod types {
         pub display_name: ::std::option::Option<::std::string::String>,
         pub email: ::std::string::String,
         pub id: ::std::string::String,
+        /**True when this is the `[demo]` read-only account (change:
+        demo-mode), so the UI can show a "read-only" badge and hide
+        mutating navigation without hardcoding the demo username.*/
+        pub is_demo: bool,
         pub is_instance_admin: bool,
     }
     impl SessionUser {
@@ -6369,6 +6443,60 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct DemoLoginConfig {
+            password: ::std::result::Result<::std::string::String, ::std::string::String>,
+            username: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for DemoLoginConfig {
+            fn default() -> Self {
+                Self {
+                    password: Err("no value supplied for password".to_string()),
+                    username: Err("no value supplied for username".to_string()),
+                }
+            }
+        }
+        impl DemoLoginConfig {
+            pub fn password<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.password = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for password: {e}"));
+                self
+            }
+            pub fn username<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.username = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for username: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<DemoLoginConfig> for super::DemoLoginConfig {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: DemoLoginConfig,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    password: value.password?,
+                    username: value.username?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::DemoLoginConfig> for DemoLoginConfig {
+            fn from(value: super::DemoLoginConfig) -> Self {
+                Self {
+                    password: Ok(value.password),
+                    username: Ok(value.username),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct DeprecatedInfo {
             note: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
@@ -8801,6 +8929,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct LoginConfigResponse {
+            demo: ::std::result::Result<
+                ::std::option::Option<super::DemoLoginConfig>,
+                ::std::string::String,
+            >,
             oidc: ::std::result::Result<
                 ::std::option::Option<super::OidcLoginConfig>,
                 ::std::string::String,
@@ -8810,12 +8942,23 @@ pub mod types {
         impl ::std::default::Default for LoginConfigResponse {
             fn default() -> Self {
                 Self {
+                    demo: Err("no value supplied for demo".to_string()),
                     oidc: Err("no value supplied for oidc".to_string()),
                     password_enabled: Err("no value supplied for password_enabled".to_string()),
                 }
             }
         }
         impl LoginConfigResponse {
+            pub fn demo<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::DemoLoginConfig>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.demo = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for demo: {e}"));
+                self
+            }
             pub fn oidc<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::option::Option<super::OidcLoginConfig>>,
@@ -8843,6 +8986,7 @@ pub mod types {
                 value: LoginConfigResponse,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    demo: value.demo?,
                     oidc: value.oidc?,
                     password_enabled: value.password_enabled?,
                 })
@@ -8851,6 +8995,7 @@ pub mod types {
         impl ::std::convert::From<super::LoginConfigResponse> for LoginConfigResponse {
             fn from(value: super::LoginConfigResponse) -> Self {
                 Self {
+                    demo: Ok(value.demo),
                     oidc: Ok(value.oidc),
                     password_enabled: Ok(value.password_enabled),
                 }
@@ -10805,6 +10950,80 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct MultiQueryIrRequest {
+            formulas:
+                ::std::result::Result<::std::vec::Vec<super::QueryFormula>, ::std::string::String>,
+            queries: ::std::result::Result<
+                ::std::collections::HashMap<::std::string::String, super::QueryIrRequest>,
+                ::std::string::String,
+            >,
+            result: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for MultiQueryIrRequest {
+            fn default() -> Self {
+                Self {
+                    formulas: Err("no value supplied for formulas".to_string()),
+                    queries: Err("no value supplied for queries".to_string()),
+                    result: Err("no value supplied for result".to_string()),
+                }
+            }
+        }
+        impl MultiQueryIrRequest {
+            pub fn formulas<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::QueryFormula>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.formulas = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for formulas: {e}"));
+                self
+            }
+            pub fn queries<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::collections::HashMap<::std::string::String, super::QueryIrRequest>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.queries = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for queries: {e}"));
+                self
+            }
+            pub fn result<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.result = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for result: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<MultiQueryIrRequest> for super::MultiQueryIrRequest {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: MultiQueryIrRequest,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    formulas: value.formulas?,
+                    queries: value.queries?,
+                    result: value.result?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::MultiQueryIrRequest> for MultiQueryIrRequest {
+            fn from(value: super::MultiQueryIrRequest) -> Self {
+                Self {
+                    formulas: Ok(value.formulas),
+                    queries: Ok(value.queries),
+                    result: Ok(value.result),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct OidcLoginConfig {
             name: ::std::result::Result<::std::string::String, ::std::string::String>,
         }
@@ -12278,6 +12497,60 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct QueryFormula {
+            expr: ::std::result::Result<::std::string::String, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for QueryFormula {
+            fn default() -> Self {
+                Self {
+                    expr: Err("no value supplied for expr".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                }
+            }
+        }
+        impl QueryFormula {
+            pub fn expr<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.expr = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for expr: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<QueryFormula> for super::QueryFormula {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: QueryFormula,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    expr: value.expr?,
+                    name: value.name?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::QueryFormula> for QueryFormula {
+            fn from(value: super::QueryFormula) -> Self {
+                Self {
+                    expr: Ok(value.expr),
+                    name: Ok(value.name),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct QueryIrRequest {
             fields: ::std::result::Result<
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
@@ -13593,6 +13866,7 @@ pub mod types {
             >,
             email: ::std::result::Result<::std::string::String, ::std::string::String>,
             id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            is_demo: ::std::result::Result<bool, ::std::string::String>,
             is_instance_admin: ::std::result::Result<bool, ::std::string::String>,
         }
         impl ::std::default::Default for SessionUser {
@@ -13601,6 +13875,7 @@ pub mod types {
                     display_name: Ok(Default::default()),
                     email: Err("no value supplied for email".to_string()),
                     id: Err("no value supplied for id".to_string()),
+                    is_demo: Err("no value supplied for is_demo".to_string()),
                     is_instance_admin: Err("no value supplied for is_instance_admin".to_string()),
                 }
             }
@@ -13636,6 +13911,16 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for id: {e}"));
                 self
             }
+            pub fn is_demo<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.is_demo = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for is_demo: {e}"));
+                self
+            }
             pub fn is_instance_admin<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<bool>,
@@ -13656,6 +13941,7 @@ pub mod types {
                     display_name: value.display_name?,
                     email: value.email?,
                     id: value.id?,
+                    is_demo: value.is_demo?,
                     is_instance_admin: value.is_instance_admin?,
                 })
             }
@@ -13666,6 +13952,7 @@ pub mod types {
                     display_name: Ok(value.display_name),
                     email: Ok(value.email),
                     id: Ok(value.id),
+                    is_demo: Ok(value.is_demo),
                     is_instance_admin: Ok(value.is_instance_admin),
                 }
             }
@@ -16961,7 +17248,9 @@ impl Client {
     pub fn processors_validate(&self) -> builder::ProcessorsValidate<'_> {
         builder::ProcessorsValidate::new(self)
     }
-    /**Submit a native Query IR document
+    /**Submit a native Query IR document — either a single query or a
+    multi-query formula document (D5, [`MultiQueryIrRequest`]), discriminated
+    by the presence of `queries`
 
     Sends a `POST` request to `/api/v1/query`
 
@@ -21215,39 +21504,28 @@ pub mod builder {
     #[derive(Debug, Clone)]
     pub struct QueryIr<'a> {
         client: &'a super::Client,
-        body: Result<types::builder::QueryIrRequest, String>,
+        body: Result<types::QueryIrRequestBody, String>,
     }
     impl<'a> QueryIr<'a> {
         pub fn new(client: &'a super::Client) -> Self {
             Self {
                 client: client,
-                body: Ok(::std::default::Default::default()),
+                body: Err("body was not initialized".to_string()),
             }
         }
         pub fn body<V>(mut self, value: V) -> Self
         where
-            V: std::convert::TryInto<types::QueryIrRequest>,
-            <V as std::convert::TryInto<types::QueryIrRequest>>::Error: std::fmt::Display,
+            V: std::convert::TryInto<types::QueryIrRequestBody>,
         {
             self.body = value
                 .try_into()
-                .map(From::from)
-                .map_err(|s| format!("conversion to `QueryIrRequest` for body failed: {}", s));
-            self
-        }
-        pub fn body_map<F>(mut self, f: F) -> Self
-        where
-            F: std::ops::FnOnce(types::builder::QueryIrRequest) -> types::builder::QueryIrRequest,
-        {
-            self.body = self.body.map(f);
+                .map_err(|_| "conversion to `QueryIrRequestBody` for body failed".to_string());
             self
         }
         ///Sends a `POST` request to `/api/v1/query`
         pub async fn send(self) -> Result<ResponseValue<types::QueryIrResponse>, Error<()>> {
             let Self { client, body } = self;
-            let body = body
-                .and_then(|v| types::QueryIrRequest::try_from(v).map_err(|e| e.to_string()))
-                .map_err(Error::InvalidRequest)?;
+            let body = body.map_err(Error::InvalidRequest)?;
             let url = format!("{}/api/v1/query", client.baseurl,);
             let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
             header_map.append(
@@ -21276,6 +21554,7 @@ pub mod builder {
                 200u16 => ResponseValue::from_response(response).await,
                 400u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                403u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 503u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),

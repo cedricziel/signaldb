@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FlameGraph } from "./FlameGraph";
-import type { RenderResponse } from "../../api/pyroscope";
+import type { RenderResponse } from "../../api/profileTypes";
 import type { FrameLocation } from "../../api/gen";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
 

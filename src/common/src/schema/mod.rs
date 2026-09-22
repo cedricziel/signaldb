@@ -36,6 +36,41 @@ pub fn materialized_column_name(label: &str) -> String {
     out
 }
 
+/// Stopgap for #1533: two distinct label keys can sanitize to the same
+/// [`materialized_column_name`] (e.g. `http.method` and `http_method` both
+/// map to `label_http_method`); the writer resolves the collision by
+/// suffixing the later key's column (`label_http_method_2`). A resolver
+/// that blindly matches `base` against the scanned schema would then
+/// silently read the first key's column for the second key's queries.
+/// Callers that pick a materialized column by name must check this first:
+/// if a suffixed variant (`<base>_<n>`, `n` a positive integer) also exists
+/// in the scanned schema, treat `base` as ambiguous and fall back to the
+/// JSON/attribute-map extraction path instead of trusting the materialized
+/// column.
+pub fn has_colliding_materialized_variant<'a>(
+    base: &str,
+    columns: impl IntoIterator<Item = &'a str>,
+) -> bool {
+    let prefix = format!("{base}_");
+    columns.into_iter().any(|column| {
+        column
+            .strip_prefix(prefix.as_str())
+            .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
+/// Convenience wrapper around [`has_colliding_materialized_variant`] for the
+/// common case: `columns` is the full set of materialized column names
+/// found on the scanned table, and the caller only needs a yes/no "is
+/// `base` present and safe to use" answer.
+pub fn is_materialized_and_unambiguous(
+    base: &str,
+    columns: &std::collections::HashSet<String>,
+) -> bool {
+    columns.contains(base)
+        && !has_colliding_materialized_variant(base, columns.iter().map(String::as_str))
+}
+
 /// The derived `key=value` token column on logs tables. Each row carries
 /// one token per attribute across resource, scope, and record scopes, so a
 /// single bloom-filtered column can answer "does this file contain
@@ -739,6 +774,30 @@ mod tests {
             "label_http_method".to_string(),
         ];
         assert!(metrics_properties_for_free_text_columns(&columns).is_empty());
+    }
+
+    #[test]
+    fn colliding_materialized_variant_detected() {
+        let columns = ["label_http_method", "label_http_method_2"];
+        assert!(has_colliding_materialized_variant(
+            "label_http_method",
+            columns
+        ));
+    }
+
+    #[test]
+    fn no_colliding_materialized_variant_without_suffix() {
+        let columns = ["label_http_method"];
+        assert!(!has_colliding_materialized_variant(
+            "label_http_method",
+            columns
+        ));
+        // A different base sharing the prefix isn't a numeric suffix collision.
+        let columns = ["label_http_method_status"];
+        assert!(!has_colliding_materialized_variant(
+            "label_http_method",
+            columns
+        ));
     }
 
     #[test]

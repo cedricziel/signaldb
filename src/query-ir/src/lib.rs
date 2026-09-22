@@ -23,6 +23,7 @@
 
 pub mod alias;
 pub mod document;
+pub mod formula;
 pub mod predicate;
 pub mod relation;
 pub mod resolver;
@@ -34,6 +35,10 @@ pub mod version;
 
 pub use alias::safe_ident;
 pub use document::{Document, Range, ResultEnvelope};
+pub use formula::{
+    EvalSeries, Expr as FormulaExpr, Formula, FormulaError, MultiDocument,
+    evaluate as evaluate_formula, parse_expr as parse_formula_expr, validate_multi,
+};
 pub use predicate::{ComparisonOp, Leaf, Predicate, Record};
 pub use relation::{
     Column, Grain, Heatmap as HeatmapRelation, Metadata as MetadataRelation, RelationType, RowSet,
@@ -46,9 +51,7 @@ pub use stage::{
     HeatmapAxisX, HeatmapAxisY, HeatmapValue, HistogramMode, HistogramQuantile, Order, Parser,
     Rank, Stage,
 };
-pub use validate::{
-    DESCRIBE_MIN_VERSION, IrError, Validated, parse_document, validate, validate_describe,
-};
+pub use validate::{DESCRIBE_MIN_VERSION, IrError, Validated, validate, validate_describe};
 pub use value::{
     CoercionError, Literal, RelativeTime, TimestampLiteral, Truth, ValueType, coerce,
     parse_duration_ns, parse_relative_time, parse_timestamp_literal,

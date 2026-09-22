@@ -26,7 +26,7 @@ import {
   parseCompositeKey,
 } from "../../lib/traceGroups";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
-import { MemberTable } from "../traces/MemberTable";
+import { MemberTable } from "../../components/MemberTable";
 import { SkeletonLines } from "../explore/Skeleton";
 import {
   catalogRangeSeconds,

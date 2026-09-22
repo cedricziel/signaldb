@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { TempoSpan } from "../api/tempo";
+import type { TempoSpan } from "../api/traceTypes";
 import { buildWaterfall, formatDurationMs } from "./waterfall";
 
 const span = (over: Partial<TempoSpan>): TempoSpan => ({

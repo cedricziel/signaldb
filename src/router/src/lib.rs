@@ -13,6 +13,7 @@ use common::schema_registry::SchemaResolver;
 use std::sync::Arc;
 
 pub mod cli;
+pub mod demo_guard;
 pub mod discovery;
 pub mod endpoints;
 pub mod github;
@@ -477,6 +478,13 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .fallback_service(ui::service_from_env(
             &state.config().self_monitoring.frontend,
             &state.config().self_monitoring.environment,
+        ))
+        // Demo-account write guard (change: demo-mode): a no-op unless
+        // `[demo]` is enabled, and a no-op for every session but the demo
+        // user's own — see `demo_guard` for the allowlist.
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            demo_guard::demo_write_guard::<S>,
         ))
         // OTel HTTP server metrics for all routes (no-op unless
         // self-monitoring is enabled)

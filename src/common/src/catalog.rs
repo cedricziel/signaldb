@@ -4760,6 +4760,45 @@ impl Catalog {
         Ok(())
     }
 
+    /// Overwrite a user's password hash (already hashed by the caller).
+    ///
+    /// Bumps `updated_at`. Returns `sqlx::Error::RowNotFound` if the user
+    /// does not exist. Used by demo-mode provisioning (change: demo-mode)
+    /// to reset the demo account's password to the configured value on
+    /// every router startup, and available to any future admin
+    /// "reset password" path.
+    pub async fn set_user_password(
+        &self,
+        user_id: &str,
+        password_hash: &str,
+    ) -> Result<(), sqlx::Error> {
+        let now = Utc::now();
+        let rows_affected = match self {
+            Catalog::Sqlite(pool) => {
+                query("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?")
+                    .bind(password_hash)
+                    .bind(now.to_rfc3339())
+                    .bind(user_id)
+                    .execute(pool)
+                    .await?
+                    .rows_affected()
+            }
+            Catalog::Postgres(pool) => {
+                query("UPDATE users SET password_hash = $1, updated_at = $2 WHERE id = $3")
+                    .bind(password_hash)
+                    .bind(now)
+                    .bind(user_id)
+                    .execute(pool)
+                    .await?
+                    .rows_affected()
+            }
+        };
+        if rows_affected == 0 {
+            return Err(sqlx::Error::RowNotFound);
+        }
+        Ok(())
+    }
+
     /// Add a user to a tenant, or update their role if already a member.
     ///
     /// Pinned to `granted_by = 'local'` (change: oidc-login design

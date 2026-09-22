@@ -26,11 +26,6 @@ export class ApiError extends Error {
   }
 }
 
-/** True when the error is a throttling failure (retries exhausted). */
-export function isThrottledError(err: unknown): err is ApiError {
-  return err instanceof ApiError && err.status === 429;
-}
-
 /** The user-facing throttling message, naming the wait when known. */
 export function throttlingMessage(retryAfterMs: number | null): string {
   if (retryAfterMs == null) return "Rate limited — please retry shortly";

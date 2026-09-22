@@ -5,21 +5,9 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
-/// Reason why orphan cleanup was skipped for a table
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SkipReason {
-    /// Live file count estimate exceeded `max_live_files_threshold`
-    LiveFilesThresholdExceeded,
-}
-
-impl SkipReason {
-    /// Label used in metric output
-    pub fn as_str(&self) -> &'static str {
-        match self {
-            SkipReason::LiveFilesThresholdExceeded => "live_files_threshold_exceeded",
-        }
-    }
-}
+/// Label for the (currently only) reason orphan cleanup is skipped for a
+/// table: the live file count estimate exceeded `max_live_files_threshold`.
+pub const SKIP_REASON_LIVE_FILES_THRESHOLD_EXCEEDED: &str = "live_files_threshold_exceeded";
 
 /// Thread-safe metrics for tracking orphan cleanup operations.
 ///
@@ -64,15 +52,12 @@ impl OrphanMetrics {
         }
     }
 
-    /// Record a cleanup run skipped for the given reason
-    pub fn record_cleanup_skipped(&self, reason: SkipReason) {
-        match reason {
-            SkipReason::LiveFilesThresholdExceeded => {
-                self.inner
-                    .cleanup_skipped_threshold
-                    .fetch_add(1, Ordering::Relaxed);
-            }
-        }
+    /// Record a cleanup run skipped because the live file count estimate
+    /// exceeded `max_live_files_threshold`.
+    pub fn record_cleanup_skipped(&self) {
+        self.inner
+            .cleanup_skipped_threshold
+            .fetch_add(1, Ordering::Relaxed);
     }
 
     /// Record orphan candidates identified
@@ -157,7 +142,7 @@ mod tests {
     fn test_metrics_increment() {
         let m = OrphanMetrics::new();
 
-        m.record_cleanup_skipped(SkipReason::LiveFilesThresholdExceeded);
+        m.record_cleanup_skipped();
         assert_eq!(m.cleanup_skipped_threshold(), 1);
 
         m.record_candidates_identified(42);
@@ -176,7 +161,7 @@ mod tests {
     #[test]
     fn test_skip_reason_label() {
         assert_eq!(
-            SkipReason::LiveFilesThresholdExceeded.as_str(),
+            SKIP_REASON_LIVE_FILES_THRESHOLD_EXCEEDED,
             "live_files_threshold_exceeded"
         );
     }

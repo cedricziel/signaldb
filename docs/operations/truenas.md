@@ -126,3 +126,25 @@ and bump them in the compose instead of pulling `:main`.
   need `<ip>:<port>`.
 - **Memory.** `mem_limit: 6g` pairs with `[querier] memory_limit_mb = 4096` in
   `signaldb.toml`; scale both together.
+
+## Demo instance
+
+[`deploy/truenas/signaldb-demo-app.yaml`](https://github.com/cedricziel/signaldb/blob/main/deploy/truenas/signaldb-demo-app.yaml)
+is a separate, self-contained app for a public demo: a SignalDB monolith fed
+by a trimmed [OpenTelemetry Demo](https://github.com/open-telemetry/opentelemetry-demo)
+(frontend, cart + Valkey, product catalog, currency, recommendation, ad,
+checkout, payment, shipping, quote, email and the Locust load generator — no
+Kafka, flagd or Envoy). All demo telemetry lands in tenant `demo`, dataset
+`otel-demo`.
+
+- `signaldb.toml` is inlined through a compose `configs:` entry, so the data
+  dataset only needs to exist and be owned by uid/gid 1000.
+- Only the UI/query API is published (`30210`); OTLP stays on the app network.
+  Point a reverse proxy (the maintainers use a Pangolin resource) at
+  `<nas>:30210` and set `SIGNALDB__PUBLIC__API_URL` to its public URL.
+- Visitors sign in to the Explore UI as `demo@example.com`/`demo` (see
+  [demo-mode.md](demo-mode.md)) rather than using an API key: the account is
+  provisioned as a tenant Viewer, and a middleware refuses every write it
+  might otherwise be able to make, so it's safe to publish. The `sk-demo-*`
+  key in `signaldb.toml` still has full tenant write access for the
+  OTel-Demo services themselves — keep that one out of the UI.

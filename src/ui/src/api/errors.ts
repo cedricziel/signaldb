@@ -14,7 +14,7 @@
 import type { QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
-import type { VolumeSeries } from "../features/explore/SignalHistogram";
+import type { VolumeSeries } from "../components/SignalHistogram";
 
 export type ErrorSource = "traces" | "logs";
 

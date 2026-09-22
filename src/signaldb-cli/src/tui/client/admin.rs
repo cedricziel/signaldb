@@ -58,29 +58,6 @@ impl AdminClient {
         Ok(Self { client })
     }
 
-    /// Probe admin access to verify credentials
-    ///
-    /// # Arguments
-    /// * `base_url` - Base URL of the SignalDB router
-    /// * `key` - Admin API key to test
-    ///
-    /// # Returns
-    /// Ok(true) if access is granted, Ok(false) if unauthorized, Err if connection fails
-    pub async fn probe_admin_access(base_url: &str, key: &str) -> Result<bool, AdminClientError> {
-        let client = Self::new(base_url, key)?;
-        match client.list_tenants().await {
-            Ok(_) => Ok(true),
-            Err(e) => {
-                let err_str = e.to_string();
-                if err_str.contains("401") || err_str.contains("403") {
-                    Ok(false)
-                } else {
-                    Err(AdminClientError::ConnectionError(err_str))
-                }
-            }
-        }
-    }
-
     /// List all tenants
     pub async fn list_tenants(&self) -> Result<Vec<serde_json::Value>, AdminClientError> {
         let response = self
@@ -110,20 +87,6 @@ impl AdminClient {
             .client
             .create_tenant()
             .body(request)
-            .send()
-            .await
-            .map_err(|e| self.map_error(&e))?;
-
-        serde_json::to_value(response.into_inner())
-            .map_err(|e| AdminClientError::ApiError(e.to_string()))
-    }
-
-    /// Get a tenant by ID
-    pub async fn get_tenant(&self, id: &str) -> Result<serde_json::Value, AdminClientError> {
-        let response = self
-            .client
-            .get_tenant()
-            .tenant_id(id)
             .send()
             .await
             .map_err(|e| self.map_error(&e))?;

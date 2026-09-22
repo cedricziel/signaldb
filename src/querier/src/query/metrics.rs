@@ -1512,7 +1512,7 @@ impl MetricsService {
                         return Ok(column.to_string());
                     }
                     let name = materialized_column_name(l);
-                    if materialized.contains(&name) {
+                    if common::schema::is_materialized_and_unambiguous(&name, materialized) {
                         return Ok(name);
                     }
                     Err(QuerierError::Unsupported(format!(
@@ -2289,7 +2289,11 @@ fn matcher_expr(m: &LabelMatch, ctx: &super::logql::AttrContext) -> Result<Expr,
     };
     match column_for_label(&m.name) {
         Some(column) => Ok(column_op_expr(col(column), m.op, &m.value, false)),
-        None if materialized.contains(&materialized_column_name(&m.name)) => {
+        None if common::schema::is_materialized_and_unambiguous(
+            &materialized_column_name(&m.name),
+            materialized,
+        ) =>
+        {
             Ok(column_match(materialized_column_name(&m.name)))
         }
         // Map-typed attribute tables: per-key extraction, all four
@@ -2335,7 +2339,7 @@ fn matcher_expr(m: &LabelMatch, ctx: &super::logql::AttrContext) -> Result<Expr,
 /// The natural series-identity columns: `service_name` plus every
 /// materialized `label_<key>` column of the scanned tables, in a stable
 /// order.
-fn natural_series_columns(materialized: &MaterializedColumns) -> Vec<String> {
+pub(crate) fn natural_series_columns(materialized: &MaterializedColumns) -> Vec<String> {
     let mut cols = vec!["service_name".to_string()];
     let mut labels: Vec<String> = materialized.iter().cloned().collect();
     labels.sort();
@@ -2672,7 +2676,7 @@ fn apply_topk(batches: Vec<RecordBatch>, spec: TopKSpec) -> Result<Vec<RecordBat
 /// zero) instead of `cur - prev`. Shared by `rate`/`increase` (summed over
 /// every consecutive pair in the window) and `irate` (applied to just the
 /// last two samples).
-fn reset_corrected_delta(cur: Expr, prev: Expr) -> Result<Expr, QuerierError> {
+pub(crate) fn reset_corrected_delta(cur: Expr, prev: Expr) -> Result<Expr, QuerierError> {
     when(cur.clone().lt(prev.clone()), cur.clone())
         .otherwise(cur - prev)
         .map_err(QuerierError::QueryFailed)

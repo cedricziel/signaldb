@@ -1,6 +1,6 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMemo, useRef, useState } from "react";
-import type { LogRow } from "../../api/loki";
+import type { LogRow } from "../../api/ir/logs";
 import {
   AttributeSection,
   AttributeSummary,
@@ -22,7 +22,7 @@ import type { LabelFilter } from "../../lib/filters";
 import { formatTimestamp } from "../../lib/time";
 import type { UpdateFn } from "../../lib/urlState";
 import { normalizeLevel } from "./Histogram";
-import { splitLogScopes } from "./logScopes";
+import { logScopes } from "./logScopes";
 
 interface Props {
   rows: LogRow[];
@@ -31,28 +31,10 @@ interface Props {
   update: UpdateFn;
 }
 
-/**
- * Fallback label spellings, kept for rows from a source that promoted a
- * `trace_id`-named attribute to a label rather than sending it as
- * structured metadata.
- */
-const TRACE_LABELS = ["trace_id", "traceID", "traceId"];
-
-export function traceIdOf(row: LogRow): string | null {
-  const metadataTraceId = row.metadata["trace_id"];
-  if (metadataTraceId) return metadataTraceId;
-  for (const key of TRACE_LABELS) {
-    const v = row.labels[key];
-    if (v) return v;
-  }
-  return null;
-}
-
-/** Cheap canonical form of a labels/metadata record for a key — sorted so
+/** Cheap canonical form of a row's attribute containers — sorted so
  * insertion order never changes the result. `JSON.stringify`d over the
  * sorted `[key, value]` tuples rather than joined with plain delimiters: an
- * unescaped `,`/`=` join collapses distinct records (e.g. `{ a: "b,c=d" }`
- * and `{ a: "b", c: "d" }`) onto the same string. */
+ * unescaped `,`/`=` join collapses distinct records onto the same string. */
 function canonicalEntries(record: Record<string, string>): string {
   return JSON.stringify(
     Object.keys(record)
@@ -65,16 +47,20 @@ function canonicalEntries(record: Record<string, string>): string {
  * A row's identity for expansion/React-key purposes: the virtualizer's
  * `item.index` shifts under a row's feet in live mode (a newer row
  * prepends), which used to collapse whatever was expanded. Timestamp plus
- * the line, any span/trace id, and the row's own labels/metadata is stable
- * across such a shift and cheap to compute; it does not need to be a true
- * hash, only unique enough among the rows on screen — two streams sharing a
- * timestamp and line (e.g. the same log line from two pods) still differ in
- * at least one label.
+ * the body, ids, and every attribute container is stable across such a
+ * shift and cheap to compute; it does not need to be a true hash, only
+ * unique enough among the rows on screen.
  */
 export function rowKey(row: LogRow): string {
-  const spanId = row.metadata["span_id"] ?? "";
-  const traceId = traceIdOf(row) ?? "";
-  return `${row.tsNs}|${spanId}|${traceId}|${canonicalEntries(row.labels)}|${canonicalEntries(row.metadata)}|${row.line}`;
+  return [
+    row.tsNs,
+    row.spanId ?? "",
+    row.traceId ?? "",
+    canonicalEntries(row.logAttributes),
+    canonicalEntries(row.scopeAttributes),
+    canonicalEntries(row.resourceAttributes),
+    row.body,
+  ].join("|");
 }
 
 export function LogList({ rows, onAddFilter, onOpenTrace, update }: Props) {
@@ -99,9 +85,8 @@ export function LogList({ rows, onAddFilter, onOpenTrace, update }: Props) {
         {virtualizer.getVirtualItems().map((item) => {
           const row = rows[item.index]!;
           const key = rowKey(row);
-          const level = normalizeLevel(row.labels["level"] ?? "");
+          const level = normalizeLevel(row.severityText);
           const isOpen = expanded === key;
-          const traceId = traceIdOf(row);
           return (
             <div
               key={key}
@@ -123,13 +108,13 @@ export function LogList({ rows, onAddFilter, onOpenTrace, update }: Props) {
               >
                 <span className="logrow-ts">{formatTimestamp(row.tsMs)}</span>
                 <span className={`logrow-level level-${level}`}>
-                  {(row.labels["level"] ?? "-").toUpperCase()}
+                  {(row.severityText || "-").toUpperCase()}
                 </span>
-                <span className="logrow-svc">
-                  {row.labels["service_name"] ?? ""}
-                </span>
-                <span className="logrow-msg">{row.line}</span>
-                {traceId !== null && <span className="logrow-trace">⛓</span>}
+                <span className="logrow-svc">{row.serviceName}</span>
+                <span className="logrow-msg">{row.body}</span>
+                {row.traceId !== null && (
+                  <span className="logrow-trace">⛓</span>
+                )}
               </button>
               {isOpen && (
                 <LogDetail
@@ -149,26 +134,20 @@ export function LogList({ rows, onAddFilter, onOpenTrace, update }: Props) {
   );
 }
 
-const sortedEntries = (bag: Record<string, string>): [string, string][] =>
-  Object.entries(bag).sort(([a], [b]) => a.localeCompare(b));
-
-/** Preferred order for the collapsed stream/resource summary line — the
- * first present spelling of each field, up to 8 pairs, then `+ N more`.
- * Built from the shared resource-identity fields (`lib/attrSummary.ts`) plus
- * `level` (ahead of the pod/host/region identity fields) and the container
- * image (trailing). */
-const STREAM_SUMMARY_FIELDS: SummaryField[] = [
-  ...RESOURCE_IDENTITY_FIELDS.slice(0, 3),
-  { keys: ["level"] },
-  ...RESOURCE_IDENTITY_FIELDS.slice(3),
+/** Preferred order for the collapsed resource summary line — the shared
+ * resource-identity fields plus the container image (trailing). Level lives
+ * on the row itself now (severity_text is a first-class field, not a
+ * resource attribute), so it's no longer in this list. */
+const RESOURCE_SUMMARY_FIELDS: SummaryField[] = [
+  ...RESOURCE_IDENTITY_FIELDS,
   { keys: ["container.image.name"] },
 ];
 
 /**
- * The expanded row's actions plus its attribute table: `THIS LINE` (per-line
- * fields, always shown) then `STREAM · RESOURCE` (stream labels, collapsed
- * behind a summary by default — there are usually dozens, identical across
- * every line in the stream).
+ * The expanded row's actions plus its attribute table: "This line" (per-line
+ * fields, always shown), "Scope" and "Resource" (collapsed behind a summary
+ * by default — see logScopes.ts for how the IR's own scopes drive the
+ * split).
  */
 function LogDetail({
   row,
@@ -185,25 +164,31 @@ function LogDetail({
   showDescriptions: boolean;
   onToggleDescriptions: () => void;
 }) {
-  const traceId = traceIdOf(row);
   return (
     <div className="logdetail">
       <div className="logdetail-actions">
-        {traceId !== null && (
+        {row.traceId !== null && (
           <button
             className="act-primary btn btn-primary"
-            onClick={() => onOpenTrace(traceId)}
+            onClick={() => onOpenTrace(row.traceId!)}
           >
-            View trace {traceId.slice(0, 8)}…
+            View trace {row.traceId.slice(0, 8)}…
           </button>
         )}
-        <CopyValueButton value={row.line} label="log message" />
+        <CopyValueButton value={row.body} label="log message" />
         <button
           className="btn"
           onClick={() =>
             navigator.clipboard?.writeText(
               JSON.stringify(
-                { ...row.labels, ...row.metadata, line: row.line },
+                {
+                  ...row.logAttributes,
+                  ...row.scopeAttributes,
+                  ...row.resourceAttributes,
+                  trace_id: row.traceId,
+                  span_id: row.spanId,
+                  body: row.body,
+                },
                 null,
                 2,
               ),
@@ -241,33 +226,23 @@ function LogAttributes({
   update: UpdateFn;
   showDescriptions: boolean;
 }) {
-  const labels = useMemo(() => sortedEntries(row.labels), [row.labels]);
-  const metadata = useMemo(() => sortedEntries(row.metadata), [row.metadata]);
+  const groups = useMemo(() => logScopes(row), [row]);
   const keys = useMemo(
-    () => [...labels, ...metadata].map(([k]) => k),
-    [labels, metadata],
+    () => groups.flatMap((g) => g.entries.map(([k]) => k)),
+    [groups],
   );
   const semantics = useSemantics(keys);
-  // Every label/metadata value on the row, for `pivotRowActions`'s catalog
-  // pivot — it needs an entity's full identity, not just one row's key/value.
+  // Every attribute on the row, for `pivotRowActions`'s catalog pivot —
+  // it needs an entity's full identity, not just one row's key/value.
   const bag = useMemo(
-    (): ReadonlyMap<string, string> => new Map([...labels, ...metadata]),
-    [labels, metadata],
+    (): ReadonlyMap<string, string> =>
+      new Map(groups.flatMap((g) => g.entries)),
+    [groups],
   );
-  // "This line" (per-line fields: trace_id/span_id, and metadata with no
-  // resolved OTel entity role) vs "Resource · stream" (stream labels, plus
-  // metadata the registry says identifies/describes an entity) — see
-  // logScopes.ts for why the split isn't simply labels-vs-metadata.
-  const scopes = useMemo(
-    () => splitLogScopes(labels, metadata, semantics),
-    [labels, metadata, semantics],
-  );
+  const [scopeExpanded, setScopeExpanded] = useState(false);
   const [resourceExpanded, setResourceExpanded] = useState(false);
 
   const rowActions = (k: string, v: string): AttributeRowAction[] => {
-    // Every row — a stream label or per-line metadata alike — compiles to a
-    // LogQL matcher on the attribute's own key; the querier resolves a
-    // dotted key directly against the attribute maps.
     const filterActions: AttributeRowAction[] = [
       {
         label: "+ filter",
@@ -301,18 +276,26 @@ function LogAttributes({
     ];
   };
 
+  const groupByTitle = (title: string) => groups.find((g) => g.title === title);
+  const lineGroup = groupByTitle("This line");
+  const scopeGroup = groupByTitle("Scope");
+  const resourceGroup = groupByTitle("Resource");
   const resourceSummary = useMemo(
-    () => summarizeAttributes(scopes.resource, STREAM_SUMMARY_FIELDS),
-    [scopes.resource],
+    () =>
+      summarizeAttributes(
+        resourceGroup?.entries ?? [],
+        RESOURCE_SUMMARY_FIELDS,
+      ),
+    [resourceGroup],
   );
 
   return (
     <>
-      {scopes.line.length > 0 && (
+      {lineGroup && lineGroup.entries.length > 0 && (
         <>
           <AttributeSection title="This line" />
           <AttributeTable
-            entries={scopes.line}
+            entries={lineGroup.entries}
             semantics={semantics}
             layout="grid"
             showDescriptions={showDescriptions}
@@ -321,17 +304,37 @@ function LogAttributes({
           />
         </>
       )}
-      {scopes.resource.length > 0 && (
+      {scopeGroup && (
         <>
           <AttributeSection
-            title="Resource · stream"
-            count={`${scopes.resource.length} fields`}
+            title="Scope"
+            count={`${scopeGroup.entries.length} fields`}
+            expanded={scopeExpanded}
+            onToggle={() => setScopeExpanded((current) => !current)}
+          />
+          {scopeExpanded && (
+            <AttributeTable
+              entries={scopeGroup.entries}
+              semantics={semantics}
+              layout="grid"
+              showDescriptions={showDescriptions}
+              scope="scope"
+              actions={rowActions}
+            />
+          )}
+        </>
+      )}
+      {resourceGroup && (
+        <>
+          <AttributeSection
+            title="Resource"
+            count={`${resourceGroup.entries.length} fields`}
             expanded={resourceExpanded}
             onToggle={() => setResourceExpanded((current) => !current)}
           />
           {resourceExpanded ? (
             <AttributeTable
-              entries={scopes.resource}
+              entries={resourceGroup.entries}
               semantics={semantics}
               layout="grid"
               showDescriptions={showDescriptions}

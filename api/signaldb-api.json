@@ -2556,13 +2556,13 @@
         "tags": [
           "query"
         ],
-        "summary": "Submit a native Query IR document.",
+        "summary": "Submit a native Query IR document — either a single query or a\nmulti-query formula document (D5, [`MultiQueryIrRequest`]), discriminated\nby the presence of `queries`.",
         "operationId": "query_ir",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/QueryIrRequest"
+                "$ref": "#/components/schemas/QueryIrRequestBody"
               }
             }
           },
@@ -2584,6 +2584,9 @@
           },
           "401": {
             "description": "Missing or invalid credentials"
+          },
+          "403": {
+            "description": "Missing read scope for a queried source"
           },
           "429": {
             "$ref": "#/components/responses/RateLimited"
@@ -6350,6 +6353,22 @@
           }
         }
       },
+      "DemoLoginConfig": {
+        "type": "object",
+        "description": "The demo account's credentials, returned by `login_config` only when\n`[demo].enabled` is true (change: demo-mode) so the login page can offer\nan \"Explore the demo\" shortcut.",
+        "required": [
+          "username",
+          "password"
+        ],
+        "properties": {
+          "password": {
+            "type": "string"
+          },
+          "username": {
+            "type": "string"
+          }
+        }
+      },
       "DeprecatedInfo": {
         "type": "object",
         "description": "Deprecation info in resolved form.",
@@ -7245,9 +7264,21 @@
         "description": "`GET /ui/session/config`'s response: which credentials the login page\nmay offer. `oidc` is `null` until an OIDC provider is configured.",
         "required": [
           "password_enabled",
-          "oidc"
+          "oidc",
+          "demo"
         ],
         "properties": {
+          "demo": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/DemoLoginConfig",
+                "description": "Always serialized, `null` unless `[demo].enabled` is true (change:\ndemo-mode) — not an omittable field."
+              }
+            ]
+          },
           "oidc": {
             "oneOf": [
               {
@@ -7903,6 +7934,37 @@
           }
         }
       },
+      "MultiQueryIrRequest": {
+        "type": "object",
+        "description": "A multi-query document (D5): several named IR queries — each required to\ndeclare `result: \"series\"` — plus formulas evaluated over their results\nafter every inner query has run. Series join on an identical label set\nand timestamp; a formula input missing a series present in another\ncontributes nothing to the join, and a zero divisor drops the point,\nrather than either erroring.",
+        "required": [
+          "queries",
+          "formulas",
+          "result"
+        ],
+        "properties": {
+          "formulas": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QueryFormula"
+            }
+          },
+          "queries": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/QueryIrRequest"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "result": {
+            "type": "string",
+            "description": "Always `\"series\"` — a formula document has no other shape.",
+            "example": "series"
+          }
+        }
+      },
       "OidcLoginConfig": {
         "type": "object",
         "description": "A single-sign-on provider offered by the login-configuration probe.",
@@ -8270,6 +8332,24 @@
           }
         }
       },
+      "QueryFormula": {
+        "type": "object",
+        "description": "One named formula in a [`MultiQueryIrRequest`] (D5): arithmetic\n(`+ - * /`, numeric constants, parentheses) over the request's own query\nnames, e.g. `\"errors / total\"`.",
+        "required": [
+          "name",
+          "expr"
+        ],
+        "properties": {
+          "expr": {
+            "type": "string",
+            "example": "errors / total"
+          },
+          "name": {
+            "type": "string",
+            "description": "The formula's identity: tags each output series' `labels` under the\n`formula` key, so a request with several formulas stays distinguishable."
+          }
+        }
+      },
       "QueryIrRequest": {
         "type": "object",
         "description": "A versioned Query IR request document.\n\nThe `pipeline` stages are opaque JSON objects at the HTTP boundary — the\nquerier validates and lowers them per the versioned IR contract. See the\n`query-ir-core` capability for the full stage/predicate grammar.",
@@ -8316,6 +8396,17 @@
             "example": "rows"
           }
         }
+      },
+      "QueryIrRequestBody": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/MultiQueryIrRequest"
+          },
+          {
+            "$ref": "#/components/schemas/QueryIrRequest"
+          }
+        ],
+        "description": "The `POST /api/v1/query` request body: either a single IR document or a\n[`MultiQueryIrRequest`], discriminated by the presence of `queries` — a\ndocument without it is a single [`QueryIrRequest`], so an ordinary\nrequest needs no wrapper key."
       },
       "QueryIrResponse": {
         "type": "object",
@@ -8728,7 +8819,8 @@
         "required": [
           "id",
           "email",
-          "is_instance_admin"
+          "is_instance_admin",
+          "is_demo"
         ],
         "properties": {
           "display_name": {
@@ -8742,6 +8834,10 @@
           },
           "id": {
             "type": "string"
+          },
+          "is_demo": {
+            "type": "boolean",
+            "description": "True when this is the `[demo]` read-only account (change:\ndemo-mode), so the UI can show a \"read-only\" badge and hide\nmutating navigation without hardcoding the demo username."
           },
           "is_instance_admin": {
             "type": "boolean"

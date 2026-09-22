@@ -282,11 +282,32 @@ fn every_surface_routes_requests_through_the_retrying_client() {
         client_ts.contains("fetch: retryingFetch"),
         "src/ui/src/api/client.ts must install retryingFetch on the generated client"
     );
-    for legacy in ["session.ts", "tempo.ts", "prom.ts", "pyroscope.ts"] {
-        let source = std::fs::read_to_string(root.join("src/ui/src/api").join(legacy)).unwrap();
+    let mut api_files = vec![root.join("src/ui/src/api")];
+    let mut scanned = 0;
+    while let Some(path) = api_files.pop() {
+        if path.is_dir() {
+            if path.ends_with("gen") {
+                continue;
+            }
+            for entry in std::fs::read_dir(&path).unwrap() {
+                api_files.push(entry.unwrap().path());
+            }
+            continue;
+        }
+        let name = path.file_name().unwrap().to_string_lossy().into_owned();
+        if !name.ends_with(".ts") || name.ends_with(".test.ts") {
+            continue;
+        }
+        let source = std::fs::read_to_string(&path).unwrap();
         assert!(
             !source.contains("await fetch("),
-            "src/ui/src/api/{legacy} must call retryingFetch, not raw fetch"
+            "{} must call retryingFetch, not raw fetch",
+            path.display()
         );
+        scanned += 1;
     }
+    assert!(
+        root.join("src/ui/src/api/session.ts").exists() && scanned > 1,
+        "the src/ui/src/api scan found nothing to check"
+    );
 }

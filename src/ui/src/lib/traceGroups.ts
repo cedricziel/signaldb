@@ -4,7 +4,7 @@
 // service.name). The dimensions and selected group are URL params so a
 // drill-in is deep-linkable.
 
-import type { TraceSummary } from "../api/tempo";
+import type { TraceSummary } from "../api/traceTypes";
 
 export const DEFAULT_GROUP_BY = "span.name";
 export const BUILTIN_DIMENSIONS = [DEFAULT_GROUP_BY, "service.name"];
