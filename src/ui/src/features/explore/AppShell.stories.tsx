@@ -9,28 +9,18 @@ import { MemoryRouter } from "react-router";
 import { TopBar } from "../shell/TopBar";
 import { testQueryClient } from "../../lib/queryClient";
 import { DEFAULT_STATE } from "../../lib/urlState";
-import type { WhoamiResponse } from "../../api/session";
 import {
   describeFieldsResponse,
   irLogRowsResponse,
   irLogVolumeResponse,
+  sampleCurrentSession,
+  sampleWhoami,
   type JsonRoute,
 } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { ExploreView } from "./ExploreView";
 
-const WHO: WhoamiResponse = {
-  user: {
-    id: "user-1",
-    email: "alice@example.com",
-    display_name: "Alice",
-    is_instance_admin: false,
-  },
-  memberships: [{ tenant_id: "acme", role: "admin" }],
-  tenant: { id: "acme", slug: "acme", name: "Acme Corp" },
-  datasets: [{ id: "production", slug: "production", is_default: true }],
-  default_dataset: "production",
-};
+const WHO = sampleWhoami();
 
 const isRowsQuery = (b: unknown) =>
   (b as { result?: string }).result === "rows";
@@ -78,16 +68,7 @@ function buildVolume() {
 
 const routes: JsonRoute[] = [
   { match: "/api/v1/whoami", body: WHO },
-  {
-    match: "/ui/session",
-    method: "GET",
-    body: {
-      user: WHO.user,
-      tenant: "acme",
-      dataset: "production",
-      memberships: WHO.memberships,
-    },
-  },
+  { match: "/ui/session", method: "GET", body: sampleCurrentSession(WHO) },
   {
     match: "/api/v1/query",
     bodyMatch: isRowsQuery,

@@ -3,33 +3,15 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { MemoryRouter } from "react-router";
 import { testQueryClient } from "../lib/queryClient";
 import { DEFAULT_STATE } from "../lib/urlState";
-import type { WhoamiResponse } from "../api/session";
-import type { JsonRoute } from "../stories/fetchStub";
+import {
+  sampleCurrentSession,
+  sampleWhoami,
+  type JsonRoute,
+} from "../stories/fetchStub";
 import { StoryFetchStub } from "../stories/StoryFetchStub";
 import { TopBar } from "./TopBar";
 
-const WHO: WhoamiResponse = {
-  user: {
-    id: "user-1",
-    email: "alice@example.com",
-    display_name: "Alice",
-    is_instance_admin: false,
-  },
-  memberships: [{ tenant_id: "acme", role: "admin" }],
-  tenant: { id: "acme", slug: "acme", name: "Acme Corp" },
-  datasets: [
-    { id: "production", slug: "production", is_default: true },
-    { id: "staging", slug: "staging", is_default: false },
-  ],
-  default_dataset: "production",
-};
-
-const CURRENT_SESSION = {
-  user: WHO.user,
-  tenant: "acme",
-  dataset: "production",
-  memberships: WHO.memberships,
-};
+const WHO = sampleWhoami();
 
 function routesFor(isDemo: boolean): JsonRoute[] {
   return [
@@ -37,7 +19,9 @@ function routesFor(isDemo: boolean): JsonRoute[] {
     {
       match: "/ui/session",
       method: "GET",
-      body: { ...CURRENT_SESSION, user: { ...WHO.user, is_demo: isDemo } },
+      body: sampleCurrentSession(WHO, {
+        user: { ...WHO.user, is_demo: isDemo },
+      }),
     },
   ];
 }
