@@ -2,12 +2,12 @@ import { useQuery } from "@tanstack/react-query";
 import { useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import {
-  tempoSearchTags,
   type AttrValue,
   type ProfileSummaryView,
   type SpanEventView,
   type TempoSpan,
 } from "../../api/tempo";
+import { fields as describeFields } from "../../api/ir/discovery";
 import { ApiError } from "../../api/http";
 import { fetchTraceDetail } from "../../api/traceDetail";
 import { EmptyState } from "../../components/EmptyState";
@@ -52,7 +52,10 @@ import {
 import { spanDetailWidth } from "../../lib/sidebarWidth";
 import { liveRefetchInterval } from "../../lib/live";
 import { goBackOr } from "../../lib/router";
-import { codeLocationFromAttributes, repositoryHints } from "../../lib/sourceLocation";
+import {
+  codeLocationFromAttributes,
+  repositoryHints,
+} from "../../lib/sourceLocation";
 import { useSourceContextEnabled } from "../../lib/useSourceContextEnabled";
 import { formatErrorRate } from "../../lib/vizFormat";
 import { TraceFacets } from "./TraceFacets";
@@ -481,8 +484,9 @@ function CustomDimensionInput({
 }) {
   const [value, setValue] = useState("");
   const tags = useQuery({
-    queryKey: ["trace-tag-names", rangeKey],
-    queryFn: () => tempoSearchTags(range),
+    queryKey: ["ir-trace-fields", rangeKey],
+    queryFn: () =>
+      describeFields("traces", range).then((fs) => fs.map((f) => f.name)),
     staleTime: 60_000,
   });
 
@@ -761,8 +765,8 @@ function GroupList({
       {done && !unresolved && groups.length === 0 && rootGrainOnly && (
         <EmptyState title="No groups in this range">
           Trace grain only inspects each trace's root span, and one of the
-          active filters is on a field that only appears on a child span.
-          Switch to span grain to see it.
+          active filters is on a field that only appears on a child span. Switch
+          to span grain to see it.
         </EmptyState>
       )}
       {done && !unresolved && groups.length === 0 && !rootGrainOnly && (
@@ -914,10 +918,9 @@ function TraceDetail({ state, update }: Props) {
           <>
             <h3>Trace not found</h3>
             <p>
-              <code>{state.trace}</code> wasn&rsquo;t found in the selected
-              time window or the last 30 days. Trace storage is scoped by
-              time — if you know roughly when it happened, widen the range
-              and try again.
+              <code>{state.trace}</code> wasn&rsquo;t found in the selected time
+              window or the last 30 days. Trace storage is scoped by time — if
+              you know roughly when it happened, widen the range and try again.
             </p>
           </>
         ) : (
@@ -1244,7 +1247,9 @@ function SpanDetail({
       <div className="span-detail-sub">
         {kind && <span className={`kind-chip ${kindClass(kind)}`}>{kind}</span>}
         {describeService(span.serviceName, span.attributes)}
-        {span.status === "error" && <em className="tmeta-err error-text"> · error</em>}
+        {span.status === "error" && (
+          <em className="tmeta-err error-text"> · error</em>
+        )}
       </div>
       <button
         className="act-primary btn btn-primary"

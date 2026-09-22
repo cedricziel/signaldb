@@ -1,5 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -602,8 +608,32 @@ describe("TracesView group list", () => {
   it("suggests observed tag names merged with registry hits for the custom dimension", async () => {
     stubFetchRoutes([
       {
-        match: "/tempo/api/search/tags",
-        body: { tagNames: ["http.route", "http.retries", "deployment.env"] },
+        match: "/api/v1/query",
+        bodyMatch: (b) =>
+          (b as { pipeline?: { describe?: { target?: string } }[] })
+            .pipeline?.[0]?.describe?.target === "fields",
+        body: {
+          result: "metadata",
+          window: { start_ns: 0, end_ns: 1 },
+          metadata: {
+            kind: "fields",
+            truncated: false,
+            cost: {
+              mode: "metadata",
+              window_scoped: false,
+              sampled: false,
+              approximate: false,
+            },
+            fields: ["http.route", "http.retries", "deployment.env"].map(
+              (name) => ({
+                name,
+                type: "string",
+                filterable: true,
+                origin: "observed",
+              }),
+            ),
+          },
+        },
       },
       {
         match: "/api/v1/schema/attributes",
@@ -960,7 +990,9 @@ describe("TracesView group detail", () => {
 
   it("notes no spans (not traces) for an empty group at span grain", async () => {
     renderView({ group: "charge", grain: "spans" });
-    expect(await screen.findByText(/no spans in this range/i)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/no spans in this range/i),
+    ).toBeInTheDocument();
   });
 
   it("renders skeleton rows while the drill-in query is pending", async () => {
@@ -1401,9 +1433,7 @@ describe("TracesView detail", () => {
     // Enrichment shows on the group heading (title + namespace, once) and a
     // dotted-underline key — no inline brief without the descriptions
     // toggle (see the log-detail equivalent for that behavior).
-    expect(
-      within(detail).getByText("Kubernetes"),
-    ).toBeInTheDocument();
+    expect(within(detail).getByText("Kubernetes")).toBeInTheDocument();
     expect(within(detail).getByText("otel")).toBeInTheDocument();
     expect(
       within(detail).queryByText("The UID of the Pod."),
@@ -1419,9 +1449,7 @@ describe("TracesView detail", () => {
     expect(orderTerm).toBeDefined();
 
     await userEvent.click(within(detail).getByLabelText("Show descriptions"));
-    expect(
-      within(detail).getByText("The UID of the Pod."),
-    ).toBeInTheDocument();
+    expect(within(detail).getByText("The UID of the Pod.")).toBeInTheDocument();
   });
 
   it("shows the Resource section collapsed behind a one-line summary by default", async () => {
@@ -1843,10 +1871,7 @@ describe("TracesView detail", () => {
         await screen.findByRole("button", { name: "← traces" }),
       );
       // Went back in history rather than issuing a fresh state patch.
-      expect(update).not.toHaveBeenCalledWith(
-        { trace: "" },
-        expect.anything(),
-      );
+      expect(update).not.toHaveBeenCalledWith({ trace: "" }, expect.anything());
       expect(update).not.toHaveBeenCalledWith({ trace: "" });
     } finally {
       window.history.replaceState(null, "");
@@ -2258,7 +2283,7 @@ describe("TracesView facet filtering", () => {
     });
   });
 
-  it("labels an absent-value filter's chip \"(not set)\", not a blank value", async () => {
+  it('labels an absent-value filter\'s chip "(not set)", not a blank value', async () => {
     stubFetchRoutes(routes);
     const update = renderView({
       traceFilters: [{ field: "host.name", value: "", op: "absent" }],
