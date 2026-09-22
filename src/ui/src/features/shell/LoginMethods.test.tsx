@@ -4,10 +4,18 @@ import { describe, expect, it, vi } from "vitest";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { LoginMethods } from "./LoginMethods";
 
-const passwordOnly = { password_enabled: true, oidc: null };
-const both = { password_enabled: true, oidc: { name: "Acme SSO" } };
-const ssoOnly = { password_enabled: false, oidc: { name: "Acme SSO" } };
-const neither = { password_enabled: false, oidc: null };
+const passwordOnly = { password_enabled: true, oidc: null, demo: null };
+const both = {
+  password_enabled: true,
+  oidc: { name: "Acme SSO" },
+  demo: null,
+};
+const ssoOnly = {
+  password_enabled: false,
+  oidc: { name: "Acme SSO" },
+  demo: null,
+};
+const neither = { password_enabled: false, oidc: null, demo: null };
 
 describe("LoginMethods", () => {
   it("probe pending (config undefined): shows the checking hint, no form or SSO control", () => {
@@ -134,6 +142,56 @@ describe("LoginMethods", () => {
       />,
     );
     expect(screen.getByLabelText("Email")).toHaveFocus();
+  });
+
+  it("demo config: shows the demo button above a divider, ahead of the password form", () => {
+    renderWithClient(
+      <LoginMethods
+        config={{
+          password_enabled: true,
+          oidc: null,
+          demo: { username: "demo", password: "demo" },
+        }}
+        redirect="/logs"
+        onAuthenticated={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: "Explore the demo" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("demo / demo")).toBeInTheDocument();
+    expect(screen.getByText("or")).toBeInTheDocument();
+    expect(screen.getByLabelText("Email")).toBeInTheDocument();
+  });
+
+  it("demo button signs in with the demo credentials", async () => {
+    stubFetchRoutes([
+      {
+        match: "/ui/session",
+        body: { tenant: "demo", dataset: "otel-demo", memberships: [] },
+      },
+    ]);
+    const onAuthenticated = vi.fn();
+    renderWithClient(
+      <LoginMethods
+        config={{
+          password_enabled: true,
+          oidc: null,
+          demo: { username: "demo", password: "demo" },
+        }}
+        redirect="/logs"
+        onAuthenticated={onAuthenticated}
+      />,
+    );
+    await userEvent.click(
+      screen.getByRole("button", { name: "Explore the demo" }),
+    );
+    await screen.findByRole("button", { name: "Explore the demo" });
+    expect(onAuthenticated).toHaveBeenCalledWith({
+      tenant: "demo",
+      dataset: "otel-demo",
+      memberships: [],
+    });
   });
 
   it("POSTs credentials to /ui/session and reports the response", async () => {

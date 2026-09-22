@@ -31,6 +31,14 @@ export function useCurrentSession(
   });
 }
 
+/** Whether the signed-in user is the `[demo]` read-only account (change:
+ * demo-mode). Shares {@link useCurrentSession}'s cache entry, so every
+ * caller (the app shell, `TopBar`, `UserMenu`) reads it without an extra
+ * request. */
+export function useIsDemo(): boolean {
+  return useCurrentSession().data?.user.is_demo ?? false;
+}
+
 /** {@link useWhoami}'s query result plus the derived management permission
  * every shell/admin surface otherwise recomputed from `data` itself. */
 export type WhoamiResult = UseQueryResult<WhoamiResponse> & {

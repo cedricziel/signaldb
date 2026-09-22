@@ -7,7 +7,7 @@ import { Link, useNavigate } from "react-router";
 import { clearPersistedTenantContext, toErrorMessage } from "../../api/http";
 import { deleteSession, type WhoamiResponse } from "../../api/session";
 import type { ExploreState } from "../../lib/urlState";
-import { useWhoami } from "../../lib/useWhoami";
+import { useIsDemo, useWhoami } from "../../lib/useWhoami";
 import { isDarkTheme, toggleTheme } from "../../lib/theme";
 import { useEscapeKey } from "../../hooks/useEscapeKey";
 import "./UserMenu.css";
@@ -19,6 +19,7 @@ interface Props {
 export function UserMenu({ state }: Props) {
   const [open, setOpen] = useState(false);
   const { data: who, canManage } = useWhoami(state);
+  const isDemo = useIsDemo();
   const toggle = () => setOpen((prev) => !prev);
   const close = () => setOpen(false);
 
@@ -45,6 +46,7 @@ export function UserMenu({ state }: Props) {
           who={who}
           role={role}
           canManage={canManage}
+          isDemo={isDemo}
           onClose={close}
         />
       )}
@@ -56,10 +58,20 @@ interface PopoverProps {
   who: WhoamiResponse;
   role: string | undefined;
   canManage: boolean;
+  /** Hides mutating surfaces (change: demo-mode): schema/processor editing
+   * is reachable by every role today, so this is checked independently of
+   * `canManage`. */
+  isDemo: boolean;
   onClose: () => void;
 }
 
-function UserMenuPopover({ who, role, canManage, onClose }: PopoverProps) {
+function UserMenuPopover({
+  who,
+  role,
+  canManage,
+  isDemo,
+  onClose,
+}: PopoverProps) {
   const client = useQueryClient();
   const navigate = useNavigate();
   const backdropRef = useRef<HTMLSpanElement>(null);
@@ -143,18 +155,18 @@ function UserMenuPopover({ who, role, canManage, onClose }: PopoverProps) {
               <span className="user-menu-hint">integration</span>
             </Link>
           )}
-          <Link className="user-menu-item" to="/schema" onClick={onClose}>
-            <span>Schema</span>
-            <span className="user-menu-hint">conventions</span>
-          </Link>
-          <Link
-            className="user-menu-item"
-            to="/processors"
-            onClick={onClose}
-          >
-            <span>Processors</span>
-            <span className="user-menu-hint">OTTL</span>
-          </Link>
+          {!isDemo && (
+            <Link className="user-menu-item" to="/schema" onClick={onClose}>
+              <span>Schema</span>
+              <span className="user-menu-hint">conventions</span>
+            </Link>
+          )}
+          {!isDemo && (
+            <Link className="user-menu-item" to="/processors" onClick={onClose}>
+              <span>Processors</span>
+              <span className="user-menu-hint">OTTL</span>
+            </Link>
+          )}
           <a
             className="user-menu-item"
             href="https://signaldb.dev/docs"
