@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
-import { seriesName, type PromSeries } from "../../api/prom";
+import { seriesName, type PromSeries } from "../../api/ir/metrics";
 import { VizTooltip, type VizTooltipRow } from "../../components/VizTooltip";
 import { alignSeries, seriesColorVar, seriesDash } from "../../lib/promSeries";
 import { subscribeTheme } from "../../lib/theme";

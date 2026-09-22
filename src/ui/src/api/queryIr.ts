@@ -3,12 +3,15 @@
 // and unwraps the result envelope, mirroring api/management.ts.
 import "./client";
 
-import { queryIr, type QueryIrRequest, type QueryIrResponse } from "./gen";
+import { queryIr, type QueryIrRequestBody, type QueryIrResponse } from "./gen";
 import { ApiError, retryAfterMsFrom, tenantHeaders } from "./http";
 
-/** Submit an IR document and return the enveloped result. */
+/** Submit a single-document or multi-query (formula) IR request and return
+ * the enveloped result — both shapes respond with the same `QueryIrResponse`
+ * envelope, discriminated at the request level by the presence of `queries`
+ * (see `QueryIrRequestBody`). */
 export async function runIrQuery(
-  doc: QueryIrRequest,
+  doc: QueryIrRequestBody,
 ): Promise<QueryIrResponse> {
   const res = await queryIr({ body: doc, headers: tenantHeaders() });
   if (res.error || !res.data) {

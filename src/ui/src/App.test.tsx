@@ -315,9 +315,7 @@ describe("App", () => {
     await user.click(screen.getByRole("tab", { name: "Traces" }));
     await screen.findByLabelText("Trace ID");
     await user.click(screen.getByRole("tab", { name: "Metrics" }));
-    await screen.findByText(
-      "Build a query above, or switch to PromQL, then Run to chart metrics.",
-    );
+    await screen.findByText("Pick a metric above, then Run to chart it.");
     expect(window.location.pathname).toBe("/metrics");
 
     window.history.back();

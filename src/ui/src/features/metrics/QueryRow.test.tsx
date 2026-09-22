@@ -3,7 +3,7 @@ import { screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
-import { buildPromQL, emptyQuery, type MetricQuery } from "./buildPromQL";
+import { emptyQuery, type MetricQuery } from "./metricQuery";
 import { QueryRow } from "./QueryRow";
 
 const RANGE = { fromMs: 1_000_000, toMs: 2_000_000 };
@@ -12,13 +12,14 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** QueryRow is controlled; hold its state and surface the compiled PromQL. */
+/** QueryRow is controlled; hold its state and surface it as JSON so
+ * assertions can check the structured query the row produced. */
 function Harness() {
   const [query, setQuery] = useState<MetricQuery>(emptyQuery("a"));
   return (
     <>
       <QueryRow query={query} range={RANGE} onChange={setQuery} />
-      <output data-testid="promql">{buildPromQL(query)}</output>
+      <output data-testid="query">{JSON.stringify(query)}</output>
     </>
   );
 }
@@ -117,7 +118,8 @@ function stubMetadata() {
   ]);
 }
 
-const promql = () => screen.getByTestId("promql").textContent;
+const query = (): MetricQuery =>
+  JSON.parse(screen.getByTestId("query").textContent ?? "{}") as MetricQuery;
 
 describe("QueryRow", () => {
   it("builds a query step by step from the visual controls", async () => {
@@ -126,21 +128,21 @@ describe("QueryRow", () => {
     const user = userEvent.setup();
 
     await user.type(screen.getByLabelText("Metric"), "http_reqs");
-    expect(promql()).toBe("http_reqs");
+    expect(query().metric).toBe("http_reqs");
 
     await user.click(screen.getByRole("button", { name: "Add filter" }));
     await user.type(screen.getByLabelText("Filter label"), "service");
     await user.type(screen.getByLabelText("Filter value"), "checkout");
-    expect(promql()).toBe('http_reqs{service="checkout"}');
+    expect(query().filters).toEqual([
+      { label: "service", op: "=", value: "checkout" },
+    ]);
 
     await user.selectOptions(screen.getByLabelText("Aggregation"), "sum");
     await user.type(screen.getByLabelText("Group by"), "service");
-    expect(promql()).toBe('sum by (service)(http_reqs{service="checkout"})');
+    expect(query().agg).toEqual({ op: "sum", by: ["service"] });
 
     await user.selectOptions(screen.getByLabelText("Function"), "rate");
-    expect(promql()).toBe(
-      'sum by (service)(rate(http_reqs{service="checkout"}[5m]))',
-    );
+    expect(query().range).toEqual({ fn: "rate" });
   });
 
   it("carries the full metric and group-by text in a title, for when either overflows", async () => {
@@ -173,10 +175,12 @@ describe("QueryRow", () => {
     await user.click(screen.getByRole("button", { name: "Add filter" }));
     await user.type(screen.getByLabelText("Filter label"), "service");
     await user.type(screen.getByLabelText("Filter value"), "checkout");
-    expect(promql()).toBe('up{service="checkout"}');
+    expect(query().filters).toEqual([
+      { label: "service", op: "=", value: "checkout" },
+    ]);
 
     await user.click(screen.getByRole("button", { name: "Remove filter" }));
-    expect(promql()).toBe("up");
+    expect(query().filters).toEqual([]);
   });
 
   it("populates the metric picker from discovery.metricNames", async () => {

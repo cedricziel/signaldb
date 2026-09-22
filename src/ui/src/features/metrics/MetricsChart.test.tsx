@@ -1,7 +1,7 @@
 import { act, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MetricsChart, rowsForCursorIndex } from "./MetricsChart";
-import type { PromSeries } from "../../api/prom";
+import type { PromSeries } from "../../api/ir/metrics";
 import { formatTimestamp } from "../../lib/vizFormat";
 
 // uPlot needs a real <canvas> 2D context, which jsdom doesn't implement.

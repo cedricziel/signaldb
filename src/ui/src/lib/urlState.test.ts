@@ -31,7 +31,7 @@ describe("parseExploreState", () => {
 
   it("parses a fully-populated URL", () => {
     const state = parseExploreState(
-      "?range=15m&f=level%7C%3D%7Cerror&q=timeout&limit=100&live=1&promql=up",
+      "?range=15m&f=level%7C%3D%7Cerror&q=timeout&limit=100&live=1",
     );
     expect(state.range).toEqual({ type: "relative", seconds: 900 });
     expect(state.filters).toEqual([
@@ -40,7 +40,10 @@ describe("parseExploreState", () => {
     expect(state.search).toBe("timeout");
     expect(state.limit).toBe(100);
     expect(state.live).toBe(true);
-    expect(state.promql).toBe("up");
+  });
+
+  it("ignores a legacy ?promql= param — there is no PromQL escape hatch anymore", () => {
+    expect(parseExploreState("?promql=rate(x[5m])").metricQuery).toBe("");
   });
 
   it("ignores invalid limits and filters", () => {
@@ -98,10 +101,6 @@ describe("buildSearch", () => {
       live: true,
       group: "POST /checkout",
       groupBy: "resource.host.name",
-      // Not `metricQuery` too: only one of `promql`/`metricQuery` is ever
-      // kept (see the dedicated `mq`-precedence tests below), so combining
-      // both here would test a state the app itself never produces.
-      promql: "rate(x[5m])",
       querySource: "traces" as const,
       queryResult: "series" as const,
       queryFilters: [{ label: "kind", op: "=" as const, value: "server" }],
@@ -120,26 +119,6 @@ describe("buildSearch", () => {
     const search = buildSearch(state);
     expect(search).toContain("mq=");
     expect(parseExploreState(search).metricQuery).toBe(mq);
-  });
-
-  it("keeps only mq when a URL carries both mq and promql, preferring mq", () => {
-    const mq = JSON.stringify({ ref: "a", metric: "up", filters: [] });
-    const state = parseExploreState(
-      `?mq=${encodeURIComponent(mq)}&promql=rate(x[5m])`,
-    );
-    expect(state.metricQuery).toBe(mq);
-    expect(state.promql).toBe("");
-  });
-
-  it("serializes only metricQuery when state somehow carries both", () => {
-    const mq = JSON.stringify({ ref: "a", metric: "up", filters: [] });
-    const search = buildSearch({
-      ...DEFAULT_STATE,
-      metricQuery: mq,
-      promql: "rate(x[5m])",
-    });
-    expect(search).toContain("mq=");
-    expect(search).not.toContain("promql=");
   });
 
   it("drops the metrics builder query when switching signals", () => {

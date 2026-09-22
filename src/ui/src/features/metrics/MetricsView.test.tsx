@@ -8,22 +8,26 @@ import { MetricsView } from "./MetricsView";
 import * as queryIrApi from "../../api/queryIr";
 
 // uPlot needs a real canvas; the chart wrapper is exercised as a stub and
-// the data pipeline is covered by prom/promSeries unit tests.
+// the data pipeline is covered by api/ir/metrics + promSeries unit tests.
 vi.mock("./MetricsChart", () => ({
   MetricsChart: ({ series }: { series: unknown[] }) => (
     <div data-testid="metrics-chart">chart:{series.length}</div>
   ),
 }));
 
-// The builder's default (no range function, no formula) path queries Query
-// IR, not PromQL — see api/metricsIr.ts. Mocked at the module boundary, the
-// same way TracesView.test.tsx mocks fetchTraceGroups.
+// Every builder run — and the pickers' own discovery calls — go through
+// runIrQuery; only a `result: "series"` call means an actual chart run.
 vi.mock("../../api/queryIr", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../api/queryIr")>();
   return { ...actual, runIrQuery: vi.fn() };
 });
 
 const runIrQuery = vi.mocked(queryIrApi.runIrQuery);
+
+const discoveryRoutes = [
+  { match: /label\/__name__\/values/, body: { status: "success", data: [] } },
+  { match: /\/labels\?/, body: { status: "success", data: [] } },
+];
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -33,35 +37,12 @@ beforeEach(() => {
   runIrQuery.mockReset();
 });
 
-const MATRIX = {
-  status: "success",
-  data: {
-    resultType: "matrix",
-    result: [
-      {
-        metric: { __name__: "up", service_name: "checkout" },
-        values: [[1000, "1"]],
-      },
-      {
-        metric: { __name__: "up", service_name: "payments" },
-        values: [[1000, "0"]],
-      },
-    ],
-  },
-};
-
 const IR_SERIES = {
   result: "series",
   window: { start_ns: 0, end_ns: 1_000_000_000 },
   series: [
-    {
-      labels: { service_name: "checkout" },
-      points: [[1_000_000_000, 1]],
-    },
-    {
-      labels: { service_name: "payments" },
-      points: [[1_000_000_000, 0]],
-    },
+    { labels: { service_name: "checkout" }, points: [[1_000_000_000, 1]] },
+    { labels: { service_name: "payments" }, points: [[1_000_000_000, 0]] },
   ],
 };
 
@@ -77,34 +58,14 @@ function renderView(state: Partial<ExploreState> = {}) {
 }
 
 describe("MetricsView", () => {
-  it("prompts for a query when none is set", () => {
-    stubFetchRoutes([{ match: "query_range", body: MATRIX }]);
+  it("prompts for a query when none has run", () => {
+    stubFetchRoutes(discoveryRoutes);
     renderView();
-    expect(screen.getByText(/Build a query above/)).toBeInTheDocument();
+    expect(screen.getByText(/Pick a metric above/)).toBeInTheDocument();
   });
 
-  it("submits a raw query from the PromQL escape hatch, staying on PromQL", async () => {
-    stubFetchRoutes([{ match: "query_range", body: MATRIX }]);
-    const update = renderView();
-    await userEvent.click(screen.getByRole("tab", { name: "PromQL" }));
-    await userEvent.type(screen.getByLabelText("PromQL query"), "up ");
-    await userEvent.click(screen.getByRole("button", { name: "Run" }));
-    expect(update).toHaveBeenCalledWith({ promql: "up", metricQuery: "" });
-    // The builder's own discovery pickers call runIrQuery; only a
-    // `result: "series"` call would mean the run itself went through the IR.
-    expect(runIrQuery).not.toHaveBeenCalledWith(
-      expect.objectContaining({ result: "series" }),
-    );
-  });
-
-  it("runs a solo builder query via Query IR, not PromQL, and writes it to ?mq= for reload", async () => {
-    stubFetchRoutes([
-      {
-        match: /label\/__name__\/values/,
-        body: { status: "success", data: [] },
-      },
-      { match: /\/labels\?/, body: { status: "success", data: [] } },
-    ]);
+  it("runs a solo builder query via Query IR and writes it to ?mq= for reload", async () => {
+    stubFetchRoutes(discoveryRoutes);
     runIrQuery.mockResolvedValue(IR_SERIES);
     const update = renderView();
     await userEvent.type(
@@ -114,38 +75,30 @@ describe("MetricsView", () => {
     await userEvent.click(screen.getByRole("button", { name: "Run" }));
     expect(update).toHaveBeenCalledWith({
       metricQuery: expect.stringContaining("signaldb.wal.entries_processed"),
-      promql: "",
     });
     const [{ metricQuery }] = update.mock.calls[0] as [{ metricQuery: string }];
     expect(JSON.parse(metricQuery)).toMatchObject({
-      metric: "signaldb.wal.entries_processed",
+      queries: [{ metric: "signaldb.wal.entries_processed" }],
+      formula: "",
     });
     expect(await screen.findByTestId("metrics-chart")).toHaveTextContent(
       "chart:2",
     );
     expect(runIrQuery).toHaveBeenCalledWith(
-      expect.objectContaining({
-        from: "metrics",
-        result: "series",
-      }),
+      expect.objectContaining({ from: "metrics", result: "series" }),
     );
   });
 
   it("reloads a shared ?mq= link with the builder populated, querying via IR", async () => {
-    stubFetchRoutes([
-      {
-        match: /label\/__name__\/values/,
-        body: { status: "success", data: [] },
-      },
-      { match: /\/labels\?/, body: { status: "success", data: [] } },
-    ]);
+    stubFetchRoutes(discoveryRoutes);
     runIrQuery.mockResolvedValue(IR_SERIES);
     const mq = JSON.stringify({
-      ref: "a",
-      metric: "signaldb.wal.entries_processed",
-      filters: [],
+      queries: [
+        { ref: "a", metric: "signaldb.wal.entries_processed", filters: [] },
+      ],
+      formula: "",
     });
-    renderView({ metricQuery: mq, promql: "" });
+    renderView({ metricQuery: mq });
 
     expect(screen.getByLabelText("Metric")).toHaveValue(
       "signaldb.wal.entries_processed",
@@ -158,15 +111,25 @@ describe("MetricsView", () => {
     );
   });
 
-  it("runs a two-query formula as a single composed expression", async () => {
-    stubFetchRoutes([
-      {
-        match: /label\/__name__\/values/,
-        body: { status: "success", data: [] },
-      },
-      { match: /\/labels\?/, body: { status: "success", data: [] } },
-      { match: "query_range", body: MATRIX },
-    ]);
+  it("reloads the legacy single-MetricQuery ?mq= encoding", async () => {
+    stubFetchRoutes(discoveryRoutes);
+    runIrQuery.mockResolvedValue(IR_SERIES);
+    const legacyMq = JSON.stringify({
+      ref: "a",
+      metric: "legacy_metric",
+      filters: [],
+    });
+    renderView({ metricQuery: legacyMq });
+
+    expect(screen.getByLabelText("Metric")).toHaveValue("legacy_metric");
+    expect(await screen.findByTestId("metrics-chart")).toHaveTextContent(
+      "chart:2",
+    );
+  });
+
+  it("runs a two-query formula as a multi-query IR document", async () => {
+    stubFetchRoutes(discoveryRoutes);
+    runIrQuery.mockResolvedValue(IR_SERIES);
     const update = renderView();
 
     const metricA = screen.getByLabelText("Metric");
@@ -178,112 +141,90 @@ describe("MetricsView", () => {
     await userEvent.type(screen.getByLabelText("Formula"), "(a / b) * 100");
 
     await userEvent.click(screen.getByRole("button", { name: "Run" }));
-    expect(update).toHaveBeenCalledWith({
-      promql: "((http_errors) / (http_total)) * 100",
-      metricQuery: "",
-    });
-    // A formula spans multiple queries — no single metric.name to filter on
-    // in the minimal metrics IR source — so it stays on PromQL. The
-    // builder's own pickers (metric names, label fields) still call
-    // runIrQuery for discovery; only a `result: "series"` call would mean
-    // the run itself went through the IR.
-    expect(runIrQuery).not.toHaveBeenCalledWith(
-      expect.objectContaining({ result: "series" }),
+    expect(await screen.findByTestId("metrics-chart")).toHaveTextContent(
+      "chart:2",
     );
+    expect(runIrQuery).toHaveBeenCalledWith(
+      expect.objectContaining({
+        queries: expect.objectContaining({
+          a: expect.objectContaining({ from: "metrics" }),
+          b: expect.objectContaining({ from: "metrics" }),
+        }),
+        formulas: [{ name: "formula", expr: "(a / b) * 100" }],
+        result: "series",
+      }),
+    );
+    expect(update).toHaveBeenCalledWith({
+      metricQuery: expect.stringContaining("(a / b) * 100"),
+    });
   });
 
   it("renders the chart and a legend entry per series", async () => {
-    stubFetchRoutes([{ match: "query_range", body: MATRIX }]);
-    renderView({ promql: "up" });
+    stubFetchRoutes(discoveryRoutes);
+    runIrQuery.mockResolvedValue(IR_SERIES);
+    const mq = JSON.stringify({
+      queries: [{ ref: "a", metric: "up", filters: [] }],
+      formula: "",
+    });
+    renderView({ metricQuery: mq });
     expect(await screen.findByTestId("metrics-chart")).toHaveTextContent(
       "chart:2",
     );
     const legend = screen.getByRole("list", { name: "Series" });
-    expect(legend).toHaveTextContent('up{service_name="checkout"}');
-    expect(legend).toHaveTextContent('up{service_name="payments"}');
-    // A `?promql=` link with no `?mq=` stays on the PromQL path — only the
-    // builder's own discovery pickers call runIrQuery, never a `series` run.
-    expect(runIrQuery).not.toHaveBeenCalledWith(
-      expect.objectContaining({ result: "series" }),
-    );
-  });
-
-  it("copies a rendered series label", async () => {
-    const writeText = vi.fn();
-    vi.stubGlobal("navigator", { clipboard: { writeText } });
-    stubFetchRoutes([{ match: "query_range", body: MATRIX }]);
-    renderView({ promql: "up" });
-
-    await userEvent.click(
-      await screen.findByRole("button", {
-        name: 'Copy series up{service_name="checkout"}',
-      }),
-    );
-
-    expect(writeText).toHaveBeenCalledWith('up{service_name="checkout"}');
+    expect(legend).toHaveTextContent('service_name="checkout"');
+    expect(legend).toHaveTextContent('service_name="payments"');
   });
 
   it("shows the shared empty state for zero series", async () => {
-    stubFetchRoutes([
-      {
-        match: "query_range",
-        body: { status: "success", data: { resultType: "matrix", result: [] } },
-      },
-    ]);
-    renderView({ promql: "up" });
+    stubFetchRoutes(discoveryRoutes);
+    runIrQuery.mockResolvedValue({
+      result: "series",
+      window: { start_ns: 0, end_ns: 1 },
+      series: [],
+    });
+    const mq = JSON.stringify({
+      queries: [{ ref: "a", metric: "up", filters: [] }],
+      formula: "",
+    });
+    renderView({ metricQuery: mq });
     expect(await screen.findByRole("status")).toHaveTextContent(
       "No series in this range",
     );
   });
 
   it("surfaces query errors", async () => {
-    stubFetchRoutes([
-      {
-        match: "query_range",
-        body: {
-          status: "error",
-          error: "unknown function foo",
-          data: { resultType: "matrix", result: [] },
-        },
-      },
-    ]);
-    renderView({ promql: "foo(up)" });
+    stubFetchRoutes(discoveryRoutes);
+    runIrQuery.mockRejectedValue(new Error("unknown field foo"));
+    const mq = JSON.stringify({
+      queries: [{ ref: "a", metric: "up", filters: [] }],
+      formula: "",
+    });
+    renderView({ metricQuery: mq });
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      /unknown function foo/,
+      /unknown field foo/,
     );
   });
 
-  it("resyncs the builder/draft/ranQuery to a ?mq= that changed via Back/Forward", async () => {
-    stubFetchRoutes([
-      {
-        match: /label\/__name__\/values/,
-        body: { status: "success", data: [] },
-      },
-      { match: /\/labels\?/, body: { status: "success", data: [] } },
-    ]);
+  it("resyncs the builder to a ?mq= that changed via Back/Forward", async () => {
+    stubFetchRoutes(discoveryRoutes);
     runIrQuery.mockResolvedValue(IR_SERIES);
     const client = new QueryClient({
       defaultOptions: { queries: { retry: false } },
     });
+    const mqFor = (metric: string) =>
+      JSON.stringify({
+        queries: [{ ref: "a", metric, filters: [] }],
+        formula: "",
+      });
     const stateA: ExploreState = {
       ...DEFAULT_STATE,
       signal: "metrics",
-      metricQuery: JSON.stringify({
-        ref: "a",
-        metric: "metric_one",
-        filters: [],
-      }),
-      promql: "",
+      metricQuery: mqFor("metric_one"),
     };
     const stateB: ExploreState = {
       ...DEFAULT_STATE,
       signal: "metrics",
-      metricQuery: JSON.stringify({
-        ref: "a",
-        metric: "metric_two",
-        filters: [],
-      }),
-      promql: "",
+      metricQuery: mqFor("metric_two"),
     };
     const { rerender } = render(
       <QueryClientProvider client={client}>
@@ -304,111 +245,23 @@ describe("MetricsView", () => {
     expect(await screen.findByLabelText("Metric")).toHaveValue("metric_two");
   });
 
-  it("clears a stale formula when a ?mq= change re-seeds the builder via Back/Forward", async () => {
-    stubFetchRoutes([
-      {
-        match: /label\/__name__\/values/,
-        body: { status: "success", data: [] },
-      },
-      { match: /\/labels\?/, body: { status: "success", data: [] } },
-    ]);
-    runIrQuery.mockResolvedValue(IR_SERIES);
-    const client = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-    const stateA: ExploreState = {
-      ...DEFAULT_STATE,
-      signal: "metrics",
-      metricQuery: JSON.stringify({
-        ref: "a",
-        metric: "metric_one",
-        filters: [],
-      }),
-      promql: "",
-    };
-    const stateB: ExploreState = {
-      ...DEFAULT_STATE,
-      signal: "metrics",
-      metricQuery: JSON.stringify({
-        ref: "a",
-        metric: "metric_two",
-        filters: [],
-      }),
-      promql: "",
-    };
-    const { rerender } = render(
-      <QueryClientProvider client={client}>
-        <MetricsView state={stateA} update={vi.fn()} />
-      </QueryClientProvider>,
-    );
-    const formulaInput = await screen.findByLabelText("Formula");
-    await userEvent.type(formulaInput, "a - b");
-    expect(formulaInput).toHaveValue("a - b");
-
-    rerender(
-      <QueryClientProvider client={client}>
-        <MetricsView state={stateB} update={vi.fn()} />
-      </QueryClientProvider>,
-    );
-
-    // A formula referencing a query letter the reseed just dropped must not
-    // survive the navigation — it would silently compile against whatever
-    // letters happen to still exist.
-    expect(await screen.findByLabelText("Formula")).toHaveValue("");
-  });
-
-  it("resyncs the PromQL draft to a ?promql= that changed via Back/Forward", async () => {
-    stubFetchRoutes([{ match: "query_range", body: MATRIX }]);
-    const client = new QueryClient({
-      defaultOptions: { queries: { retry: false } },
-    });
-    const stateA: ExploreState = {
-      ...DEFAULT_STATE,
-      signal: "metrics",
-      promql: "up",
-    };
-    const stateB: ExploreState = {
-      ...DEFAULT_STATE,
-      signal: "metrics",
-      promql: "down",
-    };
-    const { rerender } = render(
-      <QueryClientProvider client={client}>
-        <MetricsView state={stateA} update={vi.fn()} />
-      </QueryClientProvider>,
-    );
-    await screen.findByTestId("metrics-chart");
-
-    rerender(
-      <QueryClientProvider client={client}>
-        <MetricsView state={stateB} update={vi.fn()} />
-      </QueryClientProvider>,
-    );
-    await userEvent.click(screen.getByRole("tab", { name: "PromQL" }));
-    expect(screen.getByLabelText("PromQL query")).toHaveValue("down");
-  });
-
   it("does not show the empty-builder note once a builder query has actually run", async () => {
-    stubFetchRoutes([
-      {
-        match: /label\/__name__\/values/,
-        body: { status: "success", data: [] },
-      },
-      { match: /\/labels\?/, body: { status: "success", data: [] } },
-    ]);
+    stubFetchRoutes(discoveryRoutes);
     runIrQuery.mockResolvedValue(IR_SERIES);
-    // `?mq=` runs via IR, leaving `state.promql` at "" — the empty-builder
-    // note must key off `ranQuery`, not `promql === ""` alone.
     renderView({
       metricQuery: JSON.stringify({
-        ref: "a",
-        metric: "signaldb.wal.entries_processed",
-        filters: [],
+        queries: [
+          {
+            ref: "a",
+            metric: "signaldb.wal.entries_processed",
+            filters: [],
+          },
+        ],
+        formula: "",
       }),
-      promql: "",
     });
 
     await screen.findByTestId("metrics-chart");
-    expect(screen.queryByText(/Build a query above/)).not.toBeInTheDocument();
+    expect(screen.queryByText(/Pick a metric above/)).not.toBeInTheDocument();
   });
 });

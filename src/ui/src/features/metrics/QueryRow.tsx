@@ -25,7 +25,7 @@ import {
   type MetricQuery,
   type RangeFn,
   type SpaceAgg,
-} from "./buildPromQL";
+} from "./metricQuery";
 
 interface Props {
   query: MetricQuery;
@@ -186,10 +186,7 @@ export function QueryRow({ query, range, onChange }: Props) {
         onChange={(e) =>
           patch({
             range: e.target.value
-              ? {
-                  fn: e.target.value as RangeFn,
-                  window: query.range?.window ?? "5m",
-                }
+              ? { fn: e.target.value as RangeFn }
               : undefined,
           })
         }
@@ -201,19 +198,6 @@ export function QueryRow({ query, range, onChange }: Props) {
           </option>
         ))}
       </select>
-      {query.range && (
-        <input
-          className="qrow-window"
-          aria-label="Window"
-          placeholder="5m"
-          value={query.range.window}
-          onChange={(e) =>
-            patch({
-              range: { fn: query.range?.fn ?? "rate", window: e.target.value },
-            })
-          }
-        />
-      )}
     </div>
   );
 }

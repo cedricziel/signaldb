@@ -9,12 +9,12 @@ import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { runIrQuery } from "../../api/queryIr";
-import { irSeriesToPromSeries } from "../../api/metricsIr";
+import { irSeriesToPromSeries } from "../../api/ir/metrics";
 import { AttributeValue } from "../../components/AttributeValue";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
 import type { QueryIrRequest, QueryIrResponse } from "../../api/gen";
-import type { PromSeries } from "../../api/prom";
+import type { PromSeries } from "../../api/ir/metrics";
 import { seriesColorVar } from "../../lib/promSeries";
 import { MetricsChart } from "../metrics/MetricsChart";
 import "../metrics/metrics.css";

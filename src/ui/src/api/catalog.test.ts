@@ -166,7 +166,7 @@ describe("fetchCatalogEntities", () => {
 
   it("reports what each signal observed instead of one summed volume", async () => {
     vi.mocked(runIrQuery).mockImplementation(async (doc) => {
-      if (doc.from === "traces") {
+      if ("from" in doc && doc.from === "traces") {
         return {
           result: "table",
           columns: [],
@@ -198,7 +198,7 @@ describe("fetchCatalogEntities", () => {
 
   it("omits trace-derived measurements for an entity never observed in traces", async () => {
     vi.mocked(runIrQuery).mockImplementation(async (doc) => {
-      if (doc.from === "traces") {
+      if ("from" in doc && doc.from === "traces") {
         return {
           result: "table",
           columns: [],
@@ -233,7 +233,7 @@ describe("fetchCatalogEntities", () => {
     // 1 error among 10 traces, plus 90 log lines for the same host — the
     // error is a rate of the 10 traces, not of 100 mixed records.
     vi.mocked(runIrQuery).mockImplementation(async (doc) => {
-      if (doc.from === "traces") {
+      if ("from" in doc && doc.from === "traces") {
         return {
           result: "table",
           columns: [],
@@ -263,7 +263,7 @@ describe("fetchCatalogEntities", () => {
 
   it("ranks by total observations without presenting the total as volume", async () => {
     vi.mocked(runIrQuery).mockImplementation(async (doc) => {
-      if (doc.from === "traces") {
+      if ("from" in doc && doc.from === "traces") {
         return {
           result: "table",
           columns: [],
