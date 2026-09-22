@@ -294,6 +294,11 @@ impl LogicalSchema {
             // (#1205); the remaining profile scalars still resolve through
             // the planner's alias table.
             LogicalField::record_metadata("profiles", "timestamp", LogicalType::TimestampNs),
+            // The pprof sample type (`cpu`, `alloc_objects`, ...) — the
+            // logical name a profile-type picker filters and discovers on.
+            // Aliased to the `sample_type` column in ir_planner's profiles
+            // `SourcePlan`.
+            LogicalField::record_metadata("profiles", "profile.type", LogicalType::String),
         ];
         fields.push(LogicalField::attribute(
             "metrics",
