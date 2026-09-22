@@ -66,7 +66,6 @@ use writer::IcebergTableWriter;
 
 let mut writer = IcebergTableWriter::new(
     &catalog_manager,
-    object_store,
     "my_tenant".to_string(),
     "my_dataset".to_string(),
     "metrics_gauge".to_string(),

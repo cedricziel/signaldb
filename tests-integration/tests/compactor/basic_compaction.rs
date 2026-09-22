@@ -10,7 +10,6 @@ use common::catalog_manager::CatalogManager;
 use compactor::executor::{CompactionExecutor, ExecutorConfig};
 use compactor::metrics::CompactionMetrics;
 use compactor::planner::{CompactionPlanner, PlannerConfig};
-use object_store::memory::InMemory;
 use std::sync::Arc;
 use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity};
 use tests_integration::generators;
@@ -32,14 +31,12 @@ async fn test_basic_compaction() -> Result<()> {
         .with_tenant("test-tenant", "test-dataset")
         .build();
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
     let table_name = "traces";
     let mut writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),

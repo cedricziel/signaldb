@@ -31,7 +31,6 @@ use common::flight::transport::InMemoryFlightTransport;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use datafusion::prelude::SessionContext;
 use futures::StreamExt;
-use object_store::memory::InMemory;
 use querier::QuerierFlightService;
 use tests_integration::generators::{self, BLOOM_HIGH_SENTINEL, BLOOM_LOW_SENTINEL};
 use tonic::Request;
@@ -81,7 +80,6 @@ fn target_instants(boundary: i64) -> [i64; TARGET_SPAN_COUNT] {
 async fn seed_traces(catalog_manager: &Arc<CatalogManager>, boundary: i64) -> Result<()> {
     let mut writer = IcebergTableWriter::new(
         catalog_manager,
-        Arc::new(InMemory::new()),
         TENANT.to_string(),
         DATASET.to_string(),
         TABLE.to_string(),

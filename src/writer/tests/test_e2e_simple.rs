@@ -5,16 +5,13 @@ use datafusion::arrow::array::{
     Date32Array, Float64Array, Int32Array, RecordBatch, StringArray, TimestampNanosecondArray,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
-use object_store::memory::InMemory;
 use std::sync::Arc;
 use writer::IcebergTableWriter;
 
 async fn create_writer(config: Configuration, tenant_id: &str) -> Result<IcebergTableWriter> {
     let catalog_manager = CatalogManager::new(config).await?;
-    let object_store = Arc::new(InMemory::new());
     IcebergTableWriter::new(
         &catalog_manager,
-        object_store,
         tenant_id.to_string(),
         "test_dataset".to_string(),
         "metrics_gauge".to_string(),

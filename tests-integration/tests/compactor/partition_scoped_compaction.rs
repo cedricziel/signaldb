@@ -20,7 +20,6 @@ use compactor::executor::{CompactionExecutor, CompactionStatus, ExecutorConfig};
 use compactor::metrics::CompactionMetrics;
 use compactor::planner::{CompactionCandidate, PartitionStats};
 use iceberg_rust::table::Table;
-use object_store::memory::InMemory;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity};
@@ -97,7 +96,6 @@ fn aligned_hour_start(hours_ago: i64) -> i64 {
 #[tokio::test]
 async fn compaction_rewrites_only_the_target_partition() -> Result<()> {
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
@@ -105,7 +103,6 @@ async fn compaction_rewrites_only_the_target_partition() -> Result<()> {
 
     let mut writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
@@ -223,7 +220,6 @@ async fn compaction_rewrites_only_the_target_partition() -> Result<()> {
 #[tokio::test]
 async fn concurrent_append_does_not_invalidate_the_delta_commit() -> Result<()> {
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
@@ -231,7 +227,6 @@ async fn concurrent_append_does_not_invalidate_the_delta_commit() -> Result<()> 
 
     let mut writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
@@ -297,7 +292,6 @@ async fn concurrent_append_does_not_invalidate_the_delta_commit() -> Result<()> 
     // live ingest running alongside compaction of an older hour.
     let mut concurrent_writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
@@ -402,7 +396,6 @@ async fn oversized_partition_stays_within_its_memory_budget() -> Result<()> {
     config.compactor.memory_limit_mb = 1;
 
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
@@ -410,7 +403,6 @@ async fn oversized_partition_stays_within_its_memory_budget() -> Result<()> {
 
     let mut writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
@@ -519,7 +511,6 @@ async fn wide_rows_compact_only_under_a_bounded_scan_batch() -> Result<()> {
         config.compactor.scan_batch_size = scan_batch_size;
 
         let catalog_manager = Arc::new(CatalogManager::new(config).await?);
-        let object_store = Arc::new(InMemory::new());
 
         let tenant_id = "test-tenant";
         let dataset_id = "test-dataset";
@@ -527,7 +518,6 @@ async fn wide_rows_compact_only_under_a_bounded_scan_batch() -> Result<()> {
 
         let mut writer = IcebergTableWriter::new(
             &catalog_manager,
-            object_store.clone(),
             tenant_id.to_string(),
             dataset_id.to_string(),
             table_name.to_string(),
@@ -641,7 +631,6 @@ async fn unspillable_reservation_over_budget_fails_with_attributable_resource_er
     config.compactor.target_partitions = 8;
 
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
@@ -649,7 +638,6 @@ async fn unspillable_reservation_over_budget_fails_with_attributable_resource_er
 
     let mut writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
@@ -738,7 +726,6 @@ async fn unspillable_reservation_over_budget_fails_with_attributable_resource_er
 #[tokio::test]
 async fn delta_commit_aborts_when_its_inputs_are_no_longer_live() -> Result<()> {
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
@@ -746,7 +733,6 @@ async fn delta_commit_aborts_when_its_inputs_are_no_longer_live() -> Result<()> 
 
     let mut writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),

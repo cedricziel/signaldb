@@ -720,15 +720,12 @@ async fn files_replaced_by_compaction_stay_protected_while_snapshots_retained() 
         .with_tenant("test-tenant", "test-dataset")
         .build();
     let catalog_manager = Arc::new(common::catalog_manager::CatalogManager::new(config).await?);
-    let object_store: Arc<dyn object_store::ObjectStore> =
-        Arc::new(object_store::memory::InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
     let table_name = "traces";
     let mut writer = writer::IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
@@ -1370,15 +1367,12 @@ async fn large_table_detection_reads_each_manifest_once_and_flags_only_orphans()
         .with_tenant("scale-tenant", "scale-dataset")
         .build();
     let catalog_manager = Arc::new(common::catalog_manager::CatalogManager::new(config).await?);
-    let object_store: Arc<dyn object_store::ObjectStore> =
-        Arc::new(object_store::memory::InMemory::new());
 
     let tenant_id = "scale-tenant";
     let dataset_id = "scale-dataset";
     let table_name = "traces";
     let mut writer = writer::IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),

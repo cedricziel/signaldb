@@ -87,8 +87,6 @@ async fn seed() -> Env {
             .await
             .expect("catalog manager"),
     );
-    let object_store =
-        common::storage::create_object_store_from_dsn(&storage_dsn).expect("object store");
 
     let base_ts_ms = chrono::Utc::now().timestamp_millis() - PARTITION_COUNT as i64 * DAY_MS;
     let gen_config = DataGeneratorConfig {
@@ -102,7 +100,6 @@ async fn seed() -> Env {
     // Traces: bulk volume + bloom-only-prunable files holding the target.
     let mut traces = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         TENANT.to_string(),
         DATASET.to_string(),
         "traces".to_string(),
@@ -123,7 +120,6 @@ async fn seed() -> Env {
 
     let mut logs = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         TENANT.to_string(),
         DATASET.to_string(),
         "logs".to_string(),
@@ -136,7 +132,6 @@ async fn seed() -> Env {
 
     let mut metrics = IcebergTableWriter::new(
         &catalog_manager,
-        object_store,
         TENANT.to_string(),
         DATASET.to_string(),
         "metrics_gauge".to_string(),

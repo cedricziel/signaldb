@@ -28,7 +28,6 @@ use common::flight::decode::flight_data_vec_to_batches;
 use common::flight::transport::InMemoryFlightTransport;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use futures::StreamExt;
-use object_store::memory::InMemory;
 use querier::QuerierFlightService;
 use tests_integration::compaction_helpers::{MILLIS_PER_HOUR, aligned_hour_start};
 use tests_integration::generators;
@@ -110,10 +109,8 @@ async fn wide_row_sorts_succeed_only_under_a_bounded_scan_batch() -> Result<()> 
         .build();
 
     let catalog_manager = Arc::new(CatalogManager::new(config.clone()).await?);
-    let object_store = Arc::new(InMemory::new());
     let mut writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store,
         TENANT.to_string(),
         DATASET.to_string(),
         TABLE.to_string(),

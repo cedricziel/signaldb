@@ -73,10 +73,8 @@ async fn create_writer(config: &Configuration) -> IcebergTableWriter {
     let catalog_manager = CatalogManager::new(config.clone())
         .await
         .expect("Failed to create catalog manager");
-    let object_store = Arc::new(object_store::memory::InMemory::new());
     IcebergTableWriter::new(
         &catalog_manager,
-        object_store,
         format!("bench_tenant_{}", uuid::Uuid::new_v4().simple()),
         "bench_dataset".to_string(),
         "metrics_gauge".to_string(),

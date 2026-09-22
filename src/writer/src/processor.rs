@@ -324,6 +324,7 @@ pub struct WalProcessor {
     /// ever affects its own tenant, and each cycle drains every cached WAL.
     wal_manager: Arc<WalManager>,
     catalog_manager: Arc<CatalogManager>,
+    #[allow(dead_code)]
     object_store: Arc<dyn ObjectStore>,
     /// Cache of table writers per tenant/table combination.
     ///
@@ -1226,7 +1227,6 @@ impl WalProcessor {
                 let writer = Arc::new(tokio::sync::Mutex::new(
                     IcebergTableWriter::new(
                         &self.catalog_manager,
-                        self.object_store.clone(),
                         tenant_id.to_string(),
                         dataset_id.to_string(),
                         table_name.to_string(),
@@ -2372,7 +2372,6 @@ mod tests {
 
         let mut writer = IcebergTableWriter::new(
             &catalog_manager,
-            object_store,
             "acme".to_string(),
             "production".to_string(),
             "metrics_gauge".to_string(),

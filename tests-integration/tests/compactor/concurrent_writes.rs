@@ -8,7 +8,6 @@ use common::catalog_manager::CatalogManager;
 use compactor::executor::{CompactionExecutor, CompactionStatus, ExecutorConfig};
 use compactor::metrics::CompactionMetrics;
 use compactor::planner::{CompactionCandidate, PartitionStats};
-use object_store::memory::InMemory;
 use std::sync::Arc;
 use tests_integration::compaction_helpers::busiest_partition;
 use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity};
@@ -61,7 +60,6 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
 
     // Setup: Create in-memory catalog and object store
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
@@ -72,7 +70,6 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
 
     let mut writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
@@ -151,7 +148,6 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
 
     let mut concurrent_writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
@@ -274,7 +270,6 @@ async fn test_concurrent_compactions_different_partitions() -> Result<()> {
     tracing::info!("=== Starting concurrent compactions test ===");
 
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
@@ -283,7 +278,6 @@ async fn test_concurrent_compactions_different_partitions() -> Result<()> {
     // Create initial data via Writer
     let mut writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
