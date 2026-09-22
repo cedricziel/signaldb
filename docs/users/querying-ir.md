@@ -23,12 +23,15 @@ queries over `logs`, `traces`, profile summaries, and metrics**. The `metrics`
 source covers the scalar-value case — group/filter a metric by name and
 attributes, aggregate, bucket by `step` — the same as every other source. The
 `metrics_histogram` source plus the `histogram_quantile` stage cover
-percentile-over-buckets, and the `rate`/`increase` aggregate functions cover
-counter rates (see [Counter rate](#counter-rate-rateincrease-v6)). Arithmetic
-across several queries' results — formulas — is a separate multi-query
-document shape (see [Formulas](#formulas-cross-query-arithmetic-d5)). `irate`
-stays PromQL-only. Cross-signal correlation and structural trace matching are
-separate, later capabilities (see [Roadmap](#roadmap)).
+percentile-over-buckets, and the `rate`/`increase`/`irate`/`*_over_time`
+per-series range functions cover counter rates and windowed reductions (see
+[Counter rate](#counter-rate-rateincrease-v6) and
+[More range functions](#more-range-functions-across-and-window-v7)).
+Arithmetic across several queries' results — formulas — is a separate
+multi-query document shape (see
+[Formulas](#formulas-cross-query-arithmetic-d5)). Cross-signal correlation and
+structural trace matching are separate, later capabilities (see
+[Roadmap](#roadmap)).
 
 ## The endpoint
 
@@ -325,6 +328,55 @@ always produce a `Float64` series.
 A `step` aggregate still allows exactly one aggregate output, so `rate`/
 `increase` cannot share a stage with another aggregate function.
 
+### More range functions, `across`, and `window` (v7)
+
+`rate`/`increase` belong to a wider family of **per-series range
+functions** — every one legal only with `step` set and only on the
+`metrics`/`metrics_histogram` sources, computed per individual series exactly
+as `rate`/`increase` are:
+
+- `irate` — instantaneous per-second rate from the **last two** samples in
+  the window, counter-reset aware like `rate`, but reacting to the most
+  recent pair rather than averaging over the whole window (PromQL's
+  `irate()`).
+- `avg_over_time`, `min_over_time`, `max_over_time`, `sum_over_time`,
+  `count_over_time` — the corresponding reduction over the raw values seen in
+  the window, no counter-reset logic (these apply to gauges as much as
+  counters).
+
+Two more fields on the aggregate, both `irVersion` 7:
+
+- **`across`** — the reducer that folds each `by` group's per-series values
+  into one value per step: `sum` (default — the `rate`/`increase`
+  behaviour), `avg`, `min`, `max`, or `count`. This is what `avg by
+(service.name) (rate(...))` needs: `by: ["service.name"], aggs: [{ "fn":
+"rate", ..., "across": "avg" }]`.
+- **`window`** — the lookback window each step's value is computed over,
+  independent of `step`: each step's value uses samples in the window ending
+  at that sample, evaluated at the sample closest to the step's own point in
+  time. Defaults to `step` (today's behaviour — `rate`/`increase` without a
+  `window` are unchanged). A `window` narrower than `step` is legal — PromQL
+  allows the same, and it simply means samples in the gap between windows are
+  never counted.
+
+```jsonc
+{
+  "aggregate": {
+    "by": ["service.name"],
+    "aggs": [
+      {
+        "fn": "rate",
+        "of": "metric.value",
+        "as": "requests_per_second",
+        "across": "avg",
+        "window": "5m",
+      },
+    ],
+    "step": "1m",
+  },
+}
+```
+
 ### Scoping an aggregate to a subset
 
 An aggregate may carry an optional `where` predicate scoping which records _it_
@@ -596,9 +648,12 @@ This is what makes an OTel-native dotted metric name — like
 queryable at all: PromQL's grammar can't lex a dot in a bare metric-name
 identifier, so the same query over `/prometheus/api/v1/query_range` 400s
 before it reaches the querier. The IR's field resolution has no such
-restriction. `rate`/`increase` over `metrics` are aggregate functions (see
-[Counter rate](#counter-rate-rateincrease-v6)); `irate` and cross-series
-arithmetic stay PromQL-only until they have an HTTP surface of their own.
+restriction. `rate`/`increase`/`irate`/`*_over_time` over `metrics` are
+aggregate functions (see
+[Counter rate](#counter-rate-rateincrease-v6) and
+[More range functions](#more-range-functions-across-and-window-v7));
+cross-series arithmetic stays PromQL-only until it has an HTTP surface of its
+own.
 
 ## Histograms
 
@@ -1013,8 +1068,11 @@ so it is designed and reviewed on its own risk profile:
 - **cross-signal correlate** — a `correlate` join stage (the IR becomes a DAG).
 - **structural traces** — a `match` stage + a `trace` result envelope.
 
-`rate`/`increase` (counter delta over a window — see
-[Counter rate](#counter-rate-rateincrease-v6)) and cross-query formulas (see
+`rate`/`increase`/`irate`/`*_over_time` (counter delta and windowed
+reductions over a window — see
+[Counter rate](#counter-rate-rateincrease-v6) and
+[More range functions](#more-range-functions-across-and-window-v7)) and
+cross-query formulas (see
 [Formulas](#formulas-cross-query-arithmetic-d5)) already work today.
 
 Also deferred: the compatibility dialects lowering _into_ the IR (one engine),

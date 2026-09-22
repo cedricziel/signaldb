@@ -24,6 +24,8 @@ Groups ≈ PRs, in design D6 order. TDD throughout.
 - [x] 4.1 Tests: reset scenario, rejection without `step` / on non-metric sources (query-ir `validate.rs` + querier `ir_planner.rs`; no PromQL-agreement test — see handback)
 - [x] 4.2 `rate`/`increase` in `Agg`, planner window, schema version bump, docs, MCP tool text (no supported-function listing in the MCP tool description to update)
 - [x] 4.3 Metrics builder compiles range-function rows to the IR (`rate`/`increase` only — `irate`/`*_over_time` have no IR stage and are no longer offered by the builder; see the handback in the change's PR/commit history for the full list of dropped options)
+- [x] 4.4 IR v7: `irate`/`avg_over_time`/`min_over_time`/`max_over_time`/`sum_over_time`/`count_over_time` per-series range functions, an aggregate `across` reducer (`sum`/`avg`/`min`/`max`/`count`), and a `window` lookback independent of `step` — `query-ir` (`AggFn`, `Agg.across`/`Agg.window`, validation) and `querier::query::ir_planner::lower_rate_aggregate` (RANGE-frame window evaluation, `across` reduction); docs
+- [x] 4.5 Metrics builder restores `irate`/`*_over_time`, a window input, and the `across` reducer on top of IR v7 (`RangeFnSpec.across`/`.window`, `QueryRow`'s window/across controls); old `{fn}`-only URLs still load
 
 ## 5. IR formulas
 

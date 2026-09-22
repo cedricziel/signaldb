@@ -622,7 +622,7 @@ against [`/prometheus/api/v1`](querying-promql.md)). A query row reads left
 to right as a sentence:
 
 ```
-[ a ]  metric ▾   from ⟨ filters ⟩   avg by ⟨ group ⟩   function ▾
+[ a ]  metric ▾   from ⟨ filters ⟩   avg by ⟨ group ⟩   function ▾   window   across ▾
 ```
 
 - **Metric** — type or pick a metric name; suggestions come from the Query
@@ -635,11 +635,17 @@ fields`/`values`), so you filter on what exists rather than guessing. Each
 - **aggregation** — choose a space aggregation (`sum`/`avg`/`min`/`max`/
   `count`) and an optional comma-separated **group by** to get one series per
   tag value.
-- **function** — an optional counter-rate function, `rate` or `increase`
-  (see [Counter rate](querying-ir.md#counter-rate-rateincrease-v6)), computed
-  over the chart's own step width — there's no separate window to set.
-  PromQL's `irate` and the `*_over_time` gauge rollups have no Query IR
-  equivalent yet and aren't offered here.
+- **function** — an optional per-series range function: `rate`/`increase`
+  (see [Counter rate](querying-ir.md#counter-rate-rateincrease-v6)), `irate`,
+  or `avg_over_time`/`min_over_time`/`max_over_time`/`sum_over_time`/
+  `count_over_time` (see
+  [More range functions](querying-ir.md#more-range-functions-across-and-window-v7)).
+- **window** — an optional lookback window (`5m`, `30s`, …) for the selected
+  function, independent of the chart's own step width. Left blank, it
+  defaults to the step, which is today's behaviour.
+- **across** — how the function's per-series values fold into each group
+  (`sum`/`avg`/`min`/`max`/`count`, default `sum`) — this is what `avg by
+(service) (rate(...))` needs.
 
 Labels are annotated with their approximate value count (the `cardinality`
 estimate `describe: fields` reports for each one), and grouping by a
