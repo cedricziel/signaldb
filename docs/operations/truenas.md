@@ -133,8 +133,10 @@ and bump them in the compose instead of pulling `:main`.
 is a separate, self-contained app for a public demo: a SignalDB monolith fed
 by a trimmed [OpenTelemetry Demo](https://github.com/open-telemetry/opentelemetry-demo)
 (frontend, cart + Valkey, product catalog, currency, recommendation, ad,
-checkout, payment, shipping, quote, email and the Locust load generator — no
-Kafka, flagd or Envoy). All demo telemetry lands in tenant `demo`, dataset
+checkout, payment, shipping, quote, email, flagd with every flag off, and the
+Locust load generator — no Kafka or Envoy). The flag definitions and the product
+list, which upstream mounts from its source tree, are inlined as compose
+`configs:`. All demo telemetry lands in tenant `demo`, dataset
 `otel-demo`.
 
 - `signaldb.toml` is inlined through a compose `configs:` entry, so the data
