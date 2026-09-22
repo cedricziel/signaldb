@@ -32,6 +32,19 @@ function isDescribeFields(from: string) {
   };
 }
 
+/** The `by` dimensions of a request's `aggregate` stage, wherever it sits in
+ * the pipeline — distinguishes the service-level RED aggregate
+ * (`by: ["service.name", "service.namespace"]`) from the entity detail's
+ * operations breakdown (`by: [..., "span.name"]`, see `EntityDetail.tsx`'s
+ * `breakdownEntity`), both `from: "traces", result: "table"`. */
+function aggregateBy(b: unknown): string[] {
+  const body = b as { pipeline?: Array<{ aggregate?: { by?: string[] } }> };
+  for (const stage of body.pipeline ?? []) {
+    if (stage.aggregate?.by) return stage.aggregate.by;
+  }
+  return [];
+}
+
 /** Field metadata for the traces source — enough for the catalog to report
  * itself as "analyzed" and offer the "service" identity dimension. */
 const tracesFieldsRoute: JsonRoute = {
@@ -67,7 +80,9 @@ const tracesFieldsRoute: JsonRoute = {
  * `entityTypes.ts`). */
 const servicesRoute: JsonRoute = {
   match: "/api/v1/query",
-  bodyMatch: irBody((b) => b.result === "table" && b.from === "traces"),
+  bodyMatch: (b) =>
+    irBody((body) => body.result === "table" && body.from === "traces")(b) &&
+    !aggregateBy(b).includes("span.name"),
   body: {
     result: "table",
     rows: [
@@ -111,6 +126,83 @@ const servicesRoute: JsonRoute = {
   },
 };
 
+/** The entity detail's operations breakdown (`EntityDetail.tsx`'s
+ * `breakdownEntity`, identity `["span.name"]`, pinned to the drilled-in
+ * service): [span.name, n, errors, p50, p95, last]. */
+const operationsBreakdownRoute: JsonRoute = {
+  match: "/api/v1/query",
+  bodyMatch: (b) =>
+    irBody((body) => body.result === "table" && body.from === "traces")(b) &&
+    aggregateBy(b).includes("span.name"),
+  body: {
+    result: "table",
+    rows: [
+      [
+        "POST /checkout",
+        12_400,
+        88,
+        40_000_000,
+        190_000_000,
+        "1700003600000000000",
+      ],
+      ["GET /cart", 4_100, 6, 15_000_000, 60_000_000, "1700003550000000000"],
+      [
+        "POST /checkout/validate",
+        1_700,
+        18,
+        30_000_000,
+        160_000_000,
+        "1700003500000000000",
+      ],
+    ],
+  },
+};
+
+/** The entity list's activity sparkline (`buildActivityDoc`, `from:
+ * "traces", result: "series"`, grouped by the service identity) — the
+ * fallback column shown for an entity type the registry names no metric
+ * for, which "service" is (see `useSparklineColumn`'s `activity` path). */
+const activitySparklineRoute: JsonRoute = {
+  match: "/api/v1/query",
+  bodyMatch: irBody((b) => b.result === "series" && b.from === "traces"),
+  body: {
+    result: "series",
+    series: [
+      {
+        labels: { service_name: "checkout", service_namespace: "storefront" },
+        points: Array.from({ length: 20 }, (_, i) => [
+          1_700_000_000_000_000_000 + i * 180_000_000_000,
+          40 + (i % 6) * 3,
+        ]),
+      },
+      {
+        labels: { service_name: "payments", service_namespace: "storefront" },
+        points: Array.from({ length: 20 }, (_, i) => [
+          1_700_000_000_000_000_000 + i * 180_000_000_000,
+          18 + (i % 4) * 2,
+        ]),
+      },
+      {
+        labels: { service_name: "inventory", service_namespace: "storefront" },
+        points: Array.from({ length: 20 }, (_, i) => [
+          1_700_000_000_000_000_000 + i * 180_000_000_000,
+          12 + (i % 3),
+        ]),
+      },
+      {
+        labels: {
+          service_name: "notifications",
+          service_namespace: "platform",
+        },
+        points: Array.from({ length: 20 }, (_, i) => [
+          1_700_000_000_000_000_000 + i * 180_000_000_000,
+          4 + (i % 2),
+        ]),
+      },
+    ],
+  },
+};
+
 /** Member spans for the entity detail's "Recent matching spans" table
  * (`buildMembersDoc`, `from: "traces"`, `result: "rows"`) — same eight-column
  * shape `TracesView.stories.tsx`'s span route uses. */
@@ -150,6 +242,8 @@ const routes: JsonRoute[] = [
   catchAllMetrics,
   tracesFieldsRoute,
   servicesRoute,
+  operationsBreakdownRoute,
+  activitySparklineRoute,
   membersRoute,
 ];
 
