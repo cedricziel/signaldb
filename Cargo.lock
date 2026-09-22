@@ -17,10 +17,10 @@ dependencies = [
  "flate2",
  "futures",
  "http-body",
- "opentelemetry 0.33.0",
+ "opentelemetry",
  "opentelemetry-appender-tracing",
- "opentelemetry-proto 0.32.0",
- "opentelemetry_sdk 0.33.0",
+ "opentelemetry-proto",
+ "opentelemetry_sdk",
  "ottl",
  "prost",
  "serde",
@@ -1314,12 +1314,12 @@ dependencies = [
  "libc",
  "object_store",
  "once_cell",
- "opentelemetry 0.33.0",
+ "opentelemetry",
  "opentelemetry-appender-tracing",
  "opentelemetry-otlp",
- "opentelemetry-proto 0.32.0",
+ "opentelemetry-proto",
  "opentelemetry-semantic-conventions",
- "opentelemetry_sdk 0.33.0",
+ "opentelemetry_sdk",
  "ottl",
  "prost",
  "pyroscope",
@@ -1386,8 +1386,8 @@ dependencies = [
  "humantime-serde",
  "iceberg-rust",
  "object_store",
- "opentelemetry 0.33.0",
- "opentelemetry_sdk 0.33.0",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
@@ -4495,8 +4495,8 @@ dependencies = [
  "common",
  "dashmap",
  "futures",
- "opentelemetry 0.33.0",
- "opentelemetry_sdk 0.33.0",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "reqwest 0.13.5",
  "rmcp",
  "serde",
@@ -5054,20 +5054,6 @@ checksum = "7c87def4c32ab89d880effc9e097653c8da5d6ef28e6b539d313baaacfbafcbe"
 
 [[package]]
 name = "opentelemetry"
-version = "0.32.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b0142c63252a9e054e68a4c61a5778f7b14f576274d593f8ce883d191a099682"
-dependencies = [
- "futures-core",
- "futures-sink",
- "js-sys",
- "pin-project-lite",
- "thiserror 2.0.20",
- "tracing",
-]
-
-[[package]]
-name = "opentelemetry"
 version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6cdb0b1b267eb9db3331b434ed9ddab10d50e280a9adf9d13e5233e2002b61b5"
@@ -5086,7 +5072,7 @@ version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "e2b304e8d8f11326ba366a99ca5c7aaf7cd397b67268a332437175aeb42a40db"
 dependencies = [
- "opentelemetry 0.33.0",
+ "opentelemetry",
  "tracing",
  "tracing-core",
  "tracing-subscriber",
@@ -5101,7 +5087,7 @@ dependencies = [
  "async-trait",
  "bytes",
  "http",
- "opentelemetry 0.33.0",
+ "opentelemetry",
  "reqwest 0.13.5",
 ]
 
@@ -5113,10 +5099,10 @@ checksum = "699a67345e21962a231955b9059a157e428b219fa5df8efe11f08346fb23a344"
 dependencies = [
  "http",
  "httpdate",
- "opentelemetry 0.33.0",
+ "opentelemetry",
  "opentelemetry-http",
- "opentelemetry-proto 0.33.0",
- "opentelemetry_sdk 0.33.0",
+ "opentelemetry-proto",
+ "opentelemetry_sdk",
  "prost",
  "reqwest 0.13.5",
  "thiserror 2.0.20",
@@ -5127,27 +5113,16 @@ dependencies = [
 
 [[package]]
 name = "opentelemetry-proto"
-version = "0.32.0"
-dependencies = [
- "base64 0.22.1",
- "const-hex",
- "opentelemetry 0.32.0",
- "opentelemetry_sdk 0.32.1",
- "prost",
- "serde",
- "tonic",
- "tonic-prost",
-]
-
-[[package]]
-name = "opentelemetry-proto"
 version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25da1ac11a0aeccf38d7f77ee0348715adaf8340f65ad46c94a02c6b20e2f65d"
 dependencies = [
- "opentelemetry 0.33.0",
- "opentelemetry_sdk 0.33.0",
+ "base64 0.22.1",
+ "const-hex",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "prost",
+ "serde",
  "tonic",
  "tonic-prost",
 ]
@@ -5160,22 +5135,6 @@ checksum = "d288b1e1bc3590052fbb8f0f635ef248dd9022cf1fbaeb6582b7ad6081a17b87"
 
 [[package]]
 name = "opentelemetry_sdk"
-version = "0.32.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9b59f80e1ac4d5ff7a2db8fb6c80badb7f0f3f858211fba08dd9aaec750894f9"
-dependencies = [
- "futures-channel",
- "futures-executor",
- "futures-util",
- "opentelemetry 0.32.0",
- "percent-encoding",
- "portable-atomic",
- "rand 0.9.5",
- "thiserror 2.0.20",
-]
-
-[[package]]
-name = "opentelemetry_sdk"
 version = "0.33.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "cb39533d9d1c912123efd7d41d7e0c29d16917b60ce15b4c8d87cb1af7f67520"
@@ -5183,7 +5142,7 @@ dependencies = [
  "futures-channel",
  "futures-executor",
  "futures-util",
- "opentelemetry 0.33.0",
+ "opentelemetry",
  "percent-encoding",
  "portable-atomic",
  "rand 0.9.5",
@@ -5224,7 +5183,7 @@ dependencies = [
 name = "ottl"
 version = "0.1.0"
 dependencies = [
- "opentelemetry-proto 0.32.0",
+ "opentelemetry-proto",
  "pest",
  "pest_derive",
  "regex",
@@ -6072,8 +6031,8 @@ dependencies = [
  "iceberg-rust",
  "logql-parser",
  "object_store",
- "opentelemetry 0.33.0",
- "opentelemetry_sdk 0.33.0",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "promql-parser",
  "ql-ir",
  "regex",
@@ -6736,7 +6695,7 @@ dependencies = [
  "loki-api",
  "lru",
  "openidconnect",
- "opentelemetry-proto 0.32.0",
+ "opentelemetry-proto",
  "ottl",
  "prometheus-api",
  "pyroscope-api",
@@ -7376,9 +7335,9 @@ version = "0.2.2"
 dependencies = [
  "anyhow",
  "clap",
- "opentelemetry 0.33.0",
+ "opentelemetry",
  "opentelemetry-otlp",
- "opentelemetry_sdk 0.33.0",
+ "opentelemetry_sdk",
  "rand 0.10.2",
  "tokio",
  "tracing-subscriber",
@@ -7451,8 +7410,8 @@ dependencies = [
  "arrow-flight",
  "futures",
  "httpdate",
- "opentelemetry 0.33.0",
- "opentelemetry_sdk 0.33.0",
+ "opentelemetry",
+ "opentelemetry_sdk",
  "progenitor-client",
  "rand 0.10.2",
  "reqwest 0.13.5",
@@ -8219,9 +8178,9 @@ dependencies = [
  "iceberg-rust",
  "mcp-server",
  "object_store",
- "opentelemetry 0.33.0",
- "opentelemetry-proto 0.32.0",
- "opentelemetry_sdk 0.33.0",
+ "opentelemetry",
+ "opentelemetry-proto",
+ "opentelemetry_sdk",
  "prost",
  "pyroscope-api",
  "querier",
@@ -8792,11 +8751,10 @@ dependencies = [
 [[package]]
 name = "tracing-opentelemetry"
 version = "0.33.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "adbc64cba7137545b8044cb1fe9814f7aacf3c6b5f9b45be8bb5db538befdb26"
+source = "git+https://github.com/tokio-rs/tracing-opentelemetry?rev=b475aa173d926b5f8bc4eecf255691a453850b4c#b475aa173d926b5f8bc4eecf255691a453850b4c"
 dependencies = [
  "js-sys",
- "opentelemetry 0.32.0",
+ "opentelemetry",
  "smallvec",
  "tracing",
  "tracing-core",
@@ -9816,9 +9774,9 @@ dependencies = [
  "object 0.37.3",
  "object_store",
  "once_cell",
- "opentelemetry 0.32.0",
- "opentelemetry 0.33.0",
- "opentelemetry_sdk 0.33.0",
+ "opentelemetry",
+ "opentelemetry-proto",
+ "opentelemetry_sdk",
  "petgraph",
  "proc-macro2",
  "prost",
@@ -9898,9 +9856,9 @@ dependencies = [
  "hex",
  "iceberg-rust",
  "object_store",
- "opentelemetry 0.33.0",
- "opentelemetry-proto 0.32.0",
- "opentelemetry_sdk 0.33.0",
+ "opentelemetry",
+ "opentelemetry-proto",
+ "opentelemetry_sdk",
  "serde_json",
  "tempfile",
  "thiserror 2.0.20",
