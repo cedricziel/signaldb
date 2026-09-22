@@ -24,6 +24,7 @@ import {
   SPACE_AGGS,
   type MetricQuery,
   type RangeFn,
+  type RangeFnSpec,
   type SpaceAgg,
 } from "./metricQuery";
 
@@ -186,7 +187,7 @@ export function QueryRow({ query, range, onChange }: Props) {
         onChange={(e) =>
           patch({
             range: e.target.value
-              ? { fn: e.target.value as RangeFn }
+              ? { ...query.range, fn: e.target.value as RangeFn }
               : undefined,
           })
         }
@@ -198,6 +199,12 @@ export function QueryRow({ query, range, onChange }: Props) {
           </option>
         ))}
       </select>
+      {query.range && (
+        <RangeOptions
+          range={query.range}
+          onChange={(range) => patch({ range })}
+        />
+      )}
     </div>
   );
 }
@@ -271,5 +278,52 @@ function FilterEditor({
         ✕
       </button>
     </span>
+  );
+}
+
+/** The window/across controls shown once a range function is selected — a
+ * separate component so its handlers narrow `range` once instead of
+ * asserting `query.range!` at every `onChange`. */
+function RangeOptions({
+  range,
+  onChange,
+}: {
+  range: RangeFnSpec;
+  onChange: (range: RangeFnSpec) => void;
+}) {
+  return (
+    <>
+      <input
+        className="qrow-window"
+        aria-label="Window"
+        placeholder="window (default: step)"
+        value={range.window ?? ""}
+        title={range.window ?? ""}
+        onChange={(e) =>
+          onChange({
+            ...range,
+            window: e.target.value === "" ? undefined : e.target.value,
+          })
+        }
+      />
+      <select
+        className="qrow-across"
+        aria-label="Across"
+        value={range.across ?? ""}
+        onChange={(e) =>
+          onChange({
+            ...range,
+            across: e.target.value ? (e.target.value as SpaceAgg) : undefined,
+          })
+        }
+      >
+        <option value="">across: sum</option>
+        {SPACE_AGGS.map((op) => (
+          <option key={op} value={op}>
+            across: {op}
+          </option>
+        ))}
+      </select>
+    </>
   );
 }

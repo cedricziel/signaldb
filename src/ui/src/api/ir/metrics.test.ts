@@ -143,6 +143,75 @@ describe("buildMetricIrDoc", () => {
       },
     });
   });
+
+  it("compiles irate at irVersion 7", () => {
+    const q: MetricQuery = {
+      ...emptyQuery("a"),
+      metric: "http_requests_total",
+      range: { fn: "irate" },
+    };
+    const doc = buildMetricIrDoc(q, range, 30);
+    expect(doc?.irVersion).toBe(7);
+    expect(doc?.pipeline?.[1]).toEqual({
+      aggregate: {
+        by: [],
+        aggs: [{ fn: "irate", of: "metric.value", as: "v" }],
+        step: "30s",
+      },
+    });
+  });
+
+  it("compiles avg_over_time at irVersion 7", () => {
+    const q: MetricQuery = {
+      ...emptyQuery("a"),
+      metric: "cpu_usage",
+      range: { fn: "avg_over_time" },
+    };
+    const doc = buildMetricIrDoc(q, range, 30);
+    expect(doc?.irVersion).toBe(7);
+    expect(doc?.pipeline?.[1]).toEqual({
+      aggregate: {
+        by: [],
+        aggs: [{ fn: "avg_over_time", of: "metric.value", as: "v" }],
+        step: "30s",
+      },
+    });
+  });
+
+  it("compiles rate with an across reducer and a window, bumping irVersion to 7", () => {
+    const q: MetricQuery = {
+      ...emptyQuery("a"),
+      metric: "http_requests_total",
+      range: { fn: "rate", across: "avg", window: "5m" },
+      agg: { op: "sum", by: ["service_name"] },
+    };
+    const doc = buildMetricIrDoc(q, range, 60);
+    expect(doc?.irVersion).toBe(7);
+    expect(doc?.pipeline?.[1]).toEqual({
+      aggregate: {
+        by: ["service.name"],
+        aggs: [
+          {
+            fn: "rate",
+            of: "metric.value",
+            as: "v",
+            across: "avg",
+            window: "5m",
+          },
+        ],
+        step: "60s",
+      },
+    });
+  });
+
+  it("plain rate/increase without across/window stay at irVersion 6", () => {
+    const q: MetricQuery = {
+      ...emptyQuery("a"),
+      metric: "http_requests_total",
+      range: { fn: "rate" },
+    };
+    expect(buildMetricIrDoc(q, range, 30)?.irVersion).toBe(6);
+  });
 });
 
 describe("buildFormulaIrDoc", () => {

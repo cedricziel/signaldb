@@ -3,10 +3,10 @@
  * (see docs/users/querying-ir.md). A solo query with no formula compiles to
  * a single-document request; a formula, or more than one query, compiles to
  * the multi-query `{queries, formulas, result: "series"}` shape (D5). Every
- * builder option here has an IR equivalent — the counter-rate functions
- * (`rate`/`increase`) via IR v6's `aggregate` stage, see
- * `RangeFn` in `features/metrics/metricQuery.ts` for what stays PromQL-only
- * and is therefore not offered by the builder at all.
+ * builder option here has an IR equivalent — the per-series range functions
+ * (`rate`/`increase`/`irate`/`*_over_time`, IR v6/v7's `aggregate` stage),
+ * IR v7's `across` reducer and `window` lookback — see `RangeFn`/`RangeFnSpec`
+ * in `features/metrics/metricQuery.ts`.
  */
 import type {
   MultiQueryIrRequest,
@@ -69,6 +69,17 @@ function filterWhere(f: LabelFilter): Record<string, unknown> {
   }
 }
 
+const V6_RANGE_FNS = ["rate", "increase"];
+
+/** The lowest `irVersion` a row's range function needs: `across`/`window`
+ * (IR v7) or a v7-only function (`irate`/`*_over_time`) need 7; plain
+ * `rate`/`increase` need 6; no range function needs 1. */
+function rangeIrVersion(range: MetricQuery["range"]): number {
+  if (!range) return 1;
+  if (range.across !== undefined || range.window !== undefined) return 7;
+  return V6_RANGE_FNS.includes(range.fn) ? 6 : 7;
+}
+
 /** Compile one builder row to an IR document. Returns `null` when no metric
  * is selected yet, so callers can gate the run on a non-empty result. */
 export function buildMetricIrDoc(
@@ -78,20 +89,27 @@ export function buildMetricIrDoc(
 ): QueryIrRequest | null {
   if (query.metric.trim() === "") return null;
 
-  // rate/increase (IR v6) replace the outer space-aggregation function:
-  // both are computed per individual series and then folded by `by`, the
-  // same partitioning a plain space aggregate uses — see
-  // docs/users/querying-ir.md, "Counter rate".
+  // A per-series range function (rate/increase, IR v6; irate/*_over_time,
+  // IR v7) replaces the outer space-aggregation function: it's computed per
+  // individual series and then folded by `by` via its own `across` reducer,
+  // the same partitioning a plain space aggregate uses — see
+  // docs/users/querying-ir.md, "Counter rate" and "More range functions".
   const fn = query.range ? query.range.fn : (query.agg?.op ?? "sum");
-  // count takes no `of` field; every other aggregate (including rate/
-  // increase) aggregates the point's value, via metric.value — "value" is
+  // count takes no `of` field; every other aggregate (including the range
+  // functions) aggregates the point's value, via metric.value — "value" is
   // itself the physical column name, which the resolver rejects as a bare
   // field reference (see ir_planner.rs).
-  const agg =
+  const agg: Record<string, unknown> =
     fn === "count" ? { fn, as: "v" } : { fn, of: "metric.value", as: "v" };
+  if (query.range?.across !== undefined) {
+    agg.across = query.range.across;
+  }
+  if (query.range?.window !== undefined) {
+    agg.window = query.range.window;
+  }
 
   return {
-    irVersion: 1,
+    irVersion: rangeIrVersion(query.range),
     from: "metrics",
     range: {
       from: msToNanos(range.fromMs),

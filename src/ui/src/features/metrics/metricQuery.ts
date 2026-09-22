@@ -14,18 +14,39 @@ export type SpaceAgg = "sum" | "avg" | "min" | "max" | "count";
 export const SPACE_AGGS: SpaceAgg[] = ["sum", "avg", "min", "max", "count"];
 
 /**
- * Counter-rate functions the Query IR's `aggregate` stage can express (see
- * docs/users/querying-ir.md, "Counter rate: rate/increase (v6)"). PromQL's
- * `irate` and the `*_over_time` gauge rollups have no IR pipeline-stage
- * equivalent and are not offered here — see the metrics-builder report in
- * openspec/changes/explore-ui-query-ir for what that drops.
+ * Per-series range functions the Query IR's `aggregate` stage can express
+ * (see docs/users/querying-ir.md, "Counter rate: rate/increase (v6)" and
+ * "More range functions, across, and window (v7)").
  */
-export type RangeFn = "rate" | "increase";
+export type RangeFn =
+  | "rate"
+  | "increase"
+  | "irate"
+  | "avg_over_time"
+  | "min_over_time"
+  | "max_over_time"
+  | "sum_over_time"
+  | "count_over_time";
 
-export const RANGE_FNS: RangeFn[] = ["rate", "increase"];
+export const RANGE_FNS: RangeFn[] = [
+  "rate",
+  "increase",
+  "irate",
+  "avg_over_time",
+  "min_over_time",
+  "max_over_time",
+  "sum_over_time",
+  "count_over_time",
+];
 
 export interface RangeFnSpec {
   fn: RangeFn;
+  /** The `across` reducer folding per-series values into each `by` group
+   * (IR v7). Defaults to `sum` — the historical behaviour — when absent. */
+  across?: SpaceAgg;
+  /** The `window` lookback (a duration string like `5m`, IR v7). Defaults
+   * to the query's `step` when absent. */
+  window?: string;
 }
 
 export interface SpaceAggSpec {
@@ -61,11 +82,21 @@ function isLabelFilter(value: unknown): value is LabelFilter {
 }
 
 function isRangeFnSpec(value: unknown): value is RangeFnSpec {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    RANGE_FNS.includes((value as RangeFnSpec).fn)
-  );
+  if (
+    value === null ||
+    typeof value !== "object" ||
+    !RANGE_FNS.includes((value as RangeFnSpec).fn)
+  ) {
+    return false;
+  }
+  const spec = value as RangeFnSpec;
+  if (spec.across !== undefined && !SPACE_AGGS.includes(spec.across)) {
+    return false;
+  }
+  if (spec.window !== undefined && typeof spec.window !== "string") {
+    return false;
+  }
+  return true;
 }
 
 function isSpaceAggSpec(value: unknown): value is SpaceAggSpec {

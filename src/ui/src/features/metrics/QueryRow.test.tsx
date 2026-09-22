@@ -145,6 +145,34 @@ describe("QueryRow", () => {
     expect(query().range).toEqual({ fn: "rate" });
   });
 
+  it("a selected range function exposes window and across, and clearing the function drops them", async () => {
+    stubMetadata();
+    renderWithClient(<Harness />);
+    const user = userEvent.setup();
+
+    expect(screen.queryByLabelText("Window")).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Function"), "rate");
+    await user.type(screen.getByLabelText("Window"), "5m");
+    await user.selectOptions(screen.getByLabelText("Across"), "avg");
+    expect(query().range).toEqual({ fn: "rate", window: "5m", across: "avg" });
+
+    await user.selectOptions(screen.getByLabelText("Function"), "");
+    expect(query().range).toBeUndefined();
+    expect(screen.queryByLabelText("Window")).not.toBeInTheDocument();
+  });
+
+  it("switching between range functions keeps window/across", async () => {
+    stubMetadata();
+    renderWithClient(<Harness />);
+    const user = userEvent.setup();
+
+    await user.selectOptions(screen.getByLabelText("Function"), "rate");
+    await user.type(screen.getByLabelText("Window"), "1m");
+    await user.selectOptions(screen.getByLabelText("Function"), "irate");
+    expect(query().range).toEqual({ fn: "irate", window: "1m" });
+  });
+
   it("carries the full metric and group-by text in a title, for when either overflows", async () => {
     stubMetadata();
     renderWithClient(<Harness />);

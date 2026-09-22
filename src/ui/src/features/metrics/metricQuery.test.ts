@@ -70,6 +70,78 @@ describe("parseBuilderState", () => {
     });
   });
 
+  it("accepts irate and the *_over_time range functions", () => {
+    for (const fn of [
+      "irate",
+      "avg_over_time",
+      "min_over_time",
+      "max_over_time",
+      "sum_over_time",
+      "count_over_time",
+    ]) {
+      const raw = JSON.stringify({
+        queries: [{ ref: "a", metric: "up", filters: [], range: { fn } }],
+        formula: "",
+      });
+      expect(parseBuilderState(raw)).not.toBeNull();
+    }
+  });
+
+  it("accepts a range with a well-formed across and window", () => {
+    const raw = JSON.stringify({
+      queries: [
+        {
+          ref: "a",
+          metric: "up",
+          filters: [],
+          range: { fn: "rate", across: "avg", window: "5m" },
+        },
+      ],
+      formula: "",
+    });
+    expect(parseBuilderState(raw)).toEqual({
+      queries: [
+        {
+          ref: "a",
+          metric: "up",
+          filters: [],
+          range: { fn: "rate", across: "avg", window: "5m" },
+        },
+      ],
+      formula: "",
+    });
+  });
+
+  it("rejects a range whose across isn't a valid SpaceAgg", () => {
+    const raw = JSON.stringify({
+      queries: [
+        {
+          ref: "a",
+          metric: "up",
+          filters: [],
+          range: { fn: "rate", across: "bogus" },
+        },
+      ],
+      formula: "",
+    });
+    expect(parseBuilderState(raw)).toBeNull();
+  });
+
+  it("rejects a range whose window isn't a string", () => {
+    const raw = JSON.stringify({
+      queries: [
+        {
+          ref: "a",
+          metric: "up",
+          filters: [],
+          range: { fn: "rate", window: 300 },
+        },
+      ],
+      formula: "",
+    });
+    expect(parseBuilderState(raw)).toBeNull();
+  });
+
   it("never throws on adversarial input", () => {
     const inputs = [
       {
