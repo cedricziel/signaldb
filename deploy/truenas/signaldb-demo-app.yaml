@@ -348,6 +348,8 @@ x-otel: &otel
   OTEL_RESOURCE_ATTRIBUTES: service.namespace=opentelemetry-demo,deployment.environment.name=demo
   FLAGD_HOST: flagd
   FLAGD_PORT: "8013"
+  # Skip the cloud metadata probes (AWS/GCP) that fail off-cloud.
+  OTEL_NODE_RESOURCE_DETECTORS: env,host,os,process,container
 
 x-demo: &demo
   restart: unless-stopped
