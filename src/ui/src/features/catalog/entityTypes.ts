@@ -92,6 +92,16 @@ export interface EntityTypeDef {
    * dots-to-underscores mapping has no safe inverse.
    */
   registryEntity?: string;
+  /**
+   * This type's identity, narrowed per source to the attributes that source
+   * actually carries — set by `observedEntityTypes` alongside `sources`.
+   * A source can carry the primary identity attribute while missing a
+   * secondary one, and the tier-2 listing query must group that source by
+   * what it has, not by the full tuple (see `buildEntitySourceDoc` in
+   * `api/catalog.ts`). Absent on a type that has not gone through
+   * `observedEntityTypes` — those fall back to the full `identity`.
+   */
+  identityBySource?: Record<string, string[]>;
 }
 
 /**

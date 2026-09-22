@@ -16,7 +16,7 @@ suggestions statistics-served; the surface degrades honestly without it.
       stage after `describe` is rejected; `fields` on a `metadata` document is
       rejected
 - [x] 1.2 Add `ResultEnvelope::Metadata` and `Stage::Describe(Describe { target,
-  field, limit, sample })`; bump `MAX_IR_VERSION` to 4; extend the
+field, limit, sample })`; bump `MAX_IR_VERSION` to 4; extend the
       version-gating and envelope/terminal checks in `validate()` following the
       `heatmap`/`flamegraph` precedents
 - [x] 1.3 Expose `validate_describe(&Document) -> Result<&Describe, IrError>`
@@ -64,9 +64,9 @@ suggestions statistics-served; the surface degrades honestly without it.
       response is capped independently of query limits
 - [x] 2.7 OpenAPI: `#[utoipa::path]` for the new route and schemas for the
       metadata envelope; `UPDATE_OPENAPI=1 cargo test -p router
-  openapi_spec_is_up_to_date`; `cargo xtask generate` for the Rust SDK and
+openapi_spec_is_up_to_date`; `cargo xtask generate` for the Rust SDK and
       the TypeScript client
-- [ ] 2.8 Instrumentation: discovery reads carry a boundary span through
+- [x] 2.8 Instrumentation: discovery reads carry a boundary span through
       `common::self_monitoring::spans` so the metadata path's cost is visible in
       self-monitoring alongside query reads
 
@@ -101,7 +101,7 @@ suggestions statistics-served; the surface degrades honestly without it.
 - [x] 5.2 Extend `AttrStatsAccumulator` from a distinct-value set to counted
       values; emit a bounded top-N per key at flush
 - [x] 5.3 Catalog: `attribute_value_stats (tenant, dataset, signal, attr_key,
-  value, count, updated_at)` on SQLite and PostgreSQL, with accessors and
+value, count, updated_at)` on SQLite and PostgreSQL, with accessors and
       bounded per-key row replacement. The round-trip test runs on SQLite; the
       PostgreSQL path is exercised only by CI, since the local Docker needed for
       testcontainers is unavailable
@@ -114,8 +114,8 @@ suggestions statistics-served; the surface degrades honestly without it.
 
 - [x] 6.1 `cargo fmt`; targeted clippy per touched crate (`cargo machete` not
       run locally — left to CI)
-- [ ] 6.2 Integration coverage in `tests-integration` for the end-to-end
+- [x] 6.2 Integration coverage in `tests-integration` for the end-to-end
       discovery path (declare the new test file in `tests/main.rs`)
-- [ ] 6.3 Close #820; comment the handover on #437 (live tail) and cross-link
+- [x] 6.3 Close #820; comment the handover on #437 (live tail) and cross-link
       #813, #819, #818, #769, #732; file the Explore-UI field-picker swap as a
       follow-up under #769

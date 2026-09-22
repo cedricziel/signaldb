@@ -55,6 +55,16 @@ function timeField(source: string): string {
   return source === "traces" ? "start_time_unix_nano" : "timestamp";
 }
 
+/** This entity type's identity as grouped for one source: the degraded
+ * per-source tuple where `observedEntityTypes` computed one, falling back to
+ * the full identity for a type that bypassed it (an unanalyzed deployment,
+ * or a caller in a test). A source absent from `identityBySource` here would
+ * mean the source was never confirmed to carry even the primary attribute —
+ * callers only reach this for a source `entityType.sources` already lists. */
+function sourceIdentity(entityType: EntityTypeDef, source: string): string[] {
+  return entityType.identityBySource?.[source] ?? entityType.identity;
+}
+
 /**
  * Builds the aggregate for one entity type against one of its sources.
  * Ordered by count, descending, regardless of the table's displayed sort:
@@ -70,6 +80,7 @@ export function buildEntitySourceDoc(
   pinned: EntityPin[] = [],
 ): QueryIrRequest {
   const isTraces = source === "traces";
+  const identity = sourceIdentity(entityType, source);
   const scope: Record<string, unknown>[] = [
     ...(isTraces && entityType.spanKindScope
       ? [
@@ -102,7 +113,7 @@ export function buildEntitySourceDoc(
       ...scope,
       {
         aggregate: {
-          by: entityType.identity,
+          by: identity,
           aggs: [
             { fn: "count", as: "n" },
             ...(isTraces
@@ -244,6 +255,23 @@ function entitySortValue(e: CatalogEntity, key: string): SortValue {
   return rankOf(e);
 }
 
+/** Realigns a source's row values, positioned per that source's own
+ * (possibly degraded) identity tuple, onto the entity type's full identity
+ * order — so that merging across sources compares like dimensions. A
+ * dimension the source dropped (absent from its field list) reads as
+ * unknown for that source's rows, the same way an absent value would. */
+function alignValues(
+  values: (string | null)[],
+  sourceIdentity: string[],
+  fullIdentity: string[],
+): (string | null)[] {
+  if (sourceIdentity.length === fullIdentity.length) return values;
+  return fullIdentity.map((field) => {
+    const i = sourceIdentity.indexOf(field);
+    return i === -1 ? null : values[i]!;
+  });
+}
+
 export async function fetchCatalogEntities(
   entityType: EntityTypeDef,
   range: ResolvedRange,
@@ -251,19 +279,27 @@ export async function fetchCatalogEntities(
   pinned: EntityPin[] = [],
 ): Promise<CatalogEntityResult> {
   const sources = entityType.sources ?? ["traces"];
-  const dimensionCount = entityType.identity.length;
 
   const perSource = await Promise.all(
     sources.map(async (source) => {
+      const identity = sourceIdentity(entityType, source);
       const res = await runIrQuery(
         buildEntitySourceDoc(entityType, source, range, pinned),
       );
       const decoded = decodeSourceRows(
         res,
-        dimensionCount,
+        identity.length,
         source === "traces",
       );
-      return { ...decoded, source };
+      return {
+        ...decoded,
+        rows: decoded.rows.map((row) => ({
+          ...row,
+          values: alignValues(row.values, identity, entityType.identity),
+        })),
+        source,
+        dimensions: identity.join("\u0000"),
+      };
     }),
   );
 
@@ -272,9 +308,12 @@ export async function fetchCatalogEntities(
   // never clobber a real trace measurement for the same identity, nor
   // manufacture one for an identity traces never saw.
   const merged = new Map<string, CatalogEntity>();
-  for (const { source, rows } of perSource) {
+  for (const { source, rows, dimensions } of perSource) {
     for (const row of rows) {
-      const key = compositeKey(row.values);
+      // The grouped dimensions are part of the key: a degraded row's `null`
+      // means "not carried", a full-tuple row's `null` means "absent value",
+      // and the two must not merge.
+      const key = `${dimensions}\u0001${compositeKey(row.values)}`;
       const observation = { source, count: row.count };
       const existing = merged.get(key);
       if (!existing) {

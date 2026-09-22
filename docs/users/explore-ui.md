@@ -232,6 +232,16 @@ whose names are merely _descriptive_), the first descriptive attribute your
 data carries stands in. That is what lets those entity types be catalogued
 without SignalDB hard-coding a key for each one.
 
+Which attributes make up that identity can differ by signal, and the catalog
+groups each signal's instance list by what that signal actually carries, not
+by the identity as a whole. A process identified by `process.pid` and
+`host.name` is a case in point: a metrics pipeline that reports `process.pid`
+but never attaches `host.name` still lists its processes, grouped by pid
+alone, rather than collapsing every one of them into a single "no host"
+bucket — the same defect a naive fixed-tuple grouping would produce. A signal
+missing the _primary_ identifying attribute altogether contributes no
+instances rather than a coarser listing.
+
 That metadata is maintained by compaction, so a freshly-ingesting deployment
 may not have been analyzed yet. The catalog says so — "not analyzed yet"
 alongside the age of the metadata it used — rather than showing an empty nav,
@@ -846,8 +856,15 @@ GitHub** link, and a **Remove** action. The list refreshes each
 installation's repositories from GitHub on every load and marks an entry
 _stale_ when GitHub could not be reached. When the operator has not
 configured the `[github]` section, the page explains that instead of
-offering **Connect**. Operator setup and the security model:
-[Connecting GitHub](../operations/github-app.md).
+offering **Connect**. Next to **Connect GitHub**, and visible only to an
+instance admin (a tenant admin who is not also an instance admin does not
+see it, since the endpoint rejects that credential), a **Link existing
+installation** field takes a numeric installation id and attaches it
+directly (`POST .../github-installations/attach`), with no OAuth redirect —
+this is the way to link a second tenant to a GitHub account that already
+has the App installed, since GitHub then skips the consent screen and
+**Connect GitHub** has nothing to complete. Operator setup and the security
+model: [Connecting GitHub](../operations/github-app.md).
 
 ### API keys (`/api-keys`)
 

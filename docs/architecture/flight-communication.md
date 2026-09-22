@@ -387,6 +387,11 @@ keeps the non-nullable `value` columns of `metrics_gauge`/`metrics_sum`
 satisfiable, so one such point can no longer make the writer reject a whole
 batch and pin its WAL entry forever (#1061). Histogram `explicit_bounds` keep
 a `+Inf` bound for the same reason.
+The reverse direction, OTLP → Prometheus series
+(`conversion_prometheus::from_otel`), downsamples exponential histograms to
+classic `_bucket`/`_count`/`_sum` series: bucket `i` of scale `s` gets upper
+bound `base^(i+1)` with `base = 2^(2^-s)` (negative buckets `-base^i`), and
+the zero bucket folds into the lowest bound (#748).
 A related isolation applies one step later, at the Iceberg commit itself:
 `IcebergTableWriter::append_batches_with_marker` prepares (transforms and
 coerces) every WAL entry in a commit group independently and returns a

@@ -418,50 +418,17 @@ impl IcebergTableWriter {
         retention: Duration,
         process_outlived_retention: bool,
     ) -> Result<usize> {
-        let now_secs = common::wal::unix_now_secs();
-        let removals = stale_marker_keys(
-            &self.table.metadata().properties,
+        let retired = retire_stale_markers_on(
+            self.catalog.clone(),
+            &self.table,
             own_writer_ids,
-            now_secs,
             retention,
             process_outlived_retention,
-        );
-        if removals.is_empty() {
-            return Ok(0);
+        )
+        .await?;
+        if retired > 0 {
+            self.reload_table().await?;
         }
-
-        let retired = removals.len();
-        let requirements = match self.table.metadata().current_snapshot_id {
-            Some(snapshot_id) => vec![TableRequirement::AssertRefSnapshotId {
-                r#ref: MAIN_BRANCH.to_string(),
-                snapshot_id,
-            }],
-            // A table with no snapshot has never been committed to, so no
-            // marker can be racing us.
-            None => Vec::new(),
-        };
-
-        self.catalog
-            .clone()
-            .update_table(CommitTable {
-                identifier: self.table.identifier().clone(),
-                requirements,
-                updates: vec![TableUpdate::RemoveProperties { removals }],
-            })
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to retire stale WAL markers on {}: {e}",
-                    self.table.identifier()
-                )
-            })?;
-        self.reload_table().await?;
-
-        tracing::info!(
-            table = %self.table.identifier(),
-            retired,
-            "Retired WAL idempotency markers from writers that have not committed within retention"
-        );
         Ok(retired)
     }
 
@@ -792,6 +759,71 @@ fn parse_marker(value: &str) -> (Option<u64>, &str) {
 /// markers carried a commit time.
 fn marker_committed_at(value: &str) -> Option<u64> {
     parse_marker(value).0
+}
+
+/// Delete stale WAL idempotency markers from `table` via `catalog`, without
+/// needing a live [`IcebergTableWriter`] for it.
+///
+/// Backs both [`IcebergTableWriter::retire_stale_markers`] (which sweeps the
+/// tables this process is actively committing to) and the signal-table
+/// reconciler (which sweeps every registered table, including ones no live
+/// writer commits to any more — see #1345). Staleness rules are
+/// [`stale_marker_keys`]; this only performs the guarded commit.
+///
+/// The delete is guarded by an assertion on the branch's current snapshot,
+/// so a marker written between the read and the delete makes this commit
+/// fail rather than discard fresh idempotency evidence. A failure here is
+/// never fatal: the markers simply stay until the next pass.
+pub async fn retire_stale_markers_on(
+    catalog: Arc<dyn IcebergRustCatalog>,
+    table: &Table,
+    own_writer_ids: &HashSet<String>,
+    retention: Duration,
+    process_outlived_retention: bool,
+) -> Result<usize> {
+    let now_secs = common::wal::unix_now_secs();
+    let removals = stale_marker_keys(
+        &table.metadata().properties,
+        own_writer_ids,
+        now_secs,
+        retention,
+        process_outlived_retention,
+    );
+    if removals.is_empty() {
+        return Ok(0);
+    }
+
+    let retired = removals.len();
+    let requirements = match table.metadata().current_snapshot_id {
+        Some(snapshot_id) => vec![TableRequirement::AssertRefSnapshotId {
+            r#ref: MAIN_BRANCH.to_string(),
+            snapshot_id,
+        }],
+        // A table with no snapshot has never been committed to, so no
+        // marker can be racing us.
+        None => Vec::new(),
+    };
+
+    catalog
+        .update_table(CommitTable {
+            identifier: table.identifier().clone(),
+            requirements,
+            updates: vec![TableUpdate::RemoveProperties { removals }],
+        })
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to retire stale WAL markers on {}: {e}",
+                table.identifier()
+            )
+        })?;
+
+    tracing::info!(
+        table = %table.identifier(),
+        retired,
+        "Retired WAL idempotency markers from writers that have not committed within retention"
+    );
+    Ok(retired)
 }
 
 /// Which marker properties in `properties` are safe to delete.

@@ -68,7 +68,7 @@ the headers, for browsers using the [embedded explore UI](explore-ui.md):
   opaque session and resolves `X-Tenant-ID` through the user's memberships.
   The optional `X-Dataset-ID` selects a dataset in that tenant. A session's
   TTL slides forward: any authenticated request (this path, `GET
-  /ui/session`, or the OTLP/Tempo/Loki/query routes below) made within 6
+/ui/session`, or the OTLP/Tempo/Loki/query routes below) made within 6
   hours of the session's expiry extends it another 12, and the response
   carries a fresh `Set-Cookie` when that happens. A session only lapses
   after 12 hours with no authenticated request — capped at 30 days since
@@ -360,18 +360,18 @@ exposes tenant-scoped endpoints under `/api/v1` (read-only, plus one
 table-creation endpoint). Every row below is in the OpenAPI document, so
 each is reachable through `signaldb-sdk`, not only raw HTTP:
 
-| Method | Path                                        | Returns                                                                                                                                                                              | SDK operation            | CLI / MCP                                                                        |
-| ------ | ------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------ | -------------------------------------------------------------------------------- |
-| GET    | `/api/v1/whoami`                            | The authenticated tenant (id, slug, name), its datasets, and the default dataset — filtered to the caller's own dataset restriction, if any (`dataset_ids` in the response names it) | `whoami`                 | `signaldb-cli whoami` / `server_info`                                            |
-| GET    | `/api/v1/connection`                        | Public ingest/query endpoints, headers, required scopes, and OTel env vars for this deployment, scoped to the caller's tenant/dataset                                                | `connection_info`        | `signaldb-cli connection` / `connection_info`                                    |
-| GET    | `/api/v1/tenants`                           | All configured tenants, filtered to the caller's own                                                                                                                                 | `list_tenants_self`      | `signaldb-cli tenant show` / `tenant_info` (single-item view of the same tenant) |
-| GET    | `/api/v1/tenants/{tenant_id}`               | Tenant details                                                                                                                                                                       | `get_tenant_self`        | `signaldb-cli tenant show` / `tenant_info`                                       |
-| GET    | `/api/v1/tenants/{tenant_id}/tables`        | The tenant's provisioned tables, grouped by dataset                                                                                                                                  | `list_tenant_tables`     | `signaldb-cli tenant table list` / `tenant_list_tables`                          |
-| POST   | `/api/v1/tenants/{tenant_id}/tables/create` | Creates the tenant's signal tables (see below)                                                                                                                                       | `create_tenant_tables`   | `signaldb-cli tenant table provision` / `tenant_create_tables`                   |
-| GET    | `/api/v1/tenants/{tenant_id}/schemas`       | The tenant's configured table schema types                                                                                                                                           | `list_tenant_schemas`    | `signaldb-cli tenant table schemas` / `tenant_list_table_schemas`                |
-| GET    | `/api/v1/schemas/available`                 | Every table schema type SignalDB can provision                                                                                                                                       | `list_available_schemas` | `signaldb-cli tenant table available-schemas` / `list_available_table_schemas`   |
-| POST   | `/api/v1/tenants/{tenant_id}/source-context` | Source snippet around a stack-frame location via the tenant's linked GitHub App installation(s); always `200`, `status: available\|unavailable` (see below) | `source_context`         | `signaldb-cli tenant source-context` / `get_source_context`                     |
-| GET    | `/api/v1/tenants/{tenant_id}/source-context` | Whether source context can be served at all (`configured`, `linked`); no dedicated CLI/MCP surface (see below) | `source_context_availability` | —                                                                           |
+| Method | Path                                         | Returns                                                                                                                                                                              | SDK operation                 | CLI / MCP                                                                        |
+| ------ | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------- | -------------------------------------------------------------------------------- |
+| GET    | `/api/v1/whoami`                             | The authenticated tenant (id, slug, name), its datasets, and the default dataset — filtered to the caller's own dataset restriction, if any (`dataset_ids` in the response names it) | `whoami`                      | `signaldb-cli whoami` / `server_info`                                            |
+| GET    | `/api/v1/connection`                         | Public ingest/query endpoints, headers, required scopes, and OTel env vars for this deployment, scoped to the caller's tenant/dataset                                                | `connection_info`             | `signaldb-cli connection` / `connection_info`                                    |
+| GET    | `/api/v1/tenants`                            | All configured tenants, filtered to the caller's own                                                                                                                                 | `list_tenants_self`           | `signaldb-cli tenant show` / `tenant_info` (single-item view of the same tenant) |
+| GET    | `/api/v1/tenants/{tenant_id}`                | Tenant details                                                                                                                                                                       | `get_tenant_self`             | `signaldb-cli tenant show` / `tenant_info`                                       |
+| GET    | `/api/v1/tenants/{tenant_id}/tables`         | The tenant's provisioned tables, grouped by dataset                                                                                                                                  | `list_tenant_tables`          | `signaldb-cli tenant table list` / `tenant_list_tables`                          |
+| POST   | `/api/v1/tenants/{tenant_id}/tables/create`  | Creates the tenant's signal tables (see below)                                                                                                                                       | `create_tenant_tables`        | `signaldb-cli tenant table provision` / `tenant_create_tables`                   |
+| GET    | `/api/v1/tenants/{tenant_id}/schemas`        | The tenant's configured table schema types                                                                                                                                           | `list_tenant_schemas`         | `signaldb-cli tenant table schemas` / `tenant_list_table_schemas`                |
+| GET    | `/api/v1/schemas/available`                  | Every table schema type SignalDB can provision                                                                                                                                       | `list_available_schemas`      | `signaldb-cli tenant table available-schemas` / `list_available_table_schemas`   |
+| POST   | `/api/v1/tenants/{tenant_id}/source-context` | Source snippet around a stack-frame location via the tenant's linked GitHub App installation(s); always `200`, `status: available\|unavailable` (see below)                          | `source_context`              | `signaldb-cli tenant source-context` / `get_source_context`                      |
+| GET    | `/api/v1/tenants/{tenant_id}/source-context` | Whether source context can be served at all (`configured`, `linked`); no dedicated CLI/MCP surface (see below)                                                                       | `source_context_availability` | —                                                                                |
 
 `GET /tenants` and `GET /tenants/{tenant_id}` return only the caller's own
 tenant — a single-entry view — so both map to `signaldb-cli tenant show` and
@@ -406,28 +406,38 @@ Tenant _creation_ (`POST /api/v1/manage/tenants`) stays instance-admin-only;
 API-key automation creates tenants through the admin API
 (`signaldb-cli admin tenant create`).
 
-| Method | Path                                                    | SDK operation              | CLI / MCP                                                                            |
-| ------ | ------------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------ |
-| GET    | `/api/v1/manage/tenants/{tenant_id}/datasets`           | `manage_list_datasets`     | `signaldb-cli tenant dataset list` / `tenant_list_datasets`                          |
-| POST   | `/api/v1/manage/tenants/{tenant_id}/datasets`           | `manage_create_dataset`    | `signaldb-cli tenant dataset create <name>` / `tenant_create_dataset`                |
-| DELETE | `/api/v1/manage/tenants/{tenant_id}/datasets/{name}`    | `manage_delete_dataset`    | `signaldb-cli tenant dataset delete <name>` / `tenant_delete_dataset`                |
-| GET    | `/api/v1/manage/tenants/{tenant_id}/api-keys`           | `manage_list_api_keys`     | `signaldb-cli tenant api-key list` / `tenant_list_api_keys`                          |
-| POST   | `/api/v1/manage/tenants/{tenant_id}/api-keys`           | `manage_create_api_key`    | `signaldb-cli tenant api-key create --scope ...` / `tenant_create_api_key`           |
-| PATCH  | `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`  | `manage_update_api_key`    | `signaldb-cli tenant api-key update <key-id>` / `tenant_update_api_key`              |
-| DELETE | `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`  | `manage_revoke_api_key`    | `signaldb-cli tenant api-key revoke <key-id>` / `tenant_revoke_api_key`              |
-| GET    | `/api/v1/manage/tenants/{tenant_id}/memberships`        | `manage_list_memberships`  | `signaldb-cli tenant membership list` / `tenant_list_memberships`                    |
-| PUT    | `/api/v1/manage/tenants/{tenant_id}/memberships`        | `manage_upsert_membership` | `signaldb-cli tenant membership set <email> --role ...` / `tenant_upsert_membership` |
-| DELETE | `/api/v1/manage/tenants/{tenant_id}/memberships/{user}` | `manage_remove_membership` | `signaldb-cli tenant membership remove <user-id>` / `tenant_remove_membership`       |
-| GET    | `/api/v1/manage/schema`                                 | `manage_get_schema`        | `signaldb-cli tenant schema get` / `tenant_get_schema`                               |
-| POST   | `/api/v1/manage/tenants/{tenant_id}/github-installations/link` | `manage_start_github_link` | `signaldb-cli tenant github link`                                            |
-| GET    | `/api/v1/manage/tenants/{tenant_id}/github-installations` | `manage_list_github_installations` | `signaldb-cli tenant github list`                                    |
-| DELETE | `/api/v1/manage/tenants/{tenant_id}/github-installations/{installation_id}` | `manage_remove_github_installation` | `signaldb-cli tenant github remove <installation_id>` |
+| Method | Path                                                                        | SDK operation                       | CLI / MCP                                                                            |
+| ------ | --------------------------------------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------ |
+| GET    | `/api/v1/manage/tenants/{tenant_id}/datasets`                               | `manage_list_datasets`              | `signaldb-cli tenant dataset list` / `tenant_list_datasets`                          |
+| POST   | `/api/v1/manage/tenants/{tenant_id}/datasets`                               | `manage_create_dataset`             | `signaldb-cli tenant dataset create <name>` / `tenant_create_dataset`                |
+| DELETE | `/api/v1/manage/tenants/{tenant_id}/datasets/{name}`                        | `manage_delete_dataset`             | `signaldb-cli tenant dataset delete <name>` / `tenant_delete_dataset`                |
+| GET    | `/api/v1/manage/tenants/{tenant_id}/api-keys`                               | `manage_list_api_keys`              | `signaldb-cli tenant api-key list` / `tenant_list_api_keys`                          |
+| POST   | `/api/v1/manage/tenants/{tenant_id}/api-keys`                               | `manage_create_api_key`             | `signaldb-cli tenant api-key create --scope ...` / `tenant_create_api_key`           |
+| PATCH  | `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`                      | `manage_update_api_key`             | `signaldb-cli tenant api-key update <key-id>` / `tenant_update_api_key`              |
+| DELETE | `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`                      | `manage_revoke_api_key`             | `signaldb-cli tenant api-key revoke <key-id>` / `tenant_revoke_api_key`              |
+| GET    | `/api/v1/manage/tenants/{tenant_id}/memberships`                            | `manage_list_memberships`           | `signaldb-cli tenant membership list` / `tenant_list_memberships`                    |
+| PUT    | `/api/v1/manage/tenants/{tenant_id}/memberships`                            | `manage_upsert_membership`          | `signaldb-cli tenant membership set <email> --role ...` / `tenant_upsert_membership` |
+| DELETE | `/api/v1/manage/tenants/{tenant_id}/memberships/{user}`                     | `manage_remove_membership`          | `signaldb-cli tenant membership remove <user-id>` / `tenant_remove_membership`       |
+| GET    | `/api/v1/manage/schema`                                                     | `manage_get_schema`                 | `signaldb-cli tenant schema get` / `tenant_get_schema`                               |
+| POST   | `/api/v1/manage/tenants/{tenant_id}/github-installations/link`              | `manage_start_github_link`          | `signaldb-cli tenant github link`                                                    |
+| GET    | `/api/v1/manage/tenants/{tenant_id}/github-installations`                   | `manage_list_github_installations`  | `signaldb-cli tenant github list`                                                    |
+| DELETE | `/api/v1/manage/tenants/{tenant_id}/github-installations/{installation_id}` | `manage_remove_github_installation` | `signaldb-cli tenant github remove <installation_id>`                                |
+| POST   | `/api/v1/manage/tenants/{tenant_id}/github-installations/attach`            | `manage_attach_github_installation` | `tenant_attach_github_installation`                                                  |
 
 The `github-installations` operations connect SignalDB's GitHub App to the
 tenant's repositories; they answer `404` until the operator configures
 `[github]`. Starting a link returns an install URL the admin opens in a
 browser signed in to SignalDB; GitHub redirects back to
-`/ui/github/callback`, which completes the link against that session. See
+`/ui/github/callback`, which completes the link against that session.
+`attach` skips that flow entirely: it links an installation id that already
+exists (e.g. one already linked to another tenant on the same GitHub
+account, where a second OAuth install attempt cannot complete because
+GitHub skips straight to its own installation-management page) directly,
+with no state token. Unlike every other row in this table, `attach`
+requires **instance-admin** — a tenant's own `tenant:manage` grant is not
+enough, because attach has no GitHub `code` to verify the caller actually
+controls the installation being linked (see [How linking is
+secured](../operations/github-app.md#how-linking-is-secured)). See
 [Connecting GitHub](../operations/github-app.md).
 
 `POST /api/v1/tenants/{tenant_id}/source-context` (`source_context`, and
