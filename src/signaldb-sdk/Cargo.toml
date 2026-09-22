@@ -15,6 +15,7 @@ default = ["tracing"]
 tracing = ["dep:tracing", "dep:opentelemetry", "dep:tracing-opentelemetry"]
 
 [dependencies]
+chrono.workspace = true
 progenitor-client = { workspace = true }
 reqwest.workspace = true
 serde.workspace = true
