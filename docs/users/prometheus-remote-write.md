@@ -29,6 +29,11 @@ histograms and stored in `metrics_exponential_histogram`; custom-bucket
 native histograms (NHCB) cannot be represented as exponential histograms
 and are dropped with a warning in the acceptor logs.
 
+In the other direction, when stored metrics are rendered as Prometheus
+series, exponential histograms are downsampled to classic histograms
+(`_bucket` with `le` bounds derived from the scale, plus `_count` and
+`_sum`), so consumers without native-histogram support still see them.
+
 ## Prerequisites
 
 - A running SignalDB acceptor (HTTP port 4318 by default).
