@@ -159,10 +159,6 @@ pub struct ResolvedRegistry {
     pub attributes: BTreeMap<String, AttributeDef>,
     pub entities: BTreeMap<String, EntityDef>,
     pub metrics: BTreeMap<String, MetricDef>,
-    /// Groups of types other than attribute_group/entity/metric, kept
-    /// verbatim so the document round-trips.
-    #[serde(default)]
-    pub other_group_count: usize,
     #[serde(default)]
     entity_metrics: BTreeMap<String, Vec<String>>,
     #[serde(default)]
@@ -536,10 +532,7 @@ impl Registry {
                     );
                 }
                 "entity" => {} // handled above
-                other => {
-                    if other != "attribute_group" {
-                        out.other_group_count += 1;
-                    }
+                _ => {
                     if let Some(parent_id) = &group.extends
                         && !doc.groups.iter().any(|g| &g.id == parent_id)
                         && !deps.iter().any(|d| {
