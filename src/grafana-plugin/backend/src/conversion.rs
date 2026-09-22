@@ -569,7 +569,7 @@ struct FlameBlock {
 fn decode_level(level: &[i64]) -> Vec<FlameBlock> {
     let mut blocks = Vec::with_capacity(level.len() / 4);
     let mut cursor = 0i64;
-    for chunk in level.chunks_exact(4) {
+    for chunk in level.as_chunks::<4>().0 {
         let start = cursor + chunk[0];
         blocks.push(FlameBlock {
             start,
