@@ -20,7 +20,6 @@ use iceberg_rust::catalog::identifier::Identifier;
 use iceberg_rust::catalog::tabular::Tabular;
 use iceberg_rust::spec::table_metadata::MAIN_BRANCH;
 use iceberg_rust::table::Table;
-use object_store::ObjectStore;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -207,8 +206,6 @@ impl LabelColumnReconciliation {
 pub struct IcebergTableWriter {
     catalog: Arc<dyn IcebergRustCatalog>,
     table: Table,
-    #[allow(dead_code)] // Will be used for data writing
-    object_store: Arc<dyn ObjectStore>,
     tenant_id: String,
     dataset_id: String,
     /// Tenant-resolved materialized-label allowlists (a tenant schema
@@ -222,7 +219,6 @@ impl IcebergTableWriter {
     /// Create a new IcebergTableWriter for a specific table
     pub async fn new(
         catalog_manager: &CatalogManager,
-        object_store: Arc<dyn ObjectStore>,
         tenant_id: String,
         dataset_id: String,
         table_name: String,
@@ -260,7 +256,6 @@ impl IcebergTableWriter {
         Ok(Self {
             catalog,
             table,
-            object_store,
             tenant_id,
             dataset_id,
             materialized,
@@ -956,7 +951,6 @@ mod tests {
     use common::config::{Configuration, SchemaConfig, StorageConfig};
     use datafusion::arrow::array::{Array, StringArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use object_store::memory::InMemory;
     use std::sync::Arc;
 
     /// Resolves and applies a [`LabelColumnReconciliation`] against
@@ -1187,13 +1181,10 @@ mod tests {
     async fn test_iceberg_writer_with_memory_catalog() {
         let catalog_manager = create_test_catalog_manager().await;
 
-        let object_store = Arc::new(InMemory::new());
-
         // With a real in-memory SQL catalog, creating the writer (and thus the
         // "traces" table) must deterministically succeed.
         let writer = IcebergTableWriter::new(
             &catalog_manager,
-            object_store,
             "test-tenant".to_string(),
             "local".to_string(),
             "traces".to_string(),
@@ -1226,7 +1217,6 @@ mod tests {
         let catalog_manager = CatalogManager::new(config).await.unwrap();
         let mut writer = IcebergTableWriter::new(
             &catalog_manager,
-            Arc::new(InMemory::new()),
             "test-tenant".to_string(),
             "local".to_string(),
             "logs".to_string(),
@@ -1294,7 +1284,6 @@ mod tests {
         let catalog_manager = create_test_catalog_manager().await;
         let mut writer = IcebergTableWriter::new(
             &catalog_manager,
-            Arc::new(InMemory::new()),
             "test-tenant".to_string(),
             "local".to_string(),
             "logs".to_string(),
@@ -1378,7 +1367,6 @@ mod tests {
         let catalog_manager = CatalogManager::new(config).await.unwrap();
         let mut writer = IcebergTableWriter::new(
             &catalog_manager,
-            Arc::new(InMemory::new()),
             "test-tenant".to_string(),
             "local".to_string(),
             "logs".to_string(),
@@ -1438,7 +1426,6 @@ mod tests {
         let catalog_manager = create_test_catalog_manager().await;
         let mut writer = IcebergTableWriter::new(
             &catalog_manager,
-            Arc::new(InMemory::new()),
             "test-tenant".to_string(),
             "local".to_string(),
             "traces".to_string(),

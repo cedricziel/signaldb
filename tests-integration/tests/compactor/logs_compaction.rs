@@ -13,7 +13,6 @@ use datafusion::arrow::array::{Array, Int64Array, StringArray};
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::prelude::SessionContext;
 use iceberg_rust::catalog::tabular::Tabular;
-use object_store::memory::InMemory;
 use opentelemetry_proto::tonic::{
     collector::logs::v1::ExportLogsServiceRequest,
     common::v1::{AnyValue, KeyValue, any_value::Value},
@@ -140,7 +139,6 @@ async fn test_logs_table_compaction() -> Result<()> {
 
     // Setup: Create in-memory catalog and object store
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
@@ -151,7 +149,6 @@ async fn test_logs_table_compaction() -> Result<()> {
 
     let writer_result = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
@@ -267,7 +264,6 @@ async fn test_logs_compaction_with_sorting_verification() -> Result<()> {
     tracing::info!("=== Starting logs sorting verification test ===");
 
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
@@ -276,7 +272,6 @@ async fn test_logs_compaction_with_sorting_verification() -> Result<()> {
     // Create writer and write varied severity logs
     let mut writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),

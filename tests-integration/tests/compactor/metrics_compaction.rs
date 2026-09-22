@@ -9,7 +9,6 @@ use common::flight::conversion::conversion_metrics::otlp_metrics_to_arrow;
 use compactor::executor::{CompactionExecutor, ExecutorConfig};
 use compactor::metrics::CompactionMetrics;
 use compactor::planner::{CompactionCandidate, PartitionStats};
-use object_store::memory::InMemory;
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue};
 use opentelemetry_proto::tonic::metrics::v1::{
@@ -164,7 +163,6 @@ async fn test_metrics_gauge_compaction() -> Result<()> {
 
     // Setup: Create in-memory catalog and object store
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
@@ -175,7 +173,6 @@ async fn test_metrics_gauge_compaction() -> Result<()> {
 
     let writer_result = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
@@ -268,7 +265,6 @@ async fn test_metrics_histogram_compaction() -> Result<()> {
 
     // Setup: Create in-memory catalog and object store
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
@@ -279,7 +275,6 @@ async fn test_metrics_histogram_compaction() -> Result<()> {
 
     let writer_result = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),

@@ -164,7 +164,6 @@ impl RetentionTestContext {
     ) -> Result<IcebergTableWriter> {
         let writer = IcebergTableWriter::new(
             &self.catalog.catalog_manager,
-            self.storage.object_store.clone(),
             tenant_id.to_string(),
             dataset_id.to_string(),
             table_name.to_string(),

@@ -24,13 +24,11 @@ async fn test_iceberg_writer_integration() -> Result<()> {
     // Setup test environment
     let _temp_dir = tempdir()?;
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     // Creating an Iceberg writer against a fresh in-memory catalog must
     // deterministically succeed (it creates the "traces" table on demand).
     let writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         "default".to_string(),
         "default".to_string(),
         "traces".to_string(),
@@ -226,13 +224,11 @@ async fn test_iceberg_namespace_slug_based() -> Result<()> {
         ..Default::default()
     };
 
-    let object_store = Arc::new(InMemory::new());
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
 
     // Create writer with tenant_id/dataset_id that map to slugs "mycorp"/"prod"
     let writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         "tenant-1".to_string(),
         "dataset-1".to_string(),
         "traces".to_string(),
@@ -296,12 +292,10 @@ async fn test_created_tables_enable_metadata_pruning() -> Result<()> {
         ..Default::default()
     };
 
-    let object_store = Arc::new(InMemory::new());
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
 
     let writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store,
         "tenant-1".to_string(),
         "dataset-1".to_string(),
         "traces".to_string(),
@@ -380,7 +374,6 @@ async fn test_metadata_pruning_reclaims_old_metadata_files() -> Result<()> {
     // Create the table (applies the retention properties).
     let _writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         "tenant-1".to_string(),
         "dataset-1".to_string(),
         "traces".to_string(),
@@ -439,13 +432,11 @@ async fn test_partition_spec_roundtrip() -> Result<()> {
         ..Default::default()
     };
 
-    let object_store = Arc::new(InMemory::new());
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
 
     // Create a writer for the traces table (which creates the table with partitioning)
     let writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         "default".to_string(),
         "default".to_string(),
         "traces".to_string(),
@@ -476,7 +467,6 @@ async fn test_partition_spec_roundtrip() -> Result<()> {
     // Also test logs table
     let logs_writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         "default".to_string(),
         "default".to_string(),
         "logs".to_string(),
@@ -491,7 +481,6 @@ async fn test_partition_spec_roundtrip() -> Result<()> {
     // Also test metrics_gauge table
     let metrics_writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         "default".to_string(),
         "default".to_string(),
         "metrics_gauge".to_string(),
@@ -550,13 +539,11 @@ async fn test_write_and_query_with_slugs() -> Result<()> {
         ..Default::default()
     };
 
-    let object_store = Arc::new(InMemory::new());
     let catalog_manager = Arc::new(CatalogManager::new(config.clone()).await?);
 
     // Step 1: Writer creates the traces table under slug-based namespace [testco, staging]
     let writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         "test-tenant".to_string(),
         "test-dataset".to_string(),
         "traces".to_string(),
@@ -972,11 +959,9 @@ async fn attr_tokens_write_populates_column_and_bloom_filter() -> Result<()> {
     config.schema.catalog_uri =
         "sqlite:file:signaldb_attr_tokens?mode=memory&cache=shared".to_string();
     let manager = CatalogManager::new(config).await?;
-    let object_store = Arc::new(InMemory::new());
 
     let mut writer = IcebergTableWriter::new(
         &manager,
-        object_store,
         "default".to_string(),
         "default".to_string(),
         "logs".to_string(),

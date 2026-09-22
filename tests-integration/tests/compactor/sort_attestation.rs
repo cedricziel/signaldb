@@ -10,7 +10,6 @@ use common::catalog_manager::CatalogManager;
 use compactor::executor::{CompactionExecutor, ExecutorConfig};
 use compactor::planner::{CompactionPlanner, PlannerConfig};
 use datafusion::arrow::array::RecordBatch;
-use object_store::memory::InMemory;
 use std::sync::Arc;
 use tests_integration::compaction_helpers::{
     aligned_hour_start, attested_sort_order_ids, context_for, load_table, trace_sort_keys,
@@ -55,7 +54,6 @@ async fn compaction_makes_a_partition_of_legacy_files_fully_attested() -> Result
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
     let mut writer = IcebergTableWriter::new(
         &catalog_manager,
-        Arc::new(InMemory::new()),
         TENANT.to_string(),
         DATASET.to_string(),
         TABLE.to_string(),

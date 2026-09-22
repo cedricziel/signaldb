@@ -28,7 +28,6 @@ use compactor::executor::{CompactionExecutor, ExecutorConfig};
 use compactor::lease::LeaseManager;
 use compactor::metrics::CompactionMetrics;
 use compactor::planner::{CompactionCandidate, PartitionStats};
-use object_store::memory::InMemory;
 use opentelemetry_proto::tonic::{
     collector::logs::v1::ExportLogsServiceRequest,
     common::v1::{AnyValue, KeyValue, any_value::Value},
@@ -94,14 +93,12 @@ fn build_logs_request(batch_num: usize, rows: usize) -> ExportLogsServiceRequest
 /// lease/mutual-exclusion assertions that are this file's actual value.
 async fn write_small_log_files(
     catalog_manager: &Arc<CatalogManager>,
-    object_store: Arc<InMemory>,
     tenant_id: &str,
     dataset_id: &str,
     batches: usize,
 ) -> Result<()> {
     let mut writer = IcebergTableWriter::new(
         catalog_manager,
-        object_store,
         tenant_id.to_string(),
         dataset_id.to_string(),
         "logs".to_string(),
@@ -258,7 +255,6 @@ async fn test_two_instances_compact_without_duplicate_work() -> Result<()> {
     // point at), and a shared SQLite file for lease coordination accessed
     // through two independent connections — the way two processes would.
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     let lease_db_dir = tempfile::tempdir()?;
     let lease_dsn = format!(
@@ -272,14 +268,7 @@ async fn test_two_instances_compact_without_duplicate_work() -> Result<()> {
     let datasets = ["dataset-a", "dataset-b"];
 
     for dataset_id in &datasets {
-        write_small_log_files(
-            &catalog_manager,
-            object_store.clone(),
-            tenant_id,
-            dataset_id,
-            10,
-        )
-        .await?;
+        write_small_log_files(&catalog_manager, tenant_id, dataset_id, 10).await?;
     }
 
     // Resolve each dataset's own partition. The datasets are seeded by
@@ -393,7 +382,6 @@ async fn test_crashed_instance_lease_taken_over() -> Result<()> {
     init_test_logging();
 
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     let lease_db_dir = tempfile::tempdir()?;
     let lease_dsn = format!(
@@ -406,14 +394,7 @@ async fn test_crashed_instance_lease_taken_over() -> Result<()> {
     let tenant_id = "takeover-tenant";
     let dataset_id = "takeover-dataset";
 
-    write_small_log_files(
-        &catalog_manager,
-        object_store.clone(),
-        tenant_id,
-        dataset_id,
-        10,
-    )
-    .await?;
+    write_small_log_files(&catalog_manager, tenant_id, dataset_id, 10).await?;
 
     let partition = busiest_partition(&catalog_manager, tenant_id, dataset_id, "logs").await?;
     let candidate = make_candidate(tenant_id, dataset_id, partition);

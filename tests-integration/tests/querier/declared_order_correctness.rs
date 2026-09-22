@@ -13,7 +13,6 @@ use common::catalog_manager::CatalogManager;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::physical_plan::displayable;
 use datafusion::prelude::SessionContext;
-use object_store::memory::InMemory;
 use std::sync::Arc;
 use tests_integration::compaction_helpers::{
     aligned_hour_start, attested_sort_order_ids, context_for, load_table, trace_sort_keys,
@@ -48,7 +47,6 @@ impl Fixture {
         let catalog_manager = Arc::new(CatalogManager::new(config).await?);
         let mut writer = IcebergTableWriter::new(
             &catalog_manager,
-            Arc::new(InMemory::new()),
             tenant.to_string(),
             DATASET.to_string(),
             TABLE.to_string(),

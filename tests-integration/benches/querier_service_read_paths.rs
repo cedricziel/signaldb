@@ -102,7 +102,6 @@ async fn seed() -> Env {
     // Traces: bulk volume + bloom-only-prunable files holding the target.
     let mut traces = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         TENANT.to_string(),
         DATASET.to_string(),
         "traces".to_string(),
@@ -123,7 +122,6 @@ async fn seed() -> Env {
 
     let mut logs = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         TENANT.to_string(),
         DATASET.to_string(),
         "logs".to_string(),
@@ -136,7 +134,6 @@ async fn seed() -> Env {
 
     let mut metrics = IcebergTableWriter::new(
         &catalog_manager,
-        object_store,
         TENANT.to_string(),
         DATASET.to_string(),
         "metrics_gauge".to_string(),
