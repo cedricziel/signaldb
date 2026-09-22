@@ -1,8 +1,9 @@
 use crate::schema_transform::{
-    transform_logs_v1_to_iceberg, transform_metrics_exponential_histogram_v1_to_iceberg,
-    transform_metrics_gauge_v1_to_iceberg, transform_metrics_histogram_v1_to_iceberg,
-    transform_metrics_sum_v1_to_iceberg, transform_metrics_summary_v1_to_iceberg,
-    transform_profiles_v1_to_iceberg, transform_trace_v1_to_v2, warm_trace_v1_to_v2_plan,
+    LABEL_ORIGIN_KEY_METADATA, transform_logs_v1_to_iceberg,
+    transform_metrics_exponential_histogram_v1_to_iceberg, transform_metrics_gauge_v1_to_iceberg,
+    transform_metrics_histogram_v1_to_iceberg, transform_metrics_sum_v1_to_iceberg,
+    transform_metrics_summary_v1_to_iceberg, transform_profiles_v1_to_iceberg,
+    transform_trace_v1_to_v2, warm_trace_v1_to_v2_plan,
 };
 use anyhow::{Context, Result};
 use common::CatalogManager;
@@ -107,10 +108,17 @@ struct LabelColumnReconciliation {
     /// Every column name the current config's fresh resolution produces.
     /// One entry's transform emits exactly this set unconditionally (even
     /// all-null), so a batch missing one of them was named by a *different*
-    /// config generation -- see [`Self::apply`].
+    /// config generation -- see [`Self::apply`]'s name-based fallback.
     fresh_columns: HashSet<String>,
     renames: HashMap<String, String>,
     drops: HashSet<String>,
+    /// Same plan as `renames`/`drops`, keyed by origin key rather than by
+    /// the fresh column name a batch built under a different config
+    /// generation might not share. Used to resolve a batch whose columns
+    /// carry [`LABEL_ORIGIN_KEY_METADATA`] (#1534); name collisions across
+    /// generations cannot fool it, unlike the name-based fallback.
+    renames_by_key: HashMap<String, String>,
+    drops_by_key: HashSet<String>,
 }
 
 impl LabelColumnReconciliation {
@@ -120,10 +128,13 @@ impl LabelColumnReconciliation {
 
         let mut renames = HashMap::new();
         let mut drops = HashSet::new();
+        let mut renames_by_key = HashMap::new();
+        let mut drops_by_key = HashSet::new();
         for (key, fresh_column) in fresh {
             match common::iceberg::evolution::column_for_key(current_schema, &key) {
                 Some(authoritative) if authoritative != fresh_column => {
                     renames.insert(fresh_column, authoritative.to_string());
+                    renames_by_key.insert(key, authoritative.to_string());
                 }
                 Some(_) => {}
                 None => {
@@ -133,6 +144,7 @@ impl LabelColumnReconciliation {
                         .any(|f| f.name == fresh_column)
                     {
                         drops.insert(fresh_column);
+                        drops_by_key.insert(key);
                     }
                 }
             }
@@ -142,6 +154,8 @@ impl LabelColumnReconciliation {
             fresh_columns,
             renames,
             drops,
+            renames_by_key,
+            drops_by_key,
         }
     }
 
@@ -150,28 +164,34 @@ impl LabelColumnReconciliation {
     /// keys that need to swap names resolve correctly instead of one
     /// clobbering the other mid-rename.
     ///
-    /// Renaming is by column *name*, so it first checks that `batch` was
-    /// actually named by the config generation this plan was resolved
-    /// against: every column [`Self::compute`]'s fresh resolution produces
-    /// must be present. A WAL backlog carried across a restart that also
-    /// changed `[schema.materialized_labels]` can contain entries a
-    /// *previous* fresh resolution named -- missing one or more of the
-    /// current generation's columns -- whose columns this plan's names
-    /// would misroute rather than fix. A name-based check cannot
+    /// A column carrying [`LABEL_ORIGIN_KEY_METADATA`] is matched by that
+    /// stamped origin key, immune to a name collision between config
+    /// generations (#1534). A batch with no such metadata predates the
+    /// stamping and falls back to the old name-based guard: it first checks
+    /// that `batch` was actually named by the config generation this plan
+    /// was resolved against -- every column [`Self::compute`]'s fresh
+    /// resolution produces must be present. A WAL backlog carried across a
+    /// restart that also changed `[schema.materialized_labels]` can contain
+    /// entries a *previous* fresh resolution named -- missing one or more
+    /// of the current generation's columns -- whose columns this plan's
+    /// names would misroute rather than fix. A name-based check cannot
     /// distinguish "named by an old generation" from "needs no
-    /// reconciling", so it errs toward leaving such a batch untouched; this
-    /// is a mitigation, not a full fix (tracked as a follow-up to #1448:
-    /// stamping the origin key into Arrow field metadata at materialization
-    /// time, so reconciliation matches on provenance instead of name).
+    /// reconciling", so it errs toward leaving such a batch untouched.
     fn apply(&self, batch: RecordBatch) -> Result<RecordBatch> {
         if self.renames.is_empty() && self.drops.is_empty() {
             return Ok(batch);
         }
         let batch_schema = batch.schema();
-        if !self
-            .fresh_columns
+        let has_origin_metadata = batch_schema
+            .fields()
             .iter()
-            .all(|column| batch_schema.index_of(column).is_ok())
+            .any(|f| f.metadata().contains_key(LABEL_ORIGIN_KEY_METADATA));
+
+        if !has_origin_metadata
+            && !self
+                .fresh_columns
+                .iter()
+                .all(|column| batch_schema.index_of(column).is_ok())
         {
             return Ok(batch);
         }
@@ -179,11 +199,21 @@ impl LabelColumnReconciliation {
         let mut fields = Vec::with_capacity(batch.num_columns());
         let mut columns = Vec::with_capacity(batch.num_columns());
         for (field, column) in batch.schema().fields().iter().zip(batch.columns()) {
-            let name = field.name();
-            if self.drops.contains(name) {
+            let origin_key = field.metadata().get(LABEL_ORIGIN_KEY_METADATA);
+            let (drop, rename) = match origin_key {
+                Some(key) => (
+                    self.drops_by_key.contains(key),
+                    self.renames_by_key.get(key),
+                ),
+                None => (
+                    self.drops.contains(field.name()),
+                    self.renames.get(field.name()),
+                ),
+            };
+            if drop {
                 continue;
             }
-            match self.renames.get(name) {
+            match rename {
                 Some(new_name) => {
                     fields.push(Arc::new(field.as_ref().clone().with_name(new_name.clone())))
                 }
@@ -1283,6 +1313,79 @@ mod tests {
             .unwrap()
             .value(0);
         assert_eq!(value, "real-http_method-value");
+    }
+
+    #[tokio::test]
+    async fn reconcile_label_columns_trusts_stamped_origin_key_over_a_name_collision() {
+        // Same setup as the "grown" test above, but the batch's columns
+        // carry LABEL_ORIGIN_KEY_METADATA stamped by the current (grown)
+        // config generation -- unlike the name-based heuristic, matching by
+        // that stamped key must not rename either column onto the wrong
+        // key, even though the column *names* happen to satisfy the
+        // current generation's fresh-column set.
+        let config = Configuration {
+            schema: SchemaConfig {
+                catalog_type: "memory".to_string(),
+                catalog_uri: "memory://".to_string(),
+                default_schemas: Default::default(),
+                materialized_labels: common::config::MaterializedLabels {
+                    logs: vec!["http_method".to_string()],
+                    ..Default::default()
+                },
+            },
+            storage: StorageConfig {
+                dsn: "memory://".to_string(),
+            },
+            ..Default::default()
+        };
+        let catalog_manager = CatalogManager::new(config).await.unwrap();
+        let mut writer = IcebergTableWriter::new(
+            &catalog_manager,
+            Arc::new(InMemory::new()),
+            "test-tenant".to_string(),
+            "local".to_string(),
+            "logs".to_string(),
+        )
+        .await
+        .unwrap();
+        writer.materialized.logs = vec!["http.method".to_string(), "http_method".to_string()];
+
+        // An *old*-generation batch that happens to use the exact column
+        // names the current generation's fresh resolution would produce,
+        // but was actually stamped for a different key by an earlier
+        // config generation (e.g. a prior key ordering): `label_http_method`
+        // here was materialized for `some.other.key`, not `http_method`.
+        let stamped =
+            |key: &str| HashMap::from([(LABEL_ORIGIN_KEY_METADATA.to_string(), key.to_string())]);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("timestamp", DataType::Utf8, true),
+            Field::new("label_http_method", DataType::Utf8, true)
+                .with_metadata(stamped("some.other.key")),
+            Field::new("label_http_method_2", DataType::Utf8, true)
+                .with_metadata(stamped("yet.another.key")),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("t")])),
+                Arc::new(StringArray::from(vec![Some("other-key-value")])),
+                Arc::new(StringArray::from(vec![Some("another-key-value")])),
+            ],
+        )
+        .unwrap();
+
+        let reconciled = reconcile(&writer, batch).unwrap();
+
+        // Neither column matches a key this plan knows about (`http.method`
+        // or `http_method`), so both must pass through untouched -- not
+        // renamed or dropped based on their misleading names.
+        let schema = reconciled.schema();
+        let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["timestamp", "label_http_method", "label_http_method_2"],
+            "stamped origin keys with no match in the plan must not be renamed or dropped: {names:?}"
+        );
     }
 
     #[tokio::test]
