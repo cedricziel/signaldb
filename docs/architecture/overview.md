@@ -320,7 +320,10 @@ them to strings — the compatibility dialects lose the OTel resource/scope/reco
 distinction, the IR preserves it. `source_read_scope` gates a document's `from`
 against the caller's `{signal}:read` scopes (`logs`/`traces`/`profiles`/`metrics`,
 with `metrics_histogram` mapped to the same `metrics` scope) before the request
-ever reaches the querier. Any envelope may carry a `warnings` array — non-fatal
+ever reaches the querier. A multi-query request (`queries` + `formulas`) checks
+that scope for every inner query before any of them runs, executes each inner
+`series` query the same way, and evaluates the formulas in the router,
+joining series on identical labels and timestamps. Any envelope may carry a `warnings` array — non-fatal
 diagnostics with a stable `code`; today `unknown_group_by_field`, raised when an
 `aggregate.by` field is neither a logical field of the source nor carried by any
 record in the window, so the grouping produced one `null` label. It is a warning
