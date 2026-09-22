@@ -23,16 +23,16 @@ Groups ≈ PRs, in design D6 order. TDD throughout.
 
 - [x] 4.1 Tests: reset scenario, rejection without `step` / on non-metric sources (query-ir `validate.rs` + querier `ir_planner.rs`; no PromQL-agreement test — see handback)
 - [x] 4.2 `rate`/`increase` in `Agg`, planner window, schema version bump, docs, MCP tool text (no supported-function listing in the MCP tool description to update)
-- [ ] 4.3 Metrics builder compiles range-function rows to the IR
+- [x] 4.3 Metrics builder compiles range-function rows to the IR (`rate`/`increase` only — `irate`/`*_over_time` have no IR stage and are no longer offered by the builder; see the handback in the change's PR/commit history for the full list of dropped options)
 
 ## 5. IR formulas
 
 - [x] 5.1 Tests: error ratio, missing series, divide by zero, invalid expression (`query-ir/src/formula.rs`)
 - [x] 5.2 Multi-query document + formula evaluator in the querier; docs — `POST /api/v1/query` accepts `{queries, formulas, result}` (discriminated by `queries`), authorizes every inner query's source, executes each via its own Flight ticket, and evaluates formulas with `query-ir`'s evaluator; OpenAPI/TS client/Rust SDK regenerated
-- [ ] 5.3 Metrics builder formulas on the IR; remove PromQL tab and `api/prom.ts`
+- [x] 5.3 Metrics builder formulas on the IR; remove PromQL tab and `api/prom.ts`
 
 ## 6. Cleanup
 
-- [ ] 6.1 Delete `api/loki.ts`, `api/pyroscope.ts`, Tempo search functions; drop compat prefixes the UI no longer needs from `lib/proxiedPaths.ts`
-- [ ] 6.2 Test guard: hand-written UI request code may not call `/loki`, `/prometheus`, `/tempo`, `/pyroscope` or their generated SDK functions (excludes `api/gen/**`, `lib/proxiedPaths.ts`, connection-info fixtures)
-- [ ] 6.3 Update `docs/users/explore-ui.md`; "open as IR" action on each tab
+- [x] 6.1 Delete `api/loki.ts`, `api/pyroscope.ts`, Tempo search functions; drop compat prefixes the UI no longer needs from `lib/proxiedPaths.ts` (`api/pyroscope.ts`/`api/tempo.ts` already held no compat client, just shared types — renamed to `api/profileTypes.ts`/`api/traceTypes.ts` rather than deleted; `lib/proxiedPaths.ts`'s prefixes are still needed by the dev proxy/service-worker denylist for Grafana-facing paths, so kept as-is)
+- [x] 6.2 Test guard: hand-written UI request code may not call `/loki`, `/prometheus`, `/tempo`, `/pyroscope` or their generated SDK functions (excludes `api/gen/**`, `lib/proxiedPaths.ts`, connection-info fixtures) — `src/ui/src/test/compatGuard.test.ts`
+- [x] 6.3 Update `docs/users/explore-ui.md` (the "open as IR" action was left undone — see the change's handback for why)
