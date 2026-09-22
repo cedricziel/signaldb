@@ -1491,14 +1491,13 @@ impl Lowering<'_> {
         df: DataFrame,
         agg: &Aggregate,
     ) -> Result<DataFrame, QuerierError> {
-        use common::query_ir::AggFn;
         // `rate`/`increase` are computed per series from the raw ordered
         // samples (a window function), not from a plain aggregate
         // expression — `validate` guarantees this is the aggregate's only
         // output when either is present, so no other agg can share this
         // stage with it.
         if let (Some(step), [a]) = (&agg.step, agg.aggs.as_slice())
-            && matches!(a.func, AggFn::Rate | AggFn::Increase)
+            && a.func.is_range_fn()
         {
             return self.lower_rate_aggregate(df, agg, a, step);
         }
@@ -1552,21 +1551,29 @@ impl Lowering<'_> {
         Ok(df)
     }
 
-    /// `rate`/`increase`: walk the samples ordered by time within each
-    /// *individual series* — not the `by` grouping, which may fold several
-    /// series into one output row (e.g. `by: ["metric.name"]` alone) — and
-    /// accumulate the counter-reset-aware delta between consecutive samples
+    /// `rate`/`increase`/`irate`/`*_over_time`: walk the samples ordered by
+    /// time within each *individual series* — not the `by` grouping, which
+    /// may fold several series into one output row (e.g. `by:
+    /// ["metric.name"]` alone) — and, for `rate`/`increase`, accumulate the
+    /// counter-reset-aware delta between consecutive samples
     /// (`super::metrics::reset_corrected_delta` — the same Prometheus rule
     /// the PromQL compat path uses). A series' identity is `metric_name`
     /// plus its natural label set (`super::metrics::natural_series_columns`
     /// — `service_name` plus every promoted `label_*` column present in the
     /// scanned schema), the same identity the PromQL `rate`/`increase` path
     /// partitions by; two series sharing a `by` value are never allowed to
-    /// interleave and take deltas across each other. Each series' deltas are
-    /// then summed into its `step` bucket, and buckets sharing a `by` value
-    /// are folded together by the final aggregate. `rate` divides the
-    /// bucket's total by the window width in seconds; `increase` is the
-    /// total itself.
+    /// interleave and combine across each other.
+    ///
+    /// The lookback window (`irVersion` 7's `window`, defaulting to `step`)
+    /// is evaluated per raw sample as a `RANGE` window frame in nanoseconds
+    /// ending at that sample: each sample's per-series value already
+    /// reflects only the samples in `(sample_ts - window, sample_ts]`. Each
+    /// `step` bucket then reports the value from the *latest* sample it
+    /// contains — the closest available point to the bucket's right edge,
+    /// rather than an exact-edge instant no raw sample necessarily lands on.
+    /// Finally, per-bucket per-series values sharing a `by` group are folded
+    /// together by the `across` reducer (default `sum` — the historical
+    /// `rate`/`increase` behaviour).
     fn lower_rate_aggregate(
         &mut self,
         df: DataFrame,
@@ -1575,9 +1582,33 @@ impl Lowering<'_> {
         step: &str,
     ) -> Result<DataFrame, QuerierError> {
         use common::query_ir::AggFn;
+        use datafusion::functions_aggregate::average::avg_udaf;
+        use datafusion::functions_aggregate::count::count_udaf;
+        use datafusion::functions_aggregate::min_max::{max_udaf, min_udaf};
+        use datafusion::functions_aggregate::sum::sum_udaf;
+        use datafusion::logical_expr::expr::WindowFunction;
+        use datafusion::logical_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits};
+
+        // `sum`/`avg`/`min`/`max`/`count` from `functions_aggregate::expr_fn`
+        // build a plain `Expr::AggregateFunction` — `ExprFunctionExt`'s
+        // `partition_by`/`window_frame` only accept `Expr::WindowFunction`, so
+        // a RANGE-framed windowed reduction needs the same UDAF wrapped as one
+        // directly.
+        fn windowed(
+            udaf: std::sync::Arc<datafusion::logical_expr::AggregateUDF>,
+            arg: Expr,
+        ) -> Expr {
+            Expr::WindowFunction(Box::new(WindowFunction::new(udaf, vec![arg])))
+        }
 
         let step_ns = common::query_ir::parse_duration_ns(step)
             .ok_or_else(|| QuerierError::InvalidInput(format!("invalid step duration '{step}'")))?;
+        let window_ns = match &a.window {
+            Some(w) => common::query_ir::parse_duration_ns(w).ok_or_else(|| {
+                QuerierError::InvalidInput(format!("invalid window duration '{w}'"))
+            })?,
+            None => step_ns,
+        };
         let of = a.of.as_deref().ok_or_else(|| {
             QuerierError::InvalidInput(format!(
                 "aggregate '{}' requires an `of` field",
@@ -1593,57 +1624,166 @@ impl Lowering<'_> {
                 .iter()
                 .map(|c| col(c.as_str())),
         );
-        let order = vec![SortExpr::new(col(self.source.time_col), true, true)];
-        let prev_value = lag(value_f64.clone(), Some(1), None)
-            .partition_by(partition)
-            .order_by(order)
-            .build()
-            .map_err(QuerierError::QueryFailed)?
-            .alias("__rate_prev");
+        let time_col = || col(self.source.time_col);
+        let order = || vec![SortExpr::new(time_col(), true, true)];
+
         let df = df
-            .window(vec![prev_value])
+            .with_column("__val", value_f64)
             .map_err(QuerierError::QueryFailed)?;
 
-        // The first sample in a series has no previous value; it contributes
-        // nothing, matching how a NULL delta is simply ignored by `sum`.
-        let contribution =
-            datafusion::logical_expr::when(col("__rate_prev").is_null(), lit(0.0f64))
-                .otherwise(super::metrics::reset_corrected_delta(
-                    value_f64,
-                    col("__rate_prev"),
-                )?)
+        // `prev_val`/`prev_ts`: the immediately preceding raw sample in the
+        // same series, used by `irate` and by the reset-aware per-row delta
+        // that `rate`/`increase` sum over their window.
+        let prev_val = lag(ident("__val"), Some(1), None)
+            .partition_by(partition.clone())
+            .order_by(order())
+            .build()
+            .map_err(QuerierError::QueryFailed)?
+            .alias("__prev_val");
+        let prev_ts = lag(time_col(), Some(1), None)
+            .partition_by(partition.clone())
+            .order_by(order())
+            .build()
+            .map_err(QuerierError::QueryFailed)?
+            .alias("__prev_ts");
+        let df = df
+            .window(vec![prev_val, prev_ts])
+            .map_err(QuerierError::QueryFailed)?;
+
+        let window_bound = WindowFrameBound::Preceding(ScalarValue::IntervalMonthDayNano(Some(
+            IntervalMonthDayNano::new(0, 0, window_ns),
+        )));
+        let range_frame = WindowFrame::new_bounds(
+            WindowFrameUnits::Range,
+            window_bound,
+            WindowFrameBound::CurrentRow,
+        );
+
+        // The point value each raw sample carries for its function — folded
+        // into the RANGE window below for every function except `irate`,
+        // which only ever looks at the single preceding sample.
+        let df = if a.func == AggFn::Irate {
+            let dt_ns =
+                cast(time_col(), DataType::Int64) - cast(ident("__prev_ts"), DataType::Int64);
+            let point = datafusion::logical_expr::when(
+                ident("__prev_val")
+                    .is_null()
+                    .or(dt_ns.clone().gt(lit(window_ns))),
+                lit(ScalarValue::Float64(None)),
+            )
+            .otherwise(
+                super::metrics::reset_corrected_delta(ident("__val"), ident("__prev_val"))?
+                    / (cast(dt_ns, DataType::Float64) / lit(1_000_000_000.0)),
+            )
+            .map_err(QuerierError::QueryFailed)?;
+            df.with_column("__point", point)
+                .map_err(QuerierError::QueryFailed)?
+        } else {
+            let point = match a.func {
+                AggFn::Rate | AggFn::Increase => {
+                    datafusion::logical_expr::when(ident("__prev_val").is_null(), lit(0.0f64))
+                        .otherwise(super::metrics::reset_corrected_delta(
+                            ident("__val"),
+                            ident("__prev_val"),
+                        )?)
+                        .map_err(QuerierError::QueryFailed)?
+                }
+                _ => ident("__val"),
+            };
+            let df = df
+                .with_column("__point", point)
                 .map_err(QuerierError::QueryFailed)?;
 
+            let windowed_expr = match a.func {
+                AggFn::Rate | AggFn::Increase | AggFn::SumOverTime => {
+                    windowed(sum_udaf(), ident("__point"))
+                }
+                AggFn::AvgOverTime => windowed(avg_udaf(), ident("__point")),
+                AggFn::MinOverTime => windowed(min_udaf(), ident("__point")),
+                AggFn::MaxOverTime => windowed(max_udaf(), ident("__point")),
+                AggFn::CountOverTime => windowed(count_udaf(), ident("__point")),
+                _ => unreachable!("irate handled above"),
+            };
+            let windowed = windowed_expr
+                .partition_by(partition.clone())
+                .order_by(order())
+                .window_frame(range_frame.clone())
+                .build()
+                .map_err(QuerierError::QueryFailed)?
+                .alias("__windowed");
+            df.window(vec![windowed])
+                .map_err(QuerierError::QueryFailed)?
+        };
+
+        // `rate` reports the summed delta per second of the *window*, not
+        // the step — the two coincide only when `window` defaults to `step`.
+        let per_sample_value = match a.func {
+            AggFn::Rate => ident("__windowed") / lit(window_ns as f64 / 1_000_000_000.0),
+            AggFn::Increase
+            | AggFn::AvgOverTime
+            | AggFn::MinOverTime
+            | AggFn::MaxOverTime
+            | AggFn::SumOverTime
+            | AggFn::CountOverTime => ident("__windowed"),
+            AggFn::Irate => ident("__point"),
+            _ => unreachable!("only range functions reach lower_rate_aggregate"),
+        };
+        let df = df
+            .with_column("__per_sample", per_sample_value)
+            .map_err(QuerierError::QueryFailed)?;
+
+        // Bucket each sample to its step, then keep only the latest sample
+        // per (series, bucket) — the per-series value reported for that
+        // step, closest available point to the bucket's right edge.
         let stride = lit(ScalarValue::IntervalMonthDayNano(Some(
             IntervalMonthDayNano::new(0, 0, step_ns),
         )));
         let origin = lit(ScalarValue::TimestampNanosecond(Some(0), None));
-        let ts_ns = cast(
-            col(self.source.time_col),
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-        );
-        let mut group_exprs = vec![date_bin(stride, ts_ns, origin).alias("bucket")];
+        let ts_ns = cast(time_col(), DataType::Timestamp(TimeUnit::Nanosecond, None));
+        let df = df
+            .with_column("bucket", date_bin(stride, ts_ns, origin))
+            .map_err(QuerierError::QueryFailed)?;
+
+        let mut per_series_partition = partition;
+        per_series_partition.push(ident("bucket"));
+        let rn = datafusion::functions_window::expr_fn::row_number()
+            .partition_by(per_series_partition)
+            .order_by(vec![SortExpr::new(time_col(), false, false)])
+            .build()
+            .map_err(QuerierError::QueryFailed)?
+            .alias("__rn");
+        let df = df.window(vec![rn]).map_err(QuerierError::QueryFailed)?;
+        let df = df
+            .filter(ident("__rn").eq(lit(1i64)))
+            .map_err(QuerierError::QueryFailed)?;
+
+        // Fold per-series values sharing a `by` group into one value per
+        // bucket with the `across` reducer (default `sum`).
+        let mut group_exprs = vec![ident("bucket").alias("bucket")];
         let mut new_col_of = HashMap::new();
         for by in &agg.by {
             let alias = safe_ident(by);
             group_exprs.push(self.value_expr(by)?.alias(alias.clone()));
             new_col_of.insert(by.clone(), alias);
         }
+        let across = a.across.unwrap_or(AggFn::Sum);
         const TOTAL: &str = "__rate_total";
+        let across_expr = match across {
+            AggFn::Avg => avg(ident("__per_sample")),
+            AggFn::Min => min(ident("__per_sample")),
+            AggFn::Max => max(ident("__per_sample")),
+            AggFn::Count => count(ident("__per_sample")),
+            _ => sum(ident("__per_sample")),
+        };
         let df = df
-            .aggregate(group_exprs, vec![sum(contribution).alias(TOTAL)])
+            .aggregate(group_exprs, vec![across_expr.alias(TOTAL)])
             .map_err(QuerierError::QueryFailed)?;
 
-        let value_expr = match a.func {
-            AggFn::Increase => ident(TOTAL),
-            AggFn::Rate => ident(TOTAL) / lit(step_ns as f64 / 1_000_000_000.0),
-            _ => unreachable!("only rate/increase reach lower_rate_aggregate"),
-        };
         let mut select = vec![col("bucket")];
         for by in &agg.by {
             select.push(ident(safe_ident(by)));
         }
-        select.push(value_expr.alias(a.as_name.clone()));
+        select.push(ident(TOTAL).alias(a.as_name.clone()));
         let df = df.select(select).map_err(QuerierError::QueryFailed)?;
 
         new_col_of.insert(a.as_name.clone(), a.as_name.clone());
@@ -2005,7 +2145,14 @@ impl Lowering<'_> {
             // Intercepted in `lower_aggregate` before reaching `agg_expr` —
             // computed from a window over the raw samples, not a plain
             // aggregate expression.
-            AggFn::Rate | AggFn::Increase => {
+            AggFn::Rate
+            | AggFn::Increase
+            | AggFn::Irate
+            | AggFn::AvgOverTime
+            | AggFn::MinOverTime
+            | AggFn::MaxOverTime
+            | AggFn::SumOverTime
+            | AggFn::CountOverTime => {
                 return Err(QuerierError::InvalidInput(format!(
                     "aggregate '{}' must be lowered by lower_rate_aggregate",
                     a.func.as_str()
@@ -3556,6 +3703,173 @@ mod tests {
         }));
         let err = svc.plan(&d, "t", "d", 0).await.expect_err("rejected");
         assert!(format!("{err}").contains("requires `step`"), "{err}");
+    }
+
+    // irVersion 7 — irate/*_over_time, `across`, `window`.
+
+    async fn one_row_f64(svc: &IrService, d: &Document) -> f64 {
+        let (df, _) = svc
+            .plan(d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let batches = df.collect().await.unwrap();
+        let batch = batches.iter().find(|b| b.num_rows() > 0).expect("one row");
+        assert_eq!(batch.num_rows(), 1, "expected exactly one output row");
+        batch
+            .column_by_name("r")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap()
+            .value(0)
+    }
+
+    /// `irate` looks only at the last two samples in the window — the reset
+    /// at t=20 (30 → 5) that `increase_and_rate_across_a_reset` sees earlier
+    /// in the series is irrelevant here; only the last pair (5 at t=20, 15
+    /// at t=29) matters: delta 10 over dt 9s.
+    #[tokio::test]
+    async fn irate_uses_only_the_last_two_samples() {
+        let svc = IrService::new(rate_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 7, "from": "metrics",
+            "range": { "from": 0, "to": 30_000_000_000i64 },
+            "result": "series",
+            "pipeline": [{ "aggregate": {
+                "by": ["metric.name"],
+                "aggs": [{ "fn": "irate", "of": "metric.value", "as": "r" }],
+                "step": "30s"
+            } }]
+        }));
+        let value = one_row_f64(&svc, &d).await;
+        let expected = 10.0 / 9.0;
+        assert!(
+            (value - expected).abs() < 1e-9,
+            "expected {expected}, got {value}"
+        );
+    }
+
+    #[tokio::test]
+    async fn avg_over_time_averages_the_raw_samples_in_the_window() {
+        let svc = IrService::new(rate_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 7, "from": "metrics",
+            "range": { "from": 0, "to": 30_000_000_000i64 },
+            "result": "series",
+            "pipeline": [{ "aggregate": {
+                "by": ["metric.name"],
+                "aggs": [{ "fn": "avg_over_time", "of": "metric.value", "as": "r" }],
+                "step": "30s"
+            } }]
+        }));
+        let value = one_row_f64(&svc, &d).await;
+        // (10 + 20 + 5 + 15) / 4
+        assert!((value - 12.5).abs() < 1e-9, "got {value}");
+    }
+
+    /// `across: "avg"` folds the two series' per-series `avg_over_time`
+    /// values (20 for svcA, 15 for svcB) with `avg` instead of the default
+    /// `sum` — 17.5, not 35.
+    #[tokio::test]
+    async fn across_avg_reduces_per_series_values_with_avg_not_sum() {
+        let svc = IrService::new(rate_two_series_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 7, "from": "metrics",
+            "range": { "from": 0, "to": 2_000_000_000_000i64 },
+            "result": "series",
+            "pipeline": [{ "aggregate": {
+                "by": ["metric.name"],
+                "aggs": [{
+                    "fn": "avg_over_time", "of": "metric.value", "as": "r", "across": "avg"
+                }],
+                "step": "2000s"
+            } }]
+        }));
+        let value = one_row_f64(&svc, &d).await;
+        assert!((value - 17.5).abs() < 1e-9, "got {value}");
+    }
+
+    /// Five evenly-spaced samples 10s apart (`t=0,10,20,30,40s`, values
+    /// `1,2,3,4,5`), `step: "10s"` (one raw sample per bucket) but
+    /// `window: "25s"` — each bucket's `sum_over_time` must include every
+    /// sample within 25s of its own timestamp, not just its own bucket's,
+    /// which is the whole point of a lookback window wider than the step.
+    /// Hand-computed (RANGE frame bounds are inclusive on both ends):
+    /// bucket 0 → {0} = 1; bucket 10 → {0,10} = 3; bucket 20 → {0,10,20} = 6;
+    /// bucket 30 → {10,20,30} = 9; bucket 40 → {20,30,40} = 12.
+    #[tokio::test]
+    async fn window_wider_than_step_overlaps_buckets() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+            map_field_named("attributes"),
+            map_field_named("resource_attributes"),
+        ]));
+        let ts: Vec<i64> = (0..5).map(|i| i * 10_000_000_000).collect();
+        let n = ts.len();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(ts)),
+                Arc::new(StringArray::from(vec!["svc"; n])),
+                Arc::new(StringArray::from(vec!["requests"; n])),
+                Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0, 4.0, 5.0])),
+                build_map(&vec![&[] as &[(&str, &str)]; n]),
+                build_map(&vec![&[] as &[(&str, &str)]; n]),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("metrics_gauge".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+
+        let svc = IrService::new(ctx);
+        let d = doc(serde_json::json!({
+            "irVersion": 7, "from": "metrics",
+            "range": { "from": 0, "to": 50_000_000_000i64 },
+            "result": "series",
+            "pipeline": [{ "aggregate": {
+                "by": ["metric.name"],
+                "aggs": [{
+                    "fn": "sum_over_time", "of": "metric.value", "as": "r", "window": "25s"
+                }],
+                "step": "10s"
+            } }]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let batches = df.collect().await.unwrap();
+        let mut values = Vec::new();
+        for batch in &batches {
+            if batch.num_rows() == 0 {
+                continue;
+            }
+            let col = batch
+                .column_by_name("r")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .unwrap();
+            for i in 0..batch.num_rows() {
+                values.push(col.value(i));
+            }
+        }
+        assert_eq!(values, vec![1.0, 3.0, 6.0, 9.0, 12.0], "got {values:?}");
     }
 
     // Task 4.1 — from(logs)+where+aggregate(step) lowers to the expected plan.
