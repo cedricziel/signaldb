@@ -50,9 +50,9 @@ user-visible change is RED honesty; everything else is internal shape.
       `describe { target: "fields" }` (irVersion 4), one call per source
 - [x] 3.3 Implement tier-1 presence: intersect each source's field set with each
       entity type's identifying attributes, across every queryable source
-- [ ] 3.4 Test: identifying attributes absent from a source are dropped from the
+- [x] 3.4 Test: identifying attributes absent from a source are dropped from the
       tuple; when the primary is absent the source contributes no instances
-- [ ] 3.5 Apply per-source identity degradation to the tier-2 listing queries
+- [x] 3.5 Apply per-source identity degradation to the tier-2 listing queries
 - [x] 3.6 Test: an entity type whose identity attributes have no covering
       statistics is reported unanalyzed, distinctly from analyzed-and-absent
 - [x] 3.7 Add the unanalyzed state and surface the statistics `as_of` stamp in

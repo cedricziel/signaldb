@@ -136,6 +136,42 @@ describe("buildEntitySourceDoc", () => {
       { where: { not: { field: "service.namespace", op: "exists" } } },
     ]);
   });
+
+  // Per-source identity degradation (3.4/3.5): a source that carries only
+  // some of the declared identity attributes must group by what it has, not
+  // by the full tuple — grouping metrics by `host.name` when metrics never
+  // carries it would put every process in one null-valued bucket.
+  it("groups a source by its own degraded identity, not the full tuple", () => {
+    const process: EntityTypeDef = {
+      id: "process",
+      label: "Processes",
+      singular: "process",
+      identity: ["process.pid", "host.name"],
+      sources: ["metrics", "traces"],
+      identityBySource: {
+        metrics: ["process.pid"],
+        traces: ["process.pid", "host.name"],
+      },
+    };
+
+    const metricsDoc = buildEntitySourceDoc(process, "metrics", range);
+    expect(
+      (metricsDoc.pipeline?.[0] as { aggregate: { by: string[] } }).aggregate
+        .by,
+    ).toEqual(["process.pid"]);
+
+    const tracesDoc = buildEntitySourceDoc(process, "traces", range);
+    expect(
+      (tracesDoc.pipeline?.[0] as { aggregate: { by: string[] } }).aggregate.by,
+    ).toEqual(["process.pid", "host.name"]);
+  });
+
+  it("falls back to the full identity when no per-source identity was computed", () => {
+    const doc = buildEntitySourceDoc(host, "logs", range);
+    expect(
+      (doc.pipeline?.[0] as { aggregate: { by: string[] } }).aggregate.by,
+    ).toEqual(["host.name"]);
+  });
 });
 
 describe("fetchCatalogEntities", () => {
@@ -291,6 +327,67 @@ describe("fetchCatalogEntities", () => {
     expect(result.entities.map((e) => e.values[0])).toEqual([
       "ip-10-0-1-08",
       "ip-10-0-2-09",
+    ]);
+  });
+
+  it("aligns a degraded source's row onto the primary dimension, not the secondary one", async () => {
+    // metrics carries only process.pid; traces carries pid and host.name.
+    // metrics' single-column row must land on the primary dimension. It
+    // cannot be merged with the traces row for the same pid — metrics never
+    // reported a host, so the two rows are not known to share one — but its
+    // pid must not be misread as a host name.
+    const process: EntityTypeDef = {
+      id: "process",
+      label: "Processes",
+      singular: "process",
+      identity: ["process.pid", "host.name"],
+      sources: ["traces", "metrics"],
+      identityBySource: {
+        traces: ["process.pid", "host.name"],
+        metrics: ["process.pid"],
+      },
+    };
+    vi.mocked(runIrQuery).mockImplementation(async (doc) => {
+      if (doc.from === "traces") {
+        return {
+          result: "table",
+          columns: [],
+          window: { start_ns: 1, end_ns: 2 },
+          rows: [
+            [
+              "4821",
+              "ip-10-0-1-08",
+              2,
+              0,
+              900_000,
+              3_000_000,
+              "1700000000000000000",
+            ],
+          ],
+        };
+      }
+      return {
+        result: "table",
+        columns: [],
+        window: { start_ns: 1, end_ns: 2 },
+        rows: [["4821", 6, "1700000000900000000"]],
+      };
+    });
+
+    const result = await fetchCatalogEntities(process, range);
+
+    expect(result.entities).toHaveLength(2);
+    const byValues = new Map(
+      result.entities.map((e) => [JSON.stringify(e.values), e]),
+    );
+    expect(
+      byValues.get(JSON.stringify(["4821", "ip-10-0-1-08"])),
+    ).toBeDefined();
+    expect(
+      byValues.get(JSON.stringify(["4821", "ip-10-0-1-08"]))?.observations,
+    ).toEqual([{ source: "traces", count: 2 }]);
+    expect(byValues.get(JSON.stringify(["4821", null]))?.observations).toEqual([
+      { source: "metrics", count: 6 },
     ]);
   });
 });
