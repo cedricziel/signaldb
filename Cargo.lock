@@ -9861,7 +9861,6 @@ dependencies = [
  "futures",
  "hex",
  "iceberg-rust",
- "object_store",
  "opentelemetry",
  "opentelemetry-proto",
  "opentelemetry_sdk",
