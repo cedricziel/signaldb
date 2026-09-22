@@ -93,8 +93,7 @@ hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17" }
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "server-auto", "service"] }
 indexmap = { version = "2", features = ["serde"] }
-itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
-itertools-93f6ce9d446188ac = { package = "itertools", version = "0.10" }
+itertools = { version = "0.14" }
 lazy_static = { version = "1", default-features = false, features = ["spin_no_std"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
 memchr = { version = "2" }
@@ -103,8 +102,8 @@ num-iter = { version = "0.1", default-features = false, features = ["i128", "std
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 object_store = { version = "0.13", features = ["aws", "azure", "gcp"] }
 once_cell = { version = "1" }
-opentelemetry = { version = "0.33", features = ["testing"] }
-opentelemetry-proto = { path = "../vendor/opentelemetry-proto", features = ["profiles"] }
+opentelemetry-51543b5218fc235c = { package = "opentelemetry", version = "0.32", default-features = false, features = ["internal-logs", "logs", "metrics", "trace"] }
+opentelemetry-f0a1752353b51542 = { package = "opentelemetry", version = "0.33", features = ["testing"] }
 opentelemetry_sdk = { version = "0.33", features = ["testing"] }
 petgraph = { version = "0.8" }
 proc-macro2 = { version = "1" }
@@ -194,8 +193,7 @@ hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17" }
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "server-auto", "service"] }
 indexmap = { version = "2", features = ["serde"] }
-itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
-itertools-93f6ce9d446188ac = { package = "itertools", version = "0.10" }
+itertools = { version = "0.14" }
 lazy_static = { version = "1", default-features = false, features = ["spin_no_std"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
 memchr = { version = "2" }
@@ -204,8 +202,8 @@ num-iter = { version = "0.1", default-features = false, features = ["i128", "std
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 object_store = { version = "0.13", features = ["aws", "azure", "gcp"] }
 once_cell = { version = "1" }
-opentelemetry = { version = "0.33", features = ["testing"] }
-opentelemetry-proto = { path = "../vendor/opentelemetry-proto", features = ["profiles"] }
+opentelemetry-51543b5218fc235c = { package = "opentelemetry", version = "0.32", default-features = false, features = ["internal-logs", "logs", "metrics", "trace"] }
+opentelemetry-f0a1752353b51542 = { package = "opentelemetry", version = "0.33", features = ["testing"] }
 opentelemetry_sdk = { version = "0.33", features = ["testing"] }
 petgraph = { version = "0.8" }
 proc-macro2 = { version = "1" }
