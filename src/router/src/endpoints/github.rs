@@ -53,12 +53,14 @@ use common::auth::{TenantContextExtractor, generate_prefixed_token, sha256_hex};
 use common::catalog::{GitHubLinkOutcome, MembershipRole, NewGitHubInstallation};
 use serde::{Deserialize, Serialize};
 
+use crate::github::GitHubError;
+
 use crate::RouterState;
 use crate::endpoints::management::{ManageError, authorize_tenant, error};
 use crate::endpoints::session;
 use crate::github::write_permissions;
 
-/// The three tenant-management routes, nested under `/manage` (final paths
+/// The four tenant-management routes, nested under `/manage` (final paths
 /// `/api/v1/manage/tenants/{tenant_id}/github-installations...`) beside
 /// [`crate::endpoints::management::router`].
 pub fn manage_router<S: RouterState>() -> Router<S> {
@@ -74,6 +76,10 @@ pub fn manage_router<S: RouterState>() -> Router<S> {
         .route(
             "/tenants/{tenant_id}/github-installations/{installation_id}",
             delete(remove_github_installation::<S>),
+        )
+        .route(
+            "/tenants/{tenant_id}/github-installations/attach",
+            post(attach_github_installation::<S>),
         )
 }
 
@@ -92,6 +98,15 @@ pub(crate) struct GitHubLinkStartResponse {
     /// RFC 3339 timestamp naming when the state token (and so this link
     /// attempt) expires.
     pub expires_at: String,
+}
+
+/// Request body for [`attach_github_installation`].
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
+pub(crate) struct AttachGitHubInstallationRequest {
+    /// A GitHub App installation id that already exists for this App —
+    /// e.g. one already linked to another tenant on the same GitHub
+    /// account, or read off GitHub's own installation settings page.
+    pub installation_id: i64,
 }
 
 /// One linked installation, as reported by [`list_github_installations`].
@@ -390,6 +405,137 @@ pub(crate) async fn remove_github_installation<S: RouterState>(
     }
     tracing::info!(tenant_id, installation_id, "GitHub installation removed");
     StatusCode::NO_CONTENT.into_response()
+}
+
+/// `POST /api/v1/manage/tenants/{tenant_id}/github-installations/attach`
+///
+/// Attaches an installation that already exists on GitHub — e.g. one
+/// already linked to another tenant on the same GitHub account — to
+/// `tenant_id` directly, with no OAuth install flow. GitHub allows only one
+/// App installation per account, so once one tenant has linked it, GitHub's
+/// install-flow URL for a second tenant skips straight to its own
+/// installation-management page instead of redirecting back here; this
+/// endpoint is the escape hatch. Authorization is the caller's own
+/// `tenant:manage` grant (checked by [`authorize_tenant`]) — there is no
+/// state token to bind to, unlike [`start_github_link`]'s flow. The same
+/// read-only-permission check the OAuth callback performs is re-run here.
+#[utoipa::path(
+    post,
+    path = "/api/v1/manage/tenants/{tenant_id}/github-installations/attach",
+    tag = "github",
+    operation_id = "manage_attach_github_installation",
+    params(("tenant_id" = String, Path, description = "Tenant identifier")),
+    request_body = AttachGitHubInstallationRequest,
+    responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
+        (status = 201, description = "Installation attached", body = GitHubInstallationResponse),
+        (status = 403, description = "Tenant administrator role or tenant:manage scope required and the tenant must match the caller, or the installation carries a write-capable permission", body = ManageError),
+        (status = 404, description = "GitHub integration is not configured, or the installation was not found on GitHub", body = ManageError),
+        (status = 500, description = "Internal error", body = ManageError),
+        (status = 502, description = "GitHub request failed", body = ManageError),
+    )
+)]
+pub(crate) async fn attach_github_installation<S: RouterState>(
+    State(state): State<S>,
+    TenantContextExtractor(ctx): TenantContextExtractor,
+    Path(tenant_id): Path<String>,
+    Json(body): Json<AttachGitHubInstallationRequest>,
+) -> Response {
+    if let Err((status, message)) = authorize_tenant(&ctx, &tenant_id) {
+        return error(status, message);
+    }
+    let Some(app) = state.github() else {
+        return error(
+            StatusCode::NOT_FOUND,
+            "GitHub integration is not configured",
+        );
+    };
+
+    let summary = match app.installation(body.installation_id).await {
+        Ok(summary) => summary,
+        Err(GitHubError::Status { status: 404, .. }) => {
+            return error(StatusCode::NOT_FOUND, "GitHub installation not found");
+        }
+        Err(github_error) => {
+            tracing::warn!(error = %github_error, tenant_id, installation_id = body.installation_id, "GitHub installation lookup failed");
+            return error(StatusCode::BAD_GATEWAY, "GitHub request failed");
+        }
+    };
+
+    let write_perms = write_permissions(&summary.permissions);
+    if !write_perms.is_empty() {
+        tracing::warn!(
+            permissions = ?write_perms,
+            tenant_id,
+            installation_id = body.installation_id,
+            "GitHub installation carries write-capable permissions; refusing attach"
+        );
+        return error(
+            StatusCode::FORBIDDEN,
+            "installation carries a write-capable permission",
+        );
+    }
+
+    let repositories = match app.installation_repositories(body.installation_id).await {
+        Ok(repositories) => repositories,
+        Err(github_error) => {
+            tracing::warn!(error = %github_error, tenant_id, installation_id = body.installation_id, "GitHub repository listing failed");
+            return error(StatusCode::BAD_GATEWAY, "GitHub request failed");
+        }
+    };
+
+    let new_installation = NewGitHubInstallation {
+        installation_id: body.installation_id,
+        account_login: summary.account.login.clone(),
+        account_type: summary.account.kind.clone(),
+        account_id: summary.account.id,
+        repositories,
+        linked_by_user_id: ctx.user_id.clone(),
+        linked_by_github_login: None,
+    };
+    let record = match state
+        .catalog()
+        .attach_github_installation(&tenant_id, &new_installation)
+        .await
+    {
+        Ok(record) => record,
+        Err(catalog_error) => {
+            tracing::error!(error = %catalog_error, tenant_id, installation_id = body.installation_id, "GitHub installation attach failed");
+            return error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Unable to attach GitHub installation",
+            );
+        }
+    };
+
+    tracing::info!(
+        tenant_id,
+        installation_id = body.installation_id,
+        account = %record.account_login,
+        "GitHub installation attached"
+    );
+    let manage_url = installation_manage_url(
+        app.config().web_base(),
+        &record.account_type,
+        &record.account_login,
+        record.installation_id,
+    );
+    (
+        StatusCode::CREATED,
+        Json(GitHubInstallationResponse {
+            installation_id: record.installation_id,
+            account_login: record.account_login,
+            account_type: record.account_type,
+            repositories: record.repositories,
+            repositories_synced_at: record.repositories_synced_at.to_rfc3339(),
+            stale: false,
+            linked_by_github_login: record.linked_by_github_login,
+            manage_url,
+            created_at: record.created_at.to_rfc3339(),
+            updated_at: record.updated_at.to_rfc3339(),
+        }),
+    )
+        .into_response()
 }
 
 /// Query parameters GitHub appends to the install-flow callback redirect
@@ -1379,5 +1525,228 @@ mod tests {
             .map(|v| v.as_str().unwrap().to_string())
             .collect();
         assert_eq!(repos, vec!["octo-org/api", "octo-org/web"]);
+    }
+
+    /// Mounts `GET /app/installations/{id}` for the direct-attach path,
+    /// separate from [`mount_happy_path_mocks`]'s `/user/installations`
+    /// (the OAuth callback's own lookup) since attach never calls that.
+    async fn mount_installation_lookup(
+        server: &MockServer,
+        installation_id: i64,
+        permissions: serde_json::Value,
+    ) {
+        Mock::given(method("GET"))
+            .and(path(format!("/app/installations/{installation_id}")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": installation_id,
+                "app_id": 4242,
+                "account": { "login": "octo-org", "id": 9, "type": "Organization" },
+                "permissions": permissions,
+            })))
+            .mount(server)
+            .await;
+    }
+
+    /// Mounts the full mock set a happy-path attach needs: the installation
+    /// lookup (read-only permissions), its access-token mint, and its
+    /// repository list.
+    async fn mount_attach_happy_path_mocks(server: &MockServer, installation_id: i64) {
+        mount_installation_lookup(
+            server,
+            installation_id,
+            json!({ "contents": "read", "metadata": "read" }),
+        )
+        .await;
+        crate::github::test_support::mount_installation_token(server, installation_id).await;
+        Mock::given(method("GET"))
+            .and(path("/installation/repositories"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "repositories": [
+                    { "full_name": "octo-org/api" },
+                    { "full_name": "octo-org/web" },
+                ],
+            })))
+            .mount(server)
+            .await;
+    }
+
+    /// Like [`call_manage`] but for `tenant_id` (not hard-coded `acme`) and
+    /// carrying a JSON body, for the attach endpoint's `POST`.
+    async fn call_attach(
+        app: &axum::Router,
+        tenant_id: &str,
+        credential: Credential<'_>,
+        installation_id: i64,
+    ) -> (StatusCode, Value) {
+        let mut builder = Request::builder()
+            .method(axum::http::Method::POST)
+            .uri(format!(
+                "/api/v1/manage/tenants/{tenant_id}/github-installations/attach"
+            ))
+            .header("x-tenant-id", tenant_id)
+            .header("content-type", "application/json");
+        builder = match credential {
+            Credential::ApiKey(key) => builder.header("authorization", format!("Bearer {key}")),
+            Credential::Cookie(cookie) => builder.header(header::COOKIE, cookie),
+        };
+        let response = app
+            .clone()
+            .oneshot(
+                builder
+                    .body(Body::from(
+                        json!({ "installation_id": installation_id }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+        };
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn attach_happy_path_appears_in_list() {
+        let server = MockServer::start().await;
+        mount_attach_happy_path_mocks(&server, 777).await;
+        let (app, _catalog, _admin_id, _member_id) = test_app(Some(github_config(&server))).await;
+        let admin_cookie = login(&app, "admin@example.com").await;
+
+        let (status, body) =
+            call_attach(&app, "acme", Credential::Cookie(admin_cookie.clone()), 777).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(body["installation_id"], 777);
+        assert_eq!(body["account_login"], "octo-org");
+        assert_eq!(body["stale"], false);
+        assert_eq!(body["linked_by_github_login"], Value::Null);
+        assert_eq!(
+            body["manage_url"],
+            format!(
+                "{}/organizations/octo-org/settings/installations/777",
+                server.uri()
+            )
+        );
+
+        let (status, body) = call_manage(
+            &app,
+            axum::http::Method::GET,
+            "/api/v1/manage/tenants/acme/github-installations",
+            Credential::Cookie(admin_cookie),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let installations = body["installations"].as_array().unwrap();
+        assert_eq!(installations.len(), 1);
+        assert_eq!(installations[0]["installation_id"], 777);
+    }
+
+    #[tokio::test]
+    async fn attach_write_permission_installation_is_refused() {
+        let server = MockServer::start().await;
+        mount_installation_lookup(&server, 777, json!({ "contents": "write" })).await;
+        let (app, catalog, _admin_id, _member_id) = test_app(Some(github_config(&server))).await;
+        let admin_cookie = login(&app, "admin@example.com").await;
+
+        let (status, _) = call_attach(&app, "acme", Credential::Cookie(admin_cookie), 777).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(
+            catalog
+                .list_github_installations("acme")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_installation_not_found_on_github() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/app/installations/777"))
+            .respond_with(ResponseTemplate::new(404))
+            .mount(&server)
+            .await;
+        let (app, _catalog, _admin_id, _member_id) = test_app(Some(github_config(&server))).await;
+        let admin_cookie = login(&app, "admin@example.com").await;
+
+        let (status, _) = call_attach(&app, "acme", Credential::Cookie(admin_cookie), 777).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn attach_unauthorized_caller_is_forbidden() {
+        let server = MockServer::start().await;
+        mount_attach_happy_path_mocks(&server, 777).await;
+        let (app, _catalog, _admin_id, _member_id) = test_app(Some(github_config(&server))).await;
+        let member_cookie = login(&app, "member@example.com").await;
+
+        let (status, _) = call_attach(&app, "acme", Credential::Cookie(member_cookie), 777).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn attach_without_github_configured_is_not_found() {
+        let (app, _catalog, _admin_id, _member_id) = test_app(None).await;
+        let admin_cookie = login(&app, "admin@example.com").await;
+
+        let (status, _) = call_attach(&app, "acme", Credential::Cookie(admin_cookie), 777).await;
+        assert_eq!(status, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn attach_same_installation_to_two_tenants_succeeds_independently() {
+        const GLOBEX_MANAGE_KEY: &str = "sdbk_globex_manage";
+
+        let server = MockServer::start().await;
+        mount_attach_happy_path_mocks(&server, 777).await;
+        let (app, catalog, _admin_id, _member_id) = test_app(Some(github_config(&server))).await;
+        let admin_cookie = login(&app, "admin@example.com").await;
+        catalog
+            .upsert_scoped_api_key(
+                "globex",
+                &Authenticator::hash_api_key(GLOBEX_MANAGE_KEY),
+                Some(GLOBEX_MANAGE_KEY),
+                None,
+                None,
+                Some(&[TENANT_MANAGE_SCOPE.to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let (status, _) = call_attach(&app, "acme", Credential::Cookie(admin_cookie), 777).await;
+        assert_eq!(status, StatusCode::CREATED);
+
+        // `globex` gets its own `tenant:manage`-scoped key, independent of
+        // acme's admin session — attaching the same installation id to it
+        // must succeed on its own.
+        let (status, body) =
+            call_attach(&app, "globex", Credential::ApiKey(GLOBEX_MANAGE_KEY), 777).await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        assert_eq!(body["installation_id"], 777);
+
+        let request = Request::builder()
+            .method(axum::http::Method::GET)
+            .uri("/api/v1/manage/tenants/globex/github-installations")
+            .header("x-tenant-id", "globex")
+            .header("authorization", format!("Bearer {GLOBEX_MANAGE_KEY}"))
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let body: Value = serde_json::from_slice(&bytes).unwrap();
+        let installations = body["installations"].as_array().unwrap();
+        assert_eq!(installations.len(), 1);
+        assert_eq!(installations[0]["installation_id"], 777);
     }
 }
