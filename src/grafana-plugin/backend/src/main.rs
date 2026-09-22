@@ -19,8 +19,6 @@ const DEFAULT_TIMEOUT_SECS: u32 = 30;
 pub struct DataSourceConfig {
     /// Router URL for Flight service (e.g., "http://localhost:50053")
     pub router_url: Option<String>,
-    /// Protocol to use (currently only "flight" is supported)
-    pub protocol: Option<String>,
     /// Query timeout in seconds
     pub timeout: Option<u32>,
     /// Tenant ID for multi-tenancy
@@ -133,7 +131,7 @@ impl SignalDBDataSource {
 /// `query_data` request.
 ///
 /// Each Grafana datasource instance carries its own provisioned settings
-/// (`router_url`, `protocol`, `timeout`, tenant/dataset). Those settings must
+/// (`router_url`, `timeout`, tenant/dataset). Those settings must
 /// win over the process-global datasource built once at plugin startup from
 /// `SIGNALDB_ROUTER_URL`/`SIGNALDB_TIMEOUT_SECS` env vars — otherwise every
 /// request silently dials the env-configured (or default `localhost`) router
@@ -547,5 +545,15 @@ mod tests {
             append_limit_param("trace_by_id?id=abc".to_string(), None),
             "trace_by_id?id=abc"
         );
+    }
+
+    /// A saved datasource config that still has a `protocol` field (from
+    /// before the Protocol selector was removed) must keep deserializing.
+    #[test]
+    fn data_source_config_deserializes_with_legacy_protocol_field() {
+        let json = r#"{"routerUrl":"http://localhost:50053","protocol":"HTTP","timeout":30}"#;
+        let config: DataSourceConfig = serde_json::from_str(json).unwrap();
+        assert_eq!(config.router_url.as_deref(), Some("http://localhost:50053"));
+        assert_eq!(config.timeout, Some(30));
     }
 }
