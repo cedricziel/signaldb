@@ -1,21 +1,21 @@
 // The visual metric-query builder row: metric · from · agg by · function.
-// Each control is populated from the Prometheus metadata endpoints so filters
-// and group-by are pick-from-what-exists rather than typed blind. State is a
-// MetricQuery (see buildPromQL); the row is fully controlled via onChange.
+// Each control is populated through the Query IR's discovery stage
+// (api/ir/discovery.ts) so filters and group-by are pick-from-what-exists
+// rather than typed blind. State is a MetricQuery (see buildPromQL); the
+// row is fully controlled via onChange.
 
 import { useId, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  promLabelNames,
-  promLabelStats,
-  promLabelValues,
-  promMetricNames,
-} from "../../api/prom";
+  fields,
+  metricNames as discoverMetricNames,
+  values as discoverValues,
+} from "../../api/ir/discovery";
 import { FILTER_OPS, type LabelFilter } from "../../lib/filters";
 import type { ResolvedRange } from "../../lib/time";
 import {
   cardinalityLabel,
-  indexLabelStats,
+  indexFields,
   isHighCardinality,
   optionLabel,
 } from "./cardinality";
@@ -40,23 +40,21 @@ export function QueryRow({ query, range, onChange }: Props) {
   const labelList = useId();
 
   const metricNames = useQuery({
-    queryKey: ["prom-metric-names", rangeKey(range)],
-    queryFn: () => promMetricNames(range),
+    queryKey: ["ir-metric-names", rangeKey(range)],
+    queryFn: () => discoverMetricNames(range),
     staleTime: 60_000,
   });
-  const labelNames = useQuery({
-    queryKey: ["prom-label-names", rangeKey(range)],
-    queryFn: () => promLabelNames(range),
-    staleTime: 60_000,
-  });
-  const labelStats = useQuery({
-    queryKey: ["prom-label-stats", rangeKey(range)],
-    queryFn: () => promLabelStats(range),
+  // `fields` doubles as the label-cardinality source: `DiscoveredField`
+  // already carries the coverage/cardinality estimate a separate
+  // `label_stats` call used to fetch.
+  const labelFields = useQuery({
+    queryKey: ["ir-metric-fields", rangeKey(range)],
+    queryFn: () => fields("metrics", range),
     staleTime: 60_000,
   });
   const statByName = useMemo(
-    () => indexLabelStats(labelStats.data ?? []),
-    [labelStats.data],
+    () => indexFields(labelFields.data ?? []),
+    [labelFields.data],
   );
 
   const patch = (p: Partial<MetricQuery>) => onChange({ ...query, ...p });
@@ -77,12 +75,16 @@ export function QueryRow({ query, range, onChange }: Props) {
     <div className="qrow">
       <datalist id={metricList}>
         {(metricNames.data ?? []).map((m) => (
-          <option key={m} value={m} />
+          <option key={m.value} value={m.value} />
         ))}
       </datalist>
       <datalist id={labelList}>
-        {(labelNames.data ?? []).map((l) => (
-          <option key={l} value={l} label={optionLabel(statByName.get(l))} />
+        {(labelFields.data ?? []).map((f) => (
+          <option
+            key={f.name}
+            value={f.name}
+            label={optionLabel(statByName.get(f.name))}
+          />
         ))}
       </datalist>
 
@@ -233,8 +235,8 @@ function FilterEditor({
 }: FilterProps) {
   const valueList = useId();
   const values = useQuery({
-    queryKey: ["prom-label-values", filter.label, rangeKey(range)],
-    queryFn: () => promLabelValues(filter.label, range),
+    queryKey: ["ir-metric-label-values", filter.label, rangeKey(range)],
+    queryFn: () => discoverValues("metrics", filter.label, range),
     enabled: filter.label !== "",
     staleTime: 60_000,
   });
@@ -265,7 +267,7 @@ function FilterEditor({
       </select>
       <datalist id={valueList}>
         {(values.data ?? []).map((v) => (
-          <option key={v} value={v} />
+          <option key={v.value} value={v.value} />
         ))}
       </datalist>
       <input

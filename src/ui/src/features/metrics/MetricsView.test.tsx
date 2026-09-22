@@ -90,7 +90,11 @@ describe("MetricsView", () => {
     await userEvent.type(screen.getByLabelText("PromQL query"), "up ");
     await userEvent.click(screen.getByRole("button", { name: "Run" }));
     expect(update).toHaveBeenCalledWith({ promql: "up", metricQuery: "" });
-    expect(runIrQuery).not.toHaveBeenCalled();
+    // The builder's own discovery pickers call runIrQuery; only a
+    // `result: "series"` call would mean the run itself went through the IR.
+    expect(runIrQuery).not.toHaveBeenCalledWith(
+      expect.objectContaining({ result: "series" }),
+    );
   });
 
   it("runs a solo builder query via Query IR, not PromQL, and writes it to ?mq= for reload", async () => {
@@ -179,8 +183,13 @@ describe("MetricsView", () => {
       metricQuery: "",
     });
     // A formula spans multiple queries — no single metric.name to filter on
-    // in the minimal metrics IR source — so it stays on PromQL.
-    expect(runIrQuery).not.toHaveBeenCalled();
+    // in the minimal metrics IR source — so it stays on PromQL. The
+    // builder's own pickers (metric names, label fields) still call
+    // runIrQuery for discovery; only a `result: "series"` call would mean
+    // the run itself went through the IR.
+    expect(runIrQuery).not.toHaveBeenCalledWith(
+      expect.objectContaining({ result: "series" }),
+    );
   });
 
   it("renders the chart and a legend entry per series", async () => {
@@ -192,8 +201,11 @@ describe("MetricsView", () => {
     const legend = screen.getByRole("list", { name: "Series" });
     expect(legend).toHaveTextContent('up{service_name="checkout"}');
     expect(legend).toHaveTextContent('up{service_name="payments"}');
-    // A `?promql=` link with no `?mq=` stays on the PromQL path.
-    expect(runIrQuery).not.toHaveBeenCalled();
+    // A `?promql=` link with no `?mq=` stays on the PromQL path — only the
+    // builder's own discovery pickers call runIrQuery, never a `series` run.
+    expect(runIrQuery).not.toHaveBeenCalledWith(
+      expect.objectContaining({ result: "series" }),
+    );
   });
 
   it("copies a rendered series label", async () => {
@@ -256,13 +268,21 @@ describe("MetricsView", () => {
     const stateA: ExploreState = {
       ...DEFAULT_STATE,
       signal: "metrics",
-      metricQuery: JSON.stringify({ ref: "a", metric: "metric_one", filters: [] }),
+      metricQuery: JSON.stringify({
+        ref: "a",
+        metric: "metric_one",
+        filters: [],
+      }),
       promql: "",
     };
     const stateB: ExploreState = {
       ...DEFAULT_STATE,
       signal: "metrics",
-      metricQuery: JSON.stringify({ ref: "a", metric: "metric_two", filters: [] }),
+      metricQuery: JSON.stringify({
+        ref: "a",
+        metric: "metric_two",
+        filters: [],
+      }),
       promql: "",
     };
     const { rerender } = render(
@@ -299,13 +319,21 @@ describe("MetricsView", () => {
     const stateA: ExploreState = {
       ...DEFAULT_STATE,
       signal: "metrics",
-      metricQuery: JSON.stringify({ ref: "a", metric: "metric_one", filters: [] }),
+      metricQuery: JSON.stringify({
+        ref: "a",
+        metric: "metric_one",
+        filters: [],
+      }),
       promql: "",
     };
     const stateB: ExploreState = {
       ...DEFAULT_STATE,
       signal: "metrics",
-      metricQuery: JSON.stringify({ ref: "a", metric: "metric_two", filters: [] }),
+      metricQuery: JSON.stringify({
+        ref: "a",
+        metric: "metric_two",
+        filters: [],
+      }),
       promql: "",
     };
     const { rerender } = render(
@@ -381,8 +409,6 @@ describe("MetricsView", () => {
     });
 
     await screen.findByTestId("metrics-chart");
-    expect(
-      screen.queryByText(/Build a query above/),
-    ).not.toBeInTheDocument();
+    expect(screen.queryByText(/Build a query above/)).not.toBeInTheDocument();
   });
 });

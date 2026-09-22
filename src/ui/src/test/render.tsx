@@ -83,9 +83,9 @@ type JsonRoute = {
 };
 
 /**
- * Stub URL-matched JSON routes for both raw `fetch` calls (e.g.
- * `promLabelStats`, not yet in the OpenAPI document) and the generated
- * OpenAPI client's transport (everything else) — the client constructs its
+ * Stub URL-matched JSON routes for both raw `fetch` calls (endpoints not yet
+ * in the OpenAPI document) and the generated OpenAPI client's transport
+ * (everything else) — the client constructs its
  * own `Request(url)` before any fetch mock runs, and `Request` rejects
  * relative URLs under jsdom/Node, so it needs an absolute `baseUrl` too (see
  * api/queryIr.ts's test precedent). Later routes win when multiple match;

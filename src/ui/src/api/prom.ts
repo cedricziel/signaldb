@@ -1,17 +1,16 @@
-// Client for the router's Prometheus-compatible API (/prometheus/api/v1),
-// layered over the generated OpenAPI SDK — the UI never hand-writes the HTTP
-// call for endpoints the SDK covers (see docs/architecture/openapi-codegen.md,
-// "Adding or changing an endpoint"), mirroring api/queryIr.ts.
+// Client for the router's Prometheus-compatible query_range endpoint
+// (/prometheus/api/v1/query_range), layered over the generated OpenAPI SDK —
+// the UI never hand-writes the HTTP call for endpoints the SDK covers (see
+// docs/architecture/openapi-codegen.md, "Adding or changing an endpoint"),
+// mirroring api/queryIr.ts. Discovery (metric names, label keys/values,
+// cardinality) is api/ir/discovery.ts; this module stays only for range
+// queries a PromQL formula still needs (see the metrics builder's rate/
+// formula tasks in openspec/changes/explore-ui-query-ir).
 import "./client";
 
-import { promqlLabels, promqlLabelValues, promqlQueryRange } from "./gen";
+import { promqlQueryRange } from "./gen";
 import type { ResolvedRange } from "../lib/time";
-import {
-  ApiError,
-  retryAfterMsFrom,
-  retryingFetch,
-  tenantHeaders,
-} from "./http";
+import { ApiError, retryAfterMsFrom, tenantHeaders } from "./http";
 
 export interface PromSeries {
   labels: Record<string, string>;
@@ -93,86 +92,4 @@ export function seriesName(labels: Record<string, string>): string {
     .map(([k, v]) => `${k}="${v}"`);
   if (pairs.length === 0) return name ?? "value";
   return `${name ?? ""}{${pairs.join(", ")}}`;
-}
-
-// ---- metadata (feeds the visual builder's metric/label/value pickers) ----
-
-/** Label names available for filtering/grouping in the current window. */
-export async function promLabelNames(range: ResolvedRange): Promise<string[]> {
-  const res = await promqlLabels({
-    query: {
-      start: String(range.fromMs / 1000),
-      end: String(range.toMs / 1000),
-    },
-    headers: tenantHeaders(),
-  });
-  return unwrapProm<string[] | undefined>(res, "Prometheus labels") ?? [];
-}
-
-/** Distinct values of a single label. */
-export async function promLabelValues(
-  label: string,
-  range: ResolvedRange,
-): Promise<string[]> {
-  const res = await promqlLabelValues({
-    path: { name: label },
-    query: {
-      start: String(range.fromMs / 1000),
-      end: String(range.toMs / 1000),
-    },
-    headers: tenantHeaders(),
-  });
-  return unwrapProm<string[] | undefined>(res, "Prometheus label values") ?? [];
-}
-
-/** Metric names — the distinct values of the reserved `__name__` label. */
-export function promMetricNames(range: ResolvedRange): Promise<string[]> {
-  return promLabelValues("__name__", range);
-}
-
-/** Per-label cardinality, from `/api/v1/label_stats` (a SignalDB extension). */
-export interface LabelStat {
-  name: string;
-  /** Approximate distinct value count (a floor when `capped`). */
-  distinct_estimate: number;
-  /** Fraction of scanned rows carrying the label, in `[0, 1]`. */
-  presence: number;
-  /** True when `distinct_estimate` hit the analyzer's cardinality cap. */
-  capped: boolean;
-}
-
-/**
- * Cardinality statistics for each label in the window. Only labels whose data
- * has been compacted at least once appear; the builder treats missing labels
- * as "unknown cardinality".
- *
- * `label_stats` is a SignalDB extension not yet in the OpenAPI document
- * (deferred — see openspec change `mcp-server` design D9), so this one call
- * stays on raw `fetch` until it is annotated.
- */
-export async function promLabelStats(
-  range: ResolvedRange,
-): Promise<LabelStat[]> {
-  const params = new URLSearchParams({
-    start: String(range.fromMs / 1000),
-    end: String(range.toMs / 1000),
-  });
-  const res = await retryingFetch(`/prometheus/api/v1/label_stats?${params}`, {
-    headers: tenantHeaders(),
-  });
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new ApiError(
-      `Prometheus label_stats failed (${res.status}): ${body.slice(0, 300)}`,
-      res.status,
-      retryAfterMsFrom(res),
-    );
-  }
-  const json = (await res.json()) as PromEnvelope<LabelStat[]>;
-  if (json.status !== "success") {
-    throw new Error(
-      `Prometheus label_stats failed: ${json.error ?? json.status}`,
-    );
-  }
-  return json.data ?? [];
 }

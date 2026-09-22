@@ -23,35 +23,100 @@ function Harness() {
   );
 }
 
+function metadataWindow() {
+  return { result: "metadata", window: { start_ns: 0, end_ns: 0 } };
+}
+
+function valuesBody(values: string[]) {
+  return {
+    ...metadataWindow(),
+    metadata: {
+      kind: "values",
+      truncated: false,
+      cost: {
+        mode: "metadata",
+        window_scoped: false,
+        sampled: false,
+        approximate: false,
+      },
+      values: values.map((v) => ({ value: v, origin: "registry" })),
+    },
+  };
+}
+
+function fieldsBody(
+  entries: Array<{
+    name: string;
+    cardinality?: { estimate: number; at_least: boolean } | null;
+  }>,
+) {
+  return {
+    ...metadataWindow(),
+    metadata: {
+      kind: "fields",
+      truncated: false,
+      cost: {
+        mode: "metadata",
+        window_scoped: false,
+        sampled: false,
+        approximate: false,
+      },
+      fields: entries.map((e) => ({
+        name: e.name,
+        type: "string",
+        filterable: true,
+        origin: "declared",
+        cardinality: e.cardinality ?? null,
+      })),
+    },
+  };
+}
+
+/** Every Query IR document QueryRow submits is a POST to the same
+ * `/api/v1/query` URL, so discovery routes match on the pipeline shape. */
+function isDescribeFields(body: unknown): boolean {
+  const b = body as { pipeline?: Array<{ describe?: { target?: string } }> };
+  return b.pipeline?.[0]?.describe?.target === "fields";
+}
+function isDescribeValues(field: string) {
+  return (body: unknown): boolean => {
+    const b = body as {
+      pipeline?: Array<{ describe?: { target?: string; field?: string } }>;
+    };
+    return (
+      b.pipeline?.[0]?.describe?.target === "values" &&
+      b.pipeline[0]?.describe?.field === field
+    );
+  };
+}
+
 function stubMetadata() {
   stubFetchRoutes([
-    { match: /label\/__name__\/values/, body: metaBody(["http_reqs", "up"]) },
-    { match: /\/labels\?/, body: metaBody(["service", "host"]) },
-    { match: /label\/service\/values/, body: metaBody(["checkout"]) },
     {
-      match: /label_stats/,
-      body: {
-        status: "success",
-        data: [
-          {
-            name: "service",
-            distinct_estimate: 12,
-            presence: 1,
-            capped: false,
-          },
-          {
-            name: "k8s.pod",
-            distinct_estimate: 10000,
-            presence: 0.9,
-            capped: true,
-          },
-        ],
-      },
+      match: "/api/v1/query",
+      bodyMatch: isDescribeValues("metric.name"),
+      body: valuesBody(["http_reqs", "up"]),
+    },
+    {
+      match: "/api/v1/query",
+      bodyMatch: isDescribeFields,
+      body: fieldsBody([
+        { name: "service", cardinality: { estimate: 12, at_least: false } },
+        {
+          name: "k8s.pod",
+          cardinality: { estimate: 10000, at_least: true },
+        },
+        { name: "host", cardinality: null },
+      ]),
+    },
+    {
+      match: "/api/v1/query",
+      bodyMatch: isDescribeValues("service"),
+      body: valuesBody(["checkout"]),
     },
   ]);
 }
 
-const metaBody = (data: string[]) => ({ status: "success", data });
 const promql = () => screen.getByTestId("promql").textContent;
 
 describe("QueryRow", () => {
@@ -114,7 +179,7 @@ describe("QueryRow", () => {
     expect(promql()).toBe("up");
   });
 
-  it("populates the metric picker from the __name__ endpoint", async () => {
+  it("populates the metric picker from discovery.metricNames", async () => {
     stubMetadata();
     renderWithClient(<Harness />);
     // Datalist <option>s aren't exposed as ARIA options; assert via the DOM.

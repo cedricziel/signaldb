@@ -14,8 +14,10 @@ import type { LabelFilter } from "../lib/filters";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 import type { MetricQuery } from "../features/metrics/buildPromQL";
 
-/** Builder labels come from `promLabelNames`/`promLabelValues` — Prometheus'
- * physical, underscored label spelling. The IR's `metrics` source registers
+/** A user can still free-type a label the picker didn't offer, so this stays
+ * a safety net for Prometheus' physical, underscored spelling even though
+ * the picker itself (`api/ir/discovery.ts`) now offers logical names
+ * directly. The IR's `metrics` source registers
  * `service.name` as the logical alias for the physical `service_name`
  * column, and rejects the physical spelling directly (a document must name
  * a logical field, never storage — see ir_planner.rs's `SourcePlan.aliases`
