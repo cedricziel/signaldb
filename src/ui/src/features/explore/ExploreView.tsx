@@ -1,5 +1,5 @@
 import { Link } from "react-router";
-import { RefreshButton } from "../shell/RefreshButton";
+import { RefreshButton } from "../../components/RefreshButton";
 import { TimeRangePicker } from "../../components/TimeRangePicker";
 import { CatalogView } from "../catalog/CatalogView";
 import { ErrorsView } from "../errors/ErrorsView";

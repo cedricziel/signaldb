@@ -1,6 +1,6 @@
 import { act, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { resetThrottleState, retryingFetch } from "../../api/http";
+import { resetThrottleState, retryingFetch } from "../api/http";
 import { ThrottleBanner } from "./ThrottleBanner";
 
 describe("ThrottleBanner", () => {

@@ -4,7 +4,7 @@
 // explains why nothing has arrived yet. It renders nothing when no retry is
 // pending.
 import { useSyncExternalStore } from "react";
-import { getThrottleState, subscribeThrottleState } from "../../api/http";
+import { getThrottleState, subscribeThrottleState } from "../api/http";
 import "./ThrottleBanner.css";
 
 export function useThrottleState() {

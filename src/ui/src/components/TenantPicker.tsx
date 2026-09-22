@@ -2,7 +2,7 @@
 // of one (design decision 2, the shared context step). Rendered by
 // LoginRoute.
 
-import type { SessionMembership } from "../../api/session";
+import type { SessionMembership } from "../api/session";
 
 interface Props {
   memberships: SessionMembership[];
