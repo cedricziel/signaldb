@@ -64,5 +64,5 @@
 
 ## 8. Finishing
 
-- [ ] 8.1 Run the `simplify` skill on the full diff and apply its findings
-- [ ] 8.2 Squash into clean semantic commits, one concern per commit
+- [x] 8.1 Run the `simplify` skill on the full diff and apply its findings
+- [x] 8.2 Squash into clean semantic commits, one concern per commit
