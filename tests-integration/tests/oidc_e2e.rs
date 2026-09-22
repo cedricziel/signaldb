@@ -421,6 +421,13 @@ async fn perform_keycloak_login(authorization_url: &str) -> (String, String) {
             .to_str()
             .expect("Location header is ASCII")
             .to_string();
+        // An error answer (`invalid_scope`, a required-action bounce, ...)
+        // redirects to the unresolvable client `redirect_uri`; surface it
+        // instead of failing on DNS.
+        assert!(
+            location.contains("/realms/") && !location.starts_with(REDIRECT_URL),
+            "Keycloak left its login flow before the login page: {location}"
+        );
         login_page = client
             .get(&location)
             .header(reqwest::header::COOKIE, cookies.header())
