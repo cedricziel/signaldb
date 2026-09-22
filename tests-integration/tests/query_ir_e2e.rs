@@ -46,10 +46,10 @@ use writer::IcebergWriterFlightService;
 /// A base timestamp (2023-11-14T22:13:20Z) shared by the ingested signals.
 const BASE_NS: i64 = 1_700_000_000_000_000_000;
 
-struct TestServices {
+pub(crate) struct TestServices {
     flight_transport: Arc<InMemoryFlightTransport>,
-    log_handler: Arc<LogHandler>,
-    trace_handler: Arc<TraceHandler>,
+    pub(crate) log_handler: Arc<LogHandler>,
+    pub(crate) trace_handler: Arc<TraceHandler>,
     /// Shared with the router built by `build_router`, so a processor
     /// created through `POST /api/v1/processors` is visible to the next
     /// `for_request` lookup the ingest handlers make (task 3.3).
@@ -58,7 +58,7 @@ struct TestServices {
     _temp_dir: TempDir,
 }
 
-fn test_tenant_context() -> TenantContext {
+pub(crate) fn test_tenant_context() -> TenantContext {
     tenant_context("test-tenant", "test-dataset", "test-key-123")
 }
 
@@ -130,7 +130,7 @@ fn test_config(catalog_dsn: &str) -> Configuration {
     config
 }
 
-async fn setup() -> TestServices {
+pub(crate) async fn setup() -> TestServices {
     let temp_dir = TempDir::new().unwrap();
     let storage_path = temp_dir.path().join("storage");
     std::fs::create_dir_all(&storage_path).unwrap();
@@ -305,7 +305,7 @@ fn string_value(s: &str) -> AnyValue {
     }
 }
 
-fn log_record(offset_ns: i64, severity: &str, body: &str) -> LogRecord {
+pub(crate) fn log_record(offset_ns: i64, severity: &str, body: &str) -> LogRecord {
     let severity_number = match severity {
         "ERROR" => 17,
         "WARN" => 13,
@@ -356,7 +356,7 @@ fn kvlist_log_record(offset_ns: i64, entries: &[(&str, &str)]) -> LogRecord {
     }
 }
 
-fn logs_request(service: &str, records: Vec<LogRecord>) -> ExportLogsServiceRequest {
+pub(crate) fn logs_request(service: &str, records: Vec<LogRecord>) -> ExportLogsServiceRequest {
     ExportLogsServiceRequest {
         resource_logs: vec![ResourceLogs {
             resource: Some(Resource {
@@ -378,7 +378,7 @@ fn logs_request(service: &str, records: Vec<LogRecord>) -> ExportLogsServiceRequ
     }
 }
 
-fn span(name: &str, seq: u8, dur_ns: i64) -> Span {
+pub(crate) fn span(name: &str, seq: u8, dur_ns: i64) -> Span {
     Span {
         trace_id: vec![seq; 16],
         span_id: vec![seq; 8],
@@ -402,7 +402,7 @@ fn span(name: &str, seq: u8, dur_ns: i64) -> Span {
     }
 }
 
-fn traces_request(service: &str, spans: Vec<Span>) -> ExportTraceServiceRequest {
+pub(crate) fn traces_request(service: &str, spans: Vec<Span>) -> ExportTraceServiceRequest {
     ExportTraceServiceRequest {
         resource_spans: vec![ResourceSpans {
             resource: Some(Resource {
@@ -425,7 +425,7 @@ fn traces_request(service: &str, spans: Vec<Span>) -> ExportTraceServiceRequest 
 }
 
 /// Build the router with the native IR endpoint and test auth.
-async fn build_router(services: &TestServices) -> Router {
+pub(crate) async fn build_router(services: &TestServices) -> Router {
     let catalog = Catalog::new(services.config.discovery.as_ref().unwrap().dsn.as_str())
         .await
         .unwrap();
@@ -500,7 +500,10 @@ async fn build_router(services: &TestServices) -> Router {
 }
 
 /// POST an IR document to `/api/v1/query` and parse the JSON body.
-async fn post_ir(app: &Router, doc: serde_json::Value) -> (StatusCode, serde_json::Value) {
+pub(crate) async fn post_ir(
+    app: &Router,
+    doc: serde_json::Value,
+) -> (StatusCode, serde_json::Value) {
     post_ir_as(app, doc, "test-key-123", "test-tenant", None).await
 }
 
@@ -538,7 +541,7 @@ async fn post_ir_as(
     (status, json)
 }
 
-fn range() -> serde_json::Value {
+pub(crate) fn range() -> serde_json::Value {
     // Nanosecond bounds as numeric strings (the `QueryRange` wire type is a
     // string; a numeric string coerces to an absolute timestamp).
     serde_json::json!({
@@ -550,7 +553,7 @@ fn range() -> serde_json::Value {
 /// Poll `POST /api/v1/query` until it returns a non-empty `rows` result or the
 /// deadline elapses — the writer's WAL loop persists asynchronously (a ≥5s base
 /// interval), so a fixed sleep would race it.
-async fn post_ir_until_rows(
+pub(crate) async fn post_ir_until_rows(
     app: &Router,
     doc: serde_json::Value,
 ) -> (StatusCode, serde_json::Value) {

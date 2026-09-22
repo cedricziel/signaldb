@@ -162,6 +162,14 @@ groups:
         type: int
         stability: development
         brief: Input files a delta commit re-validates as still live before committing.
+      - id: signaldb.job.deferred_open_partition_files
+        type: int
+        stability: development
+        brief: Files a compaction planning pass deferred because their partition is still open.
+      - id: signaldb.job.unclassifiable_files
+        type: int
+        stability: development
+        brief: Files a compaction planning pass excluded because they could not be classified into a partition.
       - id: signaldb.job.partition_value
         type: string
         stability: development
@@ -228,6 +236,27 @@ groups:
           The query text with all literals replaced by placeholders
           (see common::self_monitoring::sanitize) — never raw user SQL.
         examples: ["SELECT * FROM t WHERE name = ?"]
+
+  - id: registry.signaldb.discovery
+    type: attribute_group
+    display_name: SignalDB Discovery Attributes
+    brief: Metadata-tier discovery reads (describe fields/values, query sources).
+    attributes:
+      - id: signaldb.discovery.kind
+        type: string
+        stability: development
+        brief: Which discovery question was asked.
+        examples: ["fields", "values", "sources"]
+      - id: signaldb.discovery.source
+        type: string
+        stability: development
+        brief: The signal source the question was asked about; absent for a sources listing.
+        examples: ["traces", "logs"]
+      - id: signaldb.discovery.cost_mode
+        type: string
+        stability: development
+        brief: The cost tier that produced the answer.
+        examples: ["metadata", "sampled_scan", "none"]
 
   # MCP tool-call attributes. The pinned upstream semconv snapshot (1.43)
   # moved the MCP and GenAI conventions to the GenAI conventions repository

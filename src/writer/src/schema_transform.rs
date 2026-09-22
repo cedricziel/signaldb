@@ -13,7 +13,19 @@ use datafusion::arrow::{
     datatypes::{DataType, Field, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Arrow field metadata key stamped on every materialized `label_<key>`
+/// column with the attribute key it was built from -- the WAL-batch
+/// counterpart of [`common::iceberg::evolution::label_doc`], which records
+/// the same origin key on the committed Iceberg column's `doc`.
+/// `LabelColumnReconciliation::apply` (writer/src/storage/iceberg.rs)
+/// resolves a batch's label columns by this key rather than by name, so a
+/// name collision between config generations cannot misroute a value (see
+/// #1534). A batch with no such metadata predates this change and falls
+/// back to the old name-based guard.
+pub(crate) const LABEL_ORIGIN_KEY_METADATA: &str = "signaldb.origin_key";
 
 /// Struct to hold all extracted metadata from Flight messages
 #[derive(Debug, Clone)]
@@ -619,7 +631,11 @@ fn label_columns_from_maps(
                 None
             })
             .collect();
-        fields.push(Field::new(&name, DataType::Utf8, true));
+        let field = Field::new(&name, DataType::Utf8, true).with_metadata(HashMap::from([(
+            LABEL_ORIGIN_KEY_METADATA.to_string(),
+            label,
+        )]));
+        fields.push(field);
         columns.push(Arc::new(StringArray::from(values)));
     }
     (fields, columns)
@@ -2313,6 +2329,40 @@ pub fn transform_for_signal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn materialized_label_column_carries_its_origin_key_and_survives_an_ipc_round_trip() {
+        let (fields, columns) = materialized_label_columns_from_json(
+            &[Some(r#"{"http.method":"GET"}"#.to_string())],
+            &[None],
+            &[None],
+            &["http.method".to_string()],
+        );
+        assert_eq!(fields.len(), 1);
+        assert_eq!(
+            fields[0].metadata().get(LABEL_ORIGIN_KEY_METADATA),
+            Some(&"http.method".to_string()),
+            "materialized label field must carry its origin key in metadata"
+        );
+
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(fields.clone())),
+            columns.into_iter().map(|c| c as ArrayRef).collect(),
+        )
+        .unwrap();
+
+        // WAL persists batches through this same IPC path.
+        let bytes = common::wal::record_batch_to_bytes(&batch).unwrap();
+        let round_tripped = common::wal::bytes_to_record_batch(&bytes).unwrap();
+        let round_tripped_field = round_tripped.schema().field(0).clone();
+        assert_eq!(
+            round_tripped_field
+                .metadata()
+                .get(LABEL_ORIGIN_KEY_METADATA),
+            Some(&"http.method".to_string()),
+            "origin key metadata must survive an Arrow IPC write/read round trip"
+        );
+    }
 
     #[test]
     fn transform_trace_v1_to_v2_carries_the_1208_columns_through() {

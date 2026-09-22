@@ -259,6 +259,36 @@ pub fn processors_apply_span(tenant_id: &str, dataset_id: &str, signal: &str) ->
     )
 }
 
+/// INTERNAL span for one discovery read — `describe: fields`/`describe:
+/// values` on `POST /api/v1/query`, or `GET /api/v1/query/sources` (change
+/// `query-field-discovery`). The metadata-tier counterpart to the querier's
+/// `signaldb.query.execute`: it makes the cost of answering "what can I
+/// query" visible in self-monitoring next to an ordinary query read, though
+/// most discovery reads never reach a querier (only a sampled `describe:
+/// values` does). Exported as `discovery {kind}`. Bounded fields only:
+/// tenancy, which discovery question was asked, the source it was asked
+/// about (absent for `sources`, which names none), and — once the answer is
+/// known — which cost tier produced it.
+pub fn discovery_span(kind: &str, tenant_id: &str, dataset_id: &str, source: Option<&str>) -> Span {
+    let span = tracing::info_span!(
+        "signaldb.discovery",
+        otel.name = %format!("discovery {kind}"),
+        otel.kind = "internal",
+        otel.status_code = Empty,
+        otel.status_message = Empty,
+        error.r#type = Empty,
+        signaldb.tenant.id = %tenant_id,
+        signaldb.dataset.id = %dataset_id,
+        signaldb.discovery.kind = %kind,
+        signaldb.discovery.source = Empty,
+        signaldb.discovery.cost_mode = Empty,
+    );
+    if let Some(source) = source {
+        span.record("signaldb.discovery.source", source);
+    }
+    span
+}
+
 /// INTERNAL span for one MCP tool call, per the MCP semantic conventions
 /// (now maintained in the GenAI conventions repository): named
 /// `{mcp.method.name} {gen_ai.tool.name}`, i.e. `tools/call {tool}`, and

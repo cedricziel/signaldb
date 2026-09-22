@@ -118,6 +118,15 @@ pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
         );
     }
 
+    // Provision/reconcile the read-only demo account (change: demo-mode), if
+    // configured. Runs after tenant sync so `[demo].tenant_id` exists.
+    // Failure logs and continues rather than blocking startup.
+    if let Err(error) =
+        common::bootstrap::provision_demo_user(router_bootstrap.catalog(), &config).await
+    {
+        tracing::error!(error = %error, "Failed to provision demo account");
+    }
+
     // Create router state with catalog access and configuration
     let state = RouterAppState::new(router_bootstrap.catalog().clone(), config.clone());
 

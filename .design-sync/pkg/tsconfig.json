@@ -1,0 +1,13 @@
+{
+  "extends": "../../src/ui/tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rootDir": "../../src/ui/src",
+    "outDir": "dist/types",
+    "types": []
+  },
+  "include": ["../../src/ui/src/components/*.tsx", "../../src/ui/src/lib/queryClient.ts", "../../src/ui/src/vite-env.d.ts"],
+  "exclude": ["../../src/ui/src/**/*.test.tsx", "../../src/ui/src/**/*.stories.tsx"]
+}

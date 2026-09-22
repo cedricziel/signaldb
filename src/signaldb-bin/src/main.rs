@@ -174,6 +174,15 @@ async fn main() -> Result<()> {
         tracing::info!("Materialized {materialized} missing default dataset row(s)");
     }
 
+    // Provision/reconcile the read-only demo account (change: demo-mode), if
+    // configured. Runs after tenant sync so `[demo].tenant_id` exists.
+    // Failure logs and continues rather than blocking startup.
+    if let Err(error) =
+        common::bootstrap::provision_demo_user(router_bootstrap.catalog(), &config).await
+    {
+        tracing::error!(error = %error, "Failed to provision demo account");
+    }
+
     // First boot with no tenants at all (none in config, none in the
     // catalog): auto-provision a default tenant and print its API key once.
     if let Some(api_key) =

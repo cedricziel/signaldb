@@ -620,6 +620,16 @@ export type DatasetTables = {
 };
 
 /**
+ * The demo account's credentials, returned by `login_config` only when
+ * `[demo].enabled` is true (change: demo-mode) so the login page can offer
+ * an "Explore the demo" shortcut.
+ */
+export type DemoLoginConfig = {
+    password: string;
+    username: string;
+};
+
+/**
  * Deprecation info in resolved form.
  */
 export type DeprecatedInfo = {
@@ -1096,6 +1106,7 @@ export type LogicalType = 'string' | 'bool' | 'int64' | 'float64' | 'timestamp_n
  * may offer. `oidc` is `null` until an OIDC provider is configured.
  */
 export type LoginConfigResponse = {
+    demo: null | DemoLoginConfig;
     oidc: null | OidcLoginConfig;
     password_enabled: boolean;
 };
@@ -1746,6 +1757,12 @@ export type SessionUser = {
     display_name?: string | null;
     email: string;
     id: string;
+    /**
+     * True when this is the `[demo]` read-only account (change:
+     * demo-mode), so the UI can show a "read-only" badge and hide
+     * mutating navigation without hardcoding the demo username.
+     */
+    is_demo: boolean;
     is_instance_admin: boolean;
 };
 

@@ -1,0 +1,57 @@
+{
+  "projectId": "6b1371e8-5c56-402a-8c4c-81af3a725fc0",
+  "shape": "storybook",
+  "storybookConfigDir": "src/ui/.storybook",
+  "storybookStatic": ".design-sync/sb-reference",
+  "pkg": "signaldb-ui",
+  "globalName": "SignalDBUI",
+  "srcDir": "src/ui/src/components",
+  "entry": ".design-sync/pkg/dist/index.js",
+  "cssEntry": "dist/index.css",
+  "buildCmd": ".design-sync/pkg/build.sh",
+  "titleMap": {
+    "SemanticKey": "SemanticKeyLabel"
+  },
+  "provider": {
+    "component": "QueryClientProvider",
+    "props": {
+      "client": {
+        "$ref": "previewQueryClient"
+      }
+    }
+  },
+  "overrides": {
+    "AttributeTable": {
+      "cardMode": "column"
+    },
+    "VizTooltip": {
+      "cardMode": "column"
+    },
+    "Dialog": {
+      "cardMode": "single",
+      "primaryStory": "Default"
+    },
+    "MobileSidebarDrawer": {
+      "skip": [
+        "components-mobilesidebardrawer--open-by-default",
+        "components-mobilesidebardrawer--right-side"
+      ]
+    },
+    "SemanticKeyLabel": {
+      "skip": [
+        "components-semantickey--unresolved"
+      ]
+    },
+    "SourceSnippet": {
+      "skip": [
+        "components-sourcesnippet--unavailable"
+      ]
+    }
+  },
+  "storyImports": {
+    "shim": [
+      "@tanstack/react-query"
+    ]
+  },
+  "readmeHeader": ".design-sync/conventions.md"
+}

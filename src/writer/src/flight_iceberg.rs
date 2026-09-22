@@ -110,7 +110,10 @@ impl IcebergWriterFlightService {
         Self {
             processor: Arc::new(Mutex::new(processor)),
             wal_manager,
-            reconciler: Arc::new(crate::reconcile::TableReconciler::new(catalog_manager)),
+            reconciler: Arc::new(
+                crate::reconcile::TableReconciler::new(catalog_manager)
+                    .with_marker_retention(writer_config.wal_marker_retention),
+            ),
             table_reconcile_interval: writer_config.table_reconcile_interval,
         }
     }

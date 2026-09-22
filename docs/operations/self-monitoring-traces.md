@@ -126,6 +126,12 @@ flowchart LR
 - **Query stages**: `signaldb.query.plan` / `signaldb.query.execute`
   INTERNAL spans with `signaldb.query.rows`/`batches`; recorded query text
   is always literal-sanitized (`… WHERE name = ?`).
+- **Discovery reads**: `discovery {kind}` INTERNAL span around
+  `describe: fields` / `describe: values` and `GET /api/v1/query/sources`,
+  with `signaldb.discovery.kind` (`fields`/`values`/`sources`),
+  `signaldb.discovery.source`, and `signaldb.discovery.cost_mode`
+  (`metadata`, or `sampled_scan` for a sampled `describe: values`, the one
+  discovery read that reaches a querier).
 - **Background jobs**: `compaction`, `retention_enforcement`,
   `orphan_cleanup` root INTERNAL spans with `signaldb.tenant.id` /
   `signaldb.dataset.id` / `signaldb.table` and affected-object counts

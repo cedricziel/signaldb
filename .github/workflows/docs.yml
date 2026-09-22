@@ -10,6 +10,8 @@ on:
       - "scripts/render-schema-files.py"
       - "otel/registry/manifest.yaml"
       - "src/common/CHANGELOG.md"
+      - "src/ui/src/components/**"
+      - "src/ui/.storybook/**"
       - ".github/workflows/docs.yml"
   # Re-publish after each nightly benchmark run so the "latest results"
   # table and the trend charts under /benchmarks/ stay current.
@@ -42,6 +44,16 @@ jobs:
 
       - name: Install MkDocs
         run: pip install "mkdocs-material==9.*"
+
+      - uses: pnpm/action-setup@v6.1.0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install UI dependencies
+        run: pnpm --filter signaldb-ui... install --frozen-lockfile
 
       # Nightly Criterion results live on the machine-written benchmark-data
       # branch (see benchmarks.yml). Pull them in so the benchmarking page
@@ -82,6 +94,12 @@ jobs:
             mkdir -p _site/benchmarks
             cp -R bench-data/dev/bench/. _site/benchmarks/
           fi
+
+      # Component previews (see src/ui/src/components/**/*.stories.tsx),
+      # published alongside the docs site since Pages serves one deployment
+      # per repo.
+      - name: Build Storybook
+        run: pnpm --filter signaldb-ui exec storybook build --output-dir ../../_site/storybook
 
       - uses: actions/upload-pages-artifact@v5
 

@@ -1,5 +1,8 @@
 //! End-to-end OIDC/SSO login against a real IdP container (change:
-//! oidc-login, task 4.5).
+//! oidc-login, tasks 4.5-4.6), including the full MCP OAuth round trip
+//! carried through SSO: DCR, an unauthenticated consent decision refused,
+//! SSO start carrying the consent URL as its return target, callback landing
+//! back on it with a session cookie, consent, and PKCE token exchange.
 //!
 //! `src/router/src/endpoints/oidc.rs`'s unit tests already exercise the
 //! callback logic exhaustively against a *simulated* IdP (wiremock serving
@@ -90,11 +93,11 @@ const USER_EMAIL: &str = "sso.tester@example.com";
 const USER_PASSWORD: &str = "correct horse battery staple";
 const MAPPED_GROUP: &str = "observability-admins";
 const MAPPED_TENANT: &str = "acme";
-// RFC 7636 Appendix B PKCE pair, reused from tests/oauth_connector_flow.rs;
-// only the challenge is needed since this test stops at consent, not token
-// exchange (see the module doc's MCP-OAuth-over-SSO section).
+// RFC 7636 Appendix B PKCE pair, reused from tests/oauth_connector_flow.rs.
+const MCP_PKCE_VERIFIER: &str = "dBjftJeZ4CVP-mB92K27uhbUJU1p1r_wW1gFWFOEjXk";
 const MCP_PKCE_CHALLENGE: &str = "E9Melhoa2OwvFrEMTJguCHaoeK1t8URWbuGJSstw-cM";
 const MCP_RESOURCE: &str = "http://localhost:3000/mcp";
+const MCP_REDIRECT_URI: &str = "https://claude.ai/cb";
 
 /// The realm-import JSON Keycloak's `--import-realm` flag loads at startup.
 ///
@@ -112,6 +115,12 @@ fn realm_import_json() -> Vec<u8> {
         "users": [{
             "username": "sso-tester",
             "email": USER_EMAIL,
+            // A fresh Keycloak realm's default user profile requires
+            // first/last name; leaving them unset triggers a `VERIFY_PROFILE`
+            // required-action page after login instead of the redirect back
+            // to `redirectUris`.
+            "firstName": "SSO",
+            "lastName": "Tester",
             "enabled": true,
             "emailVerified": true,
             "credentials": [{
@@ -121,14 +130,27 @@ fn realm_import_json() -> Vec<u8> {
             }],
             "groups": [format!("/{MAPPED_GROUP}")],
         }],
-        "clientScopes": [{
-            // A *default* client scope (named below in the client's
-            // `defaultClientScopes`) is included in every token issued to
-            // that client regardless of the OAuth `scope` parameter it
-            // requests — see the module doc's "Why Keycloak, not Dex"
-            // section.
-            "name": "signaldb-groups",
+        "clients": [{
+            "clientId": CLIENT_ID,
+            "secret": CLIENT_SECRET,
+            "enabled": true,
+            "publicClient": false,
+            "standardFlowEnabled": true,
+            "directAccessGrantsEnabled": false,
+            "consentRequired": false,
             "protocol": "openid-connect",
+            "redirectUris": [REDIRECT_URL],
+            // Deliberately no `defaultClientScopes`/`clientScopes` override:
+            // a realm import's `clientScopes` array replaces the realm's
+            // built-in default scopes (`profile`, `email`, ...) wholesale
+            // rather than adding to them, which would make the router's
+            // fixed `openid email profile` authorization request fail with
+            // `invalid_scope`. The group-membership mapper is instead a
+            // client-level protocol mapper (`protocolMappers` embedded
+            // directly under the client, not a named client scope), which
+            // Keycloak folds into every token issued to this client
+            // regardless of the `scope` parameter requested — see the
+            // module doc's "Why Keycloak, not Dex" section.
             "protocolMappers": [{
                 "name": "groups",
                 "protocol": "openid-connect",
@@ -143,18 +165,6 @@ fn realm_import_json() -> Vec<u8> {
                     "userinfo.token.claim": "true",
                 },
             }],
-        }],
-        "clients": [{
-            "clientId": CLIENT_ID,
-            "secret": CLIENT_SECRET,
-            "enabled": true,
-            "publicClient": false,
-            "standardFlowEnabled": true,
-            "directAccessGrantsEnabled": false,
-            "consentRequired": false,
-            "protocol": "openid-connect",
-            "redirectUris": [REDIRECT_URL],
-            "defaultClientScopes": ["profile", "email", "signaldb-groups"],
         }],
     })
     .to_string()
@@ -277,15 +287,21 @@ struct StartedLogin {
 /// Drives `GET /ui/session/oidc/start` through the real router (in-process,
 /// via `oneshot` — no TCP listener needed since nothing else needs to dial
 /// back into this app; only the IdP call below goes over the network).
-async fn drive_start(app: &axum::Router) -> StartedLogin {
+/// `redirect`, when given, is carried as the `?redirect=` query parameter
+/// (e.g. the full `/oauth/consent?...` URL, or a plain UI path).
+async fn drive_start(app: &axum::Router, redirect: Option<&str>) -> StartedLogin {
+    let uri = match redirect {
+        Some(target) => {
+            let query = url::form_urlencoded::Serializer::new(String::new())
+                .append_pair("redirect", target)
+                .finish();
+            format!("/ui/session/oidc/start?{query}")
+        }
+        None => "/ui/session/oidc/start".to_string(),
+    };
     let response = app
         .clone()
-        .oneshot(
-            Request::builder()
-                .uri("/ui/session/oidc/start")
-                .body(Body::empty())
-                .unwrap(),
-        )
+        .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
         .await
         .unwrap();
     assert_eq!(
@@ -384,17 +400,47 @@ async fn perform_keycloak_login(authorization_url: &str) -> (String, String) {
         .expect("reqwest client builds");
     let mut cookies = CookieJar::default();
 
-    let login_page = client
+    let mut login_page = client
         .get(authorization_url)
         .send()
         .await
         .expect("GET the authorization endpoint");
+    cookies.record(&login_page);
+    // Keycloak's `/auth` endpoint 302s once to establish its own session
+    // cookie (`AUTH_SESSION_ID`) before serving the login form itself; follow
+    // that hop (and defensively a couple more) rather than assuming the very
+    // first response is already the page.
+    for _ in 0..3 {
+        if login_page.status() != reqwest::StatusCode::FOUND {
+            break;
+        }
+        let location = login_page
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .expect("Keycloak's pre-login redirect has a Location header")
+            .to_str()
+            .expect("Location header is ASCII")
+            .to_string();
+        // An error answer (`invalid_scope`, a required-action bounce, ...)
+        // redirects to the unresolvable client `redirect_uri`; surface it
+        // instead of failing on DNS.
+        assert!(
+            location.contains("/realms/") && !location.starts_with(REDIRECT_URL),
+            "Keycloak left its login flow before the login page: {location}"
+        );
+        login_page = client
+            .get(&location)
+            .header(reqwest::header::COOKIE, cookies.header())
+            .send()
+            .await
+            .expect("follow Keycloak's pre-login redirect");
+        cookies.record(&login_page);
+    }
     assert_eq!(
         login_page.status(),
         reqwest::StatusCode::OK,
         "expected the Keycloak login page (no other identity providers are configured on this realm)"
     );
-    cookies.record(&login_page);
     let html = login_page.text().await.expect("login page body reads");
     let action = extract_login_form_action(&html);
 
@@ -478,7 +524,101 @@ async fn sso_login_jit_provisions_user_and_grants_mapped_membership() {
     let catalog = state.catalog().clone();
     let app = create_router(state);
 
-    let login = drive_start(&app).await;
+    // Dynamic Client Registration (RFC 7591) — the MCP connector's first
+    // move, before any login. Independent of SSO.
+    let register_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/register")
+                .header("content-type", "application/json")
+                .body(Body::from(format!(
+                    r#"{{"redirect_uris":["{MCP_REDIRECT_URI}"],"client_name":"Claude"}}"#
+                )))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(register_response.status(), StatusCode::CREATED);
+    let register_body = axum::body::to_bytes(register_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let register_body: serde_json::Value = serde_json::from_slice(&register_body).unwrap();
+    let mcp_client_id = register_body["client_id"].as_str().unwrap().to_string();
+
+    // `GET /oauth/authorize` validates the client/redirect_uri/PKCE and hands
+    // off to the consent screen without requiring a session of its own
+    // (`router::endpoints::oauth::authorize`) — its `Location` is the exact
+    // consent URL a browser would carry through login.
+    let authorize_query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("client_id", &mcp_client_id)
+        .append_pair("redirect_uri", MCP_REDIRECT_URI)
+        .append_pair("response_type", "code")
+        .append_pair("code_challenge", MCP_PKCE_CHALLENGE)
+        .append_pair("code_challenge_method", "S256")
+        .append_pair("scope", "traces:read")
+        .append_pair("resource", MCP_RESOURCE)
+        .append_pair("state", "connector-state")
+        .finish();
+    let authorize_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/oauth/authorize?{authorize_query}"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    // `Redirect::to` (used by `authorize`) defaults to 303 See Other, unlike
+    // the callback/start endpoints below, which use 302 Found explicitly.
+    assert_eq!(authorize_response.status(), StatusCode::SEE_OTHER);
+    let consent_url = authorize_response
+        .headers()
+        .get(header::LOCATION)
+        .expect("authorize sets a Location header")
+        .to_str()
+        .expect("Location header is ASCII")
+        .to_string();
+    assert!(
+        consent_url.starts_with("/oauth/consent?"),
+        "authorize should hand off to the consent screen: {consent_url}"
+    );
+
+    // Assertion 0: the consent decision refuses an unauthenticated caller —
+    // no session cookie is presented — before any login has happened.
+    let unauthenticated_decision_body = serde_json::json!({
+        "client_id": mcp_client_id,
+        "redirect_uri": MCP_REDIRECT_URI,
+        "code_challenge": MCP_PKCE_CHALLENGE,
+        "scope": "traces:read",
+        "resource": MCP_RESOURCE,
+        "tenant_grants": [{ "tenant_id": MAPPED_TENANT }],
+        "approved": true,
+    })
+    .to_string();
+    let unauthenticated_decision_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/authorize/decision")
+                .header("content-type", "application/json")
+                .body(Body::from(unauthenticated_decision_body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        unauthenticated_decision_response.status(),
+        StatusCode::UNAUTHORIZED,
+        "consent must refuse a caller with no session"
+    );
+
+    // SSO start carrying the full consent URL as its return target, exactly
+    // as the login page offers when it's reached via `/oauth/consent`.
+    let login = drive_start(&app, Some(&consent_url)).await;
     let (code, idp_state) = perform_keycloak_login(&login.authorization_url).await;
 
     let query = url::form_urlencoded::Serializer::new(String::new())
@@ -500,6 +640,17 @@ async fn sso_login_jit_provisions_user_and_grants_mapped_membership() {
         callback_response.status(),
         StatusCode::FOUND,
         "a valid callback should redirect on success, not bounce to /?sso_error=1"
+    );
+    let callback_location = callback_response
+        .headers()
+        .get(header::LOCATION)
+        .expect("callback sets a Location header")
+        .to_str()
+        .expect("Location header is ASCII")
+        .to_string();
+    assert_eq!(
+        callback_location, consent_url,
+        "the callback should land back on the exact consent URL carried through SSO"
     );
     let session_cookie = callback_response
         .headers()
@@ -555,39 +706,7 @@ async fn sso_login_jit_provisions_user_and_grants_mapped_membership() {
 
     // Assertion 4: MCP OAuth consent proceeds over the SSO-issued session,
     // exactly as `tests/oauth_connector_flow.rs` drives it over a password
-    // session — dynamic client registration, then a consent decision
-    // authenticated solely by `session_cookie`.
-    let register_response = app
-        .clone()
-        .oneshot(
-            Request::builder()
-                .method("POST")
-                .uri("/oauth/register")
-                .header("content-type", "application/json")
-                .body(Body::from(
-                    r#"{"redirect_uris":["https://claude.ai/cb"],"client_name":"Claude"}"#,
-                ))
-                .unwrap(),
-        )
-        .await
-        .unwrap();
-    assert_eq!(register_response.status(), StatusCode::CREATED);
-    let register_body = axum::body::to_bytes(register_response.into_body(), usize::MAX)
-        .await
-        .unwrap();
-    let register_body: serde_json::Value = serde_json::from_slice(&register_body).unwrap();
-    let mcp_client_id = register_body["client_id"].as_str().unwrap().to_string();
-
-    let decision_body = serde_json::json!({
-        "client_id": mcp_client_id,
-        "redirect_uri": "https://claude.ai/cb",
-        "code_challenge": MCP_PKCE_CHALLENGE,
-        "scope": "traces:read",
-        "resource": MCP_RESOURCE,
-        "tenant_grants": [{ "tenant_id": MAPPED_TENANT }],
-        "approved": true,
-    })
-    .to_string();
+    // session — a consent decision authenticated solely by `session_cookie`.
     let decision_response = app
         .clone()
         .oneshot(
@@ -596,7 +715,7 @@ async fn sso_login_jit_provisions_user_and_grants_mapped_membership() {
                 .uri("/oauth/authorize/decision")
                 .header("content-type", "application/json")
                 .header(header::COOKIE, &session_cookie)
-                .body(Body::from(decision_body))
+                .body(Body::from(unauthenticated_decision_body))
                 .unwrap(),
         )
         .await
@@ -610,11 +729,139 @@ async fn sso_login_jit_provisions_user_and_grants_mapped_membership() {
         .await
         .unwrap();
     let decision_body: serde_json::Value = serde_json::from_slice(&decision_body).unwrap();
+    let decision_redirect = decision_body["redirect"].as_str().unwrap().to_string();
     assert!(
-        decision_body["redirect"]
-            .as_str()
-            .unwrap()
-            .contains("code="),
+        decision_redirect.contains("code="),
         "consent decision should hand back an authorization code"
+    );
+    let auth_code = Url::parse(&decision_redirect)
+        .expect("decision redirect parses as a URL")
+        .query_pairs()
+        .find(|(key, _)| key == "code")
+        .map(|(_, value)| value.into_owned())
+        .expect("decision redirect carries the authorization code");
+
+    // Assertion 5: PKCE token exchange with the matching `code_verifier`
+    // mints an access + refresh token pair, mirroring
+    // `tests/oauth_connector_flow.rs`'s step 3.
+    let token_form = format!(
+        "grant_type=authorization_code&code={auth_code}&code_verifier={MCP_PKCE_VERIFIER}\
+         &redirect_uri={encoded_redirect}&client_id={mcp_client_id}",
+        encoded_redirect =
+            url::form_urlencoded::byte_serialize(MCP_REDIRECT_URI.as_bytes()).collect::<String>(),
+    );
+    let token_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/oauth/token")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(token_form))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(token_response.status(), StatusCode::OK);
+    let token_body = axum::body::to_bytes(token_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let token_body: serde_json::Value = serde_json::from_slice(&token_body).unwrap();
+    let access_token = token_body["access_token"]
+        .as_str()
+        .expect("token exchange returns an access token")
+        .to_string();
+    assert!(
+        token_body["refresh_token"].as_str().is_some(),
+        "token exchange should also return a refresh token"
+    );
+
+    // Assertion 6: an authenticated call bearing the access token succeeds,
+    // scoped to the SSO user's mapped tenant. `whoami` is used rather than a
+    // real MCP tool call: reaching `mcp_server::mcp_http_router` in-process
+    // requires a second, actually-bound TCP listener (its own auth
+    // middleware calls back into the router over real HTTP for
+    // `/oauth/introspect` — see `tests/mcp_multi_tenant_oauth_flow.rs`),
+    // which is unrelated complexity this SSO-focused test doesn't need to
+    // take on; `whoami` exercises the same bearer-token `Authenticator` path
+    // MCP's auth middleware relies on.
+    let token_whoami_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/whoami")
+                .header("authorization", format!("Bearer {access_token}"))
+                .header("x-tenant-id", MAPPED_TENANT)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(token_whoami_response.status(), StatusCode::OK);
+    let token_whoami_body = axum::body::to_bytes(token_whoami_response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let token_whoami_body: serde_json::Value = serde_json::from_slice(&token_whoami_body).unwrap();
+    assert_eq!(token_whoami_body["tenant"]["id"], MAPPED_TENANT);
+
+    // Assertion 7: a plain (non-consent) `redirect` target survives SSO too,
+    // and lands the same user in the tenant they're the sole member of. A
+    // second SSO round trip against the same container/user, since the
+    // consent-URL case above already exercises JIT provisioning and mapping.
+    let plain_login = drive_start(&app, Some("/traces")).await;
+    let (plain_code, plain_state) = perform_keycloak_login(&plain_login.authorization_url).await;
+    let plain_query = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("code", &plain_code)
+        .append_pair("state", &plain_state)
+        .finish();
+    let plain_callback_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/ui/session/oidc/callback?{plain_query}"))
+                .header(header::COOKIE, &plain_login.pending_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(plain_callback_response.status(), StatusCode::FOUND);
+    let plain_callback_location = plain_callback_response
+        .headers()
+        .get(header::LOCATION)
+        .expect("callback sets a Location header")
+        .to_str()
+        .expect("Location header is ASCII")
+        .to_string();
+    assert_eq!(plain_callback_location, "/traces");
+    let plain_session_cookie = plain_callback_response
+        .headers()
+        .get_all(header::SET_COOKIE)
+        .iter()
+        .map(|value| value.to_str().unwrap())
+        .find(|value| value.starts_with("signaldb_session="))
+        .map(|value| value.split(';').next().unwrap().to_string())
+        .expect("a successful SSO login sets a signaldb_session cookie");
+    let current_session_response = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/ui/session")
+                .header(header::COOKIE, &plain_session_cookie)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(current_session_response.status(), StatusCode::OK);
+    let current_session_body =
+        axum::body::to_bytes(current_session_response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+    let current_session_body: serde_json::Value =
+        serde_json::from_slice(&current_session_body).unwrap();
+    assert_eq!(
+        current_session_body["tenant"], MAPPED_TENANT,
+        "with one membership, GET /ui/session auto-selects it by name"
     );
 }

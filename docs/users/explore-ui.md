@@ -739,6 +739,10 @@ context — you stay on the page you are on (a signal view, the Schema hub,
 In development the Vite proxy injects credentials from `.env.local`
 instead, so no sign-in is needed.
 
+On a demo instance the login page also shows an **Explore the demo** button
+that signs in with the shared read-only account; the header then carries a
+"Demo · read-only" badge and settings and admin actions are hidden.
+
 ## User menu
 
 Once signed in, a user menu appears in the top bar showing an avatar
