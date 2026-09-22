@@ -13,6 +13,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{delete, get, post},
 };
+use chrono::{DateTime, Utc};
 use common::{
     auth::{Authenticator, TenantContext, TenantContextExtractor, validate_id, validate_scopes},
     catalog::{GrantSource, MembershipRole},
@@ -460,7 +461,7 @@ pub(crate) struct ApiKeyResponse {
     allowed_origins: Option<Vec<String>>,
     scopes: Option<Vec<String>>,
     revoked: bool,
-    created_at: String,
+    created_at: DateTime<Utc>,
 }
 
 /// 201 response body for API key creation via the management API.
@@ -508,7 +509,7 @@ pub(crate) async fn list_api_keys<S: RouterState>(
                     allowed_origins: key.allowed_origins,
                     scopes: key.scopes,
                     revoked: key.revoked_at.is_some(),
-                    created_at: key.created_at.to_rfc3339(),
+                    created_at: key.created_at,
                 })
                 .collect::<Vec<_>>(),
         )
@@ -794,7 +795,7 @@ pub(crate) async fn update_api_key<S: RouterState>(
                 allowed_origins: key.allowed_origins,
                 scopes: key.scopes,
                 revoked: key.revoked_at.is_some(),
-                created_at: key.created_at.to_rfc3339(),
+                created_at: key.created_at,
             };
             Json(response).into_response()
         }

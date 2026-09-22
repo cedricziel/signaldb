@@ -6,6 +6,7 @@
 //! attributes define the JSON wire format exactly — optional fields are omitted
 //! from responses via `skip_serializing_if`, matching the documented schema.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -63,10 +64,10 @@ pub struct TenantResponse {
     pub default_dataset: Option<String>,
     /// Source of the tenant record (config or database).
     pub source: String,
-    /// ISO 8601 creation timestamp.
-    pub created_at: String,
-    /// ISO 8601 last-updated timestamp.
-    pub updated_at: String,
+    /// RFC 3339 creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// RFC 3339 last-updated timestamp.
+    pub updated_at: DateTime<Utc>,
 }
 
 /// Response containing a list of tenants.
@@ -166,8 +167,8 @@ pub struct CreateApiKeyResponse {
     /// unrestricted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_origins: Option<Vec<String>>,
-    /// ISO 8601 creation timestamp.
-    pub created_at: String,
+    /// RFC 3339 creation timestamp.
+    pub created_at: DateTime<Utc>,
 }
 
 /// API key information (without the raw key).
@@ -188,11 +189,11 @@ pub struct ApiKeyResponse {
     /// unrestricted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub allowed_origins: Option<Vec<String>>,
-    /// ISO 8601 creation timestamp.
-    pub created_at: String,
-    /// ISO 8601 revocation timestamp (if revoked).
+    /// RFC 3339 creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// RFC 3339 revocation timestamp (if revoked).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub revoked_at: Option<String>,
+    pub revoked_at: Option<DateTime<Utc>>,
 }
 
 /// Response containing a list of API keys.
@@ -218,8 +219,8 @@ pub struct DatasetResponse {
     pub name: String,
     /// Tenant that owns this dataset.
     pub tenant_id: String,
-    /// ISO 8601 creation timestamp.
-    pub created_at: String,
+    /// RFC 3339 creation timestamp.
+    pub created_at: DateTime<Utc>,
 }
 
 /// Response containing a list of datasets.
@@ -265,6 +266,6 @@ pub struct UserResponse {
     pub display_name: Option<String>,
     /// Whether the user is an instance administrator.
     pub instance_admin: bool,
-    /// ISO 8601 creation timestamp.
-    pub created_at: String,
+    /// RFC 3339 creation timestamp.
+    pub created_at: DateTime<Utc>,
 }

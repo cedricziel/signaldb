@@ -91,7 +91,7 @@ pub(crate) struct GitHubLinkStartResponse {
     pub install_url: String,
     /// RFC 3339 timestamp naming when the state token (and so this link
     /// attempt) expires.
-    pub expires_at: String,
+    pub expires_at: chrono::DateTime<Utc>,
 }
 
 /// One linked installation, as reported by [`list_github_installations`].
@@ -104,7 +104,7 @@ pub(crate) struct GitHubInstallationResponse {
     /// names.
     pub repositories: Vec<String>,
     /// RFC 3339 timestamp of the last successful repository-list refresh.
-    pub repositories_synced_at: String,
+    pub repositories_synced_at: chrono::DateTime<Utc>,
     /// `true` when the live GitHub refresh failed and `repositories` is the
     /// last successfully fetched copy rather than a fresh one.
     pub stale: bool,
@@ -112,9 +112,9 @@ pub(crate) struct GitHubInstallationResponse {
     /// GitHub's own installation-settings page for this installation.
     pub manage_url: String,
     /// RFC 3339 timestamp.
-    pub created_at: String,
+    pub created_at: chrono::DateTime<Utc>,
     /// RFC 3339 timestamp.
-    pub updated_at: String,
+    pub updated_at: chrono::DateTime<Utc>,
 }
 
 /// 200 response body for [`list_github_installations`].
@@ -187,7 +187,7 @@ pub(crate) async fn start_github_link<S: RouterState>(
         StatusCode::CREATED,
         Json(GitHubLinkStartResponse {
             install_url: app.config().install_url(&token),
-            expires_at: record.expires_at.to_rfc3339(),
+            expires_at: record.expires_at,
         }),
     )
         .into_response()
@@ -292,12 +292,12 @@ pub(crate) async fn list_github_installations<S: RouterState>(
                 account_login: installation.account_login,
                 account_type: installation.account_type,
                 repositories,
-                repositories_synced_at: repositories_synced_at.to_rfc3339(),
+                repositories_synced_at,
                 stale,
                 linked_by_github_login: installation.linked_by_github_login,
                 manage_url,
-                created_at: installation.created_at.to_rfc3339(),
-                updated_at: installation.updated_at.to_rfc3339(),
+                created_at: installation.created_at,
+                updated_at: installation.updated_at,
             }
         }
     }))

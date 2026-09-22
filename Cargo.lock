@@ -7345,6 +7345,7 @@ dependencies = [
 name = "signaldb-api"
 version = "0.2.1"
 dependencies = [
+ "chrono",
  "serde",
  "utoipa",
  "workspace-hack",
@@ -7405,6 +7406,7 @@ version = "0.2.1"
 dependencies = [
  "arrow",
  "arrow-flight",
+ "chrono",
  "futures",
  "httpdate",
  "opentelemetry",

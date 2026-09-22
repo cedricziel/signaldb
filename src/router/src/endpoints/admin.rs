@@ -621,8 +621,8 @@ pub async fn create_api_key<S: RouterState>(
         Ok(key_id) => {
             // Fetch the record for timestamps
             let created_at = match state.catalog().get_api_key(&key_id).await {
-                Ok(Some(record)) => record.created_at.to_rfc3339(),
-                _ => chrono::Utc::now().to_rfc3339(),
+                Ok(Some(record)) => record.created_at,
+                _ => chrono::Utc::now(),
             };
 
             let response = CreateApiKeyResponse {
@@ -786,8 +786,8 @@ fn api_key_record_to_response(record: common::catalog::ApiKeyRecord) -> ApiKeyRe
         scopes: record.scopes,
         dataset_ids: record.dataset_ids,
         allowed_origins: record.allowed_origins,
-        created_at: record.created_at.to_rfc3339(),
-        revoked_at: record.revoked_at.map(|t| t.to_rfc3339()),
+        created_at: record.created_at,
+        revoked_at: record.revoked_at,
     }
 }
 
@@ -976,7 +976,7 @@ pub async fn list_datasets<S: RouterState>(
                         id: d.id,
                         name: d.name,
                         tenant_id: d.tenant_id,
-                        created_at: d.created_at.to_rfc3339(),
+                        created_at: d.created_at,
                     })
                     .collect(),
             };
@@ -1102,7 +1102,7 @@ pub async fn create_dataset<S: RouterState>(
                 id: dataset_id,
                 name: request.name,
                 tenant_id,
-                created_at: chrono::Utc::now().to_rfc3339(),
+                created_at: chrono::Utc::now(),
             };
             (
                 StatusCode::CREATED,
@@ -1171,8 +1171,8 @@ fn tenant_record_to_response(record: common::catalog::TenantRecord) -> TenantRes
         name: record.name,
         default_dataset: record.default_dataset,
         source: record.source,
-        created_at: record.created_at.to_rfc3339(),
-        updated_at: record.updated_at.to_rfc3339(),
+        created_at: record.created_at,
+        updated_at: record.updated_at,
     }
 }
 
@@ -1335,7 +1335,7 @@ pub async fn create_user<S: RouterState>(
         email: user.email,
         display_name: user.display_name,
         instance_admin: user.is_instance_admin,
-        created_at: user.created_at.to_rfc3339(),
+        created_at: user.created_at,
     };
     (
         StatusCode::CREATED,
@@ -2324,6 +2324,26 @@ mod tests {
                 .is_empty(),
             "no key must be created when any dataset_ids element is invalid"
         );
+    }
+
+    #[tokio::test]
+    async fn create_api_key_serializes_created_at_as_rfc3339() {
+        let state = create_admin_test_state().await;
+        state
+            .catalog()
+            .upsert_tenant("acme", "Acme Corp", None, "database")
+            .await
+            .unwrap();
+        let app = admin_router(state);
+
+        let (status, created) = create_key(&app, r#"{"scopes": ["schema:read"]}"#).await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+
+        let created_at = created["created_at"]
+            .as_str()
+            .expect("created_at must serialize as a JSON string");
+        chrono::DateTime::parse_from_rfc3339(created_at)
+            .expect("created_at must be a valid RFC 3339 timestamp");
     }
 
     #[tokio::test]
