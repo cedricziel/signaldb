@@ -103,9 +103,9 @@ num-iter = { version = "0.1", default-features = false, features = ["i128", "std
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 object_store = { version = "0.13", features = ["aws", "azure", "gcp"] }
 once_cell = { version = "1" }
-opentelemetry = { version = "0.32", features = ["testing"] }
+opentelemetry = { version = "0.33", features = ["testing"] }
 opentelemetry-proto = { path = "../vendor/opentelemetry-proto", features = ["profiles"] }
-opentelemetry_sdk = { version = "0.32", features = ["testing"] }
+opentelemetry_sdk = { version = "0.33", features = ["testing"] }
 petgraph = { version = "0.8" }
 proc-macro2 = { version = "1" }
 prost = { version = "0.14" }
@@ -204,9 +204,9 @@ num-iter = { version = "0.1", default-features = false, features = ["i128", "std
 num-traits = { version = "0.2", features = ["i128", "libm"] }
 object_store = { version = "0.13", features = ["aws", "azure", "gcp"] }
 once_cell = { version = "1" }
-opentelemetry = { version = "0.32", features = ["testing"] }
+opentelemetry = { version = "0.33", features = ["testing"] }
 opentelemetry-proto = { path = "../vendor/opentelemetry-proto", features = ["profiles"] }
-opentelemetry_sdk = { version = "0.32", features = ["testing"] }
+opentelemetry_sdk = { version = "0.33", features = ["testing"] }
 petgraph = { version = "0.8" }
 proc-macro2 = { version = "1" }
 prost = { version = "0.14" }
