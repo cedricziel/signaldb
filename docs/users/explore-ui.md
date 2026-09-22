@@ -17,14 +17,16 @@ sources:
 SignalDB ships a built-in explore UI for the service catalog, logs, traces,
 metrics, profiles, and errors, plus a native [Query IR](querying-ir.md) tab,
 served by the router at its **root** (`http://<router>:3000/`, as a SPA
-fallback behind the API routes). The logs tab consumes the Loki-compatible
-API that Grafana uses, and the metrics tab the Prometheus-compatible one, so
-what they show is equally queryable from Grafana — with one exception: a
-single builder row with no range function and no formula runs on the Query IR
-(see [Building metric queries](#building-metric-queries)). The other tabs read
-their data through the Query IR; only their attribute and label pickers still
-use the Tempo and Pyroscope discovery endpoints. It also hosts the OAuth
-connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
+fallback behind the API routes). The logs tab reads rows and its volume
+histogram through the Query IR; its label key/value pickers still consume the
+Loki-compatible API's `/labels`/`/label/{name}/values` endpoints, so what
+they list is equally queryable from Grafana. The metrics tab reads through
+the Prometheus-compatible API, with one exception: a single builder row with
+no range function and no formula runs on the Query IR (see [Building metric
+queries](#building-metric-queries)). The other tabs read their data through
+the Query IR; only their attribute and label pickers still use the Tempo and
+Pyroscope discovery endpoints. It also hosts the OAuth connector **consent
+screen** at `/oauth/consent` (see [MCP](mcp.md)).
 
 ![Explore UI logs view: virtualized log list with level colors, a volume histogram with bucket-width and log-scale controls, and the fields sidebar](../assets/screenshots/explore-logs.png)
 
@@ -33,14 +35,19 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
 - **Catalog** — a service/infrastructure catalog discovered by querying the
   ingested telemetry for OTel semantic-convention resource attributes, not
   from a fixed inventory. See [The catalog](#the-catalog).
-- **Logs** — filter chips compiled to LogQL (with an "edit as text" escape
-  hatch), a per-level volume histogram, a virtualized log list with
-  per-attribute filter/exclude actions, a fields sidebar, and live tail.
-  The add-filter key box suggests schema-registry keys; picking a registry
-  key filters on that key as spelled, dots included, and a hand-typed key
-  that is not a valid label name (letters, digits, `_` and `.`) disables
-  **Add** with an inline hint rather than failing silently. An expanded row
-  stays expanded while live tail prepends newer lines.
+- **Logs** — filter chips compiled to a Query IR `where` predicate tree, a
+  per-severity volume histogram (an IR `aggregate` on `severity_text` with
+  `step`), a virtualized log list with per-attribute filter/exclude actions,
+  a fields sidebar, and live tail (the same IR queries, polled). There is no
+  raw-query editor for logs — the [Query IR tab](querying-ir.md) is the text
+  escape hatch. The add-filter key box suggests schema-registry keys; picking
+  a registry key filters on that key as spelled, dots included, and a
+  hand-typed key that is not a valid label name (letters, digits, `_` and
+  `.`) disables **Add** with an inline hint rather than failing silently. An
+  expanded row stays expanded while live tail prepends newer lines. The
+  expanded row shows the log's resource, scope, and log attributes as
+  separate groups, matching how the IR keeps those OTel scopes apart — the
+  same key can appear in more than one group.
 - **Traces** — a facet sidebar and a span-volume chart stacked by span status
   sit above a group-first view: recent traces arrive grouped by root
   span name (or by service, any observed root-span/resource attribute, or
@@ -383,32 +390,30 @@ detail line and highlight search still operate on the real name.
 
 ### Reading a log line
 
-Selecting a log line expands it. **This line** comes first: the trace
-context (`trace_id`, `span_id`; the `trace_id` row and the "View trace"
-button both open the trace) and the attributes that describe the record
-itself (`code.*`, `http.*`, `event.name`, an application's own keys).
-Attributes appear per line, so two lines in the same stream show their own
-values rather than a shared set. Below it, **Resource · stream** holds what
-describes the emitter rather than the line — the stream labels
-(`service_name`, `level`) and every attribute the
-[schema registry](schema-registry.md) ties to an entity (`service.*`,
-`host.*`, `k8s.*`, `cloud.*`, `container.*`, `telemetry.sdk.*`, …), the
-same thirty-odd values on every line of the stream — collapsed behind a
-one-line summary (service, namespace, environment, level, pod, host,
-region, image, then `+N more`); expand it for the full table. The split is
-the registry's, not the wire format's: until the registry answers, every
-attribute sits under **This line**, and a key no registry knows stays
-there.
+Selecting a log line expands it into the three attribute scopes the Query IR
+keeps apart (see [Addressing an attribute scope](querying-ir.md#addressing-an-attribute-scope)),
+in this order:
 
-Every row offers **+ filter** and **− exclude**, compiled to a LogQL matcher
-on the attribute's own key (see the [LogQL reference](logql-reference.md)'s
-label-resolution table).
+- **This line** — the trace context (`trace_id`, `span_id`; the `trace_id`
+  row and the "View trace" button both open the trace) and the log record's
+  own attributes (`code.*`, `http.*`, `event.name`, an application's own
+  keys). Always shown, even when empty.
+- **Scope** — the instrumentation scope's attributes, when the record
+  carried any; omitted otherwise.
+- **Resource** — `service.name` plus every resource attribute
+  (`service.*`, `host.*`, `k8s.*`, `cloud.*`, `container.*`,
+  `telemetry.sdk.*`, …), the same values on every line the resource
+  emitted — collapsed behind a one-line summary (service, namespace,
+  environment, pod, host, region, image, then `+N more`); expand it for the
+  full table.
 
-One limitation to know about: the Loki wire format carries these as one flat
-map, so the three OTel attribute scopes — resource, instrumentation scope, and
-the log record — are merged in this view, and instrumentation-scope attributes
-are not shown at all. Storage keeps all three separate; see the
-[Query IR reference](querying-ir.md) to query them individually today.
+The same key can appear in more than one group with a different value —
+each group shows its own copy rather than merging them, so a
+`service.name` log attribute and the resource's `service.name` are both
+visible.
+
+Every row offers **+ filter** and **− exclude**, compiled to an IR `where`
+predicate on the attribute's own key.
 
 ### What an attribute key means
 
