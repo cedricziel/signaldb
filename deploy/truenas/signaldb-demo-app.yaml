@@ -1,0 +1,279 @@
+# SignalDB demo instance as a TrueNAS SCALE custom app (Docker Compose).
+#
+# A self-contained SignalDB monolith fed by a trimmed-down OpenTelemetry
+# Demo (https://github.com/open-telemetry/opentelemetry-demo): the shop
+# frontend and the services it calls on a normal page load and checkout,
+# driven by the Locust load generator. Kafka, the accounting/fraud
+# consumers, flagd, Envoy, the image provider and the observability
+# backends of the upstream demo are left out.
+#
+# Everything the demo emits lands in tenant `demo`, dataset `otel-demo`.
+# Only the SignalDB UI/query API is published on the host (30210); put a
+# reverse proxy (e.g. a Pangolin resource) in front of it for public access.
+# Search for REPLACE and example.com before installing.
+
+networks:
+  default:
+    enable_ipv6: false
+
+configs:
+  signaldb_toml:
+    content: |
+      [database]
+      dsn = "sqlite:///data/signaldb.db"
+
+      [storage]
+      dsn = "file:///data/storage"
+
+      [schema]
+      catalog_type = "sql"
+      catalog_uri = "sqlite:///data/catalog.db"
+
+      [wal]
+      wal_dir = "/data/wal"
+
+      [querier]
+      memory_limit_mb = 1024
+
+      [auth]
+      admin_api_key = "sk-admin-REPLACE"
+
+      [[auth.tenants]]
+      id = "demo"
+      slug = "demo"
+      name = "OpenTelemetry Demo"
+      default_dataset = "otel-demo"
+
+      [[auth.tenants.api_keys]]
+      key = "sk-demo-REPLACE"
+      name = "Demo key"
+
+      [[auth.tenants.datasets]]
+      id = "otel-demo"
+      slug = "otel-demo"
+      is_default = true
+
+x-otel: &otel
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
+  OTEL_RESOURCE_ATTRIBUTES: service.namespace=opentelemetry-demo,deployment.environment.name=demo
+
+x-demo: &demo
+  restart: unless-stopped
+  depends_on:
+    - otel-collector
+
+services:
+  signaldb:
+    image: ghcr.io/cedricziel/signaldb:main
+    restart: unless-stopped
+    user: "1000:1000"
+    mem_limit: 2g
+    working_dir: /etc/signaldb
+    ports:
+      - "30210:3000" # query API + UI
+    volumes:
+      # Must be owned by uid/gid 1000.
+      - /mnt/tank/apps/signaldb-demo:/data
+    configs:
+      - source: signaldb_toml
+        target: /etc/signaldb/signaldb.toml
+    environment:
+      RUST_LOG: info
+      SIGNALDB__PUBLIC__API_URL: https://signaldb-demo.example.com
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.158.0
+    restart: unless-stopped
+    mem_limit: 256m
+    command: ["--config=env:OTELCOL_CONFIG"]
+    depends_on:
+      - signaldb
+    environment:
+      OTELCOL_CONFIG: |
+        receivers:
+          otlp:
+            protocols:
+              grpc:
+                endpoint: 0.0.0.0:4317
+              http:
+                endpoint: 0.0.0.0:4318
+        processors:
+          batch: {}
+        exporters:
+          otlp:
+            endpoint: signaldb:4317
+            compression: none
+            tls:
+              insecure: true
+            headers:
+              authorization: "Bearer sk-demo-REPLACE"
+              x-tenant-id: demo
+              x-dataset-id: otel-demo
+        service:
+          pipelines:
+            traces:
+              receivers: [otlp]
+              processors: [batch]
+              exporters: [otlp]
+            metrics:
+              receivers: [otlp]
+              processors: [batch]
+              exporters: [otlp]
+            logs:
+              receivers: [otlp]
+              processors: [batch]
+              exporters: [otlp]
+
+  valkey-cart:
+    image: valkey/valkey:8.1-alpine
+    restart: unless-stopped
+    mem_limit: 64m
+
+  frontend:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-frontend
+    mem_limit: 256m
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: frontend
+      PORT: "8080"
+      FRONTEND_ADDR: frontend:8080
+      AD_ADDR: ad:9555
+      CART_ADDR: cart:7070
+      CHECKOUT_ADDR: checkout:5050
+      CURRENCY_ADDR: currency:7001
+      PRODUCT_CATALOG_ADDR: product-catalog:3550
+      RECOMMENDATION_ADDR: recommendation:9001
+      SHIPPING_ADDR: http://shipping:50050
+      OTEL_COLLECTOR_HOST: otel-collector
+      WEB_OTEL_SERVICE_NAME: frontend-web
+      PUBLIC_OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://localhost:4318/v1/traces
+
+  product-catalog:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-product-catalog
+    mem_limit: 64m
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: product-catalog
+      PRODUCT_CATALOG_PORT: "3550"
+
+  currency:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-currency
+    mem_limit: 64m
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: currency
+      CURRENCY_PORT: "7001"
+      VERSION: "2.1.3"
+
+  cart:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-cart
+    mem_limit: 160m
+    depends_on:
+      - otel-collector
+      - valkey-cart
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: cart
+      CART_PORT: "7070"
+      ASPNETCORE_URLS: http://*:7070
+      VALKEY_ADDR: valkey-cart:6379
+
+  recommendation:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-recommendation
+    mem_limit: 128m
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: recommendation
+      RECOMMENDATION_PORT: "9001"
+      PRODUCT_CATALOG_ADDR: product-catalog:3550
+      OTEL_PYTHON_LOG_CORRELATION: "true"
+      PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: python
+
+  ad:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-ad
+    mem_limit: 384m
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: ad
+      AD_PORT: "9555"
+      OTEL_LOGS_EXPORTER: otlp
+
+  checkout:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-checkout
+    mem_limit: 64m
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: checkout
+      CHECKOUT_PORT: "5050"
+      CART_ADDR: cart:7070
+      CURRENCY_ADDR: currency:7001
+      EMAIL_ADDR: http://email:6060
+      PAYMENT_ADDR: payment:50051
+      PRODUCT_CATALOG_ADDR: product-catalog:3550
+      SHIPPING_ADDR: http://shipping:50050
+
+  payment:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-payment
+    mem_limit: 128m
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: payment
+      PAYMENT_PORT: "50051"
+
+  shipping:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-shipping
+    mem_limit: 32m
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: shipping
+      SHIPPING_PORT: "50050"
+      QUOTE_ADDR: http://quote:8090
+
+  quote:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-quote
+    mem_limit: 64m
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: quote
+      QUOTE_PORT: "8090"
+      OTEL_PHP_AUTOLOAD_ENABLED: "true"
+
+  email:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-email
+    mem_limit: 128m
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: email
+      EMAIL_PORT: "6060"
+      APP_ENV: production
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+
+  load-generator:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-load-generator
+    mem_limit: 512m
+    depends_on:
+      - frontend
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: load-generator
+      LOCUST_HOST: http://frontend:8080
+      LOCUST_USERS: "3"
+      LOCUST_SPAWN_RATE: "1"
+      LOCUST_HEADLESS: "true"
+      LOCUST_AUTOSTART: "true"
+      LOCUST_WEB_PORT: "8089"
+      LOCUST_BROWSER_TRAFFIC_ENABLED: "false"
+      PYTHONUNBUFFERED: "1"
