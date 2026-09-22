@@ -11,13 +11,13 @@ Groups ≈ PRs, in design D6 order. TDD throughout.
 ## 2. Discovery via `describe`
 
 - [x] 2.1 `api/ir/discovery.ts`: `fields`, `values` (with partial-tier flag), `metricNames`, `profileTypes`
-- [~] 2.2 Wire logs, traces facets, profiles and metrics pickers; add the partial-list hint — logs and traces done; profiles and metrics pickers still on `api/pyroscope.ts`/`api/prom.ts` (deferred, see PR notes)
-- [x] 2.3 Profiles: add a logical profile-type field if `describe values` cannot reach it (`profile.type`, aliased to `sample_type`)
+- [x] 2.2 Wire logs, traces facets, profiles and metrics pickers; add the partial-list hint
+- [x] 2.3 Profiles: `profileTypes` aggregates the existing `sample.type`/`sample.unit`/`period.type`/`period.unit` logical fields — no new logical field needed (the `profile.type` alias from an earlier pass was reverted as redundant)
 
 ## 3. Trace search on the IR
 
-- [ ] 3.1 Compile trace filter chips to `where`; search via `traces` source root-span rows
-- [ ] 3.2 Delete TraceQL compilation and `tempoSearch`/`tempoSearchTags`
+- [x] 3.1 Compile trace filter chips to `where`; search via `traces` source root-span rows — already true of the group table/volume chart (api/traceGroups.ts, api/traceGroupMembers.ts); `compileTraceQL`'s output was unused for the actual fetch
+- [x] 3.2 Delete TraceQL compilation and `tempoSearch`/`tempoSearchTags`
 
 ## 4. IR counter rate
 

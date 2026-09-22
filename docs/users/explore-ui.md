@@ -25,13 +25,20 @@ not the Loki-compatible API, so a bookmarked URL from before this only
 resolves its two Loki-spelled chips (`level`, `service_name`) to their IR
 equivalents (`severity_text`, `service.name`) on load. The traces tab's facet
 key picker is likewise `describe: fields` on `traces`, replacing the Tempo
-tag-name endpoint. The metrics tab reads through the Prometheus-compatible
-API, with one exception: a single builder row with no range function and no
-formula runs on the Query IR (see [Building metric
-queries](#building-metric-queries)). The profiles tab's type/service/label
-pickers still use the Pyroscope discovery endpoints. Any `describe: values`
-answer that isn't a free, exact, declared set (a statistics sketch or a
-sampled scan) is marked "partial list" in the picker. It also hosts the OAuth
+tag-name endpoint, and trace search itself (the list, the group table, the
+volume chart) is a Query IR read on `traces` — root spans, filtered by the
+same `where` tree the facet chips compile to. The metrics builder's metric,
+label, and value pickers are `describe: metricNames`/`fields`/`values` on
+`metrics`, with per-label cardinality read off the field's own
+`cardinality` estimate; running the query itself still goes through the
+Prometheus-compatible API except for a single builder row with no range
+function and no formula, which runs on the Query IR (see [Building metric
+queries](#building-metric-queries)). The profiles tab's
+type/service/attribute pickers are Query IR discovery too: profile types are
+an `aggregate` by sample/period type and unit on `profiles`, services and
+attribute keys/values are `describe: fields`/`values`. Any `describe:
+values` answer that isn't a free, exact, declared set (a statistics sketch
+or a sampled scan) is marked "partial list" in the picker. It also hosts the OAuth
 connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
 
 ![Explore UI logs view: virtualized log list with level colors, a volume histogram with bucket-width and log-scale controls, and the fields sidebar](../assets/screenshots/explore-logs.png)
@@ -475,14 +482,15 @@ table shows. Filters live in the URL, so a narrowed view is shareable.
 
 Facets currently cover `service.name`, `span.name`, `status`, and `span.kind`,
 plus a curated set of common resource/span identity attributes (`host.name`,
-the `k8s.*` fields, `db.namespace`, …) — a defined TraceQL selector and
-quoting rule per field, not an enumeration limit; a facet for another
+the `k8s.*` fields, `db.namespace`, …) — a defined logical field per facet,
+not an enumeration limit; a facet for another
 attribute is a UI addition, not a backend one. To slice by any other
 attribute today, use the "Group by attribute" custom dimension field below
 the group table: it now suggests the attribute keys actually observed in
-the current window (merged with schema-registry hits), backed by the same
-tag-discovery API that also powers `/api/search/tags` and the MCP/CLI
-`discover` surfaces ([#1073](https://github.com/cedricziel/signaldb/issues/1073)).
+the current window (merged with schema-registry hits), backed by the Query
+IR's `describe: fields` on `traces` — the same discovery stage that
+replaced `/api/search/tags`
+([#1073](https://github.com/cedricziel/signaldb/issues/1073)).
 
 Both the facet sidebar and the traces' span-detail panel are resizable: drag
 the handle on the sidebar's trailing edge. The facet/field sidebar's width is
@@ -610,19 +618,21 @@ PromQL. A query row reads left to right as a sentence:
 [ a ]  metric ▾   from ⟨ filters ⟩   avg by ⟨ group ⟩   function ▾
 ```
 
-- **Metric** — type or pick a metric name; suggestions come from the
-  Prometheus `__name__` label for the current time range.
+- **Metric** — type or pick a metric name; suggestions come from the Query
+  IR's discovery stage (`describe: metricNames` on `metrics`) for the
+  current time range.
 - **from** — add tag filters (`+ filter`). Label names and their values are
-  suggested from the metadata endpoints, so you filter on what exists rather
-  than guessing. Each filter has an operator (`=`, `!=`, `=~`, `!~`).
+  suggested from the same Query IR discovery stage (`describe:
+fields`/`values`), so you filter on what exists rather than guessing. Each
+  filter has an operator (`=`, `!=`, `=~`, `!~`).
 - **aggregation** — choose a space aggregation (`sum`/`avg`/`min`/`max`/
   `count`) and an optional comma-separated **group by** to get one series per
   tag value.
 - **function** — an optional range function (`rate`, `irate`, `increase`, or
   an `*_over_time` rollup) with a lookback window (default `5m`).
 
-Labels are annotated with their approximate value count (from
-[`/label_stats`](querying-promql.md#label-cardinality)), and grouping by a
+Labels are annotated with their approximate value count (the `cardinality`
+estimate `describe: fields` reports for each one), and grouping by a
 high-cardinality label — one that would explode into thousands of series, like
 a pod or trace id — shows a `⚠` warning before you run it.
 
