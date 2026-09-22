@@ -760,6 +760,19 @@ pub mod types {
             Default::default()
         }
     }
+    /**The demo account's credentials, returned by `login_config` only when
+    `[demo].enabled` is true (change: demo-mode) so the login page can offer
+    an "Explore the demo" shortcut.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct DemoLoginConfig {
+        pub password: ::std::string::String,
+        pub username: ::std::string::String,
+    }
+    impl DemoLoginConfig {
+        pub fn builder() -> builder::DemoLoginConfig {
+            Default::default()
+        }
+    }
     ///Deprecation info in resolved form.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Default)]
     pub struct DeprecatedInfo {
@@ -1498,6 +1511,10 @@ pub mod types {
     may offer. `oidc` is `null` until an OIDC provider is configured.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct LoginConfigResponse {
+        /**Always serialized, `null` unless `[demo].enabled` is true (change:
+        demo-mode) — not an omittable field.*/
+        #[serde(deserialize_with = "::std::option::Option::deserialize")]
+        pub demo: ::std::option::Option<DemoLoginConfig>,
         /**Always serialized, `null` until an OIDC provider is configured — not
         an omittable field.*/
         #[serde(deserialize_with = "::std::option::Option::deserialize")]
@@ -2646,6 +2663,10 @@ pub mod types {
         pub display_name: ::std::option::Option<::std::string::String>,
         pub email: ::std::string::String,
         pub id: ::std::string::String,
+        /**True when this is the `[demo]` read-only account (change:
+        demo-mode), so the UI can show a "read-only" badge and hide
+        mutating navigation without hardcoding the demo username.*/
+        pub is_demo: bool,
         pub is_instance_admin: bool,
     }
     impl SessionUser {
@@ -6422,6 +6443,60 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct DemoLoginConfig {
+            password: ::std::result::Result<::std::string::String, ::std::string::String>,
+            username: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for DemoLoginConfig {
+            fn default() -> Self {
+                Self {
+                    password: Err("no value supplied for password".to_string()),
+                    username: Err("no value supplied for username".to_string()),
+                }
+            }
+        }
+        impl DemoLoginConfig {
+            pub fn password<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.password = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for password: {e}"));
+                self
+            }
+            pub fn username<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.username = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for username: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<DemoLoginConfig> for super::DemoLoginConfig {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: DemoLoginConfig,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    password: value.password?,
+                    username: value.username?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::DemoLoginConfig> for DemoLoginConfig {
+            fn from(value: super::DemoLoginConfig) -> Self {
+                Self {
+                    password: Ok(value.password),
+                    username: Ok(value.username),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct DeprecatedInfo {
             note: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
@@ -8854,6 +8929,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct LoginConfigResponse {
+            demo: ::std::result::Result<
+                ::std::option::Option<super::DemoLoginConfig>,
+                ::std::string::String,
+            >,
             oidc: ::std::result::Result<
                 ::std::option::Option<super::OidcLoginConfig>,
                 ::std::string::String,
@@ -8863,12 +8942,23 @@ pub mod types {
         impl ::std::default::Default for LoginConfigResponse {
             fn default() -> Self {
                 Self {
+                    demo: Err("no value supplied for demo".to_string()),
                     oidc: Err("no value supplied for oidc".to_string()),
                     password_enabled: Err("no value supplied for password_enabled".to_string()),
                 }
             }
         }
         impl LoginConfigResponse {
+            pub fn demo<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::DemoLoginConfig>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.demo = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for demo: {e}"));
+                self
+            }
             pub fn oidc<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::option::Option<super::OidcLoginConfig>>,
@@ -8896,6 +8986,7 @@ pub mod types {
                 value: LoginConfigResponse,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    demo: value.demo?,
                     oidc: value.oidc?,
                     password_enabled: value.password_enabled?,
                 })
@@ -8904,6 +8995,7 @@ pub mod types {
         impl ::std::convert::From<super::LoginConfigResponse> for LoginConfigResponse {
             fn from(value: super::LoginConfigResponse) -> Self {
                 Self {
+                    demo: Ok(value.demo),
                     oidc: Ok(value.oidc),
                     password_enabled: Ok(value.password_enabled),
                 }
@@ -13774,6 +13866,7 @@ pub mod types {
             >,
             email: ::std::result::Result<::std::string::String, ::std::string::String>,
             id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            is_demo: ::std::result::Result<bool, ::std::string::String>,
             is_instance_admin: ::std::result::Result<bool, ::std::string::String>,
         }
         impl ::std::default::Default for SessionUser {
@@ -13782,6 +13875,7 @@ pub mod types {
                     display_name: Ok(Default::default()),
                     email: Err("no value supplied for email".to_string()),
                     id: Err("no value supplied for id".to_string()),
+                    is_demo: Err("no value supplied for is_demo".to_string()),
                     is_instance_admin: Err("no value supplied for is_instance_admin".to_string()),
                 }
             }
@@ -13817,6 +13911,16 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for id: {e}"));
                 self
             }
+            pub fn is_demo<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.is_demo = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for is_demo: {e}"));
+                self
+            }
             pub fn is_instance_admin<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<bool>,
@@ -13837,6 +13941,7 @@ pub mod types {
                     display_name: value.display_name?,
                     email: value.email?,
                     id: value.id?,
+                    is_demo: value.is_demo?,
                     is_instance_admin: value.is_instance_admin?,
                 })
             }
@@ -13847,6 +13952,7 @@ pub mod types {
                     display_name: Ok(value.display_name),
                     email: Ok(value.email),
                     id: Ok(value.id),
+                    is_demo: Ok(value.is_demo),
                     is_instance_admin: Ok(value.is_instance_admin),
                 }
             }

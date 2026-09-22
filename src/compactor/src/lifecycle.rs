@@ -160,8 +160,8 @@ impl CompactionCycle {
                 .unclassifiable_files()
                 .saturating_sub(unclassifiable_before);
             tracing::info!(
-                deferred_open_partition_files = deferred,
-                unclassifiable_files = unclassifiable,
+                signaldb.job.deferred_open_partition_files = deferred as i64,
+                signaldb.job.unclassifiable_files = unclassifiable as i64,
                 "No compaction candidates found in this cycle"
             );
             return;

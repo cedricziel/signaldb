@@ -777,6 +777,19 @@ default_tenant = "default"
 # snippet_cache_ttl = "10m"                # how long a fetched source-context snippet is cached
 # snippet_cache_capacity = 1000            # max distinct cached files, <=512 KiB each (LRU-evicted)
 
+# Public read-only demo account (change: demo-mode): docs/operations/demo-mode.md
+# Disabled by default. When enabled, the router provisions (and reconciles on
+# every restart) a local user signed in as `username`/`password` with exactly
+# a Viewer membership on `tenant_id` — never more, even if an admin elevates
+# it by hand. An HTTP middleware additionally refuses every non-read request
+# from that session as defense in depth.
+# [demo]
+# enabled = true
+# tenant_id = "demo"          # required when enabled; must already exist (see [[auth.tenants]])
+# dataset_id = "otel-demo"    # optional; the dataset the Explore UI pre-selects
+# username = "demo"           # login email; default shown
+# password = "demo"           # default shown — change for anything but a throwaway demo
+
 # Environment variable examples:
 # SIGNALDB__MCP__ENABLED=true
 # SIGNALDB__MCP__BIND_ADDRESS=0.0.0.0:8228

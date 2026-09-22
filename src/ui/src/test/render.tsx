@@ -1,4 +1,4 @@
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
 import type { ReactElement, ReactNode } from "react";
 import {
@@ -9,15 +9,8 @@ import {
 } from "react-router";
 import { afterEach, vi } from "vitest";
 import { client as generatedClient } from "../api/gen/client.gen";
+import { testQueryClient } from "../lib/queryClient";
 import type { ExploreState } from "../lib/urlState";
-
-function testQueryClient() {
-  return new QueryClient({
-    defaultOptions: {
-      queries: { retry: false, refetchOnWindowFocus: false },
-    },
-  });
-}
 
 export function renderWithClient(ui: ReactElement) {
   const client = testQueryClient();

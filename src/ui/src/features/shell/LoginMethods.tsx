@@ -6,6 +6,7 @@
 import { useEffect, useRef } from "react";
 import type { LoginConfigResponse, SessionResult } from "../../api/session";
 import { CHECKING_LOGIN_OPTIONS_HINT } from "../../lib/useLoginConfig";
+import { DemoButton } from "./DemoButton";
 import { PasswordForm } from "./PasswordForm";
 import { SsoButton } from "./SsoButton";
 
@@ -47,6 +48,7 @@ export function LoginMethods({
     return <p className="login-hint">{CHECKING_LOGIN_OPTIONS_HINT}</p>;
   }
 
+  const demo = config !== "unavailable" ? config.demo : null;
   const providers =
     config !== "unavailable" && config.oidc ? [config.oidc] : [];
   // Never hide the password form on a probe failure, and never hide it when
@@ -65,6 +67,16 @@ export function LoginMethods({
           Couldn't load sign-in options — password sign-in is shown as a
           fallback.
         </p>
+      )}
+      {demo && (
+        <>
+          <DemoButton
+            username={demo.username}
+            password={demo.password}
+            onAuthenticated={onAuthenticated}
+          />
+          <div className="login-divider">or</div>
+        </>
       )}
       {providers.map((provider) => (
         <SsoButton

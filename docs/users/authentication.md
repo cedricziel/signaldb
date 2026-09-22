@@ -94,6 +94,13 @@ the headers, for browsers using the [embedded explore UI](explore-ui.md):
   selected tenant's datasets. API-key requests remain supported and omit
   the human identity.
 
+### Demo account
+
+When an instance runs with `[demo] enabled = true`, a shared read-only login
+(default `demo` / `demo`) signs in as a Viewer of the demo tenant. It can run
+queries but every request that would change something returns 403. See
+[Demo mode](../operations/demo-mode.md).
+
 ## Signing in with SSO (OIDC)
 
 When your operator has configured an OIDC identity provider (Authentik,
