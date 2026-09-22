@@ -60,6 +60,8 @@ configs:
       enabled = true
       tenant_id = "demo"
       dataset_id = "otel-demo"
+      username = "demo@example.com"
+      password = "demo"
 
 x-otel: &otel
   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317

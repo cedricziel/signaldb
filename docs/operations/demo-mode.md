@@ -23,7 +23,7 @@ or a sandbox you hand out without issuing individual credentials.
 enabled = true
 tenant_id = "demo"          # required; must already exist ([[auth.tenants]])
 dataset_id = "otel-demo"    # optional; the dataset the Explore UI pre-selects
-username = "demo"           # default shown
+username = "demo@example.com" # default shown
 password = "demo"           # default shown
 ```
 

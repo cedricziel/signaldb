@@ -449,7 +449,7 @@ Env: `SIGNALDB__PUBLIC__OTLP_GRPC_URL`, `SIGNALDB__PUBLIC__OTLP_HTTP_URL`, `SIGN
 enabled = true
 tenant_id = "demo"        # required when enabled
 dataset_id = "otel-demo"  # optional
-username = "demo"         # default
+username = "demo@example.com" # default
 password = "demo"         # default
 ```
 
