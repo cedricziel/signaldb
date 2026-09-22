@@ -435,8 +435,7 @@ async fn query_ir_multi<S: RouterState>(
         window.get_or_insert(inner_window);
         inputs.insert(name.clone(), series);
     }
-    // `validate_multi` already rejected an empty `queries` map.
-    let window = window.expect("validate_multi requires at least one query");
+    let window = window.ok_or_else(|| ApiError::bad_request("`queries` must not be empty"))?;
 
     let mut series = Vec::new();
     for formula in &req.formulas {
