@@ -8,6 +8,16 @@
     "outDir": "dist/types",
     "types": []
   },
-  "include": ["../../src/ui/src/components/*.tsx", "../../src/ui/src/lib/queryClient.ts", "../../src/ui/src/vite-env.d.ts", "../../src/ui/src/api/gen/client.gen.ts", "../../src/ui/src/features/logs/LogsView.tsx", "../../src/ui/src/features/traces/TracesView.tsx"],
-  "exclude": ["../../src/ui/src/**/*.test.tsx", "../../src/ui/src/**/*.stories.tsx"]
+  "include": [
+    "../../src/ui/src/**/*.ts",
+    "../../src/ui/src/**/*.tsx"
+  ],
+  "exclude": [
+    "../../src/ui/src/**/*.test.ts",
+    "../../src/ui/src/**/*.test.tsx",
+    "../../src/ui/src/**/*.stories.tsx",
+    "../../src/ui/src/test/**",
+    "../../src/ui/src/stories/**",
+    "../../src/ui/src/**/testFixtures.ts"
+  ]
 }

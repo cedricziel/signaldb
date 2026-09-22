@@ -12,7 +12,22 @@
   "titleMap": {
     "SemanticKey": "SemanticKeyLabel",
     "Logs": "LogsView",
-    "Traces": "TracesView"
+    "Traces": "TracesView",
+    "Catalog": "CatalogView",
+    "Consent": "ConsentView",
+    "Errors": "ErrorsView",
+    "Instrumentation": "Instrumentation",
+    "Manage": "ManagementPanel",
+    "Metrics": "MetricsView",
+    "Processors": "ProcessorList",
+    "Profiles": "ProfilesView",
+    "Query": "QueryView",
+    "Schema": "SchemaHub",
+    "Login": "LoginRoute",
+    "AppShell": "ExploreView",
+    "APIKeys": "ApiKeys",
+    "GitHubIntegration": "GitHubIntegration",
+    "SelectTenant": "SelectTenant"
   },
   "provider": {
     "component": "QueryClientProvider",
@@ -58,13 +73,81 @@
       "cardMode": "single",
       "primaryStory": "Default",
       "viewport": "1280x800"
+    },
+    "CatalogView": {
+      "cardMode": "single",
+      "viewport": "1280x800"
+    },
+    "ConsentView": {
+      "cardMode": "single",
+      "viewport": "1280x800"
+    },
+    "ErrorsView": {
+      "cardMode": "single",
+      "viewport": "1280x800"
+    },
+    "ExploreView": {
+      "cardMode": "single",
+      "viewport": "1280x800"
+    },
+    "GitHubIntegration": {
+      "cardMode": "single",
+      "viewport": "1280x800"
+    },
+    "ApiKeys": {
+      "cardMode": "single",
+      "viewport": "1280x800"
+    },
+    "Instrumentation": {
+      "cardMode": "single",
+      "viewport": "1280x800"
+    },
+    "ManagementPanel": {
+      "cardMode": "single",
+      "viewport": "1280x800"
+    },
+    "SelectTenant": {
+      "cardMode": "single",
+      "viewport": "1280x800"
+    },
+    "MetricsView": {
+      "cardMode": "single",
+      "viewport": "1280x800"
+    },
+    "ProcessorList": {
+      "cardMode": "single",
+      "viewport": "1280x800"
+    },
+    "ProfilesView": {
+      "cardMode": "single",
+      "viewport": "1280x800"
+    },
+    "QueryView": {
+      "cardMode": "single",
+      "viewport": "1280x800"
+    },
+    "SchemaHub": {
+      "cardMode": "single",
+      "viewport": "1280x800"
+    },
+    "LoginRoute": {
+      "cardMode": "single",
+      "viewport": "1280x800"
+    },
+    "ThrottleBanner": {
+      "cardMode": "single",
+      "primaryStory": "Visible",
+      "skip": [
+        "components-throttlebanner--hidden"
+      ]
     }
   },
   "storyImports": {
     "shim": [
       "@tanstack/react-query",
-      "react-router",
-      "api/gen/client.gen"
+      "api/gen/client.gen",
+      "api/http",
+      "react-router"
     ]
   },
   "readmeHeader": ".design-sync/conventions.md"
