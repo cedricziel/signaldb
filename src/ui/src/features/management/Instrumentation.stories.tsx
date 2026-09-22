@@ -23,8 +23,7 @@ const routes: JsonRoute[] = [
       ingest: {
         otlp_grpc: { authority: "otlp.acme.signaldb.dev:4317", tls: true },
         otlp_http: { authority: "otlp.acme.signaldb.dev:4318", tls: true },
-        prometheus_remote_write:
-          "https://otlp.acme.signaldb.dev/api/v1/prometheus/write",
+        prometheus_remote_write: "https://otlp.acme.signaldb.dev/api/v1/write",
       },
       headers: {
         authorization: "Bearer sdb_live_examplekey",
