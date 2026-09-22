@@ -20,20 +20,38 @@ use axum::extract::State;
 use common::auth::TenantContext;
 use common::auth::TenantContextExtractor;
 use common::discovery::{
-    DEFAULT_FIELD_LIMIT, DEFAULT_VALUE_LIMIT, DiscoveredSource, DiscoveredValue, DiscoveryCost,
-    MetadataKind, MetadataResult, ValueOrigin, intrinsic_values, latest_observation, merge_fields,
-    registry_values, signal_for_source, sketch_values,
+    CostMode, DEFAULT_FIELD_LIMIT, DEFAULT_VALUE_LIMIT, DiscoveredSource, DiscoveredValue,
+    DiscoveryCost, MetadataKind, MetadataResult, ValueOrigin, intrinsic_values, latest_observation,
+    merge_fields, registry_values, signal_for_source, sketch_values,
 };
 use common::query_ir::{Describe, DescribeTarget, Document, SourceRegistry};
 use common::schema::logical::LogicalSchema;
+use common::self_monitoring::spans::discovery_span;
 use common::tenant_api::TenantApi;
+use tracing::Instrument;
 
 use super::api_error::ApiError;
 use super::query::{QueryIrResponse, QueryWarning, ResolvedWindow, execute_ticket, ir_table};
 use crate::RouterState;
 
+/// The low-cardinality string a discovery span records for a [`CostMode`]
+/// once the answer is known — its own `snake_case` `Serialize` output, so a
+/// new variant can't silently fall out of sync with a hand-maintained match.
+fn cost_mode_label(mode: CostMode) -> String {
+    serde_json::to_value(mode)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
 /// Answer a `describe` document. The caller has already authorized the source
 /// and resolved the window.
+///
+/// Carries a `signaldb.discovery` boundary span (`common::self_monitoring::
+/// spans::discovery_span`) for the duration of the read, so the metadata
+/// path's cost is visible in self-monitoring next to the querier's
+/// `signaldb.query.execute` — even though a `describe` request never reaches
+/// a querier.
 pub(super) async fn answer_describe<S: RouterState>(
     state: &S,
     ctx: &TenantContext,
@@ -42,12 +60,30 @@ pub(super) async fn answer_describe<S: RouterState>(
     window: ResolvedWindow,
     now_ns: i64,
 ) -> Result<QueryIrResponse, ApiError> {
-    let metadata = match describe.target {
-        DescribeTarget::Fields => fields(state, ctx, &doc.from, describe).await?,
-        DescribeTarget::Values => values(state, ctx, doc, describe, window, now_ns).await?,
+    let kind = match describe.target {
+        DescribeTarget::Fields => "fields",
+        DescribeTarget::Values => "values",
     };
-    let warnings = warnings_for(&metadata);
-    Ok(QueryIrResponse::metadata(window, metadata, warnings))
+    let span = discovery_span(
+        kind,
+        &ctx.tenant_id,
+        &ctx.dataset_id,
+        Some(doc.from.as_str()),
+    );
+    async {
+        let metadata = match describe.target {
+            DescribeTarget::Fields => fields(state, ctx, &doc.from, describe).await?,
+            DescribeTarget::Values => values(state, ctx, doc, describe, window, now_ns).await?,
+        };
+        tracing::Span::current().record(
+            "signaldb.discovery.cost_mode",
+            cost_mode_label(metadata.cost.mode).as_str(),
+        );
+        let warnings = warnings_for(&metadata);
+        Ok(QueryIrResponse::metadata(window, metadata, warnings))
+    }
+    .instrument(span)
+    .await
 }
 
 /// The `code` of the warning raised when no statistics back a field answer.
@@ -103,7 +139,18 @@ pub async fn query_sources<S: RouterState>(
     tenant_ctx: TenantContextExtractor,
 ) -> Result<axum::Json<QueryIrResponse>, ApiError> {
     let ctx = &tenant_ctx.0;
-    let tables = tenant_tables(&state, ctx).await?;
+    let span = discovery_span("sources", &ctx.tenant_id, &ctx.dataset_id, None);
+    query_sources_body(&state, ctx).instrument(span).await
+}
+
+/// The body of [`query_sources`], split out so the boundary span
+/// (`signaldb.discovery`) wraps the whole read rather than just the handler
+/// signature.
+async fn query_sources_body<S: RouterState>(
+    state: &S,
+    ctx: &TenantContext,
+) -> Result<axum::Json<QueryIrResponse>, ApiError> {
+    let tables = tenant_tables(state, ctx).await?;
     let registry = SourceRegistry::core();
     let sources: Vec<DiscoveredSource> = registry
         .names()
@@ -116,6 +163,7 @@ pub async fn query_sources<S: RouterState>(
         })
         .collect();
 
+    tracing::Span::current().record("signaldb.discovery.cost_mode", "metadata");
     let window = ResolvedWindow {
         start_ns: 0,
         end_ns: 0,
@@ -439,6 +487,28 @@ mod tests {
     use common::config::Configuration;
     use tower::ServiceExt;
 
+    /// Installs a real global default `tracing` subscriber exactly once for
+    /// this test binary.
+    ///
+    /// Without one, the *first* test anywhere in this file to touch the
+    /// `signaldb.discovery` span callsite with no subscriber active at all
+    /// (tracing-core's genuine "nothing is listening" sentinel, distinct
+    /// from a subscriber that merely filters it out) permanently caches
+    /// `Interest::never()` for that callsite, process-wide — `tracing-core`'s
+    /// per-callsite interest cache is not scoped to a `set_default` guard.
+    /// That would silently hide the span from a later test's scoped
+    /// `capture_spans` subscriber too, depending on which test the harness
+    /// happened to run first. A real (if inert) subscriber reports
+    /// `Interest::always()` instead, so every span this file emits is always
+    /// dispatched to whichever subscriber — global or thread-local — is
+    /// actually active at the time.
+    fn ensure_tracing_baseline() {
+        static ONCE: std::sync::Once = std::sync::Once::new();
+        ONCE.call_once(|| {
+            let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry());
+        });
+    }
+
     /// A router serving the discovery surface with `ctx` as the authenticated
     /// principal, over an empty in-memory catalog.
     ///
@@ -448,6 +518,7 @@ mod tests {
     /// metadata alone, and a `403` is evidence that authorization was decided
     /// before any ticket was attempted rather than after the work was done.
     async fn app_with(catalog: Catalog, ctx: TenantContext) -> Router {
+        ensure_tracing_baseline();
         let state = RouterAppState::new(catalog, Configuration::default());
         super::super::query::router()
             .with_state(state)
@@ -860,5 +931,128 @@ mod tests {
             ),
         )
         .expect("the sampled value query validates");
+    }
+
+    /// Run `f` under a scoped tracing→OTel bridge and return the finished
+    /// spans, the same pattern `common`'s `span_factories_semconv.rs` uses to
+    /// pin a factory span's shape.
+    async fn capture_spans<F, Fut>(f: F) -> Vec<opentelemetry_sdk::trace::SpanData>
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        use opentelemetry::trace::TracerProvider as _;
+        use tracing_subscriber::prelude::*;
+
+        let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("test");
+        ensure_tracing_baseline();
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let _guard = tracing::subscriber::set_default(subscriber);
+        f().await;
+        provider.force_flush().unwrap();
+        exporter.get_finished_spans().unwrap()
+    }
+
+    fn span_attr(span: &opentelemetry_sdk::trace::SpanData, key: &str) -> Option<String> {
+        span.attributes
+            .iter()
+            .find(|kv| kv.key.as_str() == key)
+            .map(|kv| kv.value.as_str().to_string())
+    }
+
+    #[tokio::test]
+    async fn a_fields_read_carries_the_discovery_boundary_span() {
+        // Calls `answer_describe` directly rather than through the axum
+        // stack: a `oneshot()` round trip can hand work to a pool thread
+        // outside this test's scoped subscriber, which would make span
+        // capture flaky.
+        let spans = capture_spans(|| async {
+            let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+            let state = RouterAppState::new(catalog, Configuration::default());
+            let ctx = ctx_for("acme", None);
+            let doc: Document =
+                serde_json::from_value(describe("logs", serde_json::json!({"target": "fields"})))
+                    .unwrap();
+            let describe_stage = common::query_ir::validate_describe(&doc, &SourceRegistry::core())
+                .expect("valid describe document");
+            let window = ResolvedWindow {
+                start_ns: 0,
+                end_ns: 0,
+            };
+            let result = answer_describe(&state, &ctx, &doc, describe_stage, window, 0).await;
+            assert!(result.is_ok(), "answer_describe failed: {result:?}");
+        })
+        .await;
+
+        let names: Vec<&str> = spans.iter().map(|s| s.name.as_ref()).collect();
+        let span = spans
+            .iter()
+            .find(|s| s.name == "fields")
+            .unwrap_or_else(|| {
+                panic!(
+                    "the describe:fields read must open a signaldb.discovery span; got {names:?}"
+                )
+            });
+        assert_eq!(
+            span.span_kind,
+            opentelemetry::trace::SpanKind::Internal,
+            "discovery answers from metadata in-process; it is never RPC"
+        );
+        assert_eq!(
+            span_attr(span, "signaldb.tenant.id").as_deref(),
+            Some("acme")
+        );
+        assert_eq!(
+            span_attr(span, "signaldb.dataset.id").as_deref(),
+            Some("default")
+        );
+        assert_eq!(
+            span_attr(span, "signaldb.discovery.kind").as_deref(),
+            Some("fields")
+        );
+        assert_eq!(
+            span_attr(span, "signaldb.discovery.source").as_deref(),
+            Some("logs")
+        );
+        assert_eq!(
+            span_attr(span, "signaldb.discovery.cost_mode").as_deref(),
+            Some("metadata"),
+            "the answer's cost tier must be recorded once known"
+        );
+    }
+
+    #[tokio::test]
+    async fn sources_listing_carries_the_discovery_boundary_span_with_no_source() {
+        // No tenant-table catalog wiring here (unlike `app_with`'s Flight
+        // registry, `tenant_tables` needs the config's admin tenant source),
+        // so the handler itself 503s; the point of this test is that the
+        // `signaldb.discovery` span still opens and is shaped correctly
+        // regardless of the outcome.
+        let spans = capture_spans(|| async {
+            let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+            let state = RouterAppState::new(catalog, Configuration::default());
+            let ctx = ctx_for("acme", None);
+            let _ = super::query_sources(State(state), TenantContextExtractor(ctx)).await;
+        })
+        .await;
+
+        let span = spans
+            .iter()
+            .find(|s| s.name == "sources")
+            .expect("GET /api/v1/query/sources must open a signaldb.discovery span");
+        assert_eq!(
+            span_attr(span, "signaldb.discovery.kind").as_deref(),
+            Some("sources")
+        );
+        assert_eq!(
+            span_attr(span, "signaldb.discovery.source"),
+            None,
+            "the sources listing names no single source"
+        );
     }
 }

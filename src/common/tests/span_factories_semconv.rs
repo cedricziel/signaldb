@@ -8,9 +8,9 @@
 //! factory tests can share this binary.
 
 use common::self_monitoring::spans::{
-    self, FLIGHT_DO_GET, FLIGHT_DO_PUT, RpcBoundary, db_client_span, http_client_span, job_span,
-    mcp_tool_span, record_http_client_result, record_network_peer_from_addr, record_span_error,
-    rpc_client_span, rpc_server_span,
+    self, FLIGHT_DO_GET, FLIGHT_DO_PUT, RpcBoundary, db_client_span, discovery_span,
+    http_client_span, job_span, mcp_tool_span, record_http_client_result,
+    record_network_peer_from_addr, record_span_error, rpc_client_span, rpc_server_span,
 };
 use opentelemetry::trace::{SpanKind, Status, TracerProvider as _};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
@@ -221,6 +221,48 @@ fn job_span_is_internal_with_tenancy_attributes() {
         Some("production")
     );
     assert_eq!(attr(span, "signaldb.table").as_deref(), Some("traces"));
+}
+
+#[test]
+fn discovery_span_is_internal_with_tenancy_and_cost_mode() {
+    let spans = capture_spans(|| {
+        let span = discovery_span("fields", "acme", "default", Some("logs"));
+        span.record("signaldb.discovery.cost_mode", "metadata");
+        let _guard = span.enter();
+    });
+    let span = &spans[0];
+
+    assert_eq!(span.name, "fields");
+    assert_eq!(span.span_kind, SpanKind::Internal);
+    assert_eq!(attr(span, "signaldb.tenant.id").as_deref(), Some("acme"));
+    assert_eq!(
+        attr(span, "signaldb.dataset.id").as_deref(),
+        Some("default")
+    );
+    assert_eq!(
+        attr(span, "signaldb.discovery.kind").as_deref(),
+        Some("fields")
+    );
+    assert_eq!(
+        attr(span, "signaldb.discovery.source").as_deref(),
+        Some("logs")
+    );
+    assert_eq!(
+        attr(span, "signaldb.discovery.cost_mode").as_deref(),
+        Some("metadata")
+    );
+}
+
+#[test]
+fn discovery_span_source_is_absent_for_the_sources_listing() {
+    let spans = capture_spans(|| {
+        let span = discovery_span("sources", "acme", "default", None);
+        let _guard = span.enter();
+    });
+    let span = &spans[0];
+
+    assert_eq!(span.name, "sources");
+    assert_eq!(attr(span, "signaldb.discovery.source"), None);
 }
 
 #[test]
