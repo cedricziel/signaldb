@@ -34,5 +34,5 @@ Groups ≈ PRs, in design D6 order. TDD throughout.
 ## 6. Cleanup
 
 - [ ] 6.1 Delete `api/loki.ts`, `api/pyroscope.ts`, Tempo search functions; drop compat prefixes the UI no longer needs from `lib/proxiedPaths.ts`
-- [ ] 6.2 Test guard: UI source may not reference `/loki`, `/prometheus`, `/tempo`, `/pyroscope`
+- [ ] 6.2 Test guard: hand-written UI request code may not call `/loki`, `/prometheus`, `/tempo`, `/pyroscope` or their generated SDK functions (excludes `api/gen/**`, `lib/proxiedPaths.ts`, connection-info fixtures)
 - [ ] 6.3 Update `docs/users/explore-ui.md`; "open as IR" action on each tab

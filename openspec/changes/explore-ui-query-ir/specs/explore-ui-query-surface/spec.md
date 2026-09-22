@@ -17,7 +17,10 @@ Every request the Explore UI makes to read signal data or discovery metadata
 
 #### Scenario: A guard stops regressions
 
-- **WHEN** UI source code references a compat path prefix
+- **WHEN** a hand-written UI request call site (anything outside the generated
+  client `src/api/gen/**`, the proxy/service-worker list `lib/proxiedPaths.ts`,
+  and the connection-info fixtures that tell users where to point Grafana)
+  targets a compat path prefix or calls a generated compat SDK function
 - **THEN** the UI test suite fails
 
 ### Requirement: Logs keep attribute scopes
