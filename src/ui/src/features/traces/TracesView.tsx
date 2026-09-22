@@ -20,7 +20,7 @@ import {
   fetchTraceLatencyHeatmap,
   fetchTraceVolume,
 } from "../../api/traceVolume";
-import { SignalHistogram } from "../explore/SignalHistogram";
+import { SignalHistogram } from "../../components/SignalHistogram";
 import { AttributeKeyInput } from "../../components/AttributeKeyInput";
 import { AttributeValue } from "../../components/AttributeValue";
 import {
@@ -106,7 +106,7 @@ import { buildWaterfall, formatDurationMs } from "../../lib/waterfall";
 import { fetchWindowTotal, looksUnresolved } from "./unresolvedGroup";
 import { describeService, groupSpanAttributes } from "./spanAttributes";
 import { SortTh, useSort } from "../../lib/sortTable";
-import { MemberTable } from "./MemberTable";
+import { MemberTable } from "../../components/MemberTable";
 import "./traces.css";
 
 interface Props {

@@ -19,7 +19,7 @@ import {
 } from "../../lib/time";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
 import { FieldSidebar } from "./FieldSidebar";
-import { FilterChips } from "./FilterChips";
+import { FilterChips } from "../../components/FilterChips";
 import { Histogram } from "./Histogram";
 import { LogList } from "./LogList";
 

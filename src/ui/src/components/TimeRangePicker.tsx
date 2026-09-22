@@ -1,8 +1,4 @@
-import {
-  RANGE_PRESETS,
-  formatRangeLabel,
-  type TimeRange,
-} from "../../lib/time";
+import { RANGE_PRESETS, formatRangeLabel, type TimeRange } from "../lib/time";
 
 interface Props {
   range: TimeRange;

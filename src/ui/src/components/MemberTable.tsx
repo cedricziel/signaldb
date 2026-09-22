@@ -4,13 +4,13 @@
 // presentational: the caller fetches (`fetchTraceGroupMembers` or similar)
 // and supplies rows, loading/error state, and the copy that differs by
 // context (empty message, footnote, what the identity column is called).
-import { EmptyState } from "../../components/EmptyState";
-import { QueryError } from "../../components/QueryError";
-import { SkeletonRows } from "../explore/Skeleton";
-import { SortTh, sortRows, useSort, type SortValue } from "../../lib/sortTable";
-import { formatTimestamp, nanosToMs } from "../../lib/time";
-import { formatDurationMs } from "../../lib/waterfall";
-import type { TraceGroupMember } from "../../api/traceGroupMembers";
+import { EmptyState } from "./EmptyState";
+import { QueryError } from "./QueryError";
+import { SkeletonRows } from "../features/explore/Skeleton";
+import { SortTh, sortRows, useSort, type SortValue } from "../lib/sortTable";
+import { formatTimestamp, nanosToMs } from "../lib/time";
+import { formatDurationMs } from "../lib/waterfall";
+import type { TraceGroupMember } from "../api/traceGroupMembers";
 
 /** OTel status as a display word and a severity rank (errors sort first). */
 function statusOf(code: string): { word: string; rank: number } {

@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { TraceVolumeAreaChart } from "./TraceVolumeAreaChart";
-import type { VolumeSeries } from "../explore/SignalHistogram";
+import type { VolumeSeries } from "../../components/SignalHistogram";
 import { formatTimeBucket } from "../../lib/vizFormat";
 
 const SERIES: VolumeSeries[] = [

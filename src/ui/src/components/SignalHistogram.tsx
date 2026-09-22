@@ -8,11 +8,16 @@
  * rendering maths.
  */
 import { useMemo, useRef, useState } from "react";
-import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
-import { useRovingFocus } from "../../hooks/useRovingFocus";
-import { axisLabelFormatter, durationToSeconds } from "../../lib/time";
-import { compactCount } from "../../lib/vizFormat";
-import { barHeight, splitSegments, valueAtFraction, type Scale } from "./scale";
+import { useVizPointer, VizTooltip } from "./VizTooltip";
+import { useRovingFocus } from "../hooks/useRovingFocus";
+import { axisLabelFormatter, durationToSeconds } from "../lib/time";
+import { compactCount } from "../lib/vizFormat";
+import {
+  barHeight,
+  splitSegments,
+  valueAtFraction,
+  type Scale,
+} from "../features/explore/scale";
 
 /** A series of `[timestampMs, value]` points, ascending or not. */
 export interface VolumeSeries {

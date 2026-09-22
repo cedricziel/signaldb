@@ -1,11 +1,11 @@
 import { useState } from "react";
-import { AttributeKeyInput } from "../../components/AttributeKeyInput";
+import { AttributeKeyInput } from "./AttributeKeyInput";
 import {
   FILTER_OPS,
   isValidLogLabelName,
   type FilterOp,
   type LabelFilter,
-} from "../../lib/filters";
+} from "../lib/filters";
 
 interface Props {
   filters: LabelFilter[];
@@ -96,7 +96,11 @@ export function FilterChips({ filters, labels, onChange }: Props) {
           >
             Add
           </button>
-          <button type="button" className="btn" onClick={() => setAdding(false)}>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => setAdding(false)}
+          >
             Cancel
           </button>
         </form>
