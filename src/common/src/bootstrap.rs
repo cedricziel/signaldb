@@ -91,9 +91,69 @@ pub async fn bootstrap_default_tenant(
     Ok(Some(raw_key))
 }
 
+/// Idempotently provision (or reconcile) the `[demo]` read-only account
+/// (change: demo-mode).
+///
+/// A no-op when `config.demo.enabled` is false. Otherwise ensures a user
+/// with email `config.demo.username` exists, is not an instance admin, is
+/// not disabled, has its password hash reset to `config.demo.password`
+/// every call, and holds exactly one `local` membership on
+/// `config.demo.tenant_id` at `MembershipRole::Viewer` — downgrading it if
+/// an earlier run (or an admin) had granted it something higher. Never
+/// touches any other membership row.
+///
+/// Runs after tenant sync (`sync_config_tenants`/`bootstrap_default_tenant`)
+/// so `config.demo.tenant_id` already exists; `upsert_tenant_membership`
+/// does not itself validate that the tenant is present, so a missing
+/// tenant here produces an orphaned membership row rather than an error —
+/// callers should sync tenants first.
+///
+/// # Errors
+///
+/// Returns an error if catalog reads or writes fail; callers should log and
+/// continue rather than fail startup on this alone.
+pub async fn provision_demo_user(
+    catalog: &Catalog,
+    config: &Configuration,
+) -> Result<(), sqlx::Error> {
+    let demo = &config.demo;
+    if !demo.enabled {
+        return Ok(());
+    }
+
+    let password_hash = crate::auth::hash_password(&demo.password)
+        .map_err(|e| sqlx::Error::Protocol(format!("failed to hash demo password: {e}")))?;
+
+    let user = match catalog.get_user_by_email(&demo.username).await? {
+        Some(user) => {
+            catalog.set_user_password(&user.id, &password_hash).await?;
+            if user.disabled_at.is_some() {
+                catalog.set_user_disabled(&user.id, false).await?;
+            }
+            user
+        }
+        None => {
+            catalog
+                .create_user(&demo.username, Some("Demo"), Some(&password_hash), false)
+                .await?
+        }
+    };
+
+    catalog
+        .upsert_tenant_membership(
+            &user.id,
+            &demo.tenant_id,
+            crate::catalog::MembershipRole::Viewer,
+        )
+        .await?;
+
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::{GrantSource, MembershipRole};
     use crate::config::{ApiKeyConfig, AuthConfig, DatasetConfig, TenantConfig};
     use std::sync::Arc;
 
@@ -227,6 +287,125 @@ mod tests {
         assert!(
             key.is_some(),
             "self-monitoring tenant alone must not disable bootstrap"
+        );
+    }
+
+    async fn demo_config(catalog: &Catalog) -> Configuration {
+        catalog
+            .upsert_tenant("demo", "Demo", Some("main"), "database")
+            .await
+            .unwrap();
+        let mut config = Configuration::default();
+        config.demo.enabled = true;
+        config.demo.tenant_id = "demo".to_string();
+        config
+    }
+
+    #[tokio::test]
+    async fn disabled_demo_is_a_noop() {
+        let catalog = Catalog::new_in_memory().await.unwrap();
+        let config = Configuration::default();
+        provision_demo_user(&catalog, &config).await.unwrap();
+        assert!(
+            catalog
+                .get_user_by_email(&config.demo.username)
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn provisions_a_viewer_only_demo_user() {
+        let catalog = Catalog::new_in_memory().await.unwrap();
+        let config = demo_config(&catalog).await;
+
+        provision_demo_user(&catalog, &config).await.unwrap();
+
+        let user = catalog
+            .get_user_by_email(&config.demo.username)
+            .await
+            .unwrap()
+            .expect("demo user must be provisioned");
+        assert!(!user.is_instance_admin);
+        assert!(user.disabled_at.is_none());
+        assert!(user.password_hash.is_some());
+        let membership = catalog
+            .get_tenant_membership(&user.id, &config.demo.tenant_id)
+            .await
+            .unwrap()
+            .expect("demo user must have a membership");
+        assert_eq!(membership.role, MembershipRole::Viewer);
+        assert_eq!(membership.granted_by, GrantSource::Local);
+    }
+
+    #[tokio::test]
+    async fn provisioning_is_idempotent_and_downgrades_an_elevated_role() {
+        let catalog = Catalog::new_in_memory().await.unwrap();
+        let config = demo_config(&catalog).await;
+
+        provision_demo_user(&catalog, &config).await.unwrap();
+        let user = catalog
+            .get_user_by_email(&config.demo.username)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // Simulate an admin having elevated the demo account (or a stale
+        // earlier grant); the next provisioning pass must downgrade it back
+        // to Viewer rather than leaving it alone.
+        catalog
+            .upsert_tenant_membership(&user.id, &config.demo.tenant_id, MembershipRole::Admin)
+            .await
+            .unwrap();
+
+        provision_demo_user(&catalog, &config).await.unwrap();
+
+        let membership = catalog
+            .get_tenant_membership(&user.id, &config.demo.tenant_id)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(membership.role, MembershipRole::Viewer);
+
+        // Idempotent: the user row is reused, not recreated.
+        let user_again = catalog
+            .get_user_by_email(&config.demo.username)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(user_again.id, user.id);
+    }
+
+    #[tokio::test]
+    async fn provisioning_resets_the_password_every_run() {
+        let catalog = Catalog::new_in_memory().await.unwrap();
+        let config = demo_config(&catalog).await;
+        provision_demo_user(&catalog, &config).await.unwrap();
+        let user = catalog
+            .get_user_by_email(&config.demo.username)
+            .await
+            .unwrap()
+            .unwrap();
+
+        // An admin (or an attacker) changes the password out from under the
+        // demo account; the next boot must reset it to the configured value.
+        catalog
+            .set_user_password(&user.id, "some-other-hash")
+            .await
+            .unwrap();
+
+        provision_demo_user(&catalog, &config).await.unwrap();
+
+        let reset = catalog
+            .get_user_by_email(&config.demo.username)
+            .await
+            .unwrap()
+            .unwrap();
+        let hash = reset.password_hash.expect("password hash must be set");
+        assert!(
+            crate::auth::verify_password(&config.demo.password, &hash).unwrap(),
+            "password must be reset to the configured demo password"
         );
     }
 }
