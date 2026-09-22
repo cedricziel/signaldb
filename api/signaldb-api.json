@@ -1570,6 +1570,92 @@
         }
       }
     },
+    "/api/v1/manage/tenants/{tenant_id}/github-installations/attach": {
+      "post": {
+        "tags": [
+          "github"
+        ],
+        "summary": "`POST /api/v1/manage/tenants/{tenant_id}/github-installations/attach`",
+        "description": "Attaches an installation that already exists on GitHub — e.g. one\nalready linked to another tenant on the same GitHub account — to\n`tenant_id` directly, with no OAuth install flow. GitHub allows only one\nApp installation per account, so once one tenant has linked it, GitHub's\ninstall-flow URL for a second tenant skips straight to its own\ninstallation-management page instead of redirecting back here; this\nendpoint is the escape hatch. Unlike [`start_github_link`]'s flow, there\nis no user token to check the installation's `installation_id` against\n— GitHub only scopes [`crate::github::GitHubApp::installation`] to *an*\ninstallation of this App, not to any account the caller controls. A\n`tenant:manage` grant is therefore not enough authorization on its own\n(it would let a tenant admin attach, and so read the source of, any\nother org that installed this deployment's App); this endpoint requires\n`ctx.is_instance_admin`, the same principal that already holds the\nApp's private key. The same read-only-permission check the OAuth\ncallback performs is re-run here.",
+        "operationId": "manage_attach_github_installation",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttachGitHubInstallationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Installation attached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubInstallationResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Instance administrator required, or the installation carries a write-capable permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "GitHub integration is not configured, or the installation was not found on GitHub",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "GitHub request failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/v1/manage/tenants/{tenant_id}/github-installations/link": {
       "post": {
         "tags": [
@@ -5370,6 +5456,20 @@
               "type": "string"
             },
             "description": "Scopes the key carries; `null` for a legacy unrestricted key."
+          }
+        }
+      },
+      "AttachGitHubInstallationRequest": {
+        "type": "object",
+        "description": "Request body for [`attach_github_installation`].",
+        "required": [
+          "installation_id"
+        ],
+        "properties": {
+          "installation_id": {
+            "type": "integer",
+            "format": "int64",
+            "description": "A GitHub App installation id that already exists for this App —\ne.g. one already linked to another tenant on the same GitHub\naccount, or read off GitHub's own installation settings page."
           }
         }
       },
