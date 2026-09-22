@@ -42,6 +42,15 @@ import {
 } from "../../lib/time";
 import { formatValue } from "../../lib/vizFormat";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
+// `.catalog-headline`/`.catalog-title`/`.catalog-sub`/`.catalog-main`
+// (the section headings) and `.trace-open`/`.backbtn` (the drill-in and
+// back-navigation buttons) are shared button/heading styles this view
+// reuses from the Catalog and Traces tabs rather than errors.css — each
+// only renders correctly once its owning stylesheet has loaded, so this
+// view must import them itself instead of relying on another tab having
+// mounted first.
+import "../catalog/catalog.css";
+import "../traces/traces.css";
 import "./errors.css";
 
 interface Props {
@@ -363,10 +372,16 @@ export function ErrorsView({ state, update }: Props) {
                           </td>
                           <td className="num">{formatValue(g.count)}</td>
                           <td>
-                            {formatTimestampForRange(nanosToMs(g.firstNs), range)}
+                            {formatTimestampForRange(
+                              nanosToMs(g.firstNs),
+                              range,
+                            )}
                           </td>
                           <td>
-                            {formatTimestampForRange(nanosToMs(g.lastNs), range)}
+                            {formatTimestampForRange(
+                              nanosToMs(g.lastNs),
+                              range,
+                            )}
                           </td>
                         </tr>
                       );
@@ -474,7 +489,8 @@ export function ErrorsView({ state, update }: Props) {
                                     />
                                   ) : (
                                     <div className="view-note">
-                                      No stacktrace captured for this occurrence.
+                                      No stacktrace captured for this
+                                      occurrence.
                                     </div>
                                   )}
                                 </td>
