@@ -87,8 +87,6 @@ async fn seed() -> Env {
             .await
             .expect("catalog manager"),
     );
-    let object_store =
-        common::storage::create_object_store_from_dsn(&storage_dsn).expect("object store");
 
     let base_ts_ms = chrono::Utc::now().timestamp_millis() - PARTITION_COUNT as i64 * DAY_MS;
     let gen_config = DataGeneratorConfig {
