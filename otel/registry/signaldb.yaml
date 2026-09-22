@@ -162,6 +162,14 @@ groups:
         type: int
         stability: development
         brief: Input files a delta commit re-validates as still live before committing.
+      - id: signaldb.job.deferred_open_partition_files
+        type: int
+        stability: development
+        brief: Files a compaction planning pass deferred because their partition is still open.
+      - id: signaldb.job.unclassifiable_files
+        type: int
+        stability: development
+        brief: Files a compaction planning pass excluded because they could not be classified into a partition.
       - id: signaldb.job.partition_value
         type: string
         stability: development
