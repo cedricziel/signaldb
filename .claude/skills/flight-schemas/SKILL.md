@@ -76,34 +76,34 @@ Non-finite metric doubles (NaN, ±Inf) are carried in v1 `data_json` as the stri
 
 ## Traces Table Schema (physical-v4 -- current)
 
-| #     | Field                                      | Iceberg Type | Required | Notes                                                                                             |
-| ----- | ------------------------------------------ | ------------ | -------- | ------------------------------------------------------------------------------------------------- |
-| 1     | `trace_id`                                 | String       | Yes      |                                                                                                   |
-| 2     | `span_id`                                  | String       | Yes      |                                                                                                   |
-| 3     | `parent_span_id`                           | String       | No       |                                                                                                   |
-| 4     | `span_name`                                | String       | Yes      | Renamed from `name`                                                                               |
-| 5     | `service_name`                             | String       | Yes      |                                                                                                   |
-| 6     | `start_time_unix_nano`                     | Long         | Yes      |                                                                                                   |
-| 7     | `end_time_unix_nano`                       | Long         | Yes      |                                                                                                   |
-| 8     | `duration_nanos`                           | Long         | Yes      | Renamed from `duration_nano`                                                                      |
-| 9     | `span_kind`                                | String       | Yes      | Derived from `span_kind_number`, never the reverse                                                |
-| 10    | `status_code`                              | String       | Yes      | Derived from `status_code_number`, never the reverse                                              |
-| 11    | `status_message`                           | String       | No       |                                                                                                   |
-| 12    | `is_root`                                  | Boolean      | Yes      |                                                                                                   |
-| 13    | `span_attributes`                          | String       | No       | JSON                                                                                              |
-| 14    | `resource_attributes`                      | String       | No       | JSON                                                                                              |
-| 15    | `events`                                   | String       | No       | JSON serialized                                                                                   |
-| 16    | `links`                                    | String       | No       | JSON serialized                                                                                   |
-| 17-22 | trace*state, resource_schema_url, scope*\* | String       | No       |                                                                                                   |
-| 23    | `timestamp`                                | Timestamp    | Yes      | Computed, partition key                                                                           |
-| 24    | `date_day`                                 | Date         | Yes      | Computed                                                                                          |
-| 25    | `hour`                                     | Int          | Yes      | Computed                                                                                          |
-| 26    | `span_kind_number`                         | Int          | No       | v3: numeric OTel source of truth for `span_kind`, written verbatim from `Span.kind` (issue #1208) |
-| 27    | `status_code_number`                       | Int          | No       | v3: numeric OTel source of truth for `status_code`, written verbatim from `Status.code`           |
-| 28    | `dropped_attributes_count`                 | Long         | No       | v3: preserved verbatim from the OTel span (previously discarded despite being query-registered)   |
-| 29    | `dropped_events_count`                     | Long         | No       | v3: as above                                                                                      |
-| 30    | `dropped_links_count`                      | Long         | No       | v3: as above                                                                                      |
-| 31    | `resource_identity`                        | String       | No       | v4: digest of the span's resource attribute set, from `common::schema::resource_identity` (#1340) |
+| #     | Field                                     | Iceberg Type | Required | Notes                                                                                             |
+| ----- | ----------------------------------------- | ------------ | -------- | ------------------------------------------------------------------------------------------------- |
+| 1     | `trace_id`                                | String       | Yes      |                                                                                                   |
+| 2     | `span_id`                                 | String       | Yes      |                                                                                                   |
+| 3     | `parent_span_id`                          | String       | No       |                                                                                                   |
+| 4     | `span_name`                               | String       | Yes      | Renamed from `name`                                                                               |
+| 5     | `service_name`                            | String       | Yes      |                                                                                                   |
+| 6     | `start_time_unix_nano`                    | Long         | Yes      |                                                                                                   |
+| 7     | `end_time_unix_nano`                      | Long         | Yes      |                                                                                                   |
+| 8     | `duration_nanos`                          | Long         | Yes      | Renamed from `duration_nano`                                                                      |
+| 9     | `span_kind`                               | String       | Yes      | Derived from `span_kind_number`, never the reverse                                                |
+| 10    | `status_code`                             | String       | Yes      | Derived from `status_code_number`, never the reverse                                              |
+| 11    | `status_message`                          | String       | No       |                                                                                                   |
+| 12    | `is_root`                                 | Boolean      | Yes      |                                                                                                   |
+| 13    | `span_attributes`                         | String       | No       | JSON                                                                                              |
+| 14    | `resource_attributes`                     | String       | No       | JSON                                                                                              |
+| 15    | `events`                                  | String       | No       | JSON serialized                                                                                   |
+| 16    | `links`                                   | String       | No       | JSON serialized                                                                                   |
+| 17-22 | trace_state, resource_schema_url, scope_* | String       | No       |                                                                                                   |
+| 23    | `timestamp`                               | Timestamp    | Yes      | Computed, partition key                                                                           |
+| 24    | `date_day`                                | Date         | Yes      | Computed                                                                                          |
+| 25    | `hour`                                    | Int          | Yes      | Computed                                                                                          |
+| 26    | `span_kind_number`                        | Int          | No       | v3: numeric OTel source of truth for `span_kind`, written verbatim from `Span.kind` (issue #1208) |
+| 27    | `status_code_number`                      | Int          | No       | v3: numeric OTel source of truth for `status_code`, written verbatim from `Status.code`           |
+| 28    | `dropped_attributes_count`                | Long         | No       | v3: preserved verbatim from the OTel span (previously discarded despite being query-registered)   |
+| 29    | `dropped_events_count`                    | Long         | No       | v3: as above                                                                                      |
+| 30    | `dropped_links_count`                     | Long         | No       | v3: as above                                                                                      |
+| 31    | `resource_identity`                       | String       | No       | v4: digest of the span's resource attribute set, from `common::schema::resource_identity` (#1340) |
 
 The five v3 columns and `resource_identity` are nullable, so rows written before their version have no value for them; `arrow_to_otlp_traces` falls back to deriving `span_kind`/`status_code`'s int from the string columns, and defaults the dropped counts to 0, only when the v3 column is absent or null. `resource_identity` is null on any row written before the column existed.
 
