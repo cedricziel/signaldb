@@ -4,39 +4,15 @@ import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv, type ProxyOptions } from "vite";
 import { VitePWA } from "vite-plugin-pwa";
 import { configDefaults } from "vitest/config";
+import { PROXIED_PATHS } from "./src/lib/proxiedPaths";
 import { proxyKey } from "./src/lib/proxyKey";
 
 const require = createRequire(import.meta.url);
 const pkg = require("./package.json") as { version: string };
 
-// Paths the SignalDB router serves; the dev server forwards them to a live
-// instance so the browser only ever sees same-origin requests, exactly as in
-// the embedded production build. /ui/session is the router's session login
-// endpoint and /runtime-config.js is its runtime telemetry config — the SPA is
-// served from root, so everything else is served by the dev server itself.
-//
-// The OAuth endpoints proxy too, EXCEPT `/oauth/consent`, which is the SPA
-// consent route (served by the dev server); its `/oauth/consent/context` API
-// sibling is listed on its own.
-//
-// Every entry matches whole path segments (see proxyKey): a bare prefix
-// would also swallow SPA routes that merely start with it, as `/api` once
-// did to `/api-keys`.
-const PROXIED_PATHS = [
-  "/loki",
-  "/tempo",
-  "/prometheus",
-  "/pyroscope",
-  "/api",
-  "/ui/session",
-  "/runtime-config.js",
-  "/.well-known/oauth-authorization-server",
-  "/.well-known/oauth-protected-resource",
-  "/oauth/authorize",
-  "/oauth/consent/context",
-  "/oauth/register",
-  "/oauth/token",
-];
+// See proxiedPaths.ts for what PROXIED_PATHS covers and why. One exception:
+// `/oauth/consent` itself is the SPA consent route (served by the dev
+// server), so only its `/oauth/consent/context` API sibling is listed.
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, __dirname, "SIGNALDB_");
@@ -125,12 +101,8 @@ export default defineConfig(({ mode }) => {
           // are fetched by the browser itself when it installs the app
           // (see includeAssets above for the one exception).
           globPatterns: ["**/*.{js,css,html}"],
-          // These are the backend's own routes (proxied in dev, same-origin
-          // in prod, see PROXIED_PATHS above); the SW's SPA navigate
-          // fallback must never intercept them with cached app shell. Reuses
-          // proxyKey's pattern — a hand-rolled one here previously matched
-          // `/api` against `/api-keys` too, the exact bug the comment above
-          // PROXIED_PATHS warns about.
+          // See proxiedPaths.ts: these are the backend's own routes, which
+          // the SW's SPA navigate fallback must never intercept.
           navigateFallbackDenylist: PROXIED_PATHS.map(
             (path) => new RegExp(proxyKey(path)),
           ),
