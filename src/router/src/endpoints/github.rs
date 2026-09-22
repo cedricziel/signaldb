@@ -515,13 +515,20 @@ pub(crate) async fn attach_github_installation<S: RouterState>(
         }
     };
 
+    // Neither field claims the attaching admin as the "linker": both name
+    // the SignalDB user and GitHub identity that OAuth-verified ownership,
+    // a fact attach cannot establish (it never obtains a GitHub user
+    // token) and must not overwrite with the wrong identity — see the
+    // `COALESCE` on both columns in the shared upsert SQL. Which admin
+    // performed this attach is already recorded in the `tracing::info!`
+    // below.
     let new_installation = NewGitHubInstallation {
         installation_id: body.installation_id,
         account_login: summary.account.login.clone(),
         account_type: summary.account.kind.clone(),
         account_id: summary.account.id,
         repositories,
-        linked_by_user_id: ctx.user_id.clone(),
+        linked_by_user_id: None,
         linked_by_github_login: None,
     };
     let record = match state

@@ -6396,12 +6396,14 @@ const GITHUB_INSTALLATION_COLUMNS: &str = "tenant_id, installation_id, account_l
 /// [`Catalog::complete_github_link`] and [`Catalog::attach_github_installation`]
 /// — the two entry points that create or refresh a `github_installations` row,
 /// one via a state token and one direct. Kept as a single definition so the
-/// two can never drift apart. `linked_by_github_login` is `COALESCE`d
-/// against the existing row rather than blindly overwritten: `attach`
-/// never obtains a GitHub user token (it never learns a login), so an
-/// attach over a row `complete_github_link` OAuth-verified must not erase
-/// that verified login — only a fresh non-null login (from a real OAuth
-/// completion) may replace it.
+/// two can never drift apart. `linked_by_user_id` and `linked_by_github_login`
+/// are `COALESCE`d against the existing row rather than blindly overwritten:
+/// `attach` never obtains a GitHub user token, so it always passes `None` for
+/// both — this pair names the SignalDB user and GitHub identity that
+/// OAuth-verified ownership, a fact attach cannot establish and must not
+/// overwrite with the attaching admin's own identity (which admin performed
+/// the attach is recorded separately, in the router's own log line). Only a
+/// fresh non-null value (a real OAuth completion) may replace either.
 fn github_installation_upsert_sqlite_sql() -> String {
     format!(
         "INSERT INTO github_installations ({GITHUB_INSTALLATION_COLUMNS}) \
@@ -6412,7 +6414,7 @@ fn github_installation_upsert_sqlite_sql() -> String {
             account_id = excluded.account_id, \
             repositories = excluded.repositories, \
             repositories_synced_at = excluded.repositories_synced_at, \
-            linked_by_user_id = excluded.linked_by_user_id, \
+            linked_by_user_id = COALESCE(excluded.linked_by_user_id, github_installations.linked_by_user_id), \
             linked_by_github_login = COALESCE(excluded.linked_by_github_login, github_installations.linked_by_github_login), \
             updated_at = excluded.updated_at \
          RETURNING {GITHUB_INSTALLATION_COLUMNS}"
@@ -6430,7 +6432,7 @@ fn github_installation_upsert_postgres_sql() -> String {
             account_id = EXCLUDED.account_id, \
             repositories = EXCLUDED.repositories, \
             repositories_synced_at = EXCLUDED.repositories_synced_at, \
-            linked_by_user_id = EXCLUDED.linked_by_user_id, \
+            linked_by_user_id = COALESCE(EXCLUDED.linked_by_user_id, github_installations.linked_by_user_id), \
             linked_by_github_login = COALESCE(EXCLUDED.linked_by_github_login, github_installations.linked_by_github_login), \
             updated_at = EXCLUDED.updated_at \
          RETURNING {GITHUB_INSTALLATION_COLUMNS}"
@@ -11707,12 +11709,14 @@ mod github_tests {
         );
     }
 
-    /// Attach never obtains a GitHub user token, so it always passes
-    /// `linked_by_github_login: None` — this must not erase a login that
-    /// `complete_github_link`'s OAuth flow already verified for the same
-    /// row. Regression test for the `COALESCE` in the shared upsert SQL.
+    /// Attach never obtains a GitHub user token, so it always passes `None`
+    /// for both `linked_by_user_id` and `linked_by_github_login` — neither
+    /// must erase what `complete_github_link`'s OAuth flow already verified
+    /// for the same row (an earlier version only `COALESCE`d the login,
+    /// leaving the row attributed to two different people). Regression
+    /// test for the `COALESCE` on both columns in the shared upsert SQL.
     #[tokio::test]
-    async fn attach_installation_preserves_an_oauth_verified_github_login() {
+    async fn attach_installation_preserves_oauth_verified_provenance() {
         let (catalog, user_id) = catalog_with_two_tenants().await;
         link_state(&catalog, "state-hash-preserve", "acme", &user_id).await;
         let mut oauth_installation = new_installation(20004, &["octo-org/repo-a"]);
@@ -11737,6 +11741,10 @@ mod github_tests {
             .unwrap();
 
         assert_eq!(attached.linked_by_github_login.as_deref(), Some("octocat"));
+        assert_eq!(
+            attached.linked_by_user_id.as_deref(),
+            Some(user_id.as_str())
+        );
         assert_eq!(
             attached.repositories,
             vec!["octo-org/repo-a", "octo-org/repo-b"]
