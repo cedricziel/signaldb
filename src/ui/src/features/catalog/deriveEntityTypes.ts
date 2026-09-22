@@ -191,6 +191,13 @@ function resolveIdentity(
  * Presence is judged on the *primary* identity attribute only: a source
  * carrying `process.pid` but not `process.creation.time` still knows about
  * processes, just with a coarser identity.
+ *
+ * Each carrying source also gets its own degraded identity in
+ * `identityBySource`: a source can carry the primary attribute while missing
+ * a secondary one (a metrics pipeline that reports `process.pid` but not
+ * `host.name`), and grouping that source's listing query by the full tuple
+ * would put every one of its instances in a single null-valued bucket. See
+ * `buildEntitySourceDoc` in `api/catalog.ts`, the only reader of this field.
  */
 export function observedEntityTypes(
   types: EntityTypeDef[],
@@ -209,7 +216,12 @@ export function observedEntityTypes(
       fieldsBySource.get(source)?.has(primary),
     );
     if (carrying.length === 0) continue;
-    observed.push({ ...type, identity, sources: carrying });
+    const identityBySource: Record<string, string[]> = {};
+    for (const source of carrying) {
+      const fields = fieldsBySource.get(source);
+      identityBySource[source] = identity.filter((f) => fields?.has(f));
+    }
+    observed.push({ ...type, identity, sources: carrying, identityBySource });
   }
 
   // Curated types lead the list, so truncation drops the registry-derived
