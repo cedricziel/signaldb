@@ -93,8 +93,7 @@ hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17" }
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "server-auto", "service"] }
 indexmap = { version = "2", features = ["serde"] }
-itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
-itertools-93f6ce9d446188ac = { package = "itertools", version = "0.10" }
+itertools = { version = "0.14" }
 lazy_static = { version = "1", default-features = false, features = ["spin_no_std"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
 memchr = { version = "2" }
@@ -194,8 +193,7 @@ hashbrown-9067fe90e8c1f593 = { package = "hashbrown", version = "0.17" }
 hyper = { version = "1", features = ["full"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "server-auto", "service"] }
 indexmap = { version = "2", features = ["serde"] }
-itertools-582f2526e08bb6a0 = { package = "itertools", version = "0.14" }
-itertools-93f6ce9d446188ac = { package = "itertools", version = "0.10" }
+itertools = { version = "0.14" }
 lazy_static = { version = "1", default-features = false, features = ["spin_no_std"] }
 log = { version = "0.4", default-features = false, features = ["std"] }
 memchr = { version = "2" }
