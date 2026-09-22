@@ -736,7 +736,8 @@ impl GithubAction {
                 } else {
                     println!(
                         "Open this URL in a browser where you are signed in to SignalDB as an admin of tenant {tenant_id}:\n\n  {}\n\nThe link expires at {}. After GitHub redirects back, run `signaldb-cli tenant github list` to see the installation.",
-                        v.install_url, v.expires_at.to_rfc3339()
+                        v.install_url,
+                        v.expires_at.to_rfc3339()
                     );
                 }
                 Ok(())
