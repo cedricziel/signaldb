@@ -676,9 +676,9 @@ fn format_github_installation_table(installations: &[GitHubInstallationResponse]
         .iter()
         .map(|i| {
             let synced = if i.stale {
-                format!("{} (stale)", i.repositories_synced_at)
+                format!("{} (stale)", i.repositories_synced_at.to_rfc3339())
             } else {
-                i.repositories_synced_at.clone()
+                i.repositories_synced_at.to_rfc3339()
             };
             let linked_by = i
                 .linked_by_github_login
@@ -736,7 +736,7 @@ impl GithubAction {
                 } else {
                     println!(
                         "Open this URL in a browser where you are signed in to SignalDB as an admin of tenant {tenant_id}:\n\n  {}\n\nThe link expires at {}. After GitHub redirects back, run `signaldb-cli tenant github list` to see the installation.",
-                        v.install_url, v.expires_at
+                        v.install_url, v.expires_at.to_rfc3339()
                     );
                 }
                 Ok(())
