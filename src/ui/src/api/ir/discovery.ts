@@ -1,13 +1,14 @@
 /**
- * Discovery via the Query IR's `describe` stage — what a picker can offer,
- * without reading signal data (`docs/users/querying-ir.md#discovery`).
- * Replaces the Loki label endpoints (`api/loki.ts`), the Tempo tag-name
- * endpoint (`tempoSearchTags`) and the Pyroscope discovery endpoints
- * (`api/pyroscope.ts`).
+ * Discovery via the Query IR's `describe` and `aggregate` stages — what a
+ * picker can offer, without reading signal data
+ * (`docs/users/querying-ir.md#discovery`). Replaces the Loki label endpoints
+ * (`api/loki.ts`), the Tempo tag-name endpoint (`tempoSearchTags`) and the
+ * Pyroscope discovery endpoints (formerly `api/pyroscope.ts`).
  */
-import type { DiscoveredField, QueryIrRequest } from "../gen";
+import type { QueryIrRequest, QueryIrResponse, DiscoveredField } from "../gen";
 import { msToNanos, type ResolvedRange } from "../../lib/time";
 import { runIrQuery } from "../queryIr";
+import type { ProfileType } from "../pyroscope";
 
 const IR_VERSION = 4;
 
@@ -75,9 +76,58 @@ export async function metricNames(
   return values("metrics", "metric.name", range);
 }
 
-/** Distinct profile types in the window (`profile.type` on `profiles`). */
+/**
+ * Distinct profile types in the window, as the `ProfilesView` picker shape:
+ * one entry per `(sample.type, sample.unit, period.type, period.unit)`
+ * combination on `profiles`, grouped via `aggregate` rather than `describe
+ * values` — the picker needs the unit fields alongside the type, and
+ * `describe` only answers one field at a time.
+ */
 export async function profileTypes(
   range: ResolvedRange,
-): Promise<DiscoveredValueView[]> {
-  return values("profiles", "profile.type", range);
+): Promise<ProfileType[]> {
+  const res = await runIrQuery({
+    irVersion: IR_VERSION,
+    from: "profiles",
+    range: { from: msToNanos(range.fromMs), to: msToNanos(range.toMs) },
+    result: "table",
+    pipeline: [
+      {
+        aggregate: {
+          by: ["sample.type", "sample.unit", "period.type", "period.unit"],
+          aggs: [{ fn: "count", as: "n" }],
+        },
+      },
+    ],
+  });
+  return profileTypesFromRows(res);
+}
+
+function profileTypesFromRows(res: QueryIrResponse): ProfileType[] {
+  const rows = res.rows ?? [];
+  const seen = new Set<string>();
+  const out: ProfileType[] = [];
+  for (const row of rows) {
+    const [sampleType, sampleUnit, periodType, periodUnit] = row as [
+      unknown,
+      unknown,
+      unknown,
+      unknown,
+      unknown, // count, unused
+    ];
+    if (typeof sampleType !== "string" || sampleType === "") continue;
+    const unit = typeof sampleUnit === "string" ? sampleUnit : "";
+    const id = unit ? `${sampleType}:${unit}` : sampleType;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push({
+      ID: id,
+      name: sampleType,
+      sampleType,
+      sampleUnit: unit,
+      periodType: typeof periodType === "string" ? periodType : undefined,
+      periodUnit: typeof periodUnit === "string" ? periodUnit : undefined,
+    });
+  }
+  return out;
 }

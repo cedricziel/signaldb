@@ -160,29 +160,40 @@ describe("metricNames", () => {
 });
 
 describe("profileTypes", () => {
-  it("asks for profile.type on the profiles source", async () => {
+  it("aggregates sample/period type and unit on the profiles source", async () => {
     const calls = stubApiFetch({
-      result: "metadata",
+      result: "table",
       window: { start_ns: 0, end_ns: 1 },
-      metadata: {
-        kind: "values",
-        truncated: false,
-        cost: {
-          mode: "metadata",
-          window_scoped: false,
-          sampled: false,
-          approximate: false,
-        },
-        values: [{ value: "cpu", origin: "registry" }],
-      },
+      columns: [
+        { name: "sample.type", type: "string" },
+        { name: "sample.unit", type: "string" },
+        { name: "period.type", type: "string" },
+        { name: "period.unit", type: "string" },
+        { name: "n", type: "int" },
+      ],
+      rows: [["cpu", "nanoseconds", "cpu", "nanoseconds", 42]],
     } satisfies QueryIrResponse);
 
     expect(await profileTypes(RANGE)).toEqual([
-      { value: "cpu", partial: false },
+      {
+        ID: "cpu:nanoseconds",
+        name: "cpu",
+        sampleType: "cpu",
+        sampleUnit: "nanoseconds",
+        periodType: "cpu",
+        periodUnit: "nanoseconds",
+      },
     ]);
     expect(calls[0]?.body).toMatchObject({
       from: "profiles",
-      pipeline: [{ describe: { target: "values", field: "profile.type" } }],
+      pipeline: [
+        {
+          aggregate: {
+            by: ["sample.type", "sample.unit", "period.type", "period.unit"],
+            aggs: [{ fn: "count", as: "n" }],
+          },
+        },
+      ],
     });
   });
 });
