@@ -566,12 +566,12 @@ pub(crate) async fn attach_github_installation<S: RouterState>(
             account_login: record.account_login,
             account_type: record.account_type,
             repositories: record.repositories,
-            repositories_synced_at: record.repositories_synced_at.to_rfc3339(),
+            repositories_synced_at: record.repositories_synced_at,
             stale: false,
             linked_by_github_login: record.linked_by_github_login,
             manage_url,
-            created_at: record.created_at.to_rfc3339(),
-            updated_at: record.updated_at.to_rfc3339(),
+            created_at: record.created_at,
+            updated_at: record.updated_at,
         }),
     )
         .into_response()
