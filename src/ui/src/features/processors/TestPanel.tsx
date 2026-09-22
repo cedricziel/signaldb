@@ -4,6 +4,7 @@ import { testProcessor, type ProcessorSpec, type TestResponse } from "./api";
 import { diffLines } from "./lineDiff";
 import { SAMPLE_PAYLOADS } from "./samples";
 import { toErrorMessage } from "../../api/http";
+import { LineDiffView } from "../../components/LineDiffView";
 
 interface Props {
   signal: "traces" | "logs" | "metrics";
@@ -142,17 +143,7 @@ export function TestPanel({ signal, dataset, spec }: Props) {
           </ul>
 
           <h3>Diff</h3>
-          <pre className="processors-diff" aria-label="payload diff">
-            {diff!.map((line, index) => (
-              <div
-                key={index}
-                className={`processors-diff-line processors-diff-${line.kind}`}
-              >
-                {line.kind === "removed" ? "- " : line.kind === "added" ? "+ " : "  "}
-                {line.text}
-              </div>
-            ))}
-          </pre>
+          <LineDiffView diff={diff!} />
         </>
       )}
     </div>
