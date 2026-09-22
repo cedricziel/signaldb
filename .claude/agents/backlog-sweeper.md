@@ -21,7 +21,7 @@ description: |
   user: "Sweep the backlog, including #1359."
   assistant: "#1359 is a P1 with an unbounded-memory design decision attached; the sweeper will list it as not-easy and leave it for a dedicated session rather than guess."
   </example>
-tools: Agent(coder, rust-code-reviewer, Explore), Bash, BashOutput, KillShell, Read, Grep, Glob, TodoWrite, Skill, SendMessage
+tools: Agent(coder, rust-code-reviewer, Explore), Bash, BashOutput, KillShell, Read, Grep, Glob, TodoWrite, Skill, SendMessage, ToolSearch, mcp__github
 model: opus
 permissionMode: auto
 memory: project
