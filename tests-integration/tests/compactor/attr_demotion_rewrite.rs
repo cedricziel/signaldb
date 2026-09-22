@@ -312,7 +312,7 @@ async fn setup_with_tenant(
         .with_name(TABLE.to_string())
         .with_schema(table_schema())
         .with_partition_spec(hour_partition_spec())
-        .with_location(catalog_manager.build_table_location(TENANT, DATASET, TABLE))
+        .with_location(catalog_manager.build_table_location(tenant_id, DATASET, TABLE))
         .create()
         .map_err(|e| anyhow::anyhow!("create table build: {e}"))?;
     catalog_manager
