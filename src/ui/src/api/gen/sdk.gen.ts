@@ -287,10 +287,16 @@ export const manageListGithubInstallations = <ThrowOnError extends boolean = fal
  * App installation per account, so once one tenant has linked it, GitHub's
  * install-flow URL for a second tenant skips straight to its own
  * installation-management page instead of redirecting back here; this
- * endpoint is the escape hatch. Authorization is the caller's own
- * `tenant:manage` grant (checked by [`authorize_tenant`]) — there is no
- * state token to bind to, unlike [`start_github_link`]'s flow. The same
- * read-only-permission check the OAuth callback performs is re-run here.
+ * endpoint is the escape hatch. Unlike [`start_github_link`]'s flow, there
+ * is no user token to check the installation's `installation_id` against
+ * — GitHub only scopes [`crate::github::GitHubApp::installation`] to *an*
+ * installation of this App, not to any account the caller controls. A
+ * `tenant:manage` grant is therefore not enough authorization on its own
+ * (it would let a tenant admin attach, and so read the source of, any
+ * other org that installed this deployment's App); this endpoint requires
+ * `ctx.is_instance_admin`, the same principal that already holds the
+ * App's private key. The same read-only-permission check the OAuth
+ * callback performs is re-run here.
  */
 export const manageAttachGithubInstallation = <ThrowOnError extends boolean = false>(options: Options<ManageAttachGithubInstallationData, ThrowOnError>): RequestResult<ManageAttachGithubInstallationResponses, ManageAttachGithubInstallationErrors, ThrowOnError> => (options.client ?? client).post<ManageAttachGithubInstallationResponses, ManageAttachGithubInstallationErrors, ThrowOnError>({
     security: [{ scheme: 'bearer', type: 'http' }],

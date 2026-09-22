@@ -3437,7 +3437,7 @@ export type ManageAttachGithubInstallationData = {
 
 export type ManageAttachGithubInstallationErrors = {
     /**
-     * Tenant administrator role or tenant:manage scope required and the tenant must match the caller, or the installation carries a write-capable permission
+     * Instance administrator required, or the installation carries a write-capable permission
      */
     403: ManageError;
     /**
