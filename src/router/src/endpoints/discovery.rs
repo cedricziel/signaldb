@@ -50,8 +50,8 @@ fn cost_mode_label(mode: CostMode) -> String {
 /// Carries a `signaldb.discovery` boundary span (`common::self_monitoring::
 /// spans::discovery_span`) for the duration of the read, so the metadata
 /// path's cost is visible in self-monitoring next to the querier's
-/// `signaldb.query.execute` — even though a `describe` request never reaches
-/// a querier.
+/// `signaldb.query.execute` — most `describe` requests never reach a querier;
+/// a sampled `describe: values` does, and records `cost_mode = sampled_scan`.
 pub(super) async fn answer_describe<S: RouterState>(
     state: &S,
     ctx: &TenantContext,
@@ -992,7 +992,7 @@ mod tests {
         let names: Vec<&str> = spans.iter().map(|s| s.name.as_ref()).collect();
         let span = spans
             .iter()
-            .find(|s| s.name == "fields")
+            .find(|s| s.name == "discovery fields")
             .unwrap_or_else(|| {
                 panic!(
                     "the describe:fields read must open a signaldb.discovery span; got {names:?}"
@@ -1043,7 +1043,7 @@ mod tests {
 
         let span = spans
             .iter()
-            .find(|s| s.name == "sources")
+            .find(|s| s.name == "discovery sources")
             .expect("GET /api/v1/query/sources must open a signaldb.discovery span");
         assert_eq!(
             span_attr(span, "signaldb.discovery.kind").as_deref(),

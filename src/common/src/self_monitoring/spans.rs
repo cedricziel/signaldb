@@ -263,15 +263,16 @@ pub fn processors_apply_span(tenant_id: &str, dataset_id: &str, signal: &str) ->
 /// values` on `POST /api/v1/query`, or `GET /api/v1/query/sources` (change
 /// `query-field-discovery`). The metadata-tier counterpart to the querier's
 /// `signaldb.query.execute`: it makes the cost of answering "what can I
-/// query" visible in self-monitoring next to an ordinary query read, even
-/// though a discovery request never reaches a querier. Bounded fields only:
+/// query" visible in self-monitoring next to an ordinary query read, though
+/// most discovery reads never reach a querier (only a sampled `describe:
+/// values` does). Exported as `discovery {kind}`. Bounded fields only:
 /// tenancy, which discovery question was asked, the source it was asked
 /// about (absent for `sources`, which names none), and — once the answer is
 /// known — which cost tier produced it.
 pub fn discovery_span(kind: &str, tenant_id: &str, dataset_id: &str, source: Option<&str>) -> Span {
     let span = tracing::info_span!(
         "signaldb.discovery",
-        otel.name = %kind,
+        otel.name = %format!("discovery {kind}"),
         otel.kind = "internal",
         otel.status_code = Empty,
         otel.status_message = Empty,

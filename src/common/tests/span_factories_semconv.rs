@@ -232,7 +232,7 @@ fn discovery_span_is_internal_with_tenancy_and_cost_mode() {
     });
     let span = &spans[0];
 
-    assert_eq!(span.name, "fields");
+    assert_eq!(span.name, "discovery fields");
     assert_eq!(span.span_kind, SpanKind::Internal);
     assert_eq!(attr(span, "signaldb.tenant.id").as_deref(), Some("acme"));
     assert_eq!(
@@ -261,7 +261,7 @@ fn discovery_span_source_is_absent_for_the_sources_listing() {
     });
     let span = &spans[0];
 
-    assert_eq!(span.name, "sources");
+    assert_eq!(span.name, "discovery sources");
     assert_eq!(attr(span, "signaldb.discovery.source"), None);
 }
 
