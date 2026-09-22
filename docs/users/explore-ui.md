@@ -822,7 +822,9 @@ GitHub** link, and a **Remove** action. The list refreshes each
 installation's repositories from GitHub on every load and marks an entry
 _stale_ when GitHub could not be reached. When the operator has not
 configured the `[github]` section, the page explains that instead of
-offering **Connect**. Next to **Connect GitHub** a **Link existing
+offering **Connect**. Next to **Connect GitHub**, and visible only to an
+instance admin (a tenant admin who is not also an instance admin does not
+see it, since the endpoint rejects that credential), a **Link existing
 installation** field takes a numeric installation id and attaches it
 directly (`POST .../github-installations/attach`), with no OAuth redirect —
 this is the way to link a second tenant to a GitHub account that already

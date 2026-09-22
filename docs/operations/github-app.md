@@ -195,12 +195,13 @@ Two independent checks bind each link, and neither alone is enough:
   `GET /user/installations`. A guessed or learned installation id from
   another organization is rejected and nothing is written.
 
-The `attach` endpoint (see [Connect a tenant](#connect-a-tenant)) only keeps
-the SignalDB-side half of this: it has no user `code` to exchange, so it
-cannot re-derive the GitHub-side ownership check above. That is exactly why
-it requires instance-admin rather than a tenant's own `tenant:manage`
-grant — a guessed or learned installation id from another organization
-_would_ otherwise be attachable, unlike through the OAuth flow.
+The `attach` endpoint (see [Connect a tenant](#connect-a-tenant)) does not use
+the OAuth state token or callback session. It has no user `code` to exchange,
+so it cannot re-derive the GitHub-side ownership check above. It instead
+requires instance-admin and validates the installation with the App JWT. A
+guessed or learned installation id from another organization would otherwise
+be attachable with a tenant's own `tenant:manage` grant, unlike through the
+OAuth flow.
 
 An installation whose permissions include any write-capable permission is
 refused at link time, so a mis-registered App cannot grant SignalDB more
