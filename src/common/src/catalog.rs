@@ -6084,33 +6084,20 @@ impl Catalog {
                 };
                 let tenant_id: String = consumed_row.get("tenant_id");
 
-                let row = query(&format!(
-                    "INSERT INTO github_installations ({GITHUB_INSTALLATION_COLUMNS}) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
-                     ON CONFLICT (tenant_id, installation_id) DO UPDATE SET \
-                        account_login = excluded.account_login, \
-                        account_type = excluded.account_type, \
-                        account_id = excluded.account_id, \
-                        repositories = excluded.repositories, \
-                        repositories_synced_at = excluded.repositories_synced_at, \
-                        linked_by_user_id = excluded.linked_by_user_id, \
-                        linked_by_github_login = excluded.linked_by_github_login, \
-                        updated_at = excluded.updated_at \
-                     RETURNING {GITHUB_INSTALLATION_COLUMNS}"
-                ))
-                .bind(&tenant_id)
-                .bind(installation.installation_id)
-                .bind(&installation.account_login)
-                .bind(&installation.account_type)
-                .bind(installation.account_id)
-                .bind(&repositories_json)
-                .bind(&now_str)
-                .bind(&installation.linked_by_user_id)
-                .bind(&installation.linked_by_github_login)
-                .bind(&now_str)
-                .bind(&now_str)
-                .fetch_one(&mut *tx)
-                .await?;
+                let row = query(&github_installation_upsert_sqlite_sql())
+                    .bind(&tenant_id)
+                    .bind(installation.installation_id)
+                    .bind(&installation.account_login)
+                    .bind(&installation.account_type)
+                    .bind(installation.account_id)
+                    .bind(&repositories_json)
+                    .bind(&now_str)
+                    .bind(&installation.linked_by_user_id)
+                    .bind(&installation.linked_by_github_login)
+                    .bind(&now_str)
+                    .bind(&now_str)
+                    .fetch_one(&mut *tx)
+                    .await?;
                 let record = github_installation_from_sqlite_row(row)?;
                 tx.commit().await?;
                 Ok(GitHubLinkOutcome::Linked(record))
@@ -6132,32 +6119,19 @@ impl Catalog {
                 };
                 let tenant_id: String = consumed_row.get("tenant_id");
 
-                let row = query(&format!(
-                    "INSERT INTO github_installations ({GITHUB_INSTALLATION_COLUMNS}) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10) \
-                     ON CONFLICT (tenant_id, installation_id) DO UPDATE SET \
-                        account_login = EXCLUDED.account_login, \
-                        account_type = EXCLUDED.account_type, \
-                        account_id = EXCLUDED.account_id, \
-                        repositories = EXCLUDED.repositories, \
-                        repositories_synced_at = EXCLUDED.repositories_synced_at, \
-                        linked_by_user_id = EXCLUDED.linked_by_user_id, \
-                        linked_by_github_login = EXCLUDED.linked_by_github_login, \
-                        updated_at = EXCLUDED.updated_at \
-                     RETURNING {GITHUB_INSTALLATION_COLUMNS}"
-                ))
-                .bind(&tenant_id)
-                .bind(installation.installation_id)
-                .bind(&installation.account_login)
-                .bind(&installation.account_type)
-                .bind(installation.account_id)
-                .bind(&repositories_json)
-                .bind(now)
-                .bind(&installation.linked_by_user_id)
-                .bind(&installation.linked_by_github_login)
-                .bind(now)
-                .fetch_one(&mut *tx)
-                .await?;
+                let row = query(&github_installation_upsert_postgres_sql())
+                    .bind(&tenant_id)
+                    .bind(installation.installation_id)
+                    .bind(&installation.account_login)
+                    .bind(&installation.account_type)
+                    .bind(installation.account_id)
+                    .bind(&repositories_json)
+                    .bind(now)
+                    .bind(&installation.linked_by_user_id)
+                    .bind(&installation.linked_by_github_login)
+                    .bind(now)
+                    .fetch_one(&mut *tx)
+                    .await?;
                 let record = github_installation_from_postgres_row(row)?;
                 tx.commit().await?;
                 Ok(GitHubLinkOutcome::Linked(record))
@@ -6191,62 +6165,36 @@ impl Catalog {
         match self {
             Catalog::Sqlite(pool) => {
                 let now_str = now.to_rfc3339();
-                let row = query(&format!(
-                    "INSERT INTO github_installations ({GITHUB_INSTALLATION_COLUMNS}) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
-                     ON CONFLICT (tenant_id, installation_id) DO UPDATE SET \
-                        account_login = excluded.account_login, \
-                        account_type = excluded.account_type, \
-                        account_id = excluded.account_id, \
-                        repositories = excluded.repositories, \
-                        repositories_synced_at = excluded.repositories_synced_at, \
-                        linked_by_user_id = excluded.linked_by_user_id, \
-                        linked_by_github_login = excluded.linked_by_github_login, \
-                        updated_at = excluded.updated_at \
-                     RETURNING {GITHUB_INSTALLATION_COLUMNS}"
-                ))
-                .bind(tenant_id)
-                .bind(installation.installation_id)
-                .bind(&installation.account_login)
-                .bind(&installation.account_type)
-                .bind(installation.account_id)
-                .bind(&repositories_json)
-                .bind(&now_str)
-                .bind(&installation.linked_by_user_id)
-                .bind(&installation.linked_by_github_login)
-                .bind(&now_str)
-                .bind(&now_str)
-                .fetch_one(pool)
-                .await?;
+                let row = query(&github_installation_upsert_sqlite_sql())
+                    .bind(tenant_id)
+                    .bind(installation.installation_id)
+                    .bind(&installation.account_login)
+                    .bind(&installation.account_type)
+                    .bind(installation.account_id)
+                    .bind(&repositories_json)
+                    .bind(&now_str)
+                    .bind(&installation.linked_by_user_id)
+                    .bind(&installation.linked_by_github_login)
+                    .bind(&now_str)
+                    .bind(&now_str)
+                    .fetch_one(pool)
+                    .await?;
                 github_installation_from_sqlite_row(row)
             }
             Catalog::Postgres(pool) => {
-                let row = query(&format!(
-                    "INSERT INTO github_installations ({GITHUB_INSTALLATION_COLUMNS}) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10) \
-                     ON CONFLICT (tenant_id, installation_id) DO UPDATE SET \
-                        account_login = EXCLUDED.account_login, \
-                        account_type = EXCLUDED.account_type, \
-                        account_id = EXCLUDED.account_id, \
-                        repositories = EXCLUDED.repositories, \
-                        repositories_synced_at = EXCLUDED.repositories_synced_at, \
-                        linked_by_user_id = EXCLUDED.linked_by_user_id, \
-                        linked_by_github_login = EXCLUDED.linked_by_github_login, \
-                        updated_at = EXCLUDED.updated_at \
-                     RETURNING {GITHUB_INSTALLATION_COLUMNS}"
-                ))
-                .bind(tenant_id)
-                .bind(installation.installation_id)
-                .bind(&installation.account_login)
-                .bind(&installation.account_type)
-                .bind(installation.account_id)
-                .bind(&repositories_json)
-                .bind(now)
-                .bind(&installation.linked_by_user_id)
-                .bind(&installation.linked_by_github_login)
-                .bind(now)
-                .fetch_one(pool)
-                .await?;
+                let row = query(&github_installation_upsert_postgres_sql())
+                    .bind(tenant_id)
+                    .bind(installation.installation_id)
+                    .bind(&installation.account_login)
+                    .bind(&installation.account_type)
+                    .bind(installation.account_id)
+                    .bind(&repositories_json)
+                    .bind(now)
+                    .bind(&installation.linked_by_user_id)
+                    .bind(&installation.linked_by_github_login)
+                    .bind(now)
+                    .fetch_one(pool)
+                    .await?;
                 github_installation_from_postgres_row(row)
             }
         }
@@ -6443,6 +6391,46 @@ impl Catalog {
 const GITHUB_INSTALLATION_COLUMNS: &str = "tenant_id, installation_id, account_login, \
      account_type, account_id, repositories, repositories_synced_at, linked_by_user_id, \
      linked_by_github_login, created_at, updated_at";
+
+/// The `(tenant_id, installation_id)` upsert shared by
+/// [`Catalog::complete_github_link`] and [`Catalog::attach_github_installation`]
+/// — the two entry points that create or refresh a `github_installations` row,
+/// one via a state token and one direct. Kept as a single definition so the
+/// two can never drift apart.
+fn github_installation_upsert_sqlite_sql() -> String {
+    format!(
+        "INSERT INTO github_installations ({GITHUB_INSTALLATION_COLUMNS}) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT (tenant_id, installation_id) DO UPDATE SET \
+            account_login = excluded.account_login, \
+            account_type = excluded.account_type, \
+            account_id = excluded.account_id, \
+            repositories = excluded.repositories, \
+            repositories_synced_at = excluded.repositories_synced_at, \
+            linked_by_user_id = excluded.linked_by_user_id, \
+            linked_by_github_login = excluded.linked_by_github_login, \
+            updated_at = excluded.updated_at \
+         RETURNING {GITHUB_INSTALLATION_COLUMNS}"
+    )
+}
+
+/// PostgreSQL counterpart of [`github_installation_upsert_sqlite_sql`].
+fn github_installation_upsert_postgres_sql() -> String {
+    format!(
+        "INSERT INTO github_installations ({GITHUB_INSTALLATION_COLUMNS}) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10) \
+         ON CONFLICT (tenant_id, installation_id) DO UPDATE SET \
+            account_login = EXCLUDED.account_login, \
+            account_type = EXCLUDED.account_type, \
+            account_id = EXCLUDED.account_id, \
+            repositories = EXCLUDED.repositories, \
+            repositories_synced_at = EXCLUDED.repositories_synced_at, \
+            linked_by_user_id = EXCLUDED.linked_by_user_id, \
+            linked_by_github_login = EXCLUDED.linked_by_github_login, \
+            updated_at = EXCLUDED.updated_at \
+         RETURNING {GITHUB_INSTALLATION_COLUMNS}"
+    )
+}
 
 fn github_installation_from_sqlite_row(
     row: sqlx::sqlite::SqliteRow,
