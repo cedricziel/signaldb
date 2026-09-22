@@ -17,7 +17,7 @@ import {
 } from "../../lib/redirectTarget";
 import { CHOOSE_TENANT_HINT, useTenantStep } from "../../lib/tenantResolution";
 import { useCurrentSession } from "../../lib/useWhoami";
-import { LoginCard } from "./LoginCard";
+import { LoginCard } from "../../components/LoginCard";
 import { LoginMethods } from "./LoginMethods";
 import { TenantPicker } from "../../components/TenantPicker";
 import "./LoginPanel.css";

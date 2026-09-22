@@ -2,8 +2,11 @@
 // LoginRoute, through LoginMethods.
 
 import { useState } from "react";
-import { toErrorMessage } from "../../api/http";
-import { createSession, type SessionResult } from "../../api/session";
+import { toErrorMessage } from "../api/http";
+import { createSession, type SessionResult } from "../api/session";
+// Own the stylesheet its classes come from rather than relying on a caller
+// (LoginMethods) to have loaded it.
+import "../features/shell/LoginPanel.css";
 
 interface Props {
   /** Called with the raw POST /ui/session response; the caller decides

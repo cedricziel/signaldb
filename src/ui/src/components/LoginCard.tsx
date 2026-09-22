@@ -3,6 +3,9 @@
 // top-level heading.
 
 import type { ReactNode } from "react";
+// Own the stylesheet `.login-hint` comes from rather than relying on the
+// caller (LoginRoute) to have loaded it.
+import "../features/shell/LoginPanel.css";
 
 interface Props {
   title: string;
