@@ -487,28 +487,6 @@ mod tests {
     use common::config::Configuration;
     use tower::ServiceExt;
 
-    /// Installs a real global default `tracing` subscriber exactly once for
-    /// this test binary.
-    ///
-    /// Without one, the *first* test anywhere in this file to touch the
-    /// `signaldb.discovery` span callsite with no subscriber active at all
-    /// (tracing-core's genuine "nothing is listening" sentinel, distinct
-    /// from a subscriber that merely filters it out) permanently caches
-    /// `Interest::never()` for that callsite, process-wide — `tracing-core`'s
-    /// per-callsite interest cache is not scoped to a `set_default` guard.
-    /// That would silently hide the span from a later test's scoped
-    /// `capture_spans` subscriber too, depending on which test the harness
-    /// happened to run first. A real (if inert) subscriber reports
-    /// `Interest::always()` instead, so every span this file emits is always
-    /// dispatched to whichever subscriber — global or thread-local — is
-    /// actually active at the time.
-    fn ensure_tracing_baseline() {
-        static ONCE: std::sync::Once = std::sync::Once::new();
-        ONCE.call_once(|| {
-            let _ = tracing::subscriber::set_global_default(tracing_subscriber::registry());
-        });
-    }
-
     /// A router serving the discovery surface with `ctx` as the authenticated
     /// principal, over an empty in-memory catalog.
     ///
@@ -518,7 +496,7 @@ mod tests {
     /// metadata alone, and a `403` is evidence that authorization was decided
     /// before any ticket was attempted rather than after the work was done.
     async fn app_with(catalog: Catalog, ctx: TenantContext) -> Router {
-        ensure_tracing_baseline();
+        common::testing::install_global_tracing_fallback();
         let state = RouterAppState::new(catalog, Configuration::default());
         super::super::query::router()
             .with_state(state)
@@ -934,9 +912,20 @@ mod tests {
     }
 
     /// Run `f` under a scoped tracing→OTel bridge and return the finished
-    /// spans, the same pattern `common`'s `span_factories_semconv.rs` uses to
-    /// pin a factory span's shape.
-    async fn capture_spans<F, Fut>(f: F) -> Vec<opentelemetry_sdk::trace::SpanData>
+    /// span named `name`, the same pattern `common`'s
+    /// `span_factories_semconv.rs` uses to pin a factory span's shape.
+    ///
+    /// Waits for the span rather than reading the exporter once: a span is
+    /// exported when its last handle drops, and that can happen after `f`
+    /// returns and on another thread. The handlers build a catalog inside the
+    /// discovery span, and sqlx hands the caller's current span to its SQLite
+    /// worker thread with every command, dropping it only after replying.
+    ///
+    /// That worker then releases the span's parent through *its* thread's
+    /// default dispatcher (tracing-subscriber's `DataInner::clear`), not ours,
+    /// so the global default must be the inert fallback: a real global
+    /// registry would panic on, or miscount, an id it never issued.
+    async fn capture_span<F, Fut>(name: &str, f: F) -> opentelemetry_sdk::trace::SpanData
     where
         F: FnOnce() -> Fut,
         Fut: std::future::Future<Output = ()>,
@@ -949,13 +938,26 @@ mod tests {
             .with_simple_exporter(exporter.clone())
             .build();
         let tracer = provider.tracer("test");
-        ensure_tracing_baseline();
+        common::testing::install_global_tracing_fallback();
         let subscriber =
             tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
         let _guard = tracing::subscriber::set_default(subscriber);
         f().await;
-        provider.force_flush().unwrap();
-        exporter.get_finished_spans().unwrap()
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            provider.force_flush().unwrap();
+            let spans = exporter.get_finished_spans().unwrap();
+            if let Some(span) = spans.iter().find(|s| s.name == name) {
+                return span.clone();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no finished span named {name:?}; got {:?}",
+                spans.iter().map(|s| s.name.as_ref()).collect::<Vec<_>>()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
     }
 
     fn span_attr(span: &opentelemetry_sdk::trace::SpanData, key: &str) -> Option<String> {
@@ -971,7 +973,7 @@ mod tests {
         // stack: a `oneshot()` round trip can hand work to a pool thread
         // outside this test's scoped subscriber, which would make span
         // capture flaky.
-        let spans = capture_spans(|| async {
+        let span = capture_span("discovery fields", || async {
             let catalog = Catalog::new("sqlite::memory:").await.unwrap();
             let state = RouterAppState::new(catalog, Configuration::default());
             let ctx = ctx_for("acme", None);
@@ -989,38 +991,29 @@ mod tests {
         })
         .await;
 
-        let names: Vec<&str> = spans.iter().map(|s| s.name.as_ref()).collect();
-        let span = spans
-            .iter()
-            .find(|s| s.name == "discovery fields")
-            .unwrap_or_else(|| {
-                panic!(
-                    "the describe:fields read must open a signaldb.discovery span; got {names:?}"
-                )
-            });
         assert_eq!(
             span.span_kind,
             opentelemetry::trace::SpanKind::Internal,
             "discovery answers from metadata in-process; it is never RPC"
         );
         assert_eq!(
-            span_attr(span, "signaldb.tenant.id").as_deref(),
+            span_attr(&span, "signaldb.tenant.id").as_deref(),
             Some("acme")
         );
         assert_eq!(
-            span_attr(span, "signaldb.dataset.id").as_deref(),
+            span_attr(&span, "signaldb.dataset.id").as_deref(),
             Some("default")
         );
         assert_eq!(
-            span_attr(span, "signaldb.discovery.kind").as_deref(),
+            span_attr(&span, "signaldb.discovery.kind").as_deref(),
             Some("fields")
         );
         assert_eq!(
-            span_attr(span, "signaldb.discovery.source").as_deref(),
+            span_attr(&span, "signaldb.discovery.source").as_deref(),
             Some("logs")
         );
         assert_eq!(
-            span_attr(span, "signaldb.discovery.cost_mode").as_deref(),
+            span_attr(&span, "signaldb.discovery.cost_mode").as_deref(),
             Some("metadata"),
             "the answer's cost tier must be recorded once known"
         );
@@ -1033,7 +1026,7 @@ mod tests {
         // so the handler itself 503s; the point of this test is that the
         // `signaldb.discovery` span still opens and is shaped correctly
         // regardless of the outcome.
-        let spans = capture_spans(|| async {
+        let span = capture_span("discovery sources", || async {
             let catalog = Catalog::new("sqlite::memory:").await.unwrap();
             let state = RouterAppState::new(catalog, Configuration::default());
             let ctx = ctx_for("acme", None);
@@ -1041,16 +1034,12 @@ mod tests {
         })
         .await;
 
-        let span = spans
-            .iter()
-            .find(|s| s.name == "discovery sources")
-            .expect("GET /api/v1/query/sources must open a signaldb.discovery span");
         assert_eq!(
-            span_attr(span, "signaldb.discovery.kind").as_deref(),
+            span_attr(&span, "signaldb.discovery.kind").as_deref(),
             Some("sources")
         );
         assert_eq!(
-            span_attr(span, "signaldb.discovery.source"),
+            span_attr(&span, "signaldb.discovery.source"),
             None,
             "the sources listing names no single source"
         );
