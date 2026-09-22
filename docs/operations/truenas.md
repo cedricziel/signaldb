@@ -142,5 +142,9 @@ Kafka, flagd or Envoy). All demo telemetry lands in tenant `demo`, dataset
 - Only the UI/query API is published (`30210`); OTLP stays on the app network.
   Point a reverse proxy (the maintainers use a Pangolin resource) at
   `<nas>:30210` and set `SIGNALDB__PUBLIC__API_URL` to its public URL.
-- The demo key has full tenant access; anyone who holds it can write to the
-  `demo` tenant, so don't reuse it elsewhere.
+- Visitors sign in to the Explore UI as `demo`/`demo` (see
+  [demo-mode.md](demo-mode.md)) rather than using an API key: the account is
+  provisioned as a tenant Viewer, and a middleware refuses every write it
+  might otherwise be able to make, so it's safe to publish. The `sk-demo-*`
+  key in `signaldb.toml` still has full tenant write access for the
+  OTel-Demo services themselves — keep that one out of the UI.

@@ -56,6 +56,11 @@ configs:
       slug = "otel-demo"
       is_default = true
 
+      [demo]
+      enabled = true
+      tenant_id = "demo"
+      dataset_id = "otel-demo"
+
 x-otel: &otel
   OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
   OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
