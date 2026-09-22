@@ -94,6 +94,11 @@ SHALL be rejected on every surface — a key's permissions are always
 explicit; the unrestricted legacy behaviour applies only to keys that
 predate scopes.
 
+The scope vocabulary SHALL additionally contain `processors:read` and
+`processors:write`. The UI scope picker SHALL list them in the same group as
+the schema scopes; the admin API, management API, SDK, CLI, and MCP SHALL
+accept them on key creation and scope update.
+
 #### Scenario: CLI creates a key with scopes
 
 - **WHEN** a user runs `signaldb admin api-key create acme --name ci
@@ -130,6 +135,13 @@ predate scopes.
 - **WHEN** a key is created via HTTP, CLI, or MCP with no scopes
 - **THEN** the request is rejected with a validation error stating that at
   least one scope is required
+
+#### Scenario: Create key with processor scopes
+
+- **WHEN** an admin creates a key with `scopes: ["processors:read",
+  "processors:write"]`
+- **THEN** the key is created and a request using it can list and create
+  processors
 
 ### Requirement: An existing key's scopes can be updated
 
