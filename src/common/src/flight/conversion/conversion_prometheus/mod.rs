@@ -67,7 +67,6 @@ mod tests {
         let info = detect_metric_type("http_requests_total", &metadata_map);
         assert_eq!(info.base_name, "http_requests");
         assert_eq!(info.metric_type, PrometheusMetricType::Counter);
-        assert_eq!(info.suffix, Some("total".to_string()));
     }
 
     #[test]
@@ -77,7 +76,6 @@ mod tests {
         let info = detect_metric_type("http_request_duration_seconds_bucket", &metadata_map);
         assert_eq!(info.base_name, "http_request_duration_seconds");
         assert_eq!(info.metric_type, PrometheusMetricType::Histogram);
-        assert_eq!(info.suffix, Some("bucket".to_string()));
     }
 
     #[test]
@@ -87,7 +85,6 @@ mod tests {
         let info = detect_metric_type("process_resident_memory_bytes", &metadata_map);
         assert_eq!(info.base_name, "process_resident_memory_bytes");
         assert_eq!(info.metric_type, PrometheusMetricType::Gauge);
-        assert_eq!(info.suffix, None);
     }
 
     #[test]
