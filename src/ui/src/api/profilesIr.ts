@@ -7,7 +7,7 @@
 import { runIrQuery } from "./queryIr";
 import { ApiError } from "./http";
 import { msToNanos, type ResolvedRange } from "../lib/time";
-import type { RenderResponse } from "./pyroscope";
+import type { RenderResponse } from "./profileTypes";
 import type { FrameLocation } from "./gen";
 
 /** An additional attribute matcher beyond service/sample-type — the field

@@ -1,7 +1,8 @@
-// Tempo-shaped types shared by the trace detail and group-search paths,
-// both of which are Query IR reads now (api/traceDetail.ts,
+// Trace/span view types shared by the trace detail and group-search paths,
+// both of which are Query IR reads (api/traceDetail.ts,
 // api/traceGroupMembers.ts, api/traceGroups.ts) — this module holds no
-// HTTP client of its own.
+// HTTP client of its own. Named for the shape (a rendered trace/span), not
+// the now-removed Tempo compat client that originally produced it.
 
 export type AttrValue = string | number | boolean;
 

@@ -6,7 +6,7 @@ import {
   type ProfileSummaryView,
   type SpanEventView,
   type TempoSpan,
-} from "../../api/tempo";
+} from "../../api/traceTypes";
 import { fields as describeFields } from "../../api/ir/discovery";
 import { ApiError } from "../../api/http";
 import { fetchTraceDetail } from "../../api/traceDetail";

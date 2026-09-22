@@ -3,12 +3,12 @@
  * picker can offer, without reading signal data
  * (`docs/users/querying-ir.md#discovery`). Replaces the Loki label endpoints
  * (`api/loki.ts`), the Tempo tag-name endpoint (`tempoSearchTags`) and the
- * Pyroscope discovery endpoints (formerly `api/pyroscope.ts`).
+ * Pyroscope discovery endpoints (formerly `api/pyroscope.ts`, types now in `api/profileTypes.ts`).
  */
 import type { QueryIrRequest, QueryIrResponse, DiscoveredField } from "../gen";
 import { msToNanos, type ResolvedRange } from "../../lib/time";
 import { runIrQuery } from "../queryIr";
-import type { ProfileType } from "../pyroscope";
+import type { ProfileType } from "../profileTypes";
 
 const IR_VERSION = 4;
 

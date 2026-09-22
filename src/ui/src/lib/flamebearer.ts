@@ -1,7 +1,7 @@
-// Decode the delta-encoded flamebearer (see api/pyroscope.ts) into absolute
+// Decode the delta-encoded flamebearer (see api/profileTypes.ts) into absolute
 // frames, and derive the geometry a flame graph renders. Pure + tested.
 
-import type { Flamebearer } from "../api/pyroscope";
+import type { Flamebearer } from "../api/profileTypes";
 
 export interface FlameFrame {
   level: number;

@@ -1,6 +1,8 @@
 // Flamebearer render-response types, shared by api/profilesIr.ts and the
 // FlameGraph component. Discovery (profile types, services, label
 // keys/values) is served through the Query IR — see api/ir/discovery.ts.
+// Named for the shape, not the now-removed Pyroscope compat client that
+// originally produced it.
 
 /** A profile kind, e.g. `{ID: "cpu:nanoseconds", sampleType: "cpu", ...}`. */
 export interface ProfileType {
