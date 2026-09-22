@@ -86,6 +86,40 @@ pub trait RouterState: std::fmt::Debug + Clone + Send + Sync + 'static {
     fn source_context(&self) -> Option<&Arc<source_context::SourceContextService>> {
         None
     }
+    /// The lazily built, shared `CatalogManager` slot. `None` (the default)
+    /// makes [`catalog_manager`] build a fresh one per call, fine for tests.
+    fn catalog_manager_cell(&self) -> Option<&SharedCatalogManager> {
+        None
+    }
+}
+
+type SharedCatalogManager = tokio::sync::OnceCell<Arc<common::CatalogManager>>;
+
+/// The router's `CatalogManager`, carrying the catalog as tenant source.
+///
+/// Built once on first use and reused, so per-request callers stop opening a
+/// new connection pool each time. Nothing in it needs invalidating: the
+/// router's config is fixed at startup, and tenants/datasets are read live
+/// from the tenant source on every lookup. A failed build is not cached.
+async fn catalog_manager<S: RouterState>(state: &S) -> anyhow::Result<Arc<common::CatalogManager>> {
+    let build = || async {
+        let manager = common::CatalogManager::new(state.config().clone()).await?;
+        Ok(Arc::new(
+            manager.with_tenant_source(Arc::new(state.catalog().clone())),
+        ))
+    };
+    match state.catalog_manager_cell() {
+        Some(cell) => cell.get_or_try_init(build).await.cloned(),
+        None => build().await,
+    }
+}
+
+/// A [`common::tenant_api::TenantApi`] over the shared `CatalogManager`.
+pub(crate) async fn tenant_api<S: RouterState>(
+    state: &S,
+) -> anyhow::Result<common::tenant_api::TenantApi> {
+    Ok(common::tenant_api::TenantApi::new(state.config().clone())
+        .with_catalog_manager(catalog_manager(state).await?))
 }
 
 /// Concrete [`RouterState`] holding the router's shared handles.
@@ -100,6 +134,7 @@ pub struct RouterAppState {
     oidc: Option<Arc<oidc::OidcRuntime>>,
     github: Option<Arc<github::GitHubApp>>,
     source_context: Option<Arc<source_context::SourceContextService>>,
+    catalog_manager: Arc<SharedCatalogManager>,
 }
 
 impl std::fmt::Debug for RouterAppState {
@@ -142,6 +177,7 @@ impl RouterAppState {
             oidc,
             github,
             source_context,
+            catalog_manager: Arc::default(),
         }
     }
 
@@ -175,6 +211,7 @@ impl RouterAppState {
             oidc,
             github,
             source_context,
+            catalog_manager: Arc::default(),
         }
     }
 }
@@ -252,6 +289,10 @@ impl RouterState for RouterAppState {
 
     fn source_context(&self) -> Option<&Arc<source_context::SourceContextService>> {
         self.source_context.as_ref()
+    }
+
+    fn catalog_manager_cell(&self) -> Option<&SharedCatalogManager> {
+        Some(&self.catalog_manager)
     }
 }
 

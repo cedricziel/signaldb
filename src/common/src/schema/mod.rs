@@ -316,6 +316,9 @@ pub struct TenantSchemaRegistry {
     /// Optional database catalog used as an additional tenant source, so
     /// admin-API tenants resolve alongside config-defined ones.
     tenant_source: Option<Arc<crate::catalog::Catalog>>,
+    /// A long-lived manager to reuse instead of building one (and its
+    /// connection pool) per call.
+    catalog_manager: Option<Arc<crate::CatalogManager>>,
 }
 
 impl TenantSchemaRegistry {
@@ -325,12 +328,20 @@ impl TenantSchemaRegistry {
             config,
             catalogs: HashMap::new(),
             tenant_source: None,
+            catalog_manager: None,
         }
     }
 
     /// Attach a database catalog as an additional tenant source.
     pub fn with_tenant_source(mut self, tenant_source: Arc<crate::catalog::Catalog>) -> Self {
         self.tenant_source = Some(tenant_source);
+        self
+    }
+
+    /// Reuse a shared `CatalogManager` rather than building one per call.
+    /// It must already carry the tenant source, if any.
+    pub fn with_catalog_manager(mut self, manager: Arc<crate::CatalogManager>) -> Self {
+        self.catalog_manager = Some(manager);
         self
     }
 
@@ -525,12 +536,15 @@ impl TenantSchemaRegistry {
     /// Build a `CatalogManager` over this registry's configuration, carrying
     /// the tenant source when one is attached so database-created tenants
     /// resolve alongside config-defined ones.
-    async fn catalog_manager(&self) -> Result<crate::CatalogManager> {
+    async fn catalog_manager(&self) -> Result<Arc<crate::CatalogManager>> {
+        if let Some(manager) = &self.catalog_manager {
+            return Ok(manager.clone());
+        }
         let manager = crate::CatalogManager::new(self.config.clone()).await?;
-        Ok(match &self.tenant_source {
+        Ok(Arc::new(match &self.tenant_source {
             Some(source) => manager.with_tenant_source(source.clone()),
             None => manager,
-        })
+        }))
     }
 
     /// List every table actually provisioned for a tenant, across all of its
