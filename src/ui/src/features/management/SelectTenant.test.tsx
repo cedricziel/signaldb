@@ -44,6 +44,7 @@ const sessionWithMemberships: CurrentSessionResponse = {
     email: "admin@acme.com",
     display_name: "Admin",
     is_instance_admin: true,
+    is_demo: false,
   },
   memberships: [
     { tenant_id: "acme", name: "Acme", role: "admin" },
@@ -245,6 +246,7 @@ describe("SelectTenant", () => {
         email: "root@example.com",
         display_name: null,
         is_instance_admin: true,
+        is_demo: false,
       },
       memberships: [],
     });
@@ -271,6 +273,7 @@ describe("SelectTenant", () => {
         email: "orphan@example.com",
         display_name: null,
         is_instance_admin: false,
+        is_demo: false,
       },
       memberships: [],
     });

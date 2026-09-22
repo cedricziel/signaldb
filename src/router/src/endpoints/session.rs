@@ -439,6 +439,15 @@ pub struct OidcLoginConfig {
     pub name: String,
 }
 
+/// The demo account's credentials, returned by `login_config` only when
+/// `[demo].enabled` is true (change: demo-mode) so the login page can offer
+/// an "Explore the demo" shortcut.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct DemoLoginConfig {
+    pub username: String,
+    pub password: String,
+}
+
 /// `GET /ui/session/config`'s response: which credentials the login page
 /// may offer. `oidc` is `null` until an OIDC provider is configured.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -448,6 +457,10 @@ pub struct LoginConfigResponse {
     /// an omittable field.
     #[schema(required = true)]
     pub oidc: Option<OidcLoginConfig>,
+    /// Always serialized, `null` unless `[demo].enabled` is true (change:
+    /// demo-mode) — not an omittable field.
+    #[schema(required = true)]
+    pub demo: Option<DemoLoginConfig>,
 }
 
 /// GET /ui/session/config
@@ -481,9 +494,14 @@ pub async fn login_config<S: RouterState>(State(state): State<S>) -> Response {
         .oidc
         .as_ref()
         .is_some_and(|oidc| oidc.disable_password_login);
+    let demo = state.config().demo.enabled.then(|| DemoLoginConfig {
+        username: state.config().demo.username.clone(),
+        password: state.config().demo.password.clone(),
+    });
     Json(LoginConfigResponse {
         password_enabled,
         oidc,
+        demo,
     })
     .into_response()
 }
@@ -495,6 +513,10 @@ pub struct SessionUser {
     pub email: String,
     pub display_name: Option<String>,
     pub is_instance_admin: bool,
+    /// True when this is the `[demo]` read-only account (change:
+    /// demo-mode), so the UI can show a "read-only" badge and hide
+    /// mutating navigation without hardcoding the demo username.
+    pub is_demo: bool,
 }
 
 /// `GET /ui/session`'s response: the signed-in user, the memberships the
@@ -575,12 +597,15 @@ pub async fn current_session<S: RouterState>(
         }
     };
 
+    let is_demo = state.config().demo.enabled
+        && user.email == state.config().demo.username.trim().to_lowercase();
     let mut response = Json(CurrentSessionResponse {
         user: SessionUser {
             id: user.id,
             email: user.email,
             display_name: user.display_name,
             is_instance_admin: user.is_instance_admin,
+            is_demo,
         },
         tenant,
         dataset,
@@ -3072,6 +3097,115 @@ mod tests {
         assert_eq!(body["password_enabled"], true);
         assert!(body.get("oidc").is_some(), "oidc key must be present");
         assert_eq!(body["oidc"], Value::Null);
+        assert!(body.get("demo").is_some(), "demo key must be present");
+        assert_eq!(body["demo"], Value::Null, "demo is null when disabled");
+    }
+
+    /// Builds `test_app`'s tenants/users plus a provisioned `[demo]` account
+    /// (change: demo-mode), for the demo-specific tests below.
+    async fn test_app_with_demo() -> axum::Router {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant("acme", "acme-key", &[("main", true)], Some("main"))],
+                ..Default::default()
+            },
+            demo: common::config::DemoConfig {
+                enabled: true,
+                tenant_id: "acme".to_string(),
+                dataset_id: None,
+                username: "demo".to_string(),
+                password: "demo".to_string(),
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        common::bootstrap::provision_demo_user(&catalog, &config)
+            .await
+            .unwrap();
+        create_router(RouterAppState::new(catalog, config))
+    }
+
+    #[tokio::test]
+    async fn login_config_reports_demo_credentials_when_enabled() {
+        let app = test_app_with_demo().await;
+        let request = Request::builder()
+            .uri("/ui/session/config")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        let body = json_body(res).await;
+        assert_eq!(body["demo"]["username"], "demo");
+        assert_eq!(body["demo"]["password"], "demo");
+    }
+
+    #[tokio::test]
+    async fn demo_credentials_log_in() {
+        let app = test_app_with_demo().await;
+        let res = create_session(
+            &app,
+            serde_json::json!({"email": "demo", "password": "demo"}),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn demo_session_cannot_create_api_key() {
+        let app = test_app_with_demo().await;
+        let login = create_session(
+            &app,
+            serde_json::json!({"email": "demo", "password": "demo"}),
+        )
+        .await;
+        let cookie = cookie_pair(&login);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/manage/tenants/acme/api-keys")
+            .header(header::COOKIE, cookie)
+            .header("content-type", "application/json")
+            .header("x-tenant-id", "acme")
+            .body(Body::from(
+                serde_json::json!({"name": "sneaky"}).to_string(),
+            ))
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        let body = json_body(res).await;
+        assert_eq!(body["error"], "The demo account is read-only");
+    }
+
+    #[tokio::test]
+    async fn demo_session_can_query() {
+        let app = test_app_with_demo().await;
+        let login = create_session(
+            &app,
+            serde_json::json!({"email": "demo", "password": "demo"}),
+        )
+        .await;
+        let cookie = cookie_pair(&login);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/query")
+            .header(header::COOKIE, cookie)
+            .header("content-type", "application/json")
+            .header("x-tenant-id", "acme")
+            .body(Body::from(
+                serde_json::json!({
+                    "signal": "traces",
+                    "stages": [],
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        // The demo guard must not be the thing that rejects this — a 403
+        // with the guard's own message would mean the allowlist missed it.
+        // Whatever the query engine itself returns (400/422 on a schema it
+        // doesn't recognize, 200 on an empty result) is fine.
+        assert_ne!(res.status(), StatusCode::FORBIDDEN);
     }
 
     #[tokio::test]
