@@ -110,27 +110,6 @@ pub enum Literal {
     Array(Vec<Literal>),
 }
 
-impl Literal {
-    /// The [`ValueType`] this literal inhabits.
-    pub fn value_type(&self) -> ValueType {
-        match self {
-            Literal::String(_) => ValueType::String,
-            Literal::Int64(_) => ValueType::Int64,
-            Literal::Float64(_) => ValueType::Float64,
-            Literal::Bool(_) => ValueType::Bool,
-            Literal::Timestamp(_) => ValueType::TimestampNs,
-            Literal::Duration(_) => ValueType::DurationNs,
-            Literal::Bytes(_) => ValueType::Bytes,
-            Literal::Array(items) => ValueType::Array(Box::new(
-                items
-                    .first()
-                    .map(Literal::value_type)
-                    .unwrap_or(ValueType::String),
-            )),
-        }
-    }
-}
-
 /// Error returned when a literal cannot be coerced to a target [`ValueType`].
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 #[error("value {value} cannot be coerced to {target}")]

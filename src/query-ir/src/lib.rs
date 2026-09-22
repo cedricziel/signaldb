@@ -46,9 +46,7 @@ pub use stage::{
     HeatmapAxisX, HeatmapAxisY, HeatmapValue, HistogramMode, HistogramQuantile, Order, Parser,
     Rank, Stage,
 };
-pub use validate::{
-    DESCRIBE_MIN_VERSION, IrError, Validated, parse_document, validate, validate_describe,
-};
+pub use validate::{DESCRIBE_MIN_VERSION, IrError, Validated, validate, validate_describe};
 pub use value::{
     CoercionError, Literal, RelativeTime, TimestampLiteral, Truth, ValueType, coerce,
     parse_duration_ns, parse_relative_time, parse_timestamp_literal,

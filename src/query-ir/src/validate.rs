@@ -107,11 +107,6 @@ pub struct Validated {
     pub terminal: RelationType,
 }
 
-/// Parse an IR document from JSON, mapping serde errors into [`IrError`].
-pub fn parse_document(json: &str) -> Result<Document, IrError> {
-    serde_json::from_str(json).map_err(|e| IrError::Invalid(e.to_string()))
-}
-
 /// Validate a document against a source registry and a field resolver.
 pub fn validate(
     doc: &Document,
