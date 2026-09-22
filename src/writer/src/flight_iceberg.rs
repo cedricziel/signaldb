@@ -31,7 +31,6 @@ use common::wal::manager::WalManager;
 use common::wal::{WalOperation, record_batch_to_bytes};
 use futures::StreamExt;
 use futures::stream::{self, BoxStream};
-use object_store::ObjectStore;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
@@ -96,16 +95,11 @@ impl IcebergWriterFlightService {
     /// metadata across all SignalDB components.
     pub fn new(
         catalog_manager: Arc<CatalogManager>,
-        object_store: Arc<dyn ObjectStore>,
         wal_manager: Arc<WalManager>,
         writer_config: &WriterConfig,
     ) -> Self {
-        let processor = WalProcessor::with_config(
-            wal_manager.clone(),
-            catalog_manager.clone(),
-            object_store,
-            writer_config,
-        );
+        let processor =
+            WalProcessor::with_config(wal_manager.clone(), catalog_manager.clone(), writer_config);
 
         Self {
             processor: Arc::new(Mutex::new(processor)),
@@ -733,7 +727,6 @@ impl FlightService for IcebergWriterFlightService {
 mod tests {
     use super::*;
     use common::wal::WalConfig;
-    use object_store::memory::InMemory;
     use std::collections::HashMap;
     use std::sync::Mutex as StdMutex;
     use tempfile::tempdir;
@@ -923,15 +916,10 @@ mod tests {
     async fn test_iceberg_flight_service_creation() {
         let temp_dir = tempdir().unwrap();
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
         let (manager, _wal) = test_wal_manager(temp_dir.path()).await;
 
-        let service = IcebergWriterFlightService::new(
-            catalog_manager,
-            object_store,
-            manager,
-            &WriterConfig::default(),
-        );
+        let service =
+            IcebergWriterFlightService::new(catalog_manager, manager, &WriterConfig::default());
 
         // Verify service was created successfully
         assert!(
@@ -950,7 +938,6 @@ mod tests {
     async fn do_action_flush_commits_pending_writes() {
         let temp_dir = tempdir().unwrap();
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
         let (manager, wal) = test_wal_manager(temp_dir.path()).await;
         // A large interval means the background loop would defer this write; the
         // flush action must commit it regardless.
@@ -959,8 +946,7 @@ mod tests {
             max_uncommitted_rows: 1_000_000,
             ..Default::default()
         };
-        let service =
-            IcebergWriterFlightService::new(catalog_manager, object_store, manager, &writer_config);
+        let service = IcebergWriterFlightService::new(catalog_manager, manager, &writer_config);
 
         wal.append(
             WalOperation::WriteMetrics,
@@ -1022,14 +1008,9 @@ mod tests {
         // there is nothing else left pending.
         let temp_dir = tempdir().unwrap();
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
         let (manager, wal) = test_wal_manager(temp_dir.path()).await;
-        let service = IcebergWriterFlightService::new(
-            catalog_manager,
-            object_store,
-            manager,
-            &WriterConfig::default(),
-        );
+        let service =
+            IcebergWriterFlightService::new(catalog_manager, manager, &WriterConfig::default());
 
         wal.append(
             WalOperation::WriteMetrics,
@@ -1143,14 +1124,9 @@ mod tests {
 
         let temp_dir = tempdir().unwrap();
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
         let (manager, _wal) = test_wal_manager(temp_dir.path()).await;
-        let service = IcebergWriterFlightService::new(
-            catalog_manager,
-            object_store,
-            manager,
-            &WriterConfig::default(),
-        );
+        let service =
+            IcebergWriterFlightService::new(catalog_manager, manager, &WriterConfig::default());
 
         let exporter = InMemorySpanExporter::default();
         let provider = SdkTracerProvider::builder()

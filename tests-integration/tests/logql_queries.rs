@@ -154,7 +154,6 @@ async fn setup() -> TestServices {
     );
     let writer_service = IcebergWriterFlightService::new(
         catalog_manager.clone(),
-        object_store.clone(),
         writer_wal.clone(),
         &common::config::WriterConfig::default(),
     );

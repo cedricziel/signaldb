@@ -6,7 +6,6 @@ use common::config::WriterConfig;
 use common::wal::manager::WalManager;
 use common::wal::{Wal, WalEntry, bytes_to_record_batch};
 use datafusion::arrow::array::RecordBatch;
-use object_store::ObjectStore;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Instant;
@@ -324,8 +323,6 @@ pub struct WalProcessor {
     /// ever affects its own tenant, and each cycle drains every cached WAL.
     wal_manager: Arc<WalManager>,
     catalog_manager: Arc<CatalogManager>,
-    #[allow(dead_code)]
-    object_store: Arc<dyn ObjectStore>,
     /// Cache of table writers per tenant/table combination.
     ///
     /// Two levels of locking, because groups commit concurrently (#1306): the
@@ -385,30 +382,19 @@ pub struct WalProcessor {
 impl WalProcessor {
     /// Create a new WAL processor with shared CatalogManager and the default
     /// writer commit-coalescing policy.
-    pub fn new(
-        wal_manager: Arc<WalManager>,
-        catalog_manager: Arc<CatalogManager>,
-        object_store: Arc<dyn ObjectStore>,
-    ) -> Self {
-        Self::with_config(
-            wal_manager,
-            catalog_manager,
-            object_store,
-            &WriterConfig::default(),
-        )
+    pub fn new(wal_manager: Arc<WalManager>, catalog_manager: Arc<CatalogManager>) -> Self {
+        Self::with_config(wal_manager, catalog_manager, &WriterConfig::default())
     }
 
     /// Create a new WAL processor with an explicit commit-coalescing policy.
     pub fn with_config(
         wal_manager: Arc<WalManager>,
         catalog_manager: Arc<CatalogManager>,
-        object_store: Arc<dyn ObjectStore>,
         writer_config: &WriterConfig,
     ) -> Self {
         Self {
             wal_manager,
             catalog_manager,
-            object_store,
             table_writers: tokio::sync::Mutex::new(HashMap::new()),
             entry_failures: tokio::sync::Mutex::new(HashMap::new()),
             coalescer: tokio::sync::Mutex::new(CommitCoalescer::new(writer_config)),
@@ -1600,7 +1586,6 @@ pub(crate) fn link_batch_origins(span: &tracing::Span, trace_contexts: &[EntryTr
 mod tests {
     use super::*;
     use common::wal::{Wal, WalConfig, WalOperation};
-    use object_store::memory::InMemory;
     use tempfile::tempdir;
 
     /// A manager holding exactly `wal`, so tests that drive one WAL by hand
@@ -1655,8 +1640,7 @@ mod tests {
         }
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
-        let mut processor = WalProcessor::new(manager, catalog_manager, object_store);
+        let mut processor = WalProcessor::new(manager, catalog_manager);
 
         // No pending entries anywhere, so drain_pending returns early after
         // the per-cycle bookkeeping — which is exactly where the dead-letter
@@ -1708,8 +1692,7 @@ mod tests {
         }
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
-        let mut processor = WalProcessor::new(manager.clone(), catalog_manager, object_store);
+        let mut processor = WalProcessor::new(manager.clone(), catalog_manager);
 
         processor.process_pending_entries().await.unwrap();
 
@@ -1776,8 +1759,7 @@ mod tests {
         globex.flush().await.unwrap();
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
-        let mut processor = WalProcessor::new(manager.clone(), catalog_manager, object_store);
+        let mut processor = WalProcessor::new(manager.clone(), catalog_manager);
         processor
             .process_pending_entries()
             .await
@@ -2019,9 +2001,7 @@ mod tests {
         );
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
-        let mut processor =
-            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
 
         processor.process_pending_entries().await.unwrap();
 
@@ -2044,9 +2024,8 @@ mod tests {
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
 
-        let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
 
         let stats = processor.get_stats().await;
         assert_eq!(stats.active_writers, 0);
@@ -2064,9 +2043,8 @@ mod tests {
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
 
-        let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
 
         // Test different operation types
         let entry = WalEntry {
@@ -2127,7 +2105,6 @@ mod tests {
         let processor = WalProcessor::new(
             manager_for(&wal).await,
             Arc::new(CatalogManager::new_in_memory().await.unwrap()),
-            Arc::new(InMemory::new()),
         );
 
         // The entry ids are what the ingest path derived: `" acme "` trimmed,
@@ -2170,7 +2147,6 @@ mod tests {
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
 
         // Garbage bytes: deserialization fails on every attempt. Before
         // the dead-letter path this aborted every processing cycle
@@ -2181,8 +2157,7 @@ mod tests {
             .unwrap();
         wal.flush().await.unwrap();
 
-        let mut processor =
-            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
         for _ in 0..super::MAX_ENTRY_FAILURES {
             processor
                 .process_pending_entries()
@@ -2218,7 +2193,6 @@ mod tests {
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
 
         let meta = Some(r#"{"tenant_id":"acme","dataset_id":"production"}"#.to_string());
         let good_before = wal
@@ -2258,8 +2232,7 @@ mod tests {
         bytes[idx] ^= 0x01;
         tokio::fs::write(&data_path, &bytes).await.unwrap();
 
-        let mut processor =
-            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
         processor
             .process_pending_entries()
             .await
@@ -2306,7 +2279,6 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
 
         let meta = Some(r#"{"target_table":"metrics_gauge"}"#.to_string());
         let good_before = wal
@@ -2331,11 +2303,7 @@ mod tests {
             .unwrap();
         wal.flush().await.unwrap();
 
-        let mut processor = WalProcessor::new(
-            manager_for(&wal).await,
-            catalog_manager.clone(),
-            object_store.clone(),
-        );
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager.clone());
         processor
             .process_pending_entries()
             .await
@@ -2412,9 +2380,7 @@ mod tests {
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
-        let mut processor =
-            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
 
         // _system-tenant entry: nothing may pass the export filter.
         wal.append(
@@ -2470,10 +2436,8 @@ mod tests {
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
 
-        let mut processor =
-            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
 
         // Should handle empty entries gracefully
         let result = processor.process_pending_entries().await;
@@ -2505,9 +2469,7 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
-        let mut processor =
-            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
 
         // No pending entries: force-commit must succeed and commit nothing.
         processor
@@ -2531,18 +2493,13 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
         let config = WriterConfig {
             commit_interval: Duration::from_secs(3600),
             max_uncommitted_rows: 1_000_000,
             ..Default::default()
         };
-        let mut processor = WalProcessor::with_config(
-            manager_for(&wal).await,
-            catalog_manager,
-            object_store,
-            &config,
-        );
+        let mut processor =
+            WalProcessor::with_config(manager_for(&wal).await, catalog_manager, &config);
 
         let meta = Some(r#"{"target_table":"metrics_gauge"}"#.to_string());
 
@@ -2600,18 +2557,13 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
         let config = WriterConfig {
             commit_interval: Duration::from_secs(3600),
             max_uncommitted_rows: 1_000_000,
             ..Default::default()
         };
-        let mut processor = WalProcessor::with_config(
-            manager_for(&wal).await,
-            catalog_manager,
-            object_store,
-            &config,
-        );
+        let mut processor =
+            WalProcessor::with_config(manager_for(&wal).await, catalog_manager, &config);
 
         let meta = Some(r#"{"target_table":"metrics_gauge"}"#.to_string());
 
@@ -2656,18 +2608,13 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
         let config = WriterConfig {
             commit_interval: Duration::from_secs(3600),
             max_uncommitted_rows: 1_000_000,
             ..Default::default()
         };
-        let mut processor = WalProcessor::with_config(
-            manager_for(&wal).await,
-            catalog_manager,
-            object_store,
-            &config,
-        );
+        let mut processor =
+            WalProcessor::with_config(manager_for(&wal).await, catalog_manager, &config);
 
         let meta_a = Some(
             r#"{"tenant_id":"acme","dataset_id":"production","target_table":"metrics_gauge"}"#
@@ -2740,7 +2687,6 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
         let meta = Some(r#"{"target_table":"metrics_gauge"}"#.to_string());
 
         // Acked-but-uncommitted: appended and flushed to the WAL, no processing.
@@ -2752,8 +2698,7 @@ mod tests {
 
         // "Restart": a brand-new processor (fresh coalescer state, same catalog
         // + object store) over the same WAL commits the pending entry.
-        let mut restarted =
-            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        let mut restarted = WalProcessor::new(manager_for(&wal).await, catalog_manager);
         restarted.process_pending_entries().await.unwrap();
         assert!(
             wal.get_unprocessed_entries().await.unwrap().is_empty(),
@@ -2777,9 +2722,7 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
-        let mut processor =
-            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
         processor
             .inject_commit_failure(Some(CommitFailureKind::Transient))
             .await;
@@ -2821,9 +2764,7 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
-        let mut processor =
-            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
         processor
             .inject_commit_failure(Some(CommitFailureKind::Transient))
             .await;
@@ -2867,9 +2808,7 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
-        let mut processor =
-            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
 
         wal.append(
             WalOperation::WriteMetrics,
@@ -2907,7 +2846,6 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
 
         let entry_bytes = metrics_gauge_bytes(1);
         let entry_size = entry_bytes.len() as u64;
@@ -2917,12 +2855,8 @@ mod tests {
             max_drain_bytes_per_cycle: entry_size * 2 + entry_size / 2,
             ..Default::default()
         };
-        let mut processor = WalProcessor::with_config(
-            manager_for(&wal).await,
-            catalog_manager,
-            object_store,
-            &config,
-        );
+        let mut processor =
+            WalProcessor::with_config(manager_for(&wal).await, catalog_manager, &config);
 
         let meta = Some(r#"{"target_table":"metrics_gauge"}"#.to_string());
         let mut ids = Vec::new();
@@ -2983,19 +2917,14 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
         let config = WriterConfig {
             commit_interval: Duration::from_secs(0),
             max_uncommitted_rows: 1_000_000,
             max_drain_bytes_per_cycle: 0,
             ..Default::default()
         };
-        let mut processor = WalProcessor::with_config(
-            manager_for(&wal).await,
-            catalog_manager,
-            object_store,
-            &config,
-        );
+        let mut processor =
+            WalProcessor::with_config(manager_for(&wal).await, catalog_manager, &config);
 
         let meta = Some(r#"{"target_table":"metrics_gauge"}"#.to_string());
         for _ in 0..6 {
@@ -3028,7 +2957,6 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
 
         let entry_bytes = metrics_gauge_bytes(1);
         let entry_size = entry_bytes.len() as u64;
@@ -3038,12 +2966,8 @@ mod tests {
             max_drain_bytes_per_cycle: entry_size * 2 + entry_size / 2,
             ..Default::default()
         };
-        let mut processor = WalProcessor::with_config(
-            manager_for(&wal).await,
-            catalog_manager,
-            object_store,
-            &config,
-        );
+        let mut processor =
+            WalProcessor::with_config(manager_for(&wal).await, catalog_manager, &config);
 
         let meta = Some(r#"{"target_table":"metrics_gauge"}"#.to_string());
         for _ in 0..6 {
@@ -3165,8 +3089,7 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
-        let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
 
         for _ in 0..ENTRY_COUNT {
             wal.append(
@@ -3240,7 +3163,6 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
 
         wal.append(
             WalOperation::WriteMetrics,
@@ -3251,8 +3173,7 @@ mod tests {
         .unwrap();
         wal.flush().await.unwrap();
 
-        let mut processor =
-            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
         processor
             .inject_commit_failure(Some(super::CommitFailureKind::Transient))
             .await;
@@ -3298,7 +3219,6 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
 
         wal.append(
             WalOperation::WriteMetrics,
@@ -3313,12 +3233,8 @@ mod tests {
             group_commit_timeout: Duration::from_millis(200),
             ..Default::default()
         };
-        let mut processor = WalProcessor::with_config(
-            manager_for(&wal).await,
-            catalog_manager,
-            object_store,
-            &config,
-        );
+        let mut processor =
+            WalProcessor::with_config(manager_for(&wal).await, catalog_manager, &config);
         // Sleep well past the timeout so the commit attempt is cancelled.
         processor
             .inject_commit_delay(Some(Duration::from_secs(2)))
@@ -3361,7 +3277,6 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
 
         let entry_id = wal
             .append(
@@ -3373,8 +3288,7 @@ mod tests {
             .unwrap();
         wal.flush().await.unwrap();
 
-        let mut processor =
-            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
         processor
             .inject_commit_failure(Some(super::CommitFailureKind::Permanent))
             .await;
@@ -3419,7 +3333,6 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
 
         let entry_id = wal
             .append(
@@ -3431,8 +3344,7 @@ mod tests {
             .unwrap();
         wal.flush().await.unwrap();
 
-        let mut processor =
-            WalProcessor::new(manager_for(&wal).await, catalog_manager, object_store);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
         for _ in 0..super::MAX_ENTRY_FAILURES {
             processor
                 .process_pending_entries()
