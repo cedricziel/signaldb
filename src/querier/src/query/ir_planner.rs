@@ -1553,11 +1553,19 @@ impl Lowering<'_> {
     }
 
     /// `rate`/`increase`: walk the samples ordered by time within each
-    /// series (the `by` labels), accumulate the counter-reset-aware delta
-    /// between consecutive samples (`super::metrics::reset_corrected_delta`
-    /// — the same Prometheus rule the PromQL compat path uses), then sum
-    /// those per-pair contributions into each `step` bucket. `rate` divides
-    /// the bucket's total by the window width in seconds; `increase` is the
+    /// *individual series* — not the `by` grouping, which may fold several
+    /// series into one output row (e.g. `by: ["metric.name"]` alone) — and
+    /// accumulate the counter-reset-aware delta between consecutive samples
+    /// (`super::metrics::reset_corrected_delta` — the same Prometheus rule
+    /// the PromQL compat path uses). A series' identity is `metric_name`
+    /// plus its natural label set (`super::metrics::natural_series_columns`
+    /// — `service_name` plus every promoted `label_*` column present in the
+    /// scanned schema), the same identity the PromQL `rate`/`increase` path
+    /// partitions by; two series sharing a `by` value are never allowed to
+    /// interleave and take deltas across each other. Each series' deltas are
+    /// then summed into its `step` bucket, and buckets sharing a `by` value
+    /// are folded together by the final aggregate. `rate` divides the
+    /// bucket's total by the window width in seconds; `increase` is the
     /// total itself.
     fn lower_rate_aggregate(
         &mut self,
@@ -1578,10 +1586,13 @@ impl Lowering<'_> {
         })?;
         let value_f64 = cast(self.value_expr(of)?, DataType::Float64);
 
-        let mut partition = Vec::with_capacity(agg.by.len());
-        for by in &agg.by {
-            partition.push(self.value_expr(by)?);
-        }
+        let materialized = super::logs::materialized_columns_of(&df);
+        let mut partition: Vec<Expr> = vec![col("metric_name")];
+        partition.extend(
+            super::metrics::natural_series_columns(&materialized)
+                .iter()
+                .map(|c| col(c.as_str())),
+        );
         let order = vec![SortExpr::new(col(self.source.time_col), true, true)];
         let prev_value = lag(value_f64.clone(), Some(1), None)
             .partition_by(partition)
@@ -3361,8 +3372,106 @@ mod tests {
         ctx
     }
 
+    /// Two distinct series (different `service_name`, same `metric_name`)
+    /// interleaved in time within one step bucket: svcA at t=0,10,20s
+    /// (10,20,30 — increase 20), svcB at t=1000,1010,1020s (5,15,25 —
+    /// increase 20). Grouping by `metric.name` alone (no `service.name` in
+    /// `by`) must still compute each series' delta independently before
+    /// summing — the correct group increase is 40. Interleaving the raw
+    /// samples by time and taking `lag` across both series instead would see
+    /// svcA's last sample (30) followed by svcB's first (5) as a spurious
+    /// counter reset, inflating the total.
+    fn rate_two_series_ctx() -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+            map_field_named("attributes"),
+            map_field_named("resource_attributes"),
+        ]));
+        let rows: &[(i64, &str, f64)] = &[
+            (0, "svcA", 10.0),
+            (10_000_000_000, "svcA", 20.0),
+            (20_000_000_000, "svcA", 30.0),
+            (1_000_000_000_000, "svcB", 5.0),
+            (1_010_000_000_000, "svcB", 15.0),
+            (1_020_000_000_000, "svcB", 25.0),
+        ];
+        let n = rows.len();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(
+                    rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.1).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(vec!["requests"; n])),
+                Arc::new(Float64Array::from(
+                    rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+                )),
+                build_map(&vec![&[] as &[(&str, &str)]; n]),
+                build_map(&vec![&[] as &[(&str, &str)]; n]),
+            ],
+        )
+        .unwrap();
+
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("metrics_gauge".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
     fn doc(v: serde_json::Value) -> Document {
         serde_json::from_value(v).unwrap()
+    }
+
+    // Rate/increase must be computed per individual series (all `service`/
+    // label identity), not just per `by` group — otherwise two series
+    // sharing a `by` value interleave and their deltas cross-contaminate.
+    #[tokio::test]
+    async fn increase_sums_independent_per_series_deltas_not_interleaved_raw_samples() {
+        let svc = IrService::new(rate_two_series_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 6, "from": "metrics",
+            "range": { "from": 0, "to": 2_000_000_000_000i64 },
+            "result": "series",
+            "pipeline": [{ "aggregate": {
+                "by": ["metric.name"],
+                "aggs": [{ "fn": "increase", "of": "metric.value", "as": "r" }],
+                "step": "2000s"
+            } }]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let batches = df.collect().await.unwrap();
+        let batch = batches.iter().find(|b| b.num_rows() > 0).expect("one row");
+        assert_eq!(batch.num_rows(), 1, "one bucket, one metric.name group");
+        let value = batch
+            .column_by_name("r")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .unwrap()
+            .value(0);
+        assert!(
+            (value - 40.0).abs() < 1e-9,
+            "expected 40 (20 + 20, each series' own delta), got {value}"
+        );
     }
 
     // Task 4.1 — counter rate (D4): reset scenario from the design doc.
