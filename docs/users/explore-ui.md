@@ -17,16 +17,22 @@ sources:
 SignalDB ships a built-in explore UI for the service catalog, logs, traces,
 metrics, profiles, and errors, plus a native [Query IR](querying-ir.md) tab,
 served by the router at its **root** (`http://<router>:3000/`, as a SPA
-fallback behind the API routes). The logs tab reads rows and its volume
-histogram through the Query IR; its label key/value pickers still consume the
-Loki-compatible API's `/labels`/`/label/{name}/values` endpoints, so what
-they list is equally queryable from Grafana. The metrics tab reads through
-the Prometheus-compatible API, with one exception: a single builder row with
-no range function and no formula runs on the Query IR (see [Building metric
-queries](#building-metric-queries)). The other tabs read their data through
-the Query IR; only their attribute and label pickers still use the Tempo and
-Pyroscope discovery endpoints. It also hosts the OAuth connector **consent
-screen** at `/oauth/consent` (see [MCP](mcp.md)).
+fallback behind the API routes). The logs tab reads rows, its volume
+histogram, and its field/value pickers through the Query IR — the field
+sidebar and the add-filter chip's key/value boxes come from the IR's
+`describe` stage ([Discovery](querying-ir.md#discovery--what-can-i-query)),
+not the Loki-compatible API, so a bookmarked URL from before this only
+resolves its two Loki-spelled chips (`level`, `service_name`) to their IR
+equivalents (`severity_text`, `service.name`) on load. The traces tab's facet
+key picker is likewise `describe: fields` on `traces`, replacing the Tempo
+tag-name endpoint. The metrics tab reads through the Prometheus-compatible
+API, with one exception: a single builder row with no range function and no
+formula runs on the Query IR (see [Building metric
+queries](#building-metric-queries)). The profiles tab's type/service/label
+pickers still use the Pyroscope discovery endpoints. Any `describe: values`
+answer that isn't a free, exact, declared set (a statistics sketch or a
+sampled scan) is marked "partial list" in the picker. It also hosts the OAuth
+connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
 
 ![Explore UI logs view: virtualized log list with level colors, a volume histogram with bucket-width and log-scale controls, and the fields sidebar](../assets/screenshots/explore-logs.png)
 

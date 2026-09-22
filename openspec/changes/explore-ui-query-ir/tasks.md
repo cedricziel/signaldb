@@ -10,9 +10,9 @@ Groups ≈ PRs, in design D6 order. TDD throughout.
 
 ## 2. Discovery via `describe`
 
-- [ ] 2.1 `api/ir/discovery.ts`: `fields`, `values` (with partial-tier flag), `metricNames`, `profileTypes`
-- [ ] 2.2 Wire logs, traces facets, profiles and metrics pickers; add the partial-list hint
-- [ ] 2.3 Profiles: add a logical profile-type field if `describe values` cannot reach it
+- [x] 2.1 `api/ir/discovery.ts`: `fields`, `values` (with partial-tier flag), `metricNames`, `profileTypes`
+- [~] 2.2 Wire logs, traces facets, profiles and metrics pickers; add the partial-list hint — logs and traces done; profiles and metrics pickers still on `api/pyroscope.ts`/`api/prom.ts` (deferred, see PR notes)
+- [x] 2.3 Profiles: add a logical profile-type field if `describe values` cannot reach it (`profile.type`, aliased to `sample_type`)
 
 ## 3. Trace search on the IR
 
