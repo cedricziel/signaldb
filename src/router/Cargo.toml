@@ -63,6 +63,13 @@ wiremock.workspace = true
 # Derives the test public key from the GitHub App test PEM to verify the
 # minted JWT (change: github-app-source-context).
 rsa.workspace = true
+# Captures the `signaldb.discovery` boundary span emitted by the discovery
+# endpoints, the same scoped-subscriber pattern `span_factories_semconv.rs`
+# uses in `common`.
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+tracing-opentelemetry.workspace = true
+tracing-subscriber.workspace = true
 
 [package.metadata.cargo-machete]
 # workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)

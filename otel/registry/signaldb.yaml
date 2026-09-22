@@ -229,6 +229,27 @@ groups:
           (see common::self_monitoring::sanitize) — never raw user SQL.
         examples: ["SELECT * FROM t WHERE name = ?"]
 
+  - id: registry.signaldb.discovery
+    type: attribute_group
+    display_name: SignalDB Discovery Attributes
+    brief: Metadata-tier discovery reads (describe fields/values, query sources).
+    attributes:
+      - id: signaldb.discovery.kind
+        type: string
+        stability: development
+        brief: Which discovery question was asked.
+        examples: ["fields", "values", "sources"]
+      - id: signaldb.discovery.source
+        type: string
+        stability: development
+        brief: The signal source the question was asked about; absent for a sources listing.
+        examples: ["traces", "logs"]
+      - id: signaldb.discovery.cost_mode
+        type: string
+        stability: development
+        brief: The cost tier that produced the answer.
+        examples: ["metadata", "sampled_scan", "none"]
+
   # MCP tool-call attributes. The pinned upstream semconv snapshot (1.43)
   # moved the MCP and GenAI conventions to the GenAI conventions repository
   # and keeps only deprecated shells (see
