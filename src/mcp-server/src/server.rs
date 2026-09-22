@@ -29,6 +29,8 @@
 //!   range (`start`/`end`/`step`)
 //! - `search_logs` — LogQL query (native Loki result), instant or range
 //! - `query_ir` — native Query IR document (structured query surface)
+//! - `list_skills` / `get_skill` — the longer-form guidance docs also served
+//!   as `skill://` resources (see below)
 //! - `compact_run` / `compact_status` / `compact_dry_run` — operational
 //!   compaction control (admin-authenticated)
 //! - `list_schema_registries`, `get_schema_registry`, `resolve_attribute` /
@@ -103,12 +105,14 @@
 //! `get_profile` an interactive flamegraph view, via the MCP Apps extension;
 //! see [`crate::apps`].
 //!
-//! Skill resources (`skill://`, `resources/read`, see [`crate::docs`]) are
-//! longer-form guidance a client fetches on demand rather than the tool
-//! descriptions or [`ServerHandler::get_info`] instructions carrying it
-//! upfront — currently just `skill://signaldb/query-ir`, on when the native
-//! `query_ir` tool covers more than `search_traces`/`search_logs`/
-//! `query_metrics`.
+//! Skill resources (`skill://<name>/SKILL.md`, `resources/read`, see
+//! [`crate::docs`]) are longer-form guidance a client fetches on demand
+//! rather than the tool descriptions or [`ServerHandler::get_info`]
+//! instructions carrying it upfront — currently just `query-ir`, on when the
+//! native `query_ir` tool covers more than `search_traces`/`search_logs`/
+//! `query_metrics`. `skill://index.json` lists every registered skill.
+//! `list_skills`/`get_skill` mirror the same catalog as tools, for clients
+//! that don't read MCP resources on their own.
 //!
 //! Prompts (`prompts/list` / `prompts/get`, see [`crate::prompts`]) are
 //! static, argument-only templates that seed an investigation using the
@@ -316,6 +320,14 @@ struct ConnectionInfoParams {
     /// Dataset to fill into the returned headers and env vars. Defaults to
     /// the credential's own dataset.
     dataset: Option<String>,
+}
+
+/// Parameters for `get_skill`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct GetSkillParams {
+    /// Skill name, e.g. `"query-ir"` (see `list_skills`).
+    name: String,
 }
 
 /// Parameters for `list_api_keys`.
@@ -2603,7 +2615,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Execute a native Query IR document (the structured, versioned query surface). Provide `query` as the IR JSON object. Returns the enveloped result scoped to your tenant. Reach for this over search_traces/search_logs/query_metrics when you need a pipeline stage those dialects can't express (topk/bottomk, extract, a multi-stage aggregate with step) or you're building from discover_sources/discover_fields/discover_field_values; see the `skill://signaldb/query-ir` resource for the full document reference."
+        description = "Execute a native Query IR document (the structured, versioned query surface). Provide `query` as the IR JSON object. Returns the enveloped result scoped to your tenant. Reach for this over search_traces/search_logs/query_metrics when you need a pipeline stage those dialects can't express (topk/bottomk, extract, a multi-stage aggregate with step) or you're building from discover_sources/discover_fields/discover_field_values; see `get_skill(\"query-ir\")` (or the `skill://query-ir/SKILL.md` resource) for the full document reference."
     )]
     async fn query_ir(
         &self,
@@ -2621,6 +2633,35 @@ impl McpServer {
             .await
             .map_err(|e| map_sdk_err(e, "query_ir"))?;
         json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "List the longer-form guidance documents (\"skills\") this server exposes beyond the tool descriptions, e.g. the full Query IR reference. Each entry names the document `get_skill` reads. Also served as `skill://index.json`.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_skills(&self) -> Result<CallToolResult, ErrorData> {
+        json_result(&docs::skill_summaries())
+    }
+
+    #[tool(
+        description = "Read one guidance document by name (see `list_skills`), e.g. \"query-ir\". Also served as the `skill://<name>/SKILL.md` resource.",
+        annotations(read_only_hint = true)
+    )]
+    async fn get_skill(
+        &self,
+        Parameters(p): Parameters<GetSkillParams>,
+    ) -> Result<CallToolResult, ErrorData> {
+        match docs::skill_text(&p.name) {
+            Some(text) => Ok(CallToolResult::success(vec![ContentBlock::text(text)])),
+            None => Err(ErrorData::invalid_params(
+                format!(
+                    "unknown skill `{}`; known skills: {}",
+                    p.name,
+                    docs::skill_names().join(", ")
+                ),
+                None,
+            )),
+        }
     }
 
     #[tool(
@@ -4005,7 +4046,9 @@ impl ServerHandler for McpServer {
              `search_schema`) — its own schema-registry conventions take precedence over \
              OpenTelemetry's. `prompts/list` has ready-made investigation templates, and clients \
              with the MCP Apps extension get `get_trace`/`get_profile` rendered as interactive \
-             waterfalls/flamegraphs.",
+             waterfalls/flamegraphs. Longer guides are available on demand via `list_skills` / \
+             `get_skill` (also as `skill://` resources) — read `query-ir` before building a \
+             `query_ir` document.",
         )
     }
 
