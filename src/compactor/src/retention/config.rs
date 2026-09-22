@@ -483,10 +483,6 @@ impl RetentionOverride for DatasetRetentionConfig {
 /// Errors that can occur during retention configuration validation.
 #[derive(Error, Debug)]
 pub enum RetentionConfigError {
-    /// Invalid timezone specified.
-    #[error("Invalid timezone '{timezone}': {message}")]
-    InvalidTimezone { timezone: String, message: String },
-
     /// Invalid retention period (must be positive).
     #[error("Invalid retention period for {signal_type}: {duration:?} must be positive")]
     InvalidRetentionPeriod {

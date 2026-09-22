@@ -98,14 +98,6 @@ pub fn classify_commit_error(error: IcebergError) -> anyhow::Error {
     }
 }
 
-/// Information about a data file to add or remove (reporting/metrics only)
-#[derive(Debug, Clone)]
-pub struct DataFileChange {
-    pub file_path: String,
-    pub size_bytes: u64,
-    pub record_count: u64,
-}
-
 /// Handles atomic commits to Iceberg tables with optimistic concurrency control
 pub struct IcebergCommitter {
     catalog_manager: Arc<CatalogManager>,

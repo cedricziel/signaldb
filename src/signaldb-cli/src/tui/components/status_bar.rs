@@ -38,7 +38,6 @@ impl Component for StatusBar {
         let (indicator, color) = match &state.connection_status {
             ConnectionStatus::Connected => ("Connected".to_string(), Color::Green),
             ConnectionStatus::Disconnected => ("Disconnected".to_string(), Color::Red),
-            ConnectionStatus::Connecting => ("Connecting".to_string(), Color::Yellow),
         };
 
         let loading_prefix = if state.loading {
