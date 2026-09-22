@@ -159,8 +159,17 @@ function GitHubIntegrationBody({ who }: { who: WhoamiResponse }) {
 
   const handleAttach = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    const installationId = Number.parseInt(attachInstallationId, 10);
-    if (!attachInstallationId.trim() || Number.isNaN(installationId)) return;
+    // `Number()` (not `parseInt`) so "1e3" is rejected rather than silently
+    // truncated to installation 1 — a number input accepts exponent
+    // notation, and parseInt stops at the first non-digit character.
+    const installationId = Number(attachInstallationId);
+    if (
+      !attachInstallationId.trim() ||
+      !Number.isSafeInteger(installationId) ||
+      installationId < 1
+    ) {
+      return;
+    }
     attachMutation.mutate(installationId);
   };
 
