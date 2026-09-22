@@ -1584,8 +1584,14 @@ impl Lowering<'_> {
         use common::query_ir::AggFn;
         use datafusion::functions_aggregate::average::avg_udaf;
         use datafusion::functions_aggregate::count::count_udaf;
+        // The dedicated window-function `first_value` (a `PartitionEvaluator`,
+        // not an accumulator) — unlike the plain aggregate UDAF, it supports a
+        // sliding (non-ever-expanding) `RANGE` frame; the aggregate one
+        // rejects it with "can not be used as a sliding accumulator" since it
+        // has no `retract_batch`.
         use datafusion::functions_aggregate::min_max::{max_udaf, min_udaf};
         use datafusion::functions_aggregate::sum::sum_udaf;
+        use datafusion::functions_window::expr_fn::first_value as first_value_window;
         use datafusion::logical_expr::expr::WindowFunction;
         use datafusion::logical_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits};
 
@@ -1594,7 +1600,7 @@ impl Lowering<'_> {
         // `partition_by`/`window_frame` only accept `Expr::WindowFunction`, so
         // a RANGE-framed windowed reduction needs the same UDAF wrapped as one
         // directly.
-        fn windowed(
+        fn windowed_agg(
             udaf: std::sync::Arc<datafusion::logical_expr::AggregateUDF>,
             arg: Expr,
         ) -> Expr {
@@ -1696,12 +1702,12 @@ impl Lowering<'_> {
 
             let windowed_expr = match a.func {
                 AggFn::Rate | AggFn::Increase | AggFn::SumOverTime => {
-                    windowed(sum_udaf(), ident("__point"))
+                    windowed_agg(sum_udaf(), ident("__point"))
                 }
-                AggFn::AvgOverTime => windowed(avg_udaf(), ident("__point")),
-                AggFn::MinOverTime => windowed(min_udaf(), ident("__point")),
-                AggFn::MaxOverTime => windowed(max_udaf(), ident("__point")),
-                AggFn::CountOverTime => windowed(count_udaf(), ident("__point")),
+                AggFn::AvgOverTime => windowed_agg(avg_udaf(), ident("__point")),
+                AggFn::MinOverTime => windowed_agg(min_udaf(), ident("__point")),
+                AggFn::MaxOverTime => windowed_agg(max_udaf(), ident("__point")),
+                AggFn::CountOverTime => windowed_agg(count_udaf(), ident("__point")),
                 _ => unreachable!("irate handled above"),
             };
             let windowed = windowed_expr
@@ -1711,8 +1717,40 @@ impl Lowering<'_> {
                 .build()
                 .map_err(QuerierError::QueryFailed)?
                 .alias("__windowed");
-            df.window(vec![windowed])
+
+            // `rate`/`increase`'s `__point` is a delta against the
+            // *immediately preceding* sample, which for the first sample in
+            // the RANGE frame may be a sample outside the window — so its
+            // delta double-counts the interval that straddles the window's
+            // left edge. Subtract that one point back out: the corrected
+            // window total is `sum(__point) - first(__point)` over the same
+            // frame (the first in-frame sample's own delta never belongs to
+            // this window; every later sample's delta is between two points
+            // both inside it, e.g. rate_ctx's 10,20,5,15 → 25, unaffected
+            // since its first sample already has no predecessor).
+            let df = if matches!(a.func, AggFn::Rate | AggFn::Increase) {
+                let first_in_frame = first_value_window(ident("__point"))
+                    .partition_by(partition.clone())
+                    .order_by(order())
+                    .window_frame(range_frame.clone())
+                    .build()
+                    .map_err(QuerierError::QueryFailed)?
+                    .alias("__first_in_frame");
+                df.window(vec![windowed, first_in_frame])
+                    .map_err(QuerierError::QueryFailed)?
+            } else {
+                df.window(vec![windowed])
+                    .map_err(QuerierError::QueryFailed)?
+            };
+            if matches!(a.func, AggFn::Rate | AggFn::Increase) {
+                df.with_column(
+                    "__windowed",
+                    ident("__windowed") - ident("__first_in_frame"),
+                )
                 .map_err(QuerierError::QueryFailed)?
+            } else {
+                df
+            }
         };
 
         // `rate` reports the summed delta per second of the *window*, not
@@ -3870,6 +3908,169 @@ mod tests {
             }
         }
         assert_eq!(values, vec![1.0, 3.0, 6.0, 9.0, 12.0], "got {values:?}");
+    }
+
+    /// Seven evenly-spaced samples 10s apart (`t=0..60s`, values `0..60`
+    /// counting by 10 — a steady counter, no reset), `step: "30s"`,
+    /// `window: "30s"`. The bucket ending at 60s must see only the delta
+    /// *within* the window (30 → 60, i.e. 30), not the delta from the
+    /// sample immediately before the window too (0 → 60, i.e. 60 minus a
+    /// double-counted first interval, 40): the first in-window sample's own
+    /// per-row delta is against a sample *outside* the window and must not
+    /// be counted, or the window total is inflated by one interval whenever
+    /// the series has history before the window.
+    fn increase_window_edge_ctx() -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+            map_field_named("attributes"),
+            map_field_named("resource_attributes"),
+        ]));
+        let ts: Vec<i64> = (0..7).map(|i| i * 10_000_000_000).collect();
+        let n = ts.len();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(ts)),
+                Arc::new(StringArray::from(vec!["svc"; n])),
+                Arc::new(StringArray::from(vec!["requests"; n])),
+                Arc::new(Float64Array::from(vec![
+                    0.0, 10.0, 20.0, 30.0, 40.0, 50.0, 60.0,
+                ])),
+                build_map(&vec![&[] as &[(&str, &str)]; n]),
+                build_map(&vec![&[] as &[(&str, &str)]; n]),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("metrics_gauge".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
+    #[tokio::test]
+    async fn increase_window_excludes_the_delta_from_before_the_window() {
+        let svc = IrService::new(increase_window_edge_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 7, "from": "metrics",
+            "range": { "from": 0, "to": 60_000_000_000i64 },
+            "result": "series",
+            "pipeline": [{ "aggregate": {
+                "by": ["metric.name"],
+                "aggs": [{
+                    "fn": "increase", "of": "metric.value", "as": "r", "window": "30s"
+                }],
+                "step": "30s"
+            } }]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let batches = df.collect().await.unwrap();
+        let mut values = Vec::new();
+        for batch in &batches {
+            if batch.num_rows() == 0 {
+                continue;
+            }
+            let col = batch
+                .column_by_name("r")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .unwrap();
+            for i in 0..batch.num_rows() {
+                values.push(col.value(i));
+            }
+        }
+        // step=30s buckets t=0..60s into 3 buckets (0, 30, 60), each
+        // reporting its latest sample's corrected windowed value:
+        // - bucket 0's latest sample is t=20, window [-10,20]: deltas at
+        //   t=10 (0→10) and t=20 (10→20) both fall fully inside it → 20
+        //   (unaffected by the fix — nothing precedes t=0).
+        // - bucket 30's latest sample is t=50, window [20,50]: deltas at
+        //   t=30,40,50 are inside; the fix drops the t=20 delta (0→10→20
+        //   sample's own delta straddles the window's left edge) → 30, not
+        //   40.
+        // - bucket 60's sample is t=60, window [30,60]: deltas at
+        //   t=40,50,60 are inside; the fix drops the t=30 delta → 30, not
+        //   40 (the case this test exists for).
+        assert_eq!(values, vec![20.0, 30.0, 30.0], "got {values:?}");
+    }
+
+    /// Same shape, but with a counter reset inside the window (30 → 5 at
+    /// t=30) — the corrected per-row delta at the reset sample is its own
+    /// value (5, counted from zero), and the fix must still only subtract
+    /// the true first-in-frame point, not silently reintroduce the dropped
+    /// pre-window interval.
+    #[tokio::test]
+    async fn increase_window_edge_fix_still_honors_a_reset_inside_the_window() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+            map_field_named("attributes"),
+            map_field_named("resource_attributes"),
+        ]));
+        let ts: Vec<i64> = (0..4).map(|i| i * 10_000_000_000).collect();
+        let n = ts.len();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(ts)),
+                Arc::new(StringArray::from(vec!["svc"; n])),
+                Arc::new(StringArray::from(vec!["requests"; n])),
+                // t=0:10, t=10:20, t=20:30 (pre-window), t=30: reset to 5.
+                Arc::new(Float64Array::from(vec![10.0, 20.0, 30.0, 5.0])),
+                build_map(&vec![&[] as &[(&str, &str)]; n]),
+                build_map(&vec![&[] as &[(&str, &str)]; n]),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("metrics_gauge".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+
+        let svc = IrService::new(ctx);
+        // `step: "40s"` keeps every sample in one bucket, whose latest
+        // sample is t=30; `window: "10s"` bounds that sample's frame to
+        // [20,30] — only the 20→30s interval (the reset, contributing 5).
+        let d = doc(serde_json::json!({
+            "irVersion": 7, "from": "metrics",
+            "range": { "from": 0, "to": 30_000_000_000i64 },
+            "result": "series",
+            "pipeline": [{ "aggregate": {
+                "by": ["metric.name"],
+                "aggs": [{
+                    "fn": "increase", "of": "metric.value", "as": "r", "window": "10s"
+                }],
+                "step": "40s"
+            } }]
+        }));
+        let value = one_row_f64(&svc, &d).await;
+        assert!((value - 5.0).abs() < 1e-9, "got {value}");
     }
 
     // Task 4.1 — from(logs)+where+aggregate(step) lowers to the expected plan.
