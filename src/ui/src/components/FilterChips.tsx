@@ -6,6 +6,11 @@ import {
   type FilterOp,
   type LabelFilter,
 } from "../lib/filters";
+// The chip/chip-form classnames below live in the explore views' shared
+// stylesheet — every current caller (LogsView, TraceFacets, ...) already
+// loads it via ExploreView, but this component's own markup depends on it
+// too, so it owns the import rather than relying on an ambient parent.
+import "../features/explore/explore.css";
 
 interface Props {
   filters: LabelFilter[];

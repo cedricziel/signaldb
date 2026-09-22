@@ -18,6 +18,10 @@ import {
   valueAtFraction,
   type Scale,
 } from "../features/explore/scale";
+// The `.svol-*` bar/axis/tooltip classnames below live in the explore views'
+// shared stylesheet; own the import rather than relying on a parent
+// (LogsView, TracesView, ...) to have loaded it.
+import "../features/explore/explore.css";
 
 /** A series of `[timestampMs, value]` points, ascending or not. */
 export interface VolumeSeries {

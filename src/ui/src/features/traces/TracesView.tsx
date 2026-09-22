@@ -107,6 +107,11 @@ import { fetchWindowTotal, looksUnresolved } from "./unresolvedGroup";
 import { describeService, groupSpanAttributes } from "./spanAttributes";
 import { SortTh, useSort } from "../../lib/sortTable";
 import { MemberTable } from "../../components/MemberTable";
+// Shared explore-view chrome (`.traces-body`, sidebar/facets, chips, the
+// mobile drawer, `.svol-*` volume chart, ...) — normally loaded once via
+// ExploreView, but this view depends on those classnames directly, so it
+// owns the import too rather than assuming a parent already loaded it.
+import "../explore/explore.css";
 import "./traces.css";
 
 interface Props {

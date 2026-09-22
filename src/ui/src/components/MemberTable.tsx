@@ -11,6 +11,10 @@ import { SortTh, sortRows, useSort, type SortValue } from "../lib/sortTable";
 import { formatTimestamp, nanosToMs } from "../lib/time";
 import { formatDurationMs } from "../lib/waterfall";
 import type { TraceGroupMember } from "../api/traceGroupMembers";
+// This table's own markup (sortable header, status pill, footnote) is
+// styled by the explore views' shared stylesheet; own the import rather
+// than relying on a parent (TracesView, EntityDetail) to have loaded it.
+import "../features/explore/explore.css";
 
 /** OTel status as a display word and a severity rank (errors sort first). */
 function statusOf(code: string): { word: string; rank: number } {
