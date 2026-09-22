@@ -1363,7 +1363,6 @@ mod tests {
         let catalog_manager = CatalogManager::new(config).await.unwrap();
         let mut writer = IcebergTableWriter::new(
             &catalog_manager,
-            Arc::new(InMemory::new()),
             "test-tenant".to_string(),
             "local".to_string(),
             "logs".to_string(),
