@@ -38,6 +38,13 @@ const TENANT: &str = "t1";
 const DATASET: &str = "d1";
 const TABLE: &str = "logs";
 
+// A tenant id deliberately different from its slug (#1535): the
+// promotion/demotion pass only ever sees the slug, taken from the Iceberg
+// namespace, so the pinned-label guard must resolve it back to this id
+// before reading `[schema.materialized_labels]`.
+const SLUG_TENANT_ID: &str = "tenant-internal-id";
+const SLUG_TENANT_SLUG: &str = "acme-corp";
+
 fn string_field(id: i32, name: &str) -> StructField {
     StructField {
         id,
@@ -241,9 +248,25 @@ async fn setup(
     Arc<common::catalog::Catalog>,
     Identifier,
 )> {
+    setup_with_tenant(dry_run, pinned, TENANT, TENANT).await
+}
+
+/// Like [`setup`], but lets the caller give the tenant a slug distinct from
+/// its id — regression coverage for #1535, where the pinned-label guard
+/// looked up the schema config by slug instead of id.
+async fn setup_with_tenant(
+    dry_run: bool,
+    pinned: bool,
+    tenant_id: &str,
+    tenant_slug: &str,
+) -> Result<(
+    Arc<CatalogManager>,
+    Arc<common::catalog::Catalog>,
+    Identifier,
+)> {
     let mut config = common::testing::TestConfigBuilder::new()
         .in_memory()
-        .with_tenant(TENANT, DATASET)
+        .with_tenant_and_slugs(tenant_id, tenant_slug, DATASET, DATASET)
         .build();
     config.compactor.attr_promotion = common::config::AttrPromotionConfig {
         enabled: true,
@@ -255,16 +278,36 @@ async fn setup(
         max_promotions_per_cycle: 4,
     };
     if pinned {
-        config.schema.materialized_labels.logs = vec!["env".to_string()];
+        if tenant_id == tenant_slug {
+            config.schema.materialized_labels.logs = vec!["env".to_string()];
+        } else {
+            // Pin the label on this tenant's own schema config (keyed by
+            // id, `config.tenants.tenants`), not the global one — the
+            // guard must resolve the namespace slug back to this id to
+            // find it (#1535).
+            config.tenants.tenants.insert(
+                tenant_id.to_string(),
+                common::config::TenantSchemaConfig {
+                    schema: Some(common::config::SchemaConfig {
+                        materialized_labels: common::config::MaterializedLabels {
+                            logs: vec!["env".to_string()],
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            );
+        }
     }
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
 
-    let namespace = catalog_manager.build_namespace(TENANT, DATASET)?;
+    let namespace = catalog_manager.build_namespace(tenant_id, DATASET)?;
     catalog_manager
         .catalog()
         .create_namespace(&namespace, None)
         .await?;
-    let identifier = catalog_manager.build_table_identifier(TENANT, DATASET, TABLE);
+    let identifier = catalog_manager.build_table_identifier(tenant_id, DATASET, TABLE);
     let create = CreateTableBuilder::default()
         .with_name(TABLE.to_string())
         .with_schema(table_schema())
@@ -330,7 +373,15 @@ async fn run_compaction(
     catalog_manager: Arc<CatalogManager>,
     service_catalog: Arc<common::catalog::Catalog>,
 ) -> Result<()> {
-    let partition = busiest_partition(&catalog_manager, TENANT, DATASET, TABLE).await?;
+    run_compaction_for_tenant(catalog_manager, service_catalog, TENANT).await
+}
+
+async fn run_compaction_for_tenant(
+    catalog_manager: Arc<CatalogManager>,
+    service_catalog: Arc<common::catalog::Catalog>,
+    tenant_id: &str,
+) -> Result<()> {
+    let partition = busiest_partition(&catalog_manager, tenant_id, DATASET, TABLE).await?;
     let executor = CompactionExecutor::new(
         catalog_manager,
         ExecutorConfig::default(),
@@ -338,7 +389,7 @@ async fn run_compaction(
     )
     .with_service_catalog(service_catalog);
     let candidate = CompactionCandidate {
-        tenant_id: TENANT.to_string(),
+        tenant_id: tenant_id.to_string(),
         dataset_id: DATASET.to_string(),
         table_name: TABLE.to_string(),
         partition_id: partition.to_string(),
@@ -456,6 +507,32 @@ async fn pinned_label_is_never_demoted_even_with_zero_demand() -> Result<()> {
         count_rows(&ctx, "SELECT body FROM logs WHERE label_env = 'prod'").await?,
         2
     );
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn pinned_label_survives_when_tenant_slug_differs_from_id() -> Result<()> {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
+    let (catalog_manager, service_catalog, identifier) =
+        setup_with_tenant(false, true, SLUG_TENANT_ID, SLUG_TENANT_SLUG).await?;
+
+    run_compaction_for_tenant(catalog_manager.clone(), service_catalog, SLUG_TENANT_ID).await?;
+
+    // The compactor only ever sees the tenant *slug* (from the Iceberg
+    // namespace); the pinned-label guard must resolve it back to the
+    // tenant id to find this tenant's own `[schema.materialized_labels]`,
+    // not the global schema config.
+    let table = load_table(&catalog_manager, &identifier).await?;
+    let schema = table.current_schema()?;
+    assert!(
+        schema.fields().iter().any(|f| f.name == "label_env"),
+        "pinned label must never be demoted, even when tenant slug != id"
+    );
+    assert_eq!(table.metadata().schemas.len(), 1, "no schema was committed");
 
     Ok(())
 }
