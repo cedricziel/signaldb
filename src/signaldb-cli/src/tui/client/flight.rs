@@ -314,10 +314,7 @@ impl FlightSqlClient {
             }
         }
 
-        Ok(TraceDetail {
-            trace_id: trace_id.to_string(),
-            spans,
-        })
+        Ok(TraceDetail { spans })
     }
 
     /// Execute an arbitrary SQL query for system metrics / admin dashboards.
