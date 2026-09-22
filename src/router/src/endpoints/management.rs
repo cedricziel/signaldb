@@ -104,6 +104,21 @@ pub(crate) fn error(status: StatusCode, message: impl Into<String>) -> Response 
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
+/// Whether `ctx` is the instance-admin principal — stricter than
+/// [`can_manage`]/[`authorize_tenant`], which also accept a tenant-scoped
+/// `tenant:manage` grant. Used by the handful of operations too privileged
+/// for that: creating a tenant, and attaching a GitHub App installation
+/// with no ownership check to fall back on (see
+/// `endpoints::github::attach_github_installation`'s doc comment).
+pub(crate) fn authorize_instance_admin(
+    ctx: &TenantContext,
+) -> Result<(), (StatusCode, &'static str)> {
+    if !ctx.is_instance_admin {
+        return Err((StatusCode::FORBIDDEN, "Instance administrator required"));
+    }
+    Ok(())
+}
+
 /// Whether `target_user_id` is the tenant's sole remaining administrator —
 /// used to block demoting or removing the last admin membership.
 ///
@@ -165,8 +180,8 @@ pub(crate) async fn create_tenant<S: RouterState>(
     TenantContextExtractor(ctx): TenantContextExtractor,
     Json(request): Json<CreateTenantRequest>,
 ) -> Response {
-    if !ctx.is_instance_admin {
-        return error(StatusCode::FORBIDDEN, "Instance administrator required");
+    if let Err((status, message)) = authorize_instance_admin(&ctx) {
+        return error(status, message);
     }
     let tenant_id = match validate_id(&request.id) {
         Ok(value) => value,

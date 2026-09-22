@@ -71,3 +71,9 @@ site/
 
 # Claude Code agent memory (backlog-sweeper etc.)
 .claude/agent-memory/
+
+*storybook.log
+storybook-static
+
+# mkdocs + Storybook Pages build output (.github/workflows/docs.yml)
+/_site/

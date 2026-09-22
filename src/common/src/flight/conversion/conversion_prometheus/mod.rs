@@ -581,6 +581,182 @@ mod tests {
     }
 
     #[test]
+    fn test_otel_exponential_histogram_scale_zero_to_prometheus() {
+        use opentelemetry_proto::tonic::metrics::v1::{
+            ExponentialHistogram, ExponentialHistogramDataPoint,
+            exponential_histogram_data_point::Buckets,
+        };
+
+        let request = ExportMetricsServiceRequest {
+            resource_metrics: vec![ResourceMetrics {
+                resource: None,
+                scope_metrics: vec![ScopeMetrics {
+                    scope: None,
+                    metrics: vec![Metric {
+                        name: "request_duration".to_string(),
+                        description: String::new(),
+                        unit: String::new(),
+                        data: Some(Data::ExponentialHistogram(ExponentialHistogram {
+                            data_points: vec![ExponentialHistogramDataPoint {
+                                attributes: vec![],
+                                start_time_unix_nano: 0,
+                                time_unix_nano: 1_700_000_000_000_000_000,
+                                count: 30,
+                                sum: Some(5.5),
+                                scale: 0,
+                                zero_count: 0,
+                                positive: Some(Buckets {
+                                    offset: 0,
+                                    bucket_counts: vec![10, 15, 5],
+                                }),
+                                negative: None,
+                                flags: 0,
+                                exemplars: vec![],
+                                min: None,
+                                max: None,
+                                zero_threshold: 0.0,
+                            }],
+                            aggregation_temporality: AggregationTemporality::Cumulative as i32,
+                        })),
+                        metadata: vec![],
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let config = OtelToPrometheusConfig::new();
+        let result = otel_to_prometheus_metrics(&request, &config);
+
+        let bucket_series: Vec<_> = result
+            .timeseries
+            .iter()
+            .filter(|ts| {
+                ts.labels
+                    .iter()
+                    .any(|l| l.name == "__name__" && l.value.contains("_bucket"))
+            })
+            .collect();
+
+        // base = 2^(2^-0) = 2, buckets at index 0,1,2 -> upper bounds 2, 4, 8, plus +Inf
+        assert_eq!(bucket_series.len(), 4);
+
+        let le = |bound: &str| {
+            bucket_series
+                .iter()
+                .find(|ts| ts.labels.iter().any(|l| l.name == "le" && l.value == bound))
+                .unwrap_or_else(|| panic!("missing bucket for le={bound}"))
+        };
+
+        assert_eq!(le("2").samples[0].value, 10.0);
+        assert_eq!(le("4").samples[0].value, 25.0);
+        assert_eq!(le("8").samples[0].value, 30.0);
+        assert_eq!(le("+Inf").samples[0].value, 30.0);
+
+        let count_series = result
+            .timeseries
+            .iter()
+            .find(|ts| {
+                ts.labels
+                    .iter()
+                    .any(|l| l.name == "__name__" && l.value == "request_duration_count")
+            })
+            .unwrap();
+        assert_eq!(count_series.samples[0].value, 30.0);
+
+        let sum_series = result
+            .timeseries
+            .iter()
+            .find(|ts| {
+                ts.labels
+                    .iter()
+                    .any(|l| l.name == "__name__" && l.value == "request_duration_sum")
+            })
+            .unwrap();
+        assert_eq!(sum_series.samples[0].value, 5.5);
+    }
+
+    #[test]
+    fn test_otel_exponential_histogram_zero_count_and_negative_bucket_to_prometheus() {
+        use opentelemetry_proto::tonic::metrics::v1::{
+            ExponentialHistogram, ExponentialHistogramDataPoint,
+            exponential_histogram_data_point::Buckets,
+        };
+
+        let request = ExportMetricsServiceRequest {
+            resource_metrics: vec![ResourceMetrics {
+                resource: None,
+                scope_metrics: vec![ScopeMetrics {
+                    scope: None,
+                    metrics: vec![Metric {
+                        name: "request_duration".to_string(),
+                        description: String::new(),
+                        unit: String::new(),
+                        data: Some(Data::ExponentialHistogram(ExponentialHistogram {
+                            data_points: vec![ExponentialHistogramDataPoint {
+                                attributes: vec![],
+                                start_time_unix_nano: 0,
+                                time_unix_nano: 1_700_000_000_000_000_000,
+                                count: 7,
+                                sum: Some(-3.0),
+                                scale: 0,
+                                zero_count: 2,
+                                positive: None,
+                                negative: Some(Buckets {
+                                    offset: 0,
+                                    bucket_counts: vec![5],
+                                }),
+                                flags: 0,
+                                exemplars: vec![],
+                                min: None,
+                                max: None,
+                                zero_threshold: 0.0,
+                            }],
+                            aggregation_temporality: AggregationTemporality::Cumulative as i32,
+                        })),
+                        metadata: vec![],
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let config = OtelToPrometheusConfig::new();
+        let result = otel_to_prometheus_metrics(&request, &config);
+
+        let bucket_series: Vec<_> = result
+            .timeseries
+            .iter()
+            .filter(|ts| {
+                ts.labels
+                    .iter()
+                    .any(|l| l.name == "__name__" && l.value.contains("_bucket"))
+            })
+            .collect();
+
+        // Single negative bucket (le=-1) absorbing zero_count, plus +Inf.
+        assert_eq!(bucket_series.len(), 2);
+
+        let negative_bucket = bucket_series
+            .iter()
+            .find(|ts| ts.labels.iter().any(|l| l.name == "le" && l.value == "-1"))
+            .expect("expected a negative le bucket");
+        assert_eq!(negative_bucket.samples[0].value, 7.0);
+
+        let inf_bucket = bucket_series
+            .iter()
+            .find(|ts| {
+                ts.labels
+                    .iter()
+                    .any(|l| l.name == "le" && l.value == "+Inf")
+            })
+            .unwrap();
+        assert_eq!(inf_bucket.samples[0].value, 7.0);
+    }
+
+    #[test]
     fn test_otel_summary_to_prometheus() {
         let request = ExportMetricsServiceRequest {
             resource_metrics: vec![ResourceMetrics {

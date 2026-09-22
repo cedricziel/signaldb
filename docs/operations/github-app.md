@@ -64,16 +64,16 @@ sequenceDiagram
    linking (see [How linking is secured](#how-linking-is-secured)).
 5. Leave **Expire user authorization tokens** on; SignalDB uses the user
    token once, during the callback, and discards it.
-6. **Setup URL**: leave empty. **Webhook**: untick *Active*; no webhook is
+6. **Setup URL**: leave empty. **Webhook**: untick _Active_; no webhook is
    needed.
 7. **Repository permissions**: `Contents: Read-only` and
    `Metadata: Read-only`. Request nothing else. SignalDB refuses to link an
    installation that carries any write-capable permission.
-8. **Where can this GitHub App be installed?**: *Any account* if tenants
-   span several organizations, otherwise *Only on this account*.
+8. **Where can this GitHub App be installed?**: _Any account_ if tenants
+   span several organizations, otherwise _Only on this account_.
 9. Create the App, then on its settings page note the **App ID** and the
    **Client ID**, click **Generate a new client secret**, and under
-   *Private keys* click **Generate a private key** (downloads a `.pem`).
+   _Private keys_ click **Generate a private key** (downloads a `.pem`).
 
 ## Configure `[github]`
 
@@ -117,11 +117,12 @@ in the list with the repositories it covers.
 
 The same surface exists on the HTTP API, the CLI, and MCP:
 
-| Operation | HTTP (tenant management API) | CLI | MCP tool |
-| --- | --- | --- | --- |
-| Start a link | `POST /api/v1/manage/tenants/{id}/github-installations/link` → `install_url` | `signaldb-cli tenant github link` | `tenant_start_github_link` |
-| List installations | `GET /api/v1/manage/tenants/{id}/github-installations` | `signaldb-cli tenant github list` | `tenant_list_github_installations` |
-| Remove a link | `DELETE /api/v1/manage/tenants/{id}/github-installations/{installation_id}` | `signaldb-cli tenant github remove <installation_id>` | `tenant_remove_github_installation` |
+| Operation                       | HTTP (tenant management API)                                                      | CLI                                                   | MCP tool                            |
+| ------------------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------- | ----------------------------------- |
+| Start a link                    | `POST /api/v1/manage/tenants/{id}/github-installations/link` → `install_url`      | `signaldb-cli tenant github link`                     | `tenant_start_github_link`          |
+| List installations              | `GET /api/v1/manage/tenants/{id}/github-installations`                            | `signaldb-cli tenant github list`                     | `tenant_list_github_installations`  |
+| Remove a link                   | `DELETE /api/v1/manage/tenants/{id}/github-installations/{installation_id}`       | `signaldb-cli tenant github remove <installation_id>` | `tenant_remove_github_installation` |
+| Attach an existing installation | `POST /api/v1/manage/tenants/{id}/github-installations/attach` → the installation | `signaldb-cli tenant github attach <installation_id>` | `tenant_attach_github_installation` |
 
 The CLI's `link` (and the MCP `tenant_start_github_link` tool) prints/returns
 the install URL; open it in a browser where you are
@@ -131,7 +132,33 @@ installation's repository list from GitHub; if GitHub cannot be reached the
 last known list is returned and marked `stale: true`. Removing a link takes
 effect immediately: SignalDB stops minting tokens for that installation even
 if it is still installed on GitHub. To also revoke GitHub's side, uninstall
-the App from the organization's *Installed GitHub Apps* page.
+the App from the organization's _Installed GitHub Apps_ page.
+
+GitHub allows only one App installation per account. Once one tenant has
+linked it, GitHub's install-flow URL for a second tenant on the same account
+skips the "Install & Authorize" consent screen entirely and sends the
+browser straight to GitHub's own installation-management page — no redirect
+back to SignalDB, so `link`/`tenant_start_github_link` has nothing to
+complete against. The attach endpoint is the way out of that dead end: it
+attaches a tenant to an `installation_id` you already know (read it off
+another tenant's linked-installations list, or off GitHub's own installation
+settings URL) without going through the install flow again, and re-runs the
+same read-only-permission check the install flow does, refusing an
+installation that carries any write-capable permission.
+
+Unlike every other operation in the table above, attach requires
+**instance-admin** — a tenant's own `tenant:manage` grant is not enough.
+The install flow's security rests on two independent checks (see
+[How linking is secured](#how-linking-is-secured)): the state token proves
+which tenant asked, and GitHub's own `code` exchange proves the browser
+belongs to a user who actually controls the installation being linked.
+Attach has no OAuth code to check ownership with, so without the
+instance-admin gate a tenant admin could attach — and, through
+[source context](#source-context), read the private repository list and
+file contents of — any other org that happens to have installed this
+deployment's App, not just their own. Requiring instance-admin keeps
+attach an operator-level escape hatch (the same principal who already
+holds the App's private key) rather than a cross-tenant disclosure path.
 
 Re-running the install flow for an installation that is already linked (for
 example after adding repositories on GitHub) refreshes the stored record
@@ -139,12 +166,12 @@ rather than failing.
 
 ## What SignalDB stores
 
-| Where | What | Secret? |
-| --- | --- | --- |
-| Config / secret store | App private key, OAuth client secret | yes, deploy-time |
-| Catalog `github_installations` | installation id, account (org or user), covered repositories, who linked it | no |
-| Catalog `github_link_states` | SHA-256 of pending link-flow state tokens, tenant, user, expiry | no |
-| Process memory only | minted installation tokens (about one hour), reused until five minutes before expiry | never persisted |
+| Where                          | What                                                                                 | Secret?          |
+| ------------------------------ | ------------------------------------------------------------------------------------ | ---------------- |
+| Config / secret store          | App private key, OAuth client secret                                                 | yes, deploy-time |
+| Catalog `github_installations` | installation id, account (org or user), covered repositories, who linked it          | no               |
+| Catalog `github_link_states`   | SHA-256 of pending link-flow state tokens, tenant, user, expiry                      | no               |
+| Process memory only            | minted installation tokens (about one hour), reused until five minutes before expiry | never persisted  |
 
 The user-to-server token from the OAuth-on-install step is used during the
 callback to verify ownership and then dropped; it is never stored.
@@ -167,6 +194,14 @@ Two independent checks bind each link, and neither alone is enough:
   and checks that the returned `installation_id` appears in that user's own
   `GET /user/installations`. A guessed or learned installation id from
   another organization is rejected and nothing is written.
+
+The `attach` endpoint (see [Connect a tenant](#connect-a-tenant)) does not use
+the OAuth state token or callback session. It has no user `code` to exchange,
+so it cannot re-derive the GitHub-side ownership check above. It instead
+requires instance-admin and validates the installation with the App JWT. A
+guessed or learned installation id from another organization would otherwise
+be attachable with a tenant's own `tenant:manage` grant, unlike through the
+OAuth flow.
 
 An installation whose permissions include any write-capable permission is
 refused at link time, so a mis-registered App cannot grant SignalDB more
@@ -234,7 +269,7 @@ tool `get_source_context` reach the same lookup.
 - `GET /api/v1/manage/tenants/{id}/github-installations` returns
   `configured: true` and, after connecting, the installation with its
   repositories.
-- The GitHub page for the App shows the organization under *Install App*.
+- The GitHub page for the App shows the organization under _Install App_.
 - The router log shows `GitHub installation linked` with the tenant and
   installation id.
 

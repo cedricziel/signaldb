@@ -21,6 +21,14 @@ schema-registry administration across tenants SHALL live under `admin`;
 self-management of the authenticated tenant SHALL live under `tenant`. Exactly
 one language flag SHALL be required on `query`.
 
+The CLI SHALL additionally expose a `processors` group (`list`, `get`,
+`validate`, `test`) backed by the tenant credential, and an `admin processors`
+group (`create`, `replace`, `delete`) that uses a tenant key holding
+`processors:write`. Processor specifications SHALL be read from a JSON or
+YAML file or from flags (`--signal`, `--dataset`, `--statement` repeatable,
+`--priority`, `--error-mode`, `--disabled`). All calls SHALL go through the
+generated SDK.
+
 #### Scenario: Query language is a flag on one `query` command
 
 - **WHEN** a user runs `signaldb query --promql '<expr>'` (or `--sql`, `--logql`,
@@ -69,6 +77,18 @@ k8s.pod`, or `signaldb schema metric get k8s.pod.cpu.time`
 - **WHEN** a user runs `signaldb admin schema create --file conventions.yaml`
   (or `replace`, `delete`)
 - **THEN** the CLI performs the custom-registry mutation through the SDK
+
+#### Scenario: Validate from the CLI
+
+- **WHEN** `signaldb-cli processors validate --signal logs --statement
+  'set(attributes["a"], 1)'` is run
+- **THEN** the CLI prints the validation result and exits non-zero on errors
+
+#### Scenario: Create from a file
+
+- **WHEN** `signaldb-cli admin processors create -f redact.yaml` is run with a
+  key holding `processors:write`
+- **THEN** the processor is created and its summary printed
 
 ### Requirement: Native per-language query output
 

@@ -67,6 +67,14 @@ const WHOAMI_NON_ADMIN = {
   memberships: [{ tenant_id: "acme", role: "viewer" }],
 };
 
+// The attach form is instance-admin-gated (the router requires it too: a
+// `tenant:manage` grant alone is not enough, since attach skips the OAuth
+// flow's GitHub-side ownership check — see docs/operations/github-app.md).
+const WHOAMI_INSTANCE_ADMIN = {
+  ...WHOAMI_ADMIN,
+  user: { ...WHOAMI_ADMIN.user, is_instance_admin: true },
+};
+
 const NOT_CONFIGURED = {
   configured: false,
   app_slug: null,
@@ -178,7 +186,8 @@ describe("GitHubIntegration page", () => {
         match: `${INSTALLATIONS_PATH}/link`,
         method: "POST",
         body: {
-          install_url: "https://github.com/apps/signaldb/installations/new?state=abc",
+          install_url:
+            "https://github.com/apps/signaldb/installations/new?state=abc",
           expires_at: "2026-09-01T00:10:00Z",
         },
         status: 201,
@@ -201,6 +210,146 @@ describe("GitHubIntegration page", () => {
       .filter((req): req is Request => req instanceof Request)
       .find((req) => req.url.includes("/link") && req.method === "POST");
     expect(postCall).toBeDefined();
+  });
+
+  it("Link existing installation is hidden for a tenant admin who is not instance-admin", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: INSTALLATIONS_PATH, method: "GET", body: CONFIGURED_EMPTY },
+    ]);
+    renderGitHubIntegration();
+
+    await screen.findByRole("button", { name: "Connect GitHub" });
+    expect(
+      screen.queryByLabelText("GitHub installation ID"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("Link existing installation calls the attach endpoint and refetches", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_INSTANCE_ADMIN },
+      { match: INSTALLATIONS_PATH, method: "GET", body: CONFIGURED_EMPTY },
+      {
+        match: `${INSTALLATIONS_PATH}/attach`,
+        method: "POST",
+        body: ONE_INSTALLATION.installations[0],
+        status: 201,
+      },
+    ]);
+    renderGitHubIntegration();
+
+    const input = await screen.findByLabelText("GitHub installation ID");
+    await userEvent.type(input, "42");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Link existing installation" }),
+    );
+
+    await waitFor(() => {
+      const postCall = fetchMock.mock.calls
+        .map((call) => call[0])
+        .filter((req): req is Request => req instanceof Request)
+        .find((req) => req.url.includes("/attach") && req.method === "POST");
+      expect(postCall).toBeDefined();
+    });
+    await waitFor(() => expect(input).toHaveValue(null));
+
+    await waitFor(() => {
+      const getCalls = fetchMock.mock.calls
+        .map((call) => call[0])
+        .filter((req): req is Request => req instanceof Request)
+        .filter(
+          (req) =>
+            req.method === "GET" &&
+            req.url.includes("github-installations") &&
+            !req.url.includes("/attach"),
+        );
+      // Initial load + refetch after attach.
+      expect(getCalls.length).toBeGreaterThanOrEqual(2);
+    });
+  });
+
+  it("Link existing installation posts the complete numeric id", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_INSTANCE_ADMIN },
+      { match: INSTALLATIONS_PATH, method: "GET", body: CONFIGURED_EMPTY },
+      {
+        match: `${INSTALLATIONS_PATH}/attach`,
+        method: "POST",
+        body: ONE_INSTALLATION.installations[0],
+        status: 201,
+      },
+    ]);
+    renderGitHubIntegration();
+
+    const input = await screen.findByLabelText("GitHub installation ID");
+    await userEvent.type(input, "1000");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Link existing installation" }),
+    );
+
+    await waitFor(async () => {
+      const postCall = fetchMock.mock.calls
+        .map((call) => call[0])
+        .filter((req): req is Request => req instanceof Request)
+        .find((req) => req.url.includes("/attach") && req.method === "POST");
+      expect(postCall).toBeDefined();
+      const body = await postCall?.clone().json();
+      expect(body).toEqual({ installation_id: 1000 });
+    });
+  });
+
+  it("Link existing installation parses exponent notation to its full value instead of truncating it", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_INSTANCE_ADMIN },
+      { match: INSTALLATIONS_PATH, method: "GET", body: CONFIGURED_EMPTY },
+      {
+        match: `${INSTALLATIONS_PATH}/attach`,
+        method: "POST",
+        body: ONE_INSTALLATION.installations[0],
+        status: 201,
+      },
+    ]);
+    renderGitHubIntegration();
+
+    // A number input accepts exponent notation; "1e3" must attach
+    // installation 1000, not 1 (`Number.parseInt` would truncate it at the
+    // "e" and post 1 instead).
+    const input = await screen.findByLabelText("GitHub installation ID");
+    await userEvent.type(input, "1e3");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Link existing installation" }),
+    );
+
+    await waitFor(async () => {
+      const postCall = fetchMock.mock.calls
+        .map((call) => call[0])
+        .filter((req): req is Request => req instanceof Request)
+        .find((req) => req.url.includes("/attach") && req.method === "POST");
+      expect(postCall).toBeDefined();
+      const body = await postCall?.clone().json();
+      expect(body).toEqual({ installation_id: 1000 });
+    });
+  });
+
+  it("Link existing installation rejects a non-positive installation id", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_INSTANCE_ADMIN },
+      { match: INSTALLATIONS_PATH, method: "GET", body: CONFIGURED_EMPTY },
+    ]);
+    renderGitHubIntegration();
+
+    const input = await screen.findByLabelText("GitHub installation ID");
+    await userEvent.type(input, "-1");
+    await userEvent.click(
+      screen.getByRole("button", { name: "Link existing installation" }),
+    );
+
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    const postCall = fetchMock.mock.calls
+      .map((call) => call[0])
+      .filter((req): req is Request => req instanceof Request)
+      .find((req) => req.url.includes("/attach") && req.method === "POST");
+    expect(postCall).toBeUndefined();
   });
 
   it("Remove confirms then DELETEs and refetches", async () => {
@@ -253,7 +402,9 @@ describe("GitHubIntegration page", () => {
       { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
       { match: INSTALLATIONS_PATH, body: CONFIGURED_EMPTY },
     ]);
-    renderGitHubIntegration("/integrations/github?github=linked&installation_id=777");
+    renderGitHubIntegration(
+      "/integrations/github?github=linked&installation_id=777",
+    );
 
     expect(
       await screen.findByText("GitHub installation 777 linked."),

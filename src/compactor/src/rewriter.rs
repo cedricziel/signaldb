@@ -544,7 +544,12 @@ impl ParquetRewriter {
             }
         };
         let materialized = crate::attr_promotion::materialized_keys_of(&current_schema, &stats);
-        let tenant_schema = config.get_tenant_schema_config(tenant);
+        // `tenant` here is the tenant *slug* (from the Iceberg namespace),
+        // but `get_tenant_schema_config` keys on the tenant id — resolve it
+        // first or a slug-!=-id tenant silently falls back to the global
+        // schema config and its pinned-label guard does nothing (#1535).
+        let tenant_id = config.get_tenant_id_by_slug(tenant);
+        let tenant_schema = config.get_tenant_schema_config(&tenant_id);
         let m = &tenant_schema.materialized_labels;
         let pinned: &[String] = match signal {
             "traces" => &m.traces,

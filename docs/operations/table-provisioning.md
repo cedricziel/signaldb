@@ -103,6 +103,13 @@ declared if the table predates it, and the table's schema is evolved to the
 current `schemas.toml` version. A step that loses a commit race is logged at
 `warn` and retried on the next load; it never fails the pass.
 
+Every table named by a pass also has its stale WAL idempotency markers
+retired, using the same `[writer].wal_marker_retention` rules the WAL commit
+path applies. This is what retires markers on a table that has gone dormant —
+one no `IcebergTableWriter` commits to anymore, and so is never reached by the
+commit-path sweep — since the reconciler walks the tenant/dataset registry
+directly rather than a process's cache of active writers.
+
 ### Steady-state cost
 
 The writer remembers, per process, which `(tenant, dataset, table)` triples it

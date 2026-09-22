@@ -6084,33 +6084,20 @@ impl Catalog {
                 };
                 let tenant_id: String = consumed_row.get("tenant_id");
 
-                let row = query(&format!(
-                    "INSERT INTO github_installations ({GITHUB_INSTALLATION_COLUMNS}) \
-                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
-                     ON CONFLICT (tenant_id, installation_id) DO UPDATE SET \
-                        account_login = excluded.account_login, \
-                        account_type = excluded.account_type, \
-                        account_id = excluded.account_id, \
-                        repositories = excluded.repositories, \
-                        repositories_synced_at = excluded.repositories_synced_at, \
-                        linked_by_user_id = excluded.linked_by_user_id, \
-                        linked_by_github_login = excluded.linked_by_github_login, \
-                        updated_at = excluded.updated_at \
-                     RETURNING {GITHUB_INSTALLATION_COLUMNS}"
-                ))
-                .bind(&tenant_id)
-                .bind(installation.installation_id)
-                .bind(&installation.account_login)
-                .bind(&installation.account_type)
-                .bind(installation.account_id)
-                .bind(&repositories_json)
-                .bind(&now_str)
-                .bind(&installation.linked_by_user_id)
-                .bind(&installation.linked_by_github_login)
-                .bind(&now_str)
-                .bind(&now_str)
-                .fetch_one(&mut *tx)
-                .await?;
+                let row = query(&github_installation_upsert_sqlite_sql())
+                    .bind(&tenant_id)
+                    .bind(installation.installation_id)
+                    .bind(&installation.account_login)
+                    .bind(&installation.account_type)
+                    .bind(installation.account_id)
+                    .bind(&repositories_json)
+                    .bind(&now_str)
+                    .bind(&installation.linked_by_user_id)
+                    .bind(&installation.linked_by_github_login)
+                    .bind(&now_str)
+                    .bind(&now_str)
+                    .fetch_one(&mut *tx)
+                    .await?;
                 let record = github_installation_from_sqlite_row(row)?;
                 tx.commit().await?;
                 Ok(GitHubLinkOutcome::Linked(record))
@@ -6132,35 +6119,83 @@ impl Catalog {
                 };
                 let tenant_id: String = consumed_row.get("tenant_id");
 
-                let row = query(&format!(
-                    "INSERT INTO github_installations ({GITHUB_INSTALLATION_COLUMNS}) \
-                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10) \
-                     ON CONFLICT (tenant_id, installation_id) DO UPDATE SET \
-                        account_login = EXCLUDED.account_login, \
-                        account_type = EXCLUDED.account_type, \
-                        account_id = EXCLUDED.account_id, \
-                        repositories = EXCLUDED.repositories, \
-                        repositories_synced_at = EXCLUDED.repositories_synced_at, \
-                        linked_by_user_id = EXCLUDED.linked_by_user_id, \
-                        linked_by_github_login = EXCLUDED.linked_by_github_login, \
-                        updated_at = EXCLUDED.updated_at \
-                     RETURNING {GITHUB_INSTALLATION_COLUMNS}"
-                ))
-                .bind(&tenant_id)
-                .bind(installation.installation_id)
-                .bind(&installation.account_login)
-                .bind(&installation.account_type)
-                .bind(installation.account_id)
-                .bind(&repositories_json)
-                .bind(now)
-                .bind(&installation.linked_by_user_id)
-                .bind(&installation.linked_by_github_login)
-                .bind(now)
-                .fetch_one(&mut *tx)
-                .await?;
+                let row = query(&github_installation_upsert_postgres_sql())
+                    .bind(&tenant_id)
+                    .bind(installation.installation_id)
+                    .bind(&installation.account_login)
+                    .bind(&installation.account_type)
+                    .bind(installation.account_id)
+                    .bind(&repositories_json)
+                    .bind(now)
+                    .bind(&installation.linked_by_user_id)
+                    .bind(&installation.linked_by_github_login)
+                    .bind(now)
+                    .fetch_one(&mut *tx)
+                    .await?;
                 let record = github_installation_from_postgres_row(row)?;
                 tx.commit().await?;
                 Ok(GitHubLinkOutcome::Linked(record))
+            }
+        }
+    }
+
+    /// Attach an already-existing GitHub App installation to `tenant_id`
+    /// directly, with no state token involved (change: github-installation
+    /// direct-attach). Unlike [`Catalog::complete_github_link`], this never
+    /// touches `github_link_states` — callers on this path (the admin
+    /// attach-installation endpoint) authorize via the caller's own
+    /// `tenant:manage` grant instead of a state token, since GitHub only
+    /// allows one App installation per account and so skips the consent
+    /// screen (and any redirect back here) once a second tenant tries to
+    /// link an already-installed account.
+    ///
+    /// Upserts on `(tenant_id, installation_id)`, so attaching the same
+    /// installation to the same tenant again refreshes the stored row
+    /// (matching [`Catalog::complete_github_link`]'s relink-refresh
+    /// semantics), and attaching the same `installation_id` to a *different*
+    /// tenant succeeds independently — the whole point of this method.
+    pub async fn attach_github_installation(
+        &self,
+        tenant_id: &str,
+        installation: &NewGitHubInstallation,
+    ) -> Result<GitHubInstallationRecord, sqlx::Error> {
+        let now = Utc::now();
+        let repositories_json = serde_json::to_string(&installation.repositories)
+            .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize repositories: {e}")))?;
+        match self {
+            Catalog::Sqlite(pool) => {
+                let now_str = now.to_rfc3339();
+                let row = query(&github_installation_upsert_sqlite_sql())
+                    .bind(tenant_id)
+                    .bind(installation.installation_id)
+                    .bind(&installation.account_login)
+                    .bind(&installation.account_type)
+                    .bind(installation.account_id)
+                    .bind(&repositories_json)
+                    .bind(&now_str)
+                    .bind(&installation.linked_by_user_id)
+                    .bind(&installation.linked_by_github_login)
+                    .bind(&now_str)
+                    .bind(&now_str)
+                    .fetch_one(pool)
+                    .await?;
+                github_installation_from_sqlite_row(row)
+            }
+            Catalog::Postgres(pool) => {
+                let row = query(&github_installation_upsert_postgres_sql())
+                    .bind(tenant_id)
+                    .bind(installation.installation_id)
+                    .bind(&installation.account_login)
+                    .bind(&installation.account_type)
+                    .bind(installation.account_id)
+                    .bind(&repositories_json)
+                    .bind(now)
+                    .bind(&installation.linked_by_user_id)
+                    .bind(&installation.linked_by_github_login)
+                    .bind(now)
+                    .fetch_one(pool)
+                    .await?;
+                github_installation_from_postgres_row(row)
             }
         }
     }
@@ -6356,6 +6391,53 @@ impl Catalog {
 const GITHUB_INSTALLATION_COLUMNS: &str = "tenant_id, installation_id, account_login, \
      account_type, account_id, repositories, repositories_synced_at, linked_by_user_id, \
      linked_by_github_login, created_at, updated_at";
+
+/// The `(tenant_id, installation_id)` upsert shared by
+/// [`Catalog::complete_github_link`] and [`Catalog::attach_github_installation`]
+/// — the two entry points that create or refresh a `github_installations` row,
+/// one via a state token and one direct. Kept as a single definition so the
+/// two can never drift apart. `linked_by_user_id` and `linked_by_github_login`
+/// are `COALESCE`d against the existing row rather than blindly overwritten:
+/// `attach` never obtains a GitHub user token, so it always passes `None` for
+/// both — this pair names the SignalDB user and GitHub identity that
+/// OAuth-verified ownership, a fact attach cannot establish and must not
+/// overwrite with the attaching admin's own identity (which admin performed
+/// the attach is recorded separately, in the router's own log line). Only a
+/// fresh non-null value (a real OAuth completion) may replace either.
+fn github_installation_upsert_sqlite_sql() -> String {
+    format!(
+        "INSERT INTO github_installations ({GITHUB_INSTALLATION_COLUMNS}) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT (tenant_id, installation_id) DO UPDATE SET \
+            account_login = excluded.account_login, \
+            account_type = excluded.account_type, \
+            account_id = excluded.account_id, \
+            repositories = excluded.repositories, \
+            repositories_synced_at = excluded.repositories_synced_at, \
+            linked_by_user_id = COALESCE(excluded.linked_by_user_id, github_installations.linked_by_user_id), \
+            linked_by_github_login = COALESCE(excluded.linked_by_github_login, github_installations.linked_by_github_login), \
+            updated_at = excluded.updated_at \
+         RETURNING {GITHUB_INSTALLATION_COLUMNS}"
+    )
+}
+
+/// PostgreSQL counterpart of [`github_installation_upsert_sqlite_sql`].
+fn github_installation_upsert_postgres_sql() -> String {
+    format!(
+        "INSERT INTO github_installations ({GITHUB_INSTALLATION_COLUMNS}) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10) \
+         ON CONFLICT (tenant_id, installation_id) DO UPDATE SET \
+            account_login = EXCLUDED.account_login, \
+            account_type = EXCLUDED.account_type, \
+            account_id = EXCLUDED.account_id, \
+            repositories = EXCLUDED.repositories, \
+            repositories_synced_at = EXCLUDED.repositories_synced_at, \
+            linked_by_user_id = COALESCE(EXCLUDED.linked_by_user_id, github_installations.linked_by_user_id), \
+            linked_by_github_login = COALESCE(EXCLUDED.linked_by_github_login, github_installations.linked_by_github_login), \
+            updated_at = EXCLUDED.updated_at \
+         RETURNING {GITHUB_INSTALLATION_COLUMNS}"
+    )
+}
 
 fn github_installation_from_sqlite_row(
     row: sqlx::sqlite::SqliteRow,
@@ -11514,6 +11596,158 @@ mod github_tests {
                 .await
                 .unwrap()
                 .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_installation_creates_a_row_without_a_state_token() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+        let mut installation = new_installation(20001, &["octo-org/repo-a"]);
+        installation.linked_by_user_id = Some(user_id.clone());
+        installation.linked_by_github_login = None;
+
+        let record = catalog
+            .attach_github_installation("acme", &installation)
+            .await
+            .unwrap();
+        assert_eq!(record.tenant_id, "acme");
+        assert_eq!(record.installation_id, 20001);
+        assert_eq!(record.repositories, vec!["octo-org/repo-a"]);
+        assert_eq!(record.linked_by_user_id.as_deref(), Some(user_id.as_str()));
+        assert_eq!(record.linked_by_github_login, None);
+
+        let fetched = catalog
+            .get_github_installation("acme", 20001)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched, record);
+    }
+
+    #[tokio::test]
+    async fn attach_installation_again_refreshes_the_row() {
+        let (catalog, _user_id) = catalog_with_two_tenants().await;
+        let first = catalog
+            .attach_github_installation("acme", &new_installation(20002, &["octo-org/repo-a"]))
+            .await
+            .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        let mut second_installation =
+            new_installation(20002, &["octo-org/repo-a", "octo-org/repo-b"]);
+        second_installation.account_login = "octo-org-renamed".to_string();
+        let second = catalog
+            .attach_github_installation("acme", &second_installation)
+            .await
+            .unwrap();
+
+        assert_eq!(second.installation_id, first.installation_id);
+        assert_eq!(second.account_login, "octo-org-renamed");
+        assert_eq!(
+            second.repositories,
+            vec!["octo-org/repo-a", "octo-org/repo-b"]
+        );
+        assert!(second.updated_at >= first.updated_at);
+        assert_eq!(
+            catalog
+                .list_github_installations("acme")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_installation_to_two_tenants_succeeds_independently() {
+        let (catalog, _user_id) = catalog_with_two_tenants().await;
+
+        let acme_record = catalog
+            .attach_github_installation("acme", &new_installation(20003, &["octo-org/repo-a"]))
+            .await
+            .unwrap();
+        let globex_record = catalog
+            .attach_github_installation("globex", &new_installation(20003, &["octo-org/repo-a"]))
+            .await
+            .unwrap();
+
+        assert_eq!(acme_record.tenant_id, "acme");
+        assert_eq!(globex_record.tenant_id, "globex");
+        assert_eq!(acme_record.installation_id, 20003);
+        assert_eq!(globex_record.installation_id, 20003);
+
+        assert_eq!(
+            catalog
+                .list_github_installations("acme")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            catalog
+                .list_github_installations("globex")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            catalog
+                .get_github_installation("acme", 20003)
+                .await
+                .unwrap(),
+            Some(acme_record)
+        );
+        assert_eq!(
+            catalog
+                .get_github_installation("globex", 20003)
+                .await
+                .unwrap(),
+            Some(globex_record)
+        );
+    }
+
+    /// Attach never obtains a GitHub user token, so it always passes `None`
+    /// for both `linked_by_user_id` and `linked_by_github_login` — neither
+    /// must erase what `complete_github_link`'s OAuth flow already verified
+    /// for the same row (an earlier version only `COALESCE`d the login,
+    /// leaving the row attributed to two different people). Regression
+    /// test for the `COALESCE` on both columns in the shared upsert SQL.
+    #[tokio::test]
+    async fn attach_installation_preserves_oauth_verified_provenance() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+        link_state(&catalog, "state-hash-preserve", "acme", &user_id).await;
+        let mut oauth_installation = new_installation(20004, &["octo-org/repo-a"]);
+        oauth_installation.linked_by_user_id = Some(user_id.clone());
+        oauth_installation.linked_by_github_login = Some("octocat".to_string());
+        let outcome = catalog
+            .complete_github_link("state-hash-preserve", &oauth_installation)
+            .await
+            .unwrap();
+        let GitHubLinkOutcome::Linked(linked) = outcome else {
+            panic!("expected Linked, got {outcome:?}");
+        };
+        assert_eq!(linked.linked_by_github_login.as_deref(), Some("octocat"));
+
+        let mut attach_installation =
+            new_installation(20004, &["octo-org/repo-a", "octo-org/repo-b"]);
+        attach_installation.linked_by_user_id = None;
+        attach_installation.linked_by_github_login = None;
+        let attached = catalog
+            .attach_github_installation("acme", &attach_installation)
+            .await
+            .unwrap();
+
+        assert_eq!(attached.linked_by_github_login.as_deref(), Some("octocat"));
+        assert_eq!(
+            attached.linked_by_user_id.as_deref(),
+            Some(user_id.as_str())
+        );
+        assert_eq!(
+            attached.repositories,
+            vec!["octo-org/repo-a", "octo-org/repo-b"]
         );
     }
 }

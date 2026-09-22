@@ -76,6 +76,9 @@ The popover SHALL include an appearance toggle that switches between light and d
 
 The popover SHALL include links to: Send data (/instrumentation), API keys (/api-keys), and external documentation.
 
+The user menu SHALL additionally link to `/processors` (labelled
+"Processors") next to the Schema link.
+
 #### Scenario: Internal navigation links work
 
 - **WHEN** the user clicks "Send data" or "API keys"
@@ -85,6 +88,11 @@ The popover SHALL include links to: Send data (/instrumentation), API keys (/api
 
 - **WHEN** the user clicks "Docs"
 - **THEN** the SignalDB docs open in a new browser tab
+
+#### Scenario: Processors link present
+
+- **WHEN** a tenant user opens the user menu
+- **THEN** a "Processors" entry navigates to `/processors`
 
 ### Requirement: Tenant switching navigates to selection page
 

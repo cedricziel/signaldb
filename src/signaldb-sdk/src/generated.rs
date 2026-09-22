@@ -80,6 +80,19 @@ pub mod types {
             Default::default()
         }
     }
+    ///Request body for [`attach_github_installation`].
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct AttachGitHubInstallationRequest {
+        /**A GitHub App installation id that already exists for this App —
+        e.g. one already linked to another tenant on the same GitHub
+        account, or read off GitHub's own installation settings page.*/
+        pub installation_id: i64,
+    }
+    impl AttachGitHubInstallationRequest {
+        pub fn builder() -> builder::AttachGitHubInstallationRequest {
+            Default::default()
+        }
+    }
     ///`Attribute`
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct Attribute {
@@ -3719,6 +3732,50 @@ pub mod types {
                     name: Ok(value.name),
                     revoked_at: Ok(value.revoked_at),
                     scopes: Ok(value.scopes),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct AttachGitHubInstallationRequest {
+            installation_id: ::std::result::Result<i64, ::std::string::String>,
+        }
+        impl ::std::default::Default for AttachGitHubInstallationRequest {
+            fn default() -> Self {
+                Self {
+                    installation_id: Err("no value supplied for installation_id".to_string()),
+                }
+            }
+        }
+        impl AttachGitHubInstallationRequest {
+            pub fn installation_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.installation_id = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for installation_id: {e}")
+                });
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<AttachGitHubInstallationRequest>
+            for super::AttachGitHubInstallationRequest
+        {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: AttachGitHubInstallationRequest,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    installation_id: value.installation_id?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::AttachGitHubInstallationRequest>
+            for AttachGitHubInstallationRequest
+        {
+            fn from(value: super::AttachGitHubInstallationRequest) -> Self {
+                Self {
+                    installation_id: Ok(value.installation_id),
                 }
             }
         }
@@ -16700,6 +16757,40 @@ impl Client {
     pub fn manage_list_github_installations(&self) -> builder::ManageListGithubInstallations<'_> {
         builder::ManageListGithubInstallations::new(self)
     }
+    /**`POST /api/v1/manage/tenants/{tenant_id}/github-installations/attach`
+
+    Attaches an installation that already exists on GitHub — e.g. one
+    already linked to another tenant on the same GitHub account — to
+    `tenant_id` directly, with no OAuth install flow. GitHub allows only one
+    App installation per account, so once one tenant has linked it, GitHub's
+    install-flow URL for a second tenant skips straight to its own
+    installation-management page instead of redirecting back here; this
+    endpoint is the escape hatch. Unlike [`start_github_link`]'s flow, there
+    is no user token to check the installation's `installation_id` against
+    — GitHub only scopes [`crate::github::GitHubApp::installation`] to *an*
+    installation of this App, not to any account the caller controls. A
+    `tenant:manage` grant is therefore not enough authorization on its own
+    (it would let a tenant admin attach, and so read the source of, any
+    other org that installed this deployment's App); this endpoint requires
+    `ctx.is_instance_admin`, the same principal that already holds the
+    App's private key. The same read-only-permission check the OAuth
+    callback performs is re-run here.
+
+    Sends a `POST` request to `/api/v1/manage/tenants/{tenant_id}/github-installations/attach`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    - `body`
+    ```ignore
+    let response = client.manage_attach_github_installation()
+        .tenant_id(tenant_id)
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn manage_attach_github_installation(&self) -> builder::ManageAttachGithubInstallation<'_> {
+        builder::ManageAttachGithubInstallation::new(self)
+    }
     /**`POST /api/v1/manage/tenants/{tenant_id}/github-installations/link`
 
     Mints a single-use, tenant-and-admin-bound state token and returns the
@@ -19898,6 +19989,120 @@ pub mod builder {
                     ResponseValue::from_response(response).await?,
                 )),
                 500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::manage_attach_github_installation`]
+
+    [`Client::manage_attach_github_installation`]: super::Client::manage_attach_github_installation*/
+    #[derive(Debug, Clone)]
+    pub struct ManageAttachGithubInstallation<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+        body: Result<types::builder::AttachGitHubInstallationRequest, String>,
+    }
+    impl<'a> ManageAttachGithubInstallation<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::AttachGitHubInstallationRequest>,
+            <V as std::convert::TryInto<types::AttachGitHubInstallationRequest>>::Error:
+                std::fmt::Display,
+        {
+            self.body = value.try_into().map(From::from).map_err(|s| {
+                format!(
+                    "conversion to `AttachGitHubInstallationRequest` for body failed: {}",
+                    s
+                )
+            });
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(
+                    types::builder::AttachGitHubInstallationRequest,
+                ) -> types::builder::AttachGitHubInstallationRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/manage/tenants/{tenant_id}/github-installations/attach`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::GitHubInstallationResponse>, Error<types::ManageError>>
+        {
+            let Self {
+                client,
+                tenant_id,
+                body,
+            } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let body = body
+                .and_then(|v| {
+                    types::AttachGitHubInstallationRequest::try_from(v).map_err(|e| e.to_string())
+                })
+                .map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/manage/tenants/{}/github-installations/attach",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "manage_attach_github_installation",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                201u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                502u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 _ => Err(Error::UnexpectedResponse(response)),
@@ -25203,6 +25408,7 @@ pub const OPERATIONS: &[&str] = &[
     "logql_labels",
     "logql_query",
     "logql_query_range",
+    "manage_attach_github_installation",
     "manage_create_api_key",
     "manage_create_dataset",
     "manage_create_tenant",
