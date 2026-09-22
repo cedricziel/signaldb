@@ -37,6 +37,21 @@ pub enum AggFn {
     /// aware — `rate` without the division by the window width (`irVersion`
     /// 6).
     Increase,
+    /// Instantaneous per-second rate from the last two samples in the
+    /// window, counter-reset aware (`irVersion` 7). Unlike `rate`, which
+    /// averages over the whole window, `irate` reacts to the most recent
+    /// pair of samples — PromQL's `irate()`.
+    Irate,
+    /// The average of the raw values seen in the window (`irVersion` 7).
+    AvgOverTime,
+    /// The minimum of the raw values seen in the window (`irVersion` 7).
+    MinOverTime,
+    /// The maximum of the raw values seen in the window (`irVersion` 7).
+    MaxOverTime,
+    /// The sum of the raw values seen in the window (`irVersion` 7).
+    SumOverTime,
+    /// The count of raw samples seen in the window (`irVersion` 7).
+    CountOverTime,
 }
 
 impl AggFn {
@@ -50,6 +65,34 @@ impl AggFn {
         matches!(self, AggFn::Quantile)
     }
 
+    /// Whether this is a per-series range function (`rate`/`increase`/`irate`/
+    /// `*_over_time`) — computed per series from ordered raw samples rather
+    /// than a plain grouped reduction, and legal only on `metrics`/
+    /// `metrics_histogram` with `step` set.
+    pub fn is_range_fn(self) -> bool {
+        matches!(
+            self,
+            AggFn::Rate
+                | AggFn::Increase
+                | AggFn::Irate
+                | AggFn::AvgOverTime
+                | AggFn::MinOverTime
+                | AggFn::MaxOverTime
+                | AggFn::SumOverTime
+                | AggFn::CountOverTime
+        )
+    }
+
+    /// Whether this function may reduce several series into one output group
+    /// per step (the `aggregate` stage's `across` reducer, or a range
+    /// function's implicit `sum` default).
+    pub fn is_across_reducer(self) -> bool {
+        matches!(
+            self,
+            AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max | AggFn::Count
+        )
+    }
+
     /// The `irVersion` that introduced this function. Documents declaring an
     /// older version are rejected rather than silently coerced, so a client
     /// never believes a query ran that its server could not have planned.
@@ -58,6 +101,12 @@ impl AggFn {
             AggFn::Count | AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max | AggFn::Quantile => 1,
             AggFn::Stddev | AggFn::Stdvar | AggFn::First | AggFn::Last => 5,
             AggFn::Rate | AggFn::Increase => 6,
+            AggFn::Irate
+            | AggFn::AvgOverTime
+            | AggFn::MinOverTime
+            | AggFn::MaxOverTime
+            | AggFn::SumOverTime
+            | AggFn::CountOverTime => 7,
         }
     }
 
@@ -75,6 +124,12 @@ impl AggFn {
             AggFn::Last => "last",
             AggFn::Rate => "rate",
             AggFn::Increase => "increase",
+            AggFn::Irate => "irate",
+            AggFn::AvgOverTime => "avg_over_time",
+            AggFn::MinOverTime => "min_over_time",
+            AggFn::MaxOverTime => "max_over_time",
+            AggFn::SumOverTime => "sum_over_time",
+            AggFn::CountOverTime => "count_over_time",
         }
     }
 }
@@ -112,6 +167,17 @@ pub struct Agg {
     /// and it narrows only this aggregate. Grouping happens once regardless.
     #[serde(rename = "where", default, skip_serializing_if = "Option::is_none")]
     pub scope: Option<Predicate>,
+    /// For a per-series range function (`rate`/`increase`/`irate`/
+    /// `*_over_time`), the reducer that folds each `by` group's per-series
+    /// values into one value per step. Defaults to `sum` (the historical
+    /// `rate`/`increase` behaviour). `irVersion` 7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub across: Option<AggFn>,
+    /// For a per-series range function, the lookback window: each step's
+    /// value uses samples in `(t - window, t]`. A duration string like
+    /// `step`. Defaults to `step` (the historical behaviour). `irVersion` 7.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
 }
 
 /// The `aggregate` stage: group-reduce, optionally time-bucketed by `step`.
@@ -409,6 +475,8 @@ mod tests {
                 op: ComparisonOp::Eq,
                 value: Some(json!("Error")),
             })),
+            across: None,
+            window: None,
         };
         let encoded = serde_json::to_value(&scoped).unwrap();
         assert!(encoded.get("where").is_some());
