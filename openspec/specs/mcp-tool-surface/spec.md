@@ -123,29 +123,53 @@ SDK.
 
 #### Scenario: Dataset discovery is available as a tool
 
-- **WHEN** a session calls `discover_datasets`
-- **THEN** the tool returns a Markdown list nesting the authenticated
-  tenant's datasets under it, marking the session's current default dataset
-  and each dataset's provisioned signal-table count
+- **WHEN** a session calls `discover_datasets` and its credential's grant
+  covers exactly one tenant
+- **THEN** the tool returns a Markdown list nesting that tenant's datasets
+  under it, marking the session's current default dataset and each dataset's
+  provisioned signal-table count
+
+#### Scenario: Dataset discovery enumerates every tenant in a multi-tenant grant
+
+- **WHEN** a session calls `discover_datasets` and its credential's grant
+  covers more than one tenant
+- **THEN** the tool returns a Markdown list with one top-level entry per
+  granted tenant, each nesting that tenant's own datasets (subject to that
+  tenant's own dataset restriction, if any) beneath it
 
 #### Scenario: A mismatched tenant confirmation argument is rejected
 
 - **WHEN** a session passes a `tenant` argument to a query, discovery, or
-  schema-lookup tool that does not match the tenant this call's own
+  schema-lookup tool that does not match the tenant a single-tenant
   credential resolved to
 - **THEN** the tool rejects the call with an error naming both tenants,
   before any request reaches the router — `tenant` (and `dataset`, for
   every tool that takes one) are required arguments on every such tool,
   since one MCP session may hold credentials for several tenants and
   datasets across calls and there is no longer an implicit session-wide
-  default to omit them in favor of; the argument only confirms the
-  caller's assumption against what this specific call authenticated as, it
+  default to omit them in favor of; for a single-tenant credential the
+  argument only confirms the caller's assumption against what this specific call authenticated as, it
   never selects which credential/tenant a call authenticates as.
   `discover_datasets` is the one exception to the `dataset`-required rule:
   it takes no `dataset` argument at all, on either side of this change,
   since discovering which datasets exist is how a caller learns what to
   pass as `dataset` to every other tool — requiring it here would be
   circular
+
+#### Scenario: The tenant argument selects among a multi-tenant grant
+
+- **WHEN** a session calls a query, discovery, or schema-lookup tool with a
+  `tenant` argument naming one tenant from a multi-tenant OAuth credential's
+  granted set
+- **THEN** the tool serves the call against that named tenant, subject to
+  that tenant's own dataset restriction from the grant
+
+#### Scenario: The tenant argument is rejected when outside a multi-tenant grant
+
+- **WHEN** a session calls a tool with a `tenant` argument naming a tenant
+  that is not in a multi-tenant OAuth credential's granted set
+- **THEN** the tool rejects the call with an access-denied error before any
+  data from any granted tenant is returned
 
 #### Scenario: Dataset discovery and table listing respect a restricted credential
 
@@ -167,12 +191,15 @@ SDK.
 
 - **WHEN** a session (one `mcp-session-id`) issues calls that present
   different, independently valid credentials — for example separate API keys
-  for two tenants — each with its matching `X-Tenant-ID`
-- **THEN** each call is authenticated by the router on its own terms and
-  succeeds against its own tenant; the session is not permanently pinned to
-  the first tenant seen, though it may accumulate only up to a bounded number
-  of distinct identities before further new identities on that session are
-  refused
+  for two tenants — each with its matching `X-Tenant-ID`, or successive calls
+  selecting different tenants from the same multi-tenant OAuth credential's
+  granted set
+- **THEN** each call is authenticated and scoped on its own terms and
+  succeeds against the tenant it named; the session is not permanently
+  pinned to the first tenant seen, though a session using distinct
+  credentials (rather than one multi-tenant grant) may accumulate only up to
+  a bounded number of distinct identities before further new identities on
+  that session are refused
 
 #### Scenario: Processor management is available as tools
 
