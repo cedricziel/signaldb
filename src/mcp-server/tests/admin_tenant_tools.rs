@@ -46,13 +46,20 @@ const TENANT_SELF_TOOLS: &[&str] = &[
     "tenant_list_table_schemas",
     "list_available_table_schemas",
     "tenant_start_github_link",
+    "tenant_attach_github_installation",
     "tenant_list_github_installations",
     "tenant_remove_github_installation",
 ];
 
 /// The tenant tools that wrap the `authorize_tenant`-gated management API:
 /// reachable by a human session with the tenant-admin role or by an API key
-/// carrying `tenant:manage`.
+/// carrying `tenant:manage`. `tenant_attach_github_installation` is
+/// deliberately excluded: unlike every other tool here, it requires
+/// instance-admin, not just `tenant:manage` (see its own tool description
+/// and `router::endpoints::github::attach_github_installation`'s doc
+/// comment for why), so it does not belong to the group this list's own
+/// test (`tenant_manage_tools_name_the_scope_and_drop_the_human_session_caveat`)
+/// asserts a uniform `tenant:manage` description contract for.
 const TENANT_MANAGE_TOOLS: &[&str] = &[
     "tenant_list_datasets",
     "tenant_create_dataset",
@@ -294,6 +301,7 @@ async fn behaviour(
         .into_response();
     }
     if (path.ends_with("/github-installations/link") && method == axum::http::Method::POST)
+        || (path.ends_with("/github-installations/attach") && method == axum::http::Method::POST)
         || (path.contains("/github-installations/") && method == axum::http::Method::DELETE)
     {
         return (
@@ -628,10 +636,11 @@ async fn tenant_list_github_installations_reports_unconfigured() {
     assert!(text.contains("\"installations\":[]"), "{text}");
 }
 
-/// `tenant_start_github_link` and `tenant_remove_github_installation` both
-/// 404 when GitHub integration is not configured, which surfaces as a
-/// resource-not-found tool error (`map_sdk_err`'s generic 404 mapping —
-/// unlike a 403, this isn't special-cased by `map_manage_err`).
+/// `tenant_start_github_link`, `tenant_attach_github_installation` and
+/// `tenant_remove_github_installation` all 404 when GitHub integration is
+/// not configured, which surfaces as a resource-not-found tool error
+/// (`map_sdk_err`'s generic 404 mapping — unlike a 403, this isn't
+/// special-cased by `map_manage_err`).
 #[tokio::test]
 async fn github_tools_surface_the_routers_not_configured_404() {
     let mut session = McpSession::open(app().await).await;
@@ -647,12 +656,69 @@ async fn github_tools_surface_the_routers_not_configured_404() {
 
     let reply = session
         .call_tool(
+            "tenant_attach_github_installation",
+            serde_json::json!({"tenant_id": "acme", "installation_id": 42}),
+        )
+        .await;
+    assert!(tool_is_error(&reply), "404 must surface: {reply}");
+    assert!(tool_error_message(&reply).contains("not found"), "{reply}");
+
+    let reply = session
+        .call_tool(
             "tenant_remove_github_installation",
             serde_json::json!({"tenant_id": "acme", "installation_id": 42, "confirm": "42"}),
         )
         .await;
     assert!(tool_is_error(&reply), "404 must surface: {reply}");
     assert!(tool_error_message(&reply).contains("not found"), "{reply}");
+}
+
+/// `tenant_attach_github_installation` is gated the same as every other
+/// tenant-management tool at the MCP-wrapper level: a 403 from the router
+/// surfaces as a tool error rather than succeeding silently. (The mock
+/// router here stands in for `authorize_tenant`'s generic denial and does
+/// not model the tool's stricter instance-admin requirement — that is
+/// exercised against the real router in
+/// `router::endpoints::github::tests::attach_tenant_admin_without_instance_admin_is_forbidden`
+/// and `..._api_key_without_instance_admin_is_forbidden`.)
+#[tokio::test]
+async fn tenant_attach_github_installation_is_manage_gated() {
+    let mut session = McpSession::open(app().await).await;
+    let reply = session
+        .call_tool(
+            "tenant_attach_github_installation",
+            serde_json::json!({"tenant_id": "denied", "installation_id": 42}),
+        )
+        .await;
+    assert!(
+        tool_is_error(&reply),
+        "a 403 from the router must surface as a tool error: {reply}"
+    );
+}
+
+/// Unlike every other tool in [`TENANT_MANAGE_TOOLS`], this tool's
+/// description must not claim `tenant:manage` alone is sufficient — it
+/// requires instance-admin (see `attach_github_installation`'s doc
+/// comment in the router for why a lower grant is a cross-tenant
+/// disclosure risk here specifically).
+#[tokio::test]
+async fn tenant_attach_github_installation_names_instance_admin_requirement() {
+    let client = connect().await;
+    let tools = client.list_tools(None).await.expect("tools/list succeeds");
+    let tool = tools
+        .tools
+        .iter()
+        .find(|t| t.name == "tenant_attach_github_installation")
+        .expect("tenant_attach_github_installation listed");
+    let description = tool.description.as_deref().unwrap_or_default();
+    assert!(
+        description.contains("instance-admin"),
+        "must name the instance-admin requirement: {description}"
+    );
+    assert!(
+        description.contains("NOT enough"),
+        "must say tenant:manage alone is not enough: {description}"
+    );
 }
 
 #[tokio::test]

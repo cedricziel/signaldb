@@ -50,9 +50,9 @@ user-visible change is RED honesty; everything else is internal shape.
       `describe { target: "fields" }` (irVersion 4), one call per source
 - [x] 3.3 Implement tier-1 presence: intersect each source's field set with each
       entity type's identifying attributes, across every queryable source
-- [ ] 3.4 Test: identifying attributes absent from a source are dropped from the
+- [x] 3.4 Test: identifying attributes absent from a source are dropped from the
       tuple; when the primary is absent the source contributes no instances
-- [ ] 3.5 Apply per-source identity degradation to the tier-2 listing queries
+- [x] 3.5 Apply per-source identity degradation to the tier-2 listing queries
 - [x] 3.6 Test: an entity type whose identity attributes have no covering
       statistics is reported unanalyzed, distinctly from analyzed-and-absent
 - [x] 3.7 Add the unanalyzed state and surface the statistics `as_of` stamp in
@@ -64,12 +64,12 @@ user-visible change is RED honesty; everything else is internal shape.
 
 ## 4. Ship
 
-- [ ] 4.1 `pnpm -C src/ui test` and `pnpm -C src/ui build` clean on each PR
+- [x] 4.1 `pnpm -C src/ui test` and `pnpm -C src/ui build` clean on each PR
 - [ ] 4.2 Lint/format per the project, then `/simplify` on the changed code
-- [ ] 4.3 Docs: update the catalog's user-facing documentation to describe
+- [x] 4.3 Docs: update the catalog's user-facing documentation to describe
       registry-derived types and all-signal detection; run the docs-freshness
       gate after committing
-- [ ] 4.4 Open the three PRs as a stack, each under the 500-line guideline, and
+- [x] 4.4 Open the three PRs as a stack, each under the 500-line guideline, and
       act on automated review findings
-- [ ] 4.5 After merge, sync the `explore-ui-catalog` delta into the main spec and
+- [x] 4.5 After merge, sync the `explore-ui-catalog` delta into the main spec and
       archive the change

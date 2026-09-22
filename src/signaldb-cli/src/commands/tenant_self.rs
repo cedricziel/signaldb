@@ -649,6 +649,15 @@ pub enum GithubAction {
     Link(GithubOutputArgs),
     /// List the linked installations and the repositories they cover
     List(GithubOutputArgs),
+    /// Attach an installation that already exists for this GitHub App
+    /// directly, with no OAuth install flow (instance-admin only — see
+    /// docs/operations/github-app.md)
+    Attach {
+        /// GitHub installation ID to attach
+        installation_id: i64,
+        #[command(flatten)]
+        output: GithubOutputArgs,
+    },
     /// Remove a linked installation (SignalDB stops minting tokens for it immediately)
     Remove {
         /// GitHub installation ID to remove
@@ -752,6 +761,32 @@ impl GithubAction {
                     );
                 } else {
                     println!("{}", format_github_installation_table(&v.installations));
+                }
+                Ok(())
+            }
+            GithubAction::Attach {
+                installation_id,
+                output: GithubOutputArgs { connect, json },
+            } => {
+                let tenant_id = require_tenant_id(&connect)?;
+                let v = connect
+                    .build_client()?
+                    .manage_attach_github_installation()
+                    .tenant_id(tenant_id)
+                    .body(signaldb_sdk::types::AttachGitHubInstallationRequest { installation_id })
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        anyhow::Error::new(e).context("manage_attach_github_installation failed")
+                    })?
+                    .into_inner();
+                if json {
+                    crate::commands::print_json(&v)?;
+                } else {
+                    println!(
+                        "GitHub installation {} ({}) attached.",
+                        v.installation_id, v.account_login
+                    );
                 }
                 Ok(())
             }
@@ -1723,8 +1758,10 @@ mod tests {
     fn github_subcommands_parse() {
         assert!(TestCli::try_parse_from(["tenant", "github", "link"]).is_ok());
         assert!(TestCli::try_parse_from(["tenant", "github", "list"]).is_ok());
+        assert!(TestCli::try_parse_from(["tenant", "github", "attach", "42"]).is_ok());
         assert!(TestCli::try_parse_from(["tenant", "github", "remove", "42", "--yes"]).is_ok());
-        // Removal needs an installation id.
+        // Attach and removal need an installation id.
+        assert!(TestCli::try_parse_from(["tenant", "github", "attach"]).is_err());
         assert!(TestCli::try_parse_from(["tenant", "github", "remove"]).is_err());
     }
 
@@ -2001,6 +2038,37 @@ mod tests {
         .run()
         .await
         .expect("link succeeds");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
+    async fn github_attach_hits_the_attach_endpoint() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock(
+                "POST",
+                "/api/v1/manage/tenants/acme/github-installations/attach",
+            )
+            .match_header("authorization", "Bearer sk-test")
+            .match_body(r#"{"installation_id":42}"#)
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"installation_id":42,"account_login":"acme-org","account_type":"Organization","repositories":[],"repositories_synced_at":"2026-01-01T00:00:00Z","stale":false,"linked_by_github_login":null,"manage_url":"https://github.com/organizations/acme-org/settings/installations/42","created_at":"2026-01-01T00:00:00Z","updated_at":"2026-01-01T00:00:00Z"}"#,
+            )
+            .create_async()
+            .await;
+
+        GithubAction::Attach {
+            installation_id: 42,
+            output: GithubOutputArgs {
+                connect: connect_acme(&server),
+                json: false,
+            },
+        }
+        .run()
+        .await
+        .expect("attach succeeds");
         mock.assert_async().await;
     }
 

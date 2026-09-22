@@ -34,11 +34,11 @@ Goal: view SignalDB data in Grafana. There are two options:
 
 3. Under HTTP headers, add:
 
-   | Header | Value |
-   |---|---|
-   | `Authorization` | `Bearer <api-key>` |
-   | `X-Tenant-ID` | your tenant ID |
-   | `X-Dataset-ID` | (optional) dataset ID |
+   | Header          | Value                 |
+   | --------------- | --------------------- |
+   | `Authorization` | `Bearer <api-key>`    |
+   | `X-Tenant-ID`   | your tenant ID        |
+   | `X-Dataset-ID`  | (optional) dataset ID |
 
 4. Save & test.
 
@@ -84,14 +84,13 @@ allow_loading_unsigned_plugins = signaldb-signaldb-datasource
 
 ### Configure
 
-| Field | Meaning |
-|---|---|
+| Field      | Meaning                                                          |
+| ---------- | ---------------------------------------------------------------- |
 | Router URL | Flight endpoint of the router, e.g. `http://<router-host>:50053` |
-| Protocol | `http` or `flight`; the backend currently only supports `flight` |
-| Timeout | Query timeout in seconds |
-| Tenant ID | Tenant to query |
-| Dataset ID | Dataset within the tenant (optional) |
-| API Key | Stored in Grafana's secure JSON store |
+| Timeout    | Query timeout in seconds                                         |
+| Tenant ID  | Tenant to query                                                  |
+| Dataset ID | Dataset within the tenant (optional)                             |
+| API Key    | Stored in Grafana's secure JSON store                            |
 
 ### Native plugin limitations
 
@@ -111,9 +110,9 @@ analysis use [SQL over Flight](querying-sql.md).
 
 ## Troubleshooting
 
-| Symptom | Cause | Fix |
-|---|---|---|
-| Tempo datasource "Save & test" fails with 400/401 | Auth headers missing or wrong | Set `Authorization` and `X-Tenant-ID` headers on the datasource |
-| Tempo metrics/TraceQL-metrics panels show errors | Endpoints return 501 | Not implemented — see [Tempo API reference](tempo-api-reference.md) |
-| Native plugin panels are always empty | Router answers the plugin's tickets with empty placeholders | Expected today; use the Tempo datasource or SQL instead |
-| Plugin not loading in Grafana | Unsigned plugin blocked | Add it to `allow_loading_unsigned_plugins` |
+| Symptom                                           | Cause                                                       | Fix                                                                 |
+| ------------------------------------------------- | ----------------------------------------------------------- | ------------------------------------------------------------------- |
+| Tempo datasource "Save & test" fails with 400/401 | Auth headers missing or wrong                               | Set `Authorization` and `X-Tenant-ID` headers on the datasource     |
+| Tempo metrics/TraceQL-metrics panels show errors  | Endpoints return 501                                        | Not implemented — see [Tempo API reference](tempo-api-reference.md) |
+| Native plugin panels are always empty             | Router answers the plugin's tickets with empty placeholders | Expected today; use the Tempo datasource or SQL instead             |
+| Plugin not loading in Grafana                     | Unsigned plugin blocked                                     | Add it to `allow_loading_unsigned_plugins`                          |

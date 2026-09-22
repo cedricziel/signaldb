@@ -108,6 +108,7 @@ impl Modify for SecurityAddon {
         crate::endpoints::github::start_github_link,
         crate::endpoints::github::list_github_installations,
         crate::endpoints::github::remove_github_installation,
+        crate::endpoints::github::attach_github_installation,
         crate::endpoints::github::callback,
         crate::endpoints::source_context::source_context,
         crate::endpoints::source_context::source_context_availability,
@@ -216,6 +217,7 @@ impl Modify for SecurityAddon {
         crate::endpoints::github::GitHubLinkStartResponse,
         crate::endpoints::github::GitHubInstallationResponse,
         crate::endpoints::github::GitHubInstallationsResponse,
+        crate::endpoints::github::AttachGitHubInstallationRequest,
         // Source-context snippet lookup (change: github-app-source-context)
         crate::endpoints::source_context::SourceContextRequest,
         crate::endpoints::source_context::SourceContextResponse,

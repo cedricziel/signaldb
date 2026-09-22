@@ -245,6 +245,11 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
         CliSurface::Path(&["tenant", "github", "remove"]),
         "tenant_remove_github_installation",
     ),
+    (
+        "manage_attach_github_installation",
+        CliSurface::Path(&["tenant", "github", "attach"]),
+        "tenant_attach_github_installation",
+    ),
     // ---- Source context (tenant self-service API; any valid key of the
     // tenant that can read a signal, not `tenant:manage`) ----
     (

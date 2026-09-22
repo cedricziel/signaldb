@@ -32,6 +32,7 @@ mod oauth_connector_flow;
 mod ops_endpoints;
 mod prometheus_remote_write_test;
 mod promql_queries;
+mod query_field_discovery_e2e;
 mod query_ir_e2e;
 mod query_parity;
 mod retry_on_throttle;
