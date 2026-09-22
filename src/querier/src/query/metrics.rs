@@ -1512,7 +1512,7 @@ impl MetricsService {
                         return Ok(column.to_string());
                     }
                     let name = materialized_column_name(l);
-                    if materialized.contains(&name) {
+                    if common::schema::is_materialized_and_unambiguous(&name, materialized) {
                         return Ok(name);
                     }
                     Err(QuerierError::Unsupported(format!(
@@ -2289,7 +2289,11 @@ fn matcher_expr(m: &LabelMatch, ctx: &super::logql::AttrContext) -> Result<Expr,
     };
     match column_for_label(&m.name) {
         Some(column) => Ok(column_op_expr(col(column), m.op, &m.value, false)),
-        None if materialized.contains(&materialized_column_name(&m.name)) => {
+        None if common::schema::is_materialized_and_unambiguous(
+            &materialized_column_name(&m.name),
+            materialized,
+        ) =>
+        {
             Ok(column_match(materialized_column_name(&m.name)))
         }
         // Map-typed attribute tables: per-key extraction, all four

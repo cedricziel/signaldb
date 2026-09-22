@@ -488,7 +488,7 @@ impl LogsService {
                     return Ok(column.to_string());
                 }
                 let name = common::schema::materialized_column_name(label);
-                if materialized.contains(&name) {
+                if common::schema::is_materialized_and_unambiguous(&name, &materialized) {
                     return Ok(name);
                 }
                 Err(QuerierError::Unsupported(format!(

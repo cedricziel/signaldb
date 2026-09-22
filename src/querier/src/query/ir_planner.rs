@@ -909,7 +909,12 @@ impl SchemaResolver {
         // promoted column (D10 of `ir-single-lowering`).
         let bare = strip_scope_qualifier(self.attr_prefixes, field).map_or(field, |(_, bare)| bare);
         let materialized = common::schema::materialized_column_name(bare);
-        if let Some(vt) = self.columns.get(&materialized) {
+        if let Some(vt) = self.columns.get(&materialized)
+            && !common::schema::has_colliding_materialized_variant(
+                &materialized,
+                self.columns.keys().map(String::as_str),
+            )
+        {
             // Matched via the materialized-label lookup, not a direct
             // physical alias — #816: this column may still be NULL in files
             // the compactor hasn't backfilled since promotion, so the caller
@@ -5219,6 +5224,150 @@ mod tests {
         let batches = df.collect().await.unwrap();
         let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(rows, 1, "only the GET row should match");
+    }
+
+    // #1533 stopgap: two distinct label keys can sanitize to the same
+    // `materialized_column_name` (`materialized_column_name` turns every
+    // non-alphanumeric into `_`), so the writer resolves the collision by
+    // suffixing the later key's column (`label_http_method_2`). Before this
+    // fix, `SchemaResolver::column_for` matched `http.method` to
+    // `label_http_method` regardless of a `label_http_method_2` sibling, so
+    // a query for the *second* key's spelling would silently read the
+    // first key's column. The resolver must instead treat `label_http_method`
+    // as ambiguous whenever a `<base>_<n>` sibling exists and fall back to
+    // the JSON/attribute-map extraction path, exactly as it does for an
+    // unpromoted key.
+    #[tokio::test]
+    async fn colliding_materialized_columns_fall_back_to_extraction() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, false),
+            Field::new("span_id", DataType::Utf8, false),
+            Field::new("parent_span_id", DataType::Utf8, true),
+            Field::new("span_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("start_time_unix_nano", DataType::Int64, false),
+            Field::new("duration_nanos", DataType::Int64, false),
+            Field::new("status_code", DataType::Utf8, true),
+            map_field_named("span_attributes"),
+            // A decoy: if the resolver trusted the materialized fast path
+            // it would read this column's ("wrong") values instead of the
+            // attribute map.
+            Field::new("label_http_method", DataType::Utf8, true),
+            Field::new("label_http_method_2", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["t0", "t1"])),
+                Arc::new(StringArray::from(vec!["s0", "s1"])),
+                Arc::new(StringArray::from(vec![None::<&str>, None])),
+                Arc::new(StringArray::from(vec!["GET /a", "POST /b"])),
+                Arc::new(StringArray::from(vec!["api", "api"])),
+                Arc::new(Int64Array::from(vec![10_i64, 20])),
+                Arc::new(Int64Array::from(vec![100_i64, 100])),
+                Arc::new(StringArray::from(vec![Some("OK"), Some("OK")])),
+                build_map(&[&[("http.method", "GET")], &[("http.method", "POST")]]),
+                Arc::new(StringArray::from(vec![Some("WRONG"), Some("WRONG")])),
+                Arc::new(StringArray::from(vec![Some("GET"), Some("POST")])),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("traces".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+
+        let svc = IrService::new(ctx);
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["trace_id"],
+            "pipeline": [{ "where": { "field": "http.method", "op": "eq", "value": "GET" } }]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let plan = format!("{}", df.logical_plan().display_indent());
+        assert!(
+            !plan.contains("label_http_method"),
+            "an ambiguous materialized column must not be referenced:\n{plan}"
+        );
+        assert!(
+            plan.contains("get_field"),
+            "expected the json-path fallback, not the materialized fast path:\n{plan}"
+        );
+        let batches = df.collect().await.unwrap();
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            rows, 1,
+            "only the row whose attribute map has GET should match"
+        );
+    }
+
+    // Companion to `colliding_materialized_columns_fall_back_to_extraction`:
+    // with no suffixed sibling, the fast path stays in effect.
+    #[tokio::test]
+    async fn uncontested_materialized_column_uses_fast_path() {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, false),
+            Field::new("span_id", DataType::Utf8, false),
+            Field::new("parent_span_id", DataType::Utf8, true),
+            Field::new("span_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("start_time_unix_nano", DataType::Int64, false),
+            Field::new("duration_nanos", DataType::Int64, false),
+            Field::new("status_code", DataType::Utf8, true),
+            map_field_named("span_attributes"),
+            Field::new("label_http_method", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["t0", "t1"])),
+                Arc::new(StringArray::from(vec!["s0", "s1"])),
+                Arc::new(StringArray::from(vec![None::<&str>, None])),
+                Arc::new(StringArray::from(vec!["GET /a", "POST /b"])),
+                Arc::new(StringArray::from(vec!["api", "api"])),
+                Arc::new(Int64Array::from(vec![10_i64, 20])),
+                Arc::new(Int64Array::from(vec![100_i64, 100])),
+                Arc::new(StringArray::from(vec![Some("OK"), Some("OK")])),
+                build_map(&[&[("http.method", "GET")], &[("http.method", "POST")]]),
+                Arc::new(StringArray::from(vec![Some("GET"), Some("POST")])),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("traces".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+
+        let svc = IrService::new(ctx);
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["trace_id"],
+            "pipeline": [{ "where": { "field": "http.method", "op": "eq", "value": "GET" } }]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let plan = format!("{}", df.logical_plan().display_indent());
+        assert!(
+            plan.contains("label_http_method"),
+            "expected the promoted column fast path with no collision:\n{plan}"
+        );
     }
 
     /// A traces table with the real v2 column names, for the single-signal
