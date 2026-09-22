@@ -72,8 +72,19 @@ impl backend::DataQueryError for QueryError {
 pub struct SignalDBQuery {
     signal_type: String,
     query_text: String,
-    #[allow(dead_code)]
     limit: Option<u32>,
+}
+
+/// Append a `limit` query-string parameter to a ticket, using `?` if the
+/// ticket carries no query string yet and `&` otherwise.
+fn append_limit_param(ticket: String, limit: Option<u32>) -> String {
+    match limit {
+        Some(limit) => {
+            let separator = if ticket.contains('?') { '&' } else { '?' };
+            format!("{ticket}{separator}limit={limit}")
+        }
+        None => ticket,
+    }
 }
 
 impl SignalDBDataSource {
@@ -293,6 +304,7 @@ impl SignalDBDataSource {
             // If query_text contains a trace ID, use trace_by_id format
             format!("trace_by_id?id={}", query.query_text)
         };
+        let ticket = append_limit_param(ticket, query.limit);
 
         self.execute_signal_query(
             ticket,
@@ -307,11 +319,11 @@ impl SignalDBDataSource {
     /// Query metrics via Flight.
     async fn query_metrics(
         &self,
-        _query: &SignalDBQuery,
+        query: &SignalDBQuery,
         auth: Option<&AuthContext>,
     ) -> anyhow::Result<data::Frame> {
         self.execute_signal_query(
-            "metrics".to_string(),
+            append_limit_param("metrics".to_string(), query.limit),
             "metrics",
             "time_unix_nano",
             auth,
@@ -323,11 +335,11 @@ impl SignalDBDataSource {
     /// Query logs via Flight.
     async fn query_logs(
         &self,
-        _query: &SignalDBQuery,
+        query: &SignalDBQuery,
         auth: Option<&AuthContext>,
     ) -> anyhow::Result<data::Frame> {
         self.execute_signal_query(
-            "logs".to_string(),
+            append_limit_param("logs".to_string(), query.limit),
             "logs",
             "time_unix_nano",
             auth,
@@ -361,6 +373,7 @@ impl SignalDBDataSource {
         let params = serde_json::json!({
             "sample_type": sample_type,
             "service_name": service_name,
+            "limit": query.limit,
         });
         let ticket = format!("profile_flamegraph:{tenant}:{dataset}:{params}");
 
@@ -511,5 +524,28 @@ mod tests {
 
         assert_eq!(&*resolved.router_url, "http://base-router:1234");
         assert_eq!(resolved.timeout_secs, 7);
+    }
+
+    /// A query with `limit: Some(n)` must carry that limit into the ticket.
+    #[test]
+    fn append_limit_param_adds_query_string_when_limit_set() {
+        assert_eq!(
+            append_limit_param("traces".to_string(), Some(50)),
+            "traces?limit=50"
+        );
+        assert_eq!(
+            append_limit_param("trace_by_id?id=abc".to_string(), Some(10)),
+            "trace_by_id?id=abc&limit=10"
+        );
+    }
+
+    /// `None` must leave the ticket unset (unchanged), not e.g. `limit=`.
+    #[test]
+    fn append_limit_param_leaves_ticket_unset_when_none() {
+        assert_eq!(append_limit_param("traces".to_string(), None), "traces");
+        assert_eq!(
+            append_limit_param("trace_by_id?id=abc".to_string(), None),
+            "trace_by_id?id=abc"
+        );
     }
 }
