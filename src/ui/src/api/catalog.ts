@@ -298,6 +298,7 @@ export async function fetchCatalogEntities(
           values: alignValues(row.values, identity, entityType.identity),
         })),
         source,
+        dimensions: identity.join("\u0000"),
       };
     }),
   );
@@ -307,9 +308,12 @@ export async function fetchCatalogEntities(
   // never clobber a real trace measurement for the same identity, nor
   // manufacture one for an identity traces never saw.
   const merged = new Map<string, CatalogEntity>();
-  for (const { source, rows } of perSource) {
+  for (const { source, rows, dimensions } of perSource) {
     for (const row of rows) {
-      const key = compositeKey(row.values);
+      // The grouped dimensions are part of the key: a degraded row's `null`
+      // means "not carried", a full-tuple row's `null` means "absent value",
+      // and the two must not merge.
+      const key = `${dimensions}\u0001${compositeKey(row.values)}`;
       const observation = { source, count: row.count };
       const existing = merged.get(key);
       if (!existing) {

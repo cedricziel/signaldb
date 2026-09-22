@@ -390,4 +390,39 @@ describe("fetchCatalogEntities", () => {
       { source: "metrics", count: 6 },
     ]);
   });
+  it("keeps a degraded row apart from a full-tuple row whose secondary value is null", async () => {
+    // traces grouped by pid and host and saw no host for pid 4821; metrics
+    // grouped by pid alone. Both align to ["4821", null], but they are
+    // different claims and must not merge.
+    const process: EntityTypeDef = {
+      id: "process",
+      label: "Processes",
+      singular: "process",
+      identity: ["process.pid", "host.name"],
+      sources: ["traces", "metrics"],
+      identityBySource: {
+        traces: ["process.pid", "host.name"],
+        metrics: ["process.pid"],
+      },
+    };
+    vi.mocked(runIrQuery).mockImplementation(async (doc) => ({
+      result: "table",
+      columns: [],
+      window: { start_ns: 1, end_ns: 2 },
+      rows:
+        doc.from === "traces"
+          ? [["4821", null, 2, 0, 900_000, 3_000_000, "1700000000000000000"]]
+          : [["4821", 6, "1700000000900000000"]],
+    }));
+
+    const result = await fetchCatalogEntities(process, range);
+
+    expect(result.entities.map((e) => e.observations)).toEqual(
+      expect.arrayContaining([
+        [{ source: "traces", count: 2 }],
+        [{ source: "metrics", count: 6 }],
+      ]),
+    );
+    expect(result.entities).toHaveLength(2);
+  });
 });
