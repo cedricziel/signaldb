@@ -46,6 +46,7 @@ const TENANT_SELF_TOOLS: &[&str] = &[
     "tenant_list_table_schemas",
     "list_available_table_schemas",
     "tenant_start_github_link",
+    "tenant_attach_github_installation",
     "tenant_list_github_installations",
     "tenant_remove_github_installation",
 ];
@@ -66,6 +67,7 @@ const TENANT_MANAGE_TOOLS: &[&str] = &[
     "tenant_remove_membership",
     "tenant_get_schema",
     "tenant_start_github_link",
+    "tenant_attach_github_installation",
     "tenant_list_github_installations",
     "tenant_remove_github_installation",
 ];
@@ -294,6 +296,7 @@ async fn behaviour(
         .into_response();
     }
     if (path.ends_with("/github-installations/link") && method == axum::http::Method::POST)
+        || (path.ends_with("/github-installations/attach") && method == axum::http::Method::POST)
         || (path.contains("/github-installations/") && method == axum::http::Method::DELETE)
     {
         return (
@@ -628,10 +631,11 @@ async fn tenant_list_github_installations_reports_unconfigured() {
     assert!(text.contains("\"installations\":[]"), "{text}");
 }
 
-/// `tenant_start_github_link` and `tenant_remove_github_installation` both
-/// 404 when GitHub integration is not configured, which surfaces as a
-/// resource-not-found tool error (`map_sdk_err`'s generic 404 mapping —
-/// unlike a 403, this isn't special-cased by `map_manage_err`).
+/// `tenant_start_github_link`, `tenant_attach_github_installation` and
+/// `tenant_remove_github_installation` all 404 when GitHub integration is
+/// not configured, which surfaces as a resource-not-found tool error
+/// (`map_sdk_err`'s generic 404 mapping — unlike a 403, this isn't
+/// special-cased by `map_manage_err`).
 #[tokio::test]
 async fn github_tools_surface_the_routers_not_configured_404() {
     let mut session = McpSession::open(app().await).await;
@@ -647,12 +651,39 @@ async fn github_tools_surface_the_routers_not_configured_404() {
 
     let reply = session
         .call_tool(
+            "tenant_attach_github_installation",
+            serde_json::json!({"tenant_id": "acme", "installation_id": 42}),
+        )
+        .await;
+    assert!(tool_is_error(&reply), "404 must surface: {reply}");
+    assert!(tool_error_message(&reply).contains("not found"), "{reply}");
+
+    let reply = session
+        .call_tool(
             "tenant_remove_github_installation",
             serde_json::json!({"tenant_id": "acme", "installation_id": 42, "confirm": "42"}),
         )
         .await;
     assert!(tool_is_error(&reply), "404 must surface: {reply}");
     assert!(tool_error_message(&reply).contains("not found"), "{reply}");
+}
+
+/// `tenant_attach_github_installation` is gated the same as every other
+/// tenant-management tool: a 403 from the router surfaces as a tool error
+/// rather than succeeding silently.
+#[tokio::test]
+async fn tenant_attach_github_installation_is_manage_gated() {
+    let mut session = McpSession::open(app().await).await;
+    let reply = session
+        .call_tool(
+            "tenant_attach_github_installation",
+            serde_json::json!({"tenant_id": "denied", "installation_id": 42}),
+        )
+        .await;
+    assert!(
+        tool_is_error(&reply),
+        "a 403 from the router must surface as a tool error: {reply}"
+    );
 }
 
 #[tokio::test]
