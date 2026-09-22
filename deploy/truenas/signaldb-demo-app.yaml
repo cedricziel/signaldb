@@ -392,6 +392,13 @@ services:
                 endpoint: 0.0.0.0:4318
         processors:
           batch: {}
+          # The Node services hardcode the AWS/GCP resource detectors, whose
+          # startup probes of the cloud metadata endpoints fail off-cloud.
+          filter/cloud_metadata:
+            error_mode: ignore
+            traces:
+              span:
+                - 'IsMatch(attributes["net.peer.name"], "^(169\\.254\\.169\\.254|metadata\\.google\\.internal\\.?)$")'
         exporters:
           otlp:
             endpoint: signaldb:4317
@@ -406,7 +413,7 @@ services:
           pipelines:
             traces:
               receivers: [otlp]
-              processors: [batch]
+              processors: [filter/cloud_metadata, batch]
               exporters: [otlp]
             metrics:
               receivers: [otlp]
