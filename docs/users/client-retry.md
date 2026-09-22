@@ -10,7 +10,7 @@ sources:
   - src/mcp-server/src/lib.rs
   - src/ui/src/api/http.ts
   - src/ui/src/api/client.ts
-  - src/ui/src/features/shell/ThrottleBanner.tsx
+  - src/ui/src/components/ThrottleBanner.tsx
   - src/router/src/endpoints/api_error.rs
   - api/retry-cases.json
 ---

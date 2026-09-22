@@ -147,6 +147,25 @@ export const emptyIrSeries = {
   series: [],
 };
 
+/** Universal fallback for any `/api/v1/query` call a story doesn't
+ * specifically care about — every consumer reads the envelope through
+ * optional chaining, so `{}` is a safe "nothing here" for any result kind,
+ * whatever picker or metadata fetch fired it. Placed first in a story's
+ * `routes` array so a more specific route later in the array overrides it
+ * (`installFetchStub` matches last-route-wins). */
+export const irCatchAll: JsonRoute = { match: "/api/v1/query", body: {} };
+
+/** Narrows a Query IR request body to its `result`/`from` fields for
+ * routing a story's several distinct `/api/v1/query` calls to different
+ * stubbed responses — the discriminator every IR-backed view's stories use
+ * (see `TracesView.stories.tsx`, `ErrorsView.stories.tsx`,
+ * `CatalogView.stories.tsx`). */
+export function irBody(
+  match: (body: { result?: string; from?: string }) => boolean,
+) {
+  return (b: unknown) => match((b ?? {}) as { result?: string; from?: string });
+}
+
 /** A `describe: fields` response naming `names` as declared, filterable
  * fields — for stubbing a field-picker's discovery request. */
 export function describeFieldsResponse(names: string[]) {
