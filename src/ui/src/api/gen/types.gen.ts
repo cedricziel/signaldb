@@ -75,6 +75,18 @@ export type ApiKeyResponse = {
     scopes?: Array<string> | null;
 };
 
+/**
+ * Request body for [`attach_github_installation`].
+ */
+export type AttachGitHubInstallationRequest = {
+    /**
+     * A GitHub App installation id that already exists for this App —
+     * e.g. one already linked to another tenant on the same GitHub
+     * account, or read off GitHub's own installation settings page.
+     */
+    installation_id: number;
+};
+
 export type Attribute = {
     key: string;
     value: unknown;
@@ -3410,6 +3422,69 @@ export type ManageListGithubInstallationsResponses = {
 };
 
 export type ManageListGithubInstallationsResponse = ManageListGithubInstallationsResponses[keyof ManageListGithubInstallationsResponses];
+
+export type ManageAttachGithubInstallationData = {
+    body: AttachGitHubInstallationRequest;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/manage/tenants/{tenant_id}/github-installations/attach';
+};
+
+export type ManageAttachGithubInstallationErrors = {
+    /**
+     * Tenant administrator role or tenant:manage scope required and the tenant must match the caller, or the installation carries a write-capable permission
+     */
+    403: ManageError;
+    /**
+     * GitHub integration is not configured, or the installation was not found on GitHub
+     */
+    404: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+    /**
+     * GitHub request failed
+     */
+    502: ManageError;
+};
+
+export type ManageAttachGithubInstallationError = ManageAttachGithubInstallationErrors[keyof ManageAttachGithubInstallationErrors];
+
+export type ManageAttachGithubInstallationResponses = {
+    /**
+     * Installation attached
+     */
+    201: GitHubInstallationResponse;
+};
+
+export type ManageAttachGithubInstallationResponse = ManageAttachGithubInstallationResponses[keyof ManageAttachGithubInstallationResponses];
 
 export type ManageStartGithubLinkData = {
     body?: never;
