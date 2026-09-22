@@ -1,9 +1,10 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { MemoryRouter, Outlet, Route, Routes } from "react-router";
+import { MemoryRouter } from "react-router";
 import { userEvent, within } from "storybook/test";
 import { testQueryClient } from "../../lib/queryClient";
 import { DEFAULT_STATE } from "../../lib/urlState";
+import { OutletContextProvider } from "../../stories/OutletContextProvider";
 import {
   irCatchAll,
   sampleWhoami,
@@ -98,20 +99,14 @@ function ProcessorsPage({
     <StoryFetchStub routes={routes}>
       <QueryClientProvider client={testQueryClient()}>
         <MemoryRouter initialEntries={initialEntries}>
-          <Routes>
-            <Route
-              element={
-                <Outlet
-                  context={{
-                    state: { ...DEFAULT_STATE, tenant: "acme" },
-                    update: () => {},
-                  }}
-                />
-              }
-            >
-              {processorsRoutes()}
-            </Route>
-          </Routes>
+          <OutletContextProvider
+            value={{
+              state: { ...DEFAULT_STATE, tenant: "acme" },
+              update: () => {},
+            }}
+          >
+            {processorsRoutes()}
+          </OutletContextProvider>
         </MemoryRouter>
       </QueryClientProvider>
     </StoryFetchStub>

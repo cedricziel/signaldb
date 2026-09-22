@@ -1,6 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route } from "react-router";
 import { testQueryClient } from "../../lib/queryClient";
 import { DEFAULT_STATE } from "../../lib/urlState";
 import { OutletContextProvider } from "../../stories/OutletContextProvider";
@@ -23,7 +23,7 @@ function page(routes: JsonRoute[]) {
           <OutletContextProvider
             value={{ state: { ...DEFAULT_STATE, tenant }, update: () => {} }}
           >
-            <GitHubIntegration />
+            <Route path="*" element={<GitHubIntegration />} />
           </OutletContextProvider>
         </MemoryRouter>
       </QueryClientProvider>

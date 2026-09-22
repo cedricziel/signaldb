@@ -1,6 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, Route } from "react-router";
 import { testQueryClient } from "../../lib/queryClient";
 import { DEFAULT_STATE } from "../../lib/urlState";
 import { OutletContextProvider } from "../../stories/OutletContextProvider";
@@ -49,7 +49,7 @@ function SelectTenantPage() {
               update: () => {},
             }}
           >
-            <SelectTenant session={session} />
+            <Route path="*" element={<SelectTenant session={session} />} />
           </OutletContextProvider>
         </MemoryRouter>
       </QueryClientProvider>
@@ -87,19 +87,24 @@ export const NoAccess: Story = {
               update: () => {},
             }}
           >
-            <SelectTenant
-              session={{
-                user: {
-                  id: "user-2",
-                  email: "new.user@example.com",
-                  display_name: "New User",
-                  is_instance_admin: false,
-                  is_demo: false,
-                },
-                tenant: "",
-                dataset: "",
-                memberships: [],
-              }}
+            <Route
+              path="*"
+              element={
+                <SelectTenant
+                  session={{
+                    user: {
+                      id: "user-2",
+                      email: "new.user@example.com",
+                      display_name: "New User",
+                      is_instance_admin: false,
+                      is_demo: false,
+                    },
+                    tenant: "",
+                    dataset: "",
+                    memberships: [],
+                  }}
+                />
+              }
             />
           </OutletContextProvider>
         </MemoryRouter>
