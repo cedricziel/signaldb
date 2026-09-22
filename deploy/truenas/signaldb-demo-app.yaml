@@ -29,6 +29,9 @@ configs:
       catalog_type = "sql"
       catalog_uri = "sqlite:///data/catalog.db"
 
+      [discovery]
+      dsn = "sqlite:///data/discovery.db"
+
       [wal]
       wal_dir = "/data/wal"
 
