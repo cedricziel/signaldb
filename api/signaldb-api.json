@@ -2470,13 +2470,13 @@
         "tags": [
           "query"
         ],
-        "summary": "Submit a native Query IR document.",
+        "summary": "Submit a native Query IR document — either a single query or a\nmulti-query formula document (D5, [`MultiQueryIrRequest`]), discriminated\nby the presence of `queries`.",
         "operationId": "query_ir",
         "requestBody": {
           "content": {
             "application/json": {
               "schema": {
-                "$ref": "#/components/schemas/QueryIrRequest"
+                "$ref": "#/components/schemas/QueryIrRequestBody"
               }
             }
           },
@@ -2498,6 +2498,9 @@
           },
           "401": {
             "description": "Missing or invalid credentials"
+          },
+          "403": {
+            "description": "Missing read scope for a queried source"
           },
           "429": {
             "$ref": "#/components/responses/RateLimited"
@@ -7803,6 +7806,37 @@
           }
         }
       },
+      "MultiQueryIrRequest": {
+        "type": "object",
+        "description": "A multi-query document (D5): several named IR queries — each required to\ndeclare `result: \"series\"` — plus formulas evaluated over their results\nafter every inner query has run. Series join on an identical label set\nand timestamp; a formula input missing a series present in another\ncontributes nothing to the join, and a zero divisor drops the point,\nrather than either erroring.",
+        "required": [
+          "queries",
+          "formulas",
+          "result"
+        ],
+        "properties": {
+          "formulas": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/QueryFormula"
+            }
+          },
+          "queries": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/QueryIrRequest"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          },
+          "result": {
+            "type": "string",
+            "description": "Always `\"series\"` — a formula document has no other shape.",
+            "example": "series"
+          }
+        }
+      },
       "OidcLoginConfig": {
         "type": "object",
         "description": "A single-sign-on provider offered by the login-configuration probe.",
@@ -8170,6 +8204,24 @@
           }
         }
       },
+      "QueryFormula": {
+        "type": "object",
+        "description": "One named formula in a [`MultiQueryIrRequest`] (D5): arithmetic\n(`+ - * /`, numeric constants, parentheses) over the request's own query\nnames, e.g. `\"errors / total\"`.",
+        "required": [
+          "name",
+          "expr"
+        ],
+        "properties": {
+          "expr": {
+            "type": "string",
+            "example": "errors / total"
+          },
+          "name": {
+            "type": "string",
+            "description": "The formula's identity: tags each output series' `labels` under the\n`formula` key, so a request with several formulas stays distinguishable."
+          }
+        }
+      },
       "QueryIrRequest": {
         "type": "object",
         "description": "A versioned Query IR request document.\n\nThe `pipeline` stages are opaque JSON objects at the HTTP boundary — the\nquerier validates and lowers them per the versioned IR contract. See the\n`query-ir-core` capability for the full stage/predicate grammar.",
@@ -8216,6 +8268,17 @@
             "example": "rows"
           }
         }
+      },
+      "QueryIrRequestBody": {
+        "oneOf": [
+          {
+            "$ref": "#/components/schemas/MultiQueryIrRequest"
+          },
+          {
+            "$ref": "#/components/schemas/QueryIrRequest"
+          }
+        ],
+        "description": "The `POST /api/v1/query` request body: either a single IR document or a\n[`MultiQueryIrRequest`], discriminated by the presence of `queries` — a\ndocument without it is a single [`QueryIrRequest`], so an ordinary\nrequest needs no wrapper key."
       },
       "QueryIrResponse": {
         "type": "object",

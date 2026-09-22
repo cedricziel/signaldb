@@ -12,7 +12,7 @@
 //! tenant/dataset from the authenticated request context, never from the
 //! document body.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use tracing::Instrument;
 
@@ -83,6 +83,44 @@ pub struct QueryIrRequest {
     #[serde(default)]
     #[schema(value_type = Vec<Object>)]
     pub pipeline: Vec<serde_json::Value>,
+}
+
+/// One named formula in a [`MultiQueryIrRequest`] (D5): arithmetic
+/// (`+ - * /`, numeric constants, parentheses) over the request's own query
+/// names, e.g. `"errors / total"`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct QueryFormula {
+    /// The formula's identity: tags each output series' `labels` under the
+    /// `formula` key, so a request with several formulas stays distinguishable.
+    pub name: String,
+    #[schema(example = "errors / total")]
+    pub expr: String,
+}
+
+/// A multi-query document (D5): several named IR queries — each required to
+/// declare `result: "series"` — plus formulas evaluated over their results
+/// after every inner query has run. Series join on an identical label set
+/// and timestamp; a formula input missing a series present in another
+/// contributes nothing to the join, and a zero divisor drops the point,
+/// rather than either erroring.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct MultiQueryIrRequest {
+    pub queries: BTreeMap<String, QueryIrRequest>,
+    pub formulas: Vec<QueryFormula>,
+    /// Always `"series"` — a formula document has no other shape.
+    #[schema(example = "series")]
+    pub result: String,
+}
+
+/// The `POST /api/v1/query` request body: either a single IR document or a
+/// [`MultiQueryIrRequest`], discriminated by the presence of `queries` — a
+/// document without it is a single [`QueryIrRequest`], so an ordinary
+/// request needs no wrapper key.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(untagged)]
+pub enum QueryIrRequestBody {
+    Multi(MultiQueryIrRequest),
+    Single(QueryIrRequest),
 }
 
 impl QueryIrResponse {
@@ -273,31 +311,45 @@ pub struct QueryIrResponse {
     pub warnings: Vec<QueryWarning>,
 }
 
-/// Submit a native Query IR document.
+/// Submit a native Query IR document — either a single query or a
+/// multi-query formula document (D5, [`MultiQueryIrRequest`]), discriminated
+/// by the presence of `queries`.
 #[utoipa::path(
     post,
     path = "/api/v1/query",
     tag = "query",
     security(("bearerAuth" = [])),
-    request_body = QueryIrRequest,
+    request_body = QueryIrRequestBody,
     responses(
         (status = 200, description = "The enveloped query result", body = QueryIrResponse),
         (status = 400, description = "Invalid IR document"),
         (status = 401, description = "Missing or invalid credentials"),
+        (status = 403, description = "Missing read scope for a queried source"),
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 503, description = "No querier service available"),
     )
 )]
+pub async fn query_ir<S: RouterState>(
+    state: State<S>,
+    tenant_ctx: TenantContextExtractor,
+    axum::Json(body): axum::Json<QueryIrRequestBody>,
+) -> Result<axum::Json<QueryIrResponse>, ApiError> {
+    match body {
+        QueryIrRequestBody::Multi(req) => query_ir_multi(state, tenant_ctx, req).await,
+        QueryIrRequestBody::Single(req) => query_ir_single(state, tenant_ctx, req).await,
+    }
+}
+
 #[tracing::instrument(skip(state, tenant_ctx, req), fields(
     signaldb.tenant.id = %tenant_ctx.0.tenant_id,
     signaldb.dataset.id = %tenant_ctx.0.dataset_id,
     source = %req.from,
     result = %req.result,
 ))]
-pub async fn query_ir<S: RouterState>(
+async fn query_ir_single<S: RouterState>(
     State(state): State<S>,
     tenant_ctx: TenantContextExtractor,
-    axum::Json(req): axum::Json<QueryIrRequest>,
+    req: QueryIrRequest,
 ) -> Result<axum::Json<QueryIrResponse>, ApiError> {
     let ctx = &tenant_ctx.0;
 
@@ -339,6 +391,187 @@ pub async fn query_ir<S: RouterState>(
     let mut response = build_envelope(&req.result, window, &batches, &document)?;
     response.warnings = unknown_group_by_warnings(&req.from, &document, &batches);
     Ok(axum::Json(response))
+}
+
+/// D5: submit a [`MultiQueryIrRequest`] — several named queries plus
+/// formulas over their `series` results. Every inner query's source is
+/// authorized before any of them run; each then executes exactly the way a
+/// standalone single-query request would (its own Flight ticket), and the
+/// formulas are evaluated once every inner query has returned.
+#[tracing::instrument(skip(state, tenant_ctx, req), fields(
+    signaldb.tenant.id = %tenant_ctx.0.tenant_id,
+    signaldb.dataset.id = %tenant_ctx.0.dataset_id,
+    query_count = req.queries.len(),
+    formula_count = req.formulas.len(),
+))]
+async fn query_ir_multi<S: RouterState>(
+    State(state): State<S>,
+    tenant_ctx: TenantContextExtractor,
+    req: MultiQueryIrRequest,
+) -> Result<axum::Json<QueryIrResponse>, ApiError> {
+    let ctx = &tenant_ctx.0;
+
+    // Authorize every inner query's source before any of them run — a
+    // partially-authorized multi-query request must fail closed, not spend
+    // work on the queries it was allowed to run before rejecting the rest.
+    check_multi_source_scopes(ctx, &req.queries)?;
+
+    let multi_doc = to_multi_document(&req)?;
+    let inner_envelopes: HashMap<String, common::query_ir::ResultEnvelope> = req
+        .queries
+        .iter()
+        .map(|(name, inner)| Ok((name.clone(), parse_envelope(&inner.result)?)))
+        .collect::<Result<_, ApiError>>()?;
+    common::query_ir::validate_multi(&multi_doc, &inner_envelopes)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    // One clock stamp for every inner query, same as a single request stamps
+    // it once at the ticket boundary.
+    let now = super::now_ns();
+    let mut inputs: HashMap<String, Vec<common::query_ir::EvalSeries>> = HashMap::new();
+    let mut window = None;
+    for (name, inner) in &req.queries {
+        let (inner_window, series) = execute_inner_series_query(&state, ctx, inner, now).await?;
+        window.get_or_insert(inner_window);
+        inputs.insert(name.clone(), series);
+    }
+    // `validate_multi` already rejected an empty `queries` map.
+    let window = window.expect("validate_multi requires at least one query");
+
+    let mut series = Vec::new();
+    for formula in &req.formulas {
+        let expr = common::query_ir::parse_formula_expr(&formula.expr)
+            .map_err(|e| ApiError::bad_request(format!("formula '{}': {e}", formula.name)))?;
+        for out in common::query_ir::evaluate_formula(&expr, &inputs) {
+            // Tag the formula's identity onto its output series' labels, so
+            // a request with several formulas stays distinguishable.
+            let mut labels = out.labels;
+            labels.insert("formula".to_string(), formula.name.clone());
+            series.push(ResultSeries {
+                labels,
+                points: out
+                    .points
+                    .into_iter()
+                    .map(|(t, v)| [serde_json::Value::from(t), serde_json::Value::from(v)])
+                    .collect(),
+            });
+        }
+    }
+
+    Ok(axum::Json(QueryIrResponse {
+        result: common::query_ir::ResultEnvelope::Series
+            .as_str()
+            .to_string(),
+        window,
+        columns: Vec::new(),
+        rows: Vec::new(),
+        series,
+        step_ns: None,
+        heatmap: HeatmapResult::default(),
+        flamegraph: None,
+        metadata: None,
+        warnings: Vec::new(),
+    }))
+}
+
+/// Require the read scope for every inner query's source before any of them
+/// run — the same [`source_read_scope`] check a single-query request goes
+/// through, applied per named query.
+fn check_multi_source_scopes(
+    ctx: &TenantContext,
+    queries: &BTreeMap<String, QueryIrRequest>,
+) -> Result<(), ApiError> {
+    for inner in queries.values() {
+        source_read_scope(ctx, &inner.from)?;
+    }
+    Ok(())
+}
+
+/// Parse an HTTP result-envelope string into the IR's typed
+/// [`common::query_ir::ResultEnvelope`].
+fn parse_envelope(s: &str) -> Result<common::query_ir::ResultEnvelope, ApiError> {
+    use common::query_ir::ResultEnvelope::*;
+    Ok(match s {
+        "rows" => Rows,
+        "series" => Series,
+        "table" => Table,
+        "heatmap" => Heatmap,
+        "flamegraph" => Flamegraph,
+        "metadata" => Metadata,
+        other => {
+            return Err(ApiError::bad_request(format!(
+                "unknown result envelope '{other}'"
+            )));
+        }
+    })
+}
+
+/// Build the [`common::query_ir::MultiDocument`] a [`MultiQueryIrRequest`]
+/// denotes, re-serializing each inner request the same way a single-query
+/// request's document is built.
+fn to_multi_document(
+    req: &MultiQueryIrRequest,
+) -> Result<common::query_ir::MultiDocument, ApiError> {
+    let mut queries = BTreeMap::new();
+    for (name, inner) in &req.queries {
+        let value = serde_json::to_value(inner)
+            .map_err(|e| ApiError::bad_request(format!("invalid IR document '{name}': {e}")))?;
+        let doc: common::query_ir::Document = serde_json::from_value(value)
+            .map_err(|e| ApiError::bad_request(format!("invalid IR document '{name}': {e}")))?;
+        queries.insert(name.clone(), doc);
+    }
+    let formulas = req
+        .formulas
+        .iter()
+        .map(|f| common::query_ir::Formula {
+            name: f.name.clone(),
+            expr: f.expr.clone(),
+        })
+        .collect();
+    let result = parse_envelope(&req.result)?;
+    Ok(common::query_ir::MultiDocument {
+        queries,
+        formulas,
+        result,
+    })
+}
+
+/// Execute one inner query of a multi-query document exactly the way a
+/// standalone single-query request would (its own `query_ir:` Flight
+/// ticket), decoded straight to [`common::query_ir::EvalSeries`] — the
+/// formula evaluator's input shape — rather than the HTTP `ResultSeries`
+/// envelope. `validate_multi` already required this query's declared result
+/// to be `series`.
+async fn execute_inner_series_query<S: RouterState>(
+    state: &S,
+    ctx: &TenantContext,
+    req: &QueryIrRequest,
+    now_ns: i64,
+) -> Result<(ResolvedWindow, Vec<common::query_ir::EvalSeries>), ApiError> {
+    let window = resolve_window(&req.range, now_ns)?;
+    let document = serde_json::to_value(req)
+        .map_err(|e| ApiError::bad_request(format!("invalid IR document: {e}")))?;
+    let payload = serde_json::json!({ "document": document, "now_ns": now_ns });
+    let payload = serde_json::to_string(&payload)
+        .map_err(|e| ApiError::bad_request(format!("invalid IR document: {e}")))?;
+    let ticket = format!(
+        "query_ir:{}:{}:{}",
+        ctx.tenant_slug, ctx.dataset_slug, payload
+    );
+    let batches = execute_ticket(state, ticket).await?;
+    let (series, _step_ns) = to_series(&batches);
+    let eval_series = series
+        .into_iter()
+        .map(|s| common::query_ir::EvalSeries {
+            labels: s.labels,
+            points: s
+                .points
+                .into_iter()
+                .filter_map(|[t, v]| Some((t.as_i64()?, v.as_f64()?)))
+                .collect(),
+        })
+        .collect();
+    Ok((window, eval_series))
 }
 
 /// Whether the request asks about the source rather than its records.
@@ -1234,7 +1467,11 @@ mod group_by_warnings {
 
 #[cfg(test)]
 mod tests {
-    use super::{ResolvedWindow, build_envelope, source_read_scope};
+    use super::{
+        MultiQueryIrRequest, QueryFormula, QueryIrRequest, QueryRange, ResolvedWindow,
+        build_envelope, check_multi_source_scopes, parse_envelope, source_read_scope,
+        to_multi_document,
+    };
     use crate::{RouterAppState, create_router};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -1675,5 +1912,176 @@ mod tests {
         )
         .unwrap();
         assert!(response.flamegraph.is_none());
+    }
+
+    // Task 5.2 — formulas wired into POST /api/v1/query.
+
+    /// A multi-query formula body (the error-ratio scenario from D5) is
+    /// recognized by the `queries` key, authorized, and reaches the query
+    /// boundary — same fixture pattern as `metrics_source_reaches_the_query_boundary`:
+    /// this fixture has no querier, so a correctly-routed, correctly-authorized
+    /// request fails as 503 (no querier), never 400/403.
+    #[tokio::test]
+    async fn formula_request_reaches_the_query_boundary() {
+        let app = test_app().await;
+        let body = Body::from(
+            serde_json::to_vec(&serde_json::json!({
+                "queries": {
+                    "errors": {
+                        "irVersion": 1, "from": "traces",
+                        "range": { "from": "now-1h", "to": "now" }, "result": "series",
+                        "pipeline": [{ "aggregate": {
+                            "by": ["service.name"],
+                            "aggs": [{ "fn": "count", "as": "n" }],
+                            "step": "1m"
+                        } }]
+                    },
+                    "total": {
+                        "irVersion": 1, "from": "traces",
+                        "range": { "from": "now-1h", "to": "now" }, "result": "series",
+                        "pipeline": [{ "aggregate": {
+                            "by": ["service.name"],
+                            "aggs": [{ "fn": "count", "as": "n" }],
+                            "step": "1m"
+                        } }]
+                    }
+                },
+                "formulas": [{ "name": "error_ratio", "expr": "errors / total" }],
+                "result": "series"
+            }))
+            .unwrap(),
+        );
+        let resp = app
+            .clone()
+            .oneshot(post("/api/v1/query", true, body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// A malformed/incomplete formula document (no `formulas`) is rejected as
+    /// a client error before it ever reaches the query boundary — proof the
+    /// `queries` key alone routes into the multi-query path rather than
+    /// silently falling back to the single-query shape (which has no `from`
+    /// here and would 400 for a different reason).
+    #[tokio::test]
+    async fn formula_request_without_formulas_is_a_client_error() {
+        let app = test_app().await;
+        let body = Body::from(
+            serde_json::to_vec(&serde_json::json!({
+                "queries": {
+                    "a": {
+                        "irVersion": 1, "from": "traces",
+                        "range": { "from": "now-1h", "to": "now" }, "result": "series",
+                        "pipeline": [{ "aggregate": {
+                            "by": [], "aggs": [{ "fn": "count", "as": "n" }], "step": "1m"
+                        } }]
+                    }
+                },
+                "formulas": [],
+                "result": "series"
+            }))
+            .unwrap(),
+        );
+        let resp = app
+            .clone()
+            .oneshot(post("/api/v1/query", true, body))
+            .await
+            .unwrap();
+        assert!(resp.status().is_client_error(), "got {}", resp.status());
+    }
+
+    /// Every inner query's source is authorized before any of them run — the
+    /// same [`source_read_scope`] check a single-query request goes through,
+    /// applied per named query. A request holding one authorized and one
+    /// unauthorized source must reject as a whole, not run the authorized
+    /// half first.
+    #[test]
+    fn multi_query_rejects_when_one_inner_source_is_unauthorized() {
+        let scoped = scoped_context(vec!["traces:read"]);
+        let mut queries = std::collections::BTreeMap::new();
+        queries.insert(
+            "a".to_string(),
+            QueryIrRequest {
+                ir_version: 1,
+                from: "traces".to_string(),
+                range: QueryRange {
+                    from: "now-1h".to_string(),
+                    to: "now".to_string(),
+                },
+                result: "series".to_string(),
+                fields: None,
+                pipeline: Vec::new(),
+            },
+        );
+        queries.insert(
+            "b".to_string(),
+            QueryIrRequest {
+                ir_version: 1,
+                from: "logs".to_string(),
+                range: QueryRange {
+                    from: "now-1h".to_string(),
+                    to: "now".to_string(),
+                },
+                result: "series".to_string(),
+                fields: None,
+                pipeline: Vec::new(),
+            },
+        );
+        assert!(check_multi_source_scopes(&scoped, &queries).is_err());
+
+        // The all-authorized case (both `traces`) is accepted.
+        let mut both_traces = std::collections::BTreeMap::new();
+        both_traces.insert("a".to_string(), queries["a"].clone());
+        let mut c = queries["a"].clone();
+        c.from = "traces".to_string();
+        both_traces.insert("c".to_string(), c);
+        assert!(check_multi_source_scopes(&scoped, &both_traces).is_ok());
+    }
+
+    // Task 5.1/5.2 — the formula evaluator's HTTP wiring: `to_multi_document`
+    // builds the same IR the evaluator runs against, and `parse_envelope`
+    // rejects anything but the six declared envelopes.
+    #[test]
+    fn to_multi_document_builds_the_declared_queries_and_formulas() {
+        let mut queries = std::collections::BTreeMap::new();
+        queries.insert(
+            "a".to_string(),
+            QueryIrRequest {
+                ir_version: 1,
+                from: "traces".to_string(),
+                range: QueryRange {
+                    from: "now-1h".to_string(),
+                    to: "now".to_string(),
+                },
+                result: "series".to_string(),
+                fields: None,
+                pipeline: vec![serde_json::json!({
+                    "aggregate": { "by": [], "aggs": [{ "fn": "count", "as": "n" }], "step": "1m" }
+                })],
+            },
+        );
+        let req = MultiQueryIrRequest {
+            queries,
+            formulas: vec![QueryFormula {
+                name: "f".to_string(),
+                expr: "a * 2".to_string(),
+            }],
+            result: "series".to_string(),
+        };
+        let multi = to_multi_document(&req).unwrap();
+        assert_eq!(multi.queries.len(), 1);
+        assert_eq!(multi.formulas.len(), 1);
+        assert_eq!(multi.formulas[0].expr, "a * 2");
+        assert_eq!(multi.result, common::query_ir::ResultEnvelope::Series);
+    }
+
+    #[test]
+    fn parse_envelope_rejects_an_unknown_result() {
+        assert!(parse_envelope("bogus").is_err());
+        assert_eq!(
+            parse_envelope("series").unwrap(),
+            common::query_ir::ResultEnvelope::Series
+        );
     }
 }
