@@ -637,3 +637,39 @@ against the previous lowering rather than by assertion.
   evidence green
 - **THEN** the superseded implementation and the mechanism for choosing between
   them are both deleted, leaving no second code path and no dormant switch
+
+### Requirement: The IR computes counter rates
+
+The IR SHALL compute the per-second rate and the increase of a monotonic counter
+per series over each `step`, treating a drop in value as a counter reset, on the
+`metrics` and `metrics_histogram` sources.
+
+#### Scenario: Rate across a reset
+
+- **WHEN** a counter series reads 10, 20, 5, 15 at 10s intervals and a rate over
+  a 30s step is asked for
+- **THEN** the increase is 25 (10 + 5 + 10) and the rate is 25/30 per second
+
+#### Scenario: Matches PromQL on the same data
+
+- **WHEN** the same counter data is queried with PromQL `rate(x[30s])` and the
+  IR rate at a 30s step
+- **THEN** the values agree within floating-point tolerance
+
+### Requirement: The IR evaluates formulas across queries
+
+One IR request SHALL be able to carry several named queries and formulas over
+their `series` results (`+ - * /`, scalar constants, parentheses), joining
+series on identical label sets and timestamps.
+
+#### Scenario: Error ratio
+
+- **WHEN** a request holds query `a` (error count by service) and `b` (total
+  count by service) and formula `a / b`
+- **THEN** the result has one series per service whose points are `a/b`, and a
+  service missing from `a` yields no series rather than an error
+
+#### Scenario: Division by zero
+
+- **WHEN** a point of `b` is 0
+- **THEN** that point is absent from the formula result, not an error
