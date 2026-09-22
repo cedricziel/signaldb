@@ -25,7 +25,7 @@ import * as traceVolumeApi from "../../api/traceVolume";
 
 // The group table is a server-side aggregate (see api/traceGroups) — mocked
 // at the module boundary rather than at the network layer, the way the rest
-// of this file mocks `tempoSearch`/`fetchTraceVolume` via `stubFetchRoutes`.
+// of this file mocks `fetchTraceVolume` via `stubFetchRoutes`.
 // `importOriginal` keeps the real `groupsFromIrResponse`/`buildGroupDoc` etc.
 // (covered by api/traceGroups.test.ts) and swaps only the network-touching
 // entry point.

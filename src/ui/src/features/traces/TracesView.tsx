@@ -63,10 +63,10 @@ import { TraceVolumeAreaChart } from "./TraceVolumeAreaChart";
 import { TraceVolumeHeatmap } from "./TraceVolumeHeatmap";
 import {
   KIND_VALUES,
-  compileTraceQL,
   facetField,
   facetableField,
   removeTraceFilter,
+  traceFilterToParam,
   upsertTraceFilter,
   withDefaultTraceFilters,
   type TraceFilter,
@@ -170,6 +170,13 @@ function plural(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? "" : "s"}`;
 }
 
+/** A stable string for a filter set, used only as a react-query cache key
+ * (the queries below take `filters` directly — see api/traceGroups.ts,
+ * api/traceGroupMembers.ts — this just tells the cache when they changed). */
+function filterCacheKey(filters: TraceFilter[]): string {
+  return filters.map(traceFilterToParam).join(",");
+}
+
 export function TracesView({ state, update }: Props) {
   if (state.trace !== "") {
     return <TraceDetail state={state} update={update} />;
@@ -187,7 +194,7 @@ function TraceSearch({ state, update }: Props) {
   // view): the default kinds apply on read, and every update writes the
   // full, explicit set back.
   const filters = withDefaultTraceFilters(state.traceFilters);
-  const traceql = compileTraceQL(filters);
+  const filterKey = filterCacheKey(filters);
   const dims = parseGroupBy(state.groupBy);
 
   const resolvedForStep = resolveRange(state.range, Date.now());
@@ -197,13 +204,13 @@ function TraceSearch({ state, update }: Props) {
   // does follow the filters, so the chart describes what the table shows.
   const refetchInterval = liveRefetchInterval(state.live);
   const volume = useQuery({
-    queryKey: ["trace-volume", rangeKey, step, traceql],
+    queryKey: ["trace-volume", rangeKey, step, filterKey],
     queryFn: () =>
       fetchTraceVolume(resolveRange(state.range, Date.now()), step, filters),
     refetchInterval,
   });
   const latencyHeatmap = useQuery({
-    queryKey: ["trace-latency", rangeKey, step, traceql],
+    queryKey: ["trace-latency", rangeKey, step, filterKey],
     queryFn: () =>
       fetchTraceLatencyHeatmap(
         resolveRange(state.range, Date.now()),
@@ -378,7 +385,7 @@ function TraceSearch({ state, update }: Props) {
             <GroupList
               dims={dims}
               filters={filters}
-              traceql={traceql}
+              filterKey={filterKey}
               timeRange={state.range}
               rangeKey={rangeKey}
               grain={state.grain}
@@ -555,7 +562,7 @@ function GrainToggle({
 function GroupList({
   dims,
   filters,
-  traceql,
+  filterKey,
   timeRange,
   rangeKey,
   grain,
@@ -565,7 +572,7 @@ function GroupList({
 }: {
   dims: string[];
   filters: TraceFilter[];
-  traceql: string;
+  filterKey: string;
   timeRange: TimeRange;
   rangeKey: string;
   grain: GroupGrain;
@@ -586,7 +593,7 @@ function GroupList({
       rangeKey,
       dims.join(","),
       grain,
-      traceql,
+      filterKey,
       sort.key,
       sort.dir,
     ],
@@ -627,7 +634,7 @@ function GroupList({
       "trace-window-total",
       rangeKey,
       grain,
-      traceql,
+      filterKey,
       resolvedRange?.fromMs,
       resolvedRange?.toMs,
     ],
@@ -798,7 +805,7 @@ function GroupDetail({
   // kinds apply. Both the key and the drill-in members query must agree
   // with the group table on what "this group" means.
   const filters = withDefaultTraceFilters(state.traceFilters);
-  const traceql = compileTraceQL(filters);
+  const filterKey = filterCacheKey(filters);
   const dims = parseGroupBy(state.groupBy);
   const values = parseCompositeKey(state.group, dims);
 
@@ -812,7 +819,7 @@ function GroupDetail({
       dims.join(","),
       values.join(KEY_SEP),
       state.grain,
-      traceql,
+      filterKey,
       state.limit,
     ],
     // Resolved fresh on every fetch, not once per render — a live refetch of
