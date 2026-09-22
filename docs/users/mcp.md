@@ -50,6 +50,8 @@ these:
 | `compare_profiles`         | Compare profiles between two time ranges with a shared Pyroscope selector; returns the differential flame graph.                                                                                                                                                                                                                  |
 | `profiles_for_trace`       | List the profiles correlated with a trace id.                                                                                                                                                                                                                                                                                     |
 | `query_ir`                 | Native Query IR document (the structured, versioned query surface).                                                                                                                                                                                                                                                               |
+| `list_skills`              | List the longer-form guidance documents ("skills") this server exposes beyond the tool descriptions — same catalog as the `skill://index.json` resource.                                                                                                                                                                          |
+| `get_skill`                | Read one guidance document by name (e.g. `query-ir`) — same content as the corresponding `skill://<name>/SKILL.md` resource, for clients that don't read MCP resources.                                                                                                                                                           |
 | `list_schema_registries`   | List the schema registries visible to your tenant in precedence order (custom first, then the bundled `signaldb` and `otel` semconv), with definition counts.                                                                                                                                                                     |
 | `get_schema_registry`      | Fetch one registry's summary and full document by `namespace`/`version`.                                                                                                                                                                                                                                                          |
 | `resolve_attribute`        | What an attribute key means: every definition across the visible registries, precedence-ordered (`primary` first), with brief, type, examples, deprecation.                                                                                                                                                                       |
@@ -259,11 +261,14 @@ strictest sandbox hosts apply (`default-src 'none'`).
 Alongside the `ui://` apps above, `resources/list`/`resources/read` also
 serve `skill://` documents: longer-form guidance a client fetches on demand,
 kept out of the always-sent `initialize` instructions so those stay short.
-Currently one:
+Each skill follows the common `skill://<name>/SKILL.md` convention; a
+`skill://index.json` resource lists all of them for discovery. The
+`list_skills`/`get_skill` tools above mirror the same catalog for clients
+that don't read MCP resources on their own. Currently one skill:
 
 | Resource                    | Covers                                                                                                                                                                                                                                                                                                                                                            |
 | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `skill://signaldb/query-ir` | When `query_ir` covers more than `search_traces`/`search_logs`/`query_metrics` (a pipeline stage they can't express, or you're already building a document from `discover_sources`/`discover_fields`/`discover_field_values`), plus the full IR document reference — the same content as [the Query IR reference](querying-ir.md), reused rather than duplicated. |
+| `skill://query-ir/SKILL.md` | When `query_ir` covers more than `search_traces`/`search_logs`/`query_metrics` (a pipeline stage they can't express, or you're already building a document from `discover_sources`/`discover_fields`/`discover_field_values`), plus the full IR document reference — the same content as [the Query IR reference](querying-ir.md), reused rather than duplicated. |
 
 Both `ui://` and `skill://` resources are static and compiled into the
 binary — identical for every client, so `resources/list`/`resources/read`
