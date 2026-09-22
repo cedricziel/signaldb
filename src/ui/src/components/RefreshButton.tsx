@@ -3,6 +3,9 @@ import {
   useQueryClient,
   type Query,
 } from "@tanstack/react-query";
+// Own the stylesheet its `.refresh-btn`/`.refresh-icon` classes come from
+// rather than relying on a parent (ExploreView) to have loaded it.
+import "../features/explore/explore.css";
 
 // Session, config and registry lookups don't depend on the time range, so a
 // refresh neither re-issues them nor spins for them.
