@@ -133,10 +133,10 @@ router openapi_spec_is_up_to_date`, then `cargo xtask generate`
 
 ## 5. Verification
 
-- [ ] 5.1 `cargo fmt`; `cargo clippy --workspace --all-targets
+- [x] 5.1 `cargo fmt`; `cargo clippy --workspace --all-targets
 --all-features`; `cargo machete --with-metadata`; `cargo test
 --workspace` (SQLite path) plus the Postgres testcontainer suite for
       `common`/`router`.
-- [ ] 5.2 `openspec validate remove-dataset-id-legacy-shims --type change
+- [x] 5.2 `openspec validate remove-dataset-id-legacy-shims --type change
 --strict` (if the `openspec` CLI is available in the implementing
       environment).
