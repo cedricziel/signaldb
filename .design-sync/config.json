@@ -10,7 +10,9 @@
   "cssEntry": "dist/index.css",
   "buildCmd": ".design-sync/pkg/build.sh",
   "titleMap": {
-    "SemanticKey": "SemanticKeyLabel"
+    "SemanticKey": "SemanticKeyLabel",
+    "Logs": "LogsView",
+    "Traces": "TracesView"
   },
   "provider": {
     "component": "QueryClientProvider",
@@ -46,11 +48,23 @@
       "skip": [
         "components-sourcesnippet--unavailable"
       ]
+    },
+    "LogsView": {
+      "cardMode": "single",
+      "primaryStory": "Default",
+      "viewport": "1280x800"
+    },
+    "TracesView": {
+      "cardMode": "single",
+      "primaryStory": "Default",
+      "viewport": "1280x800"
     }
   },
   "storyImports": {
     "shim": [
-      "@tanstack/react-query"
+      "@tanstack/react-query",
+      "react-router",
+      "api/gen/client.gen"
     ]
   },
   "readmeHeader": ".design-sync/conventions.md"
