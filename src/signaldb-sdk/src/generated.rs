@@ -58,8 +58,8 @@ pub mod types {
         unrestricted.*/
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub allowed_origins: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
-        ///ISO 8601 creation timestamp.
-        pub created_at: ::std::string::String,
+        ///RFC 3339 creation timestamp.
+        pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
         ///Dataset set the key is restricted to, if any; `null` is unrestricted.
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
@@ -68,9 +68,9 @@ pub mod types {
         ///Optional human-readable name.
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub name: ::std::option::Option<::std::string::String>,
-        ///ISO 8601 revocation timestamp (if revoked).
+        ///RFC 3339 revocation timestamp (if revoked).
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
-        pub revoked_at: ::std::option::Option<::std::string::String>,
+        pub revoked_at: ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
         ///Scopes the key carries; `null` for a legacy unrestricted key.
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub scopes: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
@@ -612,8 +612,8 @@ pub mod types {
         unrestricted.*/
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub allowed_origins: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
-        ///ISO 8601 creation timestamp.
-        pub created_at: ::std::string::String,
+        ///RFC 3339 creation timestamp.
+        pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
         ///Dataset set the key is restricted to, if any; `null` is unrestricted.
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
@@ -719,8 +719,8 @@ pub mod types {
     ///Dataset information returned by the API.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct DatasetResponse {
-        ///ISO 8601 creation timestamp.
-        pub created_at: ::std::string::String,
+        ///RFC 3339 creation timestamp.
+        pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
         ///Unique dataset identifier.
         pub id: ::std::string::String,
         ///Dataset name.
@@ -1163,7 +1163,7 @@ pub mod types {
         pub account_login: ::std::string::String,
         pub account_type: ::std::string::String,
         ///RFC 3339 timestamp.
-        pub created_at: ::std::string::String,
+        pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
         pub installation_id: i64,
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub linked_by_github_login: ::std::option::Option<::std::string::String>,
@@ -1173,12 +1173,12 @@ pub mod types {
         names.*/
         pub repositories: ::std::vec::Vec<::std::string::String>,
         ///RFC 3339 timestamp of the last successful repository-list refresh.
-        pub repositories_synced_at: ::std::string::String,
+        pub repositories_synced_at: ::chrono::DateTime<::chrono::offset::Utc>,
         /**`true` when the live GitHub refresh failed and `repositories` is the
         last successfully fetched copy rather than a fresh one.*/
         pub stale: bool,
         ///RFC 3339 timestamp.
-        pub updated_at: ::std::string::String,
+        pub updated_at: ::chrono::DateTime<::chrono::offset::Utc>,
     }
     impl GitHubInstallationResponse {
         pub fn builder() -> builder::GitHubInstallationResponse {
@@ -1207,7 +1207,7 @@ pub mod types {
     pub struct GitHubLinkStartResponse {
         /**RFC 3339 timestamp naming when the state token (and so this link
         attempt) expires.*/
-        pub expires_at: ::std::string::String,
+        pub expires_at: ::chrono::DateTime<::chrono::offset::Utc>,
         /**GitHub's install page to redirect the admin's browser to. Carries
         the single-use state token as its `state` query parameter.*/
         pub install_url: ::std::string::String,
@@ -1501,7 +1501,7 @@ pub mod types {
     pub struct ManageApiKeyResponse {
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub allowed_origins: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
-        pub created_at: ::std::string::String,
+        pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
         pub id: ::std::string::String,
@@ -2982,8 +2982,8 @@ pub mod types {
     ///Tenant information returned by the API.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TenantResponse {
-        ///ISO 8601 creation timestamp.
-        pub created_at: ::std::string::String,
+        ///RFC 3339 creation timestamp.
+        pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
         ///Default dataset name.
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub default_dataset: ::std::option::Option<::std::string::String>,
@@ -2993,8 +2993,8 @@ pub mod types {
         pub name: ::std::string::String,
         ///Source of the tenant record (config or database).
         pub source: ::std::string::String,
-        ///ISO 8601 last-updated timestamp.
-        pub updated_at: ::std::string::String,
+        ///RFC 3339 last-updated timestamp.
+        pub updated_at: ::chrono::DateTime<::chrono::offset::Utc>,
     }
     impl TenantResponse {
         pub fn builder() -> builder::TenantResponse {
@@ -3281,8 +3281,8 @@ pub mod types {
     ///Response returned when a user is created (never includes the password hash).
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct UserResponse {
-        ///ISO 8601 creation timestamp.
-        pub created_at: ::std::string::String,
+        ///RFC 3339 creation timestamp.
+        pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
         ///Optional display name.
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub display_name: ::std::option::Option<::std::string::String>,
@@ -3578,7 +3578,10 @@ pub mod types {
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
             >,
-            created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+            created_at: ::std::result::Result<
+                ::chrono::DateTime<::chrono::offset::Utc>,
+                ::std::string::String,
+            >,
             dataset_ids: ::std::result::Result<
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
@@ -3589,7 +3592,7 @@ pub mod types {
                 ::std::string::String,
             >,
             revoked_at: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
+                ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
                 ::std::string::String,
             >,
             scopes: ::std::result::Result<
@@ -3625,7 +3628,7 @@ pub mod types {
             }
             pub fn created_at<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::string::String>,
+                T: ::std::convert::TryInto<::chrono::DateTime<::chrono::offset::Utc>>,
                 T::Error: ::std::fmt::Display,
             {
                 self.created_at = value
@@ -3667,7 +3670,9 @@ pub mod types {
             }
             pub fn revoked_at<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::chrono::DateTime<::chrono::offset::Utc>>,
+                    >,
                 T::Error: ::std::fmt::Display,
             {
                 self.revoked_at = value
@@ -5670,7 +5675,10 @@ pub mod types {
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
             >,
-            created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+            created_at: ::std::result::Result<
+                ::chrono::DateTime<::chrono::offset::Utc>,
+                ::std::string::String,
+            >,
             dataset_ids: ::std::result::Result<
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
@@ -5714,7 +5722,7 @@ pub mod types {
             }
             pub fn created_at<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::string::String>,
+                T: ::std::convert::TryInto<::chrono::DateTime<::chrono::offset::Utc>>,
                 T::Error: ::std::fmt::Display,
             {
                 self.created_at = value
@@ -6177,7 +6185,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct DatasetResponse {
-            created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+            created_at: ::std::result::Result<
+                ::chrono::DateTime<::chrono::offset::Utc>,
+                ::std::string::String,
+            >,
             id: ::std::result::Result<::std::string::String, ::std::string::String>,
             name: ::std::result::Result<::std::string::String, ::std::string::String>,
             tenant_id: ::std::result::Result<::std::string::String, ::std::string::String>,
@@ -6195,7 +6206,7 @@ pub mod types {
         impl DatasetResponse {
             pub fn created_at<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::string::String>,
+                T: ::std::convert::TryInto<::chrono::DateTime<::chrono::offset::Utc>>,
                 T::Error: ::std::fmt::Display,
             {
                 self.created_at = value
@@ -7856,7 +7867,10 @@ pub mod types {
         pub struct GitHubInstallationResponse {
             account_login: ::std::result::Result<::std::string::String, ::std::string::String>,
             account_type: ::std::result::Result<::std::string::String, ::std::string::String>,
-            created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+            created_at: ::std::result::Result<
+                ::chrono::DateTime<::chrono::offset::Utc>,
+                ::std::string::String,
+            >,
             installation_id: ::std::result::Result<i64, ::std::string::String>,
             linked_by_github_login: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
@@ -7867,10 +7881,15 @@ pub mod types {
                 ::std::vec::Vec<::std::string::String>,
                 ::std::string::String,
             >,
-            repositories_synced_at:
-                ::std::result::Result<::std::string::String, ::std::string::String>,
+            repositories_synced_at: ::std::result::Result<
+                ::chrono::DateTime<::chrono::offset::Utc>,
+                ::std::string::String,
+            >,
             stale: ::std::result::Result<bool, ::std::string::String>,
-            updated_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+            updated_at: ::std::result::Result<
+                ::chrono::DateTime<::chrono::offset::Utc>,
+                ::std::string::String,
+            >,
         }
         impl ::std::default::Default for GitHubInstallationResponse {
             fn default() -> Self {
@@ -7913,7 +7932,7 @@ pub mod types {
             }
             pub fn created_at<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::string::String>,
+                T: ::std::convert::TryInto<::chrono::DateTime<::chrono::offset::Utc>>,
                 T::Error: ::std::fmt::Display,
             {
                 self.created_at = value
@@ -7963,7 +7982,7 @@ pub mod types {
             }
             pub fn repositories_synced_at<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::string::String>,
+                T: ::std::convert::TryInto<::chrono::DateTime<::chrono::offset::Utc>>,
                 T::Error: ::std::fmt::Display,
             {
                 self.repositories_synced_at = value.try_into().map_err(|e| {
@@ -7983,7 +8002,7 @@ pub mod types {
             }
             pub fn updated_at<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::string::String>,
+                T: ::std::convert::TryInto<::chrono::DateTime<::chrono::offset::Utc>>,
                 T::Error: ::std::fmt::Display,
             {
                 self.updated_at = value
@@ -8103,7 +8122,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct GitHubLinkStartResponse {
-            expires_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+            expires_at: ::std::result::Result<
+                ::chrono::DateTime<::chrono::offset::Utc>,
+                ::std::string::String,
+            >,
             install_url: ::std::result::Result<::std::string::String, ::std::string::String>,
         }
         impl ::std::default::Default for GitHubLinkStartResponse {
@@ -8117,7 +8139,7 @@ pub mod types {
         impl GitHubLinkStartResponse {
             pub fn expires_at<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::string::String>,
+                T: ::std::convert::TryInto<::chrono::DateTime<::chrono::offset::Utc>>,
                 T::Error: ::std::fmt::Display,
             {
                 self.expires_at = value
@@ -8805,7 +8827,10 @@ pub mod types {
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
             >,
-            created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+            created_at: ::std::result::Result<
+                ::chrono::DateTime<::chrono::offset::Utc>,
+                ::std::string::String,
+            >,
             dataset_ids: ::std::result::Result<
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
@@ -8849,7 +8874,7 @@ pub mod types {
             }
             pub fn created_at<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::string::String>,
+                T: ::std::convert::TryInto<::chrono::DateTime<::chrono::offset::Utc>>,
                 T::Error: ::std::fmt::Display,
             {
                 self.created_at = value
@@ -14825,7 +14850,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct TenantResponse {
-            created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+            created_at: ::std::result::Result<
+                ::chrono::DateTime<::chrono::offset::Utc>,
+                ::std::string::String,
+            >,
             default_dataset: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
                 ::std::string::String,
@@ -14833,7 +14861,10 @@ pub mod types {
             id: ::std::result::Result<::std::string::String, ::std::string::String>,
             name: ::std::result::Result<::std::string::String, ::std::string::String>,
             source: ::std::result::Result<::std::string::String, ::std::string::String>,
-            updated_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+            updated_at: ::std::result::Result<
+                ::chrono::DateTime<::chrono::offset::Utc>,
+                ::std::string::String,
+            >,
         }
         impl ::std::default::Default for TenantResponse {
             fn default() -> Self {
@@ -14850,7 +14881,7 @@ pub mod types {
         impl TenantResponse {
             pub fn created_at<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::string::String>,
+                T: ::std::convert::TryInto<::chrono::DateTime<::chrono::offset::Utc>>,
                 T::Error: ::std::fmt::Display,
             {
                 self.created_at = value
@@ -14900,7 +14931,7 @@ pub mod types {
             }
             pub fn updated_at<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::string::String>,
+                T: ::std::convert::TryInto<::chrono::DateTime<::chrono::offset::Utc>>,
                 T::Error: ::std::fmt::Display,
             {
                 self.updated_at = value
@@ -15650,7 +15681,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct UserResponse {
-            created_at: ::std::result::Result<::std::string::String, ::std::string::String>,
+            created_at: ::std::result::Result<
+                ::chrono::DateTime<::chrono::offset::Utc>,
+                ::std::string::String,
+            >,
             display_name: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
                 ::std::string::String,
@@ -15673,7 +15707,7 @@ pub mod types {
         impl UserResponse {
             pub fn created_at<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<::std::string::String>,
+                T: ::std::convert::TryInto<::chrono::DateTime<::chrono::offset::Utc>>,
                 T::Error: ::std::fmt::Display,
             {
                 self.created_at = value

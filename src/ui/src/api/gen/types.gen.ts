@@ -50,7 +50,7 @@ export type ApiKeyResponse = {
      */
     allowed_origins?: Array<string> | null;
     /**
-     * ISO 8601 creation timestamp.
+     * RFC 3339 creation timestamp.
      */
     created_at: string;
     /**
@@ -66,7 +66,7 @@ export type ApiKeyResponse = {
      */
     name?: string | null;
     /**
-     * ISO 8601 revocation timestamp (if revoked).
+     * RFC 3339 revocation timestamp (if revoked).
      */
     revoked_at?: string | null;
     /**
@@ -454,7 +454,7 @@ export type CreateApiKeyResponse = {
      */
     allowed_origins?: Array<string> | null;
     /**
-     * ISO 8601 creation timestamp.
+     * RFC 3339 creation timestamp.
      */
     created_at: string;
     /**
@@ -575,7 +575,7 @@ export type CurrentSessionResponse = {
  */
 export type DatasetResponse = {
     /**
-     * ISO 8601 creation timestamp.
+     * RFC 3339 creation timestamp.
      */
     created_at: string;
     /**
@@ -1971,7 +1971,7 @@ export type TenantInfo = {
  */
 export type TenantResponse = {
     /**
-     * ISO 8601 creation timestamp.
+     * RFC 3339 creation timestamp.
      */
     created_at: string;
     /**
@@ -1991,7 +1991,7 @@ export type TenantResponse = {
      */
     source: string;
     /**
-     * ISO 8601 last-updated timestamp.
+     * RFC 3339 last-updated timestamp.
      */
     updated_at: string;
 };
@@ -2178,7 +2178,7 @@ export type UpsertMembershipRequest = {
  */
 export type UserResponse = {
     /**
-     * ISO 8601 creation timestamp.
+     * RFC 3339 creation timestamp.
      */
     created_at: string;
     /**

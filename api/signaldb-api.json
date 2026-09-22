@@ -5331,7 +5331,8 @@
           },
           "created_at": {
             "type": "string",
-            "description": "ISO 8601 creation timestamp."
+            "format": "date-time",
+            "description": "RFC 3339 creation timestamp."
           },
           "dataset_ids": {
             "type": [
@@ -5359,7 +5360,8 @@
               "string",
               "null"
             ],
-            "description": "ISO 8601 revocation timestamp (if revoked)."
+            "format": "date-time",
+            "description": "RFC 3339 revocation timestamp (if revoked)."
           },
           "scopes": {
             "type": [
@@ -6036,7 +6038,8 @@
           },
           "created_at": {
             "type": "string",
-            "description": "ISO 8601 creation timestamp."
+            "format": "date-time",
+            "description": "RFC 3339 creation timestamp."
           },
           "dataset_ids": {
             "type": [
@@ -6213,7 +6216,8 @@
         "properties": {
           "created_at": {
             "type": "string",
-            "description": "ISO 8601 creation timestamp."
+            "format": "date-time",
+            "description": "RFC 3339 creation timestamp."
           },
           "id": {
             "type": "string",
@@ -6829,6 +6833,7 @@
           },
           "created_at": {
             "type": "string",
+            "format": "date-time",
             "description": "RFC 3339 timestamp."
           },
           "installation_id": {
@@ -6854,6 +6859,7 @@
           },
           "repositories_synced_at": {
             "type": "string",
+            "format": "date-time",
             "description": "RFC 3339 timestamp of the last successful repository-list refresh."
           },
           "stale": {
@@ -6862,6 +6868,7 @@
           },
           "updated_at": {
             "type": "string",
+            "format": "date-time",
             "description": "RFC 3339 timestamp."
           }
         }
@@ -6903,6 +6910,7 @@
         "properties": {
           "expires_at": {
             "type": "string",
+            "format": "date-time",
             "description": "RFC 3339 timestamp naming when the state token (and so this link\nattempt) expires."
           },
           "install_url": {
@@ -7182,7 +7190,8 @@
             }
           },
           "created_at": {
-            "type": "string"
+            "type": "string",
+            "format": "date-time"
           },
           "dataset_ids": {
             "type": [
@@ -9057,7 +9066,8 @@
         "properties": {
           "created_at": {
             "type": "string",
-            "description": "ISO 8601 creation timestamp."
+            "format": "date-time",
+            "description": "RFC 3339 creation timestamp."
           },
           "default_dataset": {
             "type": [
@@ -9080,7 +9090,8 @@
           },
           "updated_at": {
             "type": "string",
-            "description": "ISO 8601 last-updated timestamp."
+            "format": "date-time",
+            "description": "RFC 3339 last-updated timestamp."
           }
         }
       },
@@ -9367,7 +9378,8 @@
         "properties": {
           "created_at": {
             "type": "string",
-            "description": "ISO 8601 creation timestamp."
+            "format": "date-time",
+            "description": "RFC 3339 creation timestamp."
           },
           "display_name": {
             "type": [
