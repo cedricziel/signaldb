@@ -21,14 +21,14 @@ Groups ≈ PRs, in design D6 order. TDD throughout.
 
 ## 4. IR counter rate
 
-- [ ] 4.1 Tests: reset scenario, PromQL-agreement test, rejection without `step` / on non-metric sources
-- [ ] 4.2 `rate`/`increase` in `Agg`, planner window, schema version bump, docs, MCP tool text
+- [x] 4.1 Tests: reset scenario, rejection without `step` / on non-metric sources (query-ir `validate.rs` + querier `ir_planner.rs`; no PromQL-agreement test — see handback)
+- [x] 4.2 `rate`/`increase` in `Agg`, planner window, schema version bump, docs, MCP tool text (no supported-function listing in the MCP tool description to update)
 - [ ] 4.3 Metrics builder compiles range-function rows to the IR
 
 ## 5. IR formulas
 
-- [ ] 5.1 Tests: error ratio, missing series, divide by zero, invalid expression
-- [ ] 5.2 Multi-query document + formula evaluator in the querier; docs
+- [x] 5.1 Tests: error ratio, missing series, divide by zero, invalid expression (`query-ir/src/formula.rs`)
+- [ ] 5.2 Multi-query document + formula evaluator in the querier; docs — evaluator and `MultiDocument`/parser land in `query-ir`; `POST /api/v1/query` does not yet accept the multi-query shape (see handback)
 - [ ] 5.3 Metrics builder formulas on the IR; remove PromQL tab and `api/prom.ts`
 
 ## 6. Cleanup

@@ -23,9 +23,12 @@ queries over `logs`, `traces`, profile summaries, and metrics**. The `metrics`
 source covers the scalar-value case — group/filter a metric by name and
 attributes, aggregate, bucket by `step` — the same as every other source. The
 `metrics_histogram` source plus the `histogram_quantile` stage cover
-percentile-over-buckets. `rate`/`irate`/`increase` and cross-series arithmetic
-stay PromQL-only for now. Cross-signal correlation and structural trace
-matching are separate, later capabilities (see [Roadmap](#roadmap)).
+percentile-over-buckets, and the `rate`/`increase` aggregate functions cover
+counter rates (see [Counter rate](#counter-rate-rateincrease-v6)). `irate` and
+cross-series arithmetic (formulas) stay PromQL-only until they have an HTTP
+surface of their own — the evaluator lives in the `query-ir` crate today.
+Cross-signal correlation and structural trace matching are separate, later
+capabilities (see [Roadmap](#roadmap)).
 
 ## The endpoint
 
@@ -51,7 +54,9 @@ body. The response is the declared result envelope (see
   "range": { "from": "now-1h", "to": "now" },
   "result": "series", // v1: rows | series | table; v2 adds heatmap; flamegraph is profiles-only
   "fields": ["service.name"], // optional curated projection (rows/table)
-  "pipeline": [/* ordered transform stages */],
+  "pipeline": [
+    /* ordered transform stages */
+  ],
 }
 ```
 
@@ -288,6 +293,35 @@ function it divided returns an integer.
 `divisor` composes with [scoping](#scoping-an-aggregate-to-a-subset): an
 aggregate may narrow which records it consumes _and_ report the result per
 unit, which is how you ask for the error rate rather than the overall rate.
+
+### Counter rate: `rate`/`increase` (v6)
+
+`rate` and `increase` are aggregate functions for a monotonic counter (a
+metrics `sum` with cumulative temporality), legal only with `step` set and
+only on the `metrics`/`metrics_histogram` sources:
+
+```jsonc
+{
+  "aggregate": {
+    "by": ["metric.name", "service.name"],
+    "aggs": [
+      { "fn": "rate", "of": "metric.value", "as": "requests_per_second" },
+    ],
+    "step": "30s",
+  },
+}
+```
+
+Both are computed per series (the `by` labels), ordered by timestamp: a drop
+between two consecutive samples is treated as a counter reset, contributing
+the later sample's own value (counted from zero) rather than a negative
+delta — the same rule PromQL's `rate()`/`increase()` apply, without
+extrapolation. `increase` is the summed delta over the step window; `rate`
+divides that by the window width in seconds. Both always produce a `Float64`
+series.
+
+A `step` aggregate still allows exactly one aggregate output, so `rate`/
+`increase` cannot share a stage with another aggregate function.
 
 ### Scoping an aggregate to a subset
 
@@ -560,9 +594,9 @@ This is what makes an OTel-native dotted metric name — like
 queryable at all: PromQL's grammar can't lex a dot in a bare metric-name
 identifier, so the same query over `/prometheus/api/v1/query_range` 400s
 before it reaches the querier. The IR's field resolution has no such
-restriction. `rate`/`irate`/`increase` and cross-series arithmetic stay
-PromQL-only until they have an IR pipeline-stage equivalent — the explore
-UI's Metrics tab keeps its PromQL escape hatch for those.
+restriction. `rate`/`increase` over `metrics` are aggregate functions (see
+[Counter rate](#counter-rate-rateincrease-v6)); `irate` and cross-series
+arithmetic stay PromQL-only until they have an HTTP surface of their own.
 
 ## Histograms
 
@@ -629,9 +663,11 @@ completely different source shape. Neither is a substitute for the other:
 `histogram_quantile` needs pre-bucketed histogram data; `aggregate`'s
 `quantile` needs raw numeric samples.
 
-`histogram_fraction()` (the CDF-inverse of `histogram_quantile()`) and
-`rate`/`irate`/`increase` over `metrics_histogram` have no IR stage yet — stay
-on PromQL for those (see [Roadmap](#roadmap)).
+`rate`/`increase` over `metrics_histogram` work the same as over `metrics`
+(see [Counter rate](#counter-rate-rateincrease-v6)) — the source restriction
+is on the aggregate function, not the stage. `histogram_fraction()` (the
+CDF-inverse of `histogram_quantile()`) has no IR stage yet — stay on PromQL
+for that (see [Roadmap](#roadmap)).
 
 ### Heatmap envelope (IR v2)
 
@@ -904,10 +940,11 @@ so it is designed and reviewed on its own risk profile:
   [Discovery](#discovery-what-can-i-query).
 - **cross-signal correlate** — a `correlate` join stage (the IR becomes a DAG).
 - **structural traces** — a `match` stage + a `trace` result envelope.
-- **metrics: counters and rates** — a `rate`/`irate`/`increase` stage
-  equivalent (counter delta over a window) and cross-series arithmetic
-  (formulas). The scalar-value case (gauge/sum, plain aggregation) and
-  histogram quantiles already work today — see above.
+- **formulas over HTTP** — the multi-query document shape and evaluator
+  (`{queries, formulas, result}`, arithmetic over named queries' `series`
+  results) exist in the `query-ir` crate; `POST /api/v1/query` does not yet
+  accept it. `rate`/`increase` (counter delta over a window) already work
+  today — see [Counter rate](#counter-rate-rateincrease-v6).
 
 Also deferred: the compatibility dialects lowering _into_ the IR (one engine),
 and full attribute promotion. None of these change the document shape defined
