@@ -50,6 +50,21 @@ export function filterFromParam(param: string): LabelFilter | null {
   return { label, op: m[2] as FilterOp, value: m[3] ?? "" };
 }
 
+/** Old bookmarked logs-tab URLs (the `f` param) spelled these chips the Loki
+ * way — canonicalize on decode only, so a stale link still filters on the
+ * right IR logical field. New chips are written with the IR name already.
+ * The Query tab's own filters (`qf`) never went through LogQL, so this stays
+ * scoped to `f`'s decode site rather than living in `filterFromParam`. */
+export function logFilterFromParam(param: string): LabelFilter | null {
+  const filter = filterFromParam(param);
+  if (!filter) return null;
+  if (filter.label === "level") return { ...filter, label: "severity_text" };
+  if (filter.label === "service_name") {
+    return { ...filter, label: "service.name" };
+  }
+  return filter;
+}
+
 /** Add or replace: an `=` filter on a label replaces an existing `=` filter. */
 export function upsertFilter(
   filters: LabelFilter[],

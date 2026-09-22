@@ -35,7 +35,7 @@ describe("parseExploreState", () => {
     );
     expect(state.range).toEqual({ type: "relative", seconds: 900 });
     expect(state.filters).toEqual([
-      { label: "level", op: "=", value: "error" },
+      { label: "severity_text", op: "=", value: "error" },
     ]);
     expect(state.search).toBe("timeout");
     expect(state.limit).toBe(100);
@@ -89,8 +89,8 @@ describe("buildSearch", () => {
       ...DEFAULT_STATE,
       range: { type: "absolute" as const, fromMs: 1000, toMs: 2000 },
       filters: [
-        { label: "service_name", op: "=" as const, value: "checkout" },
-        { label: "level", op: "!=" as const, value: "debug" },
+        { label: "service.name", op: "=" as const, value: "checkout" },
+        { label: "severity_text", op: "!=" as const, value: "debug" },
       ],
       search: "a b",
       raw: '{x="y"}',
@@ -124,7 +124,9 @@ describe("buildSearch", () => {
 
   it("keeps only mq when a URL carries both mq and promql, preferring mq", () => {
     const mq = JSON.stringify({ ref: "a", metric: "up", filters: [] });
-    const state = parseExploreState(`?mq=${encodeURIComponent(mq)}&promql=rate(x[5m])`);
+    const state = parseExploreState(
+      `?mq=${encodeURIComponent(mq)}&promql=rate(x[5m])`,
+    );
     expect(state.metricQuery).toBe(mq);
     expect(state.promql).toBe("");
   });
@@ -249,9 +251,7 @@ describe("buildSearch", () => {
     expect(search).not.toContain("entity=");
     expect(search).not.toContain("primary=");
     expect(search).not.toContain("secondary=");
-    const parsed = parseExploreState(
-      "?entity=service&primary=x&secondary=y",
-    );
+    const parsed = parseExploreState("?entity=service&primary=x&secondary=y");
     expect(parsed.catalogEntity).toBe(DEFAULT_STATE.catalogEntity);
     expect(parsed.catalogPrimary).toBe("");
     expect(parsed.catalogSecondary).toBe("");
@@ -414,7 +414,9 @@ describe("catalog path segments", () => {
       catalogPrimary: "",
       catalogSecondary: "",
     });
-    expect(parseCatalogPath("/catalog/service/checkout,shop/GET%20%2Fhealth")).toEqual({
+    expect(
+      parseCatalogPath("/catalog/service/checkout,shop/GET%20%2Fhealth"),
+    ).toEqual({
       catalogEntity: "service",
       catalogPrimary: compositeKey(["checkout", "shop"]),
       catalogSecondary: compositeKey(["GET /health"]),

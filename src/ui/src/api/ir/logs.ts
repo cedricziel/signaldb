@@ -1,8 +1,8 @@
 /**
  * Logs tab over the native Query IR: rows (the log list) and per-severity
  * volume (the histogram), replacing the LogQL-compiled `api/loki.ts` calls.
- * Field/value discovery (`FieldSidebar`) stays on Loki labels until the
- * `describe`-based discovery client lands.
+ * Field/value discovery (`FieldSidebar`, add-filter chips) is
+ * `api/ir/discovery.ts`; chips address IR logical field names directly.
  */
 import type { QueryIrRequest, QueryIrResponse } from "../gen";
 import type { LabelFilter } from "../../lib/filters";
@@ -29,18 +29,8 @@ export interface HistogramSeries {
   points: [number, number][];
 }
 
-/** Chip labels spelled the Loki way (the picker isn't on `describe` yet, see
- * module doc) canonicalized to the IR's logical field names — everything
- * else is passed through as an attribute name the resolver searches every
- * scope for. */
-function irFieldForLabel(label: string): string {
-  if (label === "level") return "severity_text";
-  if (label === "service_name") return "service.name";
-  return label;
-}
-
 function filterWhere(f: LabelFilter): Record<string, unknown> {
-  const field = irFieldForLabel(f.label);
+  const field = f.label;
   switch (f.op) {
     case "=":
       return { field, op: "eq", value: f.value };

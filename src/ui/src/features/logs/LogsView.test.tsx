@@ -4,8 +4,9 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import {
+  describeFieldsResponse,
+  emptyDescribeFields,
   emptyIrSeries,
-  emptyLabels,
   irLogRowsResponse,
   renderWithClient,
   stubFetchRoutes,
@@ -20,6 +21,9 @@ const isRowsQuery = (b: unknown) =>
   (b as { result?: string }).result === "rows";
 const isSeriesQuery = (b: unknown) =>
   (b as { result?: string }).result === "series";
+const isFieldsQuery = (b: unknown) =>
+  (b as { pipeline?: { describe?: { target?: string } }[] }).pipeline?.[0]
+    ?.describe?.target === "fields";
 
 function routes() {
   return stubFetchRoutes([
@@ -43,8 +47,9 @@ function routes() {
     },
     { match: "/api/v1/query", bodyMatch: isSeriesQuery, body: emptyIrSeries },
     {
-      match: "/loki/api/v1/labels",
-      body: { status: "success", data: ["level", "service_name"] },
+      match: "/api/v1/query",
+      bodyMatch: isFieldsQuery,
+      body: describeFieldsResponse(["severity_text", "service.name"]),
     },
   ]);
 }
@@ -111,7 +116,7 @@ describe("LogsView", () => {
         body: { error: "parse error: unexpected token" },
         status: 400,
       },
-      { match: "/loki/api/v1/labels", body: emptyLabels },
+      { match: "/api/v1/query", bodyMatch: isFieldsQuery, body: emptyDescribeFields },
     ]);
     renderView();
     expect(await screen.findByRole("alert")).toHaveTextContent(
@@ -151,7 +156,7 @@ describe("LogsView", () => {
         ]),
       },
       { match: "/api/v1/query", bodyMatch: isSeriesQuery, body: emptyIrSeries },
-      { match: "/loki/api/v1/labels", body: emptyLabels },
+      { match: "/api/v1/query", bodyMatch: isFieldsQuery, body: emptyDescribeFields },
     ]);
     const { update } = renderView();
     await userEvent.click(await screen.findByText("traced line"));

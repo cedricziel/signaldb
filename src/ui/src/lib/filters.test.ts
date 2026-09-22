@@ -3,6 +3,7 @@ import {
   filterFromParam,
   filterToParam,
   isValidLogLabelName,
+  logFilterFromParam,
   upsertFilter,
   type LabelFilter,
 } from "./filters";
@@ -33,7 +34,7 @@ describe("isValidLogLabelName", () => {
 describe("filter URL params", () => {
   it("round-trips every operator", () => {
     for (const op of ["=", "!=", "=~", "!~"] as const) {
-      const filter = f("service_name", op, "check|out");
+      const filter = f("host", op, "check|out");
       expect(filterFromParam(filterToParam(filter))).toEqual(filter);
     }
   });
@@ -51,6 +52,23 @@ describe("filter URL params", () => {
   it("round-trips a dotted label", () => {
     const filter = f("k8s.pod.name", "=", "x");
     expect(filterFromParam(filterToParam(filter))).toEqual(filter);
+  });
+});
+
+describe("logFilterFromParam", () => {
+  it("canonicalizes the old Loki-spelled labels from a bookmarked logs URL", () => {
+    expect(logFilterFromParam("level|=|error")).toEqual(
+      f("severity_text", "=", "error"),
+    );
+    expect(logFilterFromParam("service_name|!=|checkout")).toEqual(
+      f("service.name", "!=", "checkout"),
+    );
+  });
+
+  it("leaves an already-canonical IR field name as-is", () => {
+    expect(logFilterFromParam("severity_text|=|error")).toEqual(
+      f("severity_text", "=", "error"),
+    );
   });
 });
 

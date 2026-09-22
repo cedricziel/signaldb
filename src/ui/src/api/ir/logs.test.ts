@@ -37,10 +37,10 @@ describe("buildLogRowsDoc", () => {
     });
   });
 
-  it("canonicalizes level/service_name chips and maps operators", () => {
+  it("compiles chip fields and operators as-is", () => {
     const filters: LabelFilter[] = [
-      { label: "level", op: "=", value: "error" },
-      { label: "service_name", op: "!=", value: "checkout" },
+      { label: "severity_text", op: "=", value: "error" },
+      { label: "service.name", op: "!=", value: "checkout" },
       { label: "host", op: "=~", value: "worker-.*" },
       { label: "az", op: "!~", value: "eu-central-1a" },
     ];

@@ -6,7 +6,12 @@ import { useCallback } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 import { DEFAULT_SCALE, isScale, type Scale } from "../features/explore/scale";
 import { DEFAULT_ENTITY_TYPE } from "../features/catalog/entityTypes";
-import { filterFromParam, filterToParam, type LabelFilter } from "./filters";
+import {
+  filterFromParam,
+  filterToParam,
+  logFilterFromParam,
+  type LabelFilter,
+} from "./filters";
 import {
   traceFilterFromParam,
   traceFilterToParam,
@@ -279,7 +284,7 @@ export function parseExploreState(search: string): ExploreState {
     range: parseRangeParam(p.get("range")),
     filters: p
       .getAll("f")
-      .map(filterFromParam)
+      .map(logFilterFromParam)
       .filter((f): f is LabelFilter => f !== null),
     search: p.get("q") ?? "",
     raw: p.get("raw") ?? "",

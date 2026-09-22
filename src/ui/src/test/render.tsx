@@ -234,6 +234,34 @@ export const emptyIrSeries = {
   series: [],
 };
 
+/** A `describe: fields` response naming `names` as declared, filterable
+ * fields — for stubbing a field-picker's discovery request. */
+export function describeFieldsResponse(names: string[]) {
+  return {
+    result: "metadata",
+    window: { start_ns: 0, end_ns: 0 },
+    metadata: {
+      kind: "fields",
+      truncated: false,
+      cost: {
+        mode: "metadata",
+        window_scoped: false,
+        sampled: false,
+        approximate: false,
+      },
+      fields: names.map((name) => ({
+        name,
+        type: "string",
+        filterable: true,
+        origin: "declared",
+      })),
+    },
+  };
+}
+
+/** An empty `describe: fields` response. */
+export const emptyDescribeFields = describeFieldsResponse([]);
+
 /**
  * A response answering either the logs tab's rows query or its volume
  * series query with nothing — a single stub covers both, since each reader

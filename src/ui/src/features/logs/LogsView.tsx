@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { lokiLabels } from "../../api/loki";
+import { fields as describeFields } from "../../api/ir/discovery";
 import { runLogRows, runLogVolume } from "../../api/ir/logs";
 import {
   MobileFiltersToggle,
@@ -64,11 +64,12 @@ export function LogsView({ state, update }: Props) {
     refetchInterval,
   });
 
-  const labels = useQuery({
-    queryKey: ["loki-labels", rangeKey],
-    queryFn: () => lokiLabels(range()),
+  const fields = useQuery({
+    queryKey: ["ir-log-fields", rangeKey],
+    queryFn: () => describeFields("logs", range()),
     staleTime: 60_000,
   });
+  const labelNames = fields.data?.map((f) => f.name) ?? [];
 
   const addFilter = (f: LabelFilter) =>
     update({ filters: upsertFilter(state.filters, f) });
@@ -81,7 +82,7 @@ export function LogsView({ state, update }: Props) {
       <div className="querybar">
         <FilterChips
           filters={state.filters}
-          labels={labels.data ?? []}
+          labels={labelNames}
           onChange={(filters) => update({ filters })}
         />
         <form
@@ -123,7 +124,7 @@ export function LogsView({ state, update }: Props) {
           onClose={mobileSidebar.close}
         >
           <FieldSidebar
-            labels={labels.data ?? []}
+            labels={labelNames}
             range={resolvedForStep}
             rangeKey={rangeKey}
             onAddFilter={addFilter}
