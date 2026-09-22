@@ -24,11 +24,11 @@ source covers the scalar-value case — group/filter a metric by name and
 attributes, aggregate, bucket by `step` — the same as every other source. The
 `metrics_histogram` source plus the `histogram_quantile` stage cover
 percentile-over-buckets, and the `rate`/`increase` aggregate functions cover
-counter rates (see [Counter rate](#counter-rate-rateincrease-v6)). `irate` and
-cross-series arithmetic (formulas) stay PromQL-only until they have an HTTP
-surface of their own — the evaluator lives in the `query-ir` crate today.
-Cross-signal correlation and structural trace matching are separate, later
-capabilities (see [Roadmap](#roadmap)).
+counter rates (see [Counter rate](#counter-rate-rateincrease-v6)). Arithmetic
+across several queries' results — formulas — is a separate multi-query
+document shape (see [Formulas](#formulas-cross-query-arithmetic-d5)). `irate`
+stays PromQL-only. Cross-signal correlation and structural trace matching are
+separate, later capabilities (see [Roadmap](#roadmap)).
 
 ## The endpoint
 
@@ -54,9 +54,7 @@ body. The response is the declared result envelope (see
   "range": { "from": "now-1h", "to": "now" },
   "result": "series", // v1: rows | series | table; v2 adds heatmap; flamegraph is profiles-only
   "fields": ["service.name"], // optional curated projection (rows/table)
-  "pipeline": [
-    /* ordered transform stages */
-  ],
+  "pipeline": [/* ordered transform stages */],
 }
 ```
 
@@ -312,13 +310,17 @@ only on the `metrics`/`metrics_histogram` sources:
 }
 ```
 
-Both are computed per series (the `by` labels), ordered by timestamp: a drop
-between two consecutive samples is treated as a counter reset, contributing
-the later sample's own value (counted from zero) rather than a negative
-delta — the same rule PromQL's `rate()`/`increase()` apply, without
-extrapolation. `increase` is the summed delta over the step window; `rate`
-divides that by the window width in seconds. Both always produce a `Float64`
-series.
+Both are computed per **individual series** — `metric.name` plus its natural
+label set (`service.name` and every promoted attribute), the same identity
+PromQL's `rate()`/`increase()` partition by — not per `by` group: two series
+sharing a `by` value never take a delta across each other, even though the
+`by` grouping still folds their (independently computed) deltas together in
+the output. Ordered by timestamp, a drop between two consecutive samples of
+one series is treated as a counter reset, contributing the later sample's own
+value (counted from zero) rather than a negative delta — the same rule
+PromQL applies, without extrapolation. `increase` is the summed delta over
+the step window; `rate` divides that by the window width in seconds. Both
+always produce a `Float64` series.
 
 A `step` aggregate still allows exactly one aggregate output, so `rate`/
 `increase` cannot share a stage with another aggregate function.
@@ -707,6 +709,76 @@ bucket. Missing cells inside the declared window are zero. The server accepts
 at most 32 y-axis bounds and rejects non-positive steps or non-increasing
 bounds before execution.
 
+## Formulas: cross-query arithmetic (D5)
+
+A formula computes arithmetic across the `series` results of several named
+queries in **one** request — an error ratio, a percentage, a difference —
+rather than in the client. Instead of the single-document shape
+(`{irVersion, from, range, result, pipeline}`), `POST /api/v1/query` accepts
+a **multi-query document**, recognized by its `queries` key:
+
+```jsonc
+{
+  "queries": {
+    "errors": {
+      "irVersion": 1,
+      "from": "traces",
+      "range": { "from": "now-1h", "to": "now" },
+      "result": "series",
+      "pipeline": [
+        { "where": { "field": "status.code", "op": "eq", "value": "Error" } },
+        {
+          "aggregate": {
+            "by": ["service.name"],
+            "aggs": [{ "fn": "count", "as": "n" }],
+            "step": "1m",
+          },
+        },
+      ],
+    },
+    "total": {
+      "irVersion": 1,
+      "from": "traces",
+      "range": { "from": "now-1h", "to": "now" },
+      "result": "series",
+      "pipeline": [
+        {
+          "aggregate": {
+            "by": ["service.name"],
+            "aggs": [{ "fn": "count", "as": "n" }],
+            "step": "1m",
+          },
+        },
+      ],
+    },
+  },
+  "formulas": [{ "name": "error_ratio", "expr": "errors / total" }],
+  "result": "series",
+}
+```
+
+Every named query must declare `result: "series"` — a formula document has
+no other shape. `expr` is `+ - * /` over numeric constants, the request's own
+query names, and parentheses, standard precedence, left-associative.
+
+Each inner query executes exactly like a standalone single-document request
+(its own Flight ticket, its own `metrics`/`traces`/... source), all under one
+server clock stamp; every query's source needs the matching read scope before
+any of them run. Once every inner query has returned, each formula is
+evaluated by joining its referenced queries' series on an **identical label
+set and timestamp**:
+
+- a series present in one operand's result but missing from another's
+  contributes nothing to the output — no error, just no series for that
+  label set;
+- a point whose divisor is zero is dropped from the output series, not an
+  error;
+- a numeric constant broadcasts across every series it meets (`a * 100`).
+
+The response is an ordinary `series` envelope. Each output series' `labels`
+carries the joined labels plus a `formula` key naming which formula produced
+it, so a request with several formulas stays distinguishable in one response.
+
 ## Discovery — what can I query?
 
 A structured query builder needs to know what it can build on. The `describe`
@@ -940,11 +1012,10 @@ so it is designed and reviewed on its own risk profile:
   [Discovery](#discovery-what-can-i-query).
 - **cross-signal correlate** — a `correlate` join stage (the IR becomes a DAG).
 - **structural traces** — a `match` stage + a `trace` result envelope.
-- **formulas over HTTP** — the multi-query document shape and evaluator
-  (`{queries, formulas, result}`, arithmetic over named queries' `series`
-  results) exist in the `query-ir` crate; `POST /api/v1/query` does not yet
-  accept it. `rate`/`increase` (counter delta over a window) already work
-  today — see [Counter rate](#counter-rate-rateincrease-v6).
+
+`rate`/`increase` (counter delta over a window — see
+[Counter rate](#counter-rate-rateincrease-v6)) and cross-query formulas (see
+[Formulas](#formulas-cross-query-arithmetic-d5)) already work today.
 
 Also deferred: the compatibility dialects lowering _into_ the IR (one engine),
 and full attribute promotion. None of these change the document shape defined

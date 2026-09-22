@@ -28,7 +28,7 @@ Groups ≈ PRs, in design D6 order. TDD throughout.
 ## 5. IR formulas
 
 - [x] 5.1 Tests: error ratio, missing series, divide by zero, invalid expression (`query-ir/src/formula.rs`)
-- [ ] 5.2 Multi-query document + formula evaluator in the querier; docs — evaluator and `MultiDocument`/parser land in `query-ir`; `POST /api/v1/query` does not yet accept the multi-query shape (see handback)
+- [x] 5.2 Multi-query document + formula evaluator in the querier; docs — `POST /api/v1/query` accepts `{queries, formulas, result}` (discriminated by `queries`), authorizes every inner query's source, executes each via its own Flight ticket, and evaluates formulas with `query-ir`'s evaluator; OpenAPI/TS client/Rust SDK regenerated
 - [ ] 5.3 Metrics builder formulas on the IR; remove PromQL tab and `api/prom.ts`
 
 ## 6. Cleanup
