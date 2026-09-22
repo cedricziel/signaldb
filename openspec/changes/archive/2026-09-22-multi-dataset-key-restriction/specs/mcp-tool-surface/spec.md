@@ -149,3 +149,14 @@ semantics as the underlying management API.
   token calls `discover_datasets` or `tenant_list_tables`
 - **THEN** the result lists every dataset in the tenant, exactly as before
   this change
+
+#### Scenario: A session spans multiple tenants
+
+- **WHEN** a session (one `mcp-session-id`) issues calls that present
+  different, independently valid credentials — for example separate API keys
+  for two tenants — each with its matching `X-Tenant-ID`
+- **THEN** each call is authenticated by the router on its own terms and
+  succeeds against its own tenant; the session is not permanently pinned to
+  the first tenant seen, though it may accumulate only up to a bounded number
+  of distinct identities before further new identities on that session are
+  refused

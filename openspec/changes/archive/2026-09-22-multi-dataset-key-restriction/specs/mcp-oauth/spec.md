@@ -1,3 +1,8 @@
+## RENAMED Requirements
+
+- FROM: `### Requirement: Authorization with human login and consent-time tenant selection`
+- TO: `### Requirement: Authorization with human login and consent-time tenant and dataset selection`
+
 ## MODIFIED Requirements
 
 ### Requirement: Authorization with human login and consent-time tenant and dataset selection
