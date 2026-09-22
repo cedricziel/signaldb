@@ -2559,6 +2559,19 @@ impl Configuration {
             .unwrap_or_else(|| tenant_id.to_string())
     }
 
+    /// Get the tenant ID for a given tenant slug.
+    ///
+    /// Returns the tenant's id if a config tenant has that slug, otherwise
+    /// returns the slug as-is (database tenants use their id as their slug).
+    pub fn get_tenant_id_by_slug(&self, tenant_slug: &str) -> String {
+        self.auth
+            .tenants
+            .iter()
+            .find(|t| t.slug == tenant_slug)
+            .map(|t| t.id.clone())
+            .unwrap_or_else(|| tenant_slug.to_string())
+    }
+
     /// Get the dataset slug for a given tenant and dataset ID.
     ///
     /// Returns the dataset's slug if found, otherwise returns the dataset_id as-is.
