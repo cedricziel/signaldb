@@ -180,3 +180,69 @@ export function logsResponse(
     },
   };
 }
+
+/** Query IR `logs` rows response, in the column order `api/ir/logs.ts`
+ * projects (see `ROW_FIELDS`). */
+export function irLogRowsResponse(
+  rows: {
+    tsNs: string;
+    body: string;
+    serviceName?: string;
+    severityText?: string;
+    traceId?: string | null;
+    spanId?: string | null;
+    scopeName?: string;
+    logAttributes?: Record<string, string>;
+    scopeAttributes?: Record<string, string>;
+    resourceAttributes?: Record<string, string>;
+  }[],
+) {
+  return {
+    result: "rows",
+    window: { start_ns: 0, end_ns: 0 },
+    columns: [
+      { name: "timestamp", type: "timestamp_ns" },
+      { name: "body", type: "string" },
+      { name: "service_name", type: "string" },
+      { name: "severity_text", type: "string" },
+      { name: "trace_id", type: "string" },
+      { name: "span_id", type: "string" },
+      { name: "scope_name", type: "string" },
+      { name: "log_attributes", type: "map<string,string>" },
+      { name: "scope_attributes", type: "map<string,string>" },
+      { name: "resource_attributes", type: "map<string,string>" },
+    ],
+    rows: rows.map((r) => [
+      r.tsNs,
+      r.body,
+      r.serviceName ?? "",
+      r.severityText ?? "",
+      r.traceId ?? null,
+      r.spanId ?? null,
+      r.scopeName ?? "",
+      r.logAttributes ?? {},
+      r.scopeAttributes ?? {},
+      r.resourceAttributes ?? {},
+    ]),
+  };
+}
+
+/** An empty Query IR `series` response (the log volume histogram). */
+export const emptyIrSeries = {
+  result: "series",
+  window: { start_ns: 0, end_ns: 0 },
+  series: [],
+};
+
+/**
+ * A response answering either the logs tab's rows query or its volume
+ * series query with nothing — a single stub covers both, since each reader
+ * only looks at its own field (`rows`/`columns` vs `series`).
+ */
+export const emptyIrLogs = {
+  result: "rows",
+  window: { start_ns: 0, end_ns: 0 },
+  columns: [],
+  rows: [],
+  series: [],
+};

@@ -4,9 +4,9 @@ Groups ≈ PRs, in design D6 order. TDD throughout.
 
 ## 1. Logs tab on the IR
 
-- [ ] 1.1 `api/ir/logs.ts`: rows query (filters → `where`, limit, order) and level volume (`aggregate` by `log.severity_text`, `step`) with unit tests on the documents they build
-- [ ] 1.2 Logs view, histogram and live-tail polling use it; detail view shows attribute scopes separately
-- [ ] 1.3 Remove the LogQL "edit as text" box; delete LogQL compile code
+- [x] 1.1 `api/ir/logs.ts`: rows query (filters → `where`, limit, order) and level volume (`aggregate` by `log.severity_text`, `step`) with unit tests on the documents they build
+- [x] 1.2 Logs view, histogram and live-tail polling use it; detail view shows attribute scopes separately
+- [x] 1.3 Remove the LogQL "edit as text" box; delete LogQL compile code
 
 ## 2. Discovery via `describe`
 

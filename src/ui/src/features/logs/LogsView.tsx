@@ -1,18 +1,14 @@
 import { useQuery } from "@tanstack/react-query";
 import { useEffect, useState } from "react";
-import { lokiLabels, lokiQueryHistogram, lokiQueryLogs } from "../../api/loki";
+import { lokiLabels } from "../../api/loki";
+import { runLogRows, runLogVolume } from "../../api/ir/logs";
 import {
   MobileFiltersToggle,
   MobileSidebarDrawer,
 } from "../../components/MobileSidebarDrawer";
 import { QueryError } from "../../components/QueryError";
 import { useMobileSidebar } from "../../hooks/useMobileSidebar";
-import {
-  compileHistogramQL,
-  compileLogQL,
-  upsertFilter,
-  type LabelFilter,
-} from "../../lib/filters";
+import { upsertFilter, type LabelFilter } from "../../lib/filters";
 import { liveRefetchInterval } from "../../lib/live";
 import {
   durationToSeconds,
@@ -33,8 +29,6 @@ interface Props {
 }
 
 export function LogsView({ state, update }: Props) {
-  const [editingRaw, setEditingRaw] = useState(false);
-  const [rawDraft, setRawDraft] = useState("");
   const [searchDraft, setSearchDraft] = useState(state.search);
   const mobileSidebar = useMobileSidebar();
 
@@ -45,12 +39,6 @@ export function LogsView({ state, update }: Props) {
     setSearchDraft(state.search);
   }, [state.search]);
 
-  const model = {
-    filters: state.filters,
-    search: state.search,
-    raw: state.raw || undefined,
-  };
-  const logql = compileLogQL(model);
   // Cache scope: time range plus tenant context, so switching tenants
   // refetches instead of serving another tenant's cached results.
   const rangeKey = rangeScopeKey(state);
@@ -62,18 +50,17 @@ export function LogsView({ state, update }: Props) {
   const refetchInterval = liveRefetchInterval(state.live, 2_000);
 
   const logs = useQuery({
-    queryKey: ["loki-logs", logql, rangeKey, state.limit],
-    queryFn: () => lokiQueryLogs(logql, range(), state.limit),
+    queryKey: ["ir-logs", state.filters, state.search, rangeKey, state.limit],
+    queryFn: () =>
+      runLogRows(state.filters, state.search, range(), state.limit),
     refetchInterval,
   });
 
   const resolvedForStep = resolveRange(state.range, Date.now());
   const step = resolveStep(resolvedForStep, state.step);
-  const histogramQL = compileHistogramQL(model, step);
   const histogram = useQuery({
-    queryKey: ["loki-histogram", histogramQL, rangeKey],
-    queryFn: () => lokiQueryHistogram(histogramQL!, range(), step),
-    enabled: histogramQL !== null,
+    queryKey: ["ir-log-volume", state.filters, state.search, rangeKey, step],
+    queryFn: () => runLogVolume(state.filters, state.search, range(), step),
     refetchInterval,
   });
 
@@ -84,7 +71,7 @@ export function LogsView({ state, update }: Props) {
   });
 
   const addFilter = (f: LabelFilter) =>
-    update({ filters: upsertFilter(state.filters, f), raw: "" });
+    update({ filters: upsertFilter(state.filters, f) });
 
   const openTrace = (traceId: string) =>
     update({ signal: "traces", trace: traceId }, { push: true });
@@ -92,88 +79,37 @@ export function LogsView({ state, update }: Props) {
   return (
     <div className="logsview">
       <div className="querybar">
-        {state.raw === "" && !editingRaw && (
-          <>
-            <FilterChips
-              filters={state.filters}
-              labels={labels.data ?? []}
-              onChange={(filters) => update({ filters })}
-            />
-            <form
-              className="search-form"
-              onSubmit={(e) => {
-                e.preventDefault();
-                update({ search: searchDraft });
-              }}
-            >
-              <input
-                type="search"
-                className="search-input"
-                placeholder="Search in log lines…"
-                aria-label="Search in log lines"
-                value={searchDraft}
-                onChange={(e) => {
-                  const next = e.target.value;
-                  setSearchDraft(next);
-                  // The native "×" clears the box without firing submit;
-                  // an empty draft over a non-empty query would otherwise
-                  // leave stale rows filtered by a query the box no longer
-                  // shows.
-                  if (next === "" && state.search !== "") {
-                    update({ search: "" });
-                  }
-                }}
-              />
-            </form>
-          </>
-        )}
-        {(state.raw !== "" || editingRaw) && (
-          <form
-            className="raw-form"
-            onSubmit={(e) => {
-              e.preventDefault();
-              update({ raw: rawDraft });
-              setEditingRaw(false);
+        <FilterChips
+          filters={state.filters}
+          labels={labels.data ?? []}
+          onChange={(filters) => update({ filters })}
+        />
+        <form
+          className="search-form"
+          onSubmit={(e) => {
+            e.preventDefault();
+            update({ search: searchDraft });
+          }}
+        >
+          <input
+            type="search"
+            className="search-input"
+            placeholder="Search in log lines…"
+            aria-label="Search in log lines"
+            value={searchDraft}
+            onChange={(e) => {
+              const next = e.target.value;
+              setSearchDraft(next);
+              // The native "×" clears the box without firing submit;
+              // an empty draft over a non-empty query would otherwise
+              // leave stale rows filtered by a query the box no longer
+              // shows.
+              if (next === "" && state.search !== "") {
+                update({ search: "" });
+              }
             }}
-          >
-            <textarea
-              aria-label="LogQL query"
-              value={editingRaw ? rawDraft : state.raw}
-              rows={2}
-              onChange={(e) => {
-                setEditingRaw(true);
-                setRawDraft(e.target.value);
-              }}
-            />
-            <div className="raw-actions">
-              <button type="submit" className="btn btn-primary">
-                Run
-              </button>
-              <button
-                type="button"
-                className="btn"
-                onClick={() => {
-                  update({ raw: "" });
-                  setEditingRaw(false);
-                }}
-              >
-                Back to builder
-              </button>
-            </div>
-          </form>
-        )}
-        {state.raw === "" && !editingRaw && (
-          <button
-            className="qlmode"
-            title="Edit the compiled LogQL directly"
-            onClick={() => {
-              setRawDraft(logql);
-              setEditingRaw(true);
-            }}
-          >
-            {"{ } edit as text"}
-          </button>
-        )}
+          />
+        </form>
       </div>
 
       <MobileFiltersToggle
@@ -206,7 +142,7 @@ export function LogsView({ state, update }: Props) {
             </span>
             {logs.isFetching && <span className="histo-note">updating…</span>}
           </div>
-          {histogramQL !== null && histogram.data && (
+          {histogram.data && (
             <div className="histo-wrap">
               <Histogram
                 series={histogram.data}

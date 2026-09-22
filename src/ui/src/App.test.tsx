@@ -12,6 +12,7 @@ import {
 } from "./lib/pwaUpdate";
 import { createAppRouter } from "./routes";
 import {
+  emptyIrLogs,
   emptyLabels,
   emptyMatrix,
   emptyStreams,
@@ -61,6 +62,7 @@ describe("App", () => {
   it("renders the shell with the product mark and explore tabs", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
+      { match: "/api/v1/query", body: emptyIrLogs },
       { match: "/labels?", body: emptyLabels },
     ]);
     renderApp();
@@ -77,6 +79,7 @@ describe("App", () => {
   it("redirects / to /logs", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
+      { match: "/api/v1/query", body: emptyIrLogs },
       { match: "/labels?", body: emptyLabels },
     ]);
     renderApp("/");
@@ -87,6 +90,7 @@ describe("App", () => {
   it("redirects an unknown path to /logs", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
+      { match: "/api/v1/query", body: emptyIrLogs },
       { match: "/labels?", body: emptyLabels },
     ]);
     renderApp("/bogus");
@@ -97,6 +101,7 @@ describe("App", () => {
   it("changes the tenant context from the top bar", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
+      { match: "/api/v1/query", body: emptyIrLogs },
       { match: "/labels?", body: emptyLabels },
     ]);
     renderApp("/logs");
@@ -119,6 +124,7 @@ describe("App", () => {
   it("changing the tenant context from the top bar stays on a non-explore route", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
+      { match: "/api/v1/query", body: emptyIrLogs },
       { match: "/labels?", body: emptyLabels },
       { match: "/api/v1/schema/registries", body: { registries: [] } },
     ]);
@@ -138,6 +144,7 @@ describe("App", () => {
   it("keeps the last tenant/dataset when navigating to a route without them in the URL", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
+      { match: "/api/v1/query", body: emptyIrLogs },
       { match: "/labels?", body: emptyLabels },
       { match: "/api/v1/schema/registries", body: { registries: [] } },
       {
@@ -175,6 +182,7 @@ describe("App", () => {
   it("restores the last tenant/dataset in a fresh tab that opens a route without them", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
+      { match: "/api/v1/query", body: emptyIrLogs },
       { match: "/labels?", body: emptyLabels },
       { match: "/api/v1/schema/registries", body: { registries: [] } },
       { match: "/api/v1/manage/schema", body: { logical: [], physical: [] } },
@@ -211,6 +219,7 @@ describe("App", () => {
   it("persists the tenant/dataset context for later tabs", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
+      { match: "/api/v1/query", body: emptyIrLogs },
       { match: "/labels?", body: emptyLabels },
     ]);
     localStorage.removeItem(TENANT_CONTEXT_STORAGE_KEY);
@@ -224,10 +233,12 @@ describe("App", () => {
   it("routes catalog entity detail under /catalog/:entity/:primary", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
+      { match: "/api/v1/query", body: emptyIrLogs },
       { match: "/labels?", body: emptyLabels },
     ]);
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
+      { match: "/api/v1/query", body: emptyIrLogs },
       { match: "/labels?", body: emptyLabels },
       { match: "/api/v1/query", body: { rows: [], columns: [] } },
     ]);
@@ -244,6 +255,7 @@ describe("App", () => {
   it("drills from the catalog list into an entity route and back", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
+      { match: "/api/v1/query", body: emptyIrLogs },
       { match: "/labels?", body: emptyLabels },
     ]);
     vi.mocked(catalogApi.fetchCatalogEntities).mockResolvedValue({
@@ -261,6 +273,7 @@ describe("App", () => {
     // the generic query endpoint; an empty envelope is enough here.
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
+      { match: "/api/v1/query", body: emptyIrLogs },
       { match: "/labels?", body: emptyLabels },
       { match: "/api/v1/query", body: { rows: [], columns: [] } },
     ]);
@@ -283,6 +296,7 @@ describe("App", () => {
   it("ignores legacy catalog query params and shows the default list", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
+      { match: "/api/v1/query", body: emptyIrLogs },
       { match: "/labels?", body: emptyLabels },
     ]);
     renderApp("/catalog?entity=host&primary=x&tenant=acme");
@@ -451,6 +465,7 @@ describe("App", () => {
   it("re-clicking the active tab returns to that tab's main view", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
+      { match: "/api/v1/query", body: emptyIrLogs },
       { match: "/labels?", body: emptyLabels },
     ]);
     renderApp("/logs?q=boom");
@@ -479,6 +494,7 @@ describe("App", () => {
     };
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
+      { match: "/api/v1/query", body: emptyIrLogs },
       { match: "/labels?", body: emptyLabels },
       { match: "/api/v1/whoami", body: WHOAMI },
       { match: "/api-keys", body: [] },
@@ -513,6 +529,7 @@ describe("App", () => {
     };
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
+      { match: "/api/v1/query", body: emptyIrLogs },
       { match: "/labels?", body: emptyLabels },
       { match: "/api/v1/whoami", body: WHOAMI },
     ]);
@@ -530,7 +547,7 @@ describe("App", () => {
     it("navigates to /login with a redirect back to the current page on a 401 query failure", async () => {
       stubFetchRoutes([
         {
-          match: "query_range",
+          match: "/api/v1/query",
           body: { error: "unauthenticated" },
           status: 401,
         },
@@ -545,11 +562,11 @@ describe("App", () => {
 
     it("does not navigate to /login on a non-auth query failure", async () => {
       stubFetchRoutes([
-        { match: "query_range", body: { error: "boom" }, status: 500 },
+        { match: "/api/v1/query", body: { error: "boom" }, status: 500 },
         { match: "/labels?", body: emptyLabels },
       ]);
       renderApp("/logs");
-      expect(await screen.findByRole("alert")).toHaveTextContent(/500/);
+      expect(await screen.findByRole("alert")).toHaveTextContent(/boom/);
       expect(window.location.pathname).toBe("/logs");
     });
   });
@@ -558,6 +575,7 @@ describe("App", () => {
     it("resolves a sole membership from the session, staying on the landing path", async () => {
       stubFetchRoutes([
         { match: "query_range", body: emptyStreams },
+        { match: "/api/v1/query", body: emptyIrLogs },
         { match: "/labels?", body: emptyLabels },
         {
           match: SESSION,
@@ -586,6 +604,7 @@ describe("App", () => {
     it("sends several (or zero) memberships to /select-tenant with the current path as the redirect target", async () => {
       stubFetchRoutes([
         { match: "query_range", body: emptyStreams },
+        { match: "/api/v1/query", body: emptyIrLogs },
         { match: "/labels?", body: emptyLabels },
         {
           match: SESSION,
@@ -618,6 +637,7 @@ describe("App", () => {
     it("preserves the location fragment in the /select-tenant redirect target", async () => {
       stubFetchRoutes([
         { match: "query_range", body: emptyStreams },
+        { match: "/api/v1/query", body: emptyIrLogs },
         { match: "/labels?", body: emptyLabels },
         {
           match: SESSION,
@@ -650,6 +670,7 @@ describe("App", () => {
     it("does not resolve from the session when a tenant is already in the URL", async () => {
       const fetchFn = stubFetchRoutes([
         { match: "query_range", body: emptyStreams },
+        { match: "/api/v1/query", body: emptyIrLogs },
         { match: "/labels?", body: emptyLabels },
       ]);
       renderApp("/logs?tenant=acme&dataset=prod");
@@ -664,6 +685,7 @@ describe("App", () => {
     it("shows the update banner once an update is pending", async () => {
       stubFetchRoutes([
         { match: "query_range", body: emptyStreams },
+        { match: "/api/v1/query", body: emptyIrLogs },
         { match: "/labels?", body: emptyLabels },
       ]);
       renderApp("/logs");
@@ -723,6 +745,7 @@ describe("App", () => {
     it("prompts before leaving the registry editor via a top-bar link, discarding the edit only after Leave", async () => {
       stubFetchRoutes([
         { match: "query_range", body: emptyStreams },
+        { match: "/api/v1/query", body: emptyIrLogs },
         { match: "/labels?", body: emptyLabels },
         { match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN },
       ]);
@@ -759,6 +782,7 @@ describe("App", () => {
         "client_id=client-1&redirect_uri=https%3A%2F%2Fclaude.ai%2Fcb&code_challenge=chal";
       stubFetchRoutes([
         { match: "query_range", body: emptyStreams },
+        { match: "/api/v1/query", body: emptyIrLogs },
         { match: "/labels?", body: emptyLabels },
         {
           match: "/oauth/consent/context",
