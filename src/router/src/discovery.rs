@@ -117,16 +117,6 @@ impl ServiceRegistry {
         Some(candidates[index].clone())
     }
 
-    /// Get services by address pattern (useful for filtering by service type if encoded in address)
-    pub async fn get_services_by_pattern(&self, pattern: &str) -> Vec<Ingester> {
-        let services = self.services.read().await;
-        services
-            .values()
-            .filter(|service| service.address.contains(pattern))
-            .cloned()
-            .collect()
-    }
-
     /// Get Flight services with specific capability
     pub async fn get_flight_services_by_capability(
         &self,
@@ -166,27 +156,6 @@ impl ServiceRegistry {
                 .await
         } else {
             Err("Flight transport not configured".into())
-        }
-    }
-
-    /// Perform Flight-specific health check on services
-    pub async fn flight_health_check(
-        &self,
-    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(transport) = &self.flight_transport {
-            Ok(transport.is_healthy().await)
-        } else {
-            // Fallback to basic health check
-            Ok(self.is_healthy().await)
-        }
-    }
-
-    /// Get Flight connection pool statistics
-    pub async fn flight_pool_stats(&self) -> Option<(usize, usize)> {
-        if let Some(transport) = &self.flight_transport {
-            Some(transport.pool_stats().await)
-        } else {
-            None
         }
     }
 
@@ -257,13 +226,6 @@ impl ServiceRegistry {
                     ],
                 )
             }
-        }
-    }
-
-    /// Start background Flight transport connection cleanup
-    pub fn start_flight_cleanup(&self, cleanup_interval: Duration) {
-        if let Some(transport) = &self.flight_transport {
-            transport.start_connection_cleanup(cleanup_interval);
         }
     }
 
