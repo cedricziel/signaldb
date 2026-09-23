@@ -165,7 +165,7 @@ async fn tenant_manage_key_drives_the_cli_and_an_ingest_key_is_denied() {
         .expect_err("ingest-only key must be denied");
     let message = format!("{denied:#}");
     assert!(
-        message.contains("manage_create_dataset failed"),
+        message.contains("create_dataset failed"),
         "names the operation: {message}"
     );
     assert!(
@@ -345,7 +345,7 @@ async fn tenant_manage_key_drives_the_mcp_tenant_tools_and_an_ingest_key_is_deni
         .call_tool("tenant_info", json!({"tenant_id": TENANT}))
         .await;
     let info: Value = serde_json::from_str(&error_text(&info)).expect("JSON result");
-    assert_eq!(info["tenant_id"], TENANT, "{info}");
+    assert_eq!(info["id"], TENANT, "{info}");
 
     let mut ingest = McpHttpClient::connect(&router_url, INGEST_KEY).await;
     let denied = ingest

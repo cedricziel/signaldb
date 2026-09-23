@@ -36,10 +36,6 @@ const EXCLUDED: &[(&str, &str)] = &[
         "browser session introspection authenticated by the session cookie alone — no CLI or MCP surface makes sense (dedicated-login-page)",
     ),
     (
-        "manage_create_tenant",
-        "human self-serve tenant creation by a signed-in instance administrator (`TenantContext::is_instance_admin`); API-key clients create tenants through the admin API's `create_tenant` (`admin tenant create` / MCP `create_tenant`), so no `tenant`-group surface is owed (management-api-key-scope, design D5)",
-    ),
-    (
         "session_oidc_start",
         "browser OIDC SSO redirect flow (change: oidc-login) — UI/HTTP-only, no CLI command or MCP tool makes sense",
     ),
@@ -98,6 +94,11 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
         "delete_tenant",
     ),
     (
+        "list_users",
+        CliSurface::Path(&["user", "list"]),
+        "list_users",
+    ),
+    (
         "create_user",
         CliSurface::Path(&["user", "create"]),
         "create_user",
@@ -137,76 +138,33 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
         CliSurface::Path(&["admin", "api-key", "revoke"]),
         "revoke_api_key",
     ),
-    // ---- Tenant self-management (management API; an API key carrying
-    // `tenant:manage`, or a tenant-admin session) ----
+    // ---- Tenant-scoped resources (issue #1561: `list_datasets`,
+    // `create_dataset`, `list_api_keys`, etc. no longer split into a
+    // separate `manage_`-prefixed operation for the tenant's own view —
+    // every caller (instance admin, break-glass admin key, or a
+    // `tenant:manage` credential for that tenant) hits the one operation
+    // above; the CLI's `tenant ...` subtree and `admin ...` subtree both
+    // call it, differing only in which credential they authenticate with)
+    // ----
     (
-        "manage_list_datasets",
-        CliSurface::Path(&["tenant", "dataset", "list"]),
-        "tenant_list_datasets",
-    ),
-    (
-        "manage_create_dataset",
-        CliSurface::Path(&["tenant", "dataset", "create"]),
-        "tenant_create_dataset",
-    ),
-    (
-        "manage_delete_dataset",
-        CliSurface::Path(&["tenant", "dataset", "delete"]),
-        "tenant_delete_dataset",
-    ),
-    (
-        "manage_list_api_keys",
-        CliSurface::Path(&["tenant", "api-key", "list"]),
-        "tenant_list_api_keys",
-    ),
-    (
-        "manage_create_api_key",
-        CliSurface::Path(&["tenant", "api-key", "create"]),
-        "tenant_create_api_key",
-    ),
-    (
-        "manage_update_api_key",
-        CliSurface::Path(&["tenant", "api-key", "update"]),
-        "tenant_update_api_key",
-    ),
-    (
-        "manage_revoke_api_key",
-        CliSurface::Path(&["tenant", "api-key", "revoke"]),
-        "tenant_revoke_api_key",
-    ),
-    (
-        "manage_list_memberships",
+        "list_memberships",
         CliSurface::Path(&["tenant", "membership", "list"]),
         "tenant_list_memberships",
     ),
     (
-        "manage_upsert_membership",
+        "upsert_membership",
         CliSurface::Path(&["tenant", "membership", "set"]),
         "tenant_upsert_membership",
     ),
     (
-        "manage_remove_membership",
+        "remove_membership",
         CliSurface::Path(&["tenant", "membership", "remove"]),
         "tenant_remove_membership",
     ),
     (
-        "manage_get_schema",
+        "get_schema",
         CliSurface::Path(&["tenant", "schema", "get"]),
         "tenant_get_schema",
-    ),
-    // ---- Tenant self view (tenant self-service API; any valid key of the
-    // tenant). `list_tenants_self` is the caller's own tenant as a
-    // single-item list, so it shares `tenant show` / `tenant_info` with
-    // `get_tenant_self` (design D4). ----
-    (
-        "list_tenants_self",
-        CliSurface::Path(&["tenant", "show"]),
-        "tenant_info",
-    ),
-    (
-        "get_tenant_self",
-        CliSurface::Path(&["tenant", "show"]),
-        "tenant_info",
     ),
     // ---- Tenant signal tables (tenant self-service API) ----
     (
@@ -231,22 +189,22 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
     ),
     // ---- Tenant GitHub App installations (management API) ----
     (
-        "manage_start_github_link",
+        "start_github_link",
         CliSurface::Path(&["tenant", "github", "link"]),
         "tenant_start_github_link",
     ),
     (
-        "manage_list_github_installations",
+        "list_github_installations",
         CliSurface::Path(&["tenant", "github", "list"]),
         "tenant_list_github_installations",
     ),
     (
-        "manage_remove_github_installation",
+        "remove_github_installation",
         CliSurface::Path(&["tenant", "github", "remove"]),
         "tenant_remove_github_installation",
     ),
     (
-        "manage_attach_github_installation",
+        "attach_github_installation",
         CliSurface::Path(&["tenant", "github", "attach"]),
         "tenant_attach_github_installation",
     ),

@@ -152,19 +152,19 @@ async fn json_body(res: axum::response::Response) -> Value {
     serde_json::from_slice(&bytes).unwrap_or(Value::Null)
 }
 
-/// GET `/api/v1/manage/tenants/acme/datasets` with a bearer credential —
+/// GET `/api/v1/tenants/acme/datasets` with a bearer credential —
 /// shared by the two D9 scenarios (a scope-carrying API key and a
 /// role-carrying OAuth session), which differ only in whether an
 /// `X-Tenant-ID` header is needed (an OAuth token's tenant comes from the
 /// token itself, so it never sends one).
-async fn manage_list_datasets(
+async fn list_datasets(
     app: &axum::Router,
     bearer: &str,
     tenant_header: Option<&str>,
 ) -> axum::response::Response {
     let mut req = Request::builder()
         .method(Method::GET)
-        .uri("/api/v1/manage/tenants/acme/datasets")
+        .uri("/api/v1/tenants/acme/datasets")
         .header("authorization", format!("Bearer {bearer}"));
     if let Some(tenant) = tenant_header {
         req = req.header("x-tenant-id", tenant);
@@ -292,7 +292,7 @@ async fn dataset_restricted_manage_key_is_refused_by_management_api() {
     )
     .await;
 
-    let res = manage_list_datasets(&app, "sk-restricted-manage", Some(TENANT)).await;
+    let res = list_datasets(&app, "sk-restricted-manage", Some(TENANT)).await;
     assert_eq!(
         res.status(),
         StatusCode::FORBIDDEN,
@@ -518,7 +518,7 @@ async fn oauth_tenant_admin_session_with_dataset_restriction_is_refused_by_manag
     // Sanity: this session's role alone would normally clear `can_manage`
     // (tenant-admin) — the refusal below must come from D9's dataset-
     // restriction check, not from a missing role.
-    let res = manage_list_datasets(&app, &access, None).await;
+    let res = list_datasets(&app, &access, None).await;
     assert_eq!(
         res.status(),
         StatusCode::FORBIDDEN,

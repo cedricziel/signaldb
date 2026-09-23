@@ -263,7 +263,7 @@ async fn github_app_install_link_source_context_and_removal_e2e() {
     let (status, body) = call(
         &app,
         axum::http::Method::POST,
-        "/api/v1/manage/tenants/acme/github-installations/link",
+        "/api/v1/tenants/acme/github-installations/link",
         &cookie,
         None,
     )
@@ -342,7 +342,7 @@ async fn github_app_install_link_source_context_and_removal_e2e() {
     let (status, _) = call(
         &app,
         axum::http::Method::DELETE,
-        &format!("/api/v1/manage/tenants/acme/github-installations/{INSTALLATION_ID}"),
+        &format!("/api/v1/tenants/acme/github-installations/{INSTALLATION_ID}"),
         &cookie,
         None,
     )
@@ -365,7 +365,7 @@ async fn github_app_install_link_source_context_and_removal_e2e() {
     let (status, body) = call(
         &app,
         axum::http::Method::GET,
-        "/api/v1/manage/tenants/acme/github-installations",
+        "/api/v1/tenants/acme/github-installations",
         &cookie,
         None,
     )

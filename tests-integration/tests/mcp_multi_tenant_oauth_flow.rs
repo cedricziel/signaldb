@@ -453,7 +453,7 @@ async fn deleting_one_granted_tenant_leaves_the_others_reachable() {
     );
 
     // Delete `acme` through the catalog's real tenant-deletion path — the
-    // same one the router's `DELETE /api/v1/manage/admin/tenants/{tenant_id}`
+    // same one the router's `DELETE /api/v1/tenants/{tenant_id}`
     // handler calls into — not a raw SQL DELETE.
     let deleted = catalog
         .delete_tenant("acme")
