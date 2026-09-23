@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.4.1](https://github.com/cedricziel/signaldb/compare/acceptor-v0.4.0...acceptor-v0.4.1) (2026-09-23)
+
+
+### Features
+
+* multi-tenant MCP OAuth grants ([#1541](https://github.com/cedricziel/signaldb/issues/1541)) ([c5b49b0](https://github.com/cedricziel/signaldb/commit/c5b49b018f749a72b639366a18223081cecef7cc))
+* per-API-key allowed origins for browser (CORS) ingestion ([#1548](https://github.com/cedricziel/signaldb/issues/1548)) ([6e966dd](https://github.com/cedricziel/signaldb/commit/6e966ddaf2740e3648583223828c6af715b6d331))
+* per-tenant, per-dataset OTTL telemetry processors ([#1603](https://github.com/cedricziel/signaldb/issues/1603)) ([2fc1022](https://github.com/cedricziel/signaldb/commit/2fc102232b1d925418b02e68393af8917184016e))
+
+
+### Code Refactoring
+
+* remove cross-crate dead code ([#1647](https://github.com/cedricziel/signaldb/issues/1647)) ([8b5b1d9](https://github.com/cedricziel/signaldb/commit/8b5b1d98f1150e75a8306beea29bb90465a4f921))
+
 ## [0.4.0](https://github.com/cedricziel/signaldb/compare/acceptor-v0.3.0...acceptor-v0.4.0) (2026-09-12)
 
 

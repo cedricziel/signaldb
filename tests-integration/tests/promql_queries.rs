@@ -30,7 +30,7 @@ use opentelemetry_proto::tonic::{
     resource::v1::Resource,
 };
 use querier::flight::QuerierFlightService;
-use router::{RouterState, discovery::ServiceRegistry, endpoints::promql};
+use router::{RouterAppState, endpoints::promql};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -464,48 +464,12 @@ async fn build_router(services: &TestServices) -> Router {
     let catalog = Catalog::new(services.config.discovery.as_ref().unwrap().dsn.as_str())
         .await
         .unwrap();
-    let service_registry = ServiceRegistry::with_flight_transport(
-        catalog.clone(),
+    let state = RouterAppState::new_with_flight_transport(
+        catalog,
+        services.config.clone(),
         (*services.flight_transport).clone(),
     );
-    let authenticator = Arc::new(common::auth::Authenticator::new(
-        services.config.auth.clone(),
-        Arc::new(catalog.clone()),
-    ));
-
-    #[derive(Clone)]
-    struct State {
-        catalog: Catalog,
-        service_registry: ServiceRegistry,
-        config: Configuration,
-        authenticator: Arc<common::auth::Authenticator>,
-    }
-    impl std::fmt::Debug for State {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("State")
-        }
-    }
-    impl RouterState for State {
-        fn catalog(&self) -> &Catalog {
-            &self.catalog
-        }
-        fn service_registry(&self) -> &ServiceRegistry {
-            &self.service_registry
-        }
-        fn config(&self) -> &Configuration {
-            &self.config
-        }
-        fn authenticator(&self) -> &Arc<common::auth::Authenticator> {
-            &self.authenticator
-        }
-    }
-
-    let state = State {
-        catalog,
-        service_registry,
-        config: services.config.clone(),
-        authenticator: authenticator.clone(),
-    };
+    let authenticator = state.authenticator().clone();
     Router::new()
         .nest("/prometheus", promql::router().with_state(state))
         .layer(middleware::from_fn(move |req, next| {

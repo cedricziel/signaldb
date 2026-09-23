@@ -13,7 +13,7 @@
 //! - `GET /api/v1/whoami` (behind the tenant auth middleware) returns the
 //!   authenticated tenant and its datasets, strictly scoped to that tenant.
 
-use crate::RouterState;
+use crate::RouterAppState;
 use axum::{
     Json, Router,
     extract::State,
@@ -34,15 +34,15 @@ use std::collections::HashMap;
 
 /// Routes mounted at the router root (absolute `/ui/session` paths, so the
 /// session endpoint coexists with the `/ui` static-asset service).
-pub fn router<S: RouterState>() -> Router<S> {
+pub fn router() -> Router<RouterAppState> {
     Router::new()
         .route(
             "/ui/session",
-            get(current_session::<S>)
-                .post(create_session::<S>)
-                .delete(delete_session::<S>),
+            get(current_session)
+                .post(create_session)
+                .delete(delete_session),
         )
-        .route("/ui/session/config", get(login_config::<S>))
+        .route("/ui/session/config", get(login_config))
 }
 
 #[derive(Debug, Deserialize)]
@@ -76,8 +76,8 @@ pub struct SessionMembership {
 /// `tenant`/`dataset` are null when the user must still pick one (the
 /// session itself is tenant-agnostic — every request re-validates the
 /// `X-Tenant-ID` header against the memberships).
-pub async fn create_session<S: RouterState>(
-    State(state): State<S>,
+pub async fn create_session(
+    State(state): State<RouterAppState>,
     Json(body): Json<CreateSessionRequest>,
 ) -> Response {
     // The password door can be switched off entirely when `[auth.oidc]`
@@ -241,8 +241,8 @@ pub async fn create_session<S: RouterState>(
 /// Callers that must undo side effects on failure (`create_session` revokes
 /// the freshly minted session) do so around this call.
 #[allow(clippy::result_large_err)]
-async fn resolve_session_tenant<S: RouterState>(
-    state: &S,
+async fn resolve_session_tenant(
+    state: &RouterAppState,
     token: &str,
     tenant: &str,
     dataset: Option<&str>,
@@ -276,8 +276,8 @@ fn auto_select_tenant(memberships: &[SessionMembership]) -> Option<String> {
 // nothing: an axum `Response` is large by construction. Same call the querier
 // makes in `flight.rs`.
 #[allow(clippy::result_large_err)]
-async fn list_session_memberships<S: RouterState>(
-    state: &S,
+async fn list_session_memberships(
+    state: &RouterAppState,
     user: &common::catalog::UserRecord,
 ) -> Result<Vec<SessionMembership>, Response> {
     if user.is_instance_admin {
@@ -362,8 +362,8 @@ async fn list_session_memberships<S: RouterState>(
 /// a missing/invalid cookie — logout is a no-op then), so it keeps its own
 /// lookup rather than reusing this.
 #[allow(clippy::result_large_err)]
-pub(crate) async fn resolve_session_user<S: RouterState>(
-    state: &S,
+pub(crate) async fn resolve_session_user(
+    state: &RouterAppState,
     headers: &axum::http::HeaderMap,
 ) -> Result<(String, UserRecord, UserSessionRecord), Response> {
     let Some(token) = session_token_from_headers(headers) else {
@@ -399,8 +399,8 @@ pub(crate) async fn resolve_session_user<S: RouterState>(
 /// DELETE /ui/session
 ///
 /// Clears the session cookie (logout).
-pub async fn delete_session<S: RouterState>(
-    State(state): State<S>,
+pub async fn delete_session(
+    State(state): State<RouterAppState>,
     headers: axum::http::HeaderMap,
 ) -> Response {
     if let Some(token) = session_token_from_headers(&headers) {
@@ -481,7 +481,7 @@ pub struct LoginConfigResponse {
         (status = 200, description = "Login credential configuration", body = LoginConfigResponse),
     )
 )]
-pub async fn login_config<S: RouterState>(State(state): State<S>) -> Response {
+pub async fn login_config(State(state): State<RouterAppState>) -> Response {
     let oidc = match state.oidc() {
         Some(runtime) if runtime.provider().await.is_some() => Some(OidcLoginConfig {
             name: runtime.display_name.clone(),
@@ -556,8 +556,8 @@ pub struct CurrentSessionResponse {
         (status = 401, description = "No valid session cookie"),
     )
 )]
-pub async fn current_session<S: RouterState>(
-    State(state): State<S>,
+pub async fn current_session(
+    State(state): State<RouterAppState>,
     headers: axum::http::HeaderMap,
 ) -> Response {
     let (token, user, session) = match resolve_session_user(&state, &headers).await {
@@ -792,8 +792,8 @@ fn apply_dataset_restriction(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
     )
 )]
-pub async fn whoami<S: RouterState>(
-    State(state): State<S>,
+pub async fn whoami(
+    State(state): State<RouterAppState>,
     TenantContextExtractor(ctx): TenantContextExtractor,
 ) -> Response {
     let (user, memberships) = match &ctx.user_id {
@@ -1142,8 +1142,8 @@ const API_KEY_PLACEHOLDER: &str = "<api-key>";
         (status = 429, response = crate::endpoints::api_error::RateLimited),
     )
 )]
-pub async fn connection_info<S: RouterState>(
-    State(state): State<S>,
+pub async fn connection_info(
+    State(state): State<RouterAppState>,
     TenantContextExtractor(ctx): TenantContextExtractor,
 ) -> Response {
     let public = match state.config().public.resolve(&state.config().mcp.oauth) {

@@ -23,18 +23,18 @@ use tonic::Request;
 use tracing::Instrument;
 
 use super::api_error::ApiError;
-use crate::RouterState;
+use crate::RouterAppState;
 use std::time::Duration;
 
 /// Upper bound on a single compactor round-trip.
 const OPS_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// The `/api/v1/ops/*` routes. Mounted behind the admin-auth layer.
-pub fn router<S: RouterState>() -> Router<S> {
+pub fn router() -> Router<RouterAppState> {
     Router::new()
-        .route("/compact", post(compact::<S>))
-        .route("/compact/status", get(compact_status::<S>))
-        .route("/compact/dry-run", post(compact_dry_run::<S>))
+        .route("/compact", post(compact))
+        .route("/compact/status", get(compact_status))
+        .route("/compact/dry-run", post(compact_dry_run))
 }
 
 /// POST /api/v1/ops/compact — trigger a compaction pass now.
@@ -51,7 +51,7 @@ pub fn router<S: RouterState>() -> Router<S> {
         (status = 504, description = "The compactor did not respond in time"),
     )
 )]
-pub async fn compact<S: RouterState>(State(state): State<S>) -> Result<Json<Value>, ApiError> {
+pub async fn compact(State(state): State<RouterAppState>) -> Result<Json<Value>, ApiError> {
     Ok(Json(do_compactor_action(&state, "compact_now").await?))
 }
 
@@ -69,9 +69,7 @@ pub async fn compact<S: RouterState>(State(state): State<S>) -> Result<Json<Valu
         (status = 504, description = "The compactor did not respond in time"),
     )
 )]
-pub async fn compact_status<S: RouterState>(
-    State(state): State<S>,
-) -> Result<Json<Value>, ApiError> {
+pub async fn compact_status(State(state): State<RouterAppState>) -> Result<Json<Value>, ApiError> {
     Ok(Json(do_compactor_action(&state, "compact_status").await?))
 }
 
@@ -90,18 +88,13 @@ pub async fn compact_status<S: RouterState>(
         (status = 504, description = "The compactor did not respond in time"),
     )
 )]
-pub async fn compact_dry_run<S: RouterState>(
-    State(state): State<S>,
-) -> Result<Json<Value>, ApiError> {
+pub async fn compact_dry_run(State(state): State<RouterAppState>) -> Result<Json<Value>, ApiError> {
     Ok(Json(do_compactor_action(&state, "compact_dry_run").await?))
 }
 
 /// Forward a control action to the compactor's Flight `do_action` surface and
 /// return its JSON result body verbatim.
-async fn do_compactor_action<S: RouterState>(
-    state: &S,
-    action_type: &str,
-) -> Result<Value, ApiError> {
+async fn do_compactor_action(state: &RouterAppState, action_type: &str) -> Result<Value, ApiError> {
     let (mut client, server_address) = state
         .service_registry()
         .get_flight_client_and_address_for_capability(ServiceCapability::StorageMaintenance)

@@ -11,8 +11,6 @@
 //! separately in `ops_endpoints_tracing.rs`, which needs process-global OTel
 //! state and so lives in its own test binary.
 
-use std::sync::Arc;
-
 use arrow_flight::flight_service_server::FlightService;
 use arrow_flight::{
     Action, ActionType, Criteria, Empty, FlightData, FlightDescriptor, FlightInfo,
@@ -24,8 +22,7 @@ use common::config::Configuration;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use futures::stream::{self, BoxStream};
-use router::RouterState;
-use router::discovery::ServiceRegistry;
+use router::RouterAppState;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tonic::{Request, Response, Status, Streaming};
@@ -126,33 +123,6 @@ impl FlightService for StubCompactorFlightService {
     }
 }
 
-#[derive(Clone)]
-struct State {
-    catalog: Catalog,
-    service_registry: ServiceRegistry,
-    config: Configuration,
-    authenticator: Arc<common::auth::Authenticator>,
-}
-impl std::fmt::Debug for State {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("State")
-    }
-}
-impl RouterState for State {
-    fn catalog(&self) -> &Catalog {
-        &self.catalog
-    }
-    fn service_registry(&self) -> &ServiceRegistry {
-        &self.service_registry
-    }
-    fn config(&self) -> &Configuration {
-        &self.config
-    }
-    fn authenticator(&self) -> &Arc<common::auth::Authenticator> {
-        &self.authenticator
-    }
-}
-
 /// Serve the full router (no compactor registered) and return its base URL.
 async fn serve_router() -> (String, TempDir) {
     let temp_dir = TempDir::new().unwrap();
@@ -162,17 +132,7 @@ async fn serve_router() -> (String, TempDir) {
     let mut config = Configuration::default();
     config.auth.admin_api_key = Some(ADMIN_KEY.to_string());
 
-    let service_registry = ServiceRegistry::new(catalog.clone());
-    let authenticator = Arc::new(common::auth::Authenticator::new(
-        config.auth.clone(),
-        Arc::new(catalog.clone()),
-    ));
-    let state = State {
-        catalog,
-        service_registry,
-        config,
-        authenticator,
-    };
+    let state = RouterAppState::new(catalog, config);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -245,21 +205,11 @@ async fn ops_compact_status_forwards_a_reachable_compactor_response() {
     )
     .await
     .expect("router bootstrap");
-    let service_registry = ServiceRegistry::with_flight_transport(
-        catalog.clone(),
+    let state = RouterAppState::new_with_flight_transport(
+        catalog,
+        config,
         InMemoryFlightTransport::new(router_bootstrap),
     );
-
-    let authenticator = Arc::new(common::auth::Authenticator::new(
-        config.auth.clone(),
-        Arc::new(catalog.clone()),
-    ));
-    let state = State {
-        catalog,
-        service_registry,
-        config,
-        authenticator,
-    };
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

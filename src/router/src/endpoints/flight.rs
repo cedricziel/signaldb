@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use tonic::{Request, Response, Status, Streaming};
 use tracing::Instrument;
 
-use crate::RouterState;
+use crate::RouterAppState;
 
 /// Query result types for Flight operations
 #[derive(Debug)]
@@ -31,14 +31,14 @@ struct ParsedQuery {
 }
 
 /// SignalDBFlightService is a Flight service implementation for SignalDB
-pub struct SignalDBFlightService<S: RouterState> {
-    state: S,
+pub struct SignalDBFlightService {
+    state: RouterAppState,
     schemas: FlightSchemas,
 }
 
-impl<S: RouterState> SignalDBFlightService<S> {
+impl SignalDBFlightService {
     /// Create a new SignalDBFlightService with the given state
-    pub fn new(state: S) -> Self {
+    pub fn new(state: RouterAppState) -> Self {
         Self {
             state,
             schemas: FlightSchemas::new(),
@@ -232,7 +232,7 @@ impl<S: RouterState> SignalDBFlightService<S> {
 }
 
 #[tonic::async_trait]
-impl<S: RouterState> FlightService for SignalDBFlightService<S> {
+impl FlightService for SignalDBFlightService {
     type HandshakeStream = BoxStream<'static, Result<HandshakeResponse, Status>>;
 
     async fn handshake(

@@ -23,25 +23,22 @@ use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequ
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use serde::{Deserialize, Serialize};
 
-use crate::RouterState;
+use crate::RouterAppState;
 
 /// Absolute routes (merged directly under `/api/v1`, like `endpoints::tenant`)
 /// rather than nested under a `/processors` prefix, so `/processors:validate`
 /// and `/processors:test` stay one path segment instead of gaining a
 /// spurious leading slash from nesting at the bare resource root.
-pub fn router<S: RouterState>() -> Router<S> {
+pub fn router() -> Router<RouterAppState> {
     Router::new()
-        .route(
-            "/processors",
-            get(list_processors::<S>).post(create_processor::<S>),
-        )
-        .route("/processors:validate", post(validate_processor::<S>))
-        .route("/processors:test", post(test_processor::<S>))
+        .route("/processors", get(list_processors).post(create_processor))
+        .route("/processors:validate", post(validate_processor))
+        .route("/processors:test", post(test_processor))
         .route(
             "/processors/{name}",
-            get(get_processor::<S>)
-                .put(replace_processor::<S>)
-                .delete(delete_processor::<S>),
+            get(get_processor)
+                .put(replace_processor)
+                .delete(delete_processor),
         )
 }
 
@@ -225,7 +222,7 @@ fn require_write(ctx: &TenantContext) -> Result<(), Box<Response>> {
     }
 }
 
-fn limits_for<S: RouterState>(state: &S) -> ottl::Limits {
+fn limits_for(state: &RouterAppState) -> ottl::Limits {
     let cfg = &state.config().processors;
     ottl::Limits {
         max_statements: cfg.max_statements,
@@ -240,7 +237,7 @@ fn limits_for<S: RouterState>(state: &S) -> ottl::Limits {
 /// uncompilable program up front. A stored row's `status` can therefore only
 /// go `invalid` later, if a `Limits`/config change makes it stop compiling
 /// (design D5) — never at the moment it was written.
-fn compile_check<S: RouterState>(state: &S, spec: &ProcessorSpec) -> Result<(), Box<Response>> {
+fn compile_check(state: &RouterAppState, spec: &ProcessorSpec) -> Result<(), Box<Response>> {
     let signal = signal_of(&spec.signal)?;
     let limits = limits_for(state);
     match ottl::compile(signal, &spec.statements, &limits) {
@@ -279,8 +276,8 @@ fn signal_of(signal: &str) -> Result<ottl::Signal, Box<Response>> {
     ),
     security(("bearerAuth" = []))
 )]
-pub async fn list_processors<S: RouterState>(
-    State(state): State<S>,
+pub async fn list_processors(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
 ) -> Response {
     if let Err(r) = require_read(&ctx) {
@@ -318,8 +315,8 @@ pub async fn list_processors<S: RouterState>(
     ),
     security(("bearerAuth" = []))
 )]
-pub async fn create_processor<S: RouterState>(
-    State(state): State<S>,
+pub async fn create_processor(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     body: Bytes,
 ) -> Response {
@@ -366,8 +363,8 @@ pub async fn create_processor<S: RouterState>(
     ),
     security(("bearerAuth" = []))
 )]
-pub async fn validate_processor<S: RouterState>(
-    State(state): State<S>,
+pub async fn validate_processor(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     body: Bytes,
 ) -> Response {
@@ -406,8 +403,8 @@ pub async fn validate_processor<S: RouterState>(
     ),
     security(("bearerAuth" = []))
 )]
-pub async fn get_processor<S: RouterState>(
-    State(state): State<S>,
+pub async fn get_processor(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     Path(name): Path<String>,
 ) -> Response {
@@ -444,8 +441,8 @@ pub async fn get_processor<S: RouterState>(
     ),
     security(("bearerAuth" = []))
 )]
-pub async fn replace_processor<S: RouterState>(
-    State(state): State<S>,
+pub async fn replace_processor(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     Path(name): Path<String>,
     body: Bytes,
@@ -493,8 +490,8 @@ pub async fn replace_processor<S: RouterState>(
     ),
     security(("bearerAuth" = []))
 )]
-pub async fn delete_processor<S: RouterState>(
-    State(state): State<S>,
+pub async fn delete_processor(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     Path(name): Path<String>,
 ) -> Response {
@@ -519,7 +516,7 @@ pub async fn delete_processor<S: RouterState>(
     }
 }
 
-fn write_response<S: RouterState>(state: &S, record: ProcessorRecord) -> ProcessorWriteResponse {
+fn write_response(state: &RouterAppState, record: ProcessorRecord) -> ProcessorWriteResponse {
     let status = processor_status(&record, &limits_for(state));
     ProcessorWriteResponse {
         record,
@@ -546,8 +543,8 @@ fn write_response<S: RouterState>(state: &S, record: ProcessorRecord) -> Process
     ),
     security(("bearerAuth" = []))
 )]
-pub async fn test_processor<S: RouterState>(
-    State(state): State<S>,
+pub async fn test_processor(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     body: Bytes,
 ) -> Response {

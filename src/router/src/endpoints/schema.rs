@@ -23,31 +23,28 @@ use common::schema_registry::{
 use schema_model::{RegistryDocument, ValidationError};
 use serde::{Deserialize, Serialize};
 
-use crate::RouterState;
+use crate::RouterAppState;
 
 /// Upper bound on `limit` for prefix searches.
 pub const MAX_SEARCH_LIMIT: usize = 200;
 const DEFAULT_SEARCH_LIMIT: usize = 50;
 
-pub fn router<S: RouterState>() -> Router<S> {
+pub fn router() -> Router<RouterAppState> {
     Router::new()
-        .route(
-            "/registries",
-            get(list_registries::<S>).post(create_registry::<S>),
-        )
-        .route("/registries:validate", post(validate_registry::<S>))
+        .route("/registries", get(list_registries).post(create_registry))
+        .route("/registries:validate", post(validate_registry))
         .route(
             "/registries/{namespace}/{version}",
-            get(get_registry::<S>)
-                .put(replace_registry::<S>)
-                .delete(delete_registry::<S>),
+            get(get_registry)
+                .put(replace_registry)
+                .delete(delete_registry),
         )
-        .route("/attributes", get(search_attributes::<S>))
-        .route("/attributes/{key}", get(resolve_attribute::<S>))
-        .route("/entities", get(search_entities::<S>))
-        .route("/entities/{name}", get(resolve_entity::<S>))
-        .route("/metrics", get(search_metrics::<S>))
-        .route("/metrics/{name}", get(resolve_metric::<S>))
+        .route("/attributes", get(search_attributes))
+        .route("/attributes/{key}", get(resolve_attribute))
+        .route("/entities", get(search_entities))
+        .route("/entities/{name}", get(resolve_entity))
+        .route("/metrics", get(search_metrics))
+        .route("/metrics/{name}", get(resolve_metric))
 }
 
 // ---- DTOs -----------------------------------------------------------------
@@ -295,8 +292,8 @@ fn split_keys(raw: &Option<String>) -> Option<impl Iterator<Item = &str>> {
     ),
     security(("bearer" = []))
 )]
-pub async fn list_registries<S: RouterState>(
-    State(state): State<S>,
+pub async fn list_registries(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
 ) -> Response {
     if let Err(r) = require_read(&ctx) {
@@ -324,8 +321,8 @@ pub async fn list_registries<S: RouterState>(
     ),
     security(("bearer" = []))
 )]
-pub async fn create_registry<S: RouterState>(
-    State(state): State<S>,
+pub async fn create_registry(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     headers: HeaderMap,
     body: Bytes,
@@ -360,8 +357,8 @@ pub async fn create_registry<S: RouterState>(
     ),
     security(("bearer" = []))
 )]
-pub async fn validate_registry<S: RouterState>(
-    State(state): State<S>,
+pub async fn validate_registry(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     headers: HeaderMap,
     body: Bytes,
@@ -393,8 +390,8 @@ pub async fn validate_registry<S: RouterState>(
     ),
     security(("bearer" = []))
 )]
-pub async fn get_registry<S: RouterState>(
-    State(state): State<S>,
+pub async fn get_registry(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     Path((namespace, version)): Path<(String, String)>,
 ) -> Response {
@@ -435,8 +432,8 @@ pub async fn get_registry<S: RouterState>(
     ),
     security(("bearer" = []))
 )]
-pub async fn replace_registry<S: RouterState>(
-    State(state): State<S>,
+pub async fn replace_registry(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     Path((namespace, version)): Path<(String, String)>,
     headers: HeaderMap,
@@ -477,8 +474,8 @@ pub async fn replace_registry<S: RouterState>(
     ),
     security(("bearer" = []))
 )]
-pub async fn delete_registry<S: RouterState>(
-    State(state): State<S>,
+pub async fn delete_registry(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     Path((namespace, version)): Path<(String, String)>,
 ) -> Response {
@@ -517,8 +514,8 @@ pub async fn delete_registry<S: RouterState>(
     ),
     security(("bearer" = []))
 )]
-pub async fn search_attributes<S: RouterState>(
-    State(state): State<S>,
+pub async fn search_attributes(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     Query(params): Query<SearchParams>,
 ) -> Response {
@@ -566,8 +563,8 @@ pub async fn search_attributes<S: RouterState>(
     ),
     security(("bearer" = []))
 )]
-pub async fn resolve_attribute<S: RouterState>(
-    State(state): State<S>,
+pub async fn resolve_attribute(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     Path(key): Path<String>,
 ) -> Response {
@@ -597,8 +594,8 @@ pub async fn resolve_attribute<S: RouterState>(
     ),
     security(("bearer" = []))
 )]
-pub async fn search_entities<S: RouterState>(
-    State(state): State<S>,
+pub async fn search_entities(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     Query(params): Query<EntitySearchParams>,
 ) -> Response {
@@ -628,8 +625,8 @@ pub async fn search_entities<S: RouterState>(
     ),
     security(("bearer" = []))
 )]
-pub async fn resolve_entity<S: RouterState>(
-    State(state): State<S>,
+pub async fn resolve_entity(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     Path(name): Path<String>,
 ) -> Response {
@@ -659,8 +656,8 @@ pub async fn resolve_entity<S: RouterState>(
     ),
     security(("bearer" = []))
 )]
-pub async fn search_metrics<S: RouterState>(
-    State(state): State<S>,
+pub async fn search_metrics(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     Query(params): Query<SearchParams>,
 ) -> Response {
@@ -708,8 +705,8 @@ pub async fn search_metrics<S: RouterState>(
     ),
     security(("bearer" = []))
 )]
-pub async fn resolve_metric<S: RouterState>(
-    State(state): State<S>,
+pub async fn resolve_metric(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     Path(name): Path<String>,
 ) -> Response {

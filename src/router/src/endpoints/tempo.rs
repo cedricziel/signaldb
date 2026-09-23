@@ -1,5 +1,5 @@
 use super::api_error::ApiError;
-use crate::RouterState;
+use crate::RouterAppState;
 use arrow_flight::{FlightData, Ticket};
 use axum::{
     Router,
@@ -52,22 +52,19 @@ pub struct TagValueSearchV2Params {
     pub q: Option<String>,
 }
 
-pub fn router<S: RouterState>() -> Router<S> {
+pub fn router() -> Router<RouterAppState> {
     Router::new()
         .route("/api/echo", get(echo))
-        .route("/api/traces/{trace_id}", get(query_single_trace::<S>))
-        .route("/api/search", get(search::<S>))
-        .route("/api/search/tags", get(search_tags::<S>))
-        .route(
-            "/api/search/tag/{tag_name}/values",
-            get(search_tag_values::<S>),
-        )
+        .route("/api/traces/{trace_id}", get(query_single_trace))
+        .route("/api/search", get(search))
+        .route("/api/search/tags", get(search_tags))
+        .route("/api/search/tag/{tag_name}/values", get(search_tag_values))
         // v2 routes
-        .route("/api/v2/traces/{trace_id}", get(query_single_trace::<S>)) // V2 uses same handler for now
-        .route("/api/v2/search/tags", get(search_tags_v2::<S>))
+        .route("/api/v2/traces/{trace_id}", get(query_single_trace)) // V2 uses same handler for now
+        .route("/api/v2/search/tags", get(search_tags_v2))
         .route(
             "/api/v2/search/tag/{tag_name}/values",
-            get(search_tag_values_v2::<S>),
+            get(search_tag_values_v2),
         )
         // metrics endpoints
         .route("/api/metrics/query", get(metrics_query))
@@ -609,8 +606,8 @@ pub async fn echo() -> &'static str {
         signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
-pub async fn query_single_trace<S: RouterState>(
-    state: State<S>,
+pub async fn query_single_trace(
+    state: State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Path(trace_id): Path<String>,
     Query(params): Query<TraceQueryParams>,
@@ -830,8 +827,8 @@ fn trace_lookup_status_to_http(trace_id: &str, status: &tonic::Status) -> ApiErr
         signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
-pub async fn search<S: RouterState>(
-    state: State<S>,
+pub async fn search(
+    state: State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(query): Query<tempo_api::SearchQueryParams>,
 ) -> Result<axum::Json<tempo_api::SearchResult>, ApiError> {
@@ -1018,8 +1015,8 @@ fn normalize_tag_name(tag_name: &str) -> String {
 }
 
 /// Send a Flight ticket to a querier and collect the result batches.
-async fn execute_ticket<S: RouterState>(
-    state: &S,
+async fn execute_ticket(
+    state: &RouterAppState,
     ticket_content: String,
 ) -> Result<Vec<RecordBatch>, ApiError> {
     let (mut client, server_address) = state
@@ -1118,8 +1115,8 @@ fn decode_json_batch<T: serde::de::DeserializeOwned + Default>(
 
 /// Fetch trace tag names for the tenant via the querier's `trace_tags`
 /// Flight ticket, bounded to the caller's (or default) time window.
-async fn fetch_tag_names<S: RouterState>(
-    state: &State<S>,
+async fn fetch_tag_names(
+    state: &State<RouterAppState>,
     tenant_ctx: &common::auth::TenantContext,
     scope: Option<tempo_api::TagScope>,
     start: Option<i64>,
@@ -1147,8 +1144,8 @@ async fn fetch_tag_names<S: RouterState>(
 /// Fetch the distinct values of one (already-unscoped) trace tag for the
 /// tenant via the querier's `trace_tag_values` Flight ticket, bounded to
 /// the caller's (or default) time window.
-async fn tag_values_for<S: RouterState>(
-    state: &State<S>,
+async fn tag_values_for(
+    state: &State<RouterAppState>,
     tenant_ctx: &common::auth::TenantContext,
     tag_name: &str,
     start: Option<i64>,
@@ -1193,8 +1190,8 @@ async fn tag_values_for<S: RouterState>(
     )
 )]
 #[tracing::instrument(skip(state, tenant_ctx, params))]
-pub async fn search_tags<S: RouterState>(
-    state: State<S>,
+pub async fn search_tags(
+    state: State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<TagSearchParams>,
 ) -> Result<axum::Json<tempo_api::TagSearchResponse>, ApiError> {
@@ -1227,8 +1224,8 @@ pub async fn search_tags<S: RouterState>(
     )
 )]
 #[tracing::instrument(skip(state, tenant_ctx, params))]
-pub async fn search_tag_values<S: RouterState>(
-    state: State<S>,
+pub async fn search_tag_values(
+    state: State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Path(tag_name): Path<String>,
     Query(params): Query<TagValueSearchParams>,
@@ -1255,8 +1252,8 @@ pub async fn search_tag_values<S: RouterState>(
     )
 )]
 #[tracing::instrument(skip(state, tenant_ctx, params))]
-pub async fn search_tags_v2<S: RouterState>(
-    state: State<S>,
+pub async fn search_tags_v2(
+    state: State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<TagSearchV2Params>,
 ) -> Result<axum::Json<tempo_api::v2::TagSearchResponse>, ApiError> {
@@ -1317,8 +1314,8 @@ pub async fn search_tags_v2<S: RouterState>(
     )
 )]
 #[tracing::instrument(skip(state, tenant_ctx, params))]
-pub async fn search_tag_values_v2<S: RouterState>(
-    state: State<S>,
+pub async fn search_tag_values_v2(
+    state: State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Path(scoped_tag): Path<String>,
     Query(params): Query<TagValueSearchV2Params>,

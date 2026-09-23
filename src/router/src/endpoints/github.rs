@@ -55,7 +55,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::github::GitHubError;
 
-use crate::RouterState;
+use crate::RouterAppState;
 use crate::endpoints::management::{
     ManageError, authorize_instance_admin, authorize_tenant, error,
 };
@@ -65,30 +65,30 @@ use crate::github::write_permissions;
 /// The four tenant-management routes, nested under `/manage` (final paths
 /// `/api/v1/manage/tenants/{tenant_id}/github-installations...`) beside
 /// [`crate::endpoints::management::router`].
-pub fn manage_router<S: RouterState>() -> Router<S> {
+pub fn manage_router() -> Router<RouterAppState> {
     Router::new()
         .route(
             "/tenants/{tenant_id}/github-installations/link",
-            post(start_github_link::<S>),
+            post(start_github_link),
         )
         .route(
             "/tenants/{tenant_id}/github-installations",
-            get(list_github_installations::<S>),
+            get(list_github_installations),
         )
         .route(
             "/tenants/{tenant_id}/github-installations/{installation_id}",
-            delete(remove_github_installation::<S>),
+            delete(remove_github_installation),
         )
         .route(
             "/tenants/{tenant_id}/github-installations/attach",
-            post(attach_github_installation::<S>),
+            post(attach_github_installation),
         )
 }
 
 /// The App's install-flow callback, mounted at the router root (public —
 /// see the module docs for why it carries no tenant auth layer).
-pub fn callback_router<S: RouterState>() -> Router<S> {
-    Router::new().route("/ui/github/callback", get(callback::<S>))
+pub fn callback_router() -> Router<RouterAppState> {
+    Router::new().route("/ui/github/callback", get(callback))
 }
 
 /// 201 response body for [`start_github_link`].
@@ -165,8 +165,8 @@ pub(crate) struct GitHubInstallationsResponse {
         (status = 500, description = "Internal error", body = ManageError),
     )
 )]
-pub(crate) async fn start_github_link<S: RouterState>(
-    State(state): State<S>,
+pub(crate) async fn start_github_link(
+    State(state): State<RouterAppState>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path(tenant_id): Path<String>,
 ) -> Response {
@@ -229,8 +229,8 @@ pub(crate) async fn start_github_link<S: RouterState>(
         (status = 500, description = "Internal error", body = ManageError),
     )
 )]
-pub(crate) async fn list_github_installations<S: RouterState>(
-    State(state): State<S>,
+pub(crate) async fn list_github_installations(
+    State(state): State<RouterAppState>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path(tenant_id): Path<String>,
 ) -> Response {
@@ -365,8 +365,8 @@ fn installation_manage_url(
         (status = 500, description = "Internal error", body = ManageError),
     )
 )]
-pub(crate) async fn remove_github_installation<S: RouterState>(
-    State(state): State<S>,
+pub(crate) async fn remove_github_installation(
+    State(state): State<RouterAppState>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path((tenant_id, installation_id)): Path<(String, i64)>,
 ) -> Response {
@@ -443,8 +443,8 @@ pub(crate) async fn remove_github_installation<S: RouterState>(
         (status = 502, description = "GitHub request failed", body = ManageError),
     )
 )]
-pub(crate) async fn attach_github_installation<S: RouterState>(
-    State(state): State<S>,
+pub(crate) async fn attach_github_installation(
+    State(state): State<RouterAppState>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path(tenant_id): Path<String>,
     Json(body): Json<AttachGitHubInstallationRequest>,
@@ -647,8 +647,8 @@ pub(crate) struct CallbackParams {
         (status = 404, description = "GitHub integration is not configured"),
     )
 )]
-pub(crate) async fn callback<S: RouterState>(
-    State(state): State<S>,
+pub(crate) async fn callback(
+    State(state): State<RouterAppState>,
     headers: HeaderMap,
     Query(params): Query<CallbackParams>,
 ) -> Response {
