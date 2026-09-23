@@ -34,9 +34,9 @@ export interface TraceGroupMember {
  */
 /** What to order the members by — defaults to newest first
  * (`start_time_unix_nano` desc), the group drill-in's own shape. The
- * "Slowest traces" section instead sorts by `duration_nanos` desc. */
+ * "Slowest traces" section instead sorts by the logical `duration` desc. */
 export interface MembersSort {
-  field: "start_time_unix_nano" | "duration_nanos";
+  field: "start_time_unix_nano" | "duration";
   dir: "asc" | "desc";
 }
 

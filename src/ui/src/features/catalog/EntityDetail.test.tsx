@@ -499,7 +499,7 @@ describe("EntityDetail", () => {
       [],
       "traces",
       8,
-      { field: "duration_nanos", dir: "desc" },
+      { field: "duration", dir: "desc" },
     );
   });
 

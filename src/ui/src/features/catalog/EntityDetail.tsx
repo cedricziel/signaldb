@@ -72,7 +72,7 @@ interface Props {
 const SLOWEST_TRACES_LIMIT = 8;
 
 const SLOWEST_TRACES_SORT: MembersSort = {
-  field: "duration_nanos",
+  field: "duration",
   dir: "desc",
 };
 
