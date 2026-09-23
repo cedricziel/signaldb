@@ -188,42 +188,44 @@ const servicesRoute: JsonRoute = {
 };
 
 /** ~20 realistic, distinct operations for the checkout service, ranked by
- * rate and summing to about the KPI strip's own rate (`entityStatsCurrentRoute`'s
- * `n: 18_200`) — enough rows to show the Operations table's top-8/show-all
- * toggle and its filter doing real work. */
+ * rate and summing to about the KPI strip's own rate — `n: 18_200` over the
+ * default 1h window is `entityStatsCurrentRoute`'s `ratePerSec` of ~5.1/s
+ * (`kpis.current.ratePerSec` in `EntityDetail.tsx`), so each operation's own
+ * `n` here is scaled the same way (rate × 3600s) rather than picked to look
+ * roughly right — the two numbers must actually add up on screen. */
 const OPERATIONS = [
-  { name: "POST /checkout", n: 4_200, errRate: 0.021, p50: 40, p95: 190 },
-  { name: "GET /cart", n: 3_100, errRate: 0.002, p50: 15, p95: 60 },
-  { name: "GET /cart/:id", n: 2_400, errRate: 0.004, p50: 18, p95: 65 },
+  { name: "POST /checkout", n: 6_480, errRate: 0.021, p50: 40, p95: 190 },
+  { name: "GET /cart", n: 3_960, errRate: 0.002, p50: 15, p95: 60 },
+  { name: "GET /cart/:id", n: 1_800, errRate: 0.004, p50: 18, p95: 65 },
   {
     name: "POST /checkout/validate",
-    n: 1_800,
+    n: 1_260,
     errRate: 0.011,
     p50: 30,
     p95: 160,
   },
-  { name: "GET /products", n: 1_500, errRate: 0.001, p50: 22, p95: 80 },
-  { name: "POST /cart/items", n: 1_200, errRate: 0.006, p50: 25, p95: 95 },
-  { name: "GET /orders/:id", n: 950, errRate: 0.003, p50: 20, p95: 70 },
-  { name: "DELETE /cart/items/:id", n: 800, errRate: 0.002, p50: 12, p95: 45 },
-  { name: "POST /checkout/payment", n: 650, errRate: 0.034, p50: 55, p95: 240 },
-  { name: "GET /promotions", n: 500, errRate: 0, p50: 10, p95: 35 },
-  { name: "POST /cart/coupon", n: 420, errRate: 0.019, p50: 28, p95: 110 },
-  { name: "GET /shipping/rates", n: 350, errRate: 0.008, p50: 45, p95: 150 },
-  { name: "POST /checkout/address", n: 300, errRate: 0.005, p50: 20, p95: 75 },
-  { name: "GET /inventory/:sku", n: 250, errRate: 0.002, p50: 14, p95: 50 },
+  { name: "GET /products", n: 1_080, errRate: 0.001, p50: 22, p95: 80 },
+  { name: "POST /cart/items", n: 792, errRate: 0.006, p50: 25, p95: 95 },
+  { name: "GET /orders/:id", n: 576, errRate: 0.003, p50: 20, p95: 70 },
+  { name: "DELETE /cart/items/:id", n: 432, errRate: 0.002, p50: 12, p95: 45 },
+  { name: "POST /checkout/payment", n: 324, errRate: 0.034, p50: 55, p95: 240 },
+  { name: "GET /promotions", n: 252, errRate: 0, p50: 10, p95: 35 },
+  { name: "POST /cart/coupon", n: 180, errRate: 0.019, p50: 28, p95: 110 },
+  { name: "GET /shipping/rates", n: 144, errRate: 0.008, p50: 45, p95: 150 },
+  { name: "POST /checkout/address", n: 108, errRate: 0.005, p50: 20, p95: 75 },
+  { name: "GET /inventory/:sku", n: 90, errRate: 0.002, p50: 14, p95: 50 },
   {
     name: "PATCH /cart/items/:id",
-    n: 200,
+    n: 72,
     errRate: 0.004,
     p50: 18,
     p95: 60,
   },
-  { name: "GET /checkout/summary", n: 150, errRate: 0.001, p50: 16, p95: 55 },
-  { name: "POST /wishlist/items", n: 120, errRate: 0, p50: 12, p95: 40 },
-  { name: "GET /recommendations", n: 90, errRate: 0.003, p50: 35, p95: 130 },
-  { name: "POST /checkout/gift-card", n: 70, errRate: 0.012, p50: 22, p95: 85 },
-  { name: "GET /returns/:id", n: 50, errRate: 0.006, p50: 19, p95: 70 },
+  { name: "GET /checkout/summary", n: 54, errRate: 0.001, p50: 16, p95: 55 },
+  { name: "POST /wishlist/items", n: 43, errRate: 0, p50: 12, p95: 40 },
+  { name: "GET /recommendations", n: 36, errRate: 0.003, p50: 35, p95: 130 },
+  { name: "POST /checkout/gift-card", n: 29, errRate: 0.012, p50: 22, p95: 85 },
+  { name: "GET /returns/:id", n: 22, errRate: 0.006, p50: 19, p95: 70 },
 ];
 
 /** The entity detail's operations breakdown (`EntityDetail.tsx`'s
@@ -247,11 +249,53 @@ const operationsBreakdownRoute: JsonRoute = {
   },
 };
 
+/** A tiny seeded PRNG (mulberry32) — deterministic per operation, so its
+ * story renders the same wobble on every build rather than a fresh random
+ * one each run. */
+function mulberry32(seed: number): () => number {
+  let a = seed;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function hashString(s: string): number {
+  let h = 0;
+  for (let i = 0; i < s.length; i++)
+    h = (Math.imul(h, 31) + s.charCodeAt(i)) | 0;
+  return h;
+}
+
+/** One operation's own "last hour" series — a smooth-ish wave around its
+ * own rate (not every operation's identical sawtooth), plus a little seeded
+ * noise, plus a spike bucket on the busier operations. Each operation gets
+ * its own phase and noise seed from its name, so two operations at the same
+ * rate still draw visibly different shapes. */
+function operationSeries(op: (typeof OPERATIONS)[number]): [number, number][] {
+  const seed = hashString(op.name);
+  const rand = mulberry32(seed);
+  const phase = (seed % 628) / 100; // 0..2π-ish, distinct per operation
+  const spikeAt = op.n > 1000 ? 5 + (seed % 20) : -1;
+  const avg = op.n / 30;
+  return Array.from({ length: 30 }, (_, i) => {
+    const wave = 1 + 0.3 * Math.sin(phase + i * 0.35);
+    const noise = 1 + (rand() - 0.5) * 0.3;
+    const spike = i === spikeAt ? 1.8 : 1;
+    return [
+      1_700_000_000_000_000_000 + i * 120_000_000_000,
+      Math.max(0, Math.round(avg * wave * noise * spike)),
+    ];
+  });
+}
+
 /** The Operations table's per-operation "last hour" sparklines
  * (`useOperationSeries`/`fetchOperationSeries`, `from: "traces", result:
- * "series"`, grouped by `span.name`) — a mild wobble around each
- * operation's own rate so the sparklines read as real activity rather than
- * flat lines. */
+ * "series"`, grouped by `span.name`) — each operation draws its own shape
+ * (see `operationSeries`), scaled to its own rate. */
 const operationSeriesRoute: JsonRoute = {
   match: "/api/v1/query",
   bodyMatch: (b) =>
@@ -259,18 +303,7 @@ const operationSeriesRoute: JsonRoute = {
     aggregateBy(b).includes("span.name"),
   body: irOperationSeriesResponse(
     "span_name",
-    Object.fromEntries(
-      OPERATIONS.map((op) => [
-        op.name,
-        Array.from({ length: 30 }, (_, i) => [
-          1_700_000_000_000_000_000 + i * 120_000_000_000,
-          Math.max(
-            0,
-            Math.round((op.n / 30) * (0.7 + (0.6 * ((i * 7) % 5)) / 5)),
-          ),
-        ]) as [number, number][],
-      ]),
-    ),
+    Object.fromEntries(OPERATIONS.map((op) => [op.name, operationSeries(op)])),
   ),
 };
 
