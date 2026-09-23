@@ -287,7 +287,7 @@ async fn behaviour(
                 .into_response()
         };
     }
-    if path.contains("/manage/tenants/denied/") {
+    if path.contains("/tenants/denied/") {
         return (
             StatusCode::FORBIDDEN,
             axum::Json(serde_json::json!({"error": "forbidden"})),
