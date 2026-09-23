@@ -239,6 +239,15 @@ select {
   color: inherit;
 }
 
+/* Baseline for any plain <a> no feature stylesheet styles (e.g. an inline
+   "see the docs" link): the browser default blue/purple is unreadable on
+   the dark surface. Matches `.trace-open`'s existing accent-as-link-color
+   convention. A feature's own class (e.g. `.trace-open`) still wins on
+   specificity for whatever else it needs. */
+a {
+  color: var(--accent);
+}
+
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
