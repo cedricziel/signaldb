@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790051682851,
+  "lastUpdate": 1790137348075,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -10519,6 +10519,334 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 1135104,
             "range": "± 13871",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cedric Ziel",
+            "username": "cedricziel",
+            "email": "mail@cedric-ziel.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "d8285bf9b98e3a1aef0be53843bfd55f55e4ab78",
+          "message": "test(querier): check Predicate::evaluate against the planned DataFusion filter (#1671)\n\nPredicate::evaluate's three-valued Truth semantics are documented as \"the\nreference semantics that the lowered plan must satisfy\", but nothing\ncompared them against what the querier's real IR planner actually does.\nAdd predicate_differential.rs, modeled on differential.rs: a table-driven\nlist of predicates over a small in-memory logs table, each lowered\nthrough the real ir_planner::plan_document path and separately evaluated\nwith Predicate::evaluate, asserting the kept-row sets agree.\n\nTwo genuine, documented divergences are left #[ignore]d rather than\npapered over:\n- regex: Predicate::evaluate deliberately never runs the pattern\n  (returns Truth::False unconditionally), while the lowered plan runs\n  the real regexp_like UDF.\n- an untyped attribute's numeric-literal comparison (e.g. `num > 10`):\n  the plan coerces the literal to a string and compares lexicographically\n  against the string-typed attribute, while Predicate::evaluate's\n  cmp_json returns None (no ordering) for mismatched JSON types.\n\nBoth are internally consistent on their own side; they disagree by\ndesign, not by bug, so planner behaviour is left unchanged.\n\nCloses #1560. Part 1: #1668.\n\n\nClaude-Session: https://claude.ai/code/session_0196DNbETSkSZDiJ5gF6k4W6\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T01:07:30Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/d8285bf9b98e3a1aef0be53843bfd55f55e4ab78"
+        },
+        "date": 1790137346615,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 1320879,
+            "range": "± 15490",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 814261,
+            "range": "± 31376",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 539122,
+            "range": "± 53247",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 1044870,
+            "range": "± 6724",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 500679,
+            "range": "± 2214",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 1441798,
+            "range": "± 8629",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 951009,
+            "range": "± 12804",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.0MB",
+            "value": 1047923,
+            "range": "± 8817",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.4MB",
+            "value": 1998395,
+            "range": "± 24584",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_3.5MB",
+            "value": 9925902,
+            "range": "± 59024",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_37.4MB",
+            "value": 85329289,
+            "range": "± 357631",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 3168709,
+            "range": "± 29776",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 6349577,
+            "range": "± 62963",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 11830140,
+            "range": "± 158613",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 23888711,
+            "range": "± 591909",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 844847,
+            "range": "± 2662",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 1753314,
+            "range": "± 46269",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 2958763,
+            "range": "± 97045",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 5325336,
+            "range": "± 176205",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/1000",
+            "value": 48987,
+            "range": "± 1700",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/1000",
+            "value": 77473,
+            "range": "± 6166",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/10000",
+            "value": 443542,
+            "range": "± 2342",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/10000",
+            "value": 895472,
+            "range": "± 14775",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/100000",
+            "value": 4614568,
+            "range": "± 293511",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/100000",
+            "value": 17504519,
+            "range": "± 947297",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 1082944,
+            "range": "± 8731",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 14908550,
+            "range": "± 606807",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 16703788,
+            "range": "± 723601",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 16135727,
+            "range": "± 326616",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 15989398,
+            "range": "± 144976",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 15980188,
+            "range": "± 142492",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 3979641,
+            "range": "± 152243",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 9415888,
+            "range": "± 46747",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 16001342,
+            "range": "± 77669",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested",
+            "value": 5638338,
+            "range": "± 49725",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested_split_off",
+            "value": 5564876,
+            "range": "± 118466",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/unattested",
+            "value": 5472118,
+            "range": "± 114598",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested",
+            "value": 4754512,
+            "range": "± 14883",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested_split_off",
+            "value": 4802976,
+            "range": "± 19711",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/unattested",
+            "value": 5350805,
+            "range": "± 123015",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested",
+            "value": 9043689,
+            "range": "± 99398",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested_split_off",
+            "value": 12357265,
+            "range": "± 117383",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/unattested",
+            "value": 9512000,
+            "range": "± 85879",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 16675967,
+            "range": "± 1519078",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 3825816,
+            "range": "± 16077",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 46432090,
+            "range": "± 858167",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 77007196,
+            "range": "± 1733224",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 80629598,
+            "range": "± 1604719",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 781315,
+            "range": "± 30694",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 783326,
+            "range": "± 5102",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 826135,
+            "range": "± 7084",
             "unit": "ns/iter"
           }
         ]
