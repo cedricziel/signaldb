@@ -474,6 +474,90 @@ const entityP95SeriesRoute: JsonRoute = {
   body: irEntitySeriesResponse(bucketedSeries(150_000_000, 6, 40_000_000)),
 };
 
+/** The entity detail's "Error groups" section (`EntityErrorGroups`,
+ * `api/errors.ts`'s `buildErrorGroupDoc`, `from: "traces"`) — five realistic
+ * exception groups for the "checkout" service, ranked by count so the
+ * section's own top-5-by-count slicing has something to prove: [type,
+ * message, service, escaped, n, first, last]. */
+const errorGroupsTracesRoute: JsonRoute = {
+  match: "/api/v1/query",
+  bodyMatch: (b) =>
+    irBody((body) => body.result === "table" && body.from === "traces")(b) &&
+    aggregateBy(b).includes("exception.type"),
+  body: {
+    result: "table",
+    rows: [
+      [
+        "PaymentDeclinedError",
+        "card declined by issuer",
+        "checkout",
+        "true",
+        128,
+        "1700003000000000000",
+        "1700003600000000000",
+      ],
+      [
+        "DeadlineExceededError",
+        "upstream call timed out",
+        "checkout",
+        "true",
+        94,
+        "1700002800000000000",
+        "1700003580000000000",
+      ],
+      [
+        "PoolExhaustedError",
+        "connection pool exhausted",
+        "checkout",
+        "true",
+        61,
+        "1700002600000000000",
+        "1700003500000000000",
+      ],
+      [
+        "NullPointerException",
+        "null reference in checkout handler",
+        "checkout",
+        "false",
+        37,
+        "1700002400000000000",
+        "1700003400000000000",
+      ],
+      [
+        "UpstreamServiceError",
+        "503 from payments-gateway",
+        "checkout",
+        "true",
+        15,
+        "1700002200000000000",
+        "1700003300000000000",
+      ],
+    ],
+  },
+};
+
+/** The same "Error groups" section's logs-sourced half of the merge (see
+ * `fetchErrorGroups`) — empty, so the story's five groups above aren't
+ * doubled by an identical logs-sourced set. */
+const errorGroupsLogsRoute: JsonRoute = {
+  match: "/api/v1/query",
+  bodyMatch: (b) =>
+    irBody((body) => body.result === "table" && body.from === "logs")(b) &&
+    aggregateBy(b).includes("exception.type"),
+  body: { result: "table", rows: [] },
+};
+
+/** Each error-group row's own "Last hour" sparkline (`fetchErrorGroupVolume`,
+ * `aggregate.by: ["exception.type"]` only — distinct from the KPI strip's
+ * `service.name`-keyed series above). One shared shape for every row. */
+const errorGroupVolumeRoute: JsonRoute = {
+  match: "/api/v1/query",
+  bodyMatch: (b) =>
+    irBody((body) => body.result === "series")(b) &&
+    aggregateBy(b).join() === "exception.type",
+  body: irEntitySeriesResponse(bucketedSeries(3, 4, 4)),
+};
+
 const routes: JsonRoute[] = [
   irCatchAll,
   catchAllEntities,
@@ -489,6 +573,9 @@ const routes: JsonRoute[] = [
   entityErrorSeriesRoute,
   entityP95SeriesRoute,
   operationSeriesRoute,
+  errorGroupsTracesRoute,
+  errorGroupsLogsRoute,
+  errorGroupVolumeRoute,
 ];
 
 function CatalogPage({ state }: { state: ExploreState }) {
@@ -507,8 +594,13 @@ const meta = {
   title: "Pages/Catalog",
   parameters: { layout: "fullscreen" },
   decorators: [
+    // `DarkScope` uses `min-height: 100%` (not a fixed `height`), so it
+    // already stretches to cover whatever a story renders — no fixed height
+    // needed here to keep a taller entity detail page's later sections
+    // (Error groups, Time by dependency, the spans table) inside the dark
+    // scope.
     (Story) => (
-      <div style={{ width: 1280, height: 800 }}>
+      <div style={{ width: 1280 }}>
         <Story />
       </div>
     ),
