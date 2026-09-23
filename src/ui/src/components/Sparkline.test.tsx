@@ -66,6 +66,16 @@ describe("Sparkline", () => {
     );
   });
 
+  it("draws the line unfilled, not the wedge under it", () => {
+    // A CSS `fill` rule beats this attribute (see Sparkline.css), so this
+    // guards the attribute only — vitest.config.ts sets `css: false`, so
+    // jsdom never loads Sparkline.css and can't catch a `fill` rule
+    // reappearing on a `.sparkline-line` selector here. That's covered by
+    // the Storybook screenshots instead (Components/Sparkline, every tone).
+    render(<Sparkline points={points} tone="accent" />);
+    expect(document.querySelector("polyline")).toHaveAttribute("fill", "none");
+  });
+
   it("renders nothing for fewer than two points by default", () => {
     const { container } = render(<Sparkline points={[{ x: 0, v: 1 }]} />);
     expect(container).toBeEmptyDOMElement();

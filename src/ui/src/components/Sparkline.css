@@ -8,22 +8,34 @@
   display: block;
 }
 
+/* A CSS `fill` rule beats the polyline's own `fill="none"` attribute, so the
+   line and bar variants get separate rules rather than one shared per-tone
+   class that would fill the wedge under the line. */
 .sparkline-line {
+  fill: none;
+}
+
+.sparkline-line.sparkline-tone-neutral {
   stroke: var(--dim);
 }
 
-.sparkline-tone-neutral {
-  stroke: var(--dim);
+.sparkline-line.sparkline-tone-error {
+  stroke: var(--err);
+}
+
+.sparkline-line.sparkline-tone-accent {
+  stroke: var(--accent);
+}
+
+.sparkline-bar.sparkline-tone-neutral {
   fill: var(--dim);
 }
 
-.sparkline-tone-error {
-  stroke: var(--err);
+.sparkline-bar.sparkline-tone-error {
   fill: var(--err);
 }
 
-.sparkline-tone-accent {
-  stroke: var(--accent);
+.sparkline-bar.sparkline-tone-accent {
   fill: var(--accent);
 }
 
