@@ -5,6 +5,7 @@ import { diffLines } from "./lineDiff";
 import { SAMPLE_PAYLOADS } from "./samples";
 import { toErrorMessage } from "../../api/http";
 import { LineDiffView } from "../../components/LineDiffView";
+import "./processors.css";
 
 interface Props {
   signal: "traces" | "logs" | "metrics";
