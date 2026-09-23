@@ -95,6 +95,33 @@ function isCurrentWindow(b: unknown): boolean {
   return Math.abs(nowNs - toNs) < 10_000 * 1_000_000;
 }
 
+/** The `field` of a `where { op: "exists" }` stage, wherever it sits in the
+ * pipeline — distinguishes `dependencyBreakdown.ts`/`dependencyTargets.ts`'s
+ * per-kind queries (database/http/rpc/messaging) from their shared baseline
+ * query, which carries no `exists` stage at all. */
+function whereExistsField(b: unknown): string | undefined {
+  const body = b as {
+    pipeline?: Array<{ where?: { op?: string; field?: string } }>;
+  };
+  for (const stage of body.pipeline ?? []) {
+    if (stage.where?.op === "exists") return stage.where.field;
+  }
+  return undefined;
+}
+
+/** The value a `where { op: "eq" }` stage pins a field to — used to tell
+ * `dependencyTargets.ts`'s SERVER-scoped request-total query apart from its
+ * CLIENT-scoped ones (`span_kind`). */
+function whereFieldValue(b: unknown, field: string): unknown {
+  const body = b as {
+    pipeline?: Array<{ where?: { field?: string; value?: unknown } }>;
+  };
+  for (const stage of body.pipeline ?? []) {
+    if (stage.where?.field === field) return stage.where.value;
+  }
+  return undefined;
+}
+
 /** Whether the pipeline pins the given field to an exact value — the KPI
  * strip's stats/series queries are pinned to one entity
  * (`scopeWhere`/`pinsWhere` in `api/entityDetailStats.ts`), unlike the
@@ -607,6 +634,178 @@ const errorGroupVolumeRoutes: JsonRoute[] = ERROR_GROUPS.map((g) => ({
   body: irEntitySeriesResponse(errorGroupSeries(g)),
 }));
 
+/**
+ * "Time by dependency" stubs (PR 6): `DependencyBreakdown`'s bar
+ * (`api/dependencyBreakdown.ts`) and `DependencyTable`'s per-target detail
+ * (`api/dependencyTargets.ts`) below it, for "checkout". Six downstream
+ * targets across the four kinds, sized so the bar's per-kind shares equal
+ * the sum of that kind's target rows in the table (the acceptance check the
+ * task screenshot verifies):
+ *
+ * - database: orders-db (postgresql) 300s + cart-cache (redis) 60s = 360s (36%)
+ * - http: payments 220s + shipping-quote 40s = 260s (26%)
+ * - rpc: inventory (grpc) 90s (9%)
+ * - messaging: order-events (kafka) 15s (1.5%)
+ * - self: 1000s request time - 725s downstream = 275s (27.5%)
+ *
+ * Both modules issue the *same* CLIENT-scoped, unfiltered "total downstream
+ * time" query shape (`dependencyBreakdown`'s baseline, `dependencyTargets`'s
+ * client total) — one route serves both.
+ */
+const DEP_REQUEST_TOTAL_NS = 1_000_000_000_000; // 1000s
+const DEP_REQUEST_COUNT = 18_200;
+const DEP_CLIENT_TOTAL_NS = 725_000_000_000; // 725s downstream, across all kinds
+const DEP_CLIENT_TOTAL_COUNT = 73_600;
+
+const DEP_TARGETS = {
+  database: {
+    filterAttr: "db.system.name",
+    totalNs: 360_000_000_000,
+    count: 49_100,
+    rows: [
+      {
+        target: "orders-db",
+        op1: "postgresql",
+        op2: "SELECT",
+        totalNs: 300_000_000_000,
+        n: 9_100,
+        p95Ns: 25_000_000,
+      },
+      {
+        target: "cart-cache",
+        op1: "redis",
+        op2: "GET",
+        totalNs: 60_000_000_000,
+        n: 40_000,
+        p95Ns: 2_000_000,
+      },
+    ],
+  },
+  http: {
+    filterAttr: "http.request.method",
+    totalNs: 260_000_000_000,
+    count: 12_400,
+    rows: [
+      {
+        target: "payments",
+        op1: "POST",
+        op2: "/v1/payments",
+        totalNs: 220_000_000_000,
+        n: 9_400,
+        p95Ns: 180_000_000,
+      },
+      {
+        target: "shipping-quote",
+        op1: "GET",
+        op2: "/v1/shipping/quote",
+        totalNs: 40_000_000_000,
+        n: 3_000,
+        p95Ns: 90_000_000,
+      },
+    ],
+  },
+  rpc: {
+    filterAttr: "rpc.system",
+    totalNs: 90_000_000_000,
+    count: 7_100,
+    rows: [
+      {
+        target: "inventory",
+        op1: "grpc",
+        op2: "CheckStock",
+        totalNs: 90_000_000_000,
+        n: 7_100,
+        p95Ns: 15_000_000,
+      },
+    ],
+  },
+  messaging: {
+    filterAttr: "messaging.system",
+    totalNs: 15_000_000_000,
+    count: 5_000,
+    rows: [
+      {
+        target: "order-events",
+        op1: "kafka",
+        op2: "publish",
+        totalNs: 15_000_000_000,
+        n: 5_000,
+        p95Ns: 5_000_000,
+      },
+    ],
+  },
+} as const;
+
+/** `DependencyBreakdown`/`DependencyTable`'s shared "total downstream CLIENT
+ * time" query — the bar's baseline (before subtracting known kinds) and
+ * the table's self-time subtrahend. */
+const dependencyClientTotalRoute: JsonRoute = {
+  match: "/api/v1/query",
+  bodyMatch: (b) =>
+    irBody((body) => body.result === "table" && body.from === "traces")(b) &&
+    aggregateBy(b).length === 1 &&
+    whereExistsField(b) === undefined &&
+    whereFieldValue(b, "span_kind") === "Client",
+  body: {
+    result: "table",
+    rows: [["checkout", DEP_CLIENT_TOTAL_NS, DEP_CLIENT_TOTAL_COUNT]],
+  },
+};
+
+/** `dependencyTargets.ts`'s SERVER-scoped request-total query — the table's
+ * share and calls/req denominator. */
+const dependencyServerTotalRoute: JsonRoute = {
+  match: "/api/v1/query",
+  bodyMatch: (b) =>
+    irBody((body) => body.result === "table" && body.from === "traces")(b) &&
+    aggregateBy(b).length === 1 &&
+    whereFieldValue(b, "span_kind") === "Server",
+  body: {
+    result: "table",
+    rows: [["checkout", DEP_REQUEST_TOTAL_NS, DEP_REQUEST_COUNT]],
+  },
+};
+
+/** `dependencyBreakdown.ts`'s per-kind sum(duration) query — one row per
+ * kind, [service.name, total, n]. */
+const dependencyBreakdownKindRoutes: JsonRoute[] = Object.values(
+  DEP_TARGETS,
+).map((cfg) => ({
+  match: "/api/v1/query",
+  bodyMatch: (b: unknown) =>
+    irBody((body) => body.result === "table" && body.from === "traces")(b) &&
+    aggregateBy(b).length === 1 &&
+    whereExistsField(b) === cfg.filterAttr,
+  body: {
+    result: "table",
+    rows: [["checkout", cfg.totalNs, cfg.count]],
+  },
+}));
+
+/** `dependencyTargets.ts`'s per-kind, per-target query — one row per
+ * downstream target, [service.name, target, op1, op2, total, n, p95]. */
+const dependencyTargetsKindRoutes: JsonRoute[] = Object.values(DEP_TARGETS).map(
+  (cfg) => ({
+    match: "/api/v1/query",
+    bodyMatch: (b: unknown) =>
+      irBody((body) => body.result === "table" && body.from === "traces")(b) &&
+      aggregateBy(b).length > 1 &&
+      whereExistsField(b) === cfg.filterAttr,
+    body: {
+      result: "table",
+      rows: cfg.rows.map((r) => [
+        "checkout",
+        r.target,
+        r.op1,
+        r.op2,
+        r.totalNs,
+        r.n,
+        r.p95Ns,
+      ]),
+    },
+  }),
+);
+
 const routes: JsonRoute[] = [
   irCatchAll,
   catchAllEntities,
@@ -625,6 +824,10 @@ const routes: JsonRoute[] = [
   errorGroupsTracesRoute,
   errorGroupsLogsRoute,
   ...errorGroupVolumeRoutes,
+  dependencyClientTotalRoute,
+  dependencyServerTotalRoute,
+  ...dependencyBreakdownKindRoutes,
+  ...dependencyTargetsKindRoutes,
 ];
 
 function CatalogPage({ state }: { state: ExploreState }) {
