@@ -1,32 +1,32 @@
 // Tenant management API, layered over the generated OpenAPI SDK. The exported
 // function names and signatures are the stable surface the management UI
-// depends on; internally each call delegates to a generated `manage*`
-// operation and unwraps the result envelope back into the historical
-// contract: the response data on success, an `ApiError` carrying the HTTP
-// status on failure (so `isAuthError` keeps working on 401).
+// depends on; internally each call delegates to a generated operation and
+// unwraps the result envelope back into the historical contract: the
+// response data on success, an `ApiError` carrying the HTTP status on
+// failure (so `isAuthError` keeps working on 401).
 import "./client";
 
 import {
+  createApiKey as generatedCreateApiKey,
+  createDataset as generatedCreateDataset,
+  createTenant as generatedCreateTenant,
   createTenantTables,
+  deleteDataset as generatedDeleteDataset,
+  getSchema as generatedGetSchema,
+  listApiKeys as generatedListApiKeys,
+  listMemberships as generatedListMemberships,
   listTenantTables,
-  manageCreateApiKey,
-  manageCreateDataset,
-  manageCreateTenant,
-  manageDeleteDataset,
-  manageGetSchema,
-  manageListApiKeys,
-  manageListMemberships,
-  manageRemoveMembership,
-  manageRevokeApiKey,
-  manageUpdateApiKey,
-  manageUpsertMembership,
+  removeMembership as generatedRemoveMembership,
+  revokeApiKey as generatedRevokeApiKey,
+  updateApiKey as generatedUpdateApiKey,
+  upsertMembership as generatedUpsertMembership,
+  type CreateTenantResponse,
   type CreateTenantTablesResponse,
+  type GetSchemaResponse,
   type ListTablesResponse,
   type ManageApiKeyResponse,
   type ManageCreatedApiKey,
-  type ManageCreatedTenant,
   type ManageDatasetResponse,
-  type ManageSchemaResponse,
   type MembershipResponse,
 } from "./gen";
 import { type SdkResult, unwrapErrorEnvelope } from "./http";
@@ -49,10 +49,7 @@ export type ManagementScope = "tenant:manage";
  * `string[]`, this drives the scope picker; the vocabulary mirrors
  * `common::auth::API_KEY_SCOPES` (the read scopes are OAuth-only). */
 export type ApiKeyScope =
-  | IngestScope
-  | SchemaScope
-  | ProcessorScope
-  | ManagementScope;
+  IngestScope | SchemaScope | ProcessorScope | ManagementScope;
 
 /** Scope picker groups with one-line descriptions, in display order. */
 export const SCOPE_GROUPS: ReadonlyArray<{
@@ -128,13 +125,13 @@ export type ManagedApiKey = ManageApiKeyResponse;
 export type ManagedMembership = MembershipResponse;
 
 /** Logical + physical schema, as returned by the management API. */
-export type ManagedSchema = ManageSchemaResponse;
+export type ManagedSchema = GetSchemaResponse;
 
 const unwrap = <T>(result: SdkResult<T>): T =>
   unwrapErrorEnvelope(result, "Management");
 
 export const listApiKeys = async (tenant: string): Promise<ManagedApiKey[]> =>
-  unwrap(await manageListApiKeys({ path: { tenant_id: tenant } }));
+  unwrap(await generatedListApiKeys({ path: { tenant_id: tenant } }));
 
 export const createApiKey = async (
   tenant: string,
@@ -146,7 +143,7 @@ export const createApiKey = async (
   },
 ): Promise<ManageCreatedApiKey> =>
   unwrap(
-    await manageCreateApiKey({ path: { tenant_id: tenant }, body: input }),
+    await generatedCreateApiKey({ path: { tenant_id: tenant }, body: input }),
   );
 
 /** Change a live key's scopes, dataset restriction, and/or allowed-origins
@@ -168,7 +165,7 @@ export const updateApiKey = async (
   },
 ): Promise<ManagedApiKey> =>
   unwrap(
-    await manageUpdateApiKey({
+    await generatedUpdateApiKey({
       path: { tenant_id: tenant, key_id: keyId },
       body: input,
     }),
@@ -179,7 +176,7 @@ export const revokeApiKey = async (
   keyId: string,
 ): Promise<void> => {
   unwrap(
-    await manageRevokeApiKey({ path: { tenant_id: tenant, key_id: keyId } }),
+    await generatedRevokeApiKey({ path: { tenant_id: tenant, key_id: keyId } }),
   );
 };
 
@@ -188,7 +185,7 @@ export const createDataset = async (
   name: string,
 ): Promise<ManageDatasetResponse> =>
   unwrap(
-    await manageCreateDataset({ path: { tenant_id: tenant }, body: { name } }),
+    await generatedCreateDataset({ path: { tenant_id: tenant }, body: { name } }),
   );
 
 export const deleteDataset = async (
@@ -196,7 +193,7 @@ export const deleteDataset = async (
   name: string,
 ): Promise<void> => {
   unwrap(
-    await manageDeleteDataset({
+    await generatedDeleteDataset({
       path: { tenant_id: tenant, dataset_name: name },
     }),
   );
@@ -206,31 +203,31 @@ export const createTenant = async (input: {
   id: string;
   name: string;
   default_dataset?: string;
-}): Promise<ManageCreatedTenant> =>
-  unwrap(await manageCreateTenant({ body: input }));
+}): Promise<CreateTenantResponse> =>
+  unwrap(await generatedCreateTenant({ body: input }));
 
 export const listMemberships = async (
   tenant: string,
 ): Promise<ManagedMembership[]> =>
-  unwrap(await manageListMemberships({ path: { tenant_id: tenant } }));
+  unwrap(await generatedListMemberships({ path: { tenant_id: tenant } }));
 
 export const upsertMembership = async (
   tenant: string,
   input: { email: string; role: ManagedMembership["role"] },
 ): Promise<ManagedMembership> =>
   unwrap(
-    await manageUpsertMembership({ path: { tenant_id: tenant }, body: input }),
+    await generatedUpsertMembership({ path: { tenant_id: tenant }, body: input }),
   );
 
 export const getSchema = async (): Promise<ManagedSchema> =>
-  unwrap(await manageGetSchema());
+  unwrap(await generatedGetSchema());
 
 export const removeMembership = async (
   tenant: string,
   userId: string,
 ): Promise<void> => {
   unwrap(
-    await manageRemoveMembership({
+    await generatedRemoveMembership({
       path: { tenant_id: tenant, user_id: userId },
     }),
   );

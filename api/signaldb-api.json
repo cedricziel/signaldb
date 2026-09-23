@@ -58,790 +58,6 @@
         ]
       }
     },
-    "/api/v1/admin/tenants": {
-      "get": {
-        "tags": [
-          "tenants"
-        ],
-        "summary": "List all tenants",
-        "operationId": "list_tenants",
-        "responses": {
-          "200": {
-            "description": "List of tenants",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListTenantsResponse"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      },
-      "post": {
-        "tags": [
-          "tenants"
-        ],
-        "summary": "Create a new tenant",
-        "operationId": "create_tenant",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateTenantRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "Tenant created",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TenantResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Validation error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Tenant already exists",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
-    "/api/v1/admin/tenants/{tenant_id}": {
-      "get": {
-        "tags": [
-          "tenants"
-        ],
-        "summary": "Get a tenant by ID",
-        "operationId": "get_tenant",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Tenant found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TenantResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Tenant not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      },
-      "put": {
-        "tags": [
-          "tenants"
-        ],
-        "summary": "Update a tenant",
-        "operationId": "update_tenant",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateTenantRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Tenant updated",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TenantResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Config-sourced tenants cannot be modified",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Tenant not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      },
-      "delete": {
-        "tags": [
-          "tenants"
-        ],
-        "summary": "Delete a tenant",
-        "operationId": "delete_tenant",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Tenant deleted"
-          },
-          "403": {
-            "description": "Config-sourced tenants cannot be deleted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Tenant not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
-    "/api/v1/admin/tenants/{tenant_id}/api-keys": {
-      "get": {
-        "tags": [
-          "api-keys"
-        ],
-        "summary": "List API keys for a tenant",
-        "operationId": "list_api_keys",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "List of API keys",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListApiKeysResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Tenant not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      },
-      "post": {
-        "tags": [
-          "api-keys"
-        ],
-        "summary": "Create a new API key for a tenant",
-        "operationId": "create_api_key",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateApiKeyRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "API key created",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CreateApiKeyResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Dataset does not exist",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Tenant not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Invalid or empty scopes",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Tenant API key quota exceeded",
-            "headers": {
-              "Retry-After": {
-                "schema": {
-                  "type": "integer",
-                  "format": "int64"
-                },
-                "description": "Fixed at 1 second: a count quota has no token bucket to refill from"
-              },
-              "X-RateLimit-Limit": {
-                "schema": {
-                  "type": "integer",
-                  "format": "int64"
-                },
-                "description": "The tenant's max_api_keys quota"
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
-    "/api/v1/admin/tenants/{tenant_id}/api-keys/{key_id}": {
-      "delete": {
-        "tags": [
-          "api-keys"
-        ],
-        "summary": "Revoke an API key",
-        "operationId": "revoke_api_key",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "key_id",
-            "in": "path",
-            "description": "API key identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "API key revoked"
-          },
-          "404": {
-            "description": "API key not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      },
-      "patch": {
-        "tags": [
-          "api-keys"
-        ],
-        "summary": "Update the scopes and/or dataset restriction of a live API key",
-        "operationId": "update_api_key",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "key_id",
-            "in": "path",
-            "description": "API key identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateApiKeyRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "API key updated",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiKeyResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Dataset does not exist",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "API key not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "API key is revoked",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Invalid scopes",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
-    "/api/v1/admin/tenants/{tenant_id}/datasets": {
-      "get": {
-        "tags": [
-          "datasets"
-        ],
-        "summary": "List datasets for a tenant",
-        "operationId": "list_datasets",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "List of datasets",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListDatasetsResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Tenant not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      },
-      "post": {
-        "tags": [
-          "datasets"
-        ],
-        "summary": "Create a new dataset for a tenant",
-        "operationId": "create_dataset",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateDatasetRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "Dataset created",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DatasetResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Tenant not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Tenant dataset quota exceeded",
-            "headers": {
-              "Retry-After": {
-                "schema": {
-                  "type": "integer",
-                  "format": "int64"
-                },
-                "description": "Fixed at 1 second: a count quota has no token bucket to refill from"
-              },
-              "X-RateLimit-Limit": {
-                "schema": {
-                  "type": "integer",
-                  "format": "int64"
-                },
-                "description": "The tenant's max_datasets quota"
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
-    "/api/v1/admin/tenants/{tenant_id}/datasets/{dataset_id}": {
-      "delete": {
-        "tags": [
-          "datasets"
-        ],
-        "summary": "Delete a dataset",
-        "operationId": "delete_dataset",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "dataset_id",
-            "in": "path",
-            "description": "Dataset identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Dataset deleted"
-          },
-          "403": {
-            "description": "Config-sourced datasets cannot be deleted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Dataset not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
-    "/api/v1/admin/users": {
-      "post": {
-        "tags": [
-          "users"
-        ],
-        "summary": "Create a human user and grant an initial tenant membership.",
-        "operationId": "create_user",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateUserRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "User created",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/UserResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Validation error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Tenant not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "User already exists",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
     "/api/v1/connection": {
       "get": {
         "tags": [
@@ -873,1137 +89,6 @@
             "bearerAuth": []
           }
         ]
-      }
-    },
-    "/api/v1/manage/schema": {
-      "get": {
-        "tags": [
-          "schema"
-        ],
-        "summary": "GET /api/v1/manage/schema",
-        "description": "The registered logical (OTel-native, client-visible) schema and the\nresolved physical (storage) schema for every version of every signal\nsource — read-only and not tenant-scoped (the schema is global, not\nper-tenant). Readable by a tenant administrator, an instance\nadministrator, or an API key carrying `tenant:manage`.",
-        "operationId": "manage_get_schema",
-        "responses": {
-          "200": {
-            "description": "Logical and physical schema",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageSchemaResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Tenant administrator role or tenant:manage scope required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "429": {
-            "$ref": "#/components/responses/RateLimited"
-          }
-        }
-      }
-    },
-    "/api/v1/manage/tenants": {
-      "post": {
-        "tags": [
-          "tenants"
-        ],
-        "operationId": "manage_create_tenant",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ManageCreateTenantRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "Tenant created",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageCreatedTenant"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Validation error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Instance administrator required",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Tenant already exists",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "429": {
-            "$ref": "#/components/responses/RateLimited"
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/manage/tenants/{tenant_id}/api-keys": {
-      "get": {
-        "tags": [
-          "api-keys"
-        ],
-        "operationId": "manage_list_api_keys",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "List of API keys",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ManageApiKeyResponse"
-                  }
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "429": {
-            "$ref": "#/components/responses/RateLimited"
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "api-keys"
-        ],
-        "operationId": "manage_create_api_key",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ManageCreateApiKeyRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "API key created",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageCreatedApiKey"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Dataset does not exist",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Unable to create API key",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Invalid or empty scopes",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "429": {
-            "$ref": "#/components/responses/RateLimited"
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}": {
-      "delete": {
-        "tags": [
-          "api-keys"
-        ],
-        "operationId": "manage_revoke_api_key",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "key_id",
-            "in": "path",
-            "description": "API key identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "API key revoked"
-          },
-          "403": {
-            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "API key not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "429": {
-            "$ref": "#/components/responses/RateLimited"
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "patch": {
-        "tags": [
-          "api-keys"
-        ],
-        "operationId": "manage_update_api_key",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "key_id",
-            "in": "path",
-            "description": "API key identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ManageUpdateApiKeyRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "API key updated",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageApiKeyResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Dataset does not exist",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "API key not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "API key is revoked",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Invalid or empty scopes",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "429": {
-            "$ref": "#/components/responses/RateLimited"
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/manage/tenants/{tenant_id}/datasets": {
-      "get": {
-        "tags": [
-          "datasets"
-        ],
-        "operationId": "manage_list_datasets",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "List of datasets",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/ManageDatasetResponse"
-                  }
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "429": {
-            "$ref": "#/components/responses/RateLimited"
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "post": {
-        "tags": [
-          "datasets"
-        ],
-        "operationId": "manage_create_dataset",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ManageCreateDatasetRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "Dataset created",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageDatasetResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Validation error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Unable to create dataset",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "429": {
-            "$ref": "#/components/responses/RateLimited"
-          }
-        }
-      }
-    },
-    "/api/v1/manage/tenants/{tenant_id}/datasets/{dataset_name}": {
-      "delete": {
-        "tags": [
-          "datasets"
-        ],
-        "operationId": "manage_delete_dataset",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "dataset_name",
-            "in": "path",
-            "description": "Dataset name",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Dataset deleted"
-          },
-          "403": {
-            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Dataset not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Dataset cannot be deleted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "429": {
-            "$ref": "#/components/responses/RateLimited"
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/manage/tenants/{tenant_id}/github-installations": {
-      "get": {
-        "tags": [
-          "github"
-        ],
-        "summary": "`GET /api/v1/manage/tenants/{tenant_id}/github-installations`",
-        "description": "Always 200, even when `[github]` is unconfigured (`configured: false`).\nWhen configured, refreshes each installation's repository list from\nGitHub; a refresh failure falls back to the last stored list, marked\n`stale: true`, rather than failing the whole request.",
-        "operationId": "manage_list_github_installations",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "Linked GitHub installations",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GitHubInstallationsResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "429": {
-            "$ref": "#/components/responses/RateLimited"
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/manage/tenants/{tenant_id}/github-installations/attach": {
-      "post": {
-        "tags": [
-          "github"
-        ],
-        "summary": "`POST /api/v1/manage/tenants/{tenant_id}/github-installations/attach`",
-        "description": "Attaches an installation that already exists on GitHub — e.g. one\nalready linked to another tenant on the same GitHub account — to\n`tenant_id` directly, with no OAuth install flow. GitHub allows only one\nApp installation per account, so once one tenant has linked it, GitHub's\ninstall-flow URL for a second tenant skips straight to its own\ninstallation-management page instead of redirecting back here; this\nendpoint is the escape hatch. Unlike [`start_github_link`]'s flow, there\nis no user token to check the installation's `installation_id` against\n— GitHub only scopes [`crate::github::GitHubApp::installation`] to *an*\ninstallation of this App, not to any account the caller controls. A\n`tenant:manage` grant is therefore not enough authorization on its own\n(it would let a tenant admin attach, and so read the source of, any\nother org that installed this deployment's App); this endpoint requires\n`ctx.is_instance_admin`, the same principal that already holds the\nApp's private key. The same read-only-permission check the OAuth\ncallback performs is re-run here.",
-        "operationId": "manage_attach_github_installation",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AttachGitHubInstallationRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "Installation attached",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GitHubInstallationResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Instance administrator required, or the installation carries a write-capable permission",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "GitHub integration is not configured, or the installation was not found on GitHub",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "429": {
-            "$ref": "#/components/responses/RateLimited"
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "502": {
-            "description": "GitHub request failed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/manage/tenants/{tenant_id}/github-installations/link": {
-      "post": {
-        "tags": [
-          "github"
-        ],
-        "summary": "`POST /api/v1/manage/tenants/{tenant_id}/github-installations/link`",
-        "description": "Mints a single-use, tenant-and-admin-bound state token and returns the\nGitHub install-flow URL carrying it. 404 when `[github]` is not\nconfigured.",
-        "operationId": "manage_start_github_link",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "201": {
-            "description": "Link flow started",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/GitHubLinkStartResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "GitHub integration is not configured",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "429": {
-            "$ref": "#/components/responses/RateLimited"
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/manage/tenants/{tenant_id}/github-installations/{installation_id}": {
-      "delete": {
-        "tags": [
-          "github"
-        ],
-        "summary": "`DELETE /api/v1/manage/tenants/{tenant_id}/github-installations/{installation_id}`",
-        "description": "Removes the tenant's link and drops any cached installation token, so\ntoken minting for that installation stops immediately (spec: \"removal\ntakes effect immediately\").",
-        "operationId": "manage_remove_github_installation",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "installation_id",
-            "in": "path",
-            "description": "GitHub installation identifier",
-            "required": true,
-            "schema": {
-              "type": "integer",
-              "format": "int64"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Installation link removed"
-          },
-          "403": {
-            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "GitHub installation not found for this tenant, or GitHub integration is not configured",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "429": {
-            "$ref": "#/components/responses/RateLimited"
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/manage/tenants/{tenant_id}/memberships": {
-      "get": {
-        "tags": [
-          "memberships"
-        ],
-        "operationId": "manage_list_memberships",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "List of memberships",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "array",
-                  "items": {
-                    "$ref": "#/components/schemas/MembershipResponse"
-                  }
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "429": {
-            "$ref": "#/components/responses/RateLimited"
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          }
-        }
-      },
-      "put": {
-        "tags": [
-          "memberships"
-        ],
-        "operationId": "manage_upsert_membership",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpsertMembershipRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "Membership updated",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MembershipResponse"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "User not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Last administrator cannot be demoted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "429": {
-            "$ref": "#/components/responses/RateLimited"
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/manage/tenants/{tenant_id}/memberships/{user_id}": {
-      "delete": {
-        "tags": [
-          "memberships"
-        ],
-        "operationId": "manage_remove_membership",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "user_id",
-            "in": "path",
-            "description": "User identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Membership removed"
-          },
-          "400": {
-            "description": "Cannot remove own membership",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "403": {
-            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Last administrator cannot be removed",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          },
-          "429": {
-            "$ref": "#/components/responses/RateLimited"
-          },
-          "500": {
-            "description": "Internal error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ManageError"
-                }
-              }
-            }
-          }
-        }
       }
     },
     "/api/v1/ops/compact": {
@@ -2636,6 +721,34 @@
             "bearerAuth": []
           }
         ]
+      }
+    },
+    "/api/v1/schema": {
+      "get": {
+        "tags": [
+          "schema"
+        ],
+        "summary": "Get the registered logical and physical schema for every signal source",
+        "description": "The registered logical (OTel-native, client-visible) schema and the\nresolved physical (storage) schema for every version of every signal\nsource — read-only and not tenant-scoped (the schema is global, not\nper-tenant). Readable by any authenticated tenant credential.",
+        "operationId": "get_schema",
+        "responses": {
+          "200": {
+            "description": "Logical and physical schema",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        }
       }
     },
     "/api/v1/schema/attributes": {
@@ -3445,16 +1558,25 @@
         "tags": [
           "tenants"
         ],
-        "summary": "GET /tenants",
-        "description": "List all configured tenants",
-        "operationId": "list_tenants_self",
+        "summary": "List tenants visible to the caller",
+        "operationId": "list_tenants",
         "responses": {
           "200": {
-            "description": "The caller's own tenant, as a single-entry list",
+            "description": "Tenants visible to the caller",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TenantSelfListResponse"
+                  "$ref": "#/components/schemas/ListTenantsResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             }
@@ -3463,6 +1585,99 @@
         "security": [
           {
             "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "tenants"
+        ],
+        "summary": "Create a new tenant",
+        "operationId": "create_tenant",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateTenantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Tenant created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Instance administrator required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Tenant already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
           }
         ]
       }
@@ -3472,14 +1687,13 @@
         "tags": [
           "tenants"
         ],
-        "summary": "GET /tenants/:tenant_id",
-        "description": "Get information about a specific tenant",
-        "operationId": "get_tenant_self",
+        "summary": "Get a tenant by ID",
+        "operationId": "get_tenant",
         "parameters": [
           {
             "name": "tenant_id",
             "in": "path",
-            "description": "Tenant identifier (must match the authenticated tenant)",
+            "description": "Tenant identifier",
             "required": true,
             "schema": {
               "type": "string"
@@ -3488,25 +1702,1424 @@
         ],
         "responses": {
           "200": {
-            "description": "Tenant information",
+            "description": "Tenant found",
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/TenantInfo"
+                  "$ref": "#/components/schemas/TenantResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
                 }
               }
             }
           },
           "403": {
-            "description": "Requested tenant does not match the authenticated tenant"
+            "description": "Requested tenant does not match the authenticated tenant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           },
           "404": {
-            "description": "Tenant not found"
+            "description": "Tenant not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
           }
         },
         "security": [
           {
             "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "tenants"
+        ],
+        "summary": "Delete a database-sourced tenant",
+        "operationId": "delete_tenant",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Tenant deleted"
+          },
+          "401": {
+            "description": "Missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Config-sourced tenants cannot be deleted, or instance administrator required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Tenant not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "tenants"
+        ],
+        "summary": "Update a tenant's name or default dataset",
+        "operationId": "update_tenant",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateTenantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Tenant updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TenantResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Config-sourced tenants cannot be modified, or instance administrator required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Tenant not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tenants/{tenant_id}/api-keys": {
+      "get": {
+        "tags": [
+          "api-keys"
+        ],
+        "operationId": "list_api_keys",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of API keys",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ManageApiKeyResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "api-keys"
+        ],
+        "operationId": "create_api_key",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManageCreateApiKeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "API key created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageCreatedApiKey"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Dataset does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Unable to create API key",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid or empty scopes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tenants/{tenant_id}/api-keys/{key_id}": {
+      "delete": {
+        "tags": [
+          "api-keys"
+        ],
+        "operationId": "revoke_api_key",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key_id",
+            "in": "path",
+            "description": "API key identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "API key revoked"
+          },
+          "401": {
+            "description": "Missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "API key not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
+      },
+      "patch": {
+        "tags": [
+          "api-keys"
+        ],
+        "operationId": "update_api_key",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "key_id",
+            "in": "path",
+            "description": "API key identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManageUpdateApiKeyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "API key updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageApiKeyResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Dataset does not exist",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "API key not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "API key is revoked",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid or empty scopes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tenants/{tenant_id}/datasets": {
+      "get": {
+        "tags": [
+          "datasets"
+        ],
+        "operationId": "list_datasets",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of datasets",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ManageDatasetResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "datasets"
+        ],
+        "operationId": "create_dataset",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ManageCreateDatasetRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Dataset created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageDatasetResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Unable to create dataset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tenants/{tenant_id}/datasets/{dataset_name}": {
+      "delete": {
+        "tags": [
+          "datasets"
+        ],
+        "operationId": "delete_dataset",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "dataset_name",
+            "in": "path",
+            "description": "Dataset name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Dataset deleted"
+          },
+          "401": {
+            "description": "Missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Dataset not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Dataset cannot be deleted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tenants/{tenant_id}/github-installations": {
+      "get": {
+        "tags": [
+          "github"
+        ],
+        "summary": "`GET /api/v1/tenants/{tenant_id}/github-installations`",
+        "description": "Always 200, even when `[github]` is unconfigured (`configured: false`).\nWhen configured, refreshes each installation's repository list from\nGitHub; a refresh failure falls back to the last stored list, marked\n`stale: true`, rather than failing the whole request.",
+        "operationId": "list_github_installations",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Linked GitHub installations",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubInstallationsResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tenants/{tenant_id}/github-installations/attach": {
+      "post": {
+        "tags": [
+          "github"
+        ],
+        "summary": "`POST /api/v1/tenants/{tenant_id}/github-installations/attach`",
+        "description": "Attaches an installation that already exists on GitHub — e.g. one\nalready linked to another tenant on the same GitHub account — to\n`tenant_id` directly, with no OAuth install flow. GitHub allows only one\nApp installation per account, so once one tenant has linked it, GitHub's\ninstall-flow URL for a second tenant skips straight to its own\ninstallation-management page instead of redirecting back here; this\nendpoint is the escape hatch. Unlike [`start_github_link`]'s flow, there\nis no user token to check the installation's `installation_id` against\n— GitHub only scopes [`crate::github::GitHubApp::installation`] to *an*\ninstallation of this App, not to any account the caller controls. A\n`tenant:manage` grant is therefore not enough authorization on its own\n(it would let a tenant admin attach, and so read the source of, any\nother org that installed this deployment's App); this endpoint requires\n`ctx.is_instance_admin`, the same principal that already holds the\nApp's private key. The same read-only-permission check the OAuth\ncallback performs is re-run here.",
+        "operationId": "attach_github_installation",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttachGitHubInstallationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Installation attached",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubInstallationResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Instance administrator required, or the installation carries a write-capable permission",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "GitHub integration is not configured, or the installation was not found on GitHub",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "502": {
+            "description": "GitHub request failed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tenants/{tenant_id}/github-installations/link": {
+      "post": {
+        "tags": [
+          "github"
+        ],
+        "summary": "`POST /api/v1/tenants/{tenant_id}/github-installations/link`",
+        "description": "Mints a single-use, tenant-and-admin-bound state token and returns the\nGitHub install-flow URL carrying it. 404 when `[github]` is not\nconfigured.",
+        "operationId": "start_github_link",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "description": "Link flow started",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GitHubLinkStartResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "GitHub integration is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tenants/{tenant_id}/github-installations/{installation_id}": {
+      "delete": {
+        "tags": [
+          "github"
+        ],
+        "summary": "`DELETE /api/v1/tenants/{tenant_id}/github-installations/{installation_id}`",
+        "description": "Removes the tenant's link and drops any cached installation token, so\ntoken minting for that installation stops immediately (spec: \"removal\ntakes effect immediately\").",
+        "operationId": "remove_github_installation",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "installation_id",
+            "in": "path",
+            "description": "GitHub installation identifier",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Installation link removed"
+          },
+          "403": {
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "GitHub installation not found for this tenant, or GitHub integration is not configured",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/v1/tenants/{tenant_id}/memberships": {
+      "get": {
+        "tags": [
+          "memberships"
+        ],
+        "operationId": "list_memberships",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List of memberships",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/MembershipResponse"
+                  }
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Tenant not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "memberships"
+        ],
+        "operationId": "upsert_membership",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpsertMembershipRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Membership updated",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MembershipResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "User or tenant not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Last administrator cannot be demoted",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
+      }
+    },
+    "/api/v1/tenants/{tenant_id}/memberships/{user_id}": {
+      "delete": {
+        "tags": [
+          "memberships"
+        ],
+        "operationId": "remove_membership",
+        "parameters": [
+          {
+            "name": "tenant_id",
+            "in": "path",
+            "description": "Tenant identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "user_id",
+            "in": "path",
+            "description": "User identifier",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Membership removed"
+          },
+          "400": {
+            "description": "Cannot remove own membership",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Tenant not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Last administrator cannot be removed",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
           }
         ]
       }
@@ -3769,6 +3382,142 @@
         "security": [
           {
             "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/users": {
+      "get": {
+        "tags": [
+          "users"
+        ],
+        "summary": "List human users",
+        "operationId": "list_users",
+        "responses": {
+          "200": {
+            "description": "Users visible to the caller",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ListUsersResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "users"
+        ],
+        "summary": "Create a user outright and grant an initial tenant membership",
+        "operationId": "create_user",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateUserRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "User created",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Instance administrator required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Tenant not found",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "User already exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
           }
         ]
       }
@@ -5400,70 +5149,6 @@
           }
         }
       },
-      "ApiKeyResponse": {
-        "type": "object",
-        "description": "API key information (without the raw key).",
-        "required": [
-          "id",
-          "created_at"
-        ],
-        "properties": {
-          "allowed_origins": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "Allowed-origin set the key is restricted to, if any; `null` is\nunrestricted."
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time",
-            "description": "RFC 3339 creation timestamp."
-          },
-          "dataset_ids": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "Dataset set the key is restricted to, if any; `null` is unrestricted."
-          },
-          "id": {
-            "type": "string",
-            "description": "Unique key identifier."
-          },
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Optional human-readable name."
-          },
-          "revoked_at": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time",
-            "description": "RFC 3339 revocation timestamp (if revoked)."
-          },
-          "scopes": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "Scopes the key carries; `null` for a legacy unrestricted key."
-          }
-        }
-      },
       "AttachGitHubInstallationRequest": {
         "type": "object",
         "description": "Request body for [`attach_github_installation`].",
@@ -6073,127 +5758,8 @@
           "none"
         ]
       },
-      "CreateApiKeyRequest": {
-        "type": "object",
-        "description": "Request body for creating a new API key.\n\n`scopes` is required and non-empty: a key's permissions are always\nexplicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,\n`profiles:write`, `traces:read`, `logs:read`, `metrics:read`,\n`profiles:read`, `schema:read`, `schema:write`, `processors:read`,\n`processors:write`.\n\nThe legacy singular `dataset_id` field is not accepted here (removed in\nthe multi-dataset-key-restriction change): a request body carrying it is\nrejected with a validation error rather than silently ignored, since\ndropping it would create an unrestricted key when the caller asked for a\nrestricted one.",
-        "required": [
-          "scopes"
-        ],
-        "properties": {
-          "allowed_origins": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "Browser origins the key is restricted to for CORS checks. Omitted or\n`null` creates an unrestricted key; a non-empty array restricts it to\nexactly that set. An explicit empty array, or a duplicate entry\nwithin the set, is rejected.",
-            "minItems": 1
-          },
-          "dataset_ids": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "Dataset set the key is restricted to. Omitted or `null` creates an\nunrestricted key; a non-empty array restricts it to exactly that set.\nAn explicit empty array, or a duplicate name within the set, is\nrejected.",
-            "minItems": 1
-          },
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Optional human-readable name for the key."
-          },
-          "scopes": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Scopes the key carries (required, at least one)."
-          }
-        },
-        "additionalProperties": false
-      },
-      "CreateApiKeyResponse": {
-        "type": "object",
-        "description": "Response returned when a new API key is created (includes the raw key).",
-        "required": [
-          "id",
-          "key",
-          "scopes",
-          "created_at"
-        ],
-        "properties": {
-          "allowed_origins": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "Allowed-origin set the key is restricted to, if any; `null` is\nunrestricted."
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time",
-            "description": "RFC 3339 creation timestamp."
-          },
-          "dataset_ids": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "Dataset set the key is restricted to, if any; `null` is unrestricted."
-          },
-          "id": {
-            "type": "string",
-            "description": "Unique key identifier."
-          },
-          "key": {
-            "type": "string",
-            "description": "The raw API key (only shown once at creation time)."
-          },
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Optional human-readable name."
-          },
-          "scopes": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Scopes the key carries."
-          }
-        }
-      },
-      "CreateDatasetRequest": {
-        "type": "object",
-        "description": "Request body for creating a new dataset.",
-        "required": [
-          "name"
-        ],
-        "properties": {
-          "name": {
-            "type": "string",
-            "description": "Dataset name."
-          }
-        }
-      },
       "CreateTenantRequest": {
         "type": "object",
-        "description": "Request body for creating a new tenant.",
         "required": [
           "id",
           "name"
@@ -6203,16 +5769,13 @@
             "type": [
               "string",
               "null"
-            ],
-            "description": "Default dataset name."
+            ]
           },
           "id": {
-            "type": "string",
-            "description": "Unique tenant identifier."
+            "type": "string"
           },
           "name": {
-            "type": "string",
-            "description": "Human-readable tenant name."
+            "type": "string"
           }
         }
       },
@@ -6304,35 +5867,6 @@
           },
           "user": {
             "$ref": "#/components/schemas/SessionUser"
-          }
-        }
-      },
-      "DatasetResponse": {
-        "type": "object",
-        "description": "Dataset information returned by the API.",
-        "required": [
-          "id",
-          "name",
-          "tenant_id",
-          "created_at"
-        ],
-        "properties": {
-          "created_at": {
-            "type": "string",
-            "format": "date-time",
-            "description": "RFC 3339 creation timestamp."
-          },
-          "id": {
-            "type": "string",
-            "description": "Unique dataset identifier."
-          },
-          "name": {
-            "type": "string",
-            "description": "Dataset name."
-          },
-          "tenant_id": {
-            "type": "string",
-            "description": "Tenant that owns this dataset."
           }
         }
       },
@@ -7167,38 +6701,6 @@
           }
         }
       },
-      "ListApiKeysResponse": {
-        "type": "object",
-        "description": "Response containing a list of API keys.",
-        "required": [
-          "api_keys"
-        ],
-        "properties": {
-          "api_keys": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ApiKeyResponse"
-            },
-            "description": "List of API key records (without raw keys)."
-          }
-        }
-      },
-      "ListDatasetsResponse": {
-        "type": "object",
-        "description": "Response containing a list of datasets.",
-        "required": [
-          "datasets"
-        ],
-        "properties": {
-          "datasets": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/DatasetResponse"
-            },
-            "description": "List of dataset records."
-          }
-        }
-      },
       "ListTablesResponse": {
         "type": "object",
         "description": "API response for listing tables",
@@ -7229,7 +6731,6 @@
       },
       "ListTenantsResponse": {
         "type": "object",
-        "description": "Response containing a list of tenants.",
         "required": [
           "tenants"
         ],
@@ -7238,8 +6739,60 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/TenantResponse"
-            },
-            "description": "List of tenant records."
+            }
+          }
+        }
+      },
+      "ListUsersResponse": {
+        "type": "object",
+        "required": [
+          "users"
+        ],
+        "properties": {
+          "users": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/UserResponse"
+            }
+          }
+        }
+      },
+      "LogicalField": {
+        "type": "object",
+        "description": "One logical (client-visible, OTel-native) field, as registered in\n[`common::schema::logical::LogicalSchema`].",
+        "required": [
+          "source",
+          "name",
+          "value_type",
+          "filterability",
+          "kind",
+          "non_native"
+        ],
+        "properties": {
+          "filterability": {
+            "$ref": "#/components/schemas/Filterability"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/LogicalFieldKind"
+          },
+          "level": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`resource` | `scope` | `record`, absent when the field isn't\nattribute-scoped (a plain `String` here, not `Option<AttributeLevel>`\n— utoipa emits a nullable `$ref` enum as `oneOf: [{type: null}, ref]`,\nwhich the progenitor-generated Rust SDK client can't parse)."
+          },
+          "name": {
+            "type": "string"
+          },
+          "non_native": {
+            "type": "boolean"
+          },
+          "source": {
+            "type": "string"
+          },
+          "value_type": {
+            "$ref": "#/components/schemas/LogicalType"
           }
         }
       },
@@ -7409,27 +6962,6 @@
           }
         }
       },
-      "ManageCreateTenantRequest": {
-        "type": "object",
-        "required": [
-          "id",
-          "name"
-        ],
-        "properties": {
-          "default_dataset": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "id": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          }
-        }
-      },
       "ManageCreatedApiKey": {
         "type": "object",
         "description": "201 response body for API key creation via the management API.\n\nFields mirror the previous `json!` body exactly (including `null` for\nabsent `name`), preserving the wire format.",
@@ -7477,18 +7009,6 @@
           }
         }
       },
-      "ManageCreatedTenant": {
-        "type": "object",
-        "description": "201 response body for tenant creation via the management API.",
-        "required": [
-          "id"
-        ],
-        "properties": {
-          "id": {
-            "type": "string"
-          }
-        }
-      },
       "ManageDatasetResponse": {
         "type": "object",
         "required": [
@@ -7506,7 +7026,7 @@
       },
       "ManageError": {
         "type": "object",
-        "description": "Error response body for the management API.",
+        "description": "Error response body for the tenant-scoped resource endpoints.",
         "required": [
           "error"
         ],
@@ -7516,141 +7036,9 @@
           }
         }
       },
-      "ManageLogicalField": {
-        "type": "object",
-        "description": "One logical (client-visible, OTel-native) field, as registered in\n[`common::schema::logical::LogicalSchema`].",
-        "required": [
-          "source",
-          "name",
-          "value_type",
-          "filterability",
-          "kind",
-          "non_native"
-        ],
-        "properties": {
-          "filterability": {
-            "$ref": "#/components/schemas/Filterability"
-          },
-          "kind": {
-            "$ref": "#/components/schemas/LogicalFieldKind"
-          },
-          "level": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "`resource` | `scope` | `record`, absent when the field isn't\nattribute-scoped (a plain `String` here, not `Option<AttributeLevel>`\n— utoipa emits a nullable `$ref` enum as `oneOf: [{type: null}, ref]`,\nwhich the progenitor-generated Rust SDK client can't parse)."
-          },
-          "name": {
-            "type": "string"
-          },
-          "non_native": {
-            "type": "boolean"
-          },
-          "source": {
-            "type": "string"
-          },
-          "value_type": {
-            "$ref": "#/components/schemas/LogicalType"
-          }
-        }
-      },
-      "ManagePhysicalField": {
-        "type": "object",
-        "description": "One physical (storage) column, as resolved from `schemas.toml`.",
-        "required": [
-          "name",
-          "field_type",
-          "required",
-          "physical_only"
-        ],
-        "properties": {
-          "computed": {
-            "type": [
-              "string",
-              "null"
-            ]
-          },
-          "field_type": {
-            "type": "string"
-          },
-          "name": {
-            "type": "string"
-          },
-          "physical_only": {
-            "type": "boolean"
-          },
-          "required": {
-            "type": "boolean"
-          }
-        }
-      },
-      "ManagePhysicalSchema": {
-        "type": "object",
-        "description": "One resolved table-schema version for one signal source.",
-        "required": [
-          "source",
-          "version",
-          "is_current",
-          "description",
-          "partition_by",
-          "fields"
-        ],
-        "properties": {
-          "description": {
-            "type": "string"
-          },
-          "fields": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ManagePhysicalField"
-            }
-          },
-          "is_current": {
-            "type": "boolean"
-          },
-          "partition_by": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            }
-          },
-          "source": {
-            "type": "string"
-          },
-          "version": {
-            "type": "string"
-          }
-        }
-      },
-      "ManageSchemaResponse": {
-        "type": "object",
-        "required": [
-          "logical_schema_version",
-          "logical",
-          "physical"
-        ],
-        "properties": {
-          "logical": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ManageLogicalField"
-            }
-          },
-          "logical_schema_version": {
-            "type": "string"
-          },
-          "physical": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ManagePhysicalSchema"
-            }
-          }
-        }
-      },
       "ManageUpdateApiKeyRequest": {
         "type": "object",
-        "description": "Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.\nAbsent fields are left untouched. `dataset_ids`/`clear_dataset_restriction`\nmirror [`signaldb_api::UpdateApiKeyRequest`] (D1a); the legacy singular\n`dataset_id` field is rejected via `deny_unknown_fields` rather than\nsilently dropped.",
+        "description": "Body for `PATCH /api/v1/tenants/{tenant_id}/api-keys/{key_id}`.\nAbsent fields are left untouched. `dataset_ids`/`clear_dataset_restriction`\nmirror [`signaldb_api::UpdateApiKeyRequest`] (D1a); the legacy singular\n`dataset_id` field is rejected via `deny_unknown_fields` rather than\nsilently dropped.",
         "properties": {
           "allowed_origins": {
             "type": [
@@ -8063,6 +7451,74 @@
             "type": "string"
           },
           "traces": {
+            "type": "string"
+          }
+        }
+      },
+      "PhysicalField": {
+        "type": "object",
+        "description": "One physical (storage) column, as resolved from `schemas.toml`.",
+        "required": [
+          "name",
+          "field_type",
+          "required",
+          "physical_only"
+        ],
+        "properties": {
+          "computed": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "field_type": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "physical_only": {
+            "type": "boolean"
+          },
+          "required": {
+            "type": "boolean"
+          }
+        }
+      },
+      "PhysicalSchema": {
+        "type": "object",
+        "description": "One resolved table-schema version for one signal source.",
+        "required": [
+          "source",
+          "version",
+          "is_current",
+          "description",
+          "partition_by",
+          "fields"
+        ],
+        "properties": {
+          "description": {
+            "type": "string"
+          },
+          "fields": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PhysicalField"
+            }
+          },
+          "is_current": {
+            "type": "boolean"
+          },
+          "partition_by": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "source": {
+            "type": "string"
+          },
+          "version": {
             "type": "string"
           }
         }
@@ -8775,6 +8231,31 @@
           }
         }
       },
+      "SchemaResponse": {
+        "type": "object",
+        "required": [
+          "logical_schema_version",
+          "logical",
+          "physical"
+        ],
+        "properties": {
+          "logical": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/LogicalField"
+            }
+          },
+          "logical_schema_version": {
+            "type": "string"
+          },
+          "physical": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/PhysicalSchema"
+            }
+          }
+        }
+      },
       "SearchResult": {
         "type": "object",
         "description": "Result of GET /api/search\nSee <https://grafana.com/docs/tempo/latest/api_docs/#example-of-traceql-search>",
@@ -9210,48 +8691,9 @@
           }
         }
       },
-      "TenantInfo": {
-        "type": "object",
-        "description": "API response for tenant information",
-        "required": [
-          "tenant_id",
-          "schema",
-          "enabled"
-        ],
-        "properties": {
-          "custom_schemas": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "description": "Custom schema definitions",
-            "additionalProperties": {
-              "type": "string"
-            },
-            "propertyNames": {
-              "type": "string"
-            }
-          },
-          "enabled": {
-            "type": "boolean",
-            "description": "Whether tenant is enabled"
-          },
-          "schema": {
-            "type": [
-              "object",
-              "null"
-            ],
-            "description": "Tenant-specific schema configuration"
-          },
-          "tenant_id": {
-            "type": "string",
-            "description": "Tenant ID"
-          }
-        }
-      },
       "TenantResponse": {
         "type": "object",
-        "description": "Tenant information returned by the API.",
+        "description": "Superset tenant response: the catalog-backed identity fields\n(`id`/`name`/`default_dataset`/`source`/timestamps) every caller of the\nold admin surface relied on, unchanged.",
         "required": [
           "id",
           "name",
@@ -9262,53 +8704,26 @@
         "properties": {
           "created_at": {
             "type": "string",
-            "format": "date-time",
-            "description": "RFC 3339 creation timestamp."
+            "format": "date-time"
           },
           "default_dataset": {
             "type": [
               "string",
               "null"
-            ],
-            "description": "Default dataset name."
+            ]
           },
           "id": {
-            "type": "string",
-            "description": "Unique tenant identifier."
+            "type": "string"
           },
           "name": {
-            "type": "string",
-            "description": "Human-readable tenant name."
+            "type": "string"
           },
           "source": {
-            "type": "string",
-            "description": "Source of the tenant record (config or database)."
+            "type": "string"
           },
           "updated_at": {
             "type": "string",
-            "format": "date-time",
-            "description": "RFC 3339 last-updated timestamp."
-          }
-        }
-      },
-      "TenantSelfListResponse": {
-        "type": "object",
-        "description": "API response for listing tenants\n\nRenamed in the OpenAPI document (`#[schema(as = ...)]`) to avoid\ncolliding with `signaldb_api::ListTenantsResponse` (the admin API's\ntenant list, a different shape) — both are plain Rust structs named\n`ListTenantsResponse`, and utoipa keys OpenAPI schema components by Rust\ntype name unless told otherwise.",
-        "required": [
-          "tenants",
-          "default_tenant"
-        ],
-        "properties": {
-          "default_tenant": {
-            "type": "string",
-            "description": "Default tenant ID"
-          },
-          "tenants": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/TenantInfo"
-            },
-            "description": "List of tenants"
+            "format": "date-time"
           }
         }
       },
@@ -9479,53 +8894,6 @@
           "github_error",
           "internal"
         ]
-      },
-      "UpdateApiKeyRequest": {
-        "type": "object",
-        "description": "Request body for updating a live API key's scopes and/or dataset restriction.\n\nAbsent fields are left untouched. Revoked keys cannot be updated. The\nlegacy singular `dataset_id` field is not accepted (see\n[`CreateApiKeyRequest`]).",
-        "properties": {
-          "allowed_origins": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "Replacement allowed-origins set (non-empty; an explicit empty array\nis rejected). Omitted/`null` leaves the current restriction\nunchanged. Mutually exclusive with `clear_allowed_origins: true`.",
-            "minItems": 1
-          },
-          "clear_allowed_origins": {
-            "type": "boolean",
-            "description": "Clear an existing allowed-origins restriction back to unrestricted.\nMust not be combined with a non-empty `allowed_origins` in the same\nrequest."
-          },
-          "clear_dataset_restriction": {
-            "type": "boolean",
-            "description": "Clear an existing dataset restriction back to unrestricted. Must not\nbe combined with a non-empty `dataset_ids` in the same request."
-          },
-          "dataset_ids": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "Replacement dataset set (non-empty; an explicit empty array is\nrejected). Omitted/`null` leaves the current restriction unchanged.\nMutually exclusive with `clear_dataset_restriction: true`.",
-            "minItems": 1
-          },
-          "scopes": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "New scope list (replaces the current one; must be non-empty)."
-          }
-        },
-        "additionalProperties": false
       },
       "UpdateTenantRequest": {
         "type": "object",
@@ -9872,6 +9240,10 @@
       }
     },
     "securitySchemes": {
+      "adminApiKey": {
+        "type": "http",
+        "scheme": "bearer"
+      },
       "bearerAuth": {
         "type": "http",
         "scheme": "bearer"

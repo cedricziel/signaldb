@@ -14,7 +14,10 @@ dsn = "sqlite://.data/signaldb.db"
 # internal Flight ports are controlled separately by
 # internal_service_key below.
 
-# Admin API key for the /api/v1/admin/* management endpoints
+# Break-glass admin API key: authenticates /api/v1/ops/* (operational
+# control) and, with no tenant, /api/v1/* (instance-admin
+# tenant/user management) and the tenant-scoped API-key/dataset admin
+# surface under /api/v1/tenants/{id}/api-keys and /datasets.
 # Generate a strong random key for production use
 # admin_api_key = "sk-admin-your-secret-key-here"
 

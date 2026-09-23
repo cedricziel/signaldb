@@ -20,7 +20,7 @@ const routes: JsonRoute[] = [
   irCatchAll,
   { match: `/api/v1/whoami`, body: who },
   {
-    match: `/api/v1/manage/tenants/${tenant}/api-keys`,
+    match: `/api/v1/tenants/${tenant}/api-keys`,
     body: [
       {
         id: "key-1",

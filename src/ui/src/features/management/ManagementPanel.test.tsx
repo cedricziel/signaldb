@@ -44,8 +44,8 @@ function renderPanelWithTwoDatasets() {
 
 function stubDatasetsSectionRoutes() {
   stubFetchRoutes([
-    { match: "/api/v1/manage/tenants/acme/api-keys", body: [] },
-    { match: "/api/v1/manage/tenants/acme/memberships", body: [] },
+    { match: "/api/v1/tenants/acme/api-keys", body: [] },
+    { match: "/api/v1/tenants/acme/memberships", body: [] },
     { match: TABLES_PATH, body: { tenant_id: "acme", tables: [] } },
   ]);
 }
@@ -59,8 +59,8 @@ const TABLES_PATH = "/api/v1/tenants/acme/tables";
 describe("ManagementPanel API key creation form", () => {
   it("pre-checks all four ingestion scopes by default", async () => {
     stubFetchRoutes([
-      { match: "/api/v1/manage/tenants/acme/api-keys", body: [] },
-      { match: "/api/v1/manage/tenants/acme/memberships", body: [] },
+      { match: "/api/v1/tenants/acme/api-keys", body: [] },
+      { match: "/api/v1/tenants/acme/memberships", body: [] },
       { match: TABLES_PATH, body: { tenant_id: "acme", tables: [] } },
     ]);
 
@@ -83,16 +83,16 @@ describe("ManagementPanel API key creation form", () => {
   it("offers a dataset multi-select and creates a key restricted to the checked datasets", async () => {
     const fetchMock = stubFetchRoutes([
       {
-        match: "/api/v1/manage/tenants/acme/api-keys",
+        match: "/api/v1/tenants/acme/api-keys",
         method: "GET",
         body: [],
       },
       {
-        match: "/api/v1/manage/tenants/acme/api-keys",
+        match: "/api/v1/tenants/acme/api-keys",
         method: "POST",
         body: { key: "sdbk_x" },
       },
-      { match: "/api/v1/manage/tenants/acme/memberships", body: [] },
+      { match: "/api/v1/tenants/acme/memberships", body: [] },
       { match: TABLES_PATH, body: { tenant_id: "acme", tables: [] } },
     ]);
 
@@ -124,7 +124,7 @@ describe("ManagementPanel API key creation form", () => {
   it("shows a key's dataset restriction, or 'unrestricted' when there is none", async () => {
     stubFetchRoutes([
       {
-        match: "/api/v1/manage/tenants/acme/api-keys",
+        match: "/api/v1/tenants/acme/api-keys",
         body: [
           {
             id: "k1",
@@ -142,7 +142,7 @@ describe("ManagementPanel API key creation form", () => {
           },
         ],
       },
-      { match: "/api/v1/manage/tenants/acme/memberships", body: [] },
+      { match: "/api/v1/tenants/acme/memberships", body: [] },
       { match: TABLES_PATH, body: { tenant_id: "acme", tables: [] } },
     ]);
 
@@ -166,16 +166,16 @@ describe("ManagementPanel API key creation form", () => {
   it("offers an allowed-origins picker and creates a key restricted to the typed origin", async () => {
     const fetchMock = stubFetchRoutes([
       {
-        match: "/api/v1/manage/tenants/acme/api-keys",
+        match: "/api/v1/tenants/acme/api-keys",
         method: "GET",
         body: [],
       },
       {
-        match: "/api/v1/manage/tenants/acme/api-keys",
+        match: "/api/v1/tenants/acme/api-keys",
         method: "POST",
         body: { key: "sdbk_origin" },
       },
-      { match: "/api/v1/manage/tenants/acme/memberships", body: [] },
+      { match: "/api/v1/tenants/acme/memberships", body: [] },
       { match: TABLES_PATH, body: { tenant_id: "acme", tables: [] } },
     ]);
 
@@ -210,8 +210,8 @@ describe("ManagementPanel API key creation form", () => {
 describe("ManagementPanel tables section", () => {
   it("lists the tenant's provisioned signal tables", async () => {
     stubFetchRoutes([
-      { match: "/api/v1/manage/tenants/acme/api-keys", body: [] },
-      { match: "/api/v1/manage/tenants/acme/memberships", body: [] },
+      { match: "/api/v1/tenants/acme/api-keys", body: [] },
+      { match: "/api/v1/tenants/acme/memberships", body: [] },
       {
         match: TABLES_PATH,
         body: {
@@ -264,8 +264,8 @@ describe("ManagementPanel tables section", () => {
 
   it("groups tables by dataset, one heading per dataset", async () => {
     stubFetchRoutes([
-      { match: "/api/v1/manage/tenants/acme/api-keys", body: [] },
-      { match: "/api/v1/manage/tenants/acme/memberships", body: [] },
+      { match: "/api/v1/tenants/acme/api-keys", body: [] },
+      { match: "/api/v1/tenants/acme/memberships", body: [] },
       {
         match: TABLES_PATH,
         body: {
@@ -329,8 +329,8 @@ describe("ManagementPanel tables section", () => {
 
   it("falls back to client-side grouping, with an 'Unknown dataset' heading, when a response omits the dataset grouping", async () => {
     stubFetchRoutes([
-      { match: "/api/v1/manage/tenants/acme/api-keys", body: [] },
-      { match: "/api/v1/manage/tenants/acme/memberships", body: [] },
+      { match: "/api/v1/tenants/acme/api-keys", body: [] },
+      { match: "/api/v1/tenants/acme/memberships", body: [] },
       {
         match: TABLES_PATH,
         // No `dataset` on the table and no `datasets` grouping at all — an
@@ -355,8 +355,8 @@ describe("ManagementPanel tables section", () => {
 
   it("shows an empty state when no tables are provisioned yet", async () => {
     stubFetchRoutes([
-      { match: "/api/v1/manage/tenants/acme/api-keys", body: [] },
-      { match: "/api/v1/manage/tenants/acme/memberships", body: [] },
+      { match: "/api/v1/tenants/acme/api-keys", body: [] },
+      { match: "/api/v1/tenants/acme/memberships", body: [] },
       {
         match: TABLES_PATH,
         body: { tenant_id: "acme", tables: [] },
@@ -375,9 +375,9 @@ describe("ManagementPanel tables section", () => {
 
   it("displays each membership's grant source, human-friendly", async () => {
     stubFetchRoutes([
-      { match: "/api/v1/manage/tenants/acme/api-keys", body: [] },
+      { match: "/api/v1/tenants/acme/api-keys", body: [] },
       {
-        match: "/api/v1/manage/tenants/acme/memberships",
+        match: "/api/v1/tenants/acme/memberships",
         body: [
           {
             user_id: "user-2",
@@ -408,9 +408,9 @@ describe("ManagementPanel tables section", () => {
   it("renders both a local and a mapped row for the same user without a React key warning, and only the local row is removable", async () => {
     const warnSpy = vi.spyOn(console, "error").mockImplementation(() => {});
     stubFetchRoutes([
-      { match: "/api/v1/manage/tenants/acme/api-keys", body: [] },
+      { match: "/api/v1/tenants/acme/api-keys", body: [] },
       {
-        match: "/api/v1/manage/tenants/acme/memberships",
+        match: "/api/v1/tenants/acme/memberships",
         body: [
           {
             user_id: "user-2",
@@ -452,8 +452,8 @@ describe("ManagementPanel tables section", () => {
 
   it("provisioning tables calls createTenantTables and refreshes the list", async () => {
     const fetchMock = stubFetchRoutes([
-      { match: "/api/v1/manage/tenants/acme/api-keys", body: [] },
-      { match: "/api/v1/manage/tenants/acme/memberships", body: [] },
+      { match: "/api/v1/tenants/acme/api-keys", body: [] },
+      { match: "/api/v1/tenants/acme/memberships", body: [] },
       {
         match: TABLES_PATH,
         body: { tenant_id: "acme", tables: [] },

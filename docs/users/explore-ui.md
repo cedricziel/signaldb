@@ -883,7 +883,7 @@ one repository (see below).
 Tenant-admin-only page for connecting SignalDB's GitHub App to the
 repositories that produce the tenant's telemetry. **Connect GitHub** asks
 the server for an install URL (`POST
-/api/v1/manage/tenants/{id}/github-installations/link`) and sends the
+/api/v1/tenants/{id}/github-installations/link`) and sends the
 browser to GitHub's install page; after you pick an organization and
 repositories, GitHub brings you back to this page, which shows the linked
 installation with the repositories it covers, who linked it, a **Manage on
@@ -918,7 +918,7 @@ this page uses; see [Authentication](authentication.md#api-key-scopes)),
 each with a one-line description; at least one scope is required, and an
 optional dataset restriction can be set. The list shows each key's scopes,
 and **Edit scopes** on a live key changes them in place (via
-`PATCH /api/v1/manage/tenants/{id}/api-keys/{key_id}`) without rotating
+`PATCH /api/v1/tenants/{id}/api-keys/{key_id}`) without rotating
 the secret; the change applies to the key's next request.
 
 Creating a key shows the secret once in a modal with a copy button;

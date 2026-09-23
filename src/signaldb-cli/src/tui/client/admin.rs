@@ -49,7 +49,7 @@ impl AdminClient {
     /// Result with AdminClient or error
     pub fn new(base_url: &str, admin_key: &str) -> Result<Self, AdminClientError> {
         // The generated SDK's operation URLs are absolute (e.g.
-        // /api/v1/admin/tenants), so the client base is the router root.
+        // /api/v1/tenants), so the client base is the router root.
         let client = crate::retry::client_builder(base_url)
             .bearer(admin_key)
             .build()
@@ -144,8 +144,7 @@ impl AdminClient {
             .await
             .map_err(|e| self.map_error(&e))?;
 
-        let body = response.into_inner();
-        Ok(to_json_array(&body.api_keys))
+        Ok(to_json_array(&response.into_inner()))
     }
 
     /// Create a new API key for a tenant carrying exactly `scopes`
@@ -157,7 +156,7 @@ impl AdminClient {
         scopes: Vec<String>,
         dataset_id: Option<String>,
     ) -> Result<serde_json::Value, AdminClientError> {
-        let request = signaldb_sdk::types::CreateApiKeyRequest {
+        let request = signaldb_sdk::types::ManageCreateApiKeyRequest {
             name: Some(name.to_string()),
             scopes,
             // TODO(multi-dataset-key-restriction phase 4): this TUI action
@@ -213,8 +212,7 @@ impl AdminClient {
             .await
             .map_err(|e| self.map_error(&e))?;
 
-        let body = response.into_inner();
-        Ok(to_json_array(&body.datasets))
+        Ok(to_json_array(&response.into_inner()))
     }
 
     /// Create a new dataset for a tenant
@@ -223,7 +221,7 @@ impl AdminClient {
         tenant_id: &str,
         id: &str,
     ) -> Result<serde_json::Value, AdminClientError> {
-        let request = signaldb_sdk::types::CreateDatasetRequest {
+        let request = signaldb_sdk::types::ManageCreateDatasetRequest {
             name: id.to_string(),
         };
 
@@ -244,12 +242,12 @@ impl AdminClient {
     pub async fn delete_dataset(
         &self,
         tenant_id: &str,
-        dataset_id: &str,
+        dataset_name: &str,
     ) -> Result<(), AdminClientError> {
         self.client
             .delete_dataset()
             .tenant_id(tenant_id)
-            .dataset_id(dataset_id)
+            .dataset_name(dataset_name)
             .send()
             .await
             .map_err(|e| self.map_error(&e))?;

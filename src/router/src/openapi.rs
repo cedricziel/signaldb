@@ -1,11 +1,13 @@
 //! Code-first OpenAPI document for the SignalDB HTTP API.
 //!
 //! The document is assembled from the `#[utoipa::path]` annotations on the
-//! admin (`/api/v1/admin/...`) and management (`/api/v1/manage/...`) handlers
-//! plus the `ToSchema`-deriving DTOs in [`signaldb_api`], this crate's
-//! management module, and [`common::catalog::MembershipRole`]. The generated
-//! spec is checked into `api/signaldb-api.json` and kept current by the golden
-//! test in this module.
+//! tenant-resource handlers — every resource lives at one regular path
+//! (`/api/v1/tenants/...`, `/api/v1/users`, `/api/v1/schema`; no
+//! privilege-scope path segment) — plus the `ToSchema`-deriving DTOs in
+//! [`signaldb_api`], this crate's `tenants`/`management` modules, and
+//! [`common::catalog::MembershipRole`]. The generated spec is checked into
+//! `api/signaldb-api.json` and kept current by the golden test in this
+//! module.
 
 use utoipa::{
     Modify, OpenApi,
@@ -21,7 +23,11 @@ use utoipa::{
 /// `signaldb_session` HttpOnly cookie), a distinct mechanism from
 /// `bearerAuth` that cookie-only endpoints like `GET /ui/session` restate
 /// per-path via `security(("sessionCookie" = []))` rather than inheriting
-/// this default.
+/// this default. And `adminApiKey`: the break-glass `[auth].admin_api_key`
+/// bearer, accepted with no tenant at all by the tenant-identity and
+/// tenant-scoped-admin operations that restate it alongside `bearerAuth` as
+/// an alternative (issue #1561) — an OR, not an AND: either credential
+/// authorizes on its own.
 struct SecurityAddon;
 
 impl Modify for SecurityAddon {
@@ -36,6 +42,10 @@ impl Modify for SecurityAddon {
         components.add_security_scheme(
             "sessionCookie",
             SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new("signaldb_session"))),
+        );
+        components.add_security_scheme(
+            "adminApiKey",
+            SecurityScheme::Http(Http::new(HttpAuthScheme::Bearer)),
         );
         openapi.security = Some(vec![SecurityRequirement::new(
             "bearerAuth",
@@ -73,27 +83,19 @@ impl Modify for SecurityAddon {
         (name = "processors", description = "Tenant OTTL processors applied at ingest"),
     ),
     paths(
-        crate::endpoints::admin::list_tenants,
-        crate::endpoints::admin::create_tenant,
-        crate::endpoints::admin::get_tenant,
-        crate::endpoints::admin::update_tenant,
-        crate::endpoints::admin::delete_tenant,
-        crate::endpoints::admin::list_api_keys,
-        crate::endpoints::admin::create_api_key,
-        crate::endpoints::admin::revoke_api_key,
-        crate::endpoints::admin::update_api_key,
-        crate::endpoints::admin::list_datasets,
-        crate::endpoints::admin::create_dataset,
-        crate::endpoints::admin::delete_dataset,
-        crate::endpoints::admin::create_user,
+        // Tenant identity resource (change: no-scope-prefixed-paths)
+        crate::endpoints::tenants::list_tenants,
+        crate::endpoints::tenants::get_tenant,
+        crate::endpoints::tenants::create_tenant,
+        crate::endpoints::tenants::update_tenant,
+        crate::endpoints::tenants::delete_tenant,
+        crate::endpoints::tenants::list_users,
+        crate::endpoints::tenants::create_user,
         // Tenant self-service endpoints (the caller's own tenant, via API key)
-        crate::endpoints::tenant::list_tenants,
-        crate::endpoints::tenant::get_tenant,
         crate::endpoints::tenant::list_tenant_tables,
         crate::endpoints::tenant::create_tenant_tables,
         crate::endpoints::tenant::list_tenant_schemas,
         crate::endpoints::tenant::list_available_schemas,
-        crate::endpoints::management::create_tenant,
         crate::endpoints::management::list_datasets,
         crate::endpoints::management::create_dataset,
         crate::endpoints::management::delete_dataset,
@@ -104,7 +106,7 @@ impl Modify for SecurityAddon {
         crate::endpoints::management::list_memberships,
         crate::endpoints::management::upsert_membership,
         crate::endpoints::management::remove_membership,
-        crate::endpoints::management::get_schema,
+        crate::endpoints::schema::get_schema,
         crate::endpoints::github::start_github_link,
         crate::endpoints::github::list_github_installations,
         crate::endpoints::github::remove_github_installation,
@@ -174,33 +176,23 @@ impl Modify for SecurityAddon {
         crate::endpoints::processors::test_processor,
     ),
     components(schemas(
-        // signaldb-api admin DTOs
+        // signaldb-api DTOs shared by the tenant identity resource
         signaldb_api::ApiError,
-        signaldb_api::CreateTenantRequest,
         signaldb_api::UpdateTenantRequest,
-        signaldb_api::TenantResponse,
-        signaldb_api::ListTenantsResponse,
-        signaldb_api::CreateApiKeyRequest,
-        signaldb_api::UpdateApiKeyRequest,
-        signaldb_api::CreateApiKeyResponse,
-        signaldb_api::ApiKeyResponse,
-        signaldb_api::ListApiKeysResponse,
-        signaldb_api::CreateDatasetRequest,
-        signaldb_api::DatasetResponse,
-        signaldb_api::ListDatasetsResponse,
         signaldb_api::CreateUserRequest,
         signaldb_api::UserResponse,
+        // Tenant identity resource (change: no-scope-prefixed-paths)
+        crate::endpoints::tenants::TenantResponse,
+        crate::endpoints::tenants::ListTenantsResponse,
+        crate::endpoints::tenants::CreateTenantRequest,
+        crate::endpoints::tenants::ListUsersResponse,
         // Tenant self-service DTOs
-        common::tenant_api::TenantInfo,
-        common::tenant_api::ListTenantsResponse,
         common::tenant_api::TableInfo,
         common::tenant_api::DatasetTables,
         common::tenant_api::ListTablesResponse,
         crate::endpoints::tenant::CreateTenantTablesResponse,
         crate::endpoints::tenant::AvailableSchemasResponse,
-        // management (session-authenticated) DTOs
-        crate::endpoints::management::CreateTenantRequest,
-        crate::endpoints::management::ManageCreatedTenant,
+        // tenant-scoped resource (datasets/api-keys/memberships) DTOs
         crate::endpoints::management::ManageError,
         crate::endpoints::management::DatasetResponse,
         crate::endpoints::management::CreateDatasetRequest,
@@ -210,10 +202,10 @@ impl Modify for SecurityAddon {
         crate::endpoints::management::ManageCreatedApiKey,
         crate::endpoints::management::MembershipResponse,
         crate::endpoints::management::UpsertMembershipRequest,
-        crate::endpoints::management::ManageLogicalField,
-        crate::endpoints::management::ManagePhysicalField,
-        crate::endpoints::management::ManagePhysicalSchema,
-        crate::endpoints::management::ManageSchemaResponse,
+        crate::endpoints::schema::LogicalField,
+        crate::endpoints::schema::PhysicalField,
+        crate::endpoints::schema::PhysicalSchema,
+        crate::endpoints::schema::SchemaResponse,
         crate::endpoints::github::GitHubLinkStartResponse,
         crate::endpoints::github::GitHubInstallationResponse,
         crate::endpoints::github::GitHubInstallationsResponse,
@@ -538,8 +530,7 @@ mod tests {
     /// paths straight out of those source files and cross-checks them
     /// against `KNOWN_ROUTES` / `ALLOWLISTED_ROUTES` bidirectionally, so a
     /// route added to one of those files without updating this list fails
-    /// loudly instead of silently escaping the guard. `admin.rs` (assembled
-    /// inline in `lib.rs`, not a standalone `router()` fn) and the
+    /// loudly instead of silently escaping the guard. The
     /// public/infra routes (`/health`, `/api/v1/openapi.json`, session,
     /// OAuth) are out of scope for the extraction and are trusted by
     /// inspection instead. `endpoints/pyroscope.rs` mounts two separate
@@ -565,15 +556,10 @@ mod tests {
         "/prometheus/api/v1/query_range",
         "/prometheus/api/v1/labels",
         "/prometheus/api/v1/label/{name}/values",
-        // endpoints/admin.rs, mounted at /api/v1/admin (assembled inline in
-        // lib.rs, not extracted — see `known_routes_match_router_fn_source`)
-        "/api/v1/admin/tenants",
-        "/api/v1/admin/tenants/{tenant_id}",
-        "/api/v1/admin/tenants/{tenant_id}/api-keys",
-        "/api/v1/admin/tenants/{tenant_id}/api-keys/{key_id}",
-        "/api/v1/admin/tenants/{tenant_id}/datasets",
-        "/api/v1/admin/tenants/{tenant_id}/datasets/{dataset_id}",
-        "/api/v1/admin/users",
+        // endpoints/tenants.rs, merged at /api/v1
+        "/api/v1/tenants",
+        "/api/v1/tenants/{tenant_id}",
+        "/api/v1/users",
         // endpoints/ops.rs, mounted at /api/v1/ops
         "/api/v1/ops/compact",
         "/api/v1/ops/compact/status",
@@ -587,8 +573,6 @@ mod tests {
         // endpoints/pyroscope.rs::profiles_router, mounted at /api/profiles
         "/api/profiles/trace/{trace_id}",
         // endpoints/tenant.rs, mounted at /api/v1
-        "/api/v1/tenants",
-        "/api/v1/tenants/{tenant_id}",
         "/api/v1/tenants/{tenant_id}/tables",
         "/api/v1/tenants/{tenant_id}/tables/create",
         "/api/v1/tenants/{tenant_id}/schemas",
@@ -599,15 +583,18 @@ mod tests {
         "/api/v1/query",
         // endpoints/discovery.rs, mounted alongside it
         "/api/v1/query/sources",
-        // endpoints/management.rs, mounted at /api/v1/manage
-        "/api/v1/manage/tenants",
-        "/api/v1/manage/tenants/{tenant_id}/datasets",
-        "/api/v1/manage/tenants/{tenant_id}/datasets/{dataset_name}",
-        "/api/v1/manage/tenants/{tenant_id}/api-keys",
-        "/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}",
-        "/api/v1/manage/tenants/{tenant_id}/memberships",
-        "/api/v1/manage/tenants/{tenant_id}/memberships/{user_id}",
-        "/api/v1/manage/schema",
+        // endpoints/management.rs, merged at /api/v1
+        "/api/v1/tenants/{tenant_id}/datasets",
+        "/api/v1/tenants/{tenant_id}/datasets/{dataset_name}",
+        "/api/v1/tenants/{tenant_id}/api-keys",
+        "/api/v1/tenants/{tenant_id}/api-keys/{key_id}",
+        "/api/v1/tenants/{tenant_id}/memberships",
+        "/api/v1/tenants/{tenant_id}/memberships/{user_id}",
+        // endpoints/github.rs::manage_router, merged at /api/v1
+        "/api/v1/tenants/{tenant_id}/github-installations/link",
+        "/api/v1/tenants/{tenant_id}/github-installations",
+        "/api/v1/tenants/{tenant_id}/github-installations/{installation_id}",
+        "/api/v1/tenants/{tenant_id}/github-installations/attach",
         // endpoints/schema.rs, mounted at /api/v1/schema
         "/api/v1/schema/registries",
         "/api/v1/schema/registries:validate",
@@ -708,15 +695,17 @@ mod tests {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         // (file, mount prefix, Some(fn name) to scope extraction to one
         // function body when the file assembles more than one router).
-        let files_with_prefix: [(&str, &str, Option<&str>); 12] = [
+        let files_with_prefix: [(&str, &str, Option<&str>); 14] = [
             ("src/endpoints/tempo.rs", "/tempo", None),
             ("src/endpoints/logql.rs", "/loki", None),
             ("src/endpoints/promql.rs", "/prometheus", None),
             ("src/endpoints/ops.rs", "/api/v1/ops", None),
             ("src/endpoints/tenant.rs", "/api/v1", None),
+            ("src/endpoints/tenants.rs", "/api/v1", None),
             ("src/endpoints/source_context.rs", "/api/v1", None),
             ("src/endpoints/query.rs", "/api/v1", None),
-            ("src/endpoints/management.rs", "/api/v1/manage", None),
+            ("src/endpoints/management.rs", "/api/v1", None),
+            ("src/endpoints/github.rs", "/api/v1", Some("manage_router")),
             ("src/endpoints/schema.rs", "/api/v1/schema", None),
             ("src/endpoints/processors.rs", "/api/v1", None),
             ("src/endpoints/pyroscope.rs", "/pyroscope", Some("router")),
@@ -759,14 +748,9 @@ mod tests {
              with a reason): {undeclared:?}"
         );
 
-        // admin.rs routes are assembled inline in lib.rs (not one of the
-        // extracted `router()` functions above) and are trusted by
-        // inspection rather than extracted; exclude them from the
-        // stale-entry check.
         let mut stale: Vec<&str> = known
             .iter()
             .chain(allowlisted.iter())
-            .filter(|route| !route.starts_with("/api/v1/admin/"))
             .filter(|route| !actual.contains(**route))
             .copied()
             .collect();
@@ -822,10 +806,9 @@ mod tests {
 
     /// Drift guard (change: query-throttle-signalling): every operation
     /// mounted behind the router's rate limiters — the query budget
-    /// (`query_rate_layer`, see `lib.rs`) and the admin per-tenant quotas
-    /// (`endpoints::admin`) — must declare a `429` response carrying at
-    /// least the `Retry-After` header, so a new rate-limited endpoint can't
-    /// silently ship without the retry contract.
+    /// (`query_rate_layer`, see `lib.rs`) — must declare a `429` response
+    /// carrying at least the `Retry-After` header, so a new rate-limited
+    /// endpoint can't silently ship without the retry contract.
     #[test]
     fn every_rate_limited_path_declares_429_with_retry_after() {
         let spec: serde_json::Value =
@@ -837,9 +820,8 @@ mod tests {
 
         // (path, method) pairs mounted under `query_rate_layer` in
         // `create_router` (tempo/pyroscope/loki/prometheus/api-profiles and
-        // the `/api/v1` tenant-scoped nest: query IR, whoami, connection, management,
-        // schema) plus the admin per-tenant count quotas, which answer 429
-        // via the same header contract (see `endpoints::admin`).
+        // the `/api/v1` tenant-scoped nest: query IR, whoami, connection,
+        // management, schema).
         let rate_limited: &[(&str, &str)] = &[
             ("/tempo/api/search", "get"),
             ("/tempo/api/traces/{trace_id}", "get"),
@@ -864,8 +846,6 @@ mod tests {
             ("/api/v1/whoami", "get"),
             ("/api/v1/connection", "get"),
             ("/api/v1/tenants/{tenant_id}/source-context", "post"),
-            ("/api/v1/admin/tenants/{tenant_id}/api-keys", "post"),
-            ("/api/v1/admin/tenants/{tenant_id}/datasets", "post"),
         ];
 
         for (path, method) in rate_limited {

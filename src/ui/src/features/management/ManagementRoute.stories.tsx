@@ -24,7 +24,7 @@ const who = sampleWhoami({
 const routes: JsonRoute[] = [
   irCatchAll,
   {
-    match: `/api/v1/manage/tenants/${tenant}/api-keys`,
+    match: `/api/v1/tenants/${tenant}/api-keys`,
     body: [
       {
         id: "key-1",
@@ -47,7 +47,7 @@ const routes: JsonRoute[] = [
     ],
   },
   {
-    match: `/api/v1/manage/tenants/${tenant}/memberships`,
+    match: `/api/v1/tenants/${tenant}/memberships`,
     body: [
       {
         user_id: "user-1",

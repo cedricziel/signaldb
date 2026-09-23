@@ -29,7 +29,7 @@ sequenceDiagram
     participant A as Tenant admin (browser)
     participant S as SignalDB router
     participant G as GitHub
-    A->>S: POST /api/v1/manage/tenants/{id}/github-installations/link
+    A->>S: POST /api/v1/tenants/{id}/github-installations/link
     S-->>A: install_url (carries a single-use state token)
     A->>G: Install the App on an org / repos
     G->>A: 302 /ui/github/callback?code&installation_id&state
@@ -119,10 +119,10 @@ The same surface exists on the HTTP API, the CLI, and MCP:
 
 | Operation                       | HTTP (tenant management API)                                                      | CLI                                                   | MCP tool                            |
 | ------------------------------- | --------------------------------------------------------------------------------- | ----------------------------------------------------- | ----------------------------------- |
-| Start a link                    | `POST /api/v1/manage/tenants/{id}/github-installations/link` → `install_url`      | `signaldb-cli tenant github link`                     | `tenant_start_github_link`          |
-| List installations              | `GET /api/v1/manage/tenants/{id}/github-installations`                            | `signaldb-cli tenant github list`                     | `tenant_list_github_installations`  |
-| Remove a link                   | `DELETE /api/v1/manage/tenants/{id}/github-installations/{installation_id}`       | `signaldb-cli tenant github remove <installation_id>` | `tenant_remove_github_installation` |
-| Attach an existing installation | `POST /api/v1/manage/tenants/{id}/github-installations/attach` → the installation | `signaldb-cli tenant github attach <installation_id>` | `tenant_attach_github_installation` |
+| Start a link                    | `POST /api/v1/tenants/{id}/github-installations/link` → `install_url`      | `signaldb-cli tenant github link`                     | `tenant_start_github_link`          |
+| List installations              | `GET /api/v1/tenants/{id}/github-installations`                            | `signaldb-cli tenant github list`                     | `tenant_list_github_installations`  |
+| Remove a link                   | `DELETE /api/v1/tenants/{id}/github-installations/{installation_id}`       | `signaldb-cli tenant github remove <installation_id>` | `tenant_remove_github_installation` |
+| Attach an existing installation | `POST /api/v1/tenants/{id}/github-installations/attach` → the installation | `signaldb-cli tenant github attach <installation_id>` | `tenant_attach_github_installation` |
 
 The CLI's `link` (and the MCP `tenant_start_github_link` tool) prints/returns
 the install URL; open it in a browser where you are
@@ -266,7 +266,7 @@ tool `get_source_context` reach the same lookup.
 
 ## Verify
 
-- `GET /api/v1/manage/tenants/{id}/github-installations` returns
+- `GET /api/v1/tenants/{id}/github-installations` returns
   `configured: true` and, after connecting, the installation with its
   repositories.
 - The GitHub page for the App shows the organization under _Install App_.

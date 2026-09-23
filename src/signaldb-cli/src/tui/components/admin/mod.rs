@@ -152,9 +152,9 @@ impl AdminPanel {
                 }
                 self::datasets::DatasetAction::Delete {
                     tenant_id,
-                    dataset_id,
+                    dataset_name,
                 } => {
-                    client.delete_dataset(&tenant_id, &dataset_id).await?;
+                    client.delete_dataset(&tenant_id, &dataset_name).await?;
                 }
             }
         }

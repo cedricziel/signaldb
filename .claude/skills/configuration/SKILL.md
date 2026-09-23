@@ -99,7 +99,9 @@ on/off switch (the former `enabled` flag was removed in #601).
 
 ```toml
 [auth]
-admin_api_key = "sk-admin-key"           # Required for /api/v1/admin/*
+admin_api_key = "sk-admin-key"           # Required for /api/v1/ops/*, and (tenant-less)
+                                         # /api/v1/* and the tenant-scoped
+                                         # API-key/dataset admin surface
 internal_service_key = "sk-internal"     # Shared secret for service-to-service
                                          # Flight calls; unset = Flight ports
                                          # accept unauthenticated calls

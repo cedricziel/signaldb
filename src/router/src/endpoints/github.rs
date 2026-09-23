@@ -5,7 +5,7 @@
 //!
 //! - The tenant-management endpoints (`start_github_link`,
 //!   `list_github_installations`, `remove_github_installation`), mounted
-//!   under `/api/v1/manage/tenants/{tenant_id}/github-installations` beside
+//!   under `/api/v1/tenants/{tenant_id}/github-installations` beside
 //!   the rest of [`crate::endpoints::management`] and subject to the same
 //!   `authorize_tenant` check and rate-limit layers.
 //! - [`callback`], the App's registered callback URL
@@ -62,8 +62,8 @@ use crate::endpoints::management::{
 use crate::endpoints::session;
 use crate::github::write_permissions;
 
-/// The four tenant-management routes, nested under `/manage` (final paths
-/// `/api/v1/manage/tenants/{tenant_id}/github-installations...`) beside
+/// The four tenant GitHub-installation routes (final paths
+/// `/api/v1/tenants/{tenant_id}/github-installations...`), merged alongside
 /// [`crate::endpoints::management::router`].
 pub fn manage_router() -> Router<RouterAppState> {
     Router::new()
@@ -146,16 +146,16 @@ pub(crate) struct GitHubInstallationsResponse {
     pub installations: Vec<GitHubInstallationResponse>,
 }
 
-/// `POST /api/v1/manage/tenants/{tenant_id}/github-installations/link`
+/// `POST /api/v1/tenants/{tenant_id}/github-installations/link`
 ///
 /// Mints a single-use, tenant-and-admin-bound state token and returns the
 /// GitHub install-flow URL carrying it. 404 when `[github]` is not
 /// configured.
 #[utoipa::path(
     post,
-    path = "/api/v1/manage/tenants/{tenant_id}/github-installations/link",
+    path = "/api/v1/tenants/{tenant_id}/github-installations/link",
     tag = "github",
-    operation_id = "manage_start_github_link",
+    operation_id = "start_github_link",
     params(("tenant_id" = String, Path, description = "Tenant identifier")),
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
@@ -210,7 +210,7 @@ pub(crate) async fn start_github_link(
         .into_response()
 }
 
-/// `GET /api/v1/manage/tenants/{tenant_id}/github-installations`
+/// `GET /api/v1/tenants/{tenant_id}/github-installations`
 ///
 /// Always 200, even when `[github]` is unconfigured (`configured: false`).
 /// When configured, refreshes each installation's repository list from
@@ -218,9 +218,9 @@ pub(crate) async fn start_github_link(
 /// `stale: true`, rather than failing the whole request.
 #[utoipa::path(
     get,
-    path = "/api/v1/manage/tenants/{tenant_id}/github-installations",
+    path = "/api/v1/tenants/{tenant_id}/github-installations",
     tag = "github",
-    operation_id = "manage_list_github_installations",
+    operation_id = "list_github_installations",
     params(("tenant_id" = String, Path, description = "Tenant identifier")),
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
@@ -343,16 +343,16 @@ fn installation_manage_url(
     }
 }
 
-/// `DELETE /api/v1/manage/tenants/{tenant_id}/github-installations/{installation_id}`
+/// `DELETE /api/v1/tenants/{tenant_id}/github-installations/{installation_id}`
 ///
 /// Removes the tenant's link and drops any cached installation token, so
 /// token minting for that installation stops immediately (spec: "removal
 /// takes effect immediately").
 #[utoipa::path(
     delete,
-    path = "/api/v1/manage/tenants/{tenant_id}/github-installations/{installation_id}",
+    path = "/api/v1/tenants/{tenant_id}/github-installations/{installation_id}",
     tag = "github",
-    operation_id = "manage_remove_github_installation",
+    operation_id = "remove_github_installation",
     params(
         ("tenant_id" = String, Path, description = "Tenant identifier"),
         ("installation_id" = i64, Path, description = "GitHub installation identifier"),
@@ -409,7 +409,7 @@ pub(crate) async fn remove_github_installation(
     StatusCode::NO_CONTENT.into_response()
 }
 
-/// `POST /api/v1/manage/tenants/{tenant_id}/github-installations/attach`
+/// `POST /api/v1/tenants/{tenant_id}/github-installations/attach`
 ///
 /// Attaches an installation that already exists on GitHub — e.g. one
 /// already linked to another tenant on the same GitHub account — to
@@ -429,9 +429,9 @@ pub(crate) async fn remove_github_installation(
 /// callback performs is re-run here.
 #[utoipa::path(
     post,
-    path = "/api/v1/manage/tenants/{tenant_id}/github-installations/attach",
+    path = "/api/v1/tenants/{tenant_id}/github-installations/attach",
     tag = "github",
-    operation_id = "manage_attach_github_installation",
+    operation_id = "attach_github_installation",
     params(("tenant_id" = String, Path, description = "Tenant identifier")),
     request_body = AttachGitHubInstallationRequest,
     responses(
@@ -1019,7 +1019,7 @@ mod tests {
         let (status, body) = call_manage(
             app,
             axum::http::Method::POST,
-            "/api/v1/manage/tenants/acme/github-installations/link",
+            "/api/v1/tenants/acme/github-installations/link",
             credential,
         )
         .await;
@@ -1121,7 +1121,7 @@ mod tests {
         let (status, _) = call_manage(
             &app,
             axum::http::Method::POST,
-            "/api/v1/manage/tenants/acme/github-installations/link",
+            "/api/v1/tenants/acme/github-installations/link",
             Credential::Cookie(cookie.clone()),
         )
         .await;
@@ -1130,7 +1130,7 @@ mod tests {
         let (status, body) = call_manage(
             &app,
             axum::http::Method::GET,
-            "/api/v1/manage/tenants/acme/github-installations",
+            "/api/v1/tenants/acme/github-installations",
             Credential::Cookie(cookie.clone()),
         )
         .await;
@@ -1140,7 +1140,7 @@ mod tests {
         let (status, _) = call_manage(
             &app,
             axum::http::Method::DELETE,
-            "/api/v1/manage/tenants/acme/github-installations/777",
+            "/api/v1/tenants/acme/github-installations/777",
             Credential::Cookie(cookie),
         )
         .await;
@@ -1160,7 +1160,7 @@ mod tests {
         let (status, body) = call_manage(
             &app,
             axum::http::Method::POST,
-            "/api/v1/manage/tenants/acme/github-installations/link",
+            "/api/v1/tenants/acme/github-installations/link",
             Credential::Cookie(admin_cookie),
         )
         .await;
@@ -1177,7 +1177,7 @@ mod tests {
         let (status, _) = call_manage(
             &app,
             axum::http::Method::POST,
-            "/api/v1/manage/tenants/acme/github-installations/link",
+            "/api/v1/tenants/acme/github-installations/link",
             Credential::Cookie(member_cookie),
         )
         .await;
@@ -1186,7 +1186,7 @@ mod tests {
         let (status, _) = call_manage(
             &app,
             axum::http::Method::POST,
-            "/api/v1/manage/tenants/acme/github-installations/link",
+            "/api/v1/tenants/acme/github-installations/link",
             Credential::ApiKey(MANAGE_KEY),
         )
         .await;
@@ -1197,7 +1197,7 @@ mod tests {
         let (status, _) = call_manage(
             &app,
             axum::http::Method::POST,
-            "/api/v1/manage/tenants/globex/github-installations/link",
+            "/api/v1/tenants/globex/github-installations/link",
             Credential::ApiKey(MANAGE_KEY),
         )
         .await;
@@ -1228,7 +1228,7 @@ mod tests {
         let (status, body) = call_manage(
             &app,
             axum::http::Method::GET,
-            "/api/v1/manage/tenants/acme/github-installations",
+            "/api/v1/tenants/acme/github-installations",
             Credential::Cookie(admin_cookie.clone()),
         )
         .await;
@@ -1258,7 +1258,7 @@ mod tests {
         let (status, _) = call_manage(
             &app,
             axum::http::Method::DELETE,
-            "/api/v1/manage/tenants/acme/github-installations/777",
+            "/api/v1/tenants/acme/github-installations/777",
             Credential::Cookie(admin_cookie.clone()),
         )
         .await;
@@ -1267,7 +1267,7 @@ mod tests {
         let (status, body) = call_manage(
             &app,
             axum::http::Method::GET,
-            "/api/v1/manage/tenants/acme/github-installations",
+            "/api/v1/tenants/acme/github-installations",
             Credential::Cookie(admin_cookie.clone()),
         )
         .await;
@@ -1277,7 +1277,7 @@ mod tests {
         let (status, _) = call_manage(
             &app,
             axum::http::Method::DELETE,
-            "/api/v1/manage/tenants/acme/github-installations/777",
+            "/api/v1/tenants/acme/github-installations/777",
             Credential::Cookie(admin_cookie),
         )
         .await;
@@ -1294,7 +1294,7 @@ mod tests {
         let (_, body) = call_manage(
             &app,
             axum::http::Method::POST,
-            "/api/v1/manage/tenants/acme/github-installations/link",
+            "/api/v1/tenants/acme/github-installations/link",
             Credential::Cookie(admin_cookie.clone()),
         )
         .await;
@@ -1328,7 +1328,7 @@ mod tests {
         let (_, body) = call_manage(
             &app,
             axum::http::Method::POST,
-            "/api/v1/manage/tenants/acme/github-installations/link",
+            "/api/v1/tenants/acme/github-installations/link",
             Credential::Cookie(admin_cookie),
         )
         .await;
@@ -1362,7 +1362,7 @@ mod tests {
         let (_, body) = call_manage(
             &app,
             axum::http::Method::POST,
-            "/api/v1/manage/tenants/acme/github-installations/link",
+            "/api/v1/tenants/acme/github-installations/link",
             Credential::ApiKey(MANAGE_KEY),
         )
         .await;
@@ -1379,7 +1379,7 @@ mod tests {
         let (_, body) = call_manage(
             &app,
             axum::http::Method::POST,
-            "/api/v1/manage/tenants/acme/github-installations/link",
+            "/api/v1/tenants/acme/github-installations/link",
             Credential::ApiKey(MANAGE_KEY),
         )
         .await;
@@ -1402,7 +1402,7 @@ mod tests {
         let (_, body) = call_manage(
             &app,
             axum::http::Method::POST,
-            "/api/v1/manage/tenants/acme/github-installations/link",
+            "/api/v1/tenants/acme/github-installations/link",
             Credential::Cookie(admin_cookie.clone()),
         )
         .await;
@@ -1434,7 +1434,7 @@ mod tests {
         let (_, body) = call_manage(
             &app,
             axum::http::Method::POST,
-            "/api/v1/manage/tenants/acme/github-installations/link",
+            "/api/v1/tenants/acme/github-installations/link",
             Credential::Cookie(admin_cookie.clone()),
         )
         .await;
@@ -1466,7 +1466,7 @@ mod tests {
         let (_, body) = call_manage(
             &app,
             axum::http::Method::POST,
-            "/api/v1/manage/tenants/acme/github-installations/link",
+            "/api/v1/tenants/acme/github-installations/link",
             Credential::Cookie(admin_cookie.clone()),
         )
         .await;
@@ -1512,7 +1512,7 @@ mod tests {
         let (_, body) = call_manage(
             &app,
             axum::http::Method::POST,
-            "/api/v1/manage/tenants/acme/github-installations/link",
+            "/api/v1/tenants/acme/github-installations/link",
             Credential::Cookie(admin_cookie.clone()),
         )
         .await;
@@ -1552,7 +1552,7 @@ mod tests {
         let (_, body) = call_manage(
             &app,
             axum::http::Method::POST,
-            "/api/v1/manage/tenants/acme/github-installations/link",
+            "/api/v1/tenants/acme/github-installations/link",
             Credential::Cookie(admin_cookie.clone()),
         )
         .await;
@@ -1579,7 +1579,7 @@ mod tests {
         let (_, body) = call_manage(
             &app,
             axum::http::Method::POST,
-            "/api/v1/manage/tenants/acme/github-installations/link",
+            "/api/v1/tenants/acme/github-installations/link",
             Credential::Cookie(admin_cookie.clone()),
         )
         .await;
@@ -1606,7 +1606,7 @@ mod tests {
         let (status, body) = call_manage(
             &app,
             axum::http::Method::GET,
-            "/api/v1/manage/tenants/acme/github-installations",
+            "/api/v1/tenants/acme/github-installations",
             Credential::Cookie(admin_cookie),
         )
         .await;
@@ -1676,7 +1676,7 @@ mod tests {
         let mut builder = Request::builder()
             .method(axum::http::Method::POST)
             .uri(format!(
-                "/api/v1/manage/tenants/{tenant_id}/github-installations/attach"
+                "/api/v1/tenants/{tenant_id}/github-installations/attach"
             ))
             .header("x-tenant-id", tenant_id)
             .header("content-type", "application/json");
@@ -1732,7 +1732,7 @@ mod tests {
         let (status, body) = call_manage(
             &app,
             axum::http::Method::GET,
-            "/api/v1/manage/tenants/acme/github-installations",
+            "/api/v1/tenants/acme/github-installations",
             Credential::Cookie(super_cookie),
         )
         .await;
@@ -1899,7 +1899,7 @@ mod tests {
         let (status, body) = call_manage_as(
             &app,
             axum::http::Method::GET,
-            "/api/v1/manage/tenants/globex/github-installations",
+            "/api/v1/tenants/globex/github-installations",
             "globex",
             Credential::Cookie(super_cookie),
         )

@@ -51,7 +51,7 @@ const linkedRoutes: JsonRoute[] = [
   irCatchAll,
   { match: "/api/v1/whoami", body: who },
   {
-    match: `/api/v1/manage/tenants/${tenant}/github-installations`,
+    match: `/api/v1/tenants/${tenant}/github-installations`,
     body: {
       configured: true,
       installations: [
@@ -85,7 +85,7 @@ export const NotLinked: Story = {
       irCatchAll,
       { match: "/api/v1/whoami", body: who },
       {
-        match: `/api/v1/manage/tenants/${tenant}/github-installations`,
+        match: `/api/v1/tenants/${tenant}/github-installations`,
         body: { configured: true, installations: [] },
       },
     ]),
@@ -97,7 +97,7 @@ export const NotConfigured: Story = {
       irCatchAll,
       { match: "/api/v1/whoami", body: who },
       {
-        match: `/api/v1/manage/tenants/${tenant}/github-installations`,
+        match: `/api/v1/tenants/${tenant}/github-installations`,
         body: { configured: false, installations: [] },
       },
     ]),

@@ -25,10 +25,7 @@ async fn builder_sends_bearer_tenant_dataset_and_custom_headers() {
     client.list_tenants().send().await.expect("ok");
     let seen = server.seen();
     assert_eq!(seen.len(), 1);
-    assert_eq!(
-        seen[0].path, "/api/v1/admin/tenants",
-        "trailing slash trimmed"
-    );
+    assert_eq!(seen[0].path, "/api/v1/tenants", "trailing slash trimmed");
     assert_eq!(seen[0].header("authorization"), Some("Bearer sk-acme"));
     assert_eq!(seen[0].header("x-tenant-id"), Some("acme"));
     assert_eq!(seen[0].header("x-dataset-id"), Some("prod"));

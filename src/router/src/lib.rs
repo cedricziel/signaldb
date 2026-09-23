@@ -1,10 +1,4 @@
-use axum::{
-    Router,
-    http::StatusCode,
-    middleware,
-    response::IntoResponse,
-    routing::{delete, get, post, put},
-};
+use axum::{Router, http::StatusCode, middleware, response::IntoResponse, routing::get};
 use common::auth::{Authenticator, TenantContext, admin_auth_middleware, auth_middleware};
 use common::catalog::Catalog;
 use common::config::Configuration;
@@ -251,12 +245,75 @@ impl RouterAppState {
     }
 }
 
+/// Whether `path` (relative to the `/api/v1` nest — `Router::nest` strips
+/// that prefix from the request `Uri` before an inner layer like
+/// `auth_layer` below ever sees it) is eligible for the break-glass
+/// `admin_api_key` bypass: the tenant-identity resource
+/// (`/tenants`, `/tenants/{id}`), human users (`/users`), or the
+/// tenant-scoped API-key/dataset/membership admin surface under
+/// `/tenants/{id}/...` — matched by route, not by any privilege-scope path
+/// segment (issue #1561 follow-up: there is no `/manage` or `/manage/admin`
+/// prefix left to match on). Every other `/tenants/{id}/...` path (`tables`,
+/// `schemas`, `source-context`, and `github-installations`) is deliberately
+/// excluded: those stay tenant-credential-only. `github-installations` in
+/// particular must stay out of this bypass even though its handlers accept
+/// the admin key — they take `TenantContextExtractor`, which this bypass
+/// leaves unset, and 500 without it (issue #1685 follow-up).
+fn is_admin_key_bypass_path(path: &str) -> bool {
+    let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    matches!(
+        segments.as_slice(),
+        ["tenants"]
+            | ["tenants", _]
+            | ["tenants", _, "api-keys", ..]
+            | ["tenants", _, "datasets", ..]
+            | ["tenants", _, "memberships", ..]
+            | ["users"]
+    )
+}
+
 /// Create a new router instance with all routes configured
 pub fn create_router(state: RouterAppState) -> Router {
-    // Create auth middleware layer
+    // The break-glass admin key, hashed once, shared by the auth layer's
+    // admin-key bypass below and by `ops_auth_layer`.
+    let admin_key_hash = state
+        .config()
+        .auth
+        .admin_api_key
+        .as_ref()
+        .map(|key| Authenticator::hash_api_key(key));
+
+    // Create auth middleware layer. `admin_key_hash` lets a break-glass
+    // request through untouched (no TenantContext attached) when it targets
+    // one of `is_admin_key_bypass_path`'s routes and its bearer token
+    // matches the configured admin key — regardless of whether `X-Tenant-ID`
+    // is *also* present (the MCP server forwards both) — the normal auth
+    // flow this layer otherwise runs requires a tenant for every bearer
+    // credential, which the admin key deliberately has none of. The actual
+    // authorization decision (does this request in fact carry that key, or
+    // an instance-admin tenant credential) stays in each handler via
+    // `endpoints::authz`, not here.
     let authenticator = state.authenticator().clone();
+    let admin_key_bypass_hash = admin_key_hash.clone();
     let auth_layer =
-        middleware::from_fn(move |req, next| auth_middleware(authenticator.clone(), req, next));
+        middleware::from_fn(move |req: axum::extract::Request, next: middleware::Next| {
+            let authenticator = authenticator.clone();
+            let admin_key_hash = admin_key_bypass_hash.clone();
+            async move {
+                if is_admin_key_bypass_path(req.uri().path())
+                    && let Some(expected_hash) = admin_key_hash.as_deref()
+                    && let Some(token) = req
+                        .headers()
+                        .get(axum::http::header::AUTHORIZATION)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.strip_prefix("Bearer "))
+                    && Authenticator::hash_api_key(token) == expected_hash
+                {
+                    return next.run(req).await;
+                }
+                auth_middleware(authenticator, req, next).await
+            }
+        });
 
     // Per-tenant query request-rate limiting, applied after authentication
     // (it reads the TenantContext the auth layer inserts). Tenants without
@@ -283,19 +340,14 @@ pub fn create_router(state: RouterAppState) -> Router {
             }
         });
 
-    // Create admin auth middleware layer
-    let admin_key_hash = state
-        .config()
-        .auth
-        .admin_api_key
-        .as_ref()
-        .map(|key| Authenticator::hash_api_key(key));
+    // Create admin auth middleware layer for operational control (compaction).
+    // The old dedicated admin API was removed (issue #1561): instance-admin
+    // operations live on the same plain resource paths as everything else
+    // (`/api/v1/tenants`, `/api/v1/users`, ...), authenticated per-handler via
+    // `endpoints::authz::require_instance_admin_or_admin_key` (which also
+    // accepts this same admin key, tenant-less — see `auth_layer` above).
     let admin_authenticator = state.authenticator().clone();
-    // Operational control uses the same administrative authentication as the
-    // admin API; clone the inputs before the admin layer moves them.
-    let ops_key_hash = admin_key_hash.clone();
-    let ops_authenticator = admin_authenticator.clone();
-    let admin_auth_layer = middleware::from_fn(move |req, next| {
+    let ops_auth_layer = middleware::from_fn(move |req, next| {
         admin_auth_middleware(
             admin_key_hash.clone(),
             admin_authenticator.clone(),
@@ -303,46 +355,6 @@ pub fn create_router(state: RouterAppState) -> Router {
             next,
         )
     });
-    let ops_auth_layer = middleware::from_fn(move |req, next| {
-        admin_auth_middleware(ops_key_hash.clone(), ops_authenticator.clone(), req, next)
-    });
-
-    // Build admin routes
-    let admin_router = Router::new()
-        .route("/tenants", get(endpoints::admin::list_tenants))
-        .route("/tenants", post(endpoints::admin::create_tenant))
-        .route("/tenants/{tenant_id}", get(endpoints::admin::get_tenant))
-        .route("/tenants/{tenant_id}", put(endpoints::admin::update_tenant))
-        .route(
-            "/tenants/{tenant_id}",
-            delete(endpoints::admin::delete_tenant),
-        )
-        .route(
-            "/tenants/{tenant_id}/api-keys",
-            get(endpoints::admin::list_api_keys),
-        )
-        .route(
-            "/tenants/{tenant_id}/api-keys",
-            post(endpoints::admin::create_api_key),
-        )
-        .route(
-            "/tenants/{tenant_id}/api-keys/{key_id}",
-            delete(endpoints::admin::revoke_api_key).patch(endpoints::admin::update_api_key),
-        )
-        .route(
-            "/tenants/{tenant_id}/datasets",
-            get(endpoints::admin::list_datasets),
-        )
-        .route(
-            "/tenants/{tenant_id}/datasets",
-            post(endpoints::admin::create_dataset),
-        )
-        .route(
-            "/tenants/{tenant_id}/datasets/{dataset_id}",
-            delete(endpoints::admin::delete_dataset),
-        )
-        .route("/users", post(endpoints::admin::create_user))
-        .layer(admin_auth_layer);
 
     // Serialize the OpenAPI spec once at startup; served as pre-encoded bytes
     // so each request only bumps a refcount instead of re-serializing (and
@@ -437,7 +449,6 @@ pub fn create_router(state: RouterAppState) -> Router {
         // unauthenticated by spec; empty unless mcp.oauth.enabled)
         .merge(oauth_routes)
         // Admin routes with admin authentication
-        .nest("/api/v1/admin", admin_router)
         // Operational control (compaction), admin-authenticated, proxied to the
         // compactor's Flight do_action surface.
         .nest(
@@ -447,11 +458,11 @@ pub fn create_router(state: RouterAppState) -> Router {
         .nest(
             "/api/v1",
             endpoints::tenant::router()
+                .merge(endpoints::tenants::router())
                 .merge(endpoints::source_context::router())
-                .nest(
-                    "/manage",
-                    endpoints::management::router().merge(endpoints::github::manage_router()),
-                )
+                .merge(endpoints::management::router())
+                .merge(endpoints::github::manage_router())
+                .route("/schema", get(endpoints::schema::get_schema))
                 .nest("/schema", endpoints::schema::router())
                 .merge(endpoints::processors::router())
                 .route("/whoami", get(endpoints::session::whoami))
@@ -516,6 +527,30 @@ mod tests {
     use axum::http::Request;
     use common::config::{ApiKeyConfig, TenantConfig, TenantLimits};
     use tower::ServiceExt;
+
+    #[test]
+    fn admin_key_bypass_path_covers_plain_tenant_and_user_resource_paths() {
+        assert!(is_admin_key_bypass_path("/tenants"));
+        assert!(is_admin_key_bypass_path("/tenants/acme"));
+        assert!(is_admin_key_bypass_path("/users"));
+        assert!(is_admin_key_bypass_path("/tenants/acme/api-keys"));
+        assert!(is_admin_key_bypass_path("/tenants/acme/api-keys/key-1"));
+        assert!(is_admin_key_bypass_path("/tenants/acme/datasets"));
+        assert!(is_admin_key_bypass_path("/tenants/acme/datasets/staging"));
+        assert!(is_admin_key_bypass_path("/tenants/acme/memberships"));
+        assert!(is_admin_key_bypass_path("/tenants/acme/memberships/u1"));
+
+        // Data-plane tenant paths, and github-installations (whose handlers
+        // take a TenantContextExtractor and 500 without one — issue #1685
+        // follow-up), stay tenant-credential-only.
+        assert!(!is_admin_key_bypass_path("/tenants/acme/tables"));
+        assert!(!is_admin_key_bypass_path("/tenants/acme/schemas"));
+        assert!(!is_admin_key_bypass_path("/tenants/acme/source-context"));
+        assert!(!is_admin_key_bypass_path(
+            "/tenants/acme/github-installations"
+        ));
+        assert!(!is_admin_key_bypass_path("/query"));
+    }
 
     fn test_config(query_limit: Option<u32>) -> Configuration {
         let mut config = Configuration::default();
@@ -642,6 +677,29 @@ mod tests {
         for _ in 0..40 {
             assert_eq!(echo_request(&app).await, StatusCode::OK);
         }
+    }
+
+    #[tokio::test]
+    async fn admin_key_request_to_github_installations_route_is_unauthorized_not_500() {
+        // github-installations handlers take a TenantContextExtractor, which
+        // 500s when no TenantContext is attached — so the admin-key bypass
+        // must not cover this route (issue #1685 follow-up).
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let mut config = test_config(None);
+        config.auth.admin_api_key = Some("admin-secret".to_string());
+        let app = create_router(RouterAppState::new(catalog, config));
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/tenants/acme/github-installations")
+                    .header("authorization", "Bearer admin-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

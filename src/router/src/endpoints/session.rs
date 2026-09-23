@@ -1710,7 +1710,7 @@ mod tests {
 
         let request = Request::builder()
             .method("POST")
-            .uri("/api/v1/manage/tenants/acme/datasets")
+            .uri("/api/v1/tenants/acme/datasets")
             .header(header::COOKIE, &cookie)
             .header("x-tenant-id", "acme")
             .header("content-type", "application/json")
@@ -1721,7 +1721,7 @@ mod tests {
 
         let request = Request::builder()
             .method("POST")
-            .uri("/api/v1/manage/tenants/acme/api-keys")
+            .uri("/api/v1/tenants/acme/api-keys")
             .header(header::COOKIE, &cookie)
             .header("x-tenant-id", "acme")
             .header("content-type", "application/json")
@@ -1757,7 +1757,7 @@ mod tests {
     ) -> (StatusCode, Value) {
         let request = Request::builder()
             .method("POST")
-            .uri("/api/v1/manage/tenants/acme/api-keys")
+            .uri("/api/v1/tenants/acme/api-keys")
             .header(header::COOKIE, cookie)
             .header("x-tenant-id", "acme")
             .header("content-type", "application/json")
@@ -1776,7 +1776,7 @@ mod tests {
     ) -> (StatusCode, Value) {
         let request = Request::builder()
             .method("PATCH")
-            .uri(format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"))
+            .uri(format!("/api/v1/tenants/acme/api-keys/{key_id}"))
             .header(header::COOKIE, cookie)
             .header("x-tenant-id", "acme")
             .header("content-type", "application/json")
@@ -1814,7 +1814,7 @@ mod tests {
         );
 
         let request = Request::builder()
-            .uri("/api/v1/manage/tenants/acme/api-keys")
+            .uri("/api/v1/tenants/acme/api-keys")
             .header(header::COOKIE, &cookie)
             .header("x-tenant-id", "acme")
             .body(Body::empty())
@@ -1923,7 +1923,7 @@ mod tests {
         // Revoked keys are immutable.
         let request = Request::builder()
             .method("DELETE")
-            .uri(format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"))
+            .uri(format!("/api/v1/tenants/acme/api-keys/{key_id}"))
             .header(header::COOKIE, &cookie)
             .header("x-tenant-id", "acme")
             .body(Body::empty())
@@ -1980,7 +1980,7 @@ mod tests {
         let cookie = cookie_pair(&login);
         let request = Request::builder()
             .method("POST")
-            .uri("/api/v1/manage/tenants")
+            .uri("/api/v1/tenants")
             .header(header::COOKIE, &cookie)
             .header("x-tenant-id", "acme")
             .header("content-type", "application/json")
@@ -2018,7 +2018,7 @@ mod tests {
         .await;
         let cookie = cookie_pair(&login);
         let request = Request::builder()
-            .uri("/api/v1/manage/tenants/globex/api-keys")
+            .uri("/api/v1/tenants/globex/api-keys")
             .header(header::COOKIE, cookie)
             .header("x-tenant-id", "acme")
             .body(Body::empty())
@@ -2041,7 +2041,7 @@ mod tests {
         .await;
         let cookie = cookie_pair(&login);
         let request = Request::builder()
-            .uri("/api/v1/manage/tenants/acme/api-keys")
+            .uri("/api/v1/tenants/acme/api-keys")
             .header(header::COOKIE, &cookie)
             .header("x-tenant-id", "acme")
             .body(Body::empty())
@@ -2063,7 +2063,7 @@ mod tests {
     async fn ingestion_api_key_cannot_use_human_management_endpoints() {
         let app = test_app().await;
         let request = Request::builder()
-            .uri("/api/v1/manage/tenants/acme/api-keys")
+            .uri("/api/v1/tenants/acme/api-keys")
             .header("authorization", "Bearer acme-key")
             .header("x-tenant-id", "acme")
             .body(Body::empty())
@@ -2097,7 +2097,7 @@ mod tests {
         );
 
         let management = Request::builder()
-            .uri("/api/v1/manage/tenants/acme/api-keys")
+            .uri("/api/v1/tenants/acme/api-keys")
             .header(header::COOKIE, cookie)
             .header("x-tenant-id", "acme")
             .body(Body::empty())
@@ -2421,7 +2421,7 @@ mod tests {
 
         let request = Request::builder()
             .method("POST")
-            .uri("/api/v1/manage/tenants")
+            .uri("/api/v1/tenants")
             .header(header::COOKIE, &cookie)
             .header("x-tenant-id", "acme")
             .header("content-type", "application/json")
@@ -2434,7 +2434,7 @@ mod tests {
 
         let request = Request::builder()
             .method("POST")
-            .uri("/api/v1/manage/tenants/newco/datasets")
+            .uri("/api/v1/tenants/newco/datasets")
             .header(header::COOKIE, &cookie)
             .header("x-tenant-id", "newco")
             .header("content-type", "application/json")
@@ -2445,7 +2445,7 @@ mod tests {
 
         let request = Request::builder()
             .method("POST")
-            .uri("/api/v1/manage/tenants/newco/api-keys")
+            .uri("/api/v1/tenants/newco/api-keys")
             .header(header::COOKIE, &cookie)
             .header("x-tenant-id", "newco")
             .header("content-type", "application/json")
@@ -3074,14 +3074,18 @@ mod tests {
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        // The admin_api_key break-glass path still authenticates too.
+        // The admin_api_key break-glass path still authenticates the
+        // operational-control (compaction) surface — the admin API itself
+        // was removed (issue #1561). No compactor is registered in this
+        // test, so a successful auth check surfaces as 503 (no compactor
+        // reachable), not 401/403.
         let request = Request::builder()
-            .uri("/api/v1/admin/tenants")
+            .uri("/api/v1/ops/compact/status")
             .header("authorization", "Bearer admin-secret")
             .body(Body::empty())
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]
@@ -3162,7 +3166,7 @@ mod tests {
 
         let request = Request::builder()
             .method("POST")
-            .uri("/api/v1/manage/tenants/acme/api-keys")
+            .uri("/api/v1/tenants/acme/api-keys")
             .header(header::COOKIE, cookie)
             .header("content-type", "application/json")
             .header("x-tenant-id", "acme")

@@ -42,8 +42,14 @@ handler states the privilege it needs and checks it itself:
   `require_read` / `require_write` helpers in `endpoints/schema.rs` and
   `endpoints/processors.rs`. Add a shared helper rather than copying one.
 - Instance-admin operations check instance-admin privilege in the handler
-  too. Living under `/manage/admin` doesn't make an endpoint admin-only; its
-  check does.
+  too, through the shared helper in `endpoints/authz.rs`. The break-glass
+  admin key counts as instance admin in that same check.
+- Paths carry no privilege-scope segment: no `/admin`, no `/manage`. A noun
+  lives at one path (`/api/v1/tenants/{id}/datasets`) whoever calls it, and
+  the handler decides what that caller may do there.
+- List endpoints filter by the caller's privileges instead of returning 403:
+  an instance admin sees every tenant, a member sees the tenants they belong
+  to.
 - Authentication (who is calling) may stay a router layer, because that's
   identity, not authorization. Authorization (what they may do) belongs in
   the handler.
@@ -60,7 +66,7 @@ check written in the handler travels with it.
 ## 3. Resources, not verbs
 
 - Paths name plural resources and their ids:
-  `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.
+  `/api/v1/tenants/{tenant_id}/api-keys/{key_id}`.
 - The method carries the verb:
   - `GET` reads
   - `POST` creates, returning `201` and a `Location` header
@@ -69,12 +75,12 @@ check written in the handler travels with it.
   - `DELETE` removes, returning `204`
 - A verb segment (`POST .../tables/create`) is allowed only for operations
   that aren't CRUD. Prefer modelling the result as a resource.
-- Scope shows in the path so a reader can tell it at a glance:
-  - `/api/v1/manage/...` acts on the caller's tenant
-  - `/api/v1/manage/admin/...` acts across tenants
-  - `/api/v1/ops/...` is operational control
-
-  The path is still only descriptive; enforcement is rule 2.
+- Tenant/user resources live on one shared path family
+  (`/api/v1/tenants[/{id}]`, `/api/v1/tenants/{id}/...`, `/api/v1/users`);
+  the path does not distinguish a caller acting on its own tenant from an
+  instance admin acting across tenants — every handler authorizes the
+  caller itself (`endpoints::authz`), per rule 2.
+  `/api/v1/ops/...` is operational control, on its own path.
 
 ## 4. Self-discoverable (hypermedia)
 
@@ -82,7 +88,7 @@ A client should be able to go from the API root to any resource by following
 links, without building URLs from documentation.
 
 - `GET /api/v{N}` returns an index: `_links` to the top-level collections the
-  caller can reach (query, schema, manage, whoami, the OpenAPI document).
+  caller can reach (query, schema, tenants, users, whoami, the OpenAPI document).
 - Every resource representation carries `_links`:
   - `self` always
   - related resources: a tenant links to its `datasets`, `api-keys`,
@@ -119,18 +125,18 @@ links, without building URLs from documentation.
 - **Operation names are explicit and stable.** Every `#[utoipa::path]` sets
   `operation_id`. Generated client method names are derived from it, so the
   Rust function name must never leak into the API surface. The format is
-  `snake_case`, `<verb>_<resource>`, prefixed with the scope:
+  `snake_case`, `<verb>_<resource>`, with no scope prefix:
   - `list_…` / `get_…` / `create_…` / `update_…` / `replace_…` /
     `delete_…` for CRUD, singular for one item (`get_tenant`) and plural
     for collections (`list_datasets`)
   - a domain verb for actions that aren't CRUD (`revoke_api_key`,
     `start_github_link`)
-  - a scope prefix matching the path: `manage_…` for `/manage`,
-    `manage_admin_…` for `/manage/admin`, `ops_…` for `/ops`. For example
-    `manage_create_api_key` and `manage_admin_delete_tenant`.
+  - a resource-area prefix only where the noun alone would clash
+    (`schema_resolve_attribute`), never a privilege scope
 
   An `operation_id` is unique across the whole spec. Renaming one is a
   breaking change for generated clients, so treat it as such (rule 7).
+
 - Every operation also sets `tag` (one per resource area, declared in
   `openapi.rs`'s `tags(...)`), a one-line `summary` saying what it does in
   the caller's terms, and `params`/`request_body`/`responses` with concrete
@@ -183,5 +189,6 @@ Treat these as debt to pay down. Don't copy them.
 - List endpoints return bare arrays or ad-hoc wrappers, not
   `{items, _links}`.
 - About 20 `#[utoipa::path]` handlers have no explicit `operation_id`, so
-  their generated names come from the Rust function name. Existing ids
-  don't all follow the scope-prefix scheme either.
+  their generated names come from the Rust function name.
+- `/api/v1/ops/*` still carries a privilege-flavoured segment; fold its
+  operations onto resource paths when they are next touched.

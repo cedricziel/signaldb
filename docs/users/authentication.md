@@ -185,7 +185,7 @@ operator via one of:
 | Method        | Where                                                                                                                                                                                                                                                                                |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Static config | `[[auth.tenants]]` blocks in `signaldb.toml`                                                                                                                                                                                                                                         |
-| Admin API     | `/api/v1/admin/*` on the router (port 3000), authenticated with `Authorization: Bearer <admin-api-key>`                                                                                                                                                                              |
+| Admin API     | `/api/v1/*` (instance-admin tenant/user management) and `/api/v1/tenants/{id}/api-keys\|datasets` on the router (port 3000), authenticated with `Authorization: Bearer <admin-api-key>` and no `X-Tenant-ID`                                                                         |
 | CLI           | `signaldb-cli admin tenant\|api-key\|dataset ...` — a client for the admin API (`--url`, default `http://localhost:3000`; `--admin-key` or `SIGNALDB_ADMIN_KEY`; `--no-retry` / `SIGNALDB_NO_RETRY=1` to fail fast on throttling, exit code 4 — see [client retry](client-retry.md)) |
 
 Example (operator-side):
@@ -242,8 +242,9 @@ signaldb-cli --admin-key <admin-key> admin api-key update acme <key-id> \
   --scope traces:write --scope schema:read --scope schema:write
 ```
 
-Over HTTP this is `PATCH /api/v1/admin/tenants/{id}/api-keys/{key_id}` (or
-`/api/v1/manage/tenants/{id}/api-keys/{key_id}` for a tenant-admin session)
+Over HTTP this is `PATCH /api/v1/tenants/{id}/api-keys/{key_id}` —
+authenticated with the break-glass admin key and no tenant, or with a
+tenant-admin session or `tenant:manage`-scoped key for that tenant —
 with a body of `{"scopes": [...], "dataset_ids": [...]}`; a field omitted
 from the body is left untouched (including `dataset_ids` — omitting it
 never changes an existing restriction), and revoked keys cannot be updated.
@@ -389,7 +390,7 @@ credential than any valid tenant key.
 
 ## Tenant management API
 
-`/api/v1/manage/...` (the `manage_*` SDK operations) manages one tenant from
+`/api/v1/...` manages one tenant from
 the inside: its datasets, API keys, user memberships, and the registered
 logical/physical schema. Every request acts on the tenant of the caller's
 context; the path `tenant_id` must match it (`403` otherwise), so a caller can
@@ -409,27 +410,27 @@ role: a narrower, dataset-scoped grant does not get a workaround path to
 widen itself by creating or updating other credentials. Use an unrestricted
 credential for management operations.
 
-Tenant _creation_ (`POST /api/v1/manage/tenants`) stays instance-admin-only;
+Tenant _creation_ (`POST /api/v1/tenants`) stays instance-admin-only;
 API-key automation creates tenants through the admin API
 (`signaldb-cli admin tenant create`).
 
-| Method | Path                                                                        | SDK operation                       | CLI / MCP                                                                            |
-| ------ | --------------------------------------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------ |
-| GET    | `/api/v1/manage/tenants/{tenant_id}/datasets`                               | `manage_list_datasets`              | `signaldb-cli tenant dataset list` / `tenant_list_datasets`                          |
-| POST   | `/api/v1/manage/tenants/{tenant_id}/datasets`                               | `manage_create_dataset`             | `signaldb-cli tenant dataset create <name>` / `tenant_create_dataset`                |
-| DELETE | `/api/v1/manage/tenants/{tenant_id}/datasets/{name}`                        | `manage_delete_dataset`             | `signaldb-cli tenant dataset delete <name>` / `tenant_delete_dataset`                |
-| GET    | `/api/v1/manage/tenants/{tenant_id}/api-keys`                               | `manage_list_api_keys`              | `signaldb-cli tenant api-key list` / `tenant_list_api_keys`                          |
-| POST   | `/api/v1/manage/tenants/{tenant_id}/api-keys`                               | `manage_create_api_key`             | `signaldb-cli tenant api-key create --scope ...` / `tenant_create_api_key`           |
-| PATCH  | `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`                      | `manage_update_api_key`             | `signaldb-cli tenant api-key update <key-id>` / `tenant_update_api_key`              |
-| DELETE | `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`                      | `manage_revoke_api_key`             | `signaldb-cli tenant api-key revoke <key-id>` / `tenant_revoke_api_key`              |
-| GET    | `/api/v1/manage/tenants/{tenant_id}/memberships`                            | `manage_list_memberships`           | `signaldb-cli tenant membership list` / `tenant_list_memberships`                    |
-| PUT    | `/api/v1/manage/tenants/{tenant_id}/memberships`                            | `manage_upsert_membership`          | `signaldb-cli tenant membership set <email> --role ...` / `tenant_upsert_membership` |
-| DELETE | `/api/v1/manage/tenants/{tenant_id}/memberships/{user}`                     | `manage_remove_membership`          | `signaldb-cli tenant membership remove <user-id>` / `tenant_remove_membership`       |
-| GET    | `/api/v1/manage/schema`                                                     | `manage_get_schema`                 | `signaldb-cli tenant schema get` / `tenant_get_schema`                               |
-| POST   | `/api/v1/manage/tenants/{tenant_id}/github-installations/link`              | `manage_start_github_link`          | `signaldb-cli tenant github link`                                                    |
-| GET    | `/api/v1/manage/tenants/{tenant_id}/github-installations`                   | `manage_list_github_installations`  | `signaldb-cli tenant github list`                                                    |
-| DELETE | `/api/v1/manage/tenants/{tenant_id}/github-installations/{installation_id}` | `manage_remove_github_installation` | `signaldb-cli tenant github remove <installation_id>`                                |
-| POST   | `/api/v1/manage/tenants/{tenant_id}/github-installations/attach`            | `manage_attach_github_installation` | `tenant_attach_github_installation`                                                  |
+| Method | Path                                                                 | SDK operation                | CLI / MCP                                                                            |
+| ------ | -------------------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------ |
+| GET    | `/api/v1/tenants/{tenant_id}/datasets`                               | `list_datasets`              | `signaldb-cli tenant dataset list` / `tenant_list_datasets`                          |
+| POST   | `/api/v1/tenants/{tenant_id}/datasets`                               | `create_dataset`             | `signaldb-cli tenant dataset create <name>` / `tenant_create_dataset`                |
+| DELETE | `/api/v1/tenants/{tenant_id}/datasets/{name}`                        | `delete_dataset`             | `signaldb-cli tenant dataset delete <name>` / `tenant_delete_dataset`                |
+| GET    | `/api/v1/tenants/{tenant_id}/api-keys`                               | `list_api_keys`              | `signaldb-cli tenant api-key list` / `tenant_list_api_keys`                          |
+| POST   | `/api/v1/tenants/{tenant_id}/api-keys`                               | `create_api_key`             | `signaldb-cli tenant api-key create --scope ...` / `tenant_create_api_key`           |
+| PATCH  | `/api/v1/tenants/{tenant_id}/api-keys/{key_id}`                      | `update_api_key`             | `signaldb-cli tenant api-key update <key-id>` / `tenant_update_api_key`              |
+| DELETE | `/api/v1/tenants/{tenant_id}/api-keys/{key_id}`                      | `revoke_api_key`             | `signaldb-cli tenant api-key revoke <key-id>` / `tenant_revoke_api_key`              |
+| GET    | `/api/v1/tenants/{tenant_id}/memberships`                            | `list_memberships`           | `signaldb-cli tenant membership list` / `tenant_list_memberships`                    |
+| PUT    | `/api/v1/tenants/{tenant_id}/memberships`                            | `upsert_membership`          | `signaldb-cli tenant membership set <email> --role ...` / `tenant_upsert_membership` |
+| DELETE | `/api/v1/tenants/{tenant_id}/memberships/{user}`                     | `remove_membership`          | `signaldb-cli tenant membership remove <user-id>` / `tenant_remove_membership`       |
+| GET    | `/api/v1/schema`                                                     | `get_schema`                 | `signaldb-cli tenant schema get` / `tenant_get_schema`                               |
+| POST   | `/api/v1/tenants/{tenant_id}/github-installations/link`              | `start_github_link`          | `signaldb-cli tenant github link`                                                    |
+| GET    | `/api/v1/tenants/{tenant_id}/github-installations`                   | `list_github_installations`  | `signaldb-cli tenant github list`                                                    |
+| DELETE | `/api/v1/tenants/{tenant_id}/github-installations/{installation_id}` | `remove_github_installation` | `signaldb-cli tenant github remove <installation_id>`                                |
+| POST   | `/api/v1/tenants/{tenant_id}/github-installations/attach`            | `attach_github_installation` | `tenant_attach_github_installation`                                                  |
 
 The `github-installations` operations connect SignalDB's GitHub App to the
 tenant's repositories; they answer `404` until the operator configures

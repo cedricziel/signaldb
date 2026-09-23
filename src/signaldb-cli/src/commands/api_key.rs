@@ -1,7 +1,9 @@
 use clap::{ArgAction, Subcommand};
 use clap_complete::engine::ArgValueCompleter;
 use signaldb_sdk::Client;
-use signaldb_sdk::types::{ApiKeyResponse, CreateApiKeyRequest, UpdateApiKeyRequest};
+use signaldb_sdk::types::{
+    ManageApiKeyResponse, ManageCreateApiKeyRequest, ManageUpdateApiKeyRequest,
+};
 
 use super::completions::tenant_id_completer;
 
@@ -77,7 +79,7 @@ pub enum ApiKeyAction {
 }
 
 /// Render `ID  NAME  SCOPES  DATASETS  ORIGINS` rows, column-aligned.
-fn format_api_key_list(keys: &[ApiKeyResponse]) -> String {
+fn format_api_key_list(keys: &[ManageApiKeyResponse]) -> String {
     let rows: Vec<(String, String, String, String, String)> = keys
         .iter()
         .map(|k| {
@@ -109,7 +111,7 @@ impl ApiKeyAction {
                 if json {
                     crate::commands::print_json(&resp)?;
                 } else {
-                    println!("{}", format_api_key_list(&resp.api_keys));
+                    println!("{}", format_api_key_list(&resp));
                 }
             }
             ApiKeyAction::Create {
@@ -122,7 +124,7 @@ impl ApiKeyAction {
                 let resp = client
                     .create_api_key()
                     .tenant_id(&tenant_id)
-                    .body(CreateApiKeyRequest {
+                    .body(ManageCreateApiKeyRequest {
                         name,
                         scopes,
                         dataset_ids: dataset,
@@ -157,7 +159,7 @@ impl ApiKeyAction {
                     .update_api_key()
                     .tenant_id(&tenant_id)
                     .key_id(&key_id)
-                    .body(UpdateApiKeyRequest {
+                    .body(ManageUpdateApiKeyRequest {
                         scopes: (!scopes.is_empty()).then_some(scopes),
                         dataset_ids: dataset,
                         clear_dataset_restriction: clear_dataset_restriction.then_some(true),
@@ -448,7 +450,7 @@ mod tests {
     async fn create_sends_scopes_and_multiple_datasets_to_admin_api() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
-            .mock("POST", "/api/v1/admin/tenants/acme/api-keys")
+            .mock("POST", "/api/v1/tenants/acme/api-keys")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "name": "ci",
                 "scopes": ["traces:write", "schema:read"],
@@ -457,7 +459,7 @@ mod tests {
             .with_status(201)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"id":"k1","key":"sk-acme-1","name":"ci","scopes":["traces:write","schema:read"],"dataset_ids":["production","staging"],"created_at":"2026-01-01T00:00:00Z"}"#,
+                r#"{"id":"k1","key":"sk-acme-1","name":"ci","scopes":["traces:write","schema:read"],"dataset_ids":["production","staging"],"created_at":"2026-01-01T00:00:00Z","revoked":false}"#,
             )
             .create_async()
             .await;
@@ -479,7 +481,7 @@ mod tests {
     async fn update_patches_scopes_and_dataset_set() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
-            .mock("PATCH", "/api/v1/admin/tenants/acme/api-keys/k1")
+            .mock("PATCH", "/api/v1/tenants/acme/api-keys/k1")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "scopes": ["schema:read", "schema:write"],
                 "dataset_ids": ["production", "staging"]
@@ -487,7 +489,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"id":"k1","name":"ci","scopes":["schema:read","schema:write"],"dataset_ids":["production","staging"],"created_at":"2026-01-01T00:00:00Z"}"#,
+                r#"{"id":"k1","name":"ci","scopes":["schema:read","schema:write"],"dataset_ids":["production","staging"],"created_at":"2026-01-01T00:00:00Z","revoked":false}"#,
             )
             .create_async()
             .await;
@@ -511,14 +513,14 @@ mod tests {
     async fn update_clears_dataset_restriction() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
-            .mock("PATCH", "/api/v1/admin/tenants/acme/api-keys/k1")
+            .mock("PATCH", "/api/v1/tenants/acme/api-keys/k1")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "clear_dataset_restriction": true
             })))
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"id":"k1","name":"ci","scopes":["schema:read"],"created_at":"2026-01-01T00:00:00Z"}"#,
+                r#"{"id":"k1","name":"ci","scopes":["schema:read"],"created_at":"2026-01-01T00:00:00Z","revoked":false}"#,
             )
             .create_async()
             .await;
@@ -542,14 +544,14 @@ mod tests {
     async fn update_patches_allowed_origins() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
-            .mock("PATCH", "/api/v1/admin/tenants/acme/api-keys/k1")
+            .mock("PATCH", "/api/v1/tenants/acme/api-keys/k1")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "allowed_origins": ["https://a.example", "https://b.example"]
             })))
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"id":"k1","name":"ci","scopes":["schema:read"],"allowed_origins":["https://a.example","https://b.example"],"created_at":"2026-01-01T00:00:00Z"}"#,
+                r#"{"id":"k1","name":"ci","scopes":["schema:read"],"allowed_origins":["https://a.example","https://b.example"],"created_at":"2026-01-01T00:00:00Z","revoked":false}"#,
             )
             .create_async()
             .await;
@@ -573,7 +575,7 @@ mod tests {
     async fn create_sends_scopes_and_allowed_origins_to_admin_api() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
-            .mock("POST", "/api/v1/admin/tenants/acme/api-keys")
+            .mock("POST", "/api/v1/tenants/acme/api-keys")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "name": "ci",
                 "scopes": ["traces:write"],
@@ -582,7 +584,7 @@ mod tests {
             .with_status(201)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"id":"k1","key":"sk-acme-1","name":"ci","scopes":["traces:write"],"allowed_origins":["https://a.example","https://b.example"],"created_at":"2026-01-01T00:00:00Z"}"#,
+                r#"{"id":"k1","key":"sk-acme-1","name":"ci","scopes":["traces:write"],"allowed_origins":["https://a.example","https://b.example"],"created_at":"2026-01-01T00:00:00Z","revoked":false}"#,
             )
             .create_async()
             .await;
@@ -604,14 +606,14 @@ mod tests {
     async fn update_clears_allowed_origins() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
-            .mock("PATCH", "/api/v1/admin/tenants/acme/api-keys/k1")
+            .mock("PATCH", "/api/v1/tenants/acme/api-keys/k1")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "clear_allowed_origins": true
             })))
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"id":"k1","name":"ci","scopes":["schema:read"],"created_at":"2026-01-01T00:00:00Z"}"#,
+                r#"{"id":"k1","name":"ci","scopes":["schema:read"],"created_at":"2026-01-01T00:00:00Z","revoked":false}"#,
             )
             .create_async()
             .await;
@@ -652,14 +654,14 @@ mod tests {
     async fn list_defaults_to_a_human_readable_table_with_dataset_restriction() {
         let mut server = mockito::Server::new_async().await;
         server
-            .mock("GET", "/api/v1/admin/tenants/acme/api-keys")
+            .mock("GET", "/api/v1/tenants/acme/api-keys")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"api_keys":[
-                    {"id":"k1","name":"ci","scopes":["traces:write"],"dataset_ids":["production","staging"],"created_at":"2026-01-01T00:00:00Z"},
-                    {"id":"k2","name":"full","scopes":["schema:read"],"dataset_ids":null,"created_at":"2026-01-01T00:00:00Z"}
-                ]}"#,
+                r#"[
+                    {"id":"k1","name":"ci","scopes":["traces:write"],"dataset_ids":["production","staging"],"created_at":"2026-01-01T00:00:00Z","revoked":false},
+                    {"id":"k2","name":"full","scopes":["schema:read"],"dataset_ids":null,"created_at":"2026-01-01T00:00:00Z","revoked":false}
+                ]"#,
             )
             .create_async()
             .await;
@@ -675,10 +677,10 @@ mod tests {
 
     #[test]
     fn format_api_key_list_shows_dataset_restriction_or_unrestricted() {
-        let keys: Vec<ApiKeyResponse> = serde_json::from_str(
+        let keys: Vec<ManageApiKeyResponse> = serde_json::from_str(
             r#"[
-                {"id":"k1","name":"ci","scopes":["traces:write"],"dataset_ids":["production","staging"],"created_at":"2026-01-01T00:00:00Z"},
-                {"id":"k2","name":"full","scopes":["schema:read"],"dataset_ids":null,"created_at":"2026-01-01T00:00:00Z"}
+                {"id":"k1","name":"ci","scopes":["traces:write"],"dataset_ids":["production","staging"],"created_at":"2026-01-01T00:00:00Z","revoked":false},
+                {"id":"k2","name":"full","scopes":["schema:read"],"dataset_ids":null,"created_at":"2026-01-01T00:00:00Z","revoked":false}
             ]"#,
         )
         .unwrap();
@@ -691,10 +693,10 @@ mod tests {
 
     #[test]
     fn format_api_key_list_shows_allowed_origins_restriction_or_unrestricted() {
-        let keys: Vec<ApiKeyResponse> = serde_json::from_str(
+        let keys: Vec<ManageApiKeyResponse> = serde_json::from_str(
             r#"[
-                {"id":"k1","name":"ci","scopes":["traces:write"],"allowed_origins":["https://a.example","https://b.example"],"created_at":"2026-01-01T00:00:00Z"},
-                {"id":"k2","name":"full","scopes":["schema:read"],"allowed_origins":null,"created_at":"2026-01-01T00:00:00Z"}
+                {"id":"k1","name":"ci","scopes":["traces:write"],"allowed_origins":["https://a.example","https://b.example"],"created_at":"2026-01-01T00:00:00Z","revoked":false},
+                {"id":"k2","name":"full","scopes":["schema:read"],"allowed_origins":null,"created_at":"2026-01-01T00:00:00Z","revoked":false}
             ]"#,
         )
         .unwrap();
