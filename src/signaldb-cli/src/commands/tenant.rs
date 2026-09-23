@@ -1,7 +1,7 @@
 use clap::Subcommand;
 use clap_complete::engine::ArgValueCompleter;
 use signaldb_sdk::Client;
-use signaldb_sdk::types::{ManageCreateTenantRequest, UpdateTenantRequest};
+use signaldb_sdk::types::{CreateTenantRequest, UpdateTenantRequest};
 
 use super::completions::tenant_id_completer;
 
@@ -50,11 +50,7 @@ impl TenantAction {
     pub async fn run(self, client: &Client) -> anyhow::Result<()> {
         match self {
             TenantAction::List => {
-                let resp = client
-                    .manage_admin_list_tenants()
-                    .send()
-                    .await?
-                    .into_inner();
+                let resp = client.list_tenants().send().await?.into_inner();
                 crate::commands::print_json(&resp)?;
             }
             TenantAction::Create {
@@ -63,8 +59,8 @@ impl TenantAction {
                 default_dataset,
             } => {
                 let resp = client
-                    .manage_create_tenant()
-                    .body(ManageCreateTenantRequest {
+                    .create_tenant()
+                    .body(CreateTenantRequest {
                         id,
                         name,
                         default_dataset,
@@ -76,7 +72,7 @@ impl TenantAction {
             }
             TenantAction::Get { id } => {
                 let resp = client
-                    .manage_admin_get_tenant()
+                    .get_tenant()
                     .tenant_id(&id)
                     .send()
                     .await?
@@ -89,7 +85,7 @@ impl TenantAction {
                 default_dataset,
             } => {
                 let resp = client
-                    .manage_admin_update_tenant()
+                    .update_tenant()
                     .tenant_id(&id)
                     .body(UpdateTenantRequest {
                         name,
@@ -101,11 +97,7 @@ impl TenantAction {
                 crate::commands::print_json(&resp)?;
             }
             TenantAction::Delete { id } => {
-                client
-                    .manage_admin_delete_tenant()
-                    .tenant_id(&id)
-                    .send()
-                    .await?;
+                client.delete_tenant().tenant_id(&id).send().await?;
                 println!("Tenant '{id}' deleted.");
             }
         }

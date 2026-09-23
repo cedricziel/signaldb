@@ -37,7 +37,7 @@ impl DatasetAction {
         match self {
             DatasetAction::List { tenant_id } => {
                 let resp = client
-                    .manage_list_datasets()
+                    .list_datasets()
                     .tenant_id(&tenant_id)
                     .send()
                     .await?
@@ -46,7 +46,7 @@ impl DatasetAction {
             }
             DatasetAction::Create { tenant_id, name } => {
                 let resp = client
-                    .manage_create_dataset()
+                    .create_dataset()
                     .tenant_id(&tenant_id)
                     .body(ManageCreateDatasetRequest { name })
                     .send()
@@ -59,7 +59,7 @@ impl DatasetAction {
                 dataset_id,
             } => {
                 client
-                    .manage_delete_dataset()
+                    .delete_dataset()
                     .tenant_id(&tenant_id)
                     .dataset_name(&dataset_id)
                     .send()

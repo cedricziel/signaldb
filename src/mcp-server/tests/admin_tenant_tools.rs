@@ -246,8 +246,8 @@ async fn whoami() -> Response {
 
 /// Behaves per path: management API-key list/create endpoints return
 /// realistic bodies (list has no key material, create does); everything
-/// under `/api/v1/manage/` with tenant `denied` returns 403; anything else
-/// gets a generic empty-success body.
+/// under `/api/v1/tenants/{tenant_id}/...` with tenant `denied` returns 403;
+/// anything else gets a generic empty-success body.
 async fn behaviour(
     headers: HeaderMap,
     uri: axum::http::Uri,
@@ -256,13 +256,17 @@ async fn behaviour(
     let path = uri.path();
     if path == "/api/v1/tenants/acme" && method == axum::http::Method::GET {
         return axum::Json(serde_json::json!({
-            "tenant_id": "acme", "enabled": true, "schema": null
+            "id": "acme",
+            "name": "Acme",
+            "source": "config",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
         }))
         .into_response();
     }
     // Scope enforcement stand-in for `authorize_tenant`: only the key that
     // carries `tenant:manage` may create a dataset.
-    if path == "/api/v1/manage/tenants/acme/datasets" && method == axum::http::Method::POST {
+    if path == "/api/v1/tenants/acme/datasets" && method == axum::http::Method::POST {
         let bearer = headers
             .get("authorization")
             .and_then(|v| v.to_str().ok())
@@ -614,7 +618,7 @@ async fn tenant_info_returns_the_callers_tenant() {
         .await;
     assert!(!tool_is_error(&reply), "tenant_info succeeds: {reply}");
     let text = tool_error_message(&reply);
-    assert!(text.contains("\"tenant_id\""), "{text}");
+    assert!(text.contains("\"id\""), "{text}");
     assert!(text.contains("acme"), "{text}");
 }
 

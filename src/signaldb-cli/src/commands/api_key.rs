@@ -103,7 +103,7 @@ impl ApiKeyAction {
         match self {
             ApiKeyAction::List { tenant_id, json } => {
                 let resp = client
-                    .manage_list_api_keys()
+                    .list_api_keys()
                     .tenant_id(&tenant_id)
                     .send()
                     .await?
@@ -122,7 +122,7 @@ impl ApiKeyAction {
                 allowed_origin,
             } => {
                 let resp = client
-                    .manage_create_api_key()
+                    .create_api_key()
                     .tenant_id(&tenant_id)
                     .body(ManageCreateApiKeyRequest {
                         name,
@@ -156,7 +156,7 @@ impl ApiKeyAction {
                     );
                 }
                 let resp = client
-                    .manage_update_api_key()
+                    .update_api_key()
                     .tenant_id(&tenant_id)
                     .key_id(&key_id)
                     .body(ManageUpdateApiKeyRequest {
@@ -173,7 +173,7 @@ impl ApiKeyAction {
             }
             ApiKeyAction::Revoke { tenant_id, key_id } => {
                 client
-                    .manage_revoke_api_key()
+                    .revoke_api_key()
                     .tenant_id(&tenant_id)
                     .key_id(&key_id)
                     .send()
@@ -450,7 +450,7 @@ mod tests {
     async fn create_sends_scopes_and_multiple_datasets_to_admin_api() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
-            .mock("POST", "/api/v1/manage/tenants/acme/api-keys")
+            .mock("POST", "/api/v1/tenants/acme/api-keys")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "name": "ci",
                 "scopes": ["traces:write", "schema:read"],
@@ -481,7 +481,7 @@ mod tests {
     async fn update_patches_scopes_and_dataset_set() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
-            .mock("PATCH", "/api/v1/manage/tenants/acme/api-keys/k1")
+            .mock("PATCH", "/api/v1/tenants/acme/api-keys/k1")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "scopes": ["schema:read", "schema:write"],
                 "dataset_ids": ["production", "staging"]
@@ -513,7 +513,7 @@ mod tests {
     async fn update_clears_dataset_restriction() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
-            .mock("PATCH", "/api/v1/manage/tenants/acme/api-keys/k1")
+            .mock("PATCH", "/api/v1/tenants/acme/api-keys/k1")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "clear_dataset_restriction": true
             })))
@@ -544,7 +544,7 @@ mod tests {
     async fn update_patches_allowed_origins() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
-            .mock("PATCH", "/api/v1/manage/tenants/acme/api-keys/k1")
+            .mock("PATCH", "/api/v1/tenants/acme/api-keys/k1")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "allowed_origins": ["https://a.example", "https://b.example"]
             })))
@@ -575,7 +575,7 @@ mod tests {
     async fn create_sends_scopes_and_allowed_origins_to_admin_api() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
-            .mock("POST", "/api/v1/manage/tenants/acme/api-keys")
+            .mock("POST", "/api/v1/tenants/acme/api-keys")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "name": "ci",
                 "scopes": ["traces:write"],
@@ -606,7 +606,7 @@ mod tests {
     async fn update_clears_allowed_origins() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
-            .mock("PATCH", "/api/v1/manage/tenants/acme/api-keys/k1")
+            .mock("PATCH", "/api/v1/tenants/acme/api-keys/k1")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "clear_allowed_origins": true
             })))
@@ -654,7 +654,7 @@ mod tests {
     async fn list_defaults_to_a_human_readable_table_with_dataset_restriction() {
         let mut server = mockito::Server::new_async().await;
         server
-            .mock("GET", "/api/v1/manage/tenants/acme/api-keys")
+            .mock("GET", "/api/v1/tenants/acme/api-keys")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(

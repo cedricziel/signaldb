@@ -13,8 +13,9 @@
 //! - `signaldb-cli tenant dataset list|create|delete`,
 //!   `tenant api-key list|create|update|revoke`,
 //!   `tenant membership list|set|remove`, `tenant schema get`,
-//!   `tenant github link|list|remove` — the tenant management API
-//!   (`/api/v1/manage/...`), which requires the key to carry the explicit
+//!   `tenant github link|list|remove` — the same tenant-scoped resource
+//!   paths (`/api/v1/tenants/{id}/...`), which require the key to carry the
+//!   explicit
 //!   `tenant:manage` scope. Ingest-only keys and legacy unscoped keys are
 //!   refused by the router with `403`; the CLI surfaces that error and exits
 //!   non-zero (see `router::endpoints::management::authorize_tenant`).
@@ -90,11 +91,11 @@ impl TenantSelfAction {
                 let tenant_id = require_tenant_id(&connect)?;
                 let v = connect
                     .build_client()?
-                    .get_tenant_self()
+                    .get_tenant()
                     .tenant_id(tenant_id)
                     .send()
                     .await;
-                print_json_response(v.map(|r| r.into_inner()), "get_tenant_self")
+                print_json_response(v.map(|r| r.into_inner()), "get_tenant")
             }
             TenantSelfAction::Dataset { action } => action.run().await,
             TenantSelfAction::ApiKey { action } => action.run().await,
@@ -107,10 +108,9 @@ impl TenantSelfAction {
     }
 }
 
-/// A tenant id required for the `/api/v1/tenants/{tenant_id}/...` and
-/// `/api/v1/manage/tenants/{tenant_id}/...` path segments — the endpoints
-/// check it against the authenticated tenant, so a mismatch (or omission) is
-/// always an error, never ambiguous.
+/// A tenant id required for the `/api/v1/tenants/{tenant_id}/...` path
+/// segment — the endpoints check it against the authenticated tenant, so a
+/// mismatch (or omission) is always an error, never ambiguous.
 fn require_tenant_id(connect: &ConnectArgs) -> anyhow::Result<&str> {
     connect.tenant_id.as_deref().ok_or_else(|| {
         anyhow::anyhow!("--tenant-id (or SIGNALDB_TENANT_ID) is required for `tenant` commands")
@@ -186,22 +186,22 @@ impl DatasetAction {
                 let tenant_id = require_tenant_id(&connect)?;
                 let v = connect
                     .build_client()?
-                    .manage_list_datasets()
+                    .list_datasets()
                     .tenant_id(tenant_id)
                     .send()
                     .await;
-                print_json_response(v.map(|r| r.into_inner()), "manage_list_datasets")
+                print_json_response(v.map(|r| r.into_inner()), "list_datasets")
             }
             DatasetAction::Create { name, connect } => {
                 let tenant_id = require_tenant_id(&connect)?;
                 let v = connect
                     .build_client()?
-                    .manage_create_dataset()
+                    .create_dataset()
                     .tenant_id(tenant_id)
                     .body(ManageCreateDatasetRequest { name })
                     .send()
                     .await;
-                print_json_response(v.map(|r| r.into_inner()), "manage_create_dataset")
+                print_json_response(v.map(|r| r.into_inner()), "create_dataset")
             }
             DatasetAction::Delete {
                 name,
@@ -212,12 +212,12 @@ impl DatasetAction {
                 confirm_destructive(&confirm, "delete dataset", &name)?;
                 connect
                     .build_client()?
-                    .manage_delete_dataset()
+                    .delete_dataset()
                     .tenant_id(tenant_id)
                     .dataset_name(&name)
                     .send()
                     .await
-                    .map_err(|e| anyhow::Error::new(e).context("manage_delete_dataset failed"))?;
+                    .map_err(|e| anyhow::Error::new(e).context("delete_dataset failed"))?;
                 println!("Dataset '{name}' deleted.");
                 Ok(())
             }
@@ -328,11 +328,11 @@ impl ApiKeyAction {
                 let tenant_id = require_tenant_id(&connect)?;
                 let v = connect
                     .build_client()?
-                    .manage_list_api_keys()
+                    .list_api_keys()
                     .tenant_id(tenant_id)
                     .send()
                     .await
-                    .map_err(|e| anyhow::Error::new(e).context("manage_list_api_keys failed"))?
+                    .map_err(|e| anyhow::Error::new(e).context("list_api_keys failed"))?
                     .into_inner();
                 if json {
                     crate::commands::print_json(&v)?;
@@ -351,7 +351,7 @@ impl ApiKeyAction {
                 let tenant_id = require_tenant_id(&connect)?;
                 let v = connect
                     .build_client()?
-                    .manage_create_api_key()
+                    .create_api_key()
                     .tenant_id(tenant_id)
                     .body(ManageCreateApiKeyRequest {
                         name,
@@ -361,7 +361,7 @@ impl ApiKeyAction {
                     })
                     .send()
                     .await;
-                print_json_response(v.map(|r| r.into_inner()), "manage_create_api_key")
+                print_json_response(v.map(|r| r.into_inner()), "create_api_key")
             }
             ApiKeyAction::Update {
                 key_id,
@@ -386,7 +386,7 @@ impl ApiKeyAction {
                 let tenant_id = require_tenant_id(&connect)?;
                 let v = connect
                     .build_client()?
-                    .manage_update_api_key()
+                    .update_api_key()
                     .tenant_id(tenant_id)
                     .key_id(&key_id)
                     .body(ManageUpdateApiKeyRequest {
@@ -398,7 +398,7 @@ impl ApiKeyAction {
                     })
                     .send()
                     .await;
-                print_json_response(v.map(|r| r.into_inner()), "manage_update_api_key")
+                print_json_response(v.map(|r| r.into_inner()), "update_api_key")
             }
             ApiKeyAction::Revoke {
                 key_id,
@@ -409,12 +409,12 @@ impl ApiKeyAction {
                 confirm_destructive(&confirm, "revoke API key", &key_id)?;
                 connect
                     .build_client()?
-                    .manage_revoke_api_key()
+                    .revoke_api_key()
                     .tenant_id(tenant_id)
                     .key_id(&key_id)
                     .send()
                     .await
-                    .map_err(|e| anyhow::Error::new(e).context("manage_revoke_api_key failed"))?;
+                    .map_err(|e| anyhow::Error::new(e).context("revoke_api_key failed"))?;
                 println!("API key '{key_id}' revoked.");
                 Ok(())
             }
@@ -456,11 +456,11 @@ impl MembershipAction {
                 let tenant_id = require_tenant_id(&connect)?;
                 let v = connect
                     .build_client()?
-                    .manage_list_memberships()
+                    .list_memberships()
                     .tenant_id(tenant_id)
                     .send()
                     .await;
-                print_json_response(v.map(|r| r.into_inner()), "manage_list_memberships")
+                print_json_response(v.map(|r| r.into_inner()), "list_memberships")
             }
             MembershipAction::Set {
                 email,
@@ -470,12 +470,12 @@ impl MembershipAction {
                 let tenant_id = require_tenant_id(&connect)?;
                 let v = connect
                     .build_client()?
-                    .manage_upsert_membership()
+                    .upsert_membership()
                     .tenant_id(tenant_id)
                     .body(UpsertMembershipRequest { email, role })
                     .send()
                     .await;
-                print_json_response(v.map(|r| r.into_inner()), "manage_upsert_membership")
+                print_json_response(v.map(|r| r.into_inner()), "upsert_membership")
             }
             MembershipAction::Remove {
                 user_id,
@@ -486,14 +486,12 @@ impl MembershipAction {
                 confirm_destructive(&confirm, "remove membership of user", &user_id)?;
                 connect
                     .build_client()?
-                    .manage_remove_membership()
+                    .remove_membership()
                     .tenant_id(tenant_id)
                     .user_id(&user_id)
                     .send()
                     .await
-                    .map_err(|e| {
-                        anyhow::Error::new(e).context("manage_remove_membership failed")
-                    })?;
+                    .map_err(|e| anyhow::Error::new(e).context("remove_membership failed"))?;
                 println!("Membership of user '{user_id}' removed.");
                 Ok(())
             }
@@ -513,8 +511,8 @@ impl SchemaAction {
     pub async fn run(self) -> anyhow::Result<()> {
         match self {
             SchemaAction::Get(connect) => {
-                let v = connect.build_client()?.manage_get_schema().send().await;
-                print_json_response(v.map(|r| r.into_inner()), "manage_get_schema")
+                let v = connect.build_client()?.get_schema().send().await;
+                print_json_response(v.map(|r| r.into_inner()), "get_schema")
             }
         }
     }
@@ -730,11 +728,11 @@ impl GithubAction {
                 let tenant_id = require_tenant_id(&connect)?;
                 let v = connect
                     .build_client()?
-                    .manage_start_github_link()
+                    .start_github_link()
                     .tenant_id(tenant_id)
                     .send()
                     .await
-                    .map_err(|e| anyhow::Error::new(e).context("manage_start_github_link failed"))?
+                    .map_err(|e| anyhow::Error::new(e).context("start_github_link failed"))?
                     .into_inner();
                 if json {
                     crate::commands::print_json(&v)?;
@@ -752,13 +750,11 @@ impl GithubAction {
                 let tenant_id = require_tenant_id(&connect)?;
                 let v = connect
                     .build_client()?
-                    .manage_list_github_installations()
+                    .list_github_installations()
                     .tenant_id(tenant_id)
                     .send()
                     .await
-                    .map_err(|e| {
-                        anyhow::Error::new(e).context("manage_list_github_installations failed")
-                    })?
+                    .map_err(|e| anyhow::Error::new(e).context("list_github_installations failed"))?
                     .into_inner();
                 if json {
                     crate::commands::print_json(&v)?;
@@ -778,13 +774,13 @@ impl GithubAction {
                 let tenant_id = require_tenant_id(&connect)?;
                 let v = connect
                     .build_client()?
-                    .manage_attach_github_installation()
+                    .attach_github_installation()
                     .tenant_id(tenant_id)
                     .body(signaldb_sdk::types::AttachGitHubInstallationRequest { installation_id })
                     .send()
                     .await
                     .map_err(|e| {
-                        anyhow::Error::new(e).context("manage_attach_github_installation failed")
+                        anyhow::Error::new(e).context("attach_github_installation failed")
                     })?
                     .into_inner();
                 if json {
@@ -810,13 +806,13 @@ impl GithubAction {
                 )?;
                 connect
                     .build_client()?
-                    .manage_remove_github_installation()
+                    .remove_github_installation()
                     .tenant_id(tenant_id)
                     .installation_id(installation_id)
                     .send()
                     .await
                     .map_err(|e| {
-                        anyhow::Error::new(e).context("manage_remove_github_installation failed")
+                        anyhow::Error::new(e).context("remove_github_installation failed")
                     })?;
                 println!("GitHub installation {installation_id} removed.");
                 Ok(())
@@ -1182,7 +1178,7 @@ mod tests {
     async fn dataset_create_and_list_hit_the_management_api() {
         let mut server = mockito::Server::new_async().await;
         let create = server
-            .mock("POST", "/api/v1/manage/tenants/acme/datasets")
+            .mock("POST", "/api/v1/tenants/acme/datasets")
             .match_header("authorization", "Bearer sk-test")
             .match_header("x-tenant-id", "acme")
             .match_body(mockito::Matcher::Json(
@@ -1194,7 +1190,7 @@ mod tests {
             .create_async()
             .await;
         let list = server
-            .mock("GET", "/api/v1/manage/tenants/acme/datasets")
+            .mock("GET", "/api/v1/tenants/acme/datasets")
             .match_header("authorization", "Bearer sk-test")
             .with_status(200)
             .with_header("content-type", "application/json")
@@ -1228,7 +1224,7 @@ mod tests {
     async fn dataset_create_surfaces_the_403_from_a_key_without_tenant_manage() {
         let mut server = mockito::Server::new_async().await;
         let _m = server
-            .mock("POST", "/api/v1/manage/tenants/acme/datasets")
+            .mock("POST", "/api/v1/tenants/acme/datasets")
             .with_status(403)
             .with_header("content-type", "application/json")
             .with_body(r#"{"error":"Tenant administrator role or tenant:manage scope required"}"#)
@@ -1246,7 +1242,7 @@ mod tests {
         .run()
         .await;
         let err = format!("{:#}", result.expect_err("must fail"));
-        assert!(err.contains("manage_create_dataset failed"), "{err}");
+        assert!(err.contains("create_dataset failed"), "{err}");
         assert!(
             err.contains("403") || err.contains("tenant:manage"),
             "{err}"
@@ -1257,7 +1253,7 @@ mod tests {
     async fn api_key_create_membership_set_and_schema_get_hit_the_management_api() {
         let mut server = mockito::Server::new_async().await;
         let key = server
-            .mock("POST", "/api/v1/manage/tenants/acme/api-keys")
+            .mock("POST", "/api/v1/tenants/acme/api-keys")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "name": "ci",
                 "scopes": ["traces:write"]
@@ -1268,7 +1264,7 @@ mod tests {
             .create_async()
             .await;
         let update = server
-            .mock("PATCH", "/api/v1/manage/tenants/acme/api-keys/k1")
+            .mock("PATCH", "/api/v1/tenants/acme/api-keys/k1")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "scopes": ["logs:write"]
             })))
@@ -1278,12 +1274,12 @@ mod tests {
             .create_async()
             .await;
         let revoke = server
-            .mock("DELETE", "/api/v1/manage/tenants/acme/api-keys/k1")
+            .mock("DELETE", "/api/v1/tenants/acme/api-keys/k1")
             .with_status(204)
             .create_async()
             .await;
         let membership = server
-            .mock("PUT", "/api/v1/manage/tenants/acme/memberships")
+            .mock("PUT", "/api/v1/tenants/acme/memberships")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "email": "bob@example.com",
                 "role": "member"
@@ -1296,12 +1292,12 @@ mod tests {
             .create_async()
             .await;
         let remove = server
-            .mock("DELETE", "/api/v1/manage/tenants/acme/memberships/u1")
+            .mock("DELETE", "/api/v1/tenants/acme/memberships/u1")
             .with_status(204)
             .create_async()
             .await;
         let schema = server
-            .mock("GET", "/api/v1/manage/schema")
+            .mock("GET", "/api/v1/schema")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"logical":[],"logical_schema_version":"1","physical":[]}"#)
@@ -1312,7 +1308,9 @@ mod tests {
             .match_header("x-tenant-id", "acme")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"tenant_id":"acme","enabled":true,"schema":null}"#)
+            .with_body(
+                r#"{"id":"acme","name":"Acme","source":"config","created_at":"2024-01-01T00:00:00Z","updated_at":"2024-01-01T00:00:00Z"}"#,
+            )
             .create_async()
             .await;
         let connect = || ConnectArgs {
@@ -1567,7 +1565,7 @@ mod tests {
     async fn tenant_api_key_update_sends_multiple_datasets() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
-            .mock("PATCH", "/api/v1/manage/tenants/acme/api-keys/k1")
+            .mock("PATCH", "/api/v1/tenants/acme/api-keys/k1")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "dataset_ids": ["production", "staging"]
             })))
@@ -1598,7 +1596,7 @@ mod tests {
     async fn tenant_api_key_update_clears_dataset_restriction() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
-            .mock("PATCH", "/api/v1/manage/tenants/acme/api-keys/k1")
+            .mock("PATCH", "/api/v1/tenants/acme/api-keys/k1")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "clear_dataset_restriction": true
             })))
@@ -1629,7 +1627,7 @@ mod tests {
     async fn tenant_api_key_update_sends_allowed_origins() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
-            .mock("PATCH", "/api/v1/manage/tenants/acme/api-keys/k1")
+            .mock("PATCH", "/api/v1/tenants/acme/api-keys/k1")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "allowed_origins": ["https://a.example", "https://b.example"]
             })))
@@ -1660,7 +1658,7 @@ mod tests {
     async fn tenant_api_key_update_clears_allowed_origins() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
-            .mock("PATCH", "/api/v1/manage/tenants/acme/api-keys/k1")
+            .mock("PATCH", "/api/v1/tenants/acme/api-keys/k1")
             .match_body(mockito::Matcher::Json(serde_json::json!({
                 "clear_allowed_origins": true
             })))
@@ -1708,7 +1706,7 @@ mod tests {
     async fn tenant_api_key_list_defaults_to_a_human_readable_table_with_dataset_restriction() {
         let mut server = mockito::Server::new_async().await;
         server
-            .mock("GET", "/api/v1/manage/tenants/acme/api-keys")
+            .mock("GET", "/api/v1/tenants/acme/api-keys")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
@@ -2027,7 +2025,7 @@ mod tests {
         let mock = server
             .mock(
                 "POST",
-                "/api/v1/manage/tenants/acme/github-installations/link",
+                "/api/v1/tenants/acme/github-installations/link",
             )
             .match_header("authorization", "Bearer sk-test")
             .with_status(201)
@@ -2054,7 +2052,7 @@ mod tests {
         let mock = server
             .mock(
                 "POST",
-                "/api/v1/manage/tenants/acme/github-installations/attach",
+                "/api/v1/tenants/acme/github-installations/attach",
             )
             .match_header("authorization", "Bearer sk-test")
             .match_body(r#"{"installation_id":42}"#)
@@ -2083,7 +2081,7 @@ mod tests {
     async fn github_list_reports_unconfigured_server() {
         let mut server = mockito::Server::new_async().await;
         server
-            .mock("GET", "/api/v1/manage/tenants/acme/github-installations")
+            .mock("GET", "/api/v1/tenants/acme/github-installations")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"configured":false,"installations":[]}"#)
@@ -2103,10 +2101,7 @@ mod tests {
     async fn github_remove_hits_the_delete_endpoint() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
-            .mock(
-                "DELETE",
-                "/api/v1/manage/tenants/acme/github-installations/42",
-            )
+            .mock("DELETE", "/api/v1/tenants/acme/github-installations/42")
             .match_header("authorization", "Bearer sk-test")
             .with_status(204)
             .create_async()

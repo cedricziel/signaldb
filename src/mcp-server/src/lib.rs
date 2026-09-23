@@ -1426,7 +1426,7 @@ mod tests {
         .expect("build forwarding client");
 
         let started = std::time::Instant::now();
-        let result = client.manage_admin_list_tenants().send().await;
+        let result = client.list_tenants().send().await;
         assert!(
             result.is_err(),
             "request against a stalled router must fail, not succeed"
@@ -1505,7 +1505,7 @@ mod tests {
         )
         .expect("build forwarding client");
         client
-            .manage_admin_list_tenants()
+            .list_tenants()
             .send()
             .await
             .expect("mock server responds to list_tenants");
@@ -1548,7 +1548,7 @@ mod tests {
         )
         .expect("build forwarding client");
         client
-            .manage_admin_list_tenants()
+            .list_tenants()
             .send()
             .await
             .expect("mock server responds to list_tenants");
@@ -1590,7 +1590,7 @@ mod tests {
         )
         .expect("build forwarding client");
         client
-            .manage_admin_list_tenants()
+            .list_tenants()
             .send()
             .await
             .expect("mock server responds to list_tenants");
