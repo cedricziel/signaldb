@@ -61,7 +61,10 @@ interface Props {
 // A structured tuple, not a delimiter-joined string: a value containing the
 // delimiter itself (e.g. an exception message with a literal "|") could
 // otherwise collide with a different group's key.
-function groupKey(g: ErrorGroup): string {
+// Exported for `EntityErrorGroups` (the service detail page's own error
+// groups section), which drills into this same tab via the identical
+// `?group=` encoding, and must produce a key `selectedFromState` recognizes.
+export function groupKey(g: ErrorGroup): string {
   return JSON.stringify([
     g.source,
     g.exceptionType,

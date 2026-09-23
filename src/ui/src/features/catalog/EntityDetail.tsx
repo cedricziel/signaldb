@@ -15,6 +15,7 @@ import { QueryError } from "../../components/QueryError";
 import { KpiCard, KpiStrip } from "../../components/KpiCard";
 import { Sparkline } from "../../components/Sparkline";
 import { DependencyBreakdown } from "./DependencyBreakdown";
+import { EntityErrorGroups } from "./EntityErrorGroups";
 import { EntityMetricsPanel } from "./EntityMetricsPanel";
 import { useEntityKpis } from "./useEntityKpis";
 import { errorRatePercent, pctChange, ppChange } from "./entityKpiFormat";
@@ -398,6 +399,15 @@ export function EntityDetail({ entity, range, state, update }: Props) {
           onRowClick={(values) =>
             update({ catalogSecondary: compositeKey(values) }, { push: true })
           }
+        />
+      )}
+
+      {entity.id === "service" && !atSecondary && primaryValues[0] && (
+        <EntityErrorGroups
+          serviceName={primaryValues[0]}
+          range={range}
+          rangeKey={rangeKey}
+          update={update}
         />
       )}
 

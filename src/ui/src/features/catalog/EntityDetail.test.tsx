@@ -10,6 +10,7 @@ import { entityType, type EntityTypeDef } from "./entityTypes";
 import * as catalogApi from "../../api/catalog";
 import * as membersApi from "../../api/traceGroupMembers";
 import * as dependencyBreakdownApi from "../../api/dependencyBreakdown";
+import * as errorsApi from "../../api/errors";
 import * as entityMetricSeriesApi from "../../api/entityMetricSeries";
 import * as operationSeriesApi from "../../api/operationSeries";
 import * as entityMetricsHook from "./useEntityMetrics";
@@ -31,6 +32,14 @@ vi.mock("../../api/dependencyBreakdown", async (importOriginal) => {
   const actual =
     await importOriginal<typeof import("../../api/dependencyBreakdown")>();
   return { ...actual, fetchDependencyBreakdown: vi.fn() };
+});
+vi.mock("../../api/errors", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../api/errors")>();
+  return {
+    ...actual,
+    fetchErrorGroups: vi.fn(),
+    fetchErrorGroupVolume: vi.fn(),
+  };
 });
 vi.mock("../../api/entityMetricSeries", async (importOriginal) => {
   const actual =
@@ -56,6 +65,8 @@ const fetchTraceGroupMembers = vi.mocked(membersApi.fetchTraceGroupMembers);
 const fetchDependencyBreakdown = vi.mocked(
   dependencyBreakdownApi.fetchDependencyBreakdown,
 );
+const fetchErrorGroups = vi.mocked(errorsApi.fetchErrorGroups);
+const fetchErrorGroupVolume = vi.mocked(errorsApi.fetchErrorGroupVolume);
 const fetchEntityMetricSeries = vi.mocked(
   entityMetricSeriesApi.fetchEntityMetricSeries,
 );
@@ -111,9 +122,13 @@ beforeEach(() => {
   fetchCatalogEntities.mockReset();
   fetchTraceGroupMembers.mockReset();
   fetchDependencyBreakdown.mockReset();
+  fetchErrorGroups.mockReset();
+  fetchErrorGroupVolume.mockReset();
   fetchCatalogEntities.mockResolvedValue({ entities: [], truncated: false });
   fetchTraceGroupMembers.mockResolvedValue([]);
   fetchDependencyBreakdown.mockResolvedValue([]);
+  fetchErrorGroups.mockResolvedValue({ groups: [], truncated: false });
+  fetchErrorGroupVolume.mockResolvedValue([]);
   fetchEntityMetricSeries.mockReset();
   fetchEntityMetricSeries.mockResolvedValue(new Map());
   fetchOperationSeries.mockReset();
@@ -605,6 +620,16 @@ describe("EntityDetail", () => {
           { field: "service.namespace", value: "edge" },
         ]);
       }
+    });
+
+    it("is not shown for non-service entity types", async () => {
+      renderView(
+        { catalogPrimary: compositeKey(["prod", "postgres"]) },
+        entityType("database")!,
+      );
+
+      await screen.findByText("Recent matching spans");
+      expect(screen.queryByText("Error groups")).not.toBeInTheDocument();
     });
 
     it("is hidden at the breakdown drill-in depth", async () => {
