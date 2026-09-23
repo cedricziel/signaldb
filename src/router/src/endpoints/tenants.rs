@@ -90,6 +90,18 @@ fn internal_error(e: impl std::fmt::Display) -> Response {
     )
 }
 
+/// Renders a [`require_instance_admin_or_admin_key`] failure as the
+/// `signaldb_api::ApiError` shape this module's handlers declare, unlike
+/// `management::error`'s bare `{"error"}` body.
+fn admin_auth_error(status: StatusCode, message: &'static str) -> Response {
+    let code = if status == StatusCode::FORBIDDEN {
+        "forbidden"
+    } else {
+        "unauthorized"
+    };
+    json_error(status, code, message)
+}
+
 // ── Tenants ─────────────────────────────────────────────────────────────
 
 /// List tenants: every tenant for an instance admin or the break-glass
@@ -249,10 +261,10 @@ pub async fn create_tenant(
     ctx: Option<Extension<TenantContext>>,
     Json(request): Json<CreateTenantRequest>,
 ) -> Response {
-    if let Err(response) =
+    if let Err((status, message)) =
         require_instance_admin_or_admin_key(&state, &headers, ctx.as_ref().map(|e| &e.0))
     {
-        return *response;
+        return admin_auth_error(status, message);
     }
     let actor_user_id = ctx.as_ref().and_then(|e| e.0.user_id.clone());
     let tenant_id = match validate_id(&request.id) {
@@ -372,10 +384,10 @@ pub async fn update_tenant(
     Path(tenant_id): Path<String>,
     Json(request): Json<UpdateTenantRequest>,
 ) -> impl IntoResponse {
-    if let Err(response) =
+    if let Err((status, message)) =
         require_instance_admin_or_admin_key(&state, &headers, ctx.as_ref().map(|e| &e.0))
     {
-        return *response;
+        return admin_auth_error(status, message);
     }
     let existing = match state.catalog().get_tenant(&tenant_id).await {
         Ok(Some(record)) => record,
@@ -395,18 +407,27 @@ pub async fn update_tenant(
             "Config-sourced tenants cannot be modified via API",
         );
     }
-    if request.name.as_deref() == Some("") {
-        return json_error(
-            StatusCode::BAD_REQUEST,
-            "validation_error",
-            "Tenant name cannot be empty",
-        );
-    }
-    let name = request.name.as_deref().unwrap_or(&existing.name);
-    let default_dataset = match &request.default_dataset {
-        Some(ds) => Some(ds.as_str()),
-        None => existing.default_dataset.as_deref(),
+    let name = match request.name.as_deref() {
+        Some(name) if name.trim().is_empty() => {
+            return json_error(
+                StatusCode::BAD_REQUEST,
+                "validation_error",
+                "Tenant name cannot be empty",
+            );
+        }
+        Some(name) => name.trim(),
+        None => &existing.name,
     };
+    let default_dataset = match request.default_dataset.as_deref() {
+        Some(ds) => match validate_id(ds) {
+            Ok(value) => Some(value),
+            Err(e) => {
+                return json_error(StatusCode::BAD_REQUEST, "validation_error", e.to_string());
+            }
+        },
+        None => existing.default_dataset.clone(),
+    };
+    let default_dataset = default_dataset.as_deref();
     if let Err(e) = state
         .catalog()
         .upsert_tenant_with_default_dataset(&tenant_id, name, default_dataset, "database")
@@ -446,10 +467,10 @@ pub async fn delete_tenant(
     ctx: Option<Extension<TenantContext>>,
     Path(tenant_id): Path<String>,
 ) -> impl IntoResponse {
-    if let Err(response) =
+    if let Err((status, message)) =
         require_instance_admin_or_admin_key(&state, &headers, ctx.as_ref().map(|e| &e.0))
     {
-        return *response;
+        return admin_auth_error(status, message);
     }
     match state.catalog().get_tenant(&tenant_id).await {
         Ok(Some(record)) => {
@@ -501,6 +522,7 @@ pub struct ListUsersResponse {
     responses(
         (status = 200, description = "Users visible to the caller", body = ListUsersResponse),
         (status = 401, description = "Missing or invalid credentials", body = ApiError),
+        (status = 500, description = "Internal error", body = ApiError),
     )
 )]
 pub async fn list_users(
@@ -573,10 +595,10 @@ pub async fn create_user(
     ctx: Option<Extension<TenantContext>>,
     Json(request): Json<CreateUserRequest>,
 ) -> impl IntoResponse {
-    if let Err(response) =
+    if let Err((status, message)) =
         require_instance_admin_or_admin_key(&state, &headers, ctx.as_ref().map(|e| &e.0))
     {
-        return *response;
+        return admin_auth_error(status, message);
     }
     if request.email.trim().is_empty() {
         return json_error(
@@ -667,4 +689,88 @@ pub async fn create_user(
         );
     }
     (StatusCode::CREATED, Json(user_record_to_response(user))).into_response()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::RouterAppState;
+    use crate::create_router;
+    use axum::body::Body;
+    use axum::http::Request;
+    use common::catalog::Catalog;
+    use common::config::{AuthConfig, Configuration};
+    use tower::ServiceExt;
+
+    const ADMIN_KEY: &str = "sk-admin-test-key";
+
+    async fn router_with_database_tenant() -> Router {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant_with_default_dataset("acme", "Acme", Some("prod"), "database")
+            .await
+            .unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                admin_api_key: Some(ADMIN_KEY.to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        create_router(RouterAppState::new(catalog, config))
+    }
+
+    async fn patch_tenant(app: &Router, body: serde_json::Value) -> axum::response::Response {
+        app.clone()
+            .oneshot(
+                Request::builder()
+                    .method("PATCH")
+                    .uri("/api/v1/tenants/acme")
+                    .header("authorization", format!("Bearer {ADMIN_KEY}"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn update_tenant_rejects_a_whitespace_only_name_and_trims_an_accepted_one() {
+        let app = router_with_database_tenant().await;
+
+        let res = patch_tenant(&app, serde_json::json!({"name": "   "})).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        let res = patch_tenant(&app, serde_json::json!({"name": "  Acme Two  "})).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["name"], "Acme Two");
+    }
+
+    #[tokio::test]
+    async fn update_tenant_validates_and_keeps_default_dataset() {
+        let app = router_with_database_tenant().await;
+
+        // An invalid `default_dataset` is rejected as a validation error.
+        let res = patch_tenant(&app, serde_json::json!({"default_dataset": "Not Valid!"})).await;
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["error"], "validation_error");
+
+        // Omitting it keeps the existing default_dataset.
+        let res = patch_tenant(&app, serde_json::json!({"name": "Acme"})).await;
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(json["default_dataset"], "prod");
+    }
 }

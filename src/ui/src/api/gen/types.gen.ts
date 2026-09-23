@@ -4832,6 +4832,10 @@ export type ListUsersErrors = {
      * Missing or invalid credentials
      */
     401: ApiError;
+    /**
+     * Internal error
+     */
+    500: ApiError;
 };
 
 export type ListUsersError = ListUsersErrors[keyof ListUsersErrors];

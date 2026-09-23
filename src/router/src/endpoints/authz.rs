@@ -41,28 +41,32 @@ fn admin_key_matches(state: &RouterAppState, headers: &HeaderMap) -> bool {
 /// Authorizes an instance-wide operation (tenant create/update/delete,
 /// listing/creating users): an instance-admin tenant credential, or the
 /// break-glass admin key with no tenant at all.
+///
+/// Returns the status and message as data, not a rendered [`Response`], so
+/// callers that declare `signaldb_api::ApiError` (`error` + `message`) as
+/// their OpenAPI response body — the tenant/user handlers in `tenants.rs` —
+/// can render it in that shape instead of the bare `{"error"}` body
+/// [`management::error`] produces, which would otherwise mismatch the
+/// documented schema on a 401/403.
 pub(crate) fn require_instance_admin_or_admin_key(
     state: &RouterAppState,
     headers: &HeaderMap,
     ctx: Option<&TenantContext>,
-) -> Result<(), Box<Response>> {
+) -> Result<(), (StatusCode, &'static str)> {
     if let Some(ctx) = ctx {
         return if ctx.is_instance_admin {
             Ok(())
         } else {
-            Err(Box::new(error(
-                StatusCode::FORBIDDEN,
-                "Instance administrator required",
-            )))
+            Err((StatusCode::FORBIDDEN, "Instance administrator required"))
         };
     }
     if admin_key_matches(state, headers) {
         return Ok(());
     }
-    Err(Box::new(error(
+    Err((
         StatusCode::UNAUTHORIZED,
         "Missing administrator credentials",
-    )))
+    ))
 }
 
 /// Authorizes an operation scoped to one tenant (datasets, API keys,
