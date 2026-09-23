@@ -1048,6 +1048,12 @@ uncaught errors, and console `error`/`warn` calls are captured as log records
 via `@opentelemetry/browser-instrumentation`, stamped with the same
 `session.id`/`tenant.id`/`dataset.id`. Browser errors show up here (not as
 `browser.error` spans — that hand-rolled span capture was replaced by this).
+A render error React Router's own error boundary catches — one that never
+reaches `window`'s `error` event, so the instrumentation above can't see it —
+is recorded the same way: the root route's `errorElement` emits one
+`exception` log record (type, message, stacktrace, plus the route's URL) and
+shows a fallback with **Reload** / **Go home** actions instead of the router's
+bare default.
 The UI's resource also carries `service.namespace`, `signaldb.server.version`
 (the backend build that served the session — distinct from the UI bundle's
 own `service.version`), and `deployment.environment.name`, all sourced from

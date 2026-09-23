@@ -22,6 +22,7 @@ import { InstrumentationRoute } from "./features/management/InstrumentationRoute
 import { ManagementRoute } from "./features/management/ManagementRoute";
 import { SelectTenantRoute } from "./features/management/SelectTenantRoute";
 import { LoginRoute } from "./features/shell/LoginRoute";
+import { RouteErrorBoundary } from "./features/shell/RouteErrorBoundary";
 import { UnsavedChangesGuard } from "./features/shell/UnsavedChangesGuard";
 import { processorsRoutes } from "./features/processors/routes";
 import { schemaRoutes } from "./features/schema/routes";
@@ -81,7 +82,7 @@ function ExploreRoute() {
  */
 export function routeElements() {
   return (
-    <Route element={<RootLayout />}>
+    <Route element={<RootLayout />} errorElement={<RouteErrorBoundary />}>
       <Route path="/oauth/consent" element={<ConsentView />} />
       <Route path="/login" element={<LoginRoute />} />
       <Route path="/" element={<App />}>
