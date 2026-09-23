@@ -379,10 +379,11 @@ const activitySparklineRoute: JsonRoute = {
   },
 };
 
-/** Member spans for the entity detail's "Recent matching spans" table
- * (`buildMembersDoc`, `from: "traces"`, `result: "rows"`) — same eight-column
- * shape `TracesView.stories.tsx`'s span route uses. */
-const membersRoute: JsonRoute = {
+/** Root spans for the entity detail's "Slowest traces" table (`buildMembersDoc`,
+ * `from: "traces"`, `result: "rows"`, ordered by `duration_nanos` desc) — same
+ * eight-column shape `TracesView.stories.tsx`'s span route uses, eight rows so
+ * the "top 8" cap has something to show, slowest first. */
+const slowestTracesRoute: JsonRoute = {
   match: "/api/v1/query",
   bodyMatch: irBody((b) => b.result === "rows" && b.from === "traces"),
   body: {
@@ -390,23 +391,83 @@ const membersRoute: JsonRoute = {
     rows: [
       [
         "t1cafe",
-        "root",
+        "root1",
         null,
-        "checkout",
+        "POST /api/checkout",
         "checkout",
         "1700003600000000000",
-        "45000000",
-        "OK",
+        "4800000000",
+        "ERROR",
       ],
       [
         "t2beef",
-        "root",
+        "root2",
         null,
-        "checkout",
+        "POST /api/checkout",
         "checkout",
         "1700003580000000000",
-        "210000000",
+        "3100000000",
+        "OK",
+      ],
+      [
+        "t3d00d",
+        "root3",
+        null,
+        "GET /api/orders/:id",
+        "checkout",
+        "1700003560000000000",
+        "1950000000",
+        "OK",
+      ],
+      [
+        "t4f00d",
+        "root4",
+        null,
+        "POST /api/checkout",
+        "checkout",
+        "1700003540000000000",
+        "1400000000",
+        "OK",
+      ],
+      [
+        "t5c0de",
+        "root5",
+        null,
+        "GET /api/cart",
+        "checkout",
+        "1700003520000000000",
+        "980000000",
         "ERROR",
+      ],
+      [
+        "t6a11e",
+        "root6",
+        null,
+        "POST /api/checkout",
+        "checkout",
+        "1700003500000000000",
+        "720000000",
+        "OK",
+      ],
+      [
+        "t7b0b0",
+        "root7",
+        null,
+        "GET /api/orders",
+        "checkout",
+        "1700003480000000000",
+        "510000000",
+        "OK",
+      ],
+      [
+        "t8feed",
+        "root8",
+        null,
+        "GET /api/cart",
+        "checkout",
+        "1700003460000000000",
+        "410000000",
+        "OK",
       ],
     ],
   },
@@ -601,7 +662,14 @@ function whereValue(b: unknown, field: string): string | undefined {
 /** One error group's own "last hour" series — 30 two-minute buckets summing
  * to roughly its own count, with a seeded wobble (same `mulberry32` PRNG as
  * `operationSeries`, keyed by the group's own type) and, for the two spiky
- * groups, one bucket well above the rest. */
+ * groups, one bucket well above the rest.
+ *
+ * Anchored to real `Date.now()`, not a fixed epoch: `EntityErrorGroups`
+ * pads its row sparkline to `[now - 1h, now]` (`SPARK_WINDOW_MS`/`SPARK_STEP`
+ * in `EntityErrorGroups.tsx`), and `padBuckets` sorts any bucket outside that
+ * window to wherever its timestamp falls — a fixed-epoch series from 2023
+ * landed entirely before the padded grid, so only its first point (sorted
+ * leftmost) showed and the rest of the row read as a flat trailing line. */
 function errorGroupSeries(
   g: (typeof ERROR_GROUPS)[number],
 ): [number, number][] {
@@ -610,12 +678,16 @@ function errorGroupSeries(
   const phase = (seed % 628) / 100;
   const spikeAt = g.spiky ? 20 + (seed % 8) : -1;
   const avg = g.n / 30;
+  const stepMs = 120_000;
+  const windowMs = 60 * 60 * 1000; // matches EntityErrorGroups' SPARK_WINDOW_MS
+  const nowMs = Date.now();
+  const startMs = Math.floor((nowMs - windowMs) / stepMs) * stepMs;
   return Array.from({ length: 30 }, (_, i) => {
     const wave = 1 + 0.3 * Math.sin(phase + i * 0.4);
     const noise = 1 + (rand() - 0.5) * 0.4;
     const spike = i === spikeAt ? 3 : 1;
     return [
-      1_700_000_000_000_000_000 + i * 120_000_000_000,
+      startMs + i * stepMs,
       Math.max(0, Math.round(avg * wave * noise * spike)),
     ];
   });
@@ -834,7 +906,7 @@ const routes: JsonRoute[] = [
   servicesRoute,
   operationsBreakdownRoute,
   activitySparklineRoute,
-  membersRoute,
+  slowestTracesRoute,
   entityStatsCurrentRoute,
   entityStatsPreviousRoute,
   entityRateSeriesRoute,
