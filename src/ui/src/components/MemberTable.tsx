@@ -61,6 +61,11 @@ export interface MemberTableProps {
   /** Shown below the table once rows are rendered, e.g. "Showing up to 500
    * spans, newest first." Omitted entirely when not supplied. */
   footnote?: string;
+  /** Which column the table opens sorted by — defaults to newest first
+   * (`time` desc), the group drill-in's own shape. The catalog's "Slowest
+   * traces" section instead opens sorted by `duration` desc, matching the
+   * order its own query already returned rows in. */
+  initialSort?: { key: string; dir: "asc" | "desc" };
   onOpenTrace: (traceId: string) => void;
 }
 
@@ -71,9 +76,10 @@ export function MemberTable({
   identityLabel,
   emptyMessage,
   footnote,
+  initialSort = { key: "time", dir: "desc" },
   onOpenTrace,
 }: MemberTableProps) {
-  const [sort, toggle] = useSort("time", "desc");
+  const [sort, toggle] = useSort(initialSort.key, initialSort.dir);
   const rows = members ? sortRows(members, sort, memberSortValue) : [];
   const isError = error != null;
   const pending = members === undefined && !isError;

@@ -462,6 +462,20 @@ describe("EntityDetail", () => {
     );
   });
 
+  it("opens the slowest traces table sorted by duration, not time", async () => {
+    fetchTraceGroupMembers.mockResolvedValue([
+      member("t1", "s1", "GET /health", "gateway"),
+    ]);
+    renderView();
+    await screen.findByText("GET /health");
+    expect(
+      screen.getByRole("columnheader", { name: "Duration" }),
+    ).toHaveAttribute("aria-sort", "descending");
+    expect(
+      screen.getByRole("columnheader", { name: "Time" }),
+    ).not.toHaveAttribute("aria-sort");
+  });
+
   it('the "Traces" button filters Traces to this entity', async () => {
     const update = renderView();
     const user = userEvent.setup();

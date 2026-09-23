@@ -453,6 +453,7 @@ export function EntityDetail({ entity, range, state, update }: Props) {
         identityLabel="Root"
         emptyMessage="No traces in this range"
         footnote={`Slowest ${SLOWEST_TRACES_LIMIT} root spans for ${title} in this window.`}
+        initialSort={{ key: "duration", dir: "desc" }}
         onOpenTrace={(traceId) =>
           update({ signal: "traces", trace: traceId }, { push: true })
         }
