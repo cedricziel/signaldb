@@ -250,12 +250,15 @@ impl RouterAppState {
 /// `auth_layer` below ever sees it) is eligible for the break-glass
 /// `admin_api_key` bypass: the tenant-identity resource
 /// (`/tenants`, `/tenants/{id}`), human users (`/users`), or the
-/// tenant-scoped API-key/dataset/membership/GitHub-installation admin
-/// surface under `/tenants/{id}/...` — matched by route, not by any
-/// privilege-scope path segment (issue #1561 follow-up: there is no
-/// `/manage` or `/manage/admin` prefix left to match on). Every other
-/// `/tenants/{id}/...` path (`tables`, `schemas`, `source-context`) is
-/// deliberately excluded: those stay tenant-credential-only.
+/// tenant-scoped API-key/dataset/membership admin surface under
+/// `/tenants/{id}/...` — matched by route, not by any privilege-scope path
+/// segment (issue #1561 follow-up: there is no `/manage` or `/manage/admin`
+/// prefix left to match on). Every other `/tenants/{id}/...` path (`tables`,
+/// `schemas`, `source-context`, and `github-installations`) is deliberately
+/// excluded: those stay tenant-credential-only. `github-installations` in
+/// particular must stay out of this bypass even though its handlers accept
+/// the admin key — they take `TenantContextExtractor`, which this bypass
+/// leaves unset, and 500 without it (issue #1685 follow-up).
 fn is_admin_key_bypass_path(path: &str) -> bool {
     let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     matches!(
@@ -265,7 +268,6 @@ fn is_admin_key_bypass_path(path: &str) -> bool {
             | ["tenants", _, "api-keys", ..]
             | ["tenants", _, "datasets", ..]
             | ["tenants", _, "memberships", ..]
-            | ["tenants", _, "github-installations", ..]
             | ["users"]
     )
 }
@@ -537,14 +539,16 @@ mod tests {
         assert!(is_admin_key_bypass_path("/tenants/acme/datasets/staging"));
         assert!(is_admin_key_bypass_path("/tenants/acme/memberships"));
         assert!(is_admin_key_bypass_path("/tenants/acme/memberships/u1"));
-        assert!(is_admin_key_bypass_path(
-            "/tenants/acme/github-installations"
-        ));
 
-        // Data-plane tenant paths stay tenant-credential-only.
+        // Data-plane tenant paths, and github-installations (whose handlers
+        // take a TenantContextExtractor and 500 without one — issue #1685
+        // follow-up), stay tenant-credential-only.
         assert!(!is_admin_key_bypass_path("/tenants/acme/tables"));
         assert!(!is_admin_key_bypass_path("/tenants/acme/schemas"));
         assert!(!is_admin_key_bypass_path("/tenants/acme/source-context"));
+        assert!(!is_admin_key_bypass_path(
+            "/tenants/acme/github-installations"
+        ));
         assert!(!is_admin_key_bypass_path("/query"));
     }
 
@@ -673,6 +677,29 @@ mod tests {
         for _ in 0..40 {
             assert_eq!(echo_request(&app).await, StatusCode::OK);
         }
+    }
+
+    #[tokio::test]
+    async fn admin_key_request_to_github_installations_route_is_unauthorized_not_500() {
+        // github-installations handlers take a TenantContextExtractor, which
+        // 500s when no TenantContext is attached — so the admin-key bypass
+        // must not cover this route (issue #1685 follow-up).
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let mut config = test_config(None);
+        config.auth.admin_api_key = Some("admin-secret".to_string());
+        let app = create_router(RouterAppState::new(catalog, config));
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/tenants/acme/github-installations")
+                    .header("authorization", "Bearer admin-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
