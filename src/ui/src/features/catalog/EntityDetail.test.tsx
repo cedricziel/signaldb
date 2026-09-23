@@ -11,6 +11,7 @@ import * as catalogApi from "../../api/catalog";
 import * as membersApi from "../../api/traceGroupMembers";
 import * as dependencyBreakdownApi from "../../api/dependencyBreakdown";
 import * as entityMetricSeriesApi from "../../api/entityMetricSeries";
+import * as operationSeriesApi from "../../api/operationSeries";
 import * as entityMetricsHook from "./useEntityMetrics";
 import * as entityKpisHook from "./useEntityKpis";
 import type { CatalogEntity } from "../../api/catalog";
@@ -36,6 +37,11 @@ vi.mock("../../api/entityMetricSeries", async (importOriginal) => {
     await importOriginal<typeof import("../../api/entityMetricSeries")>();
   return { ...actual, fetchEntityMetricSeries: vi.fn() };
 });
+vi.mock("../../api/operationSeries", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../api/operationSeries")>();
+  return { ...actual, fetchOperationSeries: vi.fn() };
+});
 vi.mock("./useEntityMetrics", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./useEntityMetrics")>();
   return { ...actual, useEntityMetrics: vi.fn() };
@@ -53,6 +59,7 @@ const fetchDependencyBreakdown = vi.mocked(
 const fetchEntityMetricSeries = vi.mocked(
   entityMetricSeriesApi.fetchEntityMetricSeries,
 );
+const fetchOperationSeries = vi.mocked(operationSeriesApi.fetchOperationSeries);
 const useEntityMetrics = vi.mocked(entityMetricsHook.useEntityMetrics);
 const useEntityKpis = vi.mocked(entityKpisHook.useEntityKpis);
 
@@ -109,6 +116,8 @@ beforeEach(() => {
   fetchDependencyBreakdown.mockResolvedValue([]);
   fetchEntityMetricSeries.mockReset();
   fetchEntityMetricSeries.mockResolvedValue(new Map());
+  fetchOperationSeries.mockReset();
+  fetchOperationSeries.mockResolvedValue(new Map());
   useEntityMetrics.mockReset();
   useEntityMetrics.mockReturnValue({
     metrics: [
