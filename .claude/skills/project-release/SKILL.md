@@ -9,9 +9,23 @@ release-please owns versions, tags and changelogs. The job here is the part
 it gets wrong or leaves undone: a sane version, readable notes, and releases
 that end up as full releases with the right one marked Latest.
 
-Merging the release PR, editing a published release and promoting a
-pre-release are all public and hard to take back. Get an explicit go from the
-user before step 3. "Cut the release" is that go; "should we release?" is not.
+A SignalDB release happens in two stages, and each needs its own go from
+the user:
+
+- **Pre-release.** Merging the release PR tags every component and publishes
+  it as a GitHub pre-release. Tarballs and images exist and can be tested, but
+  `releases/latest` does not move and the release is flagged as not ready for
+  general use. "Cut a release" or "merge the release PR" authorizes this
+  stage (steps 1 to 4). "Should we release?" does not.
+- **Public release.** Promoting the pre-releases to full releases and marking
+  `signaldb-bin` as Latest. This is what users, install scripts and
+  `releases/latest/download` links pick up. Only do it when the user asks for
+  it ("make it public", "mark as latest", "promote"), or when they asked for
+  the full release up front. Otherwise finish stage one, report, and ask.
+
+A release can sit as a pre-release as long as it needs to, for example
+while it runs on a test instance. Stopping after stage one is a normal
+outcome, not an unfinished job.
 
 ## 1. Decide whether a release is due
 
@@ -58,7 +72,7 @@ gh pr merge <N> --squash --match-head-commit <sha>
 
 Never edit the release PR body: release-please regenerates it on every push.
 
-## 4. Publish the curated notes
+## 4. Pre-release: publish the curated notes
 
 The merge triggers the `Release Please` workflow, which creates one release
 per component within a minute or two. Every one starts as a **pre-release**
@@ -82,7 +96,7 @@ underneath, so the commit list stays available without dominating:
 Apply with `gh release edit <tag> --notes-file <file>`. Skip a release whose
 body already contains curated notes, so a rerun does not stack them.
 
-## 5. Wait for the binaries, then promote
+## 5. Public release: wait for the binaries, then promote
 
 The same workflow then builds the `signaldb` tarballs and attaches them to
 the `signaldb-bin-v*` release. This takes 15+ minutes. Watch it in the
@@ -111,7 +125,8 @@ links.
 
 ## 6. Report
 
-Tell the user the release URL, what went out, and anything left open: an
+Tell the user the release URL, which stage it reached (pre-release or
+public), what went out, and anything left open: an
 unmerged component release PR, docs or sample config that still mention a
 removed key, and claims in the notes you softened because the code didn't
 back them.
