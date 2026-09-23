@@ -4,7 +4,13 @@ import { MemoryRouter } from "react-router";
 import { testQueryClient } from "../../lib/queryClient";
 import { compositeKey } from "../../lib/traceGroups";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
-import { irBody, irCatchAll, type JsonRoute } from "../../stories/fetchStub";
+import {
+  irBody,
+  irCatchAll,
+  irEntitySeriesResponse,
+  irEntityStatsResponse,
+  type JsonRoute,
+} from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
 import { CatalogView } from "./CatalogView";
@@ -46,6 +52,58 @@ function aggregateBy(b: unknown): string[] {
   return [];
 }
 
+/** Names of one request's aggregate outputs — distinguishes the KPI strip's
+ * own stats/series queries (`buildEntityStatsDoc`, `buildEntity*SeriesDoc` in
+ * `api/entityDetailStats.ts`) from the older per-row RED aggregate above,
+ * which shares the same `result`/`from` but a different agg set. */
+function aggNames(b: unknown): string[] {
+  const body = b as {
+    pipeline?: Array<{ aggregate?: { aggs?: Array<{ as?: string }> } }>;
+  };
+  for (const stage of body.pipeline ?? []) {
+    if (stage.aggregate?.aggs)
+      return stage.aggregate.aggs.map((a) => a.as ?? "");
+  }
+  return [];
+}
+
+/** Whether the aggregate's first agg carries its own `where` — the KPI
+ * strip's error-count series (`errorsOnly: true` in `buildEntityCountSeriesDoc`)
+ * is the only `aggs: ["n"]` request that does. */
+function firstAggHasWhere(b: unknown): boolean {
+  const body = b as {
+    pipeline?: Array<{ aggregate?: { aggs?: Array<{ where?: unknown }> } }>;
+  };
+  for (const stage of body.pipeline ?? []) {
+    if (stage.aggregate?.aggs)
+      return stage.aggregate.aggs[0]?.where !== undefined;
+  }
+  return false;
+}
+
+/** `buildEntityStatsDoc`/`buildEntityCountSeriesDoc`/`buildEntityP95SeriesDoc`
+ * query both the current window and, for the "vs prev" comparison, the equal-
+ * length window immediately before it (`previousPeriod` in
+ * `api/entityDetailStats.ts`) — same shape, different `range`. A story fakes
+ * "now" as whatever the request's own `range.to` is closest to: the current
+ * window's `to` is ~now, the previous window's is ~one window-length earlier. */
+function isCurrentWindow(b: unknown): boolean {
+  const body = b as { range?: { to?: string } };
+  const toNs = Number(body.range?.to ?? 0);
+  const nowNs = Date.now() * 1_000_000;
+  return Math.abs(nowNs - toNs) < 10_000 * 1_000_000;
+}
+
+/** Whether the pipeline pins the given field to an exact value — the KPI
+ * strip's stats/series queries are pinned to one entity
+ * (`scopeWhere`/`pinsWhere` in `api/entityDetailStats.ts`), unlike the
+ * entity list's own per-row activity sparkline, which shares the same
+ * `aggs: ["n"]` shape but enumerates every entity unpinned. */
+function hasWhereField(b: unknown, field: string): boolean {
+  const body = b as { pipeline?: Array<{ where?: { field?: string } }> };
+  return (body.pipeline ?? []).some((s) => s.where?.field === field);
+}
+
 /** Field metadata for the traces source — enough for the catalog to report
  * itself as "analyzed" and offer the "service" identity dimension. */
 const tracesFieldsRoute: JsonRoute = {
@@ -83,7 +141,8 @@ const servicesRoute: JsonRoute = {
   match: "/api/v1/query",
   bodyMatch: (b) =>
     irBody((body) => body.result === "table" && body.from === "traces")(b) &&
-    !aggregateBy(b).includes("span.name"),
+    !aggregateBy(b).includes("span.name") &&
+    !aggNames(b).includes("p99"),
   body: {
     result: "table",
     rows: [
@@ -237,6 +296,95 @@ const membersRoute: JsonRoute = {
   },
 };
 
+/** A count series shaped like `buildEntityCountSeriesDoc`'s buckets — a mild
+ * upward trend, so the KPI strip's rate card reads as "picking up" rather
+ * than a flat line. */
+function bucketedSeries(
+  base: number,
+  bumpEvery: number,
+  bumpAmount: number,
+): [number, number][] {
+  return Array.from({ length: 20 }, (_, i) => [
+    1_700_000_000_000_000_000 + i * 180_000_000_000,
+    base + i * 6 + (i % bumpEvery === 0 ? bumpAmount : 0),
+  ]);
+}
+
+/** The entity detail KPI strip's own current-window stats (`buildEntityStatsDoc`
+ * in `api/entityDetailStats.ts`) — the "checkout" service's numbers, up from
+ * the previous-period route below so the cards show a "worse than before"
+ * comparison (see `entityStatsPreviousRoute`). */
+const entityStatsCurrentRoute: JsonRoute = {
+  match: "/api/v1/query",
+  bodyMatch: (b) =>
+    irBody((body) => body.result === "table" && body.from === "traces")(b) &&
+    aggNames(b).includes("p99") &&
+    isCurrentWindow(b),
+  body: irEntityStatsResponse({
+    identity: ["checkout", "storefront"],
+    n: 18_200,
+    errors: 950,
+    p50Ns: 45_000_000,
+    p95Ns: 210_000_000,
+    p99Ns: 320_000_000,
+    lastNs: "1700003600000000000",
+  }),
+};
+
+/** The equal-length window immediately before `entityStatsCurrentRoute`'s —
+ * lower traffic and a cleaner error rate, so the KPI strip's "vs prev"
+ * figures have real (and mixed-tone) direction to show. */
+const entityStatsPreviousRoute: JsonRoute = {
+  match: "/api/v1/query",
+  bodyMatch: (b) =>
+    irBody((body) => body.result === "table" && body.from === "traces")(b) &&
+    aggNames(b).includes("p99") &&
+    !isCurrentWindow(b),
+  body: irEntityStatsResponse({
+    identity: ["checkout", "storefront"],
+    n: 15_800,
+    errors: 550,
+    p50Ns: 38_000_000,
+    p95Ns: 180_000_000,
+    p99Ns: 290_000_000,
+    lastNs: "1699996800000000000",
+  }),
+};
+
+/** The rate sparkline's own count series — `n` total per bucket, pinned to
+ * "checkout", unlike the entity list's unpinned per-row activity series
+ * (`activitySparklineRoute`) that shares the same `aggs: ["n"]` shape. */
+const entityRateSeriesRoute: JsonRoute = {
+  match: "/api/v1/query",
+  bodyMatch: (b) =>
+    irBody((body) => body.result === "series" && body.from === "traces")(b) &&
+    aggNames(b).join() === "n" &&
+    !firstAggHasWhere(b) &&
+    hasWhereField(b, "service.name"),
+  body: irEntitySeriesResponse(bucketedSeries(600, 5, 200)),
+};
+
+/** The errors sparkline's error-only count series (`errorsOnly: true`). */
+const entityErrorSeriesRoute: JsonRoute = {
+  match: "/api/v1/query",
+  bodyMatch: (b) =>
+    irBody((body) => body.result === "series" && body.from === "traces")(b) &&
+    aggNames(b).join() === "n" &&
+    firstAggHasWhere(b) &&
+    hasWhereField(b, "service.name"),
+  body: irEntitySeriesResponse(bucketedSeries(20, 4, 15)),
+};
+
+/** The duration sparkline's p95 series. */
+const entityP95SeriesRoute: JsonRoute = {
+  match: "/api/v1/query",
+  bodyMatch: (b) =>
+    irBody((body) => body.result === "series" && body.from === "traces")(b) &&
+    aggNames(b).join() === "p95" &&
+    hasWhereField(b, "service.name"),
+  body: irEntitySeriesResponse(bucketedSeries(150_000_000, 6, 40_000_000)),
+};
+
 const routes: JsonRoute[] = [
   irCatchAll,
   catchAllEntities,
@@ -246,6 +394,11 @@ const routes: JsonRoute[] = [
   operationsBreakdownRoute,
   activitySparklineRoute,
   membersRoute,
+  entityStatsCurrentRoute,
+  entityStatsPreviousRoute,
+  entityRateSeriesRoute,
+  entityErrorSeriesRoute,
+  entityP95SeriesRoute,
 ];
 
 function CatalogPage({ state }: { state: ExploreState }) {
@@ -287,15 +440,21 @@ export const Dark: Story = {
   ),
 };
 
+const entityDetailState: ExploreState = {
+  ...DEFAULT_STATE,
+  signal: "catalog",
+  catalogEntity: "service",
+  catalogPrimary: compositeKey(["checkout", "storefront"]),
+};
+
 export const EntityDetail: Story = {
+  render: () => <CatalogPage state={entityDetailState} />,
+};
+
+export const EntityDetailDark: Story = {
   render: () => (
-    <CatalogPage
-      state={{
-        ...DEFAULT_STATE,
-        signal: "catalog",
-        catalogEntity: "service",
-        catalogPrimary: compositeKey(["checkout", "storefront"]),
-      }}
-    />
+    <DarkScope>
+      <CatalogPage state={entityDetailState} />
+    </DarkScope>
   ),
 };
