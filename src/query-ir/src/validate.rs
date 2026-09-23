@@ -39,6 +39,7 @@ use super::stage::{
     Rank, Stage, is_expression_string,
 };
 use super::value::{ValueType, coerce, parse_duration_ns};
+use super::version::{Feature, OperatorRegistry};
 
 /// Errors raised while validating an IR document.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -114,27 +115,29 @@ pub fn validate(
     resolver: &dyn FieldResolver,
 ) -> Result<Validated, IrError> {
     // 1. Version range.
-    check_version(doc.ir_version)?;
-    if doc.ir_version < 2
+    let registry = check_version(doc.ir_version)?;
+    if !registry.supports_feature(Feature::Heatmap)
         && (doc.result == ResultEnvelope::Heatmap
             || doc
                 .pipeline
                 .iter()
                 .any(|stage| matches!(stage, Stage::Heatmap(_))))
     {
-        return Err(IrError::Invalid(
-            "heatmap stage and result envelope require irVersion 2".to_string(),
-        ));
+        return Err(IrError::Invalid(format!(
+            "heatmap stage and result envelope require irVersion {}",
+            OperatorRegistry::feature_min_version(Feature::Heatmap)
+        )));
     }
-    if doc.ir_version < 3
+    if !registry.supports_feature(Feature::HistogramQuantile)
         && doc
             .pipeline
             .iter()
             .any(|stage| matches!(stage, Stage::HistogramQuantile(_)))
     {
-        return Err(IrError::Invalid(
-            "histogram_quantile stage requires irVersion 3".to_string(),
-        ));
+        return Err(IrError::Invalid(format!(
+            "histogram_quantile stage requires irVersion {}",
+            OperatorRegistry::feature_min_version(Feature::HistogramQuantile)
+        )));
     }
     // 1b. Introspection documents (`describe` + `metadata`) never reach a plan:
     // they are answered from declared schema, the schema registries and
@@ -154,7 +157,7 @@ pub fn validate(
         source: &doc.from,
         source_def,
         resolver,
-        ir_version: doc.ir_version,
+        registry,
         relation: RelationType::RowSet(RowSet {
             source: doc.from.clone(),
             columns: Vec::new(),
@@ -201,10 +204,10 @@ struct InferCtx<'a> {
     /// The document's declared result envelope, needed by stages whose
     /// legality depends on it (e.g. `flamegraph` only composes with `where`).
     declared_result: ResultEnvelope,
-    /// The document's declared `irVersion`. Operands nested inside a stage —
-    /// an aggregate function, a `divisor` — gate on it here rather than in the
+    /// The document's version registry. Operands nested inside a stage — an
+    /// aggregate function, a `divisor` — gate on it here rather than in the
     /// up-front scans, which only see stage kinds.
-    ir_version: i64,
+    registry: OperatorRegistry,
 }
 
 impl InferCtx<'_> {
@@ -721,10 +724,11 @@ impl InferCtx<'_> {
                     a.func.as_str()
                 )));
             }
-            if self.ir_version < 7 {
+            if !self.registry.supports_feature(Feature::AggregateAcross) {
                 return Err(IrError::Invalid(format!(
-                    "aggregate `across` requires irVersion 7 (document declares {})",
-                    self.ir_version
+                    "aggregate `across` requires irVersion {} (document declares {})",
+                    OperatorRegistry::feature_min_version(Feature::AggregateAcross),
+                    self.registry.version
                 )));
             }
             if !across.is_across_reducer() {
@@ -741,10 +745,11 @@ impl InferCtx<'_> {
                     a.func.as_str()
                 )));
             }
-            if self.ir_version < 7 {
+            if !self.registry.supports_feature(Feature::AggregateWindow) {
                 return Err(IrError::Invalid(format!(
-                    "aggregate `window` requires irVersion 7 (document declares {})",
-                    self.ir_version
+                    "aggregate `window` requires irVersion {} (document declares {})",
+                    OperatorRegistry::feature_min_version(Feature::AggregateWindow),
+                    self.registry.version
                 )));
             }
             let window_ns = parse_duration_ns(window).ok_or_else(|| IrError::Coercion {
@@ -758,19 +763,20 @@ impl InferCtx<'_> {
                 ));
             }
         }
-        if a.func.min_ir_version() > self.ir_version {
+        if !self.registry.supports_agg(a.func) {
             return Err(IrError::Invalid(format!(
                 "aggregate '{}' requires irVersion {} (document declares {})",
                 a.func.as_str(),
-                a.func.min_ir_version(),
-                self.ir_version
+                OperatorRegistry::agg_min_version(a.func),
+                self.registry.version
             )));
         }
         if let Some(divisor) = a.divisor {
-            if self.ir_version < 5 {
+            if !self.registry.supports_feature(Feature::AggregateDivisor) {
                 return Err(IrError::Invalid(format!(
-                    "aggregate `divisor` requires irVersion 5 (document declares {})",
-                    self.ir_version
+                    "aggregate `divisor` requires irVersion {} (document declares {})",
+                    OperatorRegistry::feature_min_version(Feature::AggregateDivisor),
+                    self.registry.version
                 )));
             }
             // Zero has no quotient and a negative window is not a window;
@@ -927,10 +933,6 @@ fn is_numeric(t: &ValueType) -> bool {
     )
 }
 
-/// The first IR version carrying the `describe` stage and the `metadata`
-/// result envelope.
-pub const DESCRIBE_MIN_VERSION: i64 = 4;
-
 /// What a client runs instead when it wants a predicate-scoped answer.
 const SCOPED_ANSWER_HINT: &str = "discovery is not predicate-scoped: it is answered from \
      unconditional statistics, which cannot be filtered. For the scoped answer run a query: \
@@ -969,12 +971,11 @@ pub fn validate_describe<'a>(
     Ok(describe)
 }
 
-/// Reject a document whose version this server does not understand.
-fn check_version(version: i64) -> Result<(), IrError> {
-    if super::version::is_supported(version) {
-        return Ok(());
-    }
-    Err(IrError::UnsupportedVersion {
+/// Reject a document whose version this server does not understand, and
+/// return the operator registry for the (now known-supported) version — the
+/// single source of truth every other gate below asks.
+fn check_version(version: i64) -> Result<OperatorRegistry, IrError> {
+    OperatorRegistry::for_version(version).ok_or(IrError::UnsupportedVersion {
         found: version,
         min: super::version::MIN_IR_VERSION,
         max: super::version::MAX_IR_VERSION,
@@ -1023,9 +1024,10 @@ fn check_describe(doc: &Document) -> Result<Option<&Describe>, IrError> {
     if found.is_none() && doc.result != ResultEnvelope::Metadata {
         return Ok(None);
     }
-    if doc.ir_version < DESCRIBE_MIN_VERSION {
+    let describe_min_version = OperatorRegistry::feature_min_version(Feature::Describe);
+    if doc.ir_version < describe_min_version {
         return Err(IrError::Invalid(format!(
-            "describe stage and metadata result envelope require irVersion {DESCRIBE_MIN_VERSION}"
+            "describe stage and metadata result envelope require irVersion {describe_min_version}"
         )));
     }
     // A `metadata` envelope with no `describe` terminal is an envelope
@@ -2397,6 +2399,47 @@ mod tests {
             matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 6")),
             "got {err:?}"
         );
+    }
+
+    // v5: `divisor`, and the stddev/stdvar/first/last aggregate functions.
+
+    fn agg_doc(version: i64, agg: serde_json::Value) -> serde_json::Value {
+        json!({
+            "irVersion": version, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [ { "aggregate": { "by": [], "aggs": [agg] } } ]
+        })
+    }
+
+    #[test]
+    fn divisor_requires_ir_version_5() {
+        let agg = json!({ "fn": "count", "as": "n", "divisor": 60.0 });
+        let v = validate_json(agg_doc(5, agg.clone())).unwrap();
+        assert!(matches!(v.terminal, RelationType::RowSet(_)));
+
+        let err = validate_json(agg_doc(4, agg)).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 5")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn stddev_stdvar_first_last_require_ir_version_5() {
+        for func in ["stddev", "stdvar", "first", "last"] {
+            let agg = json!({ "fn": func, "of": "severity_number", "as": "n" });
+            let v = validate_json(agg_doc(5, agg.clone())).unwrap();
+            assert!(
+                matches!(v.terminal, RelationType::RowSet(_)),
+                "{func}: expected rowset"
+            );
+
+            let err = validate_json(agg_doc(4, agg)).unwrap_err();
+            assert!(
+                matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 5")),
+                "{func}: got {err:?}"
+            );
+        }
     }
 
     // v7: irate / *_over_time, `across`, `window`.

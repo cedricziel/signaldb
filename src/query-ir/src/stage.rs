@@ -93,23 +93,6 @@ impl AggFn {
         )
     }
 
-    /// The `irVersion` that introduced this function. Documents declaring an
-    /// older version are rejected rather than silently coerced, so a client
-    /// never believes a query ran that its server could not have planned.
-    pub fn min_ir_version(self) -> i64 {
-        match self {
-            AggFn::Count | AggFn::Sum | AggFn::Avg | AggFn::Min | AggFn::Max | AggFn::Quantile => 1,
-            AggFn::Stddev | AggFn::Stdvar | AggFn::First | AggFn::Last => 5,
-            AggFn::Rate | AggFn::Increase => 6,
-            AggFn::Irate
-            | AggFn::AvgOverTime
-            | AggFn::MinOverTime
-            | AggFn::MaxOverTime
-            | AggFn::SumOverTime
-            | AggFn::CountOverTime => 7,
-        }
-    }
-
     pub fn as_str(self) -> &'static str {
         match self {
             AggFn::Count => "count",
