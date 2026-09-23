@@ -15,6 +15,8 @@
 - Framing: the storybook canvas paints `--bg` behind stories; the preview pages are white. That's a harness difference, not a component one.
 
 ## Re-sync risks
+- CatalogView's card shows EntityDetail at 1280x2000: the service overview page is ~2000px tall. If it grows further, raise the viewport or the card clips (the preview stops mid-page while the storybook side shrinks to fit).
+- Story fixtures that feed time series must derive timestamps from the request's own range (fetchStub `bodyFor`), in nanoseconds like the real IR; Date.now()/ms-scale fixtures render as a spike then flat.
 - Dark mode: every page has a `Dark` story (DarkScope → scoped `data-theme="dark"`), graded like the rest; components are only checked in light on sync (the Storybook toolbar covers them manually).
 - Play-driven stories render their pre-play state in previews (graded close): PasswordForm ErrorState, Processors TestRun. Only ConfirmButton/SourceSnippet have owned previews that replay the click.
 - The Processors pages are only partly styled in the app itself (processors-table/-title/-subtitle/-note/-button/-row-actions are defined in no stylesheet); the previews faithfully copy that.

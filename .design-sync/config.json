@@ -76,8 +76,8 @@
     },
     "CatalogView": {
       "cardMode": "single",
-      "viewport": "1280x800",
-      "primaryStory": "Default"
+      "viewport": "1280x2000",
+      "primaryStory": "EntityDetail"
     },
     "ConsentView": {
       "cardMode": "single",
