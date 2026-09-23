@@ -3,6 +3,7 @@ import { Link } from "react-router";
 import { deleteProcessor, listProcessors } from "./api";
 import { PROCESSORS, editorPath } from "./paths";
 import { useProcessorsSession } from "./useProcessorsSession";
+import { ConfirmButton } from "../../components/ConfirmButton";
 import { toErrorMessage } from "../../api/http";
 import "./processors.css";
 
@@ -40,12 +41,15 @@ export function ProcessorList() {
         <div>
           <h1 className="processors-title">Processors</h1>
           <p className="processors-subtitle">
-            OTTL statements applied to this tenant's telemetry at ingest,
-            before anything is written.
+            OTTL statements applied to this tenant's telemetry at ingest, before
+            anything is written.
           </p>
         </div>
         {isTenantAdmin && (
-          <Link className="processors-button btn btn-primary" to={`${PROCESSORS}/new`}>
+          <Link
+            className="processors-button btn btn-primary"
+            to={`${PROCESSORS}/new`}
+          >
             New
           </Link>
         )}
@@ -77,9 +81,7 @@ export function ProcessorList() {
               {processors.data.map((p) => (
                 <tr
                   key={p.name}
-                  className={
-                    p.enabled ? undefined : "processors-row-disabled"
-                  }
+                  className={p.enabled ? undefined : "processors-row-disabled"}
                 >
                   <td>
                     {isTenantAdmin ? (
@@ -102,13 +104,12 @@ export function ProcessorList() {
                   <td>{formatUpdated(p.updated_at)}</td>
                   {isTenantAdmin && (
                     <td className="processors-row-actions">
-                      <button
-                        type="button"
-                        onClick={() => remove.mutate(p.name)}
+                      <ConfirmButton
+                        label="Delete"
+                        prompt={`Delete ${p.name}?`}
                         disabled={remove.isPending}
-                      >
-                        Delete
-                      </button>
+                        onConfirm={() => remove.mutate(p.name)}
+                      />
                     </td>
                   )}
                 </tr>

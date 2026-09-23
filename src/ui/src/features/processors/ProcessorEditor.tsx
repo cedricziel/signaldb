@@ -163,95 +163,118 @@ function EditorForm({
         {stored ? `Edit ${stored.name}` : "New processor"}
       </h1>
 
-      <label htmlFor="processor-name">Name</label>
-      <input
-        id="processor-name"
-        value={name}
-        onChange={(e) => setName(e.target.value)}
-        disabled={!!stored}
-      />
+      <div className="processors-form">
+        <div className="processors-field">
+          <label htmlFor="processor-name">Name</label>
+          <input
+            id="processor-name"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            disabled={!!stored}
+          />
+        </div>
 
-      <label htmlFor="processor-description">Description</label>
-      <input
-        id="processor-description"
-        value={description}
-        onChange={(e) => setDescription(e.target.value)}
-      />
+        <div className="processors-field">
+          <label htmlFor="processor-description">Description</label>
+          <input
+            id="processor-description"
+            value={description}
+            onChange={(e) => setDescription(e.target.value)}
+          />
+        </div>
 
-      <label htmlFor="processor-signal">Signal</label>
-      <select
-        id="processor-signal"
-        value={signal}
-        onChange={(e) => setSignal(e.target.value as Signal)}
-      >
-        {SIGNALS.map((s) => (
-          <option key={s} value={s}>
-            {s}
-          </option>
-        ))}
-      </select>
+        <div className="processors-field">
+          <label htmlFor="processor-signal">Signal</label>
+          <select
+            id="processor-signal"
+            value={signal}
+            onChange={(e) => setSignal(e.target.value as Signal)}
+          >
+            {SIGNALS.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+        </div>
 
-      <label htmlFor="processor-dataset">Dataset</label>
-      <select
-        id="processor-dataset"
-        value={dataset}
-        onChange={(e) => setDataset(e.target.value)}
-      >
-        <option value={ALL_DATASETS}>All datasets</option>
-        {datasets.map((d) => (
-          <option key={d.id} value={d.id}>
-            {d.id}
-          </option>
-        ))}
-      </select>
+        <div className="processors-field">
+          <label htmlFor="processor-dataset">Dataset</label>
+          <select
+            id="processor-dataset"
+            value={dataset}
+            onChange={(e) => setDataset(e.target.value)}
+          >
+            <option value={ALL_DATASETS}>All datasets</option>
+            {datasets.map((d) => (
+              <option key={d.id} value={d.id}>
+                {d.id}
+              </option>
+            ))}
+          </select>
+        </div>
 
-      <label htmlFor="processor-enabled">
-        <input
-          id="processor-enabled"
-          type="checkbox"
-          checked={enabled}
-          onChange={(e) => setEnabled(e.target.checked)}
-        />
-        Enabled
-      </label>
+        <div className="processors-field">
+          <label htmlFor="processor-enabled">
+            <input
+              id="processor-enabled"
+              type="checkbox"
+              checked={enabled}
+              onChange={(e) => setEnabled(e.target.checked)}
+            />
+            Enabled
+          </label>
+        </div>
 
-      <label htmlFor="processor-priority">Priority</label>
-      <input
-        id="processor-priority"
-        type="number"
-        value={priority}
-        onChange={(e) => setPriority(Number(e.target.value))}
-      />
+        <div className="processors-field">
+          <label htmlFor="processor-priority">Priority</label>
+          <input
+            id="processor-priority"
+            type="number"
+            value={priority}
+            onChange={(e) => setPriority(Number(e.target.value))}
+          />
+        </div>
 
-      <label htmlFor="processor-error-mode">Error mode</label>
-      <select
-        id="processor-error-mode"
-        value={errorMode}
-        onChange={(e) => setErrorMode(e.target.value)}
-      >
-        {ERROR_MODES.map((m) => (
-          <option key={m} value={m}>
-            {m}
-          </option>
-        ))}
-      </select>
+        <div className="processors-field">
+          <label htmlFor="processor-error-mode">Error mode</label>
+          <select
+            id="processor-error-mode"
+            value={errorMode}
+            onChange={(e) => setErrorMode(e.target.value)}
+          >
+            {ERROR_MODES.map((m) => (
+              <option key={m} value={m}>
+                {m}
+              </option>
+            ))}
+          </select>
+        </div>
 
-      <label htmlFor="processor-statements">Statements (one per line)</label>
-      <textarea
-        id="processor-statements"
-        className="processors-statements-textarea"
-        value={statementsText}
-        onChange={(e) => setStatementsText(e.target.value)}
-        onBlur={() => validation.mutate()}
-        rows={8}
-      />
-      <button
-        type="button"
-        onClick={() => validation.mutate()}
-        disabled={validation.isPending}
-      >
-        Validate
-      </button>
+        <div className="processors-field">
+          <label htmlFor="processor-statements">
+            Statements (one per line)
+          </label>
+          <textarea
+            id="processor-statements"
+            className="processors-statements-textarea"
+            value={statementsText}
+            onChange={(e) => setStatementsText(e.target.value)}
+            onBlur={() => validation.mutate()}
+            rows={8}
+          />
+          <div className="processors-statements-actions">
+            <button
+              type="button"
+              className="btn btn-ghost"
+              onClick={() => validation.mutate()}
+              disabled={validation.isPending}
+            >
+              Validate
+            </button>
+          </div>
+        </div>
+      </div>
 
       {statementsCurrent && errors.length > 0 && (
         <ul className="processors-line-errors">
@@ -279,7 +302,9 @@ function EditorForm({
         >
           Save
         </button>
-        <Link to={PROCESSORS}>Cancel</Link>
+        <Link className="btn" to={PROCESSORS}>
+          Cancel
+        </Link>
       </div>
 
       {saveError && (

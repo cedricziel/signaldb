@@ -5,6 +5,7 @@ import { diffLines } from "./lineDiff";
 import { SAMPLE_PAYLOADS } from "./samples";
 import { toErrorMessage } from "../../api/http";
 import { LineDiffView } from "../../components/LineDiffView";
+import "./processors.css";
 
 interface Props {
   signal: "traces" | "logs" | "metrics";
@@ -102,7 +103,7 @@ export function TestPanel({ signal, dataset, spec }: Props) {
     <div className="processors-test-panel">
       <div className="processors-test-head">
         <h2>Test</h2>
-        <button type="button" onClick={resetSample}>
+        <button type="button" className="btn btn-ghost" onClick={resetSample}>
           Reset sample
         </button>
       </div>

@@ -3,7 +3,7 @@
    table/page conventions rather than duplicating its full theme. */
 
 .processors-page {
-  padding: 1rem;
+  padding: var(--gutter);
   display: flex;
   flex-direction: column;
   gap: 0.5rem;
@@ -13,10 +13,79 @@
   display: flex;
   justify-content: space-between;
   align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.processors-title {
+  font-size: var(--text-title);
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+.processors-subtitle {
+  color: var(--dim);
+  font-size: 13px;
+  margin: 0;
+  max-width: 720px;
+}
+
+.processors-note {
+  color: var(--dim);
+  font-size: 13px;
+}
+
+.processors-applies-hint {
+  color: var(--dim);
+  font-size: 13px;
 }
 
 .processors-row-disabled {
   opacity: 0.55;
+}
+
+.processors-row-actions {
+  text-align: right;
+}
+
+/* --- table (matches .schema-table) --- */
+.processors-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.processors-table th,
+.processors-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.processors-table th {
+  background: var(--surface2);
+  text-align: left;
+}
+
+.processors-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.processors-table tbody tr:hover {
+  background: var(--surface2);
+}
+
+.processors-table a {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.processors-table a:hover {
+  text-decoration: underline;
 }
 
 .processors-status-invalid {
@@ -58,4 +127,53 @@
   display: flex;
   gap: 0.5rem;
   align-items: center;
+}
+
+.processors-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  max-width: 560px;
+}
+
+.processors-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.processors-field label {
+  color: var(--dim);
+  font-size: 12px;
+}
+
+.processors-statements-actions {
+  display: flex;
+}
+
+.processors-button {
+  flex: none;
+}
+
+.processors-test-panel {
+  border-top: 1px solid var(--border);
+  margin-top: 1rem;
+  padding-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.processors-test-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.processors-statement-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  color: var(--dim);
+  font-size: 13px;
 }

@@ -276,6 +276,9 @@ select:focus-visible {
   color: var(--text);
   font-size: 12px;
   cursor: pointer;
+  /* .btn is also applied to <a>/<Link> (e.g. "New", "Cancel"); those must
+     never carry the browser's default underline. */
+  text-decoration: none;
 }
 
 .btn:hover:not(:disabled) {
