@@ -179,6 +179,11 @@ them through `recordRenderError` in `telemetry/renderErrors.ts`, as the same
 outside the router. Don't also wire `onCaughtError`: it fires for errors the
 boundary already recorded, so each one would be logged twice.
 
+Release builds ship source maps (`build.sourcemap` in `vite.config.ts`), served
+next to the bundles. Browsers don't apply them to `error.stack`, so recorded
+frames stay minified until they are symbolicated on the server (#1677).
+DevTools uses the maps directly.
+
 ### Manual spans
 
 Import `tracer` from `telemetry` for user-meaningful operations that aren't a
