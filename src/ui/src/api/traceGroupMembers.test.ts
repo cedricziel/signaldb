@@ -98,6 +98,22 @@ describe("buildMembersDoc", () => {
     });
     expect(doc.pipeline?.at(-1)).toEqual({ limit: 25 });
   });
+
+  it("orders by an explicit sort field instead of the newest-first default", () => {
+    const doc = buildMembersDoc(
+      ["service.name"],
+      ["checkout"],
+      range,
+      [],
+      "traces",
+      8,
+      { field: "duration_nanos", dir: "desc" },
+    );
+    expect(doc.pipeline?.at(-2)).toEqual({
+      order: [{ of: "duration_nanos", dir: "desc" }],
+    });
+    expect(doc.pipeline?.at(-1)).toEqual({ limit: 8 });
+  });
 });
 
 describe("membersFromIrResponse", () => {
