@@ -32,7 +32,7 @@ use opentelemetry_proto::tonic::{
     resource::v1::Resource,
 };
 use querier::flight::QuerierFlightService;
-use router::{RouterState, create_flight_service, create_router, discovery::ServiceRegistry};
+use router::{RouterAppState, create_flight_service, create_router};
 use signaldb_sdk::{Client, QueryClient};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -115,34 +115,6 @@ fn gauge_metrics(service: &str, value: f64) -> ExportMetricsServiceRequest {
             }],
             schema_url: String::new(),
         }],
-    }
-}
-
-/// Concrete `RouterState` for the served router.
-#[derive(Clone)]
-struct State {
-    catalog: Catalog,
-    service_registry: ServiceRegistry,
-    config: Configuration,
-    authenticator: Arc<common::auth::Authenticator>,
-}
-impl std::fmt::Debug for State {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("State")
-    }
-}
-impl RouterState for State {
-    fn catalog(&self) -> &Catalog {
-        &self.catalog
-    }
-    fn service_registry(&self) -> &ServiceRegistry {
-        &self.service_registry
-    }
-    fn config(&self) -> &Configuration {
-        &self.config
-    }
-    fn authenticator(&self) -> &Arc<common::auth::Authenticator> {
-        &self.authenticator
     }
 }
 
@@ -317,20 +289,11 @@ async fn serve_router(services: &TestServices) -> (String, String) {
     let catalog = Catalog::new(services.config.discovery.as_ref().unwrap().dsn.as_str())
         .await
         .unwrap();
-    let service_registry = ServiceRegistry::with_flight_transport(
-        catalog.clone(),
+    let state = RouterAppState::new_with_flight_transport(
+        catalog,
+        services.config.clone(),
         (*services.flight_transport).clone(),
     );
-    let authenticator = Arc::new(common::auth::Authenticator::new(
-        services.config.auth.clone(),
-        Arc::new(catalog.clone()),
-    ));
-    let state = State {
-        catalog,
-        service_registry,
-        config: services.config.clone(),
-        authenticator,
-    };
 
     // HTTP app.
     let http_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

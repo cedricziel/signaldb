@@ -15,7 +15,7 @@ use std::collections::HashMap;
 use tracing::Instrument;
 
 use super::api_error::ApiError;
-use crate::RouterState;
+use crate::RouterAppState;
 use arrow_flight::Ticket;
 use axum::{
     Router,
@@ -36,17 +36,14 @@ use prometheus_api::{
 };
 use serde::Deserialize;
 
-pub fn router<S: RouterState>() -> Router<S> {
+pub fn router() -> Router<RouterAppState> {
     Router::new()
-        .route("/api/v1/query", get(query::<S>).post(query::<S>))
-        .route(
-            "/api/v1/query_range",
-            get(query_range::<S>).post(query_range::<S>),
-        )
-        .route("/api/v1/labels", get(labels::<S>))
-        .route("/api/v1/label/{name}/values", get(label_values::<S>))
-        .route("/api/v1/label_stats", get(label_stats::<S>))
-        .route("/api/v1/series", get(series::<S>))
+        .route("/api/v1/query", get(query).post(query))
+        .route("/api/v1/query_range", get(query_range).post(query_range))
+        .route("/api/v1/labels", get(labels))
+        .route("/api/v1/label/{name}/values", get(label_values))
+        .route("/api/v1/label_stats", get(label_stats))
+        .route("/api/v1/series", get(series))
 }
 
 /// One hour in nanoseconds, the default range-query lookback.
@@ -101,8 +98,8 @@ pub struct MetadataParams {
     skip(state, tenant_ctx, params),
     fields(signaldb.tenant.id = %tenant_ctx.0.tenant_id, signaldb.dataset.id = %tenant_ctx.0.dataset_id)
 )]
-pub async fn query_range<S: RouterState>(
-    State(state): State<S>,
+pub async fn query_range(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<RangeParams>,
 ) -> Result<axum::Json<QueryResponse>, ApiError> {
@@ -145,8 +142,8 @@ pub async fn query_range<S: RouterState>(
     skip(state, tenant_ctx, params),
     fields(signaldb.tenant.id = %tenant_ctx.0.tenant_id, signaldb.dataset.id = %tenant_ctx.0.dataset_id)
 )]
-pub async fn query<S: RouterState>(
-    State(state): State<S>,
+pub async fn query(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<InstantParams>,
 ) -> Result<axum::Json<QueryResponse>, ApiError> {
@@ -184,8 +181,8 @@ pub async fn query<S: RouterState>(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
     )
 )]
-pub async fn labels<S: RouterState>(
-    State(state): State<S>,
+pub async fn labels(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<MetadataParams>,
 ) -> Result<axum::Json<LabelsResponse>, ApiError> {
@@ -217,8 +214,8 @@ pub async fn labels<S: RouterState>(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
     )
 )]
-pub async fn label_values<S: RouterState>(
-    State(state): State<S>,
+pub async fn label_values(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Path(name): Path<String>,
     Query(params): Query<MetadataParams>,
@@ -239,8 +236,8 @@ pub async fn label_values<S: RouterState>(
 }
 
 /// GET /prometheus/api/v1/series — series matching a selector.
-pub async fn series<S: RouterState>(
-    State(state): State<S>,
+pub async fn series(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<MetadataParams>,
 ) -> Result<axum::Json<SeriesResponse>, ApiError> {
@@ -270,8 +267,8 @@ const METRICS_SIGNAL: &str = "metrics";
 /// Reads the compactor's advisory attribute statistics straight from the
 /// catalog (no querier round-trip), so the metrics explorer can warn before a
 /// user groups by a high-cardinality label. Names match `/api/v1/labels`.
-pub async fn label_stats<S: RouterState>(
-    State(state): State<S>,
+pub async fn label_stats(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
 ) -> Result<axum::Json<LabelStatsResponse>, ApiError> {
     let stats = fetch_label_stats(
@@ -316,8 +313,8 @@ fn label_stat_from_record(record: AttributeStatsRecord) -> LabelStat {
 // ---- execution + conversion ----
 
 /// Build and execute a `query_promql` ticket.
-async fn run_promql<S: RouterState>(
-    state: &S,
+async fn run_promql(
+    state: &RouterAppState,
     tenant_ctx: &TenantContextExtractor,
     promql: &str,
     start: i64,
@@ -338,8 +335,8 @@ async fn run_promql<S: RouterState>(
 }
 
 /// Send a Flight ticket to a querier and collect the result batches.
-async fn execute_ticket<S: RouterState>(
-    state: &S,
+async fn execute_ticket(
+    state: &RouterAppState,
     ticket_content: String,
 ) -> Result<Vec<RecordBatch>, ApiError> {
     let (mut client, server_address) = state

@@ -19,7 +19,7 @@ use common::auth::TenantContextExtractor;
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
-use crate::RouterState;
+use crate::RouterAppState;
 use crate::endpoints::api_error::ApiError;
 use crate::source_context::{
     DEFAULT_CONTEXT_LINES, SourceLookup, SourceRequest, SourceSnippet, UnavailableReason,
@@ -89,10 +89,10 @@ impl From<SourceLookup> for SourceContextResponse {
 /// The source-context route, mounted at `/api/v1` beside
 /// [`crate::endpoints::tenant::router`] (inside the auth and query-rate
 /// layers applied to that nest in `create_router`).
-pub fn router<S: RouterState>() -> Router<S> {
+pub fn router() -> Router<RouterAppState> {
     Router::new().route(
         "/tenants/{tenant_id}/source-context",
-        get(source_context_availability::<S>).post(source_context::<S>),
+        get(source_context_availability).post(source_context),
     )
 }
 
@@ -151,8 +151,8 @@ fn authorize_reader(ctx: &common::auth::TenantContext, tenant_id: &str) -> Resul
     )
 )]
 #[tracing::instrument(skip_all, fields(signaldb.tenant.id = %tenant_id))]
-pub async fn source_context_availability<S: RouterState>(
-    State(state): State<S>,
+pub async fn source_context_availability(
+    State(state): State<RouterAppState>,
     Path(tenant_id): Path<String>,
     TenantContextExtractor(ctx): TenantContextExtractor,
 ) -> Response {
@@ -212,8 +212,8 @@ pub async fn source_context_availability<S: RouterState>(
     )
 )]
 #[tracing::instrument(skip_all, fields(signaldb.tenant.id = %tenant_id))]
-pub async fn source_context<S: RouterState>(
-    State(state): State<S>,
+pub async fn source_context(
+    State(state): State<RouterAppState>,
     Path(tenant_id): Path<String>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Json(body): Json<SourceContextRequest>,

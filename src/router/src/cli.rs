@@ -1,4 +1,4 @@
-use crate::{RouterAppState, RouterState, create_flight_service, create_router};
+use crate::{RouterAppState, create_flight_service, create_router};
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use common::cli::{CommonArgs, CommonCommands, utils};

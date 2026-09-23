@@ -21,7 +21,7 @@ use opentelemetry_proto::tonic::{
     trace::v1::{ResourceSpans, ScopeSpans, Span, Status},
 };
 use querier::flight::QuerierFlightService;
-use router::{RouterAppState, RouterState, discovery::ServiceRegistry, endpoints::tempo};
+use router::{RouterAppState, endpoints::tempo};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -313,67 +313,17 @@ async fn setup_test_services() -> TestServices {
     }
 }
 
-/// Custom router state implementation that uses the test flight transport
-#[derive(Clone)]
-struct TestRouterState {
-    catalog: Catalog,
-    service_registry: ServiceRegistry,
-    config: Configuration,
-    authenticator: Arc<common::auth::Authenticator>,
-}
-
-impl std::fmt::Debug for TestRouterState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TestRouterState")
-            .field("catalog", &"Catalog")
-            .field("service_registry", &self.service_registry)
-            .field("config", &"Configuration")
-            .field("authenticator", &"Authenticator")
-            .finish()
-    }
-}
-
-impl router::RouterState for TestRouterState {
-    fn catalog(&self) -> &Catalog {
-        &self.catalog
-    }
-
-    fn service_registry(&self) -> &ServiceRegistry {
-        &self.service_registry
-    }
-
-    fn config(&self) -> &Configuration {
-        &self.config
-    }
-
-    fn authenticator(&self) -> &Arc<common::auth::Authenticator> {
-        &self.authenticator
-    }
-}
-
 /// Create router state connected to the test services
-async fn create_router_state(services: &TestServices) -> TestRouterState {
+async fn create_router_state(services: &TestServices) -> RouterAppState {
     let catalog_dsn = services.config.discovery.as_ref().unwrap().dsn.clone();
     let catalog = Catalog::new(&catalog_dsn).await.unwrap();
 
-    // Create service registry that uses the same flight transport as the test services
-    let service_registry = ServiceRegistry::with_flight_transport(
-        catalog.clone(),
-        (*services.flight_transport).clone(),
-    );
-
-    // Create authenticator for test
-    let authenticator = Arc::new(common::auth::Authenticator::new(
-        services.config.auth.clone(),
-        Arc::new(catalog.clone()),
-    ));
-
-    TestRouterState {
+    // Uses the same flight transport as the test services.
+    RouterAppState::new_with_flight_transport(
         catalog,
-        service_registry,
-        config: services.config.clone(),
-        authenticator,
-    }
+        services.config.clone(),
+        (*services.flight_transport).clone(),
+    )
 }
 
 /// Send a test trace via OTLP

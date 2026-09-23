@@ -5,7 +5,7 @@
 //! `tenant:manage` scope. Both act only on the tenant of the caller's context;
 //! tenant creation stays instance-admin-only.
 
-use crate::RouterState;
+use crate::RouterAppState;
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -26,34 +26,34 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use uuid::Uuid;
 
-pub fn router<S: RouterState>() -> Router<S> {
+pub fn router() -> Router<RouterAppState> {
     Router::new()
-        .route("/tenants", post(create_tenant::<S>))
+        .route("/tenants", post(create_tenant))
         .route(
             "/tenants/{tenant_id}/datasets",
-            get(list_datasets::<S>).post(create_dataset::<S>),
+            get(list_datasets).post(create_dataset),
         )
         .route(
             "/tenants/{tenant_id}/datasets/{dataset_name}",
-            delete(delete_dataset::<S>),
+            delete(delete_dataset),
         )
         .route(
             "/tenants/{tenant_id}/api-keys",
-            get(list_api_keys::<S>).post(create_api_key::<S>),
+            get(list_api_keys).post(create_api_key),
         )
         .route(
             "/tenants/{tenant_id}/api-keys/{key_id}",
-            delete(revoke_api_key::<S>).patch(update_api_key::<S>),
+            delete(revoke_api_key).patch(update_api_key),
         )
         .route(
             "/tenants/{tenant_id}/memberships",
-            get(list_memberships::<S>).put(upsert_membership::<S>),
+            get(list_memberships).put(upsert_membership),
         )
         .route(
             "/tenants/{tenant_id}/memberships/{user_id}",
-            delete(remove_membership::<S>),
+            delete(remove_membership),
         )
-        .route("/schema", get(get_schema::<S>))
+        .route("/schema", get(get_schema))
 }
 
 /// Error returned when the principal may not manage the tenant.
@@ -175,8 +175,8 @@ pub(crate) struct ManageError {
         (status = 500, description = "Internal error", body = ManageError),
     )
 )]
-pub(crate) async fn create_tenant<S: RouterState>(
-    State(state): State<S>,
+pub(crate) async fn create_tenant(
+    State(state): State<RouterAppState>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Json(request): Json<CreateTenantRequest>,
 ) -> Response {
@@ -273,8 +273,8 @@ pub(crate) struct DatasetResponse {
         (status = 500, description = "Internal error", body = ManageError),
     )
 )]
-pub(crate) async fn list_datasets<S: RouterState>(
-    State(state): State<S>,
+pub(crate) async fn list_datasets(
+    State(state): State<RouterAppState>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path(tenant_id): Path<String>,
 ) -> Response {
@@ -320,8 +320,8 @@ pub(crate) struct CreateDatasetRequest {
         (status = 409, description = "Unable to create dataset", body = ManageError),
     )
 )]
-pub(crate) async fn create_dataset<S: RouterState>(
-    State(state): State<S>,
+pub(crate) async fn create_dataset(
+    State(state): State<RouterAppState>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path(tenant_id): Path<String>,
     Json(request): Json<CreateDatasetRequest>,
@@ -370,8 +370,8 @@ pub(crate) async fn create_dataset<S: RouterState>(
         (status = 500, description = "Internal error", body = ManageError),
     )
 )]
-pub(crate) async fn delete_dataset<S: RouterState>(
-    State(state): State<S>,
+pub(crate) async fn delete_dataset(
+    State(state): State<RouterAppState>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path((tenant_id, dataset_name)): Path<(String, String)>,
 ) -> Response {
@@ -506,8 +506,8 @@ pub(crate) struct ManageCreatedApiKey {
         (status = 500, description = "Internal error", body = ManageError),
     )
 )]
-pub(crate) async fn list_api_keys<S: RouterState>(
-    State(state): State<S>,
+pub(crate) async fn list_api_keys(
+    State(state): State<RouterAppState>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path(tenant_id): Path<String>,
 ) -> Response {
@@ -553,8 +553,8 @@ pub(crate) async fn list_api_keys<S: RouterState>(
         (status = 500, description = "Internal error", body = ManageError),
     )
 )]
-pub(crate) async fn create_api_key<S: RouterState>(
-    State(state): State<S>,
+pub(crate) async fn create_api_key(
+    State(state): State<RouterAppState>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path(tenant_id): Path<String>,
     Json(request): Json<CreateApiKeyRequest>,
@@ -622,8 +622,8 @@ pub(crate) async fn create_api_key<S: RouterState>(
 }
 
 /// `400` unless every dataset in `dataset_ids` exists in the tenant.
-async fn ensure_datasets_exist<S: RouterState>(
-    state: &S,
+async fn ensure_datasets_exist(
+    state: &RouterAppState,
     tenant_id: &str,
     dataset_ids: &[String],
 ) -> Result<(), Box<Response>> {
@@ -658,8 +658,8 @@ async fn ensure_datasets_exist<S: RouterState>(
 /// mixed-version rollout gate (`[auth].dataset_restriction_rollout_complete`)
 /// is not yet `true` (D2), or when any element does not belong to
 /// `tenant_id`.
-async fn validate_dataset_restriction_gate_and_membership<S: RouterState>(
-    state: &S,
+async fn validate_dataset_restriction_gate_and_membership(
+    state: &RouterAppState,
     tenant_id: &str,
     dataset_ids: &[String],
 ) -> Result<(), Box<Response>> {
@@ -724,8 +724,8 @@ pub(crate) struct UpdateApiKeyRequest {
         (status = 500, description = "Internal error", body = ManageError),
     )
 )]
-pub(crate) async fn update_api_key<S: RouterState>(
-    State(state): State<S>,
+pub(crate) async fn update_api_key(
+    State(state): State<RouterAppState>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path((tenant_id, key_id)): Path<(String, String)>,
     Json(request): Json<UpdateApiKeyRequest>,
@@ -842,8 +842,8 @@ pub(crate) async fn update_api_key<S: RouterState>(
         (status = 500, description = "Internal error", body = ManageError),
     )
 )]
-pub(crate) async fn revoke_api_key<S: RouterState>(
-    State(state): State<S>,
+pub(crate) async fn revoke_api_key(
+    State(state): State<RouterAppState>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path((tenant_id, key_id)): Path<(String, String)>,
 ) -> Response {
@@ -901,8 +901,8 @@ pub(crate) struct MembershipResponse {
         (status = 500, description = "Internal error", body = ManageError),
     )
 )]
-pub(crate) async fn list_memberships<S: RouterState>(
-    State(state): State<S>,
+pub(crate) async fn list_memberships(
+    State(state): State<RouterAppState>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path(tenant_id): Path<String>,
 ) -> Response {
@@ -964,8 +964,8 @@ pub(crate) struct UpsertMembershipRequest {
         (status = 500, description = "Internal error", body = ManageError),
     )
 )]
-pub(crate) async fn upsert_membership<S: RouterState>(
-    State(state): State<S>,
+pub(crate) async fn upsert_membership(
+    State(state): State<RouterAppState>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path(tenant_id): Path<String>,
     Json(request): Json<UpsertMembershipRequest>,
@@ -1045,8 +1045,8 @@ pub(crate) async fn upsert_membership<S: RouterState>(
         (status = 500, description = "Internal error", body = ManageError),
     )
 )]
-pub(crate) async fn remove_membership<S: RouterState>(
-    State(state): State<S>,
+pub(crate) async fn remove_membership(
+    State(state): State<RouterAppState>,
     TenantContextExtractor(ctx): TenantContextExtractor,
     Path((tenant_id, user_id)): Path<(String, String)>,
 ) -> Response {
@@ -1206,8 +1206,8 @@ fn physical_schemas_for_source(
         (status = 403, description = "Tenant administrator role or tenant:manage scope required", body = ManageError),
     )
 )]
-pub(crate) async fn get_schema<S: RouterState>(
-    State(_state): State<S>,
+pub(crate) async fn get_schema(
+    State(_state): State<RouterAppState>,
     TenantContextExtractor(ctx): TenantContextExtractor,
 ) -> Response {
     if !can_manage(&ctx) {

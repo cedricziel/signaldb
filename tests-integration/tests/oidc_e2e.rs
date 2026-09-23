@@ -72,7 +72,7 @@ use common::config::{
     TenantConfig,
 };
 use common::testing::start_container_with_retry;
-use router::{RouterAppState, RouterState, create_router};
+use router::{RouterAppState, create_router};
 use std::time::Duration;
 use testcontainers_modules::testcontainers::core::wait::HttpWaitStrategy;
 use testcontainers_modules::testcontainers::core::{ContainerPort, WaitFor};

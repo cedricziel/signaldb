@@ -12,7 +12,7 @@
 //! isn't carrying the demo user's own session cookie — every other caller
 //! is unaffected.
 
-use crate::RouterState;
+use crate::RouterAppState;
 use axum::{
     Json,
     body::Body,
@@ -49,8 +49,8 @@ fn is_allowlisted(method: &Method, path: &str) -> bool {
 
 /// Rejects every request from the demo user's session other than
 /// GET/HEAD/OPTIONS and the read-only allowlist above.
-pub async fn demo_write_guard<S: RouterState>(
-    State(state): State<S>,
+pub async fn demo_write_guard(
+    State(state): State<RouterAppState>,
     request: Request<Body>,
     next: Next,
 ) -> Response {
