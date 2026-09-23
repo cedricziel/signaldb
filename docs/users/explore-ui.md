@@ -313,20 +313,58 @@ table of dashes. The metric charted is the first the entity type is associated
 with that the window holds, and the column header names it — a row with no
 data for it stays empty rather than drawing a flat line.
 
-Selecting a row opens that entity's own page: a breadcrumb, its RED numbers
-pinned to exactly that entity, a breakdown table for entity types that have
-one (services by operation, databases by `db.operation.name`, infrastructure
-entity types by which services were observed alongside them), and a list of
-real recent matching spans linking straight into their trace waterfalls. A
-breakdown row drills one level deeper the same way.
+Selecting a row opens that entity's own page, top to bottom:
 
-The page also charts the entity's **metrics**, and which metrics those are is
-the registry's answer rather than a list maintained in the UI: a metric
-definition declares the entity it measures, so a host is charted with the
-`system.*` metrics, a container with `container.*`, a process with
-`process.*` — and a tenant publishing its own registry gets its own metrics
-charted on the same terms, with no code change. That is what stops an entity
-whose telemetry is metrics rather than traces from being a page of dashes.
+- A breadcrumb, the entity's title, and (for a drillable entity type) **Logs**
+  and **Traces** buttons that jump to those tabs pre-filtered to this exact
+  entity — Logs only appears when every identity dimension is one a log
+  record can also carry (a span-only attribute like `db.namespace` has no
+  Logs equivalent, so the button is left off rather than jumping to a view
+  that silently ignores part of the entity).
+- Three **KPI cards** — Rate, Errors, Duration (p95) — each with its own
+  sparkline and, where the window allows a same-length comparison, a "vs
+  prev" change figure toned by whether that direction is good, bad, or (for
+  Rate) neither. All four are derived from traces; an entity no trace ever
+  carried shows "–" rather than a misleading "0%"/"0ms" reporting an
+  uninstrumented service as flawless. Which signals cover the entity is
+  named next to its title, under **Signals**.
+- **Operations**, for entity types that define a breakdown (services by
+  `span.name`, databases by `db.operation.name`, infrastructure types by
+  which services were observed alongside them): a searchable, sortable table
+  with a per-row "last hour" sparkline, capped to the top 8 by rate with a
+  "show all" toggle once search or the toggle asks for more. A row drills one
+  level deeper the same way the top-level catalog does.
+- **Error groups**, on a service's own page: its top 5 exception groups by
+  count (type, message, source, last-hour sparkline, count, last seen),
+  drilling into the same group detail the Errors tab itself opens, plus an
+  "All errors for `<service>`" link to the full Errors tab filtered to it.
+- **Time by dependency**, also service-only: a proportional bar and legend —
+  a small colored swatch per kind, not a full-block background — breaking
+  down where the service's outbound time goes (database, HTTP, RPC,
+  messaging, discovered from `db.system.name`, `http.request.method`,
+  `rpc.system`, `messaging.system`), and beneath it a per-dependency table
+  (target, kind, share of request time, P95, calls/request) with a `(self)`
+  row for the time no downstream call accounts for.
+- **Slowest traces**: the entity's top 8 root spans by duration in the
+  current window, with an "Open in Traces" link that jumps to the Traces tab
+  pre-filtered the same way the header's Traces button does. Opening a row
+  goes straight to its trace waterfall.
+- The entity's **metrics** panel, last on the page — supplementary context
+  rather than the primary signal a service/host/process page leads with.
+
+An identity value the catalog shows as `(not set)` becomes a filter for spans
+that carry no such attribute at all (a `(not set)` chip on the Traces tab,
+`field|absent` in the URL) rather than being dropped, so a Logs/Traces jump or
+the Slowest-traces link lists the same traces the entity page counted instead
+of every trace in the window.
+
+The metrics panel's contents are the registry's answer rather than a list
+maintained in the UI: a metric definition declares the entity it measures, so
+a host is charted with the `system.*` metrics, a container with
+`container.*`, a process with `process.*` — and a tenant publishing its own
+registry gets its own metrics charted on the same terms, with no code change.
+That is what stops an entity whose telemetry is metrics rather than traces
+from being a page of dashes.
 
 Only metrics the selected window actually holds are charted; an associated
 metric a deployment never emits is absent rather than drawn as a flat zero,
@@ -338,15 +376,8 @@ and unit off the tile, and both carry a title with the full text. A metric
 whose unit is bytes gets a y-axis in `KB`/`MB`/`GB`, the same scale its
 tooltip uses, rather than a raw count with a `K`/`M` suffix; a gauge that
 goes negative is compacted by magnitude and keeps its sign, and the axis
-gutter leaves room for it. Where an entity
-associates more metrics than fit, the panel says
-how many it is not showing rather than truncating silently. "View matching traces →"
-on the entity page hands off to the Traces tab, pre-filtered — the general
-escape hatch when the catalog's own view isn't enough. An identity value the
-catalog shows as `(not set)` becomes a filter for spans that carry no such
-attribute at all (a `(not set)` chip on the Traces tab, `field|absent` in the
-URL) rather than being dropped, so the handoff lists the same traces the
-entity page counted instead of every trace in the window.
+gutter leaves room for it. Where an entity associates more metrics than fit,
+the panel says how many it is not showing rather than truncating silently.
 
 "Services" is scoped to server-kind spans specifically: a service's own
 resource attributes appear on every span it emits, including calls it makes
