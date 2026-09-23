@@ -104,35 +104,27 @@
   color: var(--dim);
 }
 
-.entity-kpis {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
-  gap: 12px;
+.entity-detail-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.entity-detail-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.entity-detail .kpi-strip {
+  margin-bottom: 6px;
+}
+
+.entity-last-seen {
   margin: 0 0 20px;
-  padding: 14px 16px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-}
-
-.entity-kpis dt {
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  font-size: 12px;
   color: var(--faint);
-  margin-bottom: 3px;
-}
-
-.entity-kpis dd {
-  margin: 0;
-  font-family: var(--mono);
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text);
-}
-
-.entity-kpis dd.err-rate {
-  color: var(--err);
 }
 
 /* Provenance for the entity-type list: how fresh the metadata behind it is,
