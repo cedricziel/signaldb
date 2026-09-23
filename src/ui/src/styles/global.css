@@ -106,7 +106,12 @@
   }
 }
 
-:root[data-theme="dark"] {
+/* Scoped theming: :root[data-theme] forces the whole app; [data-theme] on
+   any other element (e.g. a Storybook decorator root) scopes the override
+   to that subtree and paints its own background/text so a themed panel
+   looks right embedded in an oppositely-themed page. */
+:root[data-theme="dark"],
+[data-theme="dark"] {
   --bg: #0d1014;
   --surface: #14181e;
   --surface2: #1a202a;
@@ -143,7 +148,16 @@
   --ok-text: #46b58a;
 }
 
-:root[data-theme="light"] {
+/* :root's own background/color come from the `body` rule below; a scoped
+   [data-theme] element (not :root) paints itself directly. */
+[data-theme="dark"]:not(:root),
+[data-theme="light"]:not(:root) {
+  background: var(--bg);
+  color: var(--text);
+}
+
+:root[data-theme="light"],
+[data-theme="light"] {
   --bg: #f2f3f6;
   --surface: #ffffff;
   --surface2: #e9ecf1;
