@@ -1,6 +1,6 @@
 ---
 name: project-release
-description: SignalDB release procedure end to end - deciding whether to cut a release, checking the version bump, merging the release-please PR, curating the published notes, waiting for the binary build, and promoting the pre-releases with signaldb-bin as Latest. Use whenever someone asks "should we release", "cut a release", "ship it", "publish a new version", "mark as latest", or wants the release-please PR merged, even if they don't say "release procedure".
+description: SignalDB release procedure end to end - deciding whether to cut a release, checking the version bump, merging the release-please PR, curating the published notes, and, as a separate step, promoting the pre-release to a public release with signaldb-bin as Latest. Use whenever someone asks "should we release", "cut a release", "ship it", "publish a new version", "mark as latest", "make it public", "promote the pre-release", or wants the release-please PR merged, even if they don't say "release procedure".
 ---
 
 # Cutting a SignalDB release
