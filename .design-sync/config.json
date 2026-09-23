@@ -66,73 +66,88 @@
     },
     "LogsView": {
       "cardMode": "single",
-      "primaryStory": "Default",
-      "viewport": "1280x800"
+      "viewport": "1280x800",
+      "primaryStory": "Default"
     },
     "TracesView": {
       "cardMode": "single",
-      "primaryStory": "Default",
-      "viewport": "1280x800"
+      "viewport": "1280x800",
+      "primaryStory": "Default"
     },
     "CatalogView": {
       "cardMode": "single",
-      "viewport": "1280x800"
+      "viewport": "1280x800",
+      "primaryStory": "Default"
     },
     "ConsentView": {
       "cardMode": "single",
-      "viewport": "1280x800"
+      "viewport": "1280x800",
+      "primaryStory": "SingleTenant"
     },
     "ErrorsView": {
       "cardMode": "single",
-      "viewport": "1280x800"
+      "viewport": "1280x800",
+      "primaryStory": "Default"
     },
     "ExploreView": {
       "cardMode": "single",
-      "viewport": "1280x800"
+      "viewport": "1280x800",
+      "primaryStory": "Default"
     },
     "GitHubIntegration": {
       "cardMode": "single",
-      "viewport": "1280x800"
+      "viewport": "1280x800",
+      "primaryStory": "Linked"
     },
     "ApiKeys": {
       "cardMode": "single",
-      "viewport": "1280x800"
+      "viewport": "1280x800",
+      "primaryStory": "Default"
     },
     "Instrumentation": {
       "cardMode": "single",
-      "viewport": "1280x800"
+      "viewport": "1280x800",
+      "primaryStory": "Default"
     },
     "ManagementPanel": {
       "cardMode": "single",
-      "viewport": "1280x800"
+      "viewport": "1280x800",
+      "primaryStory": "Default"
     },
     "SelectTenant": {
       "cardMode": "single",
-      "viewport": "1280x800"
+      "viewport": "1280x800",
+      "primaryStory": "Default"
     },
     "MetricsView": {
       "cardMode": "single",
-      "viewport": "1280x800"
+      "viewport": "1280x800",
+      "primaryStory": "Default"
     },
     "ProcessorList": {
       "cardMode": "single",
-      "viewport": "1280x800"
+      "viewport": "1280x800",
+      "primaryStory": "List"
     },
     "ProfilesView": {
       "cardMode": "single",
-      "viewport": "1280x800"
+      "viewport": "1280x800",
+      "primaryStory": "Default"
     },
     "QueryView": {
       "cardMode": "single",
-      "viewport": "1280x800"
+      "viewport": "1280x800",
+      "primaryStory": "Default"
     },
     "SchemaHub": {
       "cardMode": "single",
-      "viewport": "1280x800"
+      "viewport": "1280x800",
+      "primaryStory": "Conventions"
     },
     "LoginRoute": {
       "cardMode": "single",
-      "viewport": "1280x800"
+      "viewport": "1280x800",
+      "primaryStory": "PasswordOnly"
     },
     "ThrottleBanner": {
       "cardMode": "single",

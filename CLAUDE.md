@@ -40,7 +40,7 @@ JS tooling is pnpm (root workspace + `pnpm-lock.yaml`); `npm install` desyncs th
 
 Configuration precedence: defaults → TOML file (`signaldb.toml`) → environment variables (`SIGNALDB_*`). Key sections: `[database]`, `[storage]`, `[discovery]`, `[wal]`, `[schema]`, `[auth]`.
 
-The `architecture`, `crate-map`, `storage-layout`, `service-discovery`, `configuration`, and `flight-schemas` skills route into `docs/` for everything else.
+The `architecture`, `crate-map`, `storage-layout`, `service-discovery`, `configuration`, `flight-schemas`, and `http-api` skills route into `docs/` for everything else.
 
 ## Multi-Tenancy & Authentication
 

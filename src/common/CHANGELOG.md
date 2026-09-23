@@ -1,5 +1,40 @@
 # Changelog
 
+## [0.4.1](https://github.com/cedricziel/signaldb/compare/common-v0.4.0...common-v0.4.1) (2026-09-23)
+
+
+### Features
+
+* **common:** convert exponential histograms to classic buckets for Prometheus ([#1629](https://github.com/cedricziel/signaldb/issues/1629)) ([7ee1f51](https://github.com/cedricziel/signaldb/commit/7ee1f51a395faa51b2a1199febc17237563b9f37))
+* demo mode and a TrueNAS demo app with a trimmed OpenTelemetry Demo ([#1632](https://github.com/cedricziel/signaldb/issues/1632)) ([d6da0cf](https://github.com/cedricziel/signaldb/commit/d6da0cfb53d79b8167d92e0c3689aea65323d97b))
+* GitHub App integration for connecting a tenant's repositories ([#1600](https://github.com/cedricziel/signaldb/issues/1600)) ([6c9721e](https://github.com/cedricziel/signaldb/commit/6c9721ef0cf630df85e227a07be6ae30ee263191))
+* **mcp:** add optional ui_base_url config for MCP server ([#1551](https://github.com/cedricziel/signaldb/issues/1551)) ([a90c8e0](https://github.com/cedricziel/signaldb/commit/a90c8e0cecbae181bcced4bc301ab619fc2a7352))
+* multi-tenant MCP OAuth grants ([#1541](https://github.com/cedricziel/signaldb/issues/1541)) ([c5b49b0](https://github.com/cedricziel/signaldb/commit/c5b49b018f749a72b639366a18223081cecef7cc))
+* per-API-key allowed origins for browser (CORS) ingestion ([#1548](https://github.com/cedricziel/signaldb/issues/1548)) ([6e966dd](https://github.com/cedricziel/signaldb/commit/6e966ddaf2740e3648583223828c6af715b6d331))
+* per-tenant, per-dataset OTTL telemetry processors ([#1603](https://github.com/cedricziel/signaldb/issues/1603)) ([2fc1022](https://github.com/cedricziel/signaldb/commit/2fc102232b1d925418b02e68393af8917184016e))
+* **router:** attach an existing GitHub App installation to a tenant ([#1618](https://github.com/cedricziel/signaldb/issues/1618)) ([0ab8e95](https://github.com/cedricziel/signaldb/commit/0ab8e95581f5213b02e8cded8af5b2b71c827516))
+* **router:** trace discovery reads with a boundary span ([#1631](https://github.com/cedricziel/signaldb/issues/1631)) ([0055179](https://github.com/cedricziel/signaldb/commit/0055179a3c1bc8a3e655bbb817930a26b0236da0))
+* source context for stack frames from linked GitHub repositories ([#1601](https://github.com/cedricziel/signaldb/issues/1601)) ([acca49c](https://github.com/cedricziel/signaldb/commit/acca49ca770ab96464b12676211144bc20b5cc7c))
+
+
+### Bug Fixes
+
+* **auth:** slide browser session expiry forward on activity ([#1578](https://github.com/cedricziel/signaldb/issues/1578)) ([a8cfad3](https://github.com/cedricziel/signaldb/commit/a8cfad3d853e024510b0f82975f5c9971d428b68))
+* **compactor:** resolve tenant slug to id for pinned-label guard ([#1633](https://github.com/cedricziel/signaldb/issues/1633)) ([f46c403](https://github.com/cedricziel/signaldb/commit/f46c4034f51cb5a7b35ab14c577b7224bf7f53f4)), closes [#1535](https://github.com/cedricziel/signaldb/issues/1535)
+* **config:** default the demo login to demo@example.com ([#1648](https://github.com/cedricziel/signaldb/issues/1648)) ([a90e105](https://github.com/cedricziel/signaldb/commit/a90e105b4d51a61ea1ca3d4c086d6dcb69e8ef46))
+* **querier:** bound the scan batch, spill reservation and monolith memory pool ([#1602](https://github.com/cedricziel/signaldb/issues/1602)) ([edc1947](https://github.com/cedricziel/signaldb/commit/edc19477c0dc49d8b09ac54934e55cb153d6f9da))
+* **querier:** fall back to attribute extraction when materialized label columns collide ([#1642](https://github.com/cedricziel/signaldb/issues/1642)) ([998b004](https://github.com/cedricziel/signaldb/commit/998b004767b035eef4329ae765fd7d950050bc38))
+
+
+### Performance Improvements
+
+* **router:** reuse one CatalogManager for tenant table listings ([#1664](https://github.com/cedricziel/signaldb/issues/1664)) ([1f6929e](https://github.com/cedricziel/signaldb/commit/1f6929ec56402f3dc7bcc5a801d9557b0b8ce180))
+
+
+### Code Refactoring
+
+* drop unread other_group_count and DetectedMetricInfo::suffix ([#1663](https://github.com/cedricziel/signaldb/issues/1663)) ([2fb542b](https://github.com/cedricziel/signaldb/commit/2fb542b586db200e43bc48f1f6f9112cb01e5d5d))
+
 ## [0.4.0](https://github.com/cedricziel/signaldb/compare/common-v0.3.0...common-v0.4.0) (2026-09-12)
 
 

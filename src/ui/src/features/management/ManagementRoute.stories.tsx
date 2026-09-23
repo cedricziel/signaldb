@@ -7,6 +7,7 @@ import {
   type JsonRoute,
 } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
+import { DarkScope } from "../../stories/DarkScope";
 import { ManagementPanel } from "./ManagementPanel";
 
 const tenant = "acme";
@@ -135,4 +136,12 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
   render: () => <ManagePage />,
+};
+
+export const Dark: Story = {
+  render: () => (
+    <DarkScope>
+      <ManagePage />
+    </DarkScope>
+  ),
 };

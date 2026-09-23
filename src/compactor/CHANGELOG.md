@@ -5,6 +5,20 @@ All notable changes to the SignalDB Compactor Service will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1](https://github.com/cedricziel/signaldb/compare/compactor-v0.4.0...compactor-v0.4.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* **compactor:** register the empty-cycle log attributes ([#1644](https://github.com/cedricziel/signaldb/issues/1644)) ([aeb0459](https://github.com/cedricziel/signaldb/commit/aeb045977933886d697ae794da78802912e9a0bc))
+* **compactor:** resolve tenant slug to id for pinned-label guard ([#1633](https://github.com/cedricziel/signaldb/issues/1633)) ([f46c403](https://github.com/cedricziel/signaldb/commit/f46c4034f51cb5a7b35ab14c577b7224bf7f53f4)), closes [#1535](https://github.com/cedricziel/signaldb/issues/1535)
+* **querier:** bound the scan batch, spill reservation and monolith memory pool ([#1602](https://github.com/cedricziel/signaldb/issues/1602)) ([edc1947](https://github.com/cedricziel/signaldb/commit/edc19477c0dc49d8b09ac54934e55cb153d6f9da))
+
+
+### Code Refactoring
+
+* remove cross-crate dead code ([#1647](https://github.com/cedricziel/signaldb/issues/1647)) ([8b5b1d9](https://github.com/cedricziel/signaldb/commit/8b5b1d98f1150e75a8306beea29bb90465a4f921))
+
 ## [0.4.0](https://github.com/cedricziel/signaldb/compare/compactor-v0.3.0...compactor-v0.4.0) (2026-09-12)
 
 

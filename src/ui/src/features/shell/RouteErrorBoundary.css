@@ -1,0 +1,29 @@
+.route-error {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  max-width: 420px;
+  margin: 64px auto;
+  padding: 16px;
+  text-align: center;
+}
+
+.route-error-title {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+
+.route-error-detail {
+  margin: 0;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.route-error-actions {
+  display: flex;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 8px;
+}

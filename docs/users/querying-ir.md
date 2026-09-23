@@ -57,7 +57,9 @@ body. The response is the declared result envelope (see
   "range": { "from": "now-1h", "to": "now" },
   "result": "series", // v1: rows | series | table; v2 adds heatmap; flamegraph is profiles-only
   "fields": ["service.name"], // optional curated projection (rows/table)
-  "pipeline": [/* ordered transform stages */],
+  "pipeline": [
+    /* ordered transform stages */
+  ],
 }
 ```
 
@@ -137,6 +139,12 @@ so ordered and numeric operators get no special allowance for it. A
 predicate, `order`/`rank` key, `aggregate.by`, or aggregate operand on `body`
 compares against the same decoded string value a `rows` result's `body`
 field shows, never the raw JSON-encoded storage form.
+
+An attribute with no declared schema type resolves to a string, but `gt`/
+`gte`/`lt`/`lte` against a numeric literal (`{ "field": "http.status_code",
+"op": "gt", "value": 400 }`) still compares numerically: a non-numeric-looking
+value never matches, rather than sorting lexicographically (`"9" > "10"`).
+Compare against a string literal to keep lexicographic ordering.
 
 `span_events` on `traces` is the span's whole events list as a JSON string:
 `[{"name", "timestamp_unix_nano", "attributes": {...}}, ...]`, `null` for a

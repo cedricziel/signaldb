@@ -5,6 +5,7 @@ import { testQueryClient } from "../../lib/queryClient";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import { irBody, irCatchAll, type JsonRoute } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
+import { DarkScope } from "../../stories/DarkScope";
 import { ErrorsView } from "./ErrorsView";
 
 /** `buildErrorGroupDoc` rows: [type, message, service, escaped, count, first, last]. */
@@ -139,6 +140,17 @@ export const Default: Story = {
       state={{ ...DEFAULT_STATE, signal: "errors" }}
       routes={baseRoutes}
     />
+  ),
+};
+
+export const Dark: Story = {
+  render: () => (
+    <DarkScope>
+      <ErrorsPage
+        state={{ ...DEFAULT_STATE, signal: "errors" }}
+        routes={baseRoutes}
+      />
+    </DarkScope>
   ),
 };
 

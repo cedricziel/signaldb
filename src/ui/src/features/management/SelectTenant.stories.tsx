@@ -6,6 +6,7 @@ import { DEFAULT_STATE } from "../../lib/urlState";
 import { OutletContextProvider } from "../../stories/OutletContextProvider";
 import { irCatchAll, type JsonRoute } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
+import { DarkScope } from "../../stories/DarkScope";
 import { SelectTenant, type SelectTenantProps } from "./SelectTenant";
 
 const session: SelectTenantProps["session"] = {
@@ -74,6 +75,14 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
   render: () => <SelectTenantPage />,
+};
+
+export const Dark: Story = {
+  render: () => (
+    <DarkScope>
+      <SelectTenantPage />
+    </DarkScope>
+  ),
 };
 
 export const NoAccess: Story = {
