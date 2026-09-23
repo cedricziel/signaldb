@@ -932,6 +932,16 @@ impl SchemaResolver {
             value_type,
         })
     }
+
+    /// Whether the logical schema itself declares a type for `field` —
+    /// unlike [`FieldResolver::is_known`], this ignores a promoted-but-
+    /// undeclared `label_*` column. Used to decide whether an attribute is
+    /// "untyped" for the numeric-ordered-comparison rule (`Lowering::
+    /// ordered`): a materialized column being present says nothing about
+    /// the field's declared type, only that it has been promoted.
+    fn has_declared_type(&self, field: &str) -> bool {
+        self.logical_schema.resolve(&self.source, field).is_some()
+    }
 }
 
 /// Exception attributes per the OTel exception semantic conventions
@@ -2365,13 +2375,14 @@ impl Lowering<'_> {
             })?;
             let is_json = resolved.is_advisory_type();
             let ty = resolved.value_type().clone();
-            // `is_known` is false exactly for the resolver's permissive
-            // unknown-name fallback (`SchemaResolver::resolve`'s last arm):
-            // no logical-schema entry and no promoted column, so its `String`
-            // type is a hardcoded default, not a declared one. That is the
+            // `has_declared_type` is false when the logical schema has no
+            // entry for the field — whether or not a promoted `label_*`
+            // column exists (unlike `is_known`, which treats a promoted
+            // column as "known"). No declared type means its `String` type
+            // is a hardcoded default, not a declared one. That is the
             // "untyped" case `ordered` needs, distinct from a field the
             // schema registry explicitly declares as `String`.
-            let untyped = !self.resolver.is_known("", &leaf.field);
+            let untyped = !self.resolver.has_declared_type(&leaf.field);
             // The physical `body` column is JSON-encoded at ingest (issue
             // #1410): a plain-string body is stored quoted. `eq`/`ne`/`in`
             // stay pushdown-friendly by JSON-encoding the *literal* instead
@@ -8470,6 +8481,64 @@ mod tests {
             services,
             vec!["svc3", "svc1", "svc2"],
             "order must follow the attribute-map fallback value, not the null column"
+        );
+    }
+
+    /// Regression (#1672): a promoted attribute with no declared logical
+    /// type is still "untyped" for the numeric-ordered-comparison rule in
+    /// `Lowering::lower_leaf`. `SchemaResolver::is_known` also returns `true`
+    /// once a materialized `label_*` column exists for the field, so using
+    /// it to decide "untyped" wrongly treated a promoted-but-undeclared
+    /// `num` as typed `String` and compared lexicographically ("9" > "50"
+    /// as strings), keeping the wrong rows. `num` here is fully promoted
+    /// (`label_num` populated, no JSON fallback needed) and never declared
+    /// in the logical schema, so `num > 10` must still route through the
+    /// numeric `TRY_CAST` path and keep only `"50"`.
+    #[tokio::test]
+    async fn promoted_untyped_attribute_compares_numerically() {
+        let fields = vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, true),
+            map_field(),
+            Field::new("label_num", DataType::Utf8, true),
+        ];
+        let schema = Arc::new(Schema::new(fields));
+
+        let ts = TimestampNanosecondArray::from(vec![10_i64, 20, 30]);
+        let service = StringArray::from(vec![Some("svc1"), Some("svc2"), Some("svc3")]);
+        let log_attrs = build_map(&[&[("num", "9")], &[("num", "50")], &[("num", "abc")]]);
+        let label_num = StringArray::from(vec![Some("9"), Some("50"), Some("abc")]);
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(ts),
+                Arc::new(service),
+                log_attrs,
+                Arc::new(label_num),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("logs".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+
+        let pred = serde_json::json!({ "field": "num", "op": "gt", "value": 10 });
+        let services = matching_services(&ctx, pred).await;
+        assert_eq!(
+            services,
+            vec!["svc2".to_string()],
+            "num > 10 must keep only svc2 (num=\"50\"), not svc1 (num=\"9\" lexicographically \
+             greater than \"10\") or svc3 (num=\"abc\", non-numeric)"
         );
     }
 }
