@@ -2399,6 +2399,47 @@ mod tests {
         );
     }
 
+    // v5: `divisor`, and the stddev/stdvar/first/last aggregate functions.
+
+    fn agg_doc(version: i64, agg: serde_json::Value) -> serde_json::Value {
+        json!({
+            "irVersion": version, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [ { "aggregate": { "by": [], "aggs": [agg] } } ]
+        })
+    }
+
+    #[test]
+    fn divisor_requires_ir_version_5() {
+        let agg = json!({ "fn": "count", "as": "n", "divisor": 60.0 });
+        let v = validate_json(agg_doc(5, agg.clone())).unwrap();
+        assert!(matches!(v.terminal, RelationType::RowSet(_)));
+
+        let err = validate_json(agg_doc(4, agg)).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 5")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn stddev_stdvar_first_last_require_ir_version_5() {
+        for func in ["stddev", "stdvar", "first", "last"] {
+            let agg = json!({ "fn": func, "of": "severity_number", "as": "n" });
+            let v = validate_json(agg_doc(5, agg.clone())).unwrap();
+            assert!(
+                matches!(v.terminal, RelationType::RowSet(_)),
+                "{func}: expected rowset"
+            );
+
+            let err = validate_json(agg_doc(4, agg)).unwrap_err();
+            assert!(
+                matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 5")),
+                "{func}: got {err:?}"
+            );
+        }
+    }
+
     // v7: irate / *_over_time, `across`, `window`.
 
     fn v7_rate_doc(func: &str, source: &str, step: Option<&str>) -> serde_json::Value {
