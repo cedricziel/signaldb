@@ -19,6 +19,10 @@
   font-weight: 400;
 }
 
+.error-groups-table th.num {
+  text-align: right;
+}
+
 .error-groups-table td {
   padding: 6px 10px;
   border-bottom: 1px solid var(--border);
