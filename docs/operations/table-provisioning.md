@@ -10,7 +10,7 @@ sources:
   - src/common/src/tenant_api.rs
   - src/router/src/endpoints/tenant.rs
   - src/router/src/endpoints/management.rs
-  - src/router/src/endpoints/admin.rs
+  - src/router/src/endpoints/manage_admin.rs
 ---
 
 # Signal Table Provisioning
@@ -19,7 +19,7 @@ Every tenant/dataset SignalDB knows about converges on an Iceberg table for
 each signal type enabled for it, so a dataset becomes complete without waiting
 for telemetry to arrive for each signal.
 
-Creating a dataset — through the management API, the admin API, or the MCP
+Creating a dataset — through the management API or the MCP
 tools that proxy them — provisions its tables synchronously, best-effort,
 before the creation call returns: the new dataset is queryable immediately in
 the common case. That provisioning attempt never blocks or fails the dataset's
@@ -81,7 +81,7 @@ long a _newly created_ dataset waits.
 ## What a pass does
 
 1. Enumerate the tenant registry — config-defined tenants **and** tenants
-   created through the admin API. Provisioning is driven by the registry and
+   created through the management API. Provisioning is driven by the registry and
    each tenant's enabled signal types alone; it is independent of who (if
    anyone) holds a membership in the tenant, so a dataset is provisioned
    whether its users authenticate by password, API key, or SSO.
