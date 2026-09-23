@@ -4,7 +4,7 @@ type: explanation
 status: living
 sources:
   - src/router/src/openapi.rs
-  - src/router/src/endpoints/manage_admin.rs
+  - src/router/src/endpoints/tenants.rs
   - src/router/src/endpoints/management.rs
   - src/router/src/endpoints/tenant.rs
   - src/signaldb-api/src/**
@@ -36,16 +36,16 @@ flowchart LR
 
 - **DTOs** live in [`signaldb-api`](../../src/signaldb-api/src/schemas.rs) as
   hand-written structs deriving `utoipa::ToSchema` (the instance-admin
-  tenant/user DTOs under `/api/v1/manage/admin`) and, for the management
+  tenant/user DTOs under `/api/v1`) and, for the management
   surface (tenant-admin session, `tenant:manage` key, or the break-glass
   admin key with no tenant), in `src/router/src/endpoints/management.rs`.
   Field names and serde attributes define the JSON wire format; `ToSchema`
   makes each struct an OpenAPI component.
 - **Operations** are declared with `#[utoipa::path(...)]` on the handlers in
-  `endpoints/manage_admin.rs` (`/api/v1/manage/admin/...`, instance-admin
+  `endpoints/tenants.rs` (`/api/v1/...`, instance-admin
   tenant/user management — reachable by an instance-admin session or the
   break-glass admin key with no tenant), `endpoints/management.rs`
-  (`/api/v1/manage/...`, including the API-key `POST`/`PATCH` bodies with
+  (`/api/v1/...`, including the API-key `POST`/`PATCH` bodies with
   their required `scopes`), `endpoints/tempo.rs` (the Tempo-compatible trace
   query endpoints under `/tempo/api/...`, whose DTOs live in `tempo-api`),
   `endpoints/query.rs` (the native Query IR endpoint `POST /api/v1/query`, whose
@@ -67,13 +67,13 @@ flowchart LR
   endpoints `GET /ui/session/oidc/{start,callback}`, so the UI reads the
   SSO offering and the `granted_by` membership source through generated
   types — change: oidc-login), `endpoints/github.rs` (the GitHub App
-  installation surface — `manage_start_github_link`,
-  `manage_list_github_installations`, `manage_remove_github_installation`,
-  `manage_attach_github_installation` (attaches an installation that already
+  installation surface — `start_github_link`,
+  `list_github_installations`, `remove_github_installation`,
+  `attach_github_installation` (attaches an installation that already
   exists on GitHub directly, for when a second tenant on the same GitHub
   account can't complete the OAuth install flow — change:
   github-installation-direct-attach) under
-  `/api/v1/manage/tenants/{id}/github-installations`, plus the
+  `/api/v1/tenants/{id}/github-installations`, plus the
   unauthenticated `GET /ui/github/callback` install redirect declared with an
   empty security requirement — change: github-app-source-context),
   `endpoints/source_context.rs` (the stack-frame source lookup —
@@ -86,18 +86,15 @@ flowchart LR
   under `/api/v1/schema/{attributes,entities,metrics}`; its resolved-definition
   DTOs derive `ToSchema` in `common::schema_registry` and `schema-model`, and
   the raw registry document is typed as an opaque object), and
-  `endpoints/tenant.rs` (the tenant self-service surface: `GET /api/v1/tenants{,/{id}}`,
+  `endpoints/tenant.rs` (tenant tables and schemas:
   `GET`/`POST /api/v1/tenants/{id}/tables{,/create}`, `GET /api/v1/tenants/{id}/schemas`,
   `GET /api/v1/schemas/available`, response DTOs in `common::tenant_api`,
   including `DatasetTables` for `ListTablesResponse`'s per-dataset grouping).
-  Paths are absolute; operationIds on the
-  management handlers are prefixed `manage_*` and their colliding component
-  schemas aliased `Manage*` (via `#[schema(as = ...)]`) so tenant-self and
-  manage names don't clash — `tenant.rs`'s `list_tenants`/`get_tenant` collide
-  with `manage_admin.rs`'s (`manage_admin_list_tenants`/`manage_admin_get_tenant`)
-  the same way and are aliased `list_tenants_self`/`get_tenant_self`,
-  and `common::tenant_api::ListTenantsResponse` collides with
-  `signaldb_api::ListTenantsResponse` and is aliased `TenantSelfListResponse`.
+  Paths are absolute, and operationIds are plain `<verb>_<resource>` names
+  (`list_tenants`, `create_dataset`); `endpoints/tenants.rs` owns the merged
+  tenant and user handlers. A few management DTOs that would collide with
+  `signaldb_api` types by bare name are aliased `Manage*` via
+  `#[schema(as = ...)]`.
   The same technique disambiguates the Tempo v1/v2 tag
   types in `tempo-api` (`tempo_api::TagSearchResponse` vs.
   `tempo_api::v2::TagSearchResponse`, …): utoipa registers schemas by bare

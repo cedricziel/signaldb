@@ -15,9 +15,9 @@ dsn = "sqlite://.data/signaldb.db"
 # internal_service_key below.
 
 # Break-glass admin API key: authenticates /api/v1/ops/* (operational
-# control) and, with no tenant, /api/v1/manage/admin/* (instance-admin
+# control) and, with no tenant, /api/v1/* (instance-admin
 # tenant/user management) and the tenant-scoped API-key/dataset admin
-# surface under /api/v1/manage/tenants/{id}/api-keys and /datasets.
+# surface under /api/v1/tenants/{id}/api-keys and /datasets.
 # Generate a strong random key for production use
 # admin_api_key = "sk-admin-your-secret-key-here"
 

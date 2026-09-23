@@ -10,7 +10,7 @@ sources:
   - src/common/src/tenant_api.rs
   - src/router/src/endpoints/tenant.rs
   - src/router/src/endpoints/management.rs
-  - src/router/src/endpoints/manage_admin.rs
+  - src/router/src/endpoints/tenants.rs
 ---
 
 # Signal Table Provisioning
@@ -130,7 +130,7 @@ behavior — rather than to data loss.
 
 ## Provisioning at dataset creation
 
-`POST /api/v1/manage/tenants/{tenant_id}/datasets` — reachable by a
+`POST /api/v1/tenants/{tenant_id}/datasets` — reachable by a
 tenant-admin session/`tenant:manage`-scoped key, or by the break-glass
 admin key with no tenant — and the MCP `create_dataset`/`tenant_create_dataset`
 tools, which proxy it — provision

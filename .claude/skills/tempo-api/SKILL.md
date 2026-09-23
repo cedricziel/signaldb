@@ -4,7 +4,7 @@ description: SignalDB Tempo API compatibility - implemented/stub endpoints, quer
 user-invocable: false
 sources:
   - src/router/src/endpoints/tempo.rs
-  - src/router/src/endpoints/manage_admin.rs
+  - src/router/src/endpoints/tenants.rs
   - src/router/src/endpoints/pyroscope.rs
   - src/querier/src/query/trace.rs
   - src/querier/src/flight.rs
@@ -105,18 +105,18 @@ use SignalDB as a querier (`src/querier/src/services/tempo.rs`):
 
 The break-glass `admin_api_key` from config authenticates these with no
 `X-Tenant-ID` header; a tenant-admin session or `tenant:manage`-scoped key
-also reaches the `/api/v1/manage/tenants/...` rows for its own tenant.
+also reaches the `/api/v1/tenants/...` rows for its own tenant.
 
 | Endpoint                                              | Method         | Description                                                                                                                |
 | ----------------------------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------- |
-| `/api/v1/manage/admin/tenants`                        | GET            | List every tenant                                                                                                          |
-| `/api/v1/manage/admin/tenants/{id}`                   | GET/PUT/DELETE | Get/update/delete any tenant                                                                                               |
-| `/api/v1/manage/tenants`                              | POST           | Create a tenant                                                                                                            |
-| `/api/v1/manage/tenants/{id}/api-keys`                | GET/POST       | List/create API keys                                                                                                       |
-| `/api/v1/manage/tenants/{id}/api-keys/{key_id}`       | DELETE/PATCH   | Revoke / update scopes                                                                                                     |
-| `/api/v1/manage/tenants/{id}/datasets`                | GET/POST       | List/create datasets                                                                                                       |
-| `/api/v1/manage/tenants/{id}/datasets/{dataset_name}` | DELETE         | Delete dataset                                                                                                             |
-| `/api/v1/manage/admin/users`                          | POST           | Create a user (`manage_admin_create_user`; `password_hash` optional — a passwordless user is SSO-only, change: oidc-login) |
+| `/api/v1/tenants`                        | GET            | List every tenant                                                                                                          |
+| `/api/v1/tenants/{id}`                   | GET/PUT/DELETE | Get/update/delete any tenant                                                                                               |
+| `/api/v1/tenants`                              | POST           | Create a tenant                                                                                                            |
+| `/api/v1/tenants/{id}/api-keys`                | GET/POST       | List/create API keys                                                                                                       |
+| `/api/v1/tenants/{id}/api-keys/{key_id}`       | DELETE/PATCH   | Revoke / update scopes                                                                                                     |
+| `/api/v1/tenants/{id}/datasets`                | GET/POST       | List/create datasets                                                                                                       |
+| `/api/v1/tenants/{id}/datasets/{dataset_name}` | DELETE         | Delete dataset                                                                                                             |
+| `/api/v1/users`                          | POST           | Create a user (`create_user`; `password_hash` optional — a passwordless user is SSO-only, change: oidc-login) |
 
 Every row above is also in the OpenAPI document, and reachable through
 `signaldb-sdk`, the `signaldb-cli admin` group, and the MCP server's
@@ -124,7 +124,7 @@ unprefixed platform-admin tools (`list_tenants`, `create_tenant`,
 `revoke_api_key`, ...) — not only raw HTTP.
 
 A separate tenant self-service API is mounted at `/api/v1`, and a
-management API at `/api/v1/manage` for tenant admins and `tenant:manage` keys (see the
+management API at `/api/v1` for tenant admins and `tenant:manage` keys (see the
 `multi-tenancy` skill for both, including which CLI/MCP surfaces reach
 each).
 
@@ -147,7 +147,7 @@ The Router's Tempo-compatible endpoints at `/tempo/api/...` work directly with G
 | File                                       | Purpose                                                             |
 | ------------------------------------------ | ------------------------------------------------------------------- |
 | `src/router/src/endpoints/tempo.rs`        | Tempo API HTTP handlers                                             |
-| `src/router/src/endpoints/manage_admin.rs` | Instance-admin tenant/user handlers                                 |
+| `src/router/src/endpoints/tenants.rs` | Instance-admin tenant/user handlers                                 |
 | `src/tempo-api/`                           | Protobuf definitions and Tempo types                                |
 | `src/querier/src/query/trace.rs`           | Trace search/lookup and tag discovery (`get_tags`/`get_tag_values`) |
 | `src/querier/src/flight.rs`                | Query execution, ticket parsing                                     |

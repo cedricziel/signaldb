@@ -71,10 +71,10 @@ test("an admin can open /manage and the back button returns them", async ({
   page,
 }) => {
   await page.route("**/api/v1/whoami", (route) => json(route, ADMIN_WHOAMI));
-  await page.route("**/api/v1/manage/tenants/*/api-keys*", (route) =>
+  await page.route("**/api/v1/tenants/*/api-keys*", (route) =>
     json(route, []),
   );
-  await page.route("**/api/v1/manage/tenants/*/memberships*", (route) =>
+  await page.route("**/api/v1/tenants/*/memberships*", (route) =>
     json(route, []),
   );
 

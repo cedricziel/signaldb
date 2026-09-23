@@ -247,7 +247,7 @@ window too. Operator-facing detail lives in
 When `[github]` is configured, the router also hosts the **GitHub App
 integration** (`src/router/src/github.rs` client, `src/router/src/endpoints/github.rs`
 handlers): tenant admins link GitHub App installations to their tenant
-through `/api/v1/manage/tenants/{id}/github-installations` and the
+through `/api/v1/tenants/{id}/github-installations` and the
 `GET /ui/github/callback` install redirect, and the router mints short-lived
 installation tokens from the deployment's App private key on demand (never
 persisted). Installations are catalog rows scoped per tenant. On top of that,
@@ -352,11 +352,11 @@ noted):
 
 | Endpoint                               | Description                                                   |
 | -------------------------------------- | ------------------------------------------------------------- |
-| `/api/v1/manage/admin/tenants`         | List/get/update/delete any tenant                             |
-| `/api/v1/manage/admin/users`           | Create a user outright                                        |
-| `/api/v1/manage/tenants`               | Create a tenant (also reachable by an instance-admin session) |
-| `/api/v1/manage/tenants/{id}/api-keys` | Manage a tenant's API keys                                    |
-| `/api/v1/manage/tenants/{id}/datasets` | Manage a tenant's datasets                                    |
+| `/api/v1/tenants`         | List/get/update/delete any tenant                             |
+| `/api/v1/users`           | Create a user outright                                        |
+| `/api/v1/tenants`               | Create a tenant (also reachable by an instance-admin session) |
+| `/api/v1/tenants/{id}/api-keys` | Manage a tenant's API keys                                    |
+| `/api/v1/tenants/{id}/datasets` | Manage a tenant's datasets                                    |
 
 - `ServiceRegistry`: Maintains cached map of discovered services, polls catalog at configurable interval
 - Discovers Queriers via `QueryExecution` capability for query forwarding
@@ -436,7 +436,7 @@ its own tenant and read scopes (tenant-from-token, `X-Tenant-ID` ignored),
 audience-bound to the configured MCP resource. See `docs/users/mcp.md` and the
 `multi-tenancy` skill.
 
-The tenant management API (`/api/v1/manage/*`, `endpoints/management.rs`)
+The tenant management API (`/api/v1/*`, `endpoints/management.rs`)
 accepts a human principal (session or OAuth) with the tenant-admin role or
 instance-admin flag, or an API key carrying the explicit `tenant:manage` scope
 (`TenantContext::can_manage_via_key`); legacy unscoped keys stay out. Tenant
