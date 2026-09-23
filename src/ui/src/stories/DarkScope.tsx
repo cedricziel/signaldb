@@ -6,7 +6,7 @@ import type { ReactNode } from "react";
  * `Pages/*` "Dark" variants that feed Claude Design's dark-mode cards. */
 export function DarkScope({ children }: { children: ReactNode }) {
   return (
-    <div data-theme="dark" style={{ width: "100%", height: "100%" }}>
+    <div data-theme="dark" style={{ width: "100%", minHeight: "100%" }}>
       {children}
     </div>
   );

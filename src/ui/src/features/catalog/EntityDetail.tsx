@@ -43,6 +43,7 @@ import {
   EntityTable,
   isDrillable,
 } from "./CatalogView";
+import { OperationsTable } from "./OperationsTable";
 import { Observed } from "./red";
 import type { EntityTypeDef } from "./entityTypes";
 import "./catalog.css";
@@ -388,7 +389,7 @@ export function EntityDetail({ entity, range, state, update }: Props) {
       />
 
       {!atSecondary && breakdownEntity && (
-        <EntityTable
+        <OperationsTable
           entity={breakdownEntity}
           range={range}
           rangeKey={rangeKey}
