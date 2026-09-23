@@ -6,7 +6,7 @@ sources:
   - src/common/src/auth/**
   - src/common/src/config/mod.rs
   - src/common/src/ratelimit.rs
-  - src/router/src/endpoints/admin.rs
+  - src/router/src/endpoints/manage_admin.rs
   - src/router/src/endpoints/management.rs
   - src/router/src/endpoints/tenant.rs
   - src/router/src/endpoints/session.rs
@@ -421,17 +421,23 @@ server asked to retry in N s` and a shell banner while retries are pending.
 
 ## Admin API (Router)
 
-Mounted at `/api/v1/admin`, requires `admin_api_key` (`src/router/src/lib.rs`):
+`/api/v1/manage/admin/*` and the tenant-scoped API-key/dataset rows under
+`/api/v1/manage/tenants/{id}/...` accept the break-glass `admin_api_key`
+with no `X-Tenant-ID` header (`src/router/src/lib.rs`'s `auth_layer`,
+`src/router/src/endpoints/manage_admin.rs`'s
+`require_instance_admin_or_admin_key`). The tenant-scoped rows also accept
+a tenant-admin session or `tenant:manage`-scoped key for that tenant.
 
-| Endpoint                                           | Methods          | Description                                                                          |
-| -------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------ |
-| `/api/v1/admin/tenants`                            | GET, POST        | List/create tenants                                                                  |
-| `/api/v1/admin/tenants/{id}`                       | GET, PUT, DELETE | Manage a tenant                                                                      |
-| `/api/v1/admin/tenants/{id}/api-keys`              | GET, POST        | List/create API keys                                                                 |
-| `/api/v1/admin/tenants/{id}/api-keys/{key_id}`     | DELETE, PATCH    | Revoke API key / update its scopes and dataset restriction                           |
-| `/api/v1/admin/tenants/{id}/datasets`              | GET, POST        | List/create datasets                                                                 |
-| `/api/v1/admin/tenants/{id}/datasets/{dataset_id}` | DELETE           | Delete dataset                                                                       |
-| `/api/v1/admin/users`                              | POST             | Create a human user + initial tenant membership (used by `signaldb-cli user create`) |
+| Endpoint                                              | Methods          | Description                                                                          |
+| ----------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------ |
+| `/api/v1/manage/admin/tenants`                        | GET              | List every tenant                                                                    |
+| `/api/v1/manage/admin/tenants/{id}`                   | GET, PUT, DELETE | Get/update/delete any tenant                                                         |
+| `/api/v1/manage/tenants`                              | POST             | Create a tenant                                                                      |
+| `/api/v1/manage/tenants/{id}/api-keys`                | GET, POST        | List/create API keys                                                                 |
+| `/api/v1/manage/tenants/{id}/api-keys/{key_id}`       | DELETE, PATCH    | Revoke API key / update its scopes and dataset restriction                           |
+| `/api/v1/manage/tenants/{id}/datasets`                | GET, POST        | List/create datasets                                                                 |
+| `/api/v1/manage/tenants/{id}/datasets/{dataset_name}` | DELETE           | Delete dataset                                                                       |
+| `/api/v1/manage/admin/users`                          | POST             | Create a human user + initial tenant membership (used by `signaldb-cli user create`) |
 
 ## Tenant Self-Service API (Router)
 
@@ -468,8 +474,8 @@ admin), **or** an API key with `can_manage_via_key()` (explicit
 `endpoints/session.rs` plus `key_scope_authorization_tests` in
 `endpoints/management.rs` — positive, legacy-unscoped, cross-tenant, and
 OAuth-consent cases). `get_schema` uses the same rule (it used to require
-`is_instance_admin`). `create_tenant` stays `is_instance_admin`-only; keys
-create tenants through the admin API.
+`is_instance_admin`). `create_tenant` stays instance-admin-only: an
+instance-admin session, or the break-glass `admin_api_key` with no tenant.
 
 | Endpoint                                                  | Methods       | Description                                                                                       | SDK operation                                         |
 | --------------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------- | ----------------------------------------------------- |
@@ -553,20 +559,20 @@ API keys keep the existing fast SHA-256 path — the split is entropy-based.
 
 ## Key Implementation Files
 
-| File                                           | Purpose                                                                            |
-| ---------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `src/common/src/config/mod.rs`                 | Tenant/dataset config structs                                                      |
-| `src/common/src/auth/`                         | Authenticator, TenantContext, middleware, validation                               |
-| `src/common/src/auth/password.rs`              | Argon2id password hashing + opaque session tokens                                  |
-| `src/common/src/catalog_manager.rs`            | Slug resolution                                                                    |
-| `src/router/src/endpoints/admin.rs`            | Admin API endpoints (incl. quota checks)                                           |
-| `src/router/src/endpoints/management.rs`       | Management API endpoints (tenant admin or `tenant:manage` key; `authorize_tenant`) |
-| `src/router/src/endpoints/tenant.rs`           | Tenant self-service API endpoints (API-key-friendly)                               |
-| `src/router/src/endpoints/session.rs`          | UI session login/logout + whoami endpoints                                         |
-| `src/common/src/auth/session.rs`               | Session cookie codec (`signaldb_session`)                                          |
-| `src/common/src/ratelimit.rs`                  | Per-tenant token-bucket rate limiter                                               |
-| `src/signaldb-cli/`                            | CLI for tenant management                                                          |
-| `src/signaldb-cli/src/commands/tenant_self.rs` | `tenant table` group (only the API-key-friendly surface)                           |
-| `src/mcp-server/src/server.rs`                 | MCP tools, incl. platform-admin and `tenant_*` families                            |
+| File                                           | Purpose                                                                                                                                                        |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/common/src/config/mod.rs`                 | Tenant/dataset config structs                                                                                                                                  |
+| `src/common/src/auth/`                         | Authenticator, TenantContext, middleware, validation                                                                                                           |
+| `src/common/src/auth/password.rs`              | Argon2id password hashing + opaque session tokens                                                                                                              |
+| `src/common/src/catalog_manager.rs`            | Slug resolution                                                                                                                                                |
+| `src/router/src/endpoints/manage_admin.rs`     | Instance-admin tenant/user endpoints (session or break-glass admin key)                                                                                        |
+| `src/router/src/endpoints/management.rs`       | Management API endpoints (tenant admin, `tenant:manage` key, or break-glass admin key; `authorize_tenant`/`authorize_tenant_or_admin_key`; incl. quota checks) |
+| `src/router/src/endpoints/tenant.rs`           | Tenant self-service API endpoints (API-key-friendly)                                                                                                           |
+| `src/router/src/endpoints/session.rs`          | UI session login/logout + whoami endpoints                                                                                                                     |
+| `src/common/src/auth/session.rs`               | Session cookie codec (`signaldb_session`)                                                                                                                      |
+| `src/common/src/ratelimit.rs`                  | Per-tenant token-bucket rate limiter                                                                                                                           |
+| `src/signaldb-cli/`                            | CLI for tenant management                                                                                                                                      |
+| `src/signaldb-cli/src/commands/tenant_self.rs` | `tenant table` group (only the API-key-friendly surface)                                                                                                       |
+| `src/mcp-server/src/server.rs`                 | MCP tools, incl. platform-admin and `tenant_*` families                                                                                                        |
 
 Under `[compactor.attr_promotion]` (auto-promotion decision pass), a tenant's resolved materialized-label allowlist is the _pinned_ set: those keys are never demotion candidates.

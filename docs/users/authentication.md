@@ -185,7 +185,7 @@ operator via one of:
 | Method        | Where                                                                                                                                                                                                                                                                                |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Static config | `[[auth.tenants]]` blocks in `signaldb.toml`                                                                                                                                                                                                                                         |
-| Admin API     | `/api/v1/admin/*` on the router (port 3000), authenticated with `Authorization: Bearer <admin-api-key>`                                                                                                                                                                              |
+| Admin API     | `/api/v1/manage/admin/*` (instance-admin tenant/user management) and `/api/v1/manage/tenants/{id}/api-keys\|datasets` on the router (port 3000), authenticated with `Authorization: Bearer <admin-api-key>` and no `X-Tenant-ID`                                                     |
 | CLI           | `signaldb-cli admin tenant\|api-key\|dataset ...` — a client for the admin API (`--url`, default `http://localhost:3000`; `--admin-key` or `SIGNALDB_ADMIN_KEY`; `--no-retry` / `SIGNALDB_NO_RETRY=1` to fail fast on throttling, exit code 4 — see [client retry](client-retry.md)) |
 
 Example (operator-side):
@@ -242,8 +242,9 @@ signaldb-cli --admin-key <admin-key> admin api-key update acme <key-id> \
   --scope traces:write --scope schema:read --scope schema:write
 ```
 
-Over HTTP this is `PATCH /api/v1/admin/tenants/{id}/api-keys/{key_id}` (or
-`/api/v1/manage/tenants/{id}/api-keys/{key_id}` for a tenant-admin session)
+Over HTTP this is `PATCH /api/v1/manage/tenants/{id}/api-keys/{key_id}` —
+authenticated with the break-glass admin key and no tenant, or with a
+tenant-admin session or `tenant:manage`-scoped key for that tenant —
 with a body of `{"scopes": [...], "dataset_ids": [...]}`; a field omitted
 from the body is left untouched (including `dataset_ids` — omitting it
 never changes an existing restriction), and revoked keys cannot be updated.

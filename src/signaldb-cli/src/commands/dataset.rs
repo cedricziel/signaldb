@@ -1,7 +1,7 @@
 use clap::Subcommand;
 use clap_complete::engine::ArgValueCompleter;
 use signaldb_sdk::Client;
-use signaldb_sdk::types::CreateDatasetRequest;
+use signaldb_sdk::types::ManageCreateDatasetRequest;
 
 use super::completions::tenant_id_completer;
 
@@ -37,7 +37,7 @@ impl DatasetAction {
         match self {
             DatasetAction::List { tenant_id } => {
                 let resp = client
-                    .list_datasets()
+                    .manage_list_datasets()
                     .tenant_id(&tenant_id)
                     .send()
                     .await?
@@ -46,9 +46,9 @@ impl DatasetAction {
             }
             DatasetAction::Create { tenant_id, name } => {
                 let resp = client
-                    .create_dataset()
+                    .manage_create_dataset()
                     .tenant_id(&tenant_id)
-                    .body(CreateDatasetRequest { name })
+                    .body(ManageCreateDatasetRequest { name })
                     .send()
                     .await?
                     .into_inner();
@@ -59,9 +59,9 @@ impl DatasetAction {
                 dataset_id,
             } => {
                 client
-                    .delete_dataset()
+                    .manage_delete_dataset()
                     .tenant_id(&tenant_id)
-                    .dataset_id(&dataset_id)
+                    .dataset_name(&dataset_id)
                     .send()
                     .await?;
                 println!("Dataset '{dataset_id}' deleted.");

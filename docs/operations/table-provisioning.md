@@ -130,9 +130,10 @@ behavior — rather than to data loss.
 
 ## Provisioning at dataset creation
 
-`POST /api/v1/manage/tenants/{tenant_id}/datasets` (management API) and
-`POST /api/v1/admin/tenants/{tenant_id}/datasets` (admin API) — and the MCP
-`create_dataset`/`tenant_create_dataset` tools, which proxy them — provision
+`POST /api/v1/manage/tenants/{tenant_id}/datasets` — reachable by a
+tenant-admin session/`tenant:manage`-scoped key, or by the break-glass
+admin key with no tenant — and the MCP `create_dataset`/`tenant_create_dataset`
+tools, which proxy it — provision
 the new dataset's enabled tables right after the dataset row commits, using
 the same [`CatalogManager::ensure_dataset_tables`](#what-gets-provisioned)
 path a reconcile pass uses per dataset. The response still reflects the

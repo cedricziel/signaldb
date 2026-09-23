@@ -3074,14 +3074,18 @@ mod tests {
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
 
-        // The admin_api_key break-glass path still authenticates too.
+        // The admin_api_key break-glass path still authenticates the
+        // operational-control (compaction) surface — the admin API itself
+        // was removed (issue #1561). No compactor is registered in this
+        // test, so a successful auth check surfaces as 503 (no compactor
+        // reachable), not 401/403.
         let request = Request::builder()
-            .uri("/api/v1/admin/tenants")
+            .uri("/api/v1/ops/compact/status")
             .header("authorization", "Bearer admin-secret")
             .body(Body::empty())
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 
     #[tokio::test]

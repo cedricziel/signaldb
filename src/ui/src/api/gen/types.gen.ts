@@ -41,41 +41,6 @@ export type ApiErrorBody = {
 };
 
 /**
- * API key information (without the raw key).
- */
-export type ApiKeyResponse = {
-    /**
-     * Allowed-origin set the key is restricted to, if any; `null` is
-     * unrestricted.
-     */
-    allowed_origins?: Array<string> | null;
-    /**
-     * RFC 3339 creation timestamp.
-     */
-    created_at: string;
-    /**
-     * Dataset set the key is restricted to, if any; `null` is unrestricted.
-     */
-    dataset_ids?: Array<string> | null;
-    /**
-     * Unique key identifier.
-     */
-    id: string;
-    /**
-     * Optional human-readable name.
-     */
-    name?: string | null;
-    /**
-     * RFC 3339 revocation timestamp (if revoked).
-     */
-    revoked_at?: string | null;
-    /**
-     * Scopes the key carries; `null` for a legacy unrestricted key.
-     */
-    scopes?: Array<string> | null;
-};
-
-/**
  * Request body for [`attach_github_installation`].
  */
 export type AttachGitHubInstallationRequest = {
@@ -417,109 +382,6 @@ export type ConsentTenantGrant = {
 export type CostMode = 'metadata' | 'sampled_scan' | 'none';
 
 /**
- * Request body for creating a new API key.
- *
- * `scopes` is required and non-empty: a key's permissions are always
- * explicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,
- * `profiles:write`, `traces:read`, `logs:read`, `metrics:read`,
- * `profiles:read`, `schema:read`, `schema:write`, `processors:read`,
- * `processors:write`.
- *
- * The legacy singular `dataset_id` field is not accepted here (removed in
- * the multi-dataset-key-restriction change): a request body carrying it is
- * rejected with a validation error rather than silently ignored, since
- * dropping it would create an unrestricted key when the caller asked for a
- * restricted one.
- */
-export type CreateApiKeyRequest = {
-    /**
-     * Browser origins the key is restricted to for CORS checks. Omitted or
-     * `null` creates an unrestricted key; a non-empty array restricts it to
-     * exactly that set. An explicit empty array, or a duplicate entry
-     * within the set, is rejected.
-     */
-    allowed_origins?: Array<string> | null;
-    /**
-     * Dataset set the key is restricted to. Omitted or `null` creates an
-     * unrestricted key; a non-empty array restricts it to exactly that set.
-     * An explicit empty array, or a duplicate name within the set, is
-     * rejected.
-     */
-    dataset_ids?: Array<string> | null;
-    /**
-     * Optional human-readable name for the key.
-     */
-    name?: string | null;
-    /**
-     * Scopes the key carries (required, at least one).
-     */
-    scopes: Array<string>;
-};
-
-/**
- * Response returned when a new API key is created (includes the raw key).
- */
-export type CreateApiKeyResponse = {
-    /**
-     * Allowed-origin set the key is restricted to, if any; `null` is
-     * unrestricted.
-     */
-    allowed_origins?: Array<string> | null;
-    /**
-     * RFC 3339 creation timestamp.
-     */
-    created_at: string;
-    /**
-     * Dataset set the key is restricted to, if any; `null` is unrestricted.
-     */
-    dataset_ids?: Array<string> | null;
-    /**
-     * Unique key identifier.
-     */
-    id: string;
-    /**
-     * The raw API key (only shown once at creation time).
-     */
-    key: string;
-    /**
-     * Optional human-readable name.
-     */
-    name?: string | null;
-    /**
-     * Scopes the key carries.
-     */
-    scopes: Array<string>;
-};
-
-/**
- * Request body for creating a new dataset.
- */
-export type CreateDatasetRequest = {
-    /**
-     * Dataset name.
-     */
-    name: string;
-};
-
-/**
- * Request body for creating a new tenant.
- */
-export type CreateTenantRequest = {
-    /**
-     * Default dataset name.
-     */
-    default_dataset?: string | null;
-    /**
-     * Unique tenant identifier.
-     */
-    id: string;
-    /**
-     * Human-readable tenant name.
-     */
-    name: string;
-};
-
-/**
  * Response body for `POST /tenants/{tenant_id}/tables/create`.
  */
 export type CreateTenantTablesResponse = {
@@ -580,28 +442,6 @@ export type CurrentSessionResponse = {
      */
     tenant: string | null;
     user: SessionUser;
-};
-
-/**
- * Dataset information returned by the API.
- */
-export type DatasetResponse = {
-    /**
-     * RFC 3339 creation timestamp.
-     */
-    created_at: string;
-    /**
-     * Unique dataset identifier.
-     */
-    id: string;
-    /**
-     * Dataset name.
-     */
-    name: string;
-    /**
-     * Tenant that owns this dataset.
-     */
-    tenant_id: string;
 };
 
 /**
@@ -1037,26 +877,6 @@ export type HeatmapResult = {
  */
 export type LabelsResponse = {
     names: Array<string>;
-};
-
-/**
- * Response containing a list of API keys.
- */
-export type ListApiKeysResponse = {
-    /**
-     * List of API key records (without raw keys).
-     */
-    api_keys: Array<ApiKeyResponse>;
-};
-
-/**
- * Response containing a list of datasets.
- */
-export type ListDatasetsResponse = {
-    /**
-     * List of dataset records.
-     */
-    datasets: Array<DatasetResponse>;
 };
 
 /**
@@ -2188,43 +2008,6 @@ export type Trace = {
 export type UnavailableReason = 'not_configured' | 'no_installation' | 'not_found' | 'not_a_file' | 'too_large' | 'undecodable' | 'line_out_of_range' | 'github_error' | 'internal';
 
 /**
- * Request body for updating a live API key's scopes and/or dataset restriction.
- *
- * Absent fields are left untouched. Revoked keys cannot be updated. The
- * legacy singular `dataset_id` field is not accepted (see
- * [`CreateApiKeyRequest`]).
- */
-export type UpdateApiKeyRequest = {
-    /**
-     * Replacement allowed-origins set (non-empty; an explicit empty array
-     * is rejected). Omitted/`null` leaves the current restriction
-     * unchanged. Mutually exclusive with `clear_allowed_origins: true`.
-     */
-    allowed_origins?: Array<string> | null;
-    /**
-     * Clear an existing allowed-origins restriction back to unrestricted.
-     * Must not be combined with a non-empty `allowed_origins` in the same
-     * request.
-     */
-    clear_allowed_origins?: boolean;
-    /**
-     * Clear an existing dataset restriction back to unrestricted. Must not
-     * be combined with a non-empty `dataset_ids` in the same request.
-     */
-    clear_dataset_restriction?: boolean;
-    /**
-     * Replacement dataset set (non-empty; an explicit empty array is
-     * rejected). Omitted/`null` leaves the current restriction unchanged.
-     * Mutually exclusive with `clear_dataset_restriction: true`.
-     */
-    dataset_ids?: Array<string> | null;
-    /**
-     * New scope list (replaces the current one; must be non-empty).
-     */
-    scopes?: Array<string> | null;
-};
-
-/**
  * Request body for updating an existing tenant.
  */
 export type UpdateTenantRequest = {
@@ -2405,436 +2188,6 @@ export type ProfilesByTraceResponses = {
 
 export type ProfilesByTraceResponse = ProfilesByTraceResponses[keyof ProfilesByTraceResponses];
 
-export type ListTenantsData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/v1/admin/tenants';
-};
-
-export type ListTenantsResponses = {
-    /**
-     * List of tenants
-     */
-    200: ListTenantsResponse;
-};
-
-export type ListTenantsResponse2 = ListTenantsResponses[keyof ListTenantsResponses];
-
-export type CreateTenantData = {
-    body: CreateTenantRequest;
-    path?: never;
-    query?: never;
-    url: '/api/v1/admin/tenants';
-};
-
-export type CreateTenantErrors = {
-    /**
-     * Validation error
-     */
-    400: ApiError;
-    /**
-     * Tenant already exists
-     */
-    409: ApiError;
-};
-
-export type CreateTenantError = CreateTenantErrors[keyof CreateTenantErrors];
-
-export type CreateTenantResponses = {
-    /**
-     * Tenant created
-     */
-    201: TenantResponse;
-};
-
-export type CreateTenantResponse = CreateTenantResponses[keyof CreateTenantResponses];
-
-export type DeleteTenantData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/admin/tenants/{tenant_id}';
-};
-
-export type DeleteTenantErrors = {
-    /**
-     * Config-sourced tenants cannot be deleted
-     */
-    403: ApiError;
-    /**
-     * Tenant not found
-     */
-    404: ApiError;
-};
-
-export type DeleteTenantError = DeleteTenantErrors[keyof DeleteTenantErrors];
-
-export type DeleteTenantResponses = {
-    /**
-     * Tenant deleted
-     */
-    204: void;
-};
-
-export type DeleteTenantResponse = DeleteTenantResponses[keyof DeleteTenantResponses];
-
-export type GetTenantData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/admin/tenants/{tenant_id}';
-};
-
-export type GetTenantErrors = {
-    /**
-     * Tenant not found
-     */
-    404: ApiError;
-};
-
-export type GetTenantError = GetTenantErrors[keyof GetTenantErrors];
-
-export type GetTenantResponses = {
-    /**
-     * Tenant found
-     */
-    200: TenantResponse;
-};
-
-export type GetTenantResponse = GetTenantResponses[keyof GetTenantResponses];
-
-export type UpdateTenantData = {
-    body: UpdateTenantRequest;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/admin/tenants/{tenant_id}';
-};
-
-export type UpdateTenantErrors = {
-    /**
-     * Config-sourced tenants cannot be modified
-     */
-    403: ApiError;
-    /**
-     * Tenant not found
-     */
-    404: ApiError;
-};
-
-export type UpdateTenantError = UpdateTenantErrors[keyof UpdateTenantErrors];
-
-export type UpdateTenantResponses = {
-    /**
-     * Tenant updated
-     */
-    200: TenantResponse;
-};
-
-export type UpdateTenantResponse = UpdateTenantResponses[keyof UpdateTenantResponses];
-
-export type ListApiKeysData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/admin/tenants/{tenant_id}/api-keys';
-};
-
-export type ListApiKeysErrors = {
-    /**
-     * Tenant not found
-     */
-    404: ApiError;
-};
-
-export type ListApiKeysError = ListApiKeysErrors[keyof ListApiKeysErrors];
-
-export type ListApiKeysResponses = {
-    /**
-     * List of API keys
-     */
-    200: ListApiKeysResponse;
-};
-
-export type ListApiKeysResponse2 = ListApiKeysResponses[keyof ListApiKeysResponses];
-
-export type CreateApiKeyData = {
-    body: CreateApiKeyRequest;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/admin/tenants/{tenant_id}/api-keys';
-};
-
-export type CreateApiKeyErrors = {
-    /**
-     * Dataset does not exist
-     */
-    400: ApiError;
-    /**
-     * Tenant not found
-     */
-    404: ApiError;
-    /**
-     * Invalid or empty scopes
-     */
-    422: ApiError;
-    /**
-     * Tenant API key quota exceeded
-     */
-    429: ApiError;
-};
-
-export type CreateApiKeyError = CreateApiKeyErrors[keyof CreateApiKeyErrors];
-
-export type CreateApiKeyResponses = {
-    /**
-     * API key created
-     */
-    201: CreateApiKeyResponse;
-};
-
-export type CreateApiKeyResponse2 = CreateApiKeyResponses[keyof CreateApiKeyResponses];
-
-export type RevokeApiKeyData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-        /**
-         * API key identifier
-         */
-        key_id: string;
-    };
-    query?: never;
-    url: '/api/v1/admin/tenants/{tenant_id}/api-keys/{key_id}';
-};
-
-export type RevokeApiKeyErrors = {
-    /**
-     * API key not found
-     */
-    404: ApiError;
-};
-
-export type RevokeApiKeyError = RevokeApiKeyErrors[keyof RevokeApiKeyErrors];
-
-export type RevokeApiKeyResponses = {
-    /**
-     * API key revoked
-     */
-    204: void;
-};
-
-export type RevokeApiKeyResponse = RevokeApiKeyResponses[keyof RevokeApiKeyResponses];
-
-export type UpdateApiKeyData = {
-    body: UpdateApiKeyRequest;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-        /**
-         * API key identifier
-         */
-        key_id: string;
-    };
-    query?: never;
-    url: '/api/v1/admin/tenants/{tenant_id}/api-keys/{key_id}';
-};
-
-export type UpdateApiKeyErrors = {
-    /**
-     * Dataset does not exist
-     */
-    400: ApiError;
-    /**
-     * API key not found
-     */
-    404: ApiError;
-    /**
-     * API key is revoked
-     */
-    409: ApiError;
-    /**
-     * Invalid scopes
-     */
-    422: ApiError;
-};
-
-export type UpdateApiKeyError = UpdateApiKeyErrors[keyof UpdateApiKeyErrors];
-
-export type UpdateApiKeyResponses = {
-    /**
-     * API key updated
-     */
-    200: ApiKeyResponse;
-};
-
-export type UpdateApiKeyResponse = UpdateApiKeyResponses[keyof UpdateApiKeyResponses];
-
-export type ListDatasetsData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/admin/tenants/{tenant_id}/datasets';
-};
-
-export type ListDatasetsErrors = {
-    /**
-     * Tenant not found
-     */
-    404: ApiError;
-};
-
-export type ListDatasetsError = ListDatasetsErrors[keyof ListDatasetsErrors];
-
-export type ListDatasetsResponses = {
-    /**
-     * List of datasets
-     */
-    200: ListDatasetsResponse;
-};
-
-export type ListDatasetsResponse2 = ListDatasetsResponses[keyof ListDatasetsResponses];
-
-export type CreateDatasetData = {
-    body: CreateDatasetRequest;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/admin/tenants/{tenant_id}/datasets';
-};
-
-export type CreateDatasetErrors = {
-    /**
-     * Tenant not found
-     */
-    404: ApiError;
-    /**
-     * Tenant dataset quota exceeded
-     */
-    429: ApiError;
-};
-
-export type CreateDatasetError = CreateDatasetErrors[keyof CreateDatasetErrors];
-
-export type CreateDatasetResponses = {
-    /**
-     * Dataset created
-     */
-    201: DatasetResponse;
-};
-
-export type CreateDatasetResponse = CreateDatasetResponses[keyof CreateDatasetResponses];
-
-export type DeleteDatasetData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-        /**
-         * Dataset identifier
-         */
-        dataset_id: string;
-    };
-    query?: never;
-    url: '/api/v1/admin/tenants/{tenant_id}/datasets/{dataset_id}';
-};
-
-export type DeleteDatasetErrors = {
-    /**
-     * Config-sourced datasets cannot be deleted
-     */
-    403: ApiError;
-    /**
-     * Dataset not found
-     */
-    404: ApiError;
-};
-
-export type DeleteDatasetError = DeleteDatasetErrors[keyof DeleteDatasetErrors];
-
-export type DeleteDatasetResponses = {
-    /**
-     * Dataset deleted
-     */
-    204: void;
-};
-
-export type DeleteDatasetResponse = DeleteDatasetResponses[keyof DeleteDatasetResponses];
-
-export type CreateUserData = {
-    body: CreateUserRequest;
-    path?: never;
-    query?: never;
-    url: '/api/v1/admin/users';
-};
-
-export type CreateUserErrors = {
-    /**
-     * Validation error
-     */
-    400: ApiError;
-    /**
-     * Tenant not found
-     */
-    404: ApiError;
-    /**
-     * User already exists
-     */
-    409: ApiError;
-};
-
-export type CreateUserError = CreateUserErrors[keyof CreateUserErrors];
-
-export type CreateUserResponses = {
-    /**
-     * User created
-     */
-    201: UserResponse;
-};
-
-export type CreateUserResponse = CreateUserResponses[keyof CreateUserResponses];
-
 export type ConnectionInfoData = {
     body?: never;
     path?: never;
@@ -2880,6 +2233,170 @@ export type ConnectionInfoResponses = {
 };
 
 export type ConnectionInfoResponse2 = ConnectionInfoResponses[keyof ConnectionInfoResponses];
+
+export type ManageAdminListTenantsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/manage/admin/tenants';
+};
+
+export type ManageAdminListTenantsErrors = {
+    /**
+     * Instance administrator required
+     */
+    403: ApiError;
+};
+
+export type ManageAdminListTenantsError = ManageAdminListTenantsErrors[keyof ManageAdminListTenantsErrors];
+
+export type ManageAdminListTenantsResponses = {
+    /**
+     * List of tenants
+     */
+    200: ListTenantsResponse;
+};
+
+export type ManageAdminListTenantsResponse = ManageAdminListTenantsResponses[keyof ManageAdminListTenantsResponses];
+
+export type ManageAdminDeleteTenantData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/manage/admin/tenants/{tenant_id}';
+};
+
+export type ManageAdminDeleteTenantErrors = {
+    /**
+     * Config-sourced tenants cannot be deleted, or instance administrator required
+     */
+    403: ApiError;
+    /**
+     * Tenant not found
+     */
+    404: ApiError;
+};
+
+export type ManageAdminDeleteTenantError = ManageAdminDeleteTenantErrors[keyof ManageAdminDeleteTenantErrors];
+
+export type ManageAdminDeleteTenantResponses = {
+    /**
+     * Tenant deleted
+     */
+    204: void;
+};
+
+export type ManageAdminDeleteTenantResponse = ManageAdminDeleteTenantResponses[keyof ManageAdminDeleteTenantResponses];
+
+export type ManageAdminGetTenantData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/manage/admin/tenants/{tenant_id}';
+};
+
+export type ManageAdminGetTenantErrors = {
+    /**
+     * Instance administrator required
+     */
+    403: ApiError;
+    /**
+     * Tenant not found
+     */
+    404: ApiError;
+};
+
+export type ManageAdminGetTenantError = ManageAdminGetTenantErrors[keyof ManageAdminGetTenantErrors];
+
+export type ManageAdminGetTenantResponses = {
+    /**
+     * Tenant found
+     */
+    200: TenantResponse;
+};
+
+export type ManageAdminGetTenantResponse = ManageAdminGetTenantResponses[keyof ManageAdminGetTenantResponses];
+
+export type ManageAdminUpdateTenantData = {
+    body: UpdateTenantRequest;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/manage/admin/tenants/{tenant_id}';
+};
+
+export type ManageAdminUpdateTenantErrors = {
+    /**
+     * Config-sourced tenants cannot be modified, or instance administrator required
+     */
+    403: ApiError;
+    /**
+     * Tenant not found
+     */
+    404: ApiError;
+};
+
+export type ManageAdminUpdateTenantError = ManageAdminUpdateTenantErrors[keyof ManageAdminUpdateTenantErrors];
+
+export type ManageAdminUpdateTenantResponses = {
+    /**
+     * Tenant updated
+     */
+    200: TenantResponse;
+};
+
+export type ManageAdminUpdateTenantResponse = ManageAdminUpdateTenantResponses[keyof ManageAdminUpdateTenantResponses];
+
+export type ManageAdminCreateUserData = {
+    body: CreateUserRequest;
+    path?: never;
+    query?: never;
+    url: '/api/v1/manage/admin/users';
+};
+
+export type ManageAdminCreateUserErrors = {
+    /**
+     * Validation error
+     */
+    400: ApiError;
+    /**
+     * Instance administrator required
+     */
+    403: ApiError;
+    /**
+     * Tenant not found
+     */
+    404: ApiError;
+    /**
+     * User already exists
+     */
+    409: ApiError;
+};
+
+export type ManageAdminCreateUserError = ManageAdminCreateUserErrors[keyof ManageAdminCreateUserErrors];
+
+export type ManageAdminCreateUserResponses = {
+    /**
+     * User created
+     */
+    201: UserResponse;
+};
+
+export type ManageAdminCreateUserResponse = ManageAdminCreateUserResponses[keyof ManageAdminCreateUserResponses];
 
 export type ManageGetSchemaData = {
     body?: never;
@@ -2939,6 +2456,10 @@ export type ManageCreateTenantErrors = {
      * Validation error
      */
     400: ManageError;
+    /**
+     * Missing or invalid administrator credentials
+     */
+    401: ManageError;
     /**
      * Instance administrator required
      */

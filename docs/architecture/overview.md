@@ -346,13 +346,17 @@ compute the answer, and only an explicit `"sample": true` runs that query. `GET 
 table listing. Every response carries a `cost` object naming which tier answered,
 whether the answer is window-scoped, and how stale the statistics behind it are.
 
-**Admin API Endpoints** (requires `admin_api_key`):
+**Admin API Endpoints** (the break-glass `admin_api_key`, with no
+`X-Tenant-ID`, or an instance-admin session/tenant-scoped credential where
+noted):
 
-| Endpoint                              | Description            |
-| ------------------------------------- | ---------------------- |
-| `/api/v1/admin/tenants`               | CRUD for tenants       |
-| `/api/v1/admin/tenants/{id}/api-keys` | Manage tenant API keys |
-| `/api/v1/admin/tenants/{id}/datasets` | Manage tenant datasets |
+| Endpoint                               | Description                                                   |
+| -------------------------------------- | ------------------------------------------------------------- |
+| `/api/v1/manage/admin/tenants`         | List/get/update/delete any tenant                             |
+| `/api/v1/manage/admin/users`           | Create a user outright                                        |
+| `/api/v1/manage/tenants`               | Create a tenant (also reachable by an instance-admin session) |
+| `/api/v1/manage/tenants/{id}/api-keys` | Manage a tenant's API keys                                    |
+| `/api/v1/manage/tenants/{id}/datasets` | Manage a tenant's datasets                                    |
 
 - `ServiceRegistry`: Maintains cached map of discovered services, polls catalog at configurable interval
 - Discovers Queriers via `QueryExecution` capability for query forwarding

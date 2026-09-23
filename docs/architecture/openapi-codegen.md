@@ -4,7 +4,7 @@ type: explanation
 status: living
 sources:
   - src/router/src/openapi.rs
-  - src/router/src/endpoints/admin.rs
+  - src/router/src/endpoints/manage_admin.rs
   - src/router/src/endpoints/management.rs
   - src/router/src/endpoints/tenant.rs
   - src/signaldb-api/src/**
@@ -35,15 +35,18 @@ flowchart LR
 ## Source of truth
 
 - **DTOs** live in [`signaldb-api`](../../src/signaldb-api/src/schemas.rs) as
-  hand-written structs deriving `utoipa::ToSchema` (admin surface) and, for the
-  management surface (tenant-admin session or `tenant:manage` key), in
-  `src/router/src/endpoints/management.rs`. Field names and serde attributes
-  define the JSON wire format; `ToSchema` makes each struct an OpenAPI
-  component.
+  hand-written structs deriving `utoipa::ToSchema` (the instance-admin
+  tenant/user DTOs under `/api/v1/manage/admin`) and, for the management
+  surface (tenant-admin session, `tenant:manage` key, or the break-glass
+  admin key with no tenant), in `src/router/src/endpoints/management.rs`.
+  Field names and serde attributes define the JSON wire format; `ToSchema`
+  makes each struct an OpenAPI component.
 - **Operations** are declared with `#[utoipa::path(...)]` on the handlers in
-  `endpoints/admin.rs` (`/api/v1/admin/...`, including the API-key
-  `POST`/`PATCH` bodies with their required `scopes`), `endpoints/management.rs`
-  (`/api/v1/manage/...`), `endpoints/tempo.rs` (the Tempo-compatible trace
+  `endpoints/manage_admin.rs` (`/api/v1/manage/admin/...`, instance-admin
+  tenant/user management — reachable by an instance-admin session or the
+  break-glass admin key with no tenant), `endpoints/management.rs`
+  (`/api/v1/manage/...`, including the API-key `POST`/`PATCH` bodies with
+  their required `scopes`), `endpoints/tempo.rs` (the Tempo-compatible trace
   query endpoints under `/tempo/api/...`, whose DTOs live in `tempo-api`),
   `endpoints/query.rs` (the native Query IR endpoint `POST /api/v1/query`, whose
   request/response DTOs — including the response envelope's `QueryWarning`
@@ -89,9 +92,10 @@ flowchart LR
   including `DatasetTables` for `ListTablesResponse`'s per-dataset grouping).
   Paths are absolute; operationIds on the
   management handlers are prefixed `manage_*` and their colliding component
-  schemas aliased `Manage*` (via `#[schema(as = ...)]`) so admin and manage
-  names don't clash — `tenant.rs`'s `list_tenants`/`get_tenant` collide with
-  `admin.rs`'s the same way and are aliased `list_tenants_self`/`get_tenant_self`,
+  schemas aliased `Manage*` (via `#[schema(as = ...)]`) so tenant-self and
+  manage names don't clash — `tenant.rs`'s `list_tenants`/`get_tenant` collide
+  with `manage_admin.rs`'s (`manage_admin_list_tenants`/`manage_admin_get_tenant`)
+  the same way and are aliased `list_tenants_self`/`get_tenant_self`,
   and `common::tenant_api::ListTenantsResponse` collides with
   `signaldb_api::ListTenantsResponse` and is aliased `TenantSelfListResponse`.
   The same technique disambiguates the Tempo v1/v2 tag
@@ -118,10 +122,8 @@ for the modules whose `router()` is a plain list of `.route(...)` calls under
 one fixed mount prefix, and diff them against a hand-maintained
 `KNOWN_ROUTES`/`ALLOWLISTED_ROUTES` pair — catching both directions of drift
 (a route added to source without an OpenAPI operation, or a stale list
-entry). `admin.rs` (assembled inline in `lib.rs::create_router`, not through
-a standalone `router()` fn) and public/infra routes (`/health`, the spec
-endpoint itself, session, OAuth) are trusted by inspection instead of
-extracted. Pre-existing Tempo v2/echo/metrics, Loki `series`/`detected_fields`,
+entry). Public/infra routes (`/health`, the spec endpoint itself, session,
+OAuth) are trusted by inspection instead of extracted. Pre-existing Tempo v2/echo/metrics, Loki `series`/`detected_fields`,
 and Prometheus `label_stats`/`series` routes are `ALLOWLISTED_ROUTES` (not yet
 in the OpenAPI contract, tracked separately) rather than annotated.
 

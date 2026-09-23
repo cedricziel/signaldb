@@ -1,11 +1,12 @@
 //! Code-first OpenAPI document for the SignalDB HTTP API.
 //!
 //! The document is assembled from the `#[utoipa::path]` annotations on the
-//! admin (`/api/v1/admin/...`) and management (`/api/v1/manage/...`) handlers
-//! plus the `ToSchema`-deriving DTOs in [`signaldb_api`], this crate's
-//! management module, and [`common::catalog::MembershipRole`]. The generated
-//! spec is checked into `api/signaldb-api.json` and kept current by the golden
-//! test in this module.
+//! management (`/api/v1/manage/...`, including instance-admin routes under
+//! `/api/v1/manage/admin/...`) handlers plus the `ToSchema`-deriving DTOs in
+//! [`signaldb_api`], this crate's management module, and
+//! [`common::catalog::MembershipRole`]. The generated spec is checked into
+//! `api/signaldb-api.json` and kept current by the golden test in this
+//! module.
 
 use utoipa::{
     Modify, OpenApi,
@@ -21,7 +22,11 @@ use utoipa::{
 /// `signaldb_session` HttpOnly cookie), a distinct mechanism from
 /// `bearerAuth` that cookie-only endpoints like `GET /ui/session` restate
 /// per-path via `security(("sessionCookie" = []))` rather than inheriting
-/// this default.
+/// this default. And `adminApiKey`: the break-glass `[auth].admin_api_key`
+/// bearer, accepted with no tenant at all by the `/api/v1/manage/admin/*`
+/// operations that restate it alongside `bearerAuth` as an alternative
+/// (issue #1561 part 2) — an OR, not an AND: either credential authorizes on
+/// its own.
 struct SecurityAddon;
 
 impl Modify for SecurityAddon {
@@ -36,6 +41,10 @@ impl Modify for SecurityAddon {
         components.add_security_scheme(
             "sessionCookie",
             SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new("signaldb_session"))),
+        );
+        components.add_security_scheme(
+            "adminApiKey",
+            SecurityScheme::Http(Http::new(HttpAuthScheme::Bearer)),
         );
         openapi.security = Some(vec![SecurityRequirement::new(
             "bearerAuth",
@@ -73,19 +82,6 @@ impl Modify for SecurityAddon {
         (name = "processors", description = "Tenant OTTL processors applied at ingest"),
     ),
     paths(
-        crate::endpoints::admin::list_tenants,
-        crate::endpoints::admin::create_tenant,
-        crate::endpoints::admin::get_tenant,
-        crate::endpoints::admin::update_tenant,
-        crate::endpoints::admin::delete_tenant,
-        crate::endpoints::admin::list_api_keys,
-        crate::endpoints::admin::create_api_key,
-        crate::endpoints::admin::revoke_api_key,
-        crate::endpoints::admin::update_api_key,
-        crate::endpoints::admin::list_datasets,
-        crate::endpoints::admin::create_dataset,
-        crate::endpoints::admin::delete_dataset,
-        crate::endpoints::admin::create_user,
         // Tenant self-service endpoints (the caller's own tenant, via API key)
         crate::endpoints::tenant::list_tenants,
         crate::endpoints::tenant::get_tenant,
@@ -105,6 +101,12 @@ impl Modify for SecurityAddon {
         crate::endpoints::management::upsert_membership,
         crate::endpoints::management::remove_membership,
         crate::endpoints::management::get_schema,
+        // Instance-admin routes (change: remove-admin-api)
+        crate::endpoints::manage_admin::list_tenants,
+        crate::endpoints::manage_admin::get_tenant,
+        crate::endpoints::manage_admin::update_tenant,
+        crate::endpoints::manage_admin::delete_tenant,
+        crate::endpoints::manage_admin::create_user,
         crate::endpoints::github::start_github_link,
         crate::endpoints::github::list_github_installations,
         crate::endpoints::github::remove_github_installation,
@@ -174,20 +176,11 @@ impl Modify for SecurityAddon {
         crate::endpoints::processors::test_processor,
     ),
     components(schemas(
-        // signaldb-api admin DTOs
+        // signaldb-api instance-admin DTOs (/api/v1/manage/admin/...)
         signaldb_api::ApiError,
-        signaldb_api::CreateTenantRequest,
         signaldb_api::UpdateTenantRequest,
         signaldb_api::TenantResponse,
         signaldb_api::ListTenantsResponse,
-        signaldb_api::CreateApiKeyRequest,
-        signaldb_api::UpdateApiKeyRequest,
-        signaldb_api::CreateApiKeyResponse,
-        signaldb_api::ApiKeyResponse,
-        signaldb_api::ListApiKeysResponse,
-        signaldb_api::CreateDatasetRequest,
-        signaldb_api::DatasetResponse,
-        signaldb_api::ListDatasetsResponse,
         signaldb_api::CreateUserRequest,
         signaldb_api::UserResponse,
         // Tenant self-service DTOs
@@ -538,8 +531,7 @@ mod tests {
     /// paths straight out of those source files and cross-checks them
     /// against `KNOWN_ROUTES` / `ALLOWLISTED_ROUTES` bidirectionally, so a
     /// route added to one of those files without updating this list fails
-    /// loudly instead of silently escaping the guard. `admin.rs` (assembled
-    /// inline in `lib.rs`, not a standalone `router()` fn) and the
+    /// loudly instead of silently escaping the guard. The
     /// public/infra routes (`/health`, `/api/v1/openapi.json`, session,
     /// OAuth) are out of scope for the extraction and are trusted by
     /// inspection instead. `endpoints/pyroscope.rs` mounts two separate
@@ -565,15 +557,10 @@ mod tests {
         "/prometheus/api/v1/query_range",
         "/prometheus/api/v1/labels",
         "/prometheus/api/v1/label/{name}/values",
-        // endpoints/admin.rs, mounted at /api/v1/admin (assembled inline in
-        // lib.rs, not extracted — see `known_routes_match_router_fn_source`)
-        "/api/v1/admin/tenants",
-        "/api/v1/admin/tenants/{tenant_id}",
-        "/api/v1/admin/tenants/{tenant_id}/api-keys",
-        "/api/v1/admin/tenants/{tenant_id}/api-keys/{key_id}",
-        "/api/v1/admin/tenants/{tenant_id}/datasets",
-        "/api/v1/admin/tenants/{tenant_id}/datasets/{dataset_id}",
-        "/api/v1/admin/users",
+        // endpoints/manage_admin.rs, mounted at /api/v1/manage/admin
+        "/api/v1/manage/admin/tenants",
+        "/api/v1/manage/admin/tenants/{tenant_id}",
+        "/api/v1/manage/admin/users",
         // endpoints/ops.rs, mounted at /api/v1/ops
         "/api/v1/ops/compact",
         "/api/v1/ops/compact/status",
@@ -708,7 +695,7 @@ mod tests {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         // (file, mount prefix, Some(fn name) to scope extraction to one
         // function body when the file assembles more than one router).
-        let files_with_prefix: [(&str, &str, Option<&str>); 12] = [
+        let files_with_prefix: [(&str, &str, Option<&str>); 13] = [
             ("src/endpoints/tempo.rs", "/tempo", None),
             ("src/endpoints/logql.rs", "/loki", None),
             ("src/endpoints/promql.rs", "/prometheus", None),
@@ -717,6 +704,11 @@ mod tests {
             ("src/endpoints/source_context.rs", "/api/v1", None),
             ("src/endpoints/query.rs", "/api/v1", None),
             ("src/endpoints/management.rs", "/api/v1/manage", None),
+            (
+                "src/endpoints/manage_admin.rs",
+                "/api/v1/manage/admin",
+                None,
+            ),
             ("src/endpoints/schema.rs", "/api/v1/schema", None),
             ("src/endpoints/processors.rs", "/api/v1", None),
             ("src/endpoints/pyroscope.rs", "/pyroscope", Some("router")),
@@ -759,14 +751,9 @@ mod tests {
              with a reason): {undeclared:?}"
         );
 
-        // admin.rs routes are assembled inline in lib.rs (not one of the
-        // extracted `router()` functions above) and are trusted by
-        // inspection rather than extracted; exclude them from the
-        // stale-entry check.
         let mut stale: Vec<&str> = known
             .iter()
             .chain(allowlisted.iter())
-            .filter(|route| !route.starts_with("/api/v1/admin/"))
             .filter(|route| !actual.contains(**route))
             .copied()
             .collect();
@@ -822,10 +809,9 @@ mod tests {
 
     /// Drift guard (change: query-throttle-signalling): every operation
     /// mounted behind the router's rate limiters — the query budget
-    /// (`query_rate_layer`, see `lib.rs`) and the admin per-tenant quotas
-    /// (`endpoints::admin`) — must declare a `429` response carrying at
-    /// least the `Retry-After` header, so a new rate-limited endpoint can't
-    /// silently ship without the retry contract.
+    /// (`query_rate_layer`, see `lib.rs`) — must declare a `429` response
+    /// carrying at least the `Retry-After` header, so a new rate-limited
+    /// endpoint can't silently ship without the retry contract.
     #[test]
     fn every_rate_limited_path_declares_429_with_retry_after() {
         let spec: serde_json::Value =
@@ -837,9 +823,8 @@ mod tests {
 
         // (path, method) pairs mounted under `query_rate_layer` in
         // `create_router` (tempo/pyroscope/loki/prometheus/api-profiles and
-        // the `/api/v1` tenant-scoped nest: query IR, whoami, connection, management,
-        // schema) plus the admin per-tenant count quotas, which answer 429
-        // via the same header contract (see `endpoints::admin`).
+        // the `/api/v1` tenant-scoped nest: query IR, whoami, connection,
+        // management, schema).
         let rate_limited: &[(&str, &str)] = &[
             ("/tempo/api/search", "get"),
             ("/tempo/api/traces/{trace_id}", "get"),
@@ -864,8 +849,6 @@ mod tests {
             ("/api/v1/whoami", "get"),
             ("/api/v1/connection", "get"),
             ("/api/v1/tenants/{tenant_id}/source-context", "post"),
-            ("/api/v1/admin/tenants/{tenant_id}/api-keys", "post"),
-            ("/api/v1/admin/tenants/{tenant_id}/datasets", "post"),
         ];
 
         for (path, method) in rate_limited {

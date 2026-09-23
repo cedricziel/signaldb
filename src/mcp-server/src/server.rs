@@ -2723,7 +2723,7 @@ impl McpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let client = self.router_client(&parts, None)?;
         let resp = client
-            .list_api_keys()
+            .manage_list_api_keys()
             .tenant_id(&p.tenant_id)
             .send()
             .await
@@ -2742,9 +2742,9 @@ impl McpServer {
         require_nonempty_scopes(&p.scopes)?;
         let client = self.router_client(&parts, None)?;
         let resp = client
-            .create_api_key()
+            .manage_create_api_key()
             .tenant_id(&p.tenant_id)
-            .body(signaldb_sdk::types::CreateApiKeyRequest {
+            .body(signaldb_sdk::types::ManageCreateApiKeyRequest {
                 name: p.name,
                 scopes: p.scopes,
                 dataset_ids: p.dataset_ids,
@@ -2775,10 +2775,10 @@ impl McpServer {
         )?;
         let client = self.router_client(&parts, None)?;
         let resp = client
-            .update_api_key()
+            .manage_update_api_key()
             .tenant_id(&p.tenant_id)
             .key_id(&p.key_id)
-            .body(signaldb_sdk::types::UpdateApiKeyRequest {
+            .body(signaldb_sdk::types::ManageUpdateApiKeyRequest {
                 scopes: p.scopes,
                 dataset_ids: p.dataset_ids,
                 clear_dataset_restriction: Some(p.clear_dataset_restriction),
@@ -2806,7 +2806,7 @@ impl McpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let client = self.router_client(&parts, None)?;
         let resp = client
-            .list_tenants()
+            .manage_admin_list_tenants()
             .send()
             .await
             .map_err(|e| map_sdk_err(e, "list_tenants"))?;
@@ -2824,7 +2824,7 @@ impl McpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let client = self.router_client(&parts, None)?;
         let resp = client
-            .get_tenant()
+            .manage_admin_get_tenant()
             .tenant_id(&p.tenant_id)
             .send()
             .await
@@ -2842,8 +2842,8 @@ impl McpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let client = self.router_client(&parts, None)?;
         let resp = client
-            .create_tenant()
-            .body(signaldb_sdk::types::CreateTenantRequest {
+            .manage_create_tenant()
+            .body(signaldb_sdk::types::ManageCreateTenantRequest {
                 id: p.id,
                 name: p.name,
                 default_dataset: p.default_dataset,
@@ -2864,7 +2864,7 @@ impl McpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let client = self.router_client(&parts, None)?;
         let resp = client
-            .update_tenant()
+            .manage_admin_update_tenant()
             .tenant_id(&p.tenant_id)
             .body(signaldb_sdk::types::UpdateTenantRequest {
                 name: p.name,
@@ -2888,7 +2888,7 @@ impl McpServer {
         require_confirm(&p.confirm, &p.tenant_id, "tenant_id")?;
         let client = self.router_client(&parts, None)?;
         client
-            .delete_tenant()
+            .manage_admin_delete_tenant()
             .tenant_id(&p.tenant_id)
             .send()
             .await
@@ -2912,7 +2912,7 @@ impl McpServer {
         }
         let client = self.router_client(&parts, None)?;
         let resp = client
-            .create_user()
+            .manage_admin_create_user()
             .body(signaldb_sdk::types::CreateUserRequest {
                 email: p.email,
                 display_name: p.display_name,
@@ -2938,7 +2938,7 @@ impl McpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let client = self.router_client(&parts, None)?;
         let resp = client
-            .list_datasets()
+            .manage_list_datasets()
             .tenant_id(&p.tenant_id)
             .send()
             .await
@@ -2956,9 +2956,9 @@ impl McpServer {
     ) -> Result<CallToolResult, ErrorData> {
         let client = self.router_client(&parts, None)?;
         let resp = client
-            .create_dataset()
+            .manage_create_dataset()
             .tenant_id(&p.tenant_id)
-            .body(signaldb_sdk::types::CreateDatasetRequest { name: p.name })
+            .body(signaldb_sdk::types::ManageCreateDatasetRequest { name: p.name })
             .send()
             .await
             .map_err(|e| map_sdk_err(e, "create_dataset"))?;
@@ -2977,9 +2977,9 @@ impl McpServer {
         require_confirm(&p.confirm, &p.dataset_id, "dataset_id")?;
         let client = self.router_client(&parts, None)?;
         client
-            .delete_dataset()
+            .manage_delete_dataset()
             .tenant_id(&p.tenant_id)
-            .dataset_id(&p.dataset_id)
+            .dataset_name(&p.dataset_id)
             .send()
             .await
             .map_err(|e| map_sdk_err(e, "delete_dataset"))?;
@@ -2998,7 +2998,7 @@ impl McpServer {
         require_confirm(&p.confirm, &p.key_id, "key_id")?;
         let client = self.router_client(&parts, None)?;
         client
-            .revoke_api_key()
+            .manage_revoke_api_key()
             .tenant_id(&p.tenant_id)
             .key_id(&p.key_id)
             .send()
@@ -7043,7 +7043,7 @@ mod tests {
     #[tokio::test]
     async fn create_api_key_forwards_dataset_ids() {
         let (base_url, router) = mock_capturing_router(
-            "POST /api/v1/admin/tenants/acme/api-keys",
+            "POST /api/v1/manage/tenants/acme/api-keys",
             201,
             r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1","key":"secret","scopes":["traces:read"],"dataset_ids":["production","staging"]}"#,
         )
@@ -7104,9 +7104,9 @@ mod tests {
     #[tokio::test]
     async fn update_api_key_scopes_forwards_dataset_ids_and_clear_flag() {
         let (base_url, router) = mock_capturing_router(
-            "PATCH /api/v1/admin/tenants/acme/api-keys/key-1",
+            "PATCH /api/v1/manage/tenants/acme/api-keys/key-1",
             200,
-            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1"}"#,
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1","revoked":false}"#,
         )
         .await;
         let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
@@ -7135,9 +7135,9 @@ mod tests {
     #[tokio::test]
     async fn update_api_key_scopes_forwards_clear_dataset_restriction() {
         let (base_url, router) = mock_capturing_router(
-            "PATCH /api/v1/admin/tenants/acme/api-keys/key-1",
+            "PATCH /api/v1/manage/tenants/acme/api-keys/key-1",
             200,
-            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1"}"#,
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1","revoked":false}"#,
         )
         .await;
         let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
@@ -7296,7 +7296,7 @@ mod tests {
     #[tokio::test]
     async fn create_api_key_forwards_allowed_origins() {
         let (base_url, router) = mock_capturing_router(
-            "POST /api/v1/admin/tenants/acme/api-keys",
+            "POST /api/v1/manage/tenants/acme/api-keys",
             201,
             r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1","key":"secret","scopes":["traces:read"],"allowed_origins":["https://a.example","https://b.example"]}"#,
         )
@@ -7363,9 +7363,9 @@ mod tests {
     #[tokio::test]
     async fn update_api_key_scopes_forwards_allowed_origins_and_clear_flag() {
         let (base_url, router) = mock_capturing_router(
-            "PATCH /api/v1/admin/tenants/acme/api-keys/key-1",
+            "PATCH /api/v1/manage/tenants/acme/api-keys/key-1",
             200,
-            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1"}"#,
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1","revoked":false}"#,
         )
         .await;
         let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
@@ -7397,9 +7397,9 @@ mod tests {
     #[tokio::test]
     async fn update_api_key_scopes_forwards_clear_allowed_origins() {
         let (base_url, router) = mock_capturing_router(
-            "PATCH /api/v1/admin/tenants/acme/api-keys/key-1",
+            "PATCH /api/v1/manage/tenants/acme/api-keys/key-1",
             200,
-            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1"}"#,
+            r#"{"created_at":"2024-01-01T00:00:00Z","id":"key-1","revoked":false}"#,
         )
         .await;
         let server = McpServer::new(base_url, std::time::Duration::from_secs(1));

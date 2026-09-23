@@ -58,7 +58,7 @@ impl UserAction {
                     anyhow::bail!("password must be at least 12 characters");
                 }
                 let user = client
-                    .create_user()
+                    .manage_admin_create_user()
                     .body(CreateUserRequest {
                         email,
                         display_name,

@@ -104,6 +104,30 @@ pub(crate) fn error(status: StatusCode, message: impl Into<String>) -> Response 
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
+/// Like [`authorize_tenant`], but also accepts the break-glass
+/// `admin_api_key` bearer with no tenant at all (issue #1561 part 2),
+/// generalized from tenant creation to the tenant-scoped API-key/dataset
+/// admin surface the CLI's/TUI's `admin` commands use — so that surface
+/// keeps working unchanged now that it lives under `/api/v1/manage` instead
+/// of the removed `/api/v1/admin`. `ctx` is `None` exactly when `auth_layer`
+/// (see `lib.rs`) let a tenant-less admin-key request through; `tenant_id`
+/// is then trusted from the path with no ownership check, since the admin
+/// key is not scoped to any one tenant.
+pub(crate) fn authorize_tenant_or_admin_key(
+    state: &RouterAppState,
+    headers: &axum::http::HeaderMap,
+    ctx: Option<&TenantContext>,
+    tenant_id: &str,
+) -> Result<(), Box<Response>> {
+    match ctx {
+        Some(ctx) => authorize_tenant(ctx, tenant_id)
+            .map_err(|(status, message)| Box::new(error(status, message))),
+        None => crate::endpoints::manage_admin::require_instance_admin_or_admin_key(
+            state, headers, None,
+        ),
+    }
+}
+
 /// Whether `ctx` is the instance-admin principal — stricter than
 /// [`can_manage`]/[`authorize_tenant`], which also accept a tenant-scoped
 /// `tenant:manage` grant. Used by the handful of operations too privileged
@@ -165,11 +189,13 @@ pub(crate) struct ManageError {
     path = "/api/v1/manage/tenants",
     tag = "tenants",
     operation_id = "manage_create_tenant",
+    security(("bearerAuth" = []), ("adminApiKey" = [])),
     request_body = CreateTenantRequest,
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 201, description = "Tenant created", body = ManageCreatedTenant),
         (status = 400, description = "Validation error", body = ManageError),
+        (status = 401, description = "Missing or invalid administrator credentials", body = ManageError),
         (status = 403, description = "Instance administrator required", body = ManageError),
         (status = 409, description = "Tenant already exists", body = ManageError),
         (status = 500, description = "Internal error", body = ManageError),
@@ -177,12 +203,24 @@ pub(crate) struct ManageError {
 )]
 pub(crate) async fn create_tenant(
     State(state): State<RouterAppState>,
-    TenantContextExtractor(ctx): TenantContextExtractor,
+    headers: axum::http::HeaderMap,
+    ctx: Option<axum::Extension<TenantContext>>,
     Json(request): Json<CreateTenantRequest>,
 ) -> Response {
-    if let Err((status, message)) = authorize_instance_admin(&ctx) {
-        return error(status, message);
+    // Also reachable via the break-glass `admin_api_key` with no tenant at
+    // all (issue #1561 part 2), same as `/api/v1/manage/admin/*` — tenant
+    // creation is exactly as instance-admin-only, it just predates that
+    // prefix. See `crate::endpoints::manage_admin::require_instance_admin_or_admin_key`.
+    if let Err(response) = crate::endpoints::manage_admin::require_instance_admin_or_admin_key(
+        &state,
+        &headers,
+        ctx.as_ref().map(|e| &e.0),
+    ) {
+        return *response;
     }
+    // `None` for the break-glass admin-key path (no tenant, no user) — the
+    // creator-membership grant below is then simply skipped.
+    let actor_user_id = ctx.as_ref().and_then(|e| e.0.user_id.clone());
     let tenant_id = match validate_id(&request.id) {
         Ok(value) => value,
         Err(error_value) => return error(StatusCode::BAD_REQUEST, error_value.to_string()),
@@ -233,7 +271,7 @@ pub(crate) async fn create_tenant(
         tracing::error!(error = %catalog_error, tenant_id, "tenant creation failed");
         return error(StatusCode::INTERNAL_SERVER_ERROR, "Unable to create tenant");
     }
-    if let Some(user_id) = &ctx.user_id
+    if let Some(user_id) = &actor_user_id
         && let Err(catalog_error) = state
             .catalog()
             .upsert_tenant_membership(user_id, &tenant_id, MembershipRole::Admin)
@@ -245,7 +283,7 @@ pub(crate) async fn create_tenant(
             "Tenant was created but creator access could not be recorded",
         );
     }
-    tracing::info!(actor_user_id = ?ctx.user_id, tenant_id, "tenant created via UX");
+    tracing::info!(actor_user_id = ?actor_user_id, tenant_id, "tenant created via UX");
     (
         StatusCode::CREATED,
         Json(ManageCreatedTenant { id: tenant_id }),
@@ -265,6 +303,7 @@ pub(crate) struct DatasetResponse {
     path = "/api/v1/manage/tenants/{tenant_id}/datasets",
     tag = "datasets",
     operation_id = "manage_list_datasets",
+    security(("bearerAuth" = []), ("adminApiKey" = [])),
     params(("tenant_id" = String, Path, description = "Tenant identifier")),
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
@@ -275,11 +314,14 @@ pub(crate) struct DatasetResponse {
 )]
 pub(crate) async fn list_datasets(
     State(state): State<RouterAppState>,
-    TenantContextExtractor(ctx): TenantContextExtractor,
+    headers: axum::http::HeaderMap,
+    ctx: Option<axum::Extension<TenantContext>>,
     Path(tenant_id): Path<String>,
 ) -> Response {
-    if let Err((status, message)) = authorize_tenant(&ctx, &tenant_id) {
-        return error(status, message);
+    if let Err(response) =
+        authorize_tenant_or_admin_key(&state, &headers, ctx.as_ref().map(|e| &e.0), &tenant_id)
+    {
+        return *response;
     }
     match state.catalog().get_datasets(&tenant_id).await {
         Ok(datasets) => Json(
@@ -310,6 +352,7 @@ pub(crate) struct CreateDatasetRequest {
     path = "/api/v1/manage/tenants/{tenant_id}/datasets",
     tag = "datasets",
     operation_id = "manage_create_dataset",
+    security(("bearerAuth" = []), ("adminApiKey" = [])),
     params(("tenant_id" = String, Path, description = "Tenant identifier")),
     request_body = CreateDatasetRequest,
     responses(
@@ -322,20 +365,24 @@ pub(crate) struct CreateDatasetRequest {
 )]
 pub(crate) async fn create_dataset(
     State(state): State<RouterAppState>,
-    TenantContextExtractor(ctx): TenantContextExtractor,
+    headers: axum::http::HeaderMap,
+    ctx: Option<axum::Extension<TenantContext>>,
     Path(tenant_id): Path<String>,
     Json(request): Json<CreateDatasetRequest>,
 ) -> Response {
-    if let Err((status, message)) = authorize_tenant(&ctx, &tenant_id) {
-        return error(status, message);
+    if let Err(response) =
+        authorize_tenant_or_admin_key(&state, &headers, ctx.as_ref().map(|e| &e.0), &tenant_id)
+    {
+        return *response;
     }
+    let actor_user_id = ctx.as_ref().and_then(|e| e.0.user_id.clone());
     let name = match validate_id(&request.name) {
         Ok(value) => value,
         Err(error_value) => return error(StatusCode::BAD_REQUEST, error_value.to_string()),
     };
     match state.catalog().create_dataset(&tenant_id, &name).await {
         Ok(id) => {
-            tracing::info!(actor_user_id = ?ctx.user_id, tenant_id, dataset = name, "dataset created via UX");
+            tracing::info!(actor_user_id = ?actor_user_id, tenant_id, dataset = name, "dataset created via UX");
             crate::endpoints::provision_dataset_tables(
                 state.config(),
                 state.catalog(),
@@ -357,6 +404,7 @@ pub(crate) async fn create_dataset(
     path = "/api/v1/manage/tenants/{tenant_id}/datasets/{dataset_name}",
     tag = "datasets",
     operation_id = "manage_delete_dataset",
+    security(("bearerAuth" = []), ("adminApiKey" = [])),
     params(
         ("tenant_id" = String, Path, description = "Tenant identifier"),
         ("dataset_name" = String, Path, description = "Dataset name"),
@@ -372,12 +420,16 @@ pub(crate) async fn create_dataset(
 )]
 pub(crate) async fn delete_dataset(
     State(state): State<RouterAppState>,
-    TenantContextExtractor(ctx): TenantContextExtractor,
+    headers: axum::http::HeaderMap,
+    ctx: Option<axum::Extension<TenantContext>>,
     Path((tenant_id, dataset_name)): Path<(String, String)>,
 ) -> Response {
-    if let Err((status, message)) = authorize_tenant(&ctx, &tenant_id) {
-        return error(status, message);
+    if let Err(response) =
+        authorize_tenant_or_admin_key(&state, &headers, ctx.as_ref().map(|e| &e.0), &tenant_id)
+    {
+        return *response;
     }
+    let actor_user_id = ctx.as_ref().and_then(|e| e.0.user_id.clone());
     if state
         .config()
         .auth
@@ -434,7 +486,7 @@ pub(crate) async fn delete_dataset(
         .await
     {
         Ok(true) => {
-            tracing::info!(actor_user_id = ?ctx.user_id, tenant_id, dataset = dataset_name, "dataset deleted via UX");
+            tracing::info!(actor_user_id = ?actor_user_id, tenant_id, dataset = dataset_name, "dataset deleted via UX");
             StatusCode::NO_CONTENT.into_response()
         }
         Ok(false) => error(StatusCode::NOT_FOUND, "Dataset not found"),
@@ -498,6 +550,7 @@ pub(crate) struct ManageCreatedApiKey {
     path = "/api/v1/manage/tenants/{tenant_id}/api-keys",
     tag = "api-keys",
     operation_id = "manage_list_api_keys",
+    security(("bearerAuth" = []), ("adminApiKey" = [])),
     params(("tenant_id" = String, Path, description = "Tenant identifier")),
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
@@ -508,11 +561,14 @@ pub(crate) struct ManageCreatedApiKey {
 )]
 pub(crate) async fn list_api_keys(
     State(state): State<RouterAppState>,
-    TenantContextExtractor(ctx): TenantContextExtractor,
+    headers: axum::http::HeaderMap,
+    ctx: Option<axum::Extension<TenantContext>>,
     Path(tenant_id): Path<String>,
 ) -> Response {
-    if let Err((status, message)) = authorize_tenant(&ctx, &tenant_id) {
-        return error(status, message);
+    if let Err(response) =
+        authorize_tenant_or_admin_key(&state, &headers, ctx.as_ref().map(|e| &e.0), &tenant_id)
+    {
+        return *response;
     }
     match state.catalog().list_api_keys(&tenant_id).await {
         Ok(keys) => Json(
@@ -541,6 +597,7 @@ pub(crate) async fn list_api_keys(
     path = "/api/v1/manage/tenants/{tenant_id}/api-keys",
     tag = "api-keys",
     operation_id = "manage_create_api_key",
+    security(("bearerAuth" = []), ("adminApiKey" = [])),
     params(("tenant_id" = String, Path, description = "Tenant identifier")),
     request_body = CreateApiKeyRequest,
     responses(
@@ -555,13 +612,17 @@ pub(crate) async fn list_api_keys(
 )]
 pub(crate) async fn create_api_key(
     State(state): State<RouterAppState>,
-    TenantContextExtractor(ctx): TenantContextExtractor,
+    headers: axum::http::HeaderMap,
+    ctx: Option<axum::Extension<TenantContext>>,
     Path(tenant_id): Path<String>,
     Json(request): Json<CreateApiKeyRequest>,
 ) -> Response {
-    if let Err((status, message)) = authorize_tenant(&ctx, &tenant_id) {
-        return error(status, message);
+    if let Err(response) =
+        authorize_tenant_or_admin_key(&state, &headers, ctx.as_ref().map(|e| &e.0), &tenant_id)
+    {
+        return *response;
     }
+    let actor_user_id = ctx.as_ref().and_then(|e| e.0.user_id.clone());
     if let Err(validation_error) = validate_scopes(&request.scopes) {
         return error(
             StatusCode::UNPROCESSABLE_ENTITY,
@@ -598,12 +659,12 @@ pub(crate) async fn create_api_key(
             dataset_ids.as_deref(),
             allowed_origins.as_deref(),
             Some(&request.scopes),
-            ctx.user_id.as_deref(),
+            actor_user_id.as_deref(),
         )
         .await
     {
         Ok(id) => {
-            tracing::info!(actor_user_id = ?ctx.user_id, tenant_id, key_id = id, "scoped API key created via UX");
+            tracing::info!(actor_user_id = ?actor_user_id, tenant_id, key_id = id, "scoped API key created via UX");
             let response = ManageCreatedApiKey {
                 id,
                 key: secret,
@@ -708,6 +769,7 @@ pub(crate) struct UpdateApiKeyRequest {
     path = "/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}",
     tag = "api-keys",
     operation_id = "manage_update_api_key",
+    security(("bearerAuth" = []), ("adminApiKey" = [])),
     params(
         ("tenant_id" = String, Path, description = "Tenant identifier"),
         ("key_id" = String, Path, description = "API key identifier"),
@@ -726,13 +788,17 @@ pub(crate) struct UpdateApiKeyRequest {
 )]
 pub(crate) async fn update_api_key(
     State(state): State<RouterAppState>,
-    TenantContextExtractor(ctx): TenantContextExtractor,
+    headers: axum::http::HeaderMap,
+    ctx: Option<axum::Extension<TenantContext>>,
     Path((tenant_id, key_id)): Path<(String, String)>,
     Json(request): Json<UpdateApiKeyRequest>,
 ) -> Response {
-    if let Err((status, message)) = authorize_tenant(&ctx, &tenant_id) {
-        return error(status, message);
+    if let Err(response) =
+        authorize_tenant_or_admin_key(&state, &headers, ctx.as_ref().map(|e| &e.0), &tenant_id)
+    {
+        return *response;
     }
+    let actor_user_id = ctx.as_ref().and_then(|e| e.0.user_id.clone());
     if let Some(scopes) = &request.scopes
         && let Err(validation_error) = validate_scopes(scopes)
     {
@@ -800,7 +866,7 @@ pub(crate) async fn update_api_key(
             );
         }
     }
-    tracing::info!(actor_user_id = ?ctx.user_id, tenant_id, key_id, "API key scopes updated via UX");
+    tracing::info!(actor_user_id = ?actor_user_id, tenant_id, key_id, "API key scopes updated via UX");
     match state.catalog().get_api_key(&key_id).await {
         Ok(Some(key)) => {
             let response = ApiKeyResponse {
@@ -830,6 +896,7 @@ pub(crate) async fn update_api_key(
     path = "/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}",
     tag = "api-keys",
     operation_id = "manage_revoke_api_key",
+    security(("bearerAuth" = []), ("adminApiKey" = [])),
     params(
         ("tenant_id" = String, Path, description = "Tenant identifier"),
         ("key_id" = String, Path, description = "API key identifier"),
@@ -844,12 +911,16 @@ pub(crate) async fn update_api_key(
 )]
 pub(crate) async fn revoke_api_key(
     State(state): State<RouterAppState>,
-    TenantContextExtractor(ctx): TenantContextExtractor,
+    headers: axum::http::HeaderMap,
+    ctx: Option<axum::Extension<TenantContext>>,
     Path((tenant_id, key_id)): Path<(String, String)>,
 ) -> Response {
-    if let Err((status, message)) = authorize_tenant(&ctx, &tenant_id) {
-        return error(status, message);
+    if let Err(response) =
+        authorize_tenant_or_admin_key(&state, &headers, ctx.as_ref().map(|e| &e.0), &tenant_id)
+    {
+        return *response;
     }
+    let actor_user_id = ctx.as_ref().and_then(|e| e.0.user_id.clone());
     match state.catalog().get_api_key(&key_id).await {
         Ok(Some(key)) if key.tenant_id == tenant_id => {}
         Ok(_) => return error(StatusCode::NOT_FOUND, "API key not found"),
@@ -863,7 +934,7 @@ pub(crate) async fn revoke_api_key(
     }
     match state.catalog().revoke_api_key(&key_id).await {
         Ok(()) => {
-            tracing::info!(actor_user_id = ?ctx.user_id, tenant_id, key_id, "API key revoked via UX");
+            tracing::info!(actor_user_id = ?actor_user_id, tenant_id, key_id, "API key revoked via UX");
             StatusCode::NO_CONTENT.into_response()
         }
         Err(catalog_error) => {
@@ -1811,6 +1882,159 @@ mod key_scope_authorization_tests {
         )
         .await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
+    }
+}
+
+/// The break-glass `admin_api_key`, with no `X-Tenant-ID` at all, reaches
+/// the tenant-scoped API-key/dataset admin surface for any tenant (issue
+/// #1561 part 2) — the same surface `key_scope_authorization_tests` above
+/// exercises with a `tenant:manage`-scoped key.
+#[cfg(test)]
+mod admin_key_bypass_for_tenant_scoped_admin_surface_tests {
+    use crate::{RouterAppState, create_router};
+    use axum::body::Body;
+    use axum::http::{Method, Request, StatusCode};
+    use common::catalog::Catalog;
+    use common::config::Configuration;
+    use serde_json::{Value, json};
+    use tower::ServiceExt;
+
+    const ADMIN_KEY: &str = "sk-admin-break-glass";
+
+    async fn test_app() -> axum::Router {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let mut config = Configuration::default();
+        config.auth.admin_api_key = Some(ADMIN_KEY.to_string());
+        catalog
+            .upsert_tenant_with_default_dataset("acme", "Acme Corp", Some("production"), "database")
+            .await
+            .unwrap();
+        create_router(RouterAppState::new(catalog, config))
+    }
+
+    /// A bearer-only request: no `X-Tenant-ID`, no session cookie.
+    async fn call(
+        app: &axum::Router,
+        method: Method,
+        uri: &str,
+        body: Option<Value>,
+    ) -> (StatusCode, Value) {
+        let mut builder = Request::builder()
+            .method(method)
+            .uri(uri)
+            .header("authorization", format!("Bearer {ADMIN_KEY}"));
+        let body = match body {
+            Some(value) => {
+                builder = builder.header("content-type", "application/json");
+                Body::from(value.to_string())
+            }
+            None => Body::empty(),
+        };
+        let response = app
+            .clone()
+            .oneshot(builder.body(body).unwrap())
+            .await
+            .unwrap();
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json = if bytes.is_empty() {
+            Value::Null
+        } else {
+            serde_json::from_slice(&bytes).unwrap_or(Value::Null)
+        };
+        (status, json)
+    }
+
+    #[tokio::test]
+    async fn admin_key_manages_datasets_for_any_tenant() {
+        let app = test_app().await;
+
+        let (status, body) = call(
+            &app,
+            Method::GET,
+            "/api/v1/manage/tenants/acme/datasets",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        let (status, body) = call(
+            &app,
+            Method::POST,
+            "/api/v1/manage/tenants/acme/datasets",
+            Some(json!({ "name": "staging" })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+
+        let (status, body) = call(
+            &app,
+            Method::DELETE,
+            "/api/v1/manage/tenants/acme/datasets/staging",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    }
+
+    #[tokio::test]
+    async fn admin_key_manages_api_keys_for_any_tenant() {
+        let app = test_app().await;
+
+        let (status, body) = call(
+            &app,
+            Method::POST,
+            "/api/v1/manage/tenants/acme/api-keys",
+            Some(json!({ "name": "ci", "scopes": ["traces:write"] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{body}");
+        let key_id = body["id"].as_str().unwrap().to_string();
+
+        let (status, body) = call(
+            &app,
+            Method::GET,
+            "/api/v1/manage/tenants/acme/api-keys",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        let (status, body) = call(
+            &app,
+            Method::PATCH,
+            &format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"),
+            Some(json!({ "scopes": ["traces:write", "logs:write"] })),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+
+        let (status, body) = call(
+            &app,
+            Method::DELETE,
+            &format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"),
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
+    }
+
+    /// A path outside the admin-key bypass allowlist (memberships) still
+    /// requires a real tenant credential — the admin key gets no wider
+    /// reach than the API-key/dataset surface it was extended to cover.
+    #[tokio::test]
+    async fn admin_key_does_not_reach_memberships() {
+        let app = test_app().await;
+        let (status, _) = call(
+            &app,
+            Method::GET,
+            "/api/v1/manage/tenants/acme/memberships",
+            None,
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 }
 

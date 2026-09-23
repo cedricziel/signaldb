@@ -78,7 +78,7 @@ fn fetch_tenants(url: &str, admin_key: Option<&str>, timeout: Duration) -> Vec<(
                 builder = builder.bearer(key);
             }
             let client = builder.build().ok()?;
-            let resp = client.list_tenants().send().await.ok()?;
+            let resp = client.manage_admin_list_tenants().send().await.ok()?;
             Some(
                 resp.into_inner()
                     .tenants
@@ -125,7 +125,7 @@ mod tests {
     fn fetch_tenants_returns_ids_and_names_from_admin_api() {
         let mut server = mockito::Server::new();
         let mock = server
-            .mock("GET", "/api/v1/admin/tenants")
+            .mock("GET", "/api/v1/manage/admin/tenants")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
@@ -154,7 +154,7 @@ mod tests {
     fn fetch_tenants_returns_empty_for_malformed_response() {
         let mut server = mockito::Server::new();
         server
-            .mock("GET", "/api/v1/admin/tenants")
+            .mock("GET", "/api/v1/manage/admin/tenants")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"unexpected":true}"#)

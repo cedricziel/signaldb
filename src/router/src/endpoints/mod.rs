@@ -1,10 +1,10 @@
-pub mod admin;
 pub mod api_error;
 pub mod discovery;
 pub mod flight;
 mod flight_decode;
 pub mod github;
 pub mod logql;
+pub mod manage_admin;
 pub mod management;
 pub mod oauth;
 pub mod oidc;

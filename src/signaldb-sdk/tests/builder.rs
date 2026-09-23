@@ -22,11 +22,11 @@ async fn builder_sends_bearer_tenant_dataset_and_custom_headers() {
         .header("x-custom", "two")
         .build()
         .expect("builds");
-    client.list_tenants().send().await.expect("ok");
+    client.manage_admin_list_tenants().send().await.expect("ok");
     let seen = server.seen();
     assert_eq!(seen.len(), 1);
     assert_eq!(
-        seen[0].path, "/api/v1/admin/tenants",
+        seen[0].path, "/api/v1/manage/admin/tenants",
         "trailing slash trimmed"
     );
     assert_eq!(seen[0].header("authorization"), Some("Bearer sk-acme"));
@@ -62,7 +62,7 @@ async fn builder_installs_the_default_retry_policy() {
         ScriptedServer::start(vec![Scripted::throttled("0"), Scripted::ok_json(TENANTS)]).await;
     let client = ClientBuilder::new(&server.base_url).build().unwrap();
     client
-        .list_tenants()
+        .manage_admin_list_tenants()
         .send()
         .await
         .expect("retried by default");
@@ -77,7 +77,11 @@ async fn builder_retry_disabled_is_fail_fast() {
         .retry(RetryPolicy::disabled())
         .build()
         .unwrap();
-    client.list_tenants().send().await.expect_err("not retried");
+    client
+        .manage_admin_list_tenants()
+        .send()
+        .await
+        .expect_err("not retried");
     assert_eq!(server.request_count(), 1);
 }
 
@@ -108,7 +112,11 @@ async fn builder_timeout_applies_per_attempt() {
         .build()
         .unwrap();
     let started = std::time::Instant::now();
-    let err = client.list_tenants().send().await.expect_err("times out");
+    let err = client
+        .manage_admin_list_tenants()
+        .send()
+        .await
+        .expect_err("times out");
     assert!(matches!(err, signaldb_sdk::Error::CommunicationError(ref e) if e.is_timeout()));
     assert!(started.elapsed() < Duration::from_secs(5));
 }
@@ -129,7 +137,7 @@ mod trace_context {
         let client = ClientBuilder::new(&server.base_url).build().unwrap();
         let span = tracing::info_span!("plain");
         client
-            .list_tenants()
+            .manage_admin_list_tenants()
             .send()
             .instrument(span)
             .await
@@ -153,7 +161,7 @@ mod trace_context {
         let client = ClientBuilder::new(&server.base_url).build().unwrap();
         let span = tracing::info_span!("caller");
         client
-            .list_tenants()
+            .manage_admin_list_tenants()
             .send()
             .instrument(span)
             .await

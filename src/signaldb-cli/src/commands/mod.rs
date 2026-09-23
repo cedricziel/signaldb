@@ -360,8 +360,8 @@ impl Cli {
         }
 
         // Both admin-authenticated dispatches (Ops and Admin/User below) carry
-        // absolute paths (e.g. `/api/v1/ops/...`, `/api/v1/admin/tenants`), so
-        // the SDK client base is the router root in both cases, not
+        // absolute paths (e.g. `/api/v1/ops/...`, `/api/v1/manage/admin/tenants`),
+        // so the SDK client base is the router root in both cases, not
         // `{url}/api/v1/...`, which would double-prefix.
         if matches!(self.command, Commands::Ops { .. }) {
             let admin_key = self.resolve_admin_key()?;
@@ -610,13 +610,13 @@ mod parse_tests {
     }
 
     // Regression: the admin client base URL is the router root, so the generated
-    // methods' absolute paths hit `/api/v1/admin/...` — not a double-prefixed
-    // `/api/v1/admin/api/v1/admin/...`.
+    // methods' absolute paths hit `/api/v1/manage/admin/...` — not a
+    // double-prefixed `/api/v1/manage/admin/api/v1/manage/admin/...`.
     #[tokio::test]
     async fn admin_client_uses_root_base_and_absolute_paths() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
-            .mock("GET", "/api/v1/admin/tenants")
+            .mock("GET", "/api/v1/manage/admin/tenants")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"tenants":[]}"#)
@@ -627,9 +627,9 @@ mod parse_tests {
         let client = signaldb_sdk::ClientBuilder::new(server.url())
             .build()
             .unwrap();
-        // The request must reach `/api/v1/admin/tenants`; a double-prefixed URL
-        // would miss the mock and fail the assertion below.
-        let _ = client.list_tenants().send().await;
+        // The request must reach `/api/v1/manage/admin/tenants`; a
+        // double-prefixed URL would miss the mock and fail the assertion below.
+        let _ = client.manage_admin_list_tenants().send().await;
         mock.assert_async().await;
     }
 }

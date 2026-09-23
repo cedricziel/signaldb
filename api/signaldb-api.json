@@ -58,13 +58,46 @@
         ]
       }
     },
-    "/api/v1/admin/tenants": {
+    "/api/v1/connection": {
       "get": {
         "tags": [
           "tenants"
         ],
-        "summary": "List all tenants",
-        "operationId": "list_tenants",
+        "summary": "GET /api/v1/connection",
+        "description": "Everything needed to send data to and query this deployment from outside:\npublic OTLP gRPC/HTTP and Prometheus remote-write endpoints, the query API\nbase and compatibility-dialect paths, the headers to send (with this\nrequest's tenant/dataset filled in), the API-key scopes ingest and query\neach require, and ready-to-paste `OTEL_EXPORTER_OTLP_*` env vars. Behind\nthe tenant auth middleware, so any valid tenant credential — including an\ningest-only key — may call it.",
+        "operationId": "connection_info",
+        "responses": {
+          "200": {
+            "description": "Connection details for this deployment, scoped to the caller's tenant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectionInfoResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid or expired credential"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/manage/admin/tenants": {
+      "get": {
+        "tags": [
+          "tenants"
+        ],
+        "summary": "List every tenant on the instance",
+        "operationId": "manage_admin_list_tenants",
         "responses": {
           "200": {
             "description": "List of tenants",
@@ -75,53 +108,9 @@
                 }
               }
             }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      },
-      "post": {
-        "tags": [
-          "tenants"
-        ],
-        "summary": "Create a new tenant",
-        "operationId": "create_tenant",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateTenantRequest"
-              }
-            }
           },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "Tenant created",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/TenantResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Validation error",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "Tenant already exists",
+          "403": {
+            "description": "Instance administrator required",
             "content": {
               "application/json": {
                 "schema": {
@@ -134,17 +123,20 @@
         "security": [
           {
             "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
           }
         ]
       }
     },
-    "/api/v1/admin/tenants/{tenant_id}": {
+    "/api/v1/manage/admin/tenants/{tenant_id}": {
       "get": {
         "tags": [
           "tenants"
         ],
-        "summary": "Get a tenant by ID",
-        "operationId": "get_tenant",
+        "summary": "Get any tenant by ID",
+        "operationId": "manage_admin_get_tenant",
         "parameters": [
           {
             "name": "tenant_id",
@@ -167,6 +159,16 @@
               }
             }
           },
+          "403": {
+            "description": "Instance administrator required",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
           "404": {
             "description": "Tenant not found",
             "content": {
@@ -181,6 +183,9 @@
         "security": [
           {
             "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
           }
         ]
       },
@@ -188,8 +193,8 @@
         "tags": [
           "tenants"
         ],
-        "summary": "Update a tenant",
-        "operationId": "update_tenant",
+        "summary": "Update any tenant's name or default dataset",
+        "operationId": "manage_admin_update_tenant",
         "parameters": [
           {
             "name": "tenant_id",
@@ -223,7 +228,7 @@
             }
           },
           "403": {
-            "description": "Config-sourced tenants cannot be modified",
+            "description": "Config-sourced tenants cannot be modified, or instance administrator required",
             "content": {
               "application/json": {
                 "schema": {
@@ -246,6 +251,9 @@
         "security": [
           {
             "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
           }
         ]
       },
@@ -253,8 +261,8 @@
         "tags": [
           "tenants"
         ],
-        "summary": "Delete a tenant",
-        "operationId": "delete_tenant",
+        "summary": "Delete any database-sourced tenant",
+        "operationId": "manage_admin_delete_tenant",
         "parameters": [
           {
             "name": "tenant_id",
@@ -271,7 +279,7 @@
             "description": "Tenant deleted"
           },
           "403": {
-            "description": "Config-sourced tenants cannot be deleted",
+            "description": "Config-sourced tenants cannot be deleted, or instance administrator required",
             "content": {
               "application/json": {
                 "schema": {
@@ -294,495 +302,20 @@
         "security": [
           {
             "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
           }
         ]
       }
     },
-    "/api/v1/admin/tenants/{tenant_id}/api-keys": {
-      "get": {
-        "tags": [
-          "api-keys"
-        ],
-        "summary": "List API keys for a tenant",
-        "operationId": "list_api_keys",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "List of API keys",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListApiKeysResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Tenant not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      },
-      "post": {
-        "tags": [
-          "api-keys"
-        ],
-        "summary": "Create a new API key for a tenant",
-        "operationId": "create_api_key",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateApiKeyRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "API key created",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CreateApiKeyResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Dataset does not exist",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Tenant not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Invalid or empty scopes",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Tenant API key quota exceeded",
-            "headers": {
-              "Retry-After": {
-                "schema": {
-                  "type": "integer",
-                  "format": "int64"
-                },
-                "description": "Fixed at 1 second: a count quota has no token bucket to refill from"
-              },
-              "X-RateLimit-Limit": {
-                "schema": {
-                  "type": "integer",
-                  "format": "int64"
-                },
-                "description": "The tenant's max_api_keys quota"
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
-    "/api/v1/admin/tenants/{tenant_id}/api-keys/{key_id}": {
-      "delete": {
-        "tags": [
-          "api-keys"
-        ],
-        "summary": "Revoke an API key",
-        "operationId": "revoke_api_key",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "key_id",
-            "in": "path",
-            "description": "API key identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "API key revoked"
-          },
-          "404": {
-            "description": "API key not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      },
-      "patch": {
-        "tags": [
-          "api-keys"
-        ],
-        "summary": "Update the scopes and/or dataset restriction of a live API key",
-        "operationId": "update_api_key",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "key_id",
-            "in": "path",
-            "description": "API key identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateApiKeyRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "description": "API key updated",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiKeyResponse"
-                }
-              }
-            }
-          },
-          "400": {
-            "description": "Dataset does not exist",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "API key not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "409": {
-            "description": "API key is revoked",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "422": {
-            "description": "Invalid scopes",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
-    "/api/v1/admin/tenants/{tenant_id}/datasets": {
-      "get": {
-        "tags": [
-          "datasets"
-        ],
-        "summary": "List datasets for a tenant",
-        "operationId": "list_datasets",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "description": "List of datasets",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ListDatasetsResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Tenant not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      },
-      "post": {
-        "tags": [
-          "datasets"
-        ],
-        "summary": "Create a new dataset for a tenant",
-        "operationId": "create_dataset",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateDatasetRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "description": "Dataset created",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DatasetResponse"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Tenant not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "429": {
-            "description": "Tenant dataset quota exceeded",
-            "headers": {
-              "Retry-After": {
-                "schema": {
-                  "type": "integer",
-                  "format": "int64"
-                },
-                "description": "Fixed at 1 second: a count quota has no token bucket to refill from"
-              },
-              "X-RateLimit-Limit": {
-                "schema": {
-                  "type": "integer",
-                  "format": "int64"
-                },
-                "description": "The tenant's max_datasets quota"
-              }
-            },
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
-    "/api/v1/admin/tenants/{tenant_id}/datasets/{dataset_id}": {
-      "delete": {
-        "tags": [
-          "datasets"
-        ],
-        "summary": "Delete a dataset",
-        "operationId": "delete_dataset",
-        "parameters": [
-          {
-            "name": "tenant_id",
-            "in": "path",
-            "description": "Tenant identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          },
-          {
-            "name": "dataset_id",
-            "in": "path",
-            "description": "Dataset identifier",
-            "required": true,
-            "schema": {
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "204": {
-            "description": "Dataset deleted"
-          },
-          "403": {
-            "description": "Config-sourced datasets cannot be deleted",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          },
-          "404": {
-            "description": "Dataset not found",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApiError"
-                }
-              }
-            }
-          }
-        },
-        "security": [
-          {
-            "bearerAuth": []
-          }
-        ]
-      }
-    },
-    "/api/v1/admin/users": {
+    "/api/v1/manage/admin/users": {
       "post": {
         "tags": [
           "users"
         ],
-        "summary": "Create a human user and grant an initial tenant membership.",
-        "operationId": "create_user",
+        "summary": "Create a user outright and grant an initial tenant membership",
+        "operationId": "manage_admin_create_user",
         "requestBody": {
           "content": {
             "application/json": {
@@ -806,6 +339,16 @@
           },
           "400": {
             "description": "Validation error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiError"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Instance administrator required",
             "content": {
               "application/json": {
                 "schema": {
@@ -838,39 +381,9 @@
         "security": [
           {
             "bearerAuth": []
-          }
-        ]
-      }
-    },
-    "/api/v1/connection": {
-      "get": {
-        "tags": [
-          "tenants"
-        ],
-        "summary": "GET /api/v1/connection",
-        "description": "Everything needed to send data to and query this deployment from outside:\npublic OTLP gRPC/HTTP and Prometheus remote-write endpoints, the query API\nbase and compatibility-dialect paths, the headers to send (with this\nrequest's tenant/dataset filled in), the API-key scopes ingest and query\neach require, and ready-to-paste `OTEL_EXPORTER_OTLP_*` env vars. Behind\nthe tenant auth middleware, so any valid tenant credential — including an\ningest-only key — may call it.",
-        "operationId": "connection_info",
-        "responses": {
-          "200": {
-            "description": "Connection details for this deployment, scoped to the caller's tenant",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ConnectionInfoResponse"
-                }
-              }
-            }
           },
-          "401": {
-            "description": "Invalid or expired credential"
-          },
-          "429": {
-            "$ref": "#/components/responses/RateLimited"
-          }
-        },
-        "security": [
           {
-            "bearerAuth": []
+            "adminApiKey": []
           }
         ]
       }
@@ -947,6 +460,16 @@
               }
             }
           },
+          "401": {
+            "description": "Missing or invalid administrator credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ManageError"
+                }
+              }
+            }
+          },
           "403": {
             "description": "Instance administrator required",
             "content": {
@@ -980,7 +503,15 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
       }
     },
     "/api/v1/manage/tenants/{tenant_id}/api-keys": {
@@ -1037,7 +568,15 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
       },
       "post": {
         "tags": [
@@ -1129,7 +668,15 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
       }
     },
     "/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}": {
@@ -1195,7 +742,15 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
       },
       "patch": {
         "tags": [
@@ -1306,7 +861,15 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
       }
     },
     "/api/v1/manage/tenants/{tenant_id}/datasets": {
@@ -1363,7 +926,15 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
       },
       "post": {
         "tags": [
@@ -1435,7 +1006,15 @@
           "429": {
             "$ref": "#/components/responses/RateLimited"
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
       }
     },
     "/api/v1/manage/tenants/{tenant_id}/datasets/{dataset_name}": {
@@ -1511,7 +1090,15 @@
               }
             }
           }
-        }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          },
+          {
+            "adminApiKey": []
+          }
+        ]
       }
     },
     "/api/v1/manage/tenants/{tenant_id}/github-installations": {
@@ -5400,70 +4987,6 @@
           }
         }
       },
-      "ApiKeyResponse": {
-        "type": "object",
-        "description": "API key information (without the raw key).",
-        "required": [
-          "id",
-          "created_at"
-        ],
-        "properties": {
-          "allowed_origins": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "Allowed-origin set the key is restricted to, if any; `null` is\nunrestricted."
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time",
-            "description": "RFC 3339 creation timestamp."
-          },
-          "dataset_ids": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "Dataset set the key is restricted to, if any; `null` is unrestricted."
-          },
-          "id": {
-            "type": "string",
-            "description": "Unique key identifier."
-          },
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Optional human-readable name."
-          },
-          "revoked_at": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "format": "date-time",
-            "description": "RFC 3339 revocation timestamp (if revoked)."
-          },
-          "scopes": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "Scopes the key carries; `null` for a legacy unrestricted key."
-          }
-        }
-      },
       "AttachGitHubInstallationRequest": {
         "type": "object",
         "description": "Request body for [`attach_github_installation`].",
@@ -6073,149 +5596,6 @@
           "none"
         ]
       },
-      "CreateApiKeyRequest": {
-        "type": "object",
-        "description": "Request body for creating a new API key.\n\n`scopes` is required and non-empty: a key's permissions are always\nexplicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,\n`profiles:write`, `traces:read`, `logs:read`, `metrics:read`,\n`profiles:read`, `schema:read`, `schema:write`, `processors:read`,\n`processors:write`.\n\nThe legacy singular `dataset_id` field is not accepted here (removed in\nthe multi-dataset-key-restriction change): a request body carrying it is\nrejected with a validation error rather than silently ignored, since\ndropping it would create an unrestricted key when the caller asked for a\nrestricted one.",
-        "required": [
-          "scopes"
-        ],
-        "properties": {
-          "allowed_origins": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "Browser origins the key is restricted to for CORS checks. Omitted or\n`null` creates an unrestricted key; a non-empty array restricts it to\nexactly that set. An explicit empty array, or a duplicate entry\nwithin the set, is rejected.",
-            "minItems": 1
-          },
-          "dataset_ids": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "Dataset set the key is restricted to. Omitted or `null` creates an\nunrestricted key; a non-empty array restricts it to exactly that set.\nAn explicit empty array, or a duplicate name within the set, is\nrejected.",
-            "minItems": 1
-          },
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Optional human-readable name for the key."
-          },
-          "scopes": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Scopes the key carries (required, at least one)."
-          }
-        },
-        "additionalProperties": false
-      },
-      "CreateApiKeyResponse": {
-        "type": "object",
-        "description": "Response returned when a new API key is created (includes the raw key).",
-        "required": [
-          "id",
-          "key",
-          "scopes",
-          "created_at"
-        ],
-        "properties": {
-          "allowed_origins": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "Allowed-origin set the key is restricted to, if any; `null` is\nunrestricted."
-          },
-          "created_at": {
-            "type": "string",
-            "format": "date-time",
-            "description": "RFC 3339 creation timestamp."
-          },
-          "dataset_ids": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "Dataset set the key is restricted to, if any; `null` is unrestricted."
-          },
-          "id": {
-            "type": "string",
-            "description": "Unique key identifier."
-          },
-          "key": {
-            "type": "string",
-            "description": "The raw API key (only shown once at creation time)."
-          },
-          "name": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Optional human-readable name."
-          },
-          "scopes": {
-            "type": "array",
-            "items": {
-              "type": "string"
-            },
-            "description": "Scopes the key carries."
-          }
-        }
-      },
-      "CreateDatasetRequest": {
-        "type": "object",
-        "description": "Request body for creating a new dataset.",
-        "required": [
-          "name"
-        ],
-        "properties": {
-          "name": {
-            "type": "string",
-            "description": "Dataset name."
-          }
-        }
-      },
-      "CreateTenantRequest": {
-        "type": "object",
-        "description": "Request body for creating a new tenant.",
-        "required": [
-          "id",
-          "name"
-        ],
-        "properties": {
-          "default_dataset": {
-            "type": [
-              "string",
-              "null"
-            ],
-            "description": "Default dataset name."
-          },
-          "id": {
-            "type": "string",
-            "description": "Unique tenant identifier."
-          },
-          "name": {
-            "type": "string",
-            "description": "Human-readable tenant name."
-          }
-        }
-      },
       "CreateTenantTablesResponse": {
         "type": "object",
         "description": "Response body for `POST /tenants/{tenant_id}/tables/create`.",
@@ -6304,35 +5684,6 @@
           },
           "user": {
             "$ref": "#/components/schemas/SessionUser"
-          }
-        }
-      },
-      "DatasetResponse": {
-        "type": "object",
-        "description": "Dataset information returned by the API.",
-        "required": [
-          "id",
-          "name",
-          "tenant_id",
-          "created_at"
-        ],
-        "properties": {
-          "created_at": {
-            "type": "string",
-            "format": "date-time",
-            "description": "RFC 3339 creation timestamp."
-          },
-          "id": {
-            "type": "string",
-            "description": "Unique dataset identifier."
-          },
-          "name": {
-            "type": "string",
-            "description": "Dataset name."
-          },
-          "tenant_id": {
-            "type": "string",
-            "description": "Tenant that owns this dataset."
           }
         }
       },
@@ -7164,38 +6515,6 @@
             "items": {
               "type": "string"
             }
-          }
-        }
-      },
-      "ListApiKeysResponse": {
-        "type": "object",
-        "description": "Response containing a list of API keys.",
-        "required": [
-          "api_keys"
-        ],
-        "properties": {
-          "api_keys": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/ApiKeyResponse"
-            },
-            "description": "List of API key records (without raw keys)."
-          }
-        }
-      },
-      "ListDatasetsResponse": {
-        "type": "object",
-        "description": "Response containing a list of datasets.",
-        "required": [
-          "datasets"
-        ],
-        "properties": {
-          "datasets": {
-            "type": "array",
-            "items": {
-              "$ref": "#/components/schemas/DatasetResponse"
-            },
-            "description": "List of dataset records."
           }
         }
       },
@@ -9480,53 +8799,6 @@
           "internal"
         ]
       },
-      "UpdateApiKeyRequest": {
-        "type": "object",
-        "description": "Request body for updating a live API key's scopes and/or dataset restriction.\n\nAbsent fields are left untouched. Revoked keys cannot be updated. The\nlegacy singular `dataset_id` field is not accepted (see\n[`CreateApiKeyRequest`]).",
-        "properties": {
-          "allowed_origins": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "Replacement allowed-origins set (non-empty; an explicit empty array\nis rejected). Omitted/`null` leaves the current restriction\nunchanged. Mutually exclusive with `clear_allowed_origins: true`.",
-            "minItems": 1
-          },
-          "clear_allowed_origins": {
-            "type": "boolean",
-            "description": "Clear an existing allowed-origins restriction back to unrestricted.\nMust not be combined with a non-empty `allowed_origins` in the same\nrequest."
-          },
-          "clear_dataset_restriction": {
-            "type": "boolean",
-            "description": "Clear an existing dataset restriction back to unrestricted. Must not\nbe combined with a non-empty `dataset_ids` in the same request."
-          },
-          "dataset_ids": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "Replacement dataset set (non-empty; an explicit empty array is\nrejected). Omitted/`null` leaves the current restriction unchanged.\nMutually exclusive with `clear_dataset_restriction: true`.",
-            "minItems": 1
-          },
-          "scopes": {
-            "type": [
-              "array",
-              "null"
-            ],
-            "items": {
-              "type": "string"
-            },
-            "description": "New scope list (replaces the current one; must be non-empty)."
-          }
-        },
-        "additionalProperties": false
-      },
       "UpdateTenantRequest": {
         "type": "object",
         "description": "Request body for updating an existing tenant.",
@@ -9872,6 +9144,10 @@
       }
     },
     "securitySchemes": {
+      "adminApiKey": {
+        "type": "http",
+        "scheme": "bearer"
+      },
       "bearerAuth": {
         "type": "http",
         "scheme": "bearer"

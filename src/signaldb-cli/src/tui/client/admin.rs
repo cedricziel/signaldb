@@ -49,7 +49,7 @@ impl AdminClient {
     /// Result with AdminClient or error
     pub fn new(base_url: &str, admin_key: &str) -> Result<Self, AdminClientError> {
         // The generated SDK's operation URLs are absolute (e.g.
-        // /api/v1/admin/tenants), so the client base is the router root.
+        // /api/v1/manage/admin/tenants), so the client base is the router root.
         let client = crate::retry::client_builder(base_url)
             .bearer(admin_key)
             .build()
@@ -62,7 +62,7 @@ impl AdminClient {
     pub async fn list_tenants(&self) -> Result<Vec<serde_json::Value>, AdminClientError> {
         let response = self
             .client
-            .list_tenants()
+            .manage_admin_list_tenants()
             .send()
             .await
             .map_err(|e| self.map_error(&e))?;
@@ -77,7 +77,7 @@ impl AdminClient {
         id: &str,
         name: &str,
     ) -> Result<serde_json::Value, AdminClientError> {
-        let request = signaldb_sdk::types::CreateTenantRequest {
+        let request = signaldb_sdk::types::ManageCreateTenantRequest {
             id: id.to_string(),
             name: name.to_string(),
             default_dataset: None,
@@ -85,7 +85,7 @@ impl AdminClient {
 
         let response = self
             .client
-            .create_tenant()
+            .manage_create_tenant()
             .body(request)
             .send()
             .await
@@ -108,7 +108,7 @@ impl AdminClient {
 
         let response = self
             .client
-            .update_tenant()
+            .manage_admin_update_tenant()
             .tenant_id(id)
             .body(request)
             .send()
@@ -122,7 +122,7 @@ impl AdminClient {
     /// Delete a tenant
     pub async fn delete_tenant(&self, id: &str) -> Result<(), AdminClientError> {
         self.client
-            .delete_tenant()
+            .manage_admin_delete_tenant()
             .tenant_id(id)
             .send()
             .await
@@ -138,14 +138,13 @@ impl AdminClient {
     ) -> Result<Vec<serde_json::Value>, AdminClientError> {
         let response = self
             .client
-            .list_api_keys()
+            .manage_list_api_keys()
             .tenant_id(tenant_id)
             .send()
             .await
             .map_err(|e| self.map_error(&e))?;
 
-        let body = response.into_inner();
-        Ok(to_json_array(&body.api_keys))
+        Ok(to_json_array(&response.into_inner()))
     }
 
     /// Create a new API key for a tenant carrying exactly `scopes`
@@ -157,7 +156,7 @@ impl AdminClient {
         scopes: Vec<String>,
         dataset_id: Option<String>,
     ) -> Result<serde_json::Value, AdminClientError> {
-        let request = signaldb_sdk::types::CreateApiKeyRequest {
+        let request = signaldb_sdk::types::ManageCreateApiKeyRequest {
             name: Some(name.to_string()),
             scopes,
             // TODO(multi-dataset-key-restriction phase 4): this TUI action
@@ -172,7 +171,7 @@ impl AdminClient {
 
         let response = self
             .client
-            .create_api_key()
+            .manage_create_api_key()
             .tenant_id(tenant_id)
             .body(request)
             .send()
@@ -190,7 +189,7 @@ impl AdminClient {
         key_id: &str,
     ) -> Result<(), AdminClientError> {
         self.client
-            .revoke_api_key()
+            .manage_revoke_api_key()
             .tenant_id(tenant_id)
             .key_id(key_id)
             .send()
@@ -207,14 +206,13 @@ impl AdminClient {
     ) -> Result<Vec<serde_json::Value>, AdminClientError> {
         let response = self
             .client
-            .list_datasets()
+            .manage_list_datasets()
             .tenant_id(tenant_id)
             .send()
             .await
             .map_err(|e| self.map_error(&e))?;
 
-        let body = response.into_inner();
-        Ok(to_json_array(&body.datasets))
+        Ok(to_json_array(&response.into_inner()))
     }
 
     /// Create a new dataset for a tenant
@@ -223,13 +221,13 @@ impl AdminClient {
         tenant_id: &str,
         id: &str,
     ) -> Result<serde_json::Value, AdminClientError> {
-        let request = signaldb_sdk::types::CreateDatasetRequest {
+        let request = signaldb_sdk::types::ManageCreateDatasetRequest {
             name: id.to_string(),
         };
 
         let response = self
             .client
-            .create_dataset()
+            .manage_create_dataset()
             .tenant_id(tenant_id)
             .body(request)
             .send()
@@ -247,9 +245,9 @@ impl AdminClient {
         dataset_id: &str,
     ) -> Result<(), AdminClientError> {
         self.client
-            .delete_dataset()
+            .manage_delete_dataset()
             .tenant_id(tenant_id)
-            .dataset_id(dataset_id)
+            .dataset_name(dataset_id)
             .send()
             .await
             .map_err(|e| self.map_error(&e))?;

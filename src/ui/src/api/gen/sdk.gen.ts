@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { ConnectionInfoData, ConnectionInfoErrors, ConnectionInfoResponses, CreateApiKeyData, CreateApiKeyErrors, CreateApiKeyResponses, CreateDatasetData, CreateDatasetErrors, CreateDatasetResponses, CreateTenantData, CreateTenantErrors, CreateTenantResponses, CreateTenantTablesData, CreateTenantTablesErrors, CreateTenantTablesResponses, CreateUserData, CreateUserErrors, CreateUserResponses, CurrentSessionData, CurrentSessionErrors, CurrentSessionResponses, DeleteDatasetData, DeleteDatasetErrors, DeleteDatasetResponses, DeleteTenantData, DeleteTenantErrors, DeleteTenantResponses, GetTenantData, GetTenantErrors, GetTenantResponses, GetTenantSelfData, GetTenantSelfErrors, GetTenantSelfResponses, GithubCallbackData, GithubCallbackErrors, ListApiKeysData, ListApiKeysErrors, ListApiKeysResponses, ListAvailableSchemasData, ListAvailableSchemasResponses, ListDatasetsData, ListDatasetsErrors, ListDatasetsResponses, ListTenantSchemasData, ListTenantSchemasErrors, ListTenantSchemasResponses, ListTenantsData, ListTenantsResponses, ListTenantsSelfData, ListTenantsSelfResponses, ListTenantTablesData, ListTenantTablesErrors, ListTenantTablesResponses, LoginConfigData, LoginConfigResponses, LogqlLabelsData, LogqlLabelsErrors, LogqlLabelsResponses, LogqlLabelValuesData, LogqlLabelValuesErrors, LogqlLabelValuesResponses, LogqlQueryData, LogqlQueryErrors, LogqlQueryRangeData, LogqlQueryRangeErrors, LogqlQueryRangeResponses, LogqlQueryResponses, ManageAttachGithubInstallationData, ManageAttachGithubInstallationErrors, ManageAttachGithubInstallationResponses, ManageCreateApiKeyData, ManageCreateApiKeyErrors, ManageCreateApiKeyResponses, ManageCreateDatasetData, ManageCreateDatasetErrors, ManageCreateDatasetResponses, ManageCreateTenantData, ManageCreateTenantErrors, ManageCreateTenantResponses, ManageDeleteDatasetData, ManageDeleteDatasetErrors, ManageDeleteDatasetResponses, ManageGetSchemaData, ManageGetSchemaErrors, ManageGetSchemaResponses, ManageListApiKeysData, ManageListApiKeysErrors, ManageListApiKeysResponses, ManageListDatasetsData, ManageListDatasetsErrors, ManageListDatasetsResponses, ManageListGithubInstallationsData, ManageListGithubInstallationsErrors, ManageListGithubInstallationsResponses, ManageListMembershipsData, ManageListMembershipsErrors, ManageListMembershipsResponses, ManageRemoveGithubInstallationData, ManageRemoveGithubInstallationErrors, ManageRemoveGithubInstallationResponses, ManageRemoveMembershipData, ManageRemoveMembershipErrors, ManageRemoveMembershipResponses, ManageRevokeApiKeyData, ManageRevokeApiKeyErrors, ManageRevokeApiKeyResponses, ManageStartGithubLinkData, ManageStartGithubLinkErrors, ManageStartGithubLinkResponses, ManageUpdateApiKeyData, ManageUpdateApiKeyErrors, ManageUpdateApiKeyResponses, ManageUpsertMembershipData, ManageUpsertMembershipErrors, ManageUpsertMembershipResponses, OauthConsentContextData, OauthConsentContextErrors, OauthConsentContextResponses, OauthConsentDecisionData, OauthConsentDecisionErrors, OauthConsentDecisionResponses, OpsCompactData, OpsCompactDryRunData, OpsCompactDryRunErrors, OpsCompactDryRunResponses, OpsCompactErrors, OpsCompactResponses, OpsCompactStatusData, OpsCompactStatusErrors, OpsCompactStatusResponses, ProcessorsCreateData, ProcessorsCreateErrors, ProcessorsCreateResponses, ProcessorsDeleteData, ProcessorsDeleteErrors, ProcessorsDeleteResponses, ProcessorsGetData, ProcessorsGetErrors, ProcessorsGetResponses, ProcessorsListData, ProcessorsListErrors, ProcessorsListResponses, ProcessorsReplaceData, ProcessorsReplaceErrors, ProcessorsReplaceResponses, ProcessorsTestData, ProcessorsTestErrors, ProcessorsTestResponses, ProcessorsValidateData, ProcessorsValidateErrors, ProcessorsValidateResponses, ProfilesByTraceData, ProfilesByTraceErrors, ProfilesByTraceResponses, PromqlLabelsData, PromqlLabelsErrors, PromqlLabelsResponses, PromqlLabelValuesData, PromqlLabelValuesErrors, PromqlLabelValuesResponses, PromqlQueryData, PromqlQueryErrors, PromqlQueryRangeData, PromqlQueryRangeErrors, PromqlQueryRangeResponses, PromqlQueryResponses, PyroscopeLabelNamesData, PyroscopeLabelNamesErrors, PyroscopeLabelNamesResponses, PyroscopeLabelValuesData, PyroscopeLabelValuesErrors, PyroscopeLabelValuesResponses, PyroscopeProfileTypesData, PyroscopeProfileTypesErrors, PyroscopeProfileTypesResponses, PyroscopeRenderData, PyroscopeRenderDiffData, PyroscopeRenderDiffErrors, PyroscopeRenderDiffResponses, PyroscopeRenderErrors, PyroscopeRenderResponses, QueryIrData, QueryIrErrors, QueryIrResponses, QuerySingleTraceData, QuerySingleTraceErrors, QuerySingleTraceResponses, QuerySourcesData, QuerySourcesErrors, QuerySourcesResponses, RevokeApiKeyData, RevokeApiKeyErrors, RevokeApiKeyResponses, SchemaCreateRegistryData, SchemaCreateRegistryErrors, SchemaCreateRegistryResponses, SchemaDeleteRegistryData, SchemaDeleteRegistryErrors, SchemaDeleteRegistryResponses, SchemaGetRegistryData, SchemaGetRegistryErrors, SchemaGetRegistryResponses, SchemaListRegistriesData, SchemaListRegistriesErrors, SchemaListRegistriesResponses, SchemaReplaceRegistryData, SchemaReplaceRegistryErrors, SchemaReplaceRegistryResponses, SchemaResolveAttributeData, SchemaResolveAttributeErrors, SchemaResolveAttributeResponses, SchemaResolveEntityData, SchemaResolveEntityErrors, SchemaResolveEntityResponses, SchemaResolveMetricData, SchemaResolveMetricErrors, SchemaResolveMetricResponses, SchemaSearchAttributesData, SchemaSearchAttributesErrors, SchemaSearchAttributesResponses, SchemaSearchEntitiesData, SchemaSearchEntitiesErrors, SchemaSearchEntitiesResponses, SchemaSearchMetricsData, SchemaSearchMetricsErrors, SchemaSearchMetricsResponses, SchemaValidateRegistryData, SchemaValidateRegistryErrors, SchemaValidateRegistryResponses, SearchData, SearchErrors, SearchResponses, SearchTagsData, SearchTagsErrors, SearchTagsResponses, SearchTagsV2Data, SearchTagsV2Errors, SearchTagsV2Responses, SearchTagValuesData, SearchTagValuesErrors, SearchTagValuesResponses, SearchTagValuesV2Data, SearchTagValuesV2Errors, SearchTagValuesV2Responses, SessionOidcCallbackData, SessionOidcCallbackErrors, SessionOidcStartData, SessionOidcStartErrors, SourceContextAvailabilityData, SourceContextAvailabilityErrors, SourceContextAvailabilityResponses, SourceContextData, SourceContextErrors, SourceContextResponses, UpdateApiKeyData, UpdateApiKeyErrors, UpdateApiKeyResponses, UpdateTenantData, UpdateTenantErrors, UpdateTenantResponses, WhoamiData, WhoamiErrors, WhoamiResponses } from './types.gen';
+import type { ConnectionInfoData, ConnectionInfoErrors, ConnectionInfoResponses, CreateTenantTablesData, CreateTenantTablesErrors, CreateTenantTablesResponses, CurrentSessionData, CurrentSessionErrors, CurrentSessionResponses, GetTenantSelfData, GetTenantSelfErrors, GetTenantSelfResponses, GithubCallbackData, GithubCallbackErrors, ListAvailableSchemasData, ListAvailableSchemasResponses, ListTenantSchemasData, ListTenantSchemasErrors, ListTenantSchemasResponses, ListTenantsSelfData, ListTenantsSelfResponses, ListTenantTablesData, ListTenantTablesErrors, ListTenantTablesResponses, LoginConfigData, LoginConfigResponses, LogqlLabelsData, LogqlLabelsErrors, LogqlLabelsResponses, LogqlLabelValuesData, LogqlLabelValuesErrors, LogqlLabelValuesResponses, LogqlQueryData, LogqlQueryErrors, LogqlQueryRangeData, LogqlQueryRangeErrors, LogqlQueryRangeResponses, LogqlQueryResponses, ManageAdminCreateUserData, ManageAdminCreateUserErrors, ManageAdminCreateUserResponses, ManageAdminDeleteTenantData, ManageAdminDeleteTenantErrors, ManageAdminDeleteTenantResponses, ManageAdminGetTenantData, ManageAdminGetTenantErrors, ManageAdminGetTenantResponses, ManageAdminListTenantsData, ManageAdminListTenantsErrors, ManageAdminListTenantsResponses, ManageAdminUpdateTenantData, ManageAdminUpdateTenantErrors, ManageAdminUpdateTenantResponses, ManageAttachGithubInstallationData, ManageAttachGithubInstallationErrors, ManageAttachGithubInstallationResponses, ManageCreateApiKeyData, ManageCreateApiKeyErrors, ManageCreateApiKeyResponses, ManageCreateDatasetData, ManageCreateDatasetErrors, ManageCreateDatasetResponses, ManageCreateTenantData, ManageCreateTenantErrors, ManageCreateTenantResponses, ManageDeleteDatasetData, ManageDeleteDatasetErrors, ManageDeleteDatasetResponses, ManageGetSchemaData, ManageGetSchemaErrors, ManageGetSchemaResponses, ManageListApiKeysData, ManageListApiKeysErrors, ManageListApiKeysResponses, ManageListDatasetsData, ManageListDatasetsErrors, ManageListDatasetsResponses, ManageListGithubInstallationsData, ManageListGithubInstallationsErrors, ManageListGithubInstallationsResponses, ManageListMembershipsData, ManageListMembershipsErrors, ManageListMembershipsResponses, ManageRemoveGithubInstallationData, ManageRemoveGithubInstallationErrors, ManageRemoveGithubInstallationResponses, ManageRemoveMembershipData, ManageRemoveMembershipErrors, ManageRemoveMembershipResponses, ManageRevokeApiKeyData, ManageRevokeApiKeyErrors, ManageRevokeApiKeyResponses, ManageStartGithubLinkData, ManageStartGithubLinkErrors, ManageStartGithubLinkResponses, ManageUpdateApiKeyData, ManageUpdateApiKeyErrors, ManageUpdateApiKeyResponses, ManageUpsertMembershipData, ManageUpsertMembershipErrors, ManageUpsertMembershipResponses, OauthConsentContextData, OauthConsentContextErrors, OauthConsentContextResponses, OauthConsentDecisionData, OauthConsentDecisionErrors, OauthConsentDecisionResponses, OpsCompactData, OpsCompactDryRunData, OpsCompactDryRunErrors, OpsCompactDryRunResponses, OpsCompactErrors, OpsCompactResponses, OpsCompactStatusData, OpsCompactStatusErrors, OpsCompactStatusResponses, ProcessorsCreateData, ProcessorsCreateErrors, ProcessorsCreateResponses, ProcessorsDeleteData, ProcessorsDeleteErrors, ProcessorsDeleteResponses, ProcessorsGetData, ProcessorsGetErrors, ProcessorsGetResponses, ProcessorsListData, ProcessorsListErrors, ProcessorsListResponses, ProcessorsReplaceData, ProcessorsReplaceErrors, ProcessorsReplaceResponses, ProcessorsTestData, ProcessorsTestErrors, ProcessorsTestResponses, ProcessorsValidateData, ProcessorsValidateErrors, ProcessorsValidateResponses, ProfilesByTraceData, ProfilesByTraceErrors, ProfilesByTraceResponses, PromqlLabelsData, PromqlLabelsErrors, PromqlLabelsResponses, PromqlLabelValuesData, PromqlLabelValuesErrors, PromqlLabelValuesResponses, PromqlQueryData, PromqlQueryErrors, PromqlQueryRangeData, PromqlQueryRangeErrors, PromqlQueryRangeResponses, PromqlQueryResponses, PyroscopeLabelNamesData, PyroscopeLabelNamesErrors, PyroscopeLabelNamesResponses, PyroscopeLabelValuesData, PyroscopeLabelValuesErrors, PyroscopeLabelValuesResponses, PyroscopeProfileTypesData, PyroscopeProfileTypesErrors, PyroscopeProfileTypesResponses, PyroscopeRenderData, PyroscopeRenderDiffData, PyroscopeRenderDiffErrors, PyroscopeRenderDiffResponses, PyroscopeRenderErrors, PyroscopeRenderResponses, QueryIrData, QueryIrErrors, QueryIrResponses, QuerySingleTraceData, QuerySingleTraceErrors, QuerySingleTraceResponses, QuerySourcesData, QuerySourcesErrors, QuerySourcesResponses, SchemaCreateRegistryData, SchemaCreateRegistryErrors, SchemaCreateRegistryResponses, SchemaDeleteRegistryData, SchemaDeleteRegistryErrors, SchemaDeleteRegistryResponses, SchemaGetRegistryData, SchemaGetRegistryErrors, SchemaGetRegistryResponses, SchemaListRegistriesData, SchemaListRegistriesErrors, SchemaListRegistriesResponses, SchemaReplaceRegistryData, SchemaReplaceRegistryErrors, SchemaReplaceRegistryResponses, SchemaResolveAttributeData, SchemaResolveAttributeErrors, SchemaResolveAttributeResponses, SchemaResolveEntityData, SchemaResolveEntityErrors, SchemaResolveEntityResponses, SchemaResolveMetricData, SchemaResolveMetricErrors, SchemaResolveMetricResponses, SchemaSearchAttributesData, SchemaSearchAttributesErrors, SchemaSearchAttributesResponses, SchemaSearchEntitiesData, SchemaSearchEntitiesErrors, SchemaSearchEntitiesResponses, SchemaSearchMetricsData, SchemaSearchMetricsErrors, SchemaSearchMetricsResponses, SchemaValidateRegistryData, SchemaValidateRegistryErrors, SchemaValidateRegistryResponses, SearchData, SearchErrors, SearchResponses, SearchTagsData, SearchTagsErrors, SearchTagsResponses, SearchTagsV2Data, SearchTagsV2Errors, SearchTagsV2Responses, SearchTagValuesData, SearchTagValuesErrors, SearchTagValuesResponses, SearchTagValuesV2Data, SearchTagValuesV2Errors, SearchTagValuesV2Responses, SessionOidcCallbackData, SessionOidcCallbackErrors, SessionOidcStartData, SessionOidcStartErrors, SourceContextAvailabilityData, SourceContextAvailabilityErrors, SourceContextAvailabilityResponses, SourceContextData, SourceContextErrors, SourceContextResponses, WhoamiData, WhoamiErrors, WhoamiResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -22,150 +22,13 @@ export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends 
  * GET /api/profiles/trace/{trace_id} — profiles linked to a trace.
  */
 export const profilesByTrace = <ThrowOnError extends boolean = false>(options: Options<ProfilesByTraceData, ThrowOnError>): RequestResult<ProfilesByTraceResponses, ProfilesByTraceErrors, ThrowOnError> => (options.client ?? client).get<ProfilesByTraceResponses, ProfilesByTraceErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/profiles/trace/{trace_id}',
     ...options
-});
-
-/**
- * List all tenants
- */
-export const listTenants = <ThrowOnError extends boolean = false>(options?: Options<ListTenantsData, ThrowOnError>): RequestResult<ListTenantsResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListTenantsResponses, unknown, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
-    url: '/api/v1/admin/tenants',
-    ...options
-});
-
-/**
- * Create a new tenant
- */
-export const createTenant = <ThrowOnError extends boolean = false>(options: Options<CreateTenantData, ThrowOnError>): RequestResult<CreateTenantResponses, CreateTenantErrors, ThrowOnError> => (options.client ?? client).post<CreateTenantResponses, CreateTenantErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
-    url: '/api/v1/admin/tenants',
-    ...options,
-    headers: {
-        'Content-Type': 'application/json',
-        ...options.headers
-    }
-});
-
-/**
- * Delete a tenant
- */
-export const deleteTenant = <ThrowOnError extends boolean = false>(options: Options<DeleteTenantData, ThrowOnError>): RequestResult<DeleteTenantResponses, DeleteTenantErrors, ThrowOnError> => (options.client ?? client).delete<DeleteTenantResponses, DeleteTenantErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
-    url: '/api/v1/admin/tenants/{tenant_id}',
-    ...options
-});
-
-/**
- * Get a tenant by ID
- */
-export const getTenant = <ThrowOnError extends boolean = false>(options: Options<GetTenantData, ThrowOnError>): RequestResult<GetTenantResponses, GetTenantErrors, ThrowOnError> => (options.client ?? client).get<GetTenantResponses, GetTenantErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
-    url: '/api/v1/admin/tenants/{tenant_id}',
-    ...options
-});
-
-/**
- * Update a tenant
- */
-export const updateTenant = <ThrowOnError extends boolean = false>(options: Options<UpdateTenantData, ThrowOnError>): RequestResult<UpdateTenantResponses, UpdateTenantErrors, ThrowOnError> => (options.client ?? client).put<UpdateTenantResponses, UpdateTenantErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
-    url: '/api/v1/admin/tenants/{tenant_id}',
-    ...options,
-    headers: {
-        'Content-Type': 'application/json',
-        ...options.headers
-    }
-});
-
-/**
- * List API keys for a tenant
- */
-export const listApiKeys = <ThrowOnError extends boolean = false>(options: Options<ListApiKeysData, ThrowOnError>): RequestResult<ListApiKeysResponses, ListApiKeysErrors, ThrowOnError> => (options.client ?? client).get<ListApiKeysResponses, ListApiKeysErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
-    url: '/api/v1/admin/tenants/{tenant_id}/api-keys',
-    ...options
-});
-
-/**
- * Create a new API key for a tenant
- */
-export const createApiKey = <ThrowOnError extends boolean = false>(options: Options<CreateApiKeyData, ThrowOnError>): RequestResult<CreateApiKeyResponses, CreateApiKeyErrors, ThrowOnError> => (options.client ?? client).post<CreateApiKeyResponses, CreateApiKeyErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
-    url: '/api/v1/admin/tenants/{tenant_id}/api-keys',
-    ...options,
-    headers: {
-        'Content-Type': 'application/json',
-        ...options.headers
-    }
-});
-
-/**
- * Revoke an API key
- */
-export const revokeApiKey = <ThrowOnError extends boolean = false>(options: Options<RevokeApiKeyData, ThrowOnError>): RequestResult<RevokeApiKeyResponses, RevokeApiKeyErrors, ThrowOnError> => (options.client ?? client).delete<RevokeApiKeyResponses, RevokeApiKeyErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
-    url: '/api/v1/admin/tenants/{tenant_id}/api-keys/{key_id}',
-    ...options
-});
-
-/**
- * Update the scopes and/or dataset restriction of a live API key
- */
-export const updateApiKey = <ThrowOnError extends boolean = false>(options: Options<UpdateApiKeyData, ThrowOnError>): RequestResult<UpdateApiKeyResponses, UpdateApiKeyErrors, ThrowOnError> => (options.client ?? client).patch<UpdateApiKeyResponses, UpdateApiKeyErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
-    url: '/api/v1/admin/tenants/{tenant_id}/api-keys/{key_id}',
-    ...options,
-    headers: {
-        'Content-Type': 'application/json',
-        ...options.headers
-    }
-});
-
-/**
- * List datasets for a tenant
- */
-export const listDatasets = <ThrowOnError extends boolean = false>(options: Options<ListDatasetsData, ThrowOnError>): RequestResult<ListDatasetsResponses, ListDatasetsErrors, ThrowOnError> => (options.client ?? client).get<ListDatasetsResponses, ListDatasetsErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
-    url: '/api/v1/admin/tenants/{tenant_id}/datasets',
-    ...options
-});
-
-/**
- * Create a new dataset for a tenant
- */
-export const createDataset = <ThrowOnError extends boolean = false>(options: Options<CreateDatasetData, ThrowOnError>): RequestResult<CreateDatasetResponses, CreateDatasetErrors, ThrowOnError> => (options.client ?? client).post<CreateDatasetResponses, CreateDatasetErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
-    url: '/api/v1/admin/tenants/{tenant_id}/datasets',
-    ...options,
-    headers: {
-        'Content-Type': 'application/json',
-        ...options.headers
-    }
-});
-
-/**
- * Delete a dataset
- */
-export const deleteDataset = <ThrowOnError extends boolean = false>(options: Options<DeleteDatasetData, ThrowOnError>): RequestResult<DeleteDatasetResponses, DeleteDatasetErrors, ThrowOnError> => (options.client ?? client).delete<DeleteDatasetResponses, DeleteDatasetErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
-    url: '/api/v1/admin/tenants/{tenant_id}/datasets/{dataset_id}',
-    ...options
-});
-
-/**
- * Create a human user and grant an initial tenant membership.
- */
-export const createUser = <ThrowOnError extends boolean = false>(options: Options<CreateUserData, ThrowOnError>): RequestResult<CreateUserResponses, CreateUserErrors, ThrowOnError> => (options.client ?? client).post<CreateUserResponses, CreateUserErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
-    url: '/api/v1/admin/users',
-    ...options,
-    headers: {
-        'Content-Type': 'application/json',
-        ...options.headers
-    }
 });
 
 /**
@@ -180,9 +43,106 @@ export const createUser = <ThrowOnError extends boolean = false>(options: Option
  * ingest-only key — may call it.
  */
 export const connectionInfo = <ThrowOnError extends boolean = false>(options?: Options<ConnectionInfoData, ThrowOnError>): RequestResult<ConnectionInfoResponses, ConnectionInfoErrors, ThrowOnError> => (options?.client ?? client).get<ConnectionInfoResponses, ConnectionInfoErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/connection',
     ...options
+});
+
+/**
+ * List every tenant on the instance
+ */
+export const manageAdminListTenants = <ThrowOnError extends boolean = false>(options?: Options<ManageAdminListTenantsData, ThrowOnError>): RequestResult<ManageAdminListTenantsResponses, ManageAdminListTenantsErrors, ThrowOnError> => (options?.client ?? client).get<ManageAdminListTenantsResponses, ManageAdminListTenantsErrors, ThrowOnError>({
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }, {
+            key: 'adminApiKey',
+            scheme: 'bearer',
+            type: 'http'
+        }],
+    url: '/api/v1/manage/admin/tenants',
+    ...options
+});
+
+/**
+ * Delete any database-sourced tenant
+ */
+export const manageAdminDeleteTenant = <ThrowOnError extends boolean = false>(options: Options<ManageAdminDeleteTenantData, ThrowOnError>): RequestResult<ManageAdminDeleteTenantResponses, ManageAdminDeleteTenantErrors, ThrowOnError> => (options.client ?? client).delete<ManageAdminDeleteTenantResponses, ManageAdminDeleteTenantErrors, ThrowOnError>({
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }, {
+            key: 'adminApiKey',
+            scheme: 'bearer',
+            type: 'http'
+        }],
+    url: '/api/v1/manage/admin/tenants/{tenant_id}',
+    ...options
+});
+
+/**
+ * Get any tenant by ID
+ */
+export const manageAdminGetTenant = <ThrowOnError extends boolean = false>(options: Options<ManageAdminGetTenantData, ThrowOnError>): RequestResult<ManageAdminGetTenantResponses, ManageAdminGetTenantErrors, ThrowOnError> => (options.client ?? client).get<ManageAdminGetTenantResponses, ManageAdminGetTenantErrors, ThrowOnError>({
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }, {
+            key: 'adminApiKey',
+            scheme: 'bearer',
+            type: 'http'
+        }],
+    url: '/api/v1/manage/admin/tenants/{tenant_id}',
+    ...options
+});
+
+/**
+ * Update any tenant's name or default dataset
+ */
+export const manageAdminUpdateTenant = <ThrowOnError extends boolean = false>(options: Options<ManageAdminUpdateTenantData, ThrowOnError>): RequestResult<ManageAdminUpdateTenantResponses, ManageAdminUpdateTenantErrors, ThrowOnError> => (options.client ?? client).put<ManageAdminUpdateTenantResponses, ManageAdminUpdateTenantErrors, ThrowOnError>({
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }, {
+            key: 'adminApiKey',
+            scheme: 'bearer',
+            type: 'http'
+        }],
+    url: '/api/v1/manage/admin/tenants/{tenant_id}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Create a user outright and grant an initial tenant membership
+ */
+export const manageAdminCreateUser = <ThrowOnError extends boolean = false>(options: Options<ManageAdminCreateUserData, ThrowOnError>): RequestResult<ManageAdminCreateUserResponses, ManageAdminCreateUserErrors, ThrowOnError> => (options.client ?? client).post<ManageAdminCreateUserResponses, ManageAdminCreateUserErrors, ThrowOnError>({
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }, {
+            key: 'adminApiKey',
+            scheme: 'bearer',
+            type: 'http'
+        }],
+    url: '/api/v1/manage/admin/users',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
 });
 
 /**
@@ -195,13 +155,25 @@ export const connectionInfo = <ThrowOnError extends boolean = false>(options?: O
  * administrator, or an API key carrying `tenant:manage`.
  */
 export const manageGetSchema = <ThrowOnError extends boolean = false>(options?: Options<ManageGetSchemaData, ThrowOnError>): RequestResult<ManageGetSchemaResponses, ManageGetSchemaErrors, ThrowOnError> => (options?.client ?? client).get<ManageGetSchemaResponses, ManageGetSchemaErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/manage/schema',
     ...options
 });
 
 export const manageCreateTenant = <ThrowOnError extends boolean = false>(options: Options<ManageCreateTenantData, ThrowOnError>): RequestResult<ManageCreateTenantResponses, ManageCreateTenantErrors, ThrowOnError> => (options.client ?? client).post<ManageCreateTenantResponses, ManageCreateTenantErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }, {
+            key: 'adminApiKey',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/manage/tenants',
     ...options,
     headers: {
@@ -211,13 +183,29 @@ export const manageCreateTenant = <ThrowOnError extends boolean = false>(options
 });
 
 export const manageListApiKeys = <ThrowOnError extends boolean = false>(options: Options<ManageListApiKeysData, ThrowOnError>): RequestResult<ManageListApiKeysResponses, ManageListApiKeysErrors, ThrowOnError> => (options.client ?? client).get<ManageListApiKeysResponses, ManageListApiKeysErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }, {
+            key: 'adminApiKey',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/manage/tenants/{tenant_id}/api-keys',
     ...options
 });
 
 export const manageCreateApiKey = <ThrowOnError extends boolean = false>(options: Options<ManageCreateApiKeyData, ThrowOnError>): RequestResult<ManageCreateApiKeyResponses, ManageCreateApiKeyErrors, ThrowOnError> => (options.client ?? client).post<ManageCreateApiKeyResponses, ManageCreateApiKeyErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }, {
+            key: 'adminApiKey',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/manage/tenants/{tenant_id}/api-keys',
     ...options,
     headers: {
@@ -227,13 +215,29 @@ export const manageCreateApiKey = <ThrowOnError extends boolean = false>(options
 });
 
 export const manageRevokeApiKey = <ThrowOnError extends boolean = false>(options: Options<ManageRevokeApiKeyData, ThrowOnError>): RequestResult<ManageRevokeApiKeyResponses, ManageRevokeApiKeyErrors, ThrowOnError> => (options.client ?? client).delete<ManageRevokeApiKeyResponses, ManageRevokeApiKeyErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }, {
+            key: 'adminApiKey',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}',
     ...options
 });
 
 export const manageUpdateApiKey = <ThrowOnError extends boolean = false>(options: Options<ManageUpdateApiKeyData, ThrowOnError>): RequestResult<ManageUpdateApiKeyResponses, ManageUpdateApiKeyErrors, ThrowOnError> => (options.client ?? client).patch<ManageUpdateApiKeyResponses, ManageUpdateApiKeyErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }, {
+            key: 'adminApiKey',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}',
     ...options,
     headers: {
@@ -243,13 +247,29 @@ export const manageUpdateApiKey = <ThrowOnError extends boolean = false>(options
 });
 
 export const manageListDatasets = <ThrowOnError extends boolean = false>(options: Options<ManageListDatasetsData, ThrowOnError>): RequestResult<ManageListDatasetsResponses, ManageListDatasetsErrors, ThrowOnError> => (options.client ?? client).get<ManageListDatasetsResponses, ManageListDatasetsErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }, {
+            key: 'adminApiKey',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/manage/tenants/{tenant_id}/datasets',
     ...options
 });
 
 export const manageCreateDataset = <ThrowOnError extends boolean = false>(options: Options<ManageCreateDatasetData, ThrowOnError>): RequestResult<ManageCreateDatasetResponses, ManageCreateDatasetErrors, ThrowOnError> => (options.client ?? client).post<ManageCreateDatasetResponses, ManageCreateDatasetErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }, {
+            key: 'adminApiKey',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/manage/tenants/{tenant_id}/datasets',
     ...options,
     headers: {
@@ -259,7 +279,15 @@ export const manageCreateDataset = <ThrowOnError extends boolean = false>(option
 });
 
 export const manageDeleteDataset = <ThrowOnError extends boolean = false>(options: Options<ManageDeleteDatasetData, ThrowOnError>): RequestResult<ManageDeleteDatasetResponses, ManageDeleteDatasetErrors, ThrowOnError> => (options.client ?? client).delete<ManageDeleteDatasetResponses, ManageDeleteDatasetErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }, {
+            key: 'adminApiKey',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/manage/tenants/{tenant_id}/datasets/{dataset_name}',
     ...options
 });
@@ -273,7 +301,11 @@ export const manageDeleteDataset = <ThrowOnError extends boolean = false>(option
  * `stale: true`, rather than failing the whole request.
  */
 export const manageListGithubInstallations = <ThrowOnError extends boolean = false>(options: Options<ManageListGithubInstallationsData, ThrowOnError>): RequestResult<ManageListGithubInstallationsResponses, ManageListGithubInstallationsErrors, ThrowOnError> => (options.client ?? client).get<ManageListGithubInstallationsResponses, ManageListGithubInstallationsErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/manage/tenants/{tenant_id}/github-installations',
     ...options
 });
@@ -299,7 +331,11 @@ export const manageListGithubInstallations = <ThrowOnError extends boolean = fal
  * callback performs is re-run here.
  */
 export const manageAttachGithubInstallation = <ThrowOnError extends boolean = false>(options: Options<ManageAttachGithubInstallationData, ThrowOnError>): RequestResult<ManageAttachGithubInstallationResponses, ManageAttachGithubInstallationErrors, ThrowOnError> => (options.client ?? client).post<ManageAttachGithubInstallationResponses, ManageAttachGithubInstallationErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/manage/tenants/{tenant_id}/github-installations/attach',
     ...options,
     headers: {
@@ -316,7 +352,11 @@ export const manageAttachGithubInstallation = <ThrowOnError extends boolean = fa
  * configured.
  */
 export const manageStartGithubLink = <ThrowOnError extends boolean = false>(options: Options<ManageStartGithubLinkData, ThrowOnError>): RequestResult<ManageStartGithubLinkResponses, ManageStartGithubLinkErrors, ThrowOnError> => (options.client ?? client).post<ManageStartGithubLinkResponses, ManageStartGithubLinkErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/manage/tenants/{tenant_id}/github-installations/link',
     ...options
 });
@@ -329,19 +369,31 @@ export const manageStartGithubLink = <ThrowOnError extends boolean = false>(opti
  * takes effect immediately").
  */
 export const manageRemoveGithubInstallation = <ThrowOnError extends boolean = false>(options: Options<ManageRemoveGithubInstallationData, ThrowOnError>): RequestResult<ManageRemoveGithubInstallationResponses, ManageRemoveGithubInstallationErrors, ThrowOnError> => (options.client ?? client).delete<ManageRemoveGithubInstallationResponses, ManageRemoveGithubInstallationErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/manage/tenants/{tenant_id}/github-installations/{installation_id}',
     ...options
 });
 
 export const manageListMemberships = <ThrowOnError extends boolean = false>(options: Options<ManageListMembershipsData, ThrowOnError>): RequestResult<ManageListMembershipsResponses, ManageListMembershipsErrors, ThrowOnError> => (options.client ?? client).get<ManageListMembershipsResponses, ManageListMembershipsErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/manage/tenants/{tenant_id}/memberships',
     ...options
 });
 
 export const manageUpsertMembership = <ThrowOnError extends boolean = false>(options: Options<ManageUpsertMembershipData, ThrowOnError>): RequestResult<ManageUpsertMembershipResponses, ManageUpsertMembershipErrors, ThrowOnError> => (options.client ?? client).put<ManageUpsertMembershipResponses, ManageUpsertMembershipErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/manage/tenants/{tenant_id}/memberships',
     ...options,
     headers: {
@@ -351,7 +403,11 @@ export const manageUpsertMembership = <ThrowOnError extends boolean = false>(opt
 });
 
 export const manageRemoveMembership = <ThrowOnError extends boolean = false>(options: Options<ManageRemoveMembershipData, ThrowOnError>): RequestResult<ManageRemoveMembershipResponses, ManageRemoveMembershipErrors, ThrowOnError> => (options.client ?? client).delete<ManageRemoveMembershipResponses, ManageRemoveMembershipErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/manage/tenants/{tenant_id}/memberships/{user_id}',
     ...options
 });
@@ -360,7 +416,11 @@ export const manageRemoveMembership = <ThrowOnError extends boolean = false>(opt
  * POST /api/v1/ops/compact — trigger a compaction pass now.
  */
 export const opsCompact = <ThrowOnError extends boolean = false>(options?: Options<OpsCompactData, ThrowOnError>): RequestResult<OpsCompactResponses, OpsCompactErrors, ThrowOnError> => (options?.client ?? client).post<OpsCompactResponses, OpsCompactErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/ops/compact',
     ...options
 });
@@ -370,7 +430,11 @@ export const opsCompact = <ThrowOnError extends boolean = false>(options?: Optio
  * executing (the read-only preview of what `compact` would do).
  */
 export const opsCompactDryRun = <ThrowOnError extends boolean = false>(options?: Options<OpsCompactDryRunData, ThrowOnError>): RequestResult<OpsCompactDryRunResponses, OpsCompactDryRunErrors, ThrowOnError> => (options?.client ?? client).post<OpsCompactDryRunResponses, OpsCompactDryRunErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/ops/compact/dry-run',
     ...options
 });
@@ -379,19 +443,31 @@ export const opsCompactDryRun = <ThrowOnError extends boolean = false>(options?:
  * GET /api/v1/ops/compact/status — active leases and compaction metrics.
  */
 export const opsCompactStatus = <ThrowOnError extends boolean = false>(options?: Options<OpsCompactStatusData, ThrowOnError>): RequestResult<OpsCompactStatusResponses, OpsCompactStatusErrors, ThrowOnError> => (options?.client ?? client).get<OpsCompactStatusResponses, OpsCompactStatusErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/ops/compact/status',
     ...options
 });
 
 export const processorsList = <ThrowOnError extends boolean = false>(options?: Options<ProcessorsListData, ThrowOnError>): RequestResult<ProcessorsListResponses, ProcessorsListErrors, ThrowOnError> => (options?.client ?? client).get<ProcessorsListResponses, ProcessorsListErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/processors',
     ...options
 });
 
 export const processorsCreate = <ThrowOnError extends boolean = false>(options: Options<ProcessorsCreateData, ThrowOnError>): RequestResult<ProcessorsCreateResponses, ProcessorsCreateErrors, ThrowOnError> => (options.client ?? client).post<ProcessorsCreateResponses, ProcessorsCreateErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/processors',
     ...options,
     headers: {
@@ -401,19 +477,31 @@ export const processorsCreate = <ThrowOnError extends boolean = false>(options: 
 });
 
 export const processorsDelete = <ThrowOnError extends boolean = false>(options: Options<ProcessorsDeleteData, ThrowOnError>): RequestResult<ProcessorsDeleteResponses, ProcessorsDeleteErrors, ThrowOnError> => (options.client ?? client).delete<ProcessorsDeleteResponses, ProcessorsDeleteErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/processors/{name}',
     ...options
 });
 
 export const processorsGet = <ThrowOnError extends boolean = false>(options: Options<ProcessorsGetData, ThrowOnError>): RequestResult<ProcessorsGetResponses, ProcessorsGetErrors, ThrowOnError> => (options.client ?? client).get<ProcessorsGetResponses, ProcessorsGetErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/processors/{name}',
     ...options
 });
 
 export const processorsReplace = <ThrowOnError extends boolean = false>(options: Options<ProcessorsReplaceData, ThrowOnError>): RequestResult<ProcessorsReplaceResponses, ProcessorsReplaceErrors, ThrowOnError> => (options.client ?? client).put<ProcessorsReplaceResponses, ProcessorsReplaceErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/processors/{name}',
     ...options,
     headers: {
@@ -423,7 +511,11 @@ export const processorsReplace = <ThrowOnError extends boolean = false>(options:
 });
 
 export const processorsTest = <ThrowOnError extends boolean = false>(options: Options<ProcessorsTestData, ThrowOnError>): RequestResult<ProcessorsTestResponses, ProcessorsTestErrors, ThrowOnError> => (options.client ?? client).post<ProcessorsTestResponses, ProcessorsTestErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/processors:test',
     ...options,
     headers: {
@@ -433,7 +525,11 @@ export const processorsTest = <ThrowOnError extends boolean = false>(options: Op
 });
 
 export const processorsValidate = <ThrowOnError extends boolean = false>(options: Options<ProcessorsValidateData, ThrowOnError>): RequestResult<ProcessorsValidateResponses, ProcessorsValidateErrors, ThrowOnError> => (options.client ?? client).post<ProcessorsValidateResponses, ProcessorsValidateErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/processors:validate',
     ...options,
     headers: {
@@ -448,7 +544,11 @@ export const processorsValidate = <ThrowOnError extends boolean = false>(options
  * by the presence of `queries`.
  */
 export const queryIr = <ThrowOnError extends boolean = false>(options: Options<QueryIrData, ThrowOnError>): RequestResult<QueryIrResponses, QueryIrErrors, ThrowOnError> => (options.client ?? client).post<QueryIrResponses, QueryIrErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/query',
     ...options,
     headers: {
@@ -467,7 +567,11 @@ export const queryIr = <ThrowOnError extends boolean = false>(options: Options<Q
  * The answer comes from tenant metadata; it reads no signal data. The response is the same `metadata` envelope the `describe` documents return.
  */
 export const querySources = <ThrowOnError extends boolean = false>(options?: Options<QuerySourcesData, ThrowOnError>): RequestResult<QuerySourcesResponses, QuerySourcesErrors, ThrowOnError> => (options?.client ?? client).get<QuerySourcesResponses, QuerySourcesErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/query/sources',
     ...options
 });
@@ -523,7 +627,11 @@ export const schemaValidateRegistry = <ThrowOnError extends boolean = false>(opt
  * List all available table schema types
  */
 export const listAvailableSchemas = <ThrowOnError extends boolean = false>(options?: Options<ListAvailableSchemasData, ThrowOnError>): RequestResult<ListAvailableSchemasResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListAvailableSchemasResponses, unknown, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/schemas/available',
     ...options
 });
@@ -534,7 +642,11 @@ export const listAvailableSchemas = <ThrowOnError extends boolean = false>(optio
  * List all configured tenants
  */
 export const listTenantsSelf = <ThrowOnError extends boolean = false>(options?: Options<ListTenantsSelfData, ThrowOnError>): RequestResult<ListTenantsSelfResponses, unknown, ThrowOnError> => (options?.client ?? client).get<ListTenantsSelfResponses, unknown, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/tenants',
     ...options
 });
@@ -545,7 +657,11 @@ export const listTenantsSelf = <ThrowOnError extends boolean = false>(options?: 
  * Get information about a specific tenant
  */
 export const getTenantSelf = <ThrowOnError extends boolean = false>(options: Options<GetTenantSelfData, ThrowOnError>): RequestResult<GetTenantSelfResponses, GetTenantSelfErrors, ThrowOnError> => (options.client ?? client).get<GetTenantSelfResponses, GetTenantSelfErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/tenants/{tenant_id}',
     ...options
 });
@@ -556,7 +672,11 @@ export const getTenantSelf = <ThrowOnError extends boolean = false>(options: Opt
  * List available table schemas for a tenant
  */
 export const listTenantSchemas = <ThrowOnError extends boolean = false>(options: Options<ListTenantSchemasData, ThrowOnError>): RequestResult<ListTenantSchemasResponses, ListTenantSchemasErrors, ThrowOnError> => (options.client ?? client).get<ListTenantSchemasResponses, ListTenantSchemasErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/tenants/{tenant_id}/schemas',
     ...options
 });
@@ -569,7 +689,11 @@ export const listTenantSchemas = <ThrowOnError extends boolean = false>(options:
  * source lookups without the management-scoped installation list.
  */
 export const sourceContextAvailability = <ThrowOnError extends boolean = false>(options: Options<SourceContextAvailabilityData, ThrowOnError>): RequestResult<SourceContextAvailabilityResponses, SourceContextAvailabilityErrors, ThrowOnError> => (options.client ?? client).get<SourceContextAvailabilityResponses, SourceContextAvailabilityErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/tenants/{tenant_id}/source-context',
     ...options
 });
@@ -590,7 +714,11 @@ export const sourceContextAvailability = <ThrowOnError extends boolean = false>(
  * panel rather than fail.
  */
 export const sourceContext = <ThrowOnError extends boolean = false>(options: Options<SourceContextData, ThrowOnError>): RequestResult<SourceContextResponses, SourceContextErrors, ThrowOnError> => (options.client ?? client).post<SourceContextResponses, SourceContextErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/tenants/{tenant_id}/source-context',
     ...options,
     headers: {
@@ -605,7 +733,11 @@ export const sourceContext = <ThrowOnError extends boolean = false>(options: Opt
  * List all tables for a specific tenant
  */
 export const listTenantTables = <ThrowOnError extends boolean = false>(options: Options<ListTenantTablesData, ThrowOnError>): RequestResult<ListTenantTablesResponses, ListTenantTablesErrors, ThrowOnError> => (options.client ?? client).get<ListTenantTablesResponses, ListTenantTablesErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/tenants/{tenant_id}/tables',
     ...options
 });
@@ -616,7 +748,11 @@ export const listTenantTables = <ThrowOnError extends boolean = false>(options: 
  * Create default tables for a tenant
  */
 export const createTenantTables = <ThrowOnError extends boolean = false>(options: Options<CreateTenantTablesData, ThrowOnError>): RequestResult<CreateTenantTablesResponses, CreateTenantTablesErrors, ThrowOnError> => (options.client ?? client).post<CreateTenantTablesResponses, CreateTenantTablesErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/tenants/{tenant_id}/tables/create',
     ...options
 });
@@ -630,7 +766,11 @@ export const createTenantTables = <ThrowOnError extends boolean = false>(options
  * tenant in the request's [`common::auth::TenantContext`].
  */
 export const whoami = <ThrowOnError extends boolean = false>(options?: Options<WhoamiData, ThrowOnError>): RequestResult<WhoamiResponses, WhoamiErrors, ThrowOnError> => (options?.client ?? client).get<WhoamiResponses, WhoamiErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/api/v1/whoami',
     ...options
 });
@@ -639,7 +779,11 @@ export const whoami = <ThrowOnError extends boolean = false>(options?: Options<W
  * GET /loki/api/v1/label/{name}/values — list values of one label.
  */
 export const logqlLabelValues = <ThrowOnError extends boolean = false>(options: Options<LogqlLabelValuesData, ThrowOnError>): RequestResult<LogqlLabelValuesResponses, LogqlLabelValuesErrors, ThrowOnError> => (options.client ?? client).get<LogqlLabelValuesResponses, LogqlLabelValuesErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/loki/api/v1/label/{name}/values',
     ...options
 });
@@ -648,7 +792,11 @@ export const logqlLabelValues = <ThrowOnError extends boolean = false>(options: 
  * GET /loki/api/v1/labels — list label names.
  */
 export const logqlLabels = <ThrowOnError extends boolean = false>(options?: Options<LogqlLabelsData, ThrowOnError>): RequestResult<LogqlLabelsResponses, LogqlLabelsErrors, ThrowOnError> => (options?.client ?? client).get<LogqlLabelsResponses, LogqlLabelsErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/loki/api/v1/labels',
     ...options
 });
@@ -662,7 +810,11 @@ export const logqlLabels = <ThrowOnError extends boolean = false>(options?: Opti
  * panels.
  */
 export const logqlQuery = <ThrowOnError extends boolean = false>(options: Options<LogqlQueryData, ThrowOnError>): RequestResult<LogqlQueryResponses, LogqlQueryErrors, ThrowOnError> => (options.client ?? client).get<LogqlQueryResponses, LogqlQueryErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/loki/api/v1/query',
     ...options
 });
@@ -671,7 +823,11 @@ export const logqlQuery = <ThrowOnError extends boolean = false>(options: Option
  * GET /loki/api/v1/query_range — range query.
  */
 export const logqlQueryRange = <ThrowOnError extends boolean = false>(options: Options<LogqlQueryRangeData, ThrowOnError>): RequestResult<LogqlQueryRangeResponses, LogqlQueryRangeErrors, ThrowOnError> => (options.client ?? client).get<LogqlQueryRangeResponses, LogqlQueryRangeErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/loki/api/v1/query_range',
     ...options
 });
@@ -705,7 +861,11 @@ export const oauthConsentContext = <ThrowOnError extends boolean = false>(option
  * GET /prometheus/api/v1/label/{name}/values — distinct values of a label.
  */
 export const promqlLabelValues = <ThrowOnError extends boolean = false>(options: Options<PromqlLabelValuesData, ThrowOnError>): RequestResult<PromqlLabelValuesResponses, PromqlLabelValuesErrors, ThrowOnError> => (options.client ?? client).get<PromqlLabelValuesResponses, PromqlLabelValuesErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/prometheus/api/v1/label/{name}/values',
     ...options
 });
@@ -714,7 +874,11 @@ export const promqlLabelValues = <ThrowOnError extends boolean = false>(options:
  * GET /prometheus/api/v1/labels — metric label names.
  */
 export const promqlLabels = <ThrowOnError extends boolean = false>(options?: Options<PromqlLabelsData, ThrowOnError>): RequestResult<PromqlLabelsResponses, PromqlLabelsErrors, ThrowOnError> => (options?.client ?? client).get<PromqlLabelsResponses, PromqlLabelsErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/prometheus/api/v1/labels',
     ...options
 });
@@ -726,7 +890,11 @@ export const promqlLabels = <ThrowOnError extends boolean = false>(options?: Opt
  * per series as a vector.
  */
 export const promqlQuery = <ThrowOnError extends boolean = false>(options: Options<PromqlQueryData, ThrowOnError>): RequestResult<PromqlQueryResponses, PromqlQueryErrors, ThrowOnError> => (options.client ?? client).get<PromqlQueryResponses, PromqlQueryErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/prometheus/api/v1/query',
     ...options
 });
@@ -735,7 +903,11 @@ export const promqlQuery = <ThrowOnError extends boolean = false>(options: Optio
  * GET|POST /prometheus/api/v1/query_range.
  */
 export const promqlQueryRange = <ThrowOnError extends boolean = false>(options: Options<PromqlQueryRangeData, ThrowOnError>): RequestResult<PromqlQueryRangeResponses, PromqlQueryRangeErrors, ThrowOnError> => (options.client ?? client).get<PromqlQueryRangeResponses, PromqlQueryRangeErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/prometheus/api/v1/query_range',
     ...options
 });
@@ -744,7 +916,11 @@ export const promqlQueryRange = <ThrowOnError extends boolean = false>(options: 
  * GET /pyroscope/label-names
  */
 export const pyroscopeLabelNames = <ThrowOnError extends boolean = false>(options?: Options<PyroscopeLabelNamesData, ThrowOnError>): RequestResult<PyroscopeLabelNamesResponses, PyroscopeLabelNamesErrors, ThrowOnError> => (options?.client ?? client).get<PyroscopeLabelNamesResponses, PyroscopeLabelNamesErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/pyroscope/label-names',
     ...options
 });
@@ -753,7 +929,11 @@ export const pyroscopeLabelNames = <ThrowOnError extends boolean = false>(option
  * GET /pyroscope/label-values?label=<name>
  */
 export const pyroscopeLabelValues = <ThrowOnError extends boolean = false>(options?: Options<PyroscopeLabelValuesData, ThrowOnError>): RequestResult<PyroscopeLabelValuesResponses, PyroscopeLabelValuesErrors, ThrowOnError> => (options?.client ?? client).get<PyroscopeLabelValuesResponses, PyroscopeLabelValuesErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/pyroscope/label-values',
     ...options
 });
@@ -762,7 +942,11 @@ export const pyroscopeLabelValues = <ThrowOnError extends boolean = false>(optio
  * GET /pyroscope/profile-types
  */
 export const pyroscopeProfileTypes = <ThrowOnError extends boolean = false>(options?: Options<PyroscopeProfileTypesData, ThrowOnError>): RequestResult<PyroscopeProfileTypesResponses, PyroscopeProfileTypesErrors, ThrowOnError> => (options?.client ?? client).get<PyroscopeProfileTypesResponses, PyroscopeProfileTypesErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/pyroscope/profile-types',
     ...options
 });
@@ -771,7 +955,11 @@ export const pyroscopeProfileTypes = <ThrowOnError extends boolean = false>(opti
  * GET /pyroscope/render — aggregate profiles into a flamegraph.
  */
 export const pyroscopeRender = <ThrowOnError extends boolean = false>(options?: Options<PyroscopeRenderData, ThrowOnError>): RequestResult<PyroscopeRenderResponses, PyroscopeRenderErrors, ThrowOnError> => (options?.client ?? client).get<PyroscopeRenderResponses, PyroscopeRenderErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/pyroscope/render',
     ...options
 });
@@ -780,7 +968,11 @@ export const pyroscopeRender = <ThrowOnError extends boolean = false>(options?: 
  * GET /pyroscope/render-diff — differential flamegraph between two ranges.
  */
 export const pyroscopeRenderDiff = <ThrowOnError extends boolean = false>(options?: Options<PyroscopeRenderDiffData, ThrowOnError>): RequestResult<PyroscopeRenderDiffResponses, PyroscopeRenderDiffErrors, ThrowOnError> => (options?.client ?? client).get<PyroscopeRenderDiffResponses, PyroscopeRenderDiffErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/pyroscope/render-diff',
     ...options
 });
@@ -789,7 +981,11 @@ export const pyroscopeRenderDiff = <ThrowOnError extends boolean = false>(option
  * GET https://grafana.com/docs/tempo/latest/api_docs/#search
  */
 export const search = <ThrowOnError extends boolean = false>(options?: Options<SearchData, ThrowOnError>): RequestResult<SearchResponses, SearchErrors, ThrowOnError> => (options?.client ?? client).get<SearchResponses, SearchErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/tempo/api/search',
     ...options
 });
@@ -803,7 +999,11 @@ export const search = <ThrowOnError extends boolean = false>(options?: Options<S
  * unobserved tag answers `200` with an empty list, never `501`.
  */
 export const searchTagValues = <ThrowOnError extends boolean = false>(options: Options<SearchTagValuesData, ThrowOnError>): RequestResult<SearchTagValuesResponses, SearchTagValuesErrors, ThrowOnError> => (options.client ?? client).get<SearchTagValuesResponses, SearchTagValuesErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/tempo/api/search/tag/{tag_name}/values',
     ...options
 });
@@ -814,7 +1014,11 @@ export const searchTagValues = <ThrowOnError extends boolean = false>(options: O
  * See https://grafana.com/docs/tempo/latest/api_docs/#search-tags
  */
 export const searchTags = <ThrowOnError extends boolean = false>(options?: Options<SearchTagsData, ThrowOnError>): RequestResult<SearchTagsResponses, SearchTagsErrors, ThrowOnError> => (options?.client ?? client).get<SearchTagsResponses, SearchTagsErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/tempo/api/search/tags',
     ...options
 });
@@ -825,7 +1029,11 @@ export const searchTags = <ThrowOnError extends boolean = false>(options?: Optio
  * See https://grafana.com/docs/tempo/latest/api_docs/#query
  */
 export const querySingleTrace = <ThrowOnError extends boolean = false>(options: Options<QuerySingleTraceData, ThrowOnError>): RequestResult<QuerySingleTraceResponses, QuerySingleTraceErrors, ThrowOnError> => (options.client ?? client).get<QuerySingleTraceResponses, QuerySingleTraceErrors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/tempo/api/traces/{trace_id}',
     ...options
 });
@@ -834,7 +1042,11 @@ export const querySingleTrace = <ThrowOnError extends boolean = false>(options: 
  * GET /api/v2/search/tag/{tag_name}/values
  */
 export const searchTagValuesV2 = <ThrowOnError extends boolean = false>(options: Options<SearchTagValuesV2Data, ThrowOnError>): RequestResult<SearchTagValuesV2Responses, SearchTagValuesV2Errors, ThrowOnError> => (options.client ?? client).get<SearchTagValuesV2Responses, SearchTagValuesV2Errors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/tempo/api/v2/search/tag/{tag_name}/values',
     ...options
 });
@@ -843,7 +1055,11 @@ export const searchTagValuesV2 = <ThrowOnError extends boolean = false>(options:
  * GET /api/v2/search/tags?scope=<resource|span|intrinsic>
  */
 export const searchTagsV2 = <ThrowOnError extends boolean = false>(options?: Options<SearchTagsV2Data, ThrowOnError>): RequestResult<SearchTagsV2Responses, SearchTagsV2Errors, ThrowOnError> => (options?.client ?? client).get<SearchTagsV2Responses, SearchTagsV2Errors, ThrowOnError>({
-    security: [{ scheme: 'bearer', type: 'http' }],
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
     url: '/tempo/api/v2/search/tags',
     ...options
 });
