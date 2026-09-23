@@ -79,11 +79,15 @@ export function parseCompositeKey(
   });
 }
 
-/** Trace throughput over the queried range, in the unit that stays >= 1. */
-export function formatRate(count: number, rangeSeconds: number): string {
-  const perSec = count / rangeSeconds;
+/** A per-second rate, in the unit that stays >= 1. */
+export function formatRatePerSec(perSec: number): string {
   const fmt = (v: number) => String(Number(v.toFixed(1)));
   if (perSec >= 1) return `${fmt(perSec)}/s`;
   if (perSec * 60 >= 1) return `${fmt(perSec * 60)}/min`;
   return `${fmt(perSec * 3600)}/h`;
+}
+
+/** Trace throughput over the queried range, in the unit that stays >= 1. */
+export function formatRate(count: number, rangeSeconds: number): string {
+  return formatRatePerSec(count / rangeSeconds);
 }
