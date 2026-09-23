@@ -1,6 +1,6 @@
 ---
 name: http-api
-description: SignalDB HTTP API design rules - versioned /api/v{N} root, resource-oriented paths, per-endpoint privilege checks (never prefix-based access control), hypermedia links for discoverability, error/timestamp/pagination conventions, and OpenAPI as the contract. Use when adding, changing, or reviewing any router HTTP endpoint or its clients.
+description: SignalDB HTTP API design rules - versioned /api/v{N} root, resource-oriented paths, per-endpoint privilege checks (never prefix-based access control), hypermedia links for discoverability, error/timestamp/pagination conventions, and OpenAPI as the contract with explicit operation ids. Use when adding, changing, or reviewing any router HTTP endpoint or its clients.
 user-invocable: false
 sources:
   - src/router/src/lib.rs
@@ -116,6 +116,25 @@ links, without building URLs from documentation.
 - Every first-party route is annotated with `#[utoipa::path]` and registered
   in `openapi.rs`. That includes its security requirement and every status
   code it can return, 403 among them.
+- **Operation names are explicit and stable.** Every `#[utoipa::path]` sets
+  `operation_id`. Generated client method names are derived from it, so the
+  Rust function name must never leak into the API surface. The format is
+  `snake_case`, `<verb>_<resource>`, prefixed with the scope:
+  - `list_…` / `get_…` / `create_…` / `update_…` / `replace_…` /
+    `delete_…` for CRUD, singular for one item (`get_tenant`) and plural
+    for collections (`list_datasets`)
+  - a domain verb for actions that aren't CRUD (`revoke_api_key`,
+    `start_github_link`)
+  - a scope prefix matching the path: `manage_…` for `/manage`,
+    `manage_admin_…` for `/manage/admin`, `ops_…` for `/ops`. For example
+    `manage_create_api_key` and `manage_admin_delete_tenant`.
+
+  An `operation_id` is unique across the whole spec. Renaming one is a
+  breaking change for generated clients, so treat it as such (rule 7).
+- Every operation also sets `tag` (one per resource area, declared in
+  `openapi.rs`'s `tags(...)`), a one-line `summary` saying what it does in
+  the caller's terms, and `params`/`request_body`/`responses` with concrete
+  body types. An operation must not return an undocumented body.
 - The SDK (`signaldb-sdk`), the CLI and the UI client are generated from the
   spec (`cargo xtask generate`). First-party clients don't hand-write calls
   to first-party endpoints.
@@ -143,7 +162,9 @@ links, without building URLs from documentation.
 - [ ] The response carries `_links` (`self`, related, allowed actions).
       Collections return `items` plus `next`.
 - [ ] Errors use `ApiError`, and timestamps are `DateTime<Utc>`.
-- [ ] It's registered in OpenAPI and the clients are regenerated.
+- [ ] It's registered in OpenAPI with an explicit `operation_id` in the
+      naming scheme, a `tag`, a `summary`, and every response it can
+      return. The clients are regenerated.
 - [ ] Breaking changes are marked and every client is migrated.
 
 ## Known gaps (as of this skill's creation)
@@ -161,3 +182,6 @@ Treat these as debt to pay down. Don't copy them.
 - No endpoint emits `_links` yet, and no `/api/v1` index exists.
 - List endpoints return bare arrays or ad-hoc wrappers, not
   `{items, _links}`.
+- About 20 `#[utoipa::path]` handlers have no explicit `operation_id`, so
+  their generated names come from the Rust function name. Existing ids
+  don't all follow the scope-prefix scheme either.
