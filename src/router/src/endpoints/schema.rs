@@ -1402,3 +1402,232 @@ mod tests {
         assert_eq!(res.status(), 401);
     }
 }
+
+// ── Logical/physical schema introspection (`GET /api/v1/schema`) ──────────
+//
+// Global, read-only, not tenant-scoped: the registered logical (OTel-native)
+// schema and the resolved physical (storage) schema for every version of
+// every signal source. Readable by any authenticated tenant credential.
+
+/// One logical (client-visible, OTel-native) field, as registered in
+/// [`common::schema::logical::LogicalSchema`].
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct LogicalField {
+    source: String,
+    /// `resource` | `scope` | `record`, absent when the field isn't
+    /// attribute-scoped (a plain `String` here, not `Option<AttributeLevel>`
+    /// — utoipa emits a nullable `$ref` enum as `oneOf: [{type: null}, ref]`,
+    /// which the progenitor-generated Rust SDK client can't parse).
+    level: Option<String>,
+    name: String,
+    value_type: common::schema::logical::LogicalType,
+    filterability: common::schema::logical::Filterability,
+    kind: common::schema::logical::LogicalFieldKind,
+    non_native: bool,
+}
+
+fn attribute_level_str(level: Option<common::schema::logical::AttributeLevel>) -> Option<String> {
+    level.map(|level| {
+        match level {
+            common::schema::logical::AttributeLevel::Resource => "resource",
+            common::schema::logical::AttributeLevel::Scope => "scope",
+            common::schema::logical::AttributeLevel::Record => "record",
+        }
+        .to_string()
+    })
+}
+
+/// One physical (storage) column, as resolved from `schemas.toml`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PhysicalField {
+    name: String,
+    field_type: String,
+    required: bool,
+    computed: Option<String>,
+    physical_only: bool,
+}
+
+/// One resolved table-schema version for one signal source.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PhysicalSchema {
+    source: String,
+    version: String,
+    is_current: bool,
+    description: String,
+    partition_by: Vec<String>,
+    fields: Vec<PhysicalField>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct SchemaResponse {
+    logical_schema_version: String,
+    logical: Vec<LogicalField>,
+    physical: Vec<PhysicalSchema>,
+}
+
+fn physical_schemas_for_source(
+    source: &str,
+    versions: &std::collections::HashMap<
+        String,
+        common::schema::schema_parser::TableSchemaDefinition,
+    >,
+    current_version: &str,
+) -> Vec<PhysicalSchema> {
+    use common::schema::SCHEMA_DEFINITIONS;
+    let mut names: Vec<&String> = versions.keys().collect();
+    names.sort();
+    names
+        .into_iter()
+        .filter_map(|version| {
+            SCHEMA_DEFINITIONS
+                .resolve_table_schema(versions, version)
+                .ok()
+                .map(|resolved| PhysicalSchema {
+                    source: source.to_string(),
+                    version: resolved.version.clone(),
+                    is_current: resolved.version == current_version,
+                    description: resolved.description,
+                    partition_by: resolved.partition_by,
+                    fields: resolved
+                        .fields
+                        .into_iter()
+                        .map(|f| PhysicalField {
+                            name: f.name,
+                            field_type: f.field_type,
+                            required: f.required,
+                            computed: f.computed,
+                            physical_only: f.physical_only,
+                        })
+                        .collect(),
+                })
+        })
+        .collect()
+}
+
+/// GET /api/v1/schema
+///
+/// The registered logical (OTel-native, client-visible) schema and the
+/// resolved physical (storage) schema for every version of every signal
+/// source — read-only and not tenant-scoped (the schema is global, not
+/// per-tenant). Readable by any authenticated tenant credential.
+#[utoipa::path(
+    get,
+    path = "/api/v1/schema",
+    tag = "schema",
+    operation_id = "get_schema",
+    summary = "Get the registered logical and physical schema for every signal source",
+    responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
+        (status = 200, description = "Logical and physical schema", body = SchemaResponse),
+        (status = 401, description = "Missing or invalid credentials"),
+    )
+)]
+pub(crate) async fn get_schema(Extension(_ctx): Extension<TenantContext>) -> Response {
+    use common::schema::SCHEMA_DEFINITIONS;
+    use common::schema::logical::LogicalSchema;
+
+    let mut logical: Vec<LogicalField> = LogicalSchema::core()
+        .fields()
+        .map(|field| LogicalField {
+            source: field.id.source.clone(),
+            level: attribute_level_str(field.id.level),
+            name: field.id.name.clone(),
+            value_type: field.value_type,
+            filterability: field.filterability,
+            kind: field.kind,
+            non_native: field.non_native,
+        })
+        .collect();
+    logical.sort_by(|a, b| (&a.source, &a.name).cmp(&(&b.source, &b.name)));
+
+    let mut physical = Vec::new();
+    physical.extend(physical_schemas_for_source(
+        "traces",
+        &SCHEMA_DEFINITIONS.traces,
+        SCHEMA_DEFINITIONS.current_trace_version(),
+    ));
+    physical.extend(physical_schemas_for_source(
+        "logs",
+        &SCHEMA_DEFINITIONS.logs,
+        &SCHEMA_DEFINITIONS.metadata.current_log_version,
+    ));
+    for (source, versions) in [
+        ("metrics_gauge", &SCHEMA_DEFINITIONS.metrics_gauge),
+        ("metrics_sum", &SCHEMA_DEFINITIONS.metrics_sum),
+        ("metrics_histogram", &SCHEMA_DEFINITIONS.metrics_histogram),
+    ] {
+        physical.extend(physical_schemas_for_source(
+            source,
+            versions,
+            &SCHEMA_DEFINITIONS.metadata.current_metric_version,
+        ));
+    }
+
+    Json(SchemaResponse {
+        logical_schema_version: SCHEMA_DEFINITIONS.logical_schema_version().to_string(),
+        logical,
+        physical,
+    })
+    .into_response()
+}
+
+#[cfg(test)]
+mod core_schema_tests {
+    use super::*;
+    use common::schema::SCHEMA_DEFINITIONS;
+    use common::schema::logical::LogicalSchema;
+
+    #[test]
+    fn physical_schemas_for_source_resolves_every_version_sorted_and_flags_current() {
+        let schemas = physical_schemas_for_source(
+            "traces",
+            &SCHEMA_DEFINITIONS.traces,
+            SCHEMA_DEFINITIONS.current_trace_version(),
+        );
+
+        // schemas.toml registers physical-v1, physical-v2, physical-v3
+        // (#1208: span_kind_number/status_code_number/dropped counts), and
+        // physical-v4 (#1340: resource_identity) for traces.
+        assert_eq!(schemas.len(), 4);
+        let versions: Vec<&str> = schemas.iter().map(|s| s.version.as_str()).collect();
+        assert_eq!(
+            versions,
+            vec!["physical-v1", "physical-v2", "physical-v3", "physical-v4"],
+            "sorted by version name"
+        );
+
+        let current: Vec<&str> = schemas
+            .iter()
+            .filter(|s| s.is_current)
+            .map(|s| s.version.as_str())
+            .collect();
+        assert_eq!(current, vec![SCHEMA_DEFINITIONS.current_trace_version()]);
+
+        for schema in &schemas {
+            assert_eq!(schema.source, "traces");
+            assert!(!schema.fields.is_empty());
+            assert!(schema.fields.iter().any(|f| f.name == "trace_id"));
+        }
+    }
+
+    #[test]
+    fn get_schema_dto_covers_every_signal_source() {
+        let logical: Vec<LogicalField> = LogicalSchema::core()
+            .fields()
+            .map(|field| LogicalField {
+                source: field.id.source.clone(),
+                level: attribute_level_str(field.id.level),
+                name: field.id.name.clone(),
+                value_type: field.value_type,
+                filterability: field.filterability,
+                kind: field.kind,
+                non_native: field.non_native,
+            })
+            .collect();
+
+        let sources: std::collections::HashSet<&str> =
+            logical.iter().map(|f| f.source.as_str()).collect();
+        assert!(sources.contains("traces"));
+        assert!(sources.contains("logs"));
+    }
+}

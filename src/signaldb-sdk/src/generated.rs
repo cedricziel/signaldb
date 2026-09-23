@@ -550,6 +550,19 @@ pub mod types {
             value.parse()
         }
     }
+    ///`CreateTenantRequest`
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct CreateTenantRequest {
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub default_dataset: ::std::option::Option<::std::string::String>,
+        pub id: ::std::string::String,
+        pub name: ::std::string::String,
+    }
+    impl CreateTenantRequest {
+        pub fn builder() -> builder::CreateTenantRequest {
+            Default::default()
+        }
+    }
     ///Response body for `POST /tenants/{tenant_id}/tables/create`.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct CreateTenantTablesResponse {
@@ -1201,14 +1214,45 @@ pub mod types {
             Default::default()
         }
     }
-    ///Response containing a list of tenants.
+    ///`ListTenantsResponse`
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ListTenantsResponse {
-        ///List of tenant records.
         pub tenants: ::std::vec::Vec<TenantResponse>,
     }
     impl ListTenantsResponse {
         pub fn builder() -> builder::ListTenantsResponse {
+            Default::default()
+        }
+    }
+    ///`ListUsersResponse`
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ListUsersResponse {
+        pub users: ::std::vec::Vec<UserResponse>,
+    }
+    impl ListUsersResponse {
+        pub fn builder() -> builder::ListUsersResponse {
+            Default::default()
+        }
+    }
+    /**One logical (client-visible, OTel-native) field, as registered in
+    [`common::schema::logical::LogicalSchema`].*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct LogicalField {
+        pub filterability: Filterability,
+        pub kind: LogicalFieldKind,
+        /**`resource` | `scope` | `record`, absent when the field isn't
+        attribute-scoped (a plain `String` here, not `Option<AttributeLevel>`
+        — utoipa emits a nullable `$ref` enum as `oneOf: [{type: null}, ref]`,
+        which the progenitor-generated Rust SDK client can't parse).*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub level: ::std::option::Option<::std::string::String>,
+        pub name: ::std::string::String,
+        pub non_native: bool,
+        pub source: ::std::string::String,
+        pub value_type: LogicalType,
+    }
+    impl LogicalField {
+        pub fn builder() -> builder::LogicalField {
             Default::default()
         }
     }
@@ -1418,19 +1462,6 @@ pub mod types {
             Default::default()
         }
     }
-    ///`ManageCreateTenantRequest`
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    pub struct ManageCreateTenantRequest {
-        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
-        pub default_dataset: ::std::option::Option<::std::string::String>,
-        pub id: ::std::string::String,
-        pub name: ::std::string::String,
-    }
-    impl ManageCreateTenantRequest {
-        pub fn builder() -> builder::ManageCreateTenantRequest {
-            Default::default()
-        }
-    }
     /**201 response body for API key creation via the management API.
 
     Fields mirror the previous `json!` body exactly (including `null` for
@@ -1452,16 +1483,6 @@ pub mod types {
             Default::default()
         }
     }
-    ///201 response body for tenant creation via the management API.
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    pub struct ManageCreatedTenant {
-        pub id: ::std::string::String,
-    }
-    impl ManageCreatedTenant {
-        pub fn builder() -> builder::ManageCreatedTenant {
-            Default::default()
-        }
-    }
     ///`ManageDatasetResponse`
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ManageDatasetResponse {
@@ -1473,7 +1494,7 @@ pub mod types {
             Default::default()
         }
     }
-    ///Error response body for the management API.
+    ///Error response body for the tenant-scoped resource endpoints.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ManageError {
         pub error: ::std::string::String,
@@ -1483,71 +1504,7 @@ pub mod types {
             Default::default()
         }
     }
-    /**One logical (client-visible, OTel-native) field, as registered in
-    [`common::schema::logical::LogicalSchema`].*/
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    pub struct ManageLogicalField {
-        pub filterability: Filterability,
-        pub kind: LogicalFieldKind,
-        /**`resource` | `scope` | `record`, absent when the field isn't
-        attribute-scoped (a plain `String` here, not `Option<AttributeLevel>`
-        — utoipa emits a nullable `$ref` enum as `oneOf: [{type: null}, ref]`,
-        which the progenitor-generated Rust SDK client can't parse).*/
-        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
-        pub level: ::std::option::Option<::std::string::String>,
-        pub name: ::std::string::String,
-        pub non_native: bool,
-        pub source: ::std::string::String,
-        pub value_type: LogicalType,
-    }
-    impl ManageLogicalField {
-        pub fn builder() -> builder::ManageLogicalField {
-            Default::default()
-        }
-    }
-    ///One physical (storage) column, as resolved from `schemas.toml`.
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    pub struct ManagePhysicalField {
-        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
-        pub computed: ::std::option::Option<::std::string::String>,
-        pub field_type: ::std::string::String,
-        pub name: ::std::string::String,
-        pub physical_only: bool,
-        pub required: bool,
-    }
-    impl ManagePhysicalField {
-        pub fn builder() -> builder::ManagePhysicalField {
-            Default::default()
-        }
-    }
-    ///One resolved table-schema version for one signal source.
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    pub struct ManagePhysicalSchema {
-        pub description: ::std::string::String,
-        pub fields: ::std::vec::Vec<ManagePhysicalField>,
-        pub is_current: bool,
-        pub partition_by: ::std::vec::Vec<::std::string::String>,
-        pub source: ::std::string::String,
-        pub version: ::std::string::String,
-    }
-    impl ManagePhysicalSchema {
-        pub fn builder() -> builder::ManagePhysicalSchema {
-            Default::default()
-        }
-    }
-    ///`ManageSchemaResponse`
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    pub struct ManageSchemaResponse {
-        pub logical: ::std::vec::Vec<ManageLogicalField>,
-        pub logical_schema_version: ::std::string::String,
-        pub physical: ::std::vec::Vec<ManagePhysicalSchema>,
-    }
-    impl ManageSchemaResponse {
-        pub fn builder() -> builder::ManageSchemaResponse {
-            Default::default()
-        }
-    }
-    /**Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.
+    /**Body for `PATCH /api/v1/tenants/{tenant_id}/api-keys/{key_id}`.
     Absent fields are left untouched. `dataset_ids`/`clear_dataset_restriction`
     mirror [`signaldb_api::UpdateApiKeyRequest`] (D1a); the legacy singular
     `dataset_id` field is rejected via `deny_unknown_fields` rather than
@@ -1891,6 +1848,36 @@ pub mod types {
     }
     impl OtlpHttpPaths {
         pub fn builder() -> builder::OtlpHttpPaths {
+            Default::default()
+        }
+    }
+    ///One physical (storage) column, as resolved from `schemas.toml`.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PhysicalField {
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub computed: ::std::option::Option<::std::string::String>,
+        pub field_type: ::std::string::String,
+        pub name: ::std::string::String,
+        pub physical_only: bool,
+        pub required: bool,
+    }
+    impl PhysicalField {
+        pub fn builder() -> builder::PhysicalField {
+            Default::default()
+        }
+    }
+    ///One resolved table-schema version for one signal source.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct PhysicalSchema {
+        pub description: ::std::string::String,
+        pub fields: ::std::vec::Vec<PhysicalField>,
+        pub is_current: bool,
+        pub partition_by: ::std::vec::Vec<::std::string::String>,
+        pub source: ::std::string::String,
+        pub version: ::std::string::String,
+    }
+    impl PhysicalSchema {
+        pub fn builder() -> builder::PhysicalSchema {
             Default::default()
         }
     }
@@ -2469,6 +2456,18 @@ pub mod types {
             Default::default()
         }
     }
+    ///`SchemaResponse`
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct SchemaResponse {
+        pub logical: ::std::vec::Vec<LogicalField>,
+        pub logical_schema_version: ::std::string::String,
+        pub physical: ::std::vec::Vec<PhysicalSchema>,
+    }
+    impl SchemaResponse {
+        pub fn builder() -> builder::SchemaResponse {
+            Default::default()
+        }
+    }
     /**Result of GET /api/search
     See <https://grafana.com/docs/tempo/latest/api_docs/#example-of-traceql-search>*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
@@ -2883,66 +2882,21 @@ pub mod types {
             Default::default()
         }
     }
-    ///API response for tenant information
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    pub struct TenantInfo {
-        ///Custom schema definitions
-        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
-        pub custom_schemas: ::std::option::Option<
-            ::std::collections::HashMap<::std::string::String, ::std::string::String>,
-        >,
-        ///Whether tenant is enabled
-        pub enabled: bool,
-        ///Tenant-specific schema configuration
-        #[serde(deserialize_with = "::std::option::Option::deserialize")]
-        pub schema:
-            ::std::option::Option<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
-        ///Tenant ID
-        pub tenant_id: ::std::string::String,
-    }
-    impl TenantInfo {
-        pub fn builder() -> builder::TenantInfo {
-            Default::default()
-        }
-    }
-    ///Tenant information returned by the API.
+    /**Superset tenant response: the catalog-backed identity fields
+    (`id`/`name`/`default_dataset`/`source`/timestamps) every caller of the
+    old admin surface relied on, unchanged.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TenantResponse {
-        ///RFC 3339 creation timestamp.
         pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
-        ///Default dataset name.
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub default_dataset: ::std::option::Option<::std::string::String>,
-        ///Unique tenant identifier.
         pub id: ::std::string::String,
-        ///Human-readable tenant name.
         pub name: ::std::string::String,
-        ///Source of the tenant record (config or database).
         pub source: ::std::string::String,
-        ///RFC 3339 last-updated timestamp.
         pub updated_at: ::chrono::DateTime<::chrono::offset::Utc>,
     }
     impl TenantResponse {
         pub fn builder() -> builder::TenantResponse {
-            Default::default()
-        }
-    }
-    /**API response for listing tenants
-
-    Renamed in the OpenAPI document (`#[schema(as = ...)]`) to avoid
-    colliding with `signaldb_api::ListTenantsResponse` (the admin API's
-    tenant list, a different shape) — both are plain Rust structs named
-    `ListTenantsResponse`, and utoipa keys OpenAPI schema components by Rust
-    type name unless told otherwise.*/
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    pub struct TenantSelfListResponse {
-        ///Default tenant ID
-        pub default_tenant: ::std::string::String,
-        ///List of tenants
-        pub tenants: ::std::vec::Vec<TenantInfo>,
-    }
-    impl TenantSelfListResponse {
-        pub fn builder() -> builder::TenantSelfListResponse {
             Default::default()
         }
     }
@@ -5352,6 +5306,77 @@ pub mod types {
                 Self {
                     dataset_ids: Ok(value.dataset_ids),
                     tenant_id: Ok(value.tenant_id),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct CreateTenantRequest {
+            default_dataset: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for CreateTenantRequest {
+            fn default() -> Self {
+                Self {
+                    default_dataset: Ok(Default::default()),
+                    id: Err("no value supplied for id".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                }
+            }
+        }
+        impl CreateTenantRequest {
+            pub fn default_dataset<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.default_dataset = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for default_dataset: {e}")
+                });
+                self
+            }
+            pub fn id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<CreateTenantRequest> for super::CreateTenantRequest {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: CreateTenantRequest,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    default_dataset: value.default_dataset?,
+                    id: value.id?,
+                    name: value.name?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::CreateTenantRequest> for CreateTenantRequest {
+            fn from(value: super::CreateTenantRequest) -> Self {
+                Self {
+                    default_dataset: Ok(value.default_dataset),
+                    id: Ok(value.id),
+                    name: Ok(value.name),
                 }
             }
         }
@@ -8082,6 +8107,174 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct ListUsersResponse {
+            users:
+                ::std::result::Result<::std::vec::Vec<super::UserResponse>, ::std::string::String>,
+        }
+        impl ::std::default::Default for ListUsersResponse {
+            fn default() -> Self {
+                Self {
+                    users: Err("no value supplied for users".to_string()),
+                }
+            }
+        }
+        impl ListUsersResponse {
+            pub fn users<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::UserResponse>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.users = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for users: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ListUsersResponse> for super::ListUsersResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ListUsersResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    users: value.users?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ListUsersResponse> for ListUsersResponse {
+            fn from(value: super::ListUsersResponse) -> Self {
+                Self {
+                    users: Ok(value.users),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct LogicalField {
+            filterability: ::std::result::Result<super::Filterability, ::std::string::String>,
+            kind: ::std::result::Result<super::LogicalFieldKind, ::std::string::String>,
+            level: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            non_native: ::std::result::Result<bool, ::std::string::String>,
+            source: ::std::result::Result<::std::string::String, ::std::string::String>,
+            value_type: ::std::result::Result<super::LogicalType, ::std::string::String>,
+        }
+        impl ::std::default::Default for LogicalField {
+            fn default() -> Self {
+                Self {
+                    filterability: Err("no value supplied for filterability".to_string()),
+                    kind: Err("no value supplied for kind".to_string()),
+                    level: Ok(Default::default()),
+                    name: Err("no value supplied for name".to_string()),
+                    non_native: Err("no value supplied for non_native".to_string()),
+                    source: Err("no value supplied for source".to_string()),
+                    value_type: Err("no value supplied for value_type".to_string()),
+                }
+            }
+        }
+        impl LogicalField {
+            pub fn filterability<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::Filterability>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.filterability = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for filterability: {e}"));
+                self
+            }
+            pub fn kind<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::LogicalFieldKind>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.kind = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for kind: {e}"));
+                self
+            }
+            pub fn level<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.level = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for level: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn non_native<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.non_native = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for non_native: {e}"));
+                self
+            }
+            pub fn source<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.source = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for source: {e}"));
+                self
+            }
+            pub fn value_type<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::LogicalType>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.value_type = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for value_type: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<LogicalField> for super::LogicalField {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: LogicalField,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    filterability: value.filterability?,
+                    kind: value.kind?,
+                    level: value.level?,
+                    name: value.name?,
+                    non_native: value.non_native?,
+                    source: value.source?,
+                    value_type: value.value_type?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::LogicalField> for LogicalField {
+            fn from(value: super::LogicalField) -> Self {
+                Self {
+                    filterability: Ok(value.filterability),
+                    kind: Ok(value.kind),
+                    level: Ok(value.level),
+                    name: Ok(value.name),
+                    non_native: Ok(value.non_native),
+                    source: Ok(value.source),
+                    value_type: Ok(value.value_type),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct LoginConfigResponse {
             demo: ::std::result::Result<
                 ::std::option::Option<super::DemoLoginConfig>,
@@ -8437,77 +8630,6 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
-        pub struct ManageCreateTenantRequest {
-            default_dataset: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
-                ::std::string::String,
-            >,
-            id: ::std::result::Result<::std::string::String, ::std::string::String>,
-            name: ::std::result::Result<::std::string::String, ::std::string::String>,
-        }
-        impl ::std::default::Default for ManageCreateTenantRequest {
-            fn default() -> Self {
-                Self {
-                    default_dataset: Ok(Default::default()),
-                    id: Err("no value supplied for id".to_string()),
-                    name: Err("no value supplied for name".to_string()),
-                }
-            }
-        }
-        impl ManageCreateTenantRequest {
-            pub fn default_dataset<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.default_dataset = value.try_into().map_err(|e| {
-                    format!("error converting supplied value for default_dataset: {e}")
-                });
-                self
-            }
-            pub fn id<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.id = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for id: {e}"));
-                self
-            }
-            pub fn name<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.name = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for name: {e}"));
-                self
-            }
-        }
-        impl ::std::convert::TryFrom<ManageCreateTenantRequest> for super::ManageCreateTenantRequest {
-            type Error = super::error::ConversionError;
-            fn try_from(
-                value: ManageCreateTenantRequest,
-            ) -> ::std::result::Result<Self, super::error::ConversionError> {
-                Ok(Self {
-                    default_dataset: value.default_dataset?,
-                    id: value.id?,
-                    name: value.name?,
-                })
-            }
-        }
-        impl ::std::convert::From<super::ManageCreateTenantRequest> for ManageCreateTenantRequest {
-            fn from(value: super::ManageCreateTenantRequest) -> Self {
-                Self {
-                    default_dataset: Ok(value.default_dataset),
-                    id: Ok(value.id),
-                    name: Ok(value.name),
-                }
-            }
-        }
-        #[derive(Clone, Debug)]
         pub struct ManageCreatedApiKey {
             allowed_origins: ::std::result::Result<
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
@@ -8634,42 +8756,6 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
-        pub struct ManageCreatedTenant {
-            id: ::std::result::Result<::std::string::String, ::std::string::String>,
-        }
-        impl ::std::default::Default for ManageCreatedTenant {
-            fn default() -> Self {
-                Self {
-                    id: Err("no value supplied for id".to_string()),
-                }
-            }
-        }
-        impl ManageCreatedTenant {
-            pub fn id<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.id = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for id: {e}"));
-                self
-            }
-        }
-        impl ::std::convert::TryFrom<ManageCreatedTenant> for super::ManageCreatedTenant {
-            type Error = super::error::ConversionError;
-            fn try_from(
-                value: ManageCreatedTenant,
-            ) -> ::std::result::Result<Self, super::error::ConversionError> {
-                Ok(Self { id: value.id? })
-            }
-        }
-        impl ::std::convert::From<super::ManageCreatedTenant> for ManageCreatedTenant {
-            fn from(value: super::ManageCreatedTenant) -> Self {
-                Self { id: Ok(value.id) }
-            }
-        }
-        #[derive(Clone, Debug)]
         pub struct ManageDatasetResponse {
             id: ::std::result::Result<::std::string::String, ::std::string::String>,
             name: ::std::result::Result<::std::string::String, ::std::string::String>,
@@ -8760,425 +8846,6 @@ pub mod types {
             fn from(value: super::ManageError) -> Self {
                 Self {
                     error: Ok(value.error),
-                }
-            }
-        }
-        #[derive(Clone, Debug)]
-        pub struct ManageLogicalField {
-            filterability: ::std::result::Result<super::Filterability, ::std::string::String>,
-            kind: ::std::result::Result<super::LogicalFieldKind, ::std::string::String>,
-            level: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
-                ::std::string::String,
-            >,
-            name: ::std::result::Result<::std::string::String, ::std::string::String>,
-            non_native: ::std::result::Result<bool, ::std::string::String>,
-            source: ::std::result::Result<::std::string::String, ::std::string::String>,
-            value_type: ::std::result::Result<super::LogicalType, ::std::string::String>,
-        }
-        impl ::std::default::Default for ManageLogicalField {
-            fn default() -> Self {
-                Self {
-                    filterability: Err("no value supplied for filterability".to_string()),
-                    kind: Err("no value supplied for kind".to_string()),
-                    level: Ok(Default::default()),
-                    name: Err("no value supplied for name".to_string()),
-                    non_native: Err("no value supplied for non_native".to_string()),
-                    source: Err("no value supplied for source".to_string()),
-                    value_type: Err("no value supplied for value_type".to_string()),
-                }
-            }
-        }
-        impl ManageLogicalField {
-            pub fn filterability<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<super::Filterability>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.filterability = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for filterability: {e}"));
-                self
-            }
-            pub fn kind<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<super::LogicalFieldKind>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.kind = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for kind: {e}"));
-                self
-            }
-            pub fn level<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.level = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for level: {e}"));
-                self
-            }
-            pub fn name<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.name = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for name: {e}"));
-                self
-            }
-            pub fn non_native<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<bool>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.non_native = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for non_native: {e}"));
-                self
-            }
-            pub fn source<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.source = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for source: {e}"));
-                self
-            }
-            pub fn value_type<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<super::LogicalType>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.value_type = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for value_type: {e}"));
-                self
-            }
-        }
-        impl ::std::convert::TryFrom<ManageLogicalField> for super::ManageLogicalField {
-            type Error = super::error::ConversionError;
-            fn try_from(
-                value: ManageLogicalField,
-            ) -> ::std::result::Result<Self, super::error::ConversionError> {
-                Ok(Self {
-                    filterability: value.filterability?,
-                    kind: value.kind?,
-                    level: value.level?,
-                    name: value.name?,
-                    non_native: value.non_native?,
-                    source: value.source?,
-                    value_type: value.value_type?,
-                })
-            }
-        }
-        impl ::std::convert::From<super::ManageLogicalField> for ManageLogicalField {
-            fn from(value: super::ManageLogicalField) -> Self {
-                Self {
-                    filterability: Ok(value.filterability),
-                    kind: Ok(value.kind),
-                    level: Ok(value.level),
-                    name: Ok(value.name),
-                    non_native: Ok(value.non_native),
-                    source: Ok(value.source),
-                    value_type: Ok(value.value_type),
-                }
-            }
-        }
-        #[derive(Clone, Debug)]
-        pub struct ManagePhysicalField {
-            computed: ::std::result::Result<
-                ::std::option::Option<::std::string::String>,
-                ::std::string::String,
-            >,
-            field_type: ::std::result::Result<::std::string::String, ::std::string::String>,
-            name: ::std::result::Result<::std::string::String, ::std::string::String>,
-            physical_only: ::std::result::Result<bool, ::std::string::String>,
-            required: ::std::result::Result<bool, ::std::string::String>,
-        }
-        impl ::std::default::Default for ManagePhysicalField {
-            fn default() -> Self {
-                Self {
-                    computed: Ok(Default::default()),
-                    field_type: Err("no value supplied for field_type".to_string()),
-                    name: Err("no value supplied for name".to_string()),
-                    physical_only: Err("no value supplied for physical_only".to_string()),
-                    required: Err("no value supplied for required".to_string()),
-                }
-            }
-        }
-        impl ManagePhysicalField {
-            pub fn computed<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.computed = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for computed: {e}"));
-                self
-            }
-            pub fn field_type<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.field_type = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for field_type: {e}"));
-                self
-            }
-            pub fn name<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.name = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for name: {e}"));
-                self
-            }
-            pub fn physical_only<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<bool>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.physical_only = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for physical_only: {e}"));
-                self
-            }
-            pub fn required<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<bool>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.required = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for required: {e}"));
-                self
-            }
-        }
-        impl ::std::convert::TryFrom<ManagePhysicalField> for super::ManagePhysicalField {
-            type Error = super::error::ConversionError;
-            fn try_from(
-                value: ManagePhysicalField,
-            ) -> ::std::result::Result<Self, super::error::ConversionError> {
-                Ok(Self {
-                    computed: value.computed?,
-                    field_type: value.field_type?,
-                    name: value.name?,
-                    physical_only: value.physical_only?,
-                    required: value.required?,
-                })
-            }
-        }
-        impl ::std::convert::From<super::ManagePhysicalField> for ManagePhysicalField {
-            fn from(value: super::ManagePhysicalField) -> Self {
-                Self {
-                    computed: Ok(value.computed),
-                    field_type: Ok(value.field_type),
-                    name: Ok(value.name),
-                    physical_only: Ok(value.physical_only),
-                    required: Ok(value.required),
-                }
-            }
-        }
-        #[derive(Clone, Debug)]
-        pub struct ManagePhysicalSchema {
-            description: ::std::result::Result<::std::string::String, ::std::string::String>,
-            fields: ::std::result::Result<
-                ::std::vec::Vec<super::ManagePhysicalField>,
-                ::std::string::String,
-            >,
-            is_current: ::std::result::Result<bool, ::std::string::String>,
-            partition_by: ::std::result::Result<
-                ::std::vec::Vec<::std::string::String>,
-                ::std::string::String,
-            >,
-            source: ::std::result::Result<::std::string::String, ::std::string::String>,
-            version: ::std::result::Result<::std::string::String, ::std::string::String>,
-        }
-        impl ::std::default::Default for ManagePhysicalSchema {
-            fn default() -> Self {
-                Self {
-                    description: Err("no value supplied for description".to_string()),
-                    fields: Err("no value supplied for fields".to_string()),
-                    is_current: Err("no value supplied for is_current".to_string()),
-                    partition_by: Err("no value supplied for partition_by".to_string()),
-                    source: Err("no value supplied for source".to_string()),
-                    version: Err("no value supplied for version".to_string()),
-                }
-            }
-        }
-        impl ManagePhysicalSchema {
-            pub fn description<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.description = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for description: {e}"));
-                self
-            }
-            pub fn fields<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::vec::Vec<super::ManagePhysicalField>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.fields = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for fields: {e}"));
-                self
-            }
-            pub fn is_current<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<bool>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.is_current = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for is_current: {e}"));
-                self
-            }
-            pub fn partition_by<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.partition_by = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for partition_by: {e}"));
-                self
-            }
-            pub fn source<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.source = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for source: {e}"));
-                self
-            }
-            pub fn version<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.version = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for version: {e}"));
-                self
-            }
-        }
-        impl ::std::convert::TryFrom<ManagePhysicalSchema> for super::ManagePhysicalSchema {
-            type Error = super::error::ConversionError;
-            fn try_from(
-                value: ManagePhysicalSchema,
-            ) -> ::std::result::Result<Self, super::error::ConversionError> {
-                Ok(Self {
-                    description: value.description?,
-                    fields: value.fields?,
-                    is_current: value.is_current?,
-                    partition_by: value.partition_by?,
-                    source: value.source?,
-                    version: value.version?,
-                })
-            }
-        }
-        impl ::std::convert::From<super::ManagePhysicalSchema> for ManagePhysicalSchema {
-            fn from(value: super::ManagePhysicalSchema) -> Self {
-                Self {
-                    description: Ok(value.description),
-                    fields: Ok(value.fields),
-                    is_current: Ok(value.is_current),
-                    partition_by: Ok(value.partition_by),
-                    source: Ok(value.source),
-                    version: Ok(value.version),
-                }
-            }
-        }
-        #[derive(Clone, Debug)]
-        pub struct ManageSchemaResponse {
-            logical: ::std::result::Result<
-                ::std::vec::Vec<super::ManageLogicalField>,
-                ::std::string::String,
-            >,
-            logical_schema_version:
-                ::std::result::Result<::std::string::String, ::std::string::String>,
-            physical: ::std::result::Result<
-                ::std::vec::Vec<super::ManagePhysicalSchema>,
-                ::std::string::String,
-            >,
-        }
-        impl ::std::default::Default for ManageSchemaResponse {
-            fn default() -> Self {
-                Self {
-                    logical: Err("no value supplied for logical".to_string()),
-                    logical_schema_version: Err(
-                        "no value supplied for logical_schema_version".to_string()
-                    ),
-                    physical: Err("no value supplied for physical".to_string()),
-                }
-            }
-        }
-        impl ManageSchemaResponse {
-            pub fn logical<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::vec::Vec<super::ManageLogicalField>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.logical = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for logical: {e}"));
-                self
-            }
-            pub fn logical_schema_version<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.logical_schema_version = value.try_into().map_err(|e| {
-                    format!("error converting supplied value for logical_schema_version: {e}")
-                });
-                self
-            }
-            pub fn physical<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::vec::Vec<super::ManagePhysicalSchema>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.physical = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for physical: {e}"));
-                self
-            }
-        }
-        impl ::std::convert::TryFrom<ManageSchemaResponse> for super::ManageSchemaResponse {
-            type Error = super::error::ConversionError;
-            fn try_from(
-                value: ManageSchemaResponse,
-            ) -> ::std::result::Result<Self, super::error::ConversionError> {
-                Ok(Self {
-                    logical: value.logical?,
-                    logical_schema_version: value.logical_schema_version?,
-                    physical: value.physical?,
-                })
-            }
-        }
-        impl ::std::convert::From<super::ManageSchemaResponse> for ManageSchemaResponse {
-            fn from(value: super::ManageSchemaResponse) -> Self {
-                Self {
-                    logical: Ok(value.logical),
-                    logical_schema_version: Ok(value.logical_schema_version),
-                    physical: Ok(value.physical),
                 }
             }
         }
@@ -10478,6 +10145,219 @@ pub mod types {
                     metrics: Ok(value.metrics),
                     profiles: Ok(value.profiles),
                     traces: Ok(value.traces),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct PhysicalField {
+            computed: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            field_type: ::std::result::Result<::std::string::String, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            physical_only: ::std::result::Result<bool, ::std::string::String>,
+            required: ::std::result::Result<bool, ::std::string::String>,
+        }
+        impl ::std::default::Default for PhysicalField {
+            fn default() -> Self {
+                Self {
+                    computed: Ok(Default::default()),
+                    field_type: Err("no value supplied for field_type".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                    physical_only: Err("no value supplied for physical_only".to_string()),
+                    required: Err("no value supplied for required".to_string()),
+                }
+            }
+        }
+        impl PhysicalField {
+            pub fn computed<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.computed = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for computed: {e}"));
+                self
+            }
+            pub fn field_type<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.field_type = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for field_type: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn physical_only<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.physical_only = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for physical_only: {e}"));
+                self
+            }
+            pub fn required<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.required = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for required: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<PhysicalField> for super::PhysicalField {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: PhysicalField,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    computed: value.computed?,
+                    field_type: value.field_type?,
+                    name: value.name?,
+                    physical_only: value.physical_only?,
+                    required: value.required?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::PhysicalField> for PhysicalField {
+            fn from(value: super::PhysicalField) -> Self {
+                Self {
+                    computed: Ok(value.computed),
+                    field_type: Ok(value.field_type),
+                    name: Ok(value.name),
+                    physical_only: Ok(value.physical_only),
+                    required: Ok(value.required),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct PhysicalSchema {
+            description: ::std::result::Result<::std::string::String, ::std::string::String>,
+            fields:
+                ::std::result::Result<::std::vec::Vec<super::PhysicalField>, ::std::string::String>,
+            is_current: ::std::result::Result<bool, ::std::string::String>,
+            partition_by: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            source: ::std::result::Result<::std::string::String, ::std::string::String>,
+            version: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for PhysicalSchema {
+            fn default() -> Self {
+                Self {
+                    description: Err("no value supplied for description".to_string()),
+                    fields: Err("no value supplied for fields".to_string()),
+                    is_current: Err("no value supplied for is_current".to_string()),
+                    partition_by: Err("no value supplied for partition_by".to_string()),
+                    source: Err("no value supplied for source".to_string()),
+                    version: Err("no value supplied for version".to_string()),
+                }
+            }
+        }
+        impl PhysicalSchema {
+            pub fn description<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.description = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for description: {e}"));
+                self
+            }
+            pub fn fields<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::PhysicalField>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.fields = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for fields: {e}"));
+                self
+            }
+            pub fn is_current<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.is_current = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for is_current: {e}"));
+                self
+            }
+            pub fn partition_by<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.partition_by = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for partition_by: {e}"));
+                self
+            }
+            pub fn source<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.source = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for source: {e}"));
+                self
+            }
+            pub fn version<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.version = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for version: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<PhysicalSchema> for super::PhysicalSchema {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: PhysicalSchema,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    description: value.description?,
+                    fields: value.fields?,
+                    is_current: value.is_current?,
+                    partition_by: value.partition_by?,
+                    source: value.source?,
+                    version: value.version?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::PhysicalSchema> for PhysicalSchema {
+            fn from(value: super::PhysicalSchema) -> Self {
+                Self {
+                    description: Ok(value.description),
+                    fields: Ok(value.fields),
+                    is_current: Ok(value.is_current),
+                    partition_by: Ok(value.partition_by),
+                    source: Ok(value.source),
+                    version: Ok(value.version),
                 }
             }
         }
@@ -12891,6 +12771,81 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct SchemaResponse {
+            logical:
+                ::std::result::Result<::std::vec::Vec<super::LogicalField>, ::std::string::String>,
+            logical_schema_version:
+                ::std::result::Result<::std::string::String, ::std::string::String>,
+            physical: ::std::result::Result<
+                ::std::vec::Vec<super::PhysicalSchema>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for SchemaResponse {
+            fn default() -> Self {
+                Self {
+                    logical: Err("no value supplied for logical".to_string()),
+                    logical_schema_version: Err(
+                        "no value supplied for logical_schema_version".to_string()
+                    ),
+                    physical: Err("no value supplied for physical".to_string()),
+                }
+            }
+        }
+        impl SchemaResponse {
+            pub fn logical<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::LogicalField>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.logical = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for logical: {e}"));
+                self
+            }
+            pub fn logical_schema_version<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.logical_schema_version = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for logical_schema_version: {e}")
+                });
+                self
+            }
+            pub fn physical<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::PhysicalSchema>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.physical = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for physical: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<SchemaResponse> for super::SchemaResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: SchemaResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    logical: value.logical?,
+                    logical_schema_version: value.logical_schema_version?,
+                    physical: value.physical?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::SchemaResponse> for SchemaResponse {
+            fn from(value: super::SchemaResponse) -> Self {
+                Self {
+                    logical: Ok(value.logical),
+                    logical_schema_version: Ok(value.logical_schema_version),
+                    physical: Ok(value.physical),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct SearchResult {
             metrics: ::std::result::Result<
                 ::std::collections::HashMap<::std::string::String, i32>,
@@ -14222,109 +14177,6 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
-        pub struct TenantInfo {
-            custom_schemas: ::std::result::Result<
-                ::std::option::Option<
-                    ::std::collections::HashMap<::std::string::String, ::std::string::String>,
-                >,
-                ::std::string::String,
-            >,
-            enabled: ::std::result::Result<bool, ::std::string::String>,
-            schema: ::std::result::Result<
-                ::std::option::Option<
-                    ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-                >,
-                ::std::string::String,
-            >,
-            tenant_id: ::std::result::Result<::std::string::String, ::std::string::String>,
-        }
-        impl ::std::default::Default for TenantInfo {
-            fn default() -> Self {
-                Self {
-                    custom_schemas: Ok(Default::default()),
-                    enabled: Err("no value supplied for enabled".to_string()),
-                    schema: Err("no value supplied for schema".to_string()),
-                    tenant_id: Err("no value supplied for tenant_id".to_string()),
-                }
-            }
-        }
-        impl TenantInfo {
-            pub fn custom_schemas<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<
-                        ::std::option::Option<
-                            ::std::collections::HashMap<
-                                ::std::string::String,
-                                ::std::string::String,
-                            >,
-                        >,
-                    >,
-                T::Error: ::std::fmt::Display,
-            {
-                self.custom_schemas = value.try_into().map_err(|e| {
-                    format!("error converting supplied value for custom_schemas: {e}")
-                });
-                self
-            }
-            pub fn enabled<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<bool>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.enabled = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for enabled: {e}"));
-                self
-            }
-            pub fn schema<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<
-                        ::std::option::Option<
-                            ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-                        >,
-                    >,
-                T::Error: ::std::fmt::Display,
-            {
-                self.schema = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for schema: {e}"));
-                self
-            }
-            pub fn tenant_id<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.tenant_id = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for tenant_id: {e}"));
-                self
-            }
-        }
-        impl ::std::convert::TryFrom<TenantInfo> for super::TenantInfo {
-            type Error = super::error::ConversionError;
-            fn try_from(
-                value: TenantInfo,
-            ) -> ::std::result::Result<Self, super::error::ConversionError> {
-                Ok(Self {
-                    custom_schemas: value.custom_schemas?,
-                    enabled: value.enabled?,
-                    schema: value.schema?,
-                    tenant_id: value.tenant_id?,
-                })
-            }
-        }
-        impl ::std::convert::From<super::TenantInfo> for TenantInfo {
-            fn from(value: super::TenantInfo) -> Self {
-                Self {
-                    custom_schemas: Ok(value.custom_schemas),
-                    enabled: Ok(value.enabled),
-                    schema: Ok(value.schema),
-                    tenant_id: Ok(value.tenant_id),
-                }
-            }
-        }
-        #[derive(Clone, Debug)]
         pub struct TenantResponse {
             created_at: ::std::result::Result<
                 ::chrono::DateTime<::chrono::offset::Utc>,
@@ -14440,61 +14292,6 @@ pub mod types {
                     name: Ok(value.name),
                     source: Ok(value.source),
                     updated_at: Ok(value.updated_at),
-                }
-            }
-        }
-        #[derive(Clone, Debug)]
-        pub struct TenantSelfListResponse {
-            default_tenant: ::std::result::Result<::std::string::String, ::std::string::String>,
-            tenants:
-                ::std::result::Result<::std::vec::Vec<super::TenantInfo>, ::std::string::String>,
-        }
-        impl ::std::default::Default for TenantSelfListResponse {
-            fn default() -> Self {
-                Self {
-                    default_tenant: Err("no value supplied for default_tenant".to_string()),
-                    tenants: Err("no value supplied for tenants".to_string()),
-                }
-            }
-        }
-        impl TenantSelfListResponse {
-            pub fn default_tenant<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::string::String>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.default_tenant = value.try_into().map_err(|e| {
-                    format!("error converting supplied value for default_tenant: {e}")
-                });
-                self
-            }
-            pub fn tenants<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::vec::Vec<super::TenantInfo>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.tenants = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for tenants: {e}"));
-                self
-            }
-        }
-        impl ::std::convert::TryFrom<TenantSelfListResponse> for super::TenantSelfListResponse {
-            type Error = super::error::ConversionError;
-            fn try_from(
-                value: TenantSelfListResponse,
-            ) -> ::std::result::Result<Self, super::error::ConversionError> {
-                Ok(Self {
-                    default_tenant: value.default_tenant?,
-                    tenants: value.tenants?,
-                })
-            }
-        }
-        impl ::std::convert::From<super::TenantSelfListResponse> for TenantSelfListResponse {
-            fn from(value: super::TenantSelfListResponse) -> Self {
-                Self {
-                    default_tenant: Ok(value.default_tenant),
-                    tenants: Ok(value.tenants),
                 }
             }
         }
@@ -15709,347 +15506,6 @@ impl Client {
     pub fn connection_info(&self) -> builder::ConnectionInfo<'_> {
         builder::ConnectionInfo::new(self)
     }
-    /**List every tenant on the instance
-
-    Sends a `GET` request to `/api/v1/manage/admin/tenants`
-
-    ```ignore
-    let response = client.manage_admin_list_tenants()
-        .send()
-        .await;
-    ```*/
-    pub fn manage_admin_list_tenants(&self) -> builder::ManageAdminListTenants<'_> {
-        builder::ManageAdminListTenants::new(self)
-    }
-    /**Get any tenant by ID
-
-    Sends a `GET` request to `/api/v1/manage/admin/tenants/{tenant_id}`
-
-    Arguments:
-    - `tenant_id`: Tenant identifier
-    ```ignore
-    let response = client.manage_admin_get_tenant()
-        .tenant_id(tenant_id)
-        .send()
-        .await;
-    ```*/
-    pub fn manage_admin_get_tenant(&self) -> builder::ManageAdminGetTenant<'_> {
-        builder::ManageAdminGetTenant::new(self)
-    }
-    /**Update any tenant's name or default dataset
-
-    Sends a `PUT` request to `/api/v1/manage/admin/tenants/{tenant_id}`
-
-    Arguments:
-    - `tenant_id`: Tenant identifier
-    - `body`
-    ```ignore
-    let response = client.manage_admin_update_tenant()
-        .tenant_id(tenant_id)
-        .body(body)
-        .send()
-        .await;
-    ```*/
-    pub fn manage_admin_update_tenant(&self) -> builder::ManageAdminUpdateTenant<'_> {
-        builder::ManageAdminUpdateTenant::new(self)
-    }
-    /**Delete any database-sourced tenant
-
-    Sends a `DELETE` request to `/api/v1/manage/admin/tenants/{tenant_id}`
-
-    Arguments:
-    - `tenant_id`: Tenant identifier
-    ```ignore
-    let response = client.manage_admin_delete_tenant()
-        .tenant_id(tenant_id)
-        .send()
-        .await;
-    ```*/
-    pub fn manage_admin_delete_tenant(&self) -> builder::ManageAdminDeleteTenant<'_> {
-        builder::ManageAdminDeleteTenant::new(self)
-    }
-    /**Create a user outright and grant an initial tenant membership
-
-    Sends a `POST` request to `/api/v1/manage/admin/users`
-
-    ```ignore
-    let response = client.manage_admin_create_user()
-        .body(body)
-        .send()
-        .await;
-    ```*/
-    pub fn manage_admin_create_user(&self) -> builder::ManageAdminCreateUser<'_> {
-        builder::ManageAdminCreateUser::new(self)
-    }
-    /**GET /api/v1/manage/schema
-
-    The registered logical (OTel-native, client-visible) schema and the
-    resolved physical (storage) schema for every version of every signal
-    source — read-only and not tenant-scoped (the schema is global, not
-    per-tenant). Readable by a tenant administrator, an instance
-    administrator, or an API key carrying `tenant:manage`.
-
-    Sends a `GET` request to `/api/v1/manage/schema`
-
-    ```ignore
-    let response = client.manage_get_schema()
-        .send()
-        .await;
-    ```*/
-    pub fn manage_get_schema(&self) -> builder::ManageGetSchema<'_> {
-        builder::ManageGetSchema::new(self)
-    }
-    /**Sends a `POST` request to `/api/v1/manage/tenants`
-
-    ```ignore
-    let response = client.manage_create_tenant()
-        .body(body)
-        .send()
-        .await;
-    ```*/
-    pub fn manage_create_tenant(&self) -> builder::ManageCreateTenant<'_> {
-        builder::ManageCreateTenant::new(self)
-    }
-    /**Sends a `GET` request to `/api/v1/manage/tenants/{tenant_id}/api-keys`
-
-    Arguments:
-    - `tenant_id`: Tenant identifier
-    ```ignore
-    let response = client.manage_list_api_keys()
-        .tenant_id(tenant_id)
-        .send()
-        .await;
-    ```*/
-    pub fn manage_list_api_keys(&self) -> builder::ManageListApiKeys<'_> {
-        builder::ManageListApiKeys::new(self)
-    }
-    /**Sends a `POST` request to `/api/v1/manage/tenants/{tenant_id}/api-keys`
-
-    Arguments:
-    - `tenant_id`: Tenant identifier
-    - `body`
-    ```ignore
-    let response = client.manage_create_api_key()
-        .tenant_id(tenant_id)
-        .body(body)
-        .send()
-        .await;
-    ```*/
-    pub fn manage_create_api_key(&self) -> builder::ManageCreateApiKey<'_> {
-        builder::ManageCreateApiKey::new(self)
-    }
-    /**Sends a `DELETE` request to `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`
-
-    Arguments:
-    - `tenant_id`: Tenant identifier
-    - `key_id`: API key identifier
-    ```ignore
-    let response = client.manage_revoke_api_key()
-        .tenant_id(tenant_id)
-        .key_id(key_id)
-        .send()
-        .await;
-    ```*/
-    pub fn manage_revoke_api_key(&self) -> builder::ManageRevokeApiKey<'_> {
-        builder::ManageRevokeApiKey::new(self)
-    }
-    /**Sends a `PATCH` request to `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`
-
-    Arguments:
-    - `tenant_id`: Tenant identifier
-    - `key_id`: API key identifier
-    - `body`
-    ```ignore
-    let response = client.manage_update_api_key()
-        .tenant_id(tenant_id)
-        .key_id(key_id)
-        .body(body)
-        .send()
-        .await;
-    ```*/
-    pub fn manage_update_api_key(&self) -> builder::ManageUpdateApiKey<'_> {
-        builder::ManageUpdateApiKey::new(self)
-    }
-    /**Sends a `GET` request to `/api/v1/manage/tenants/{tenant_id}/datasets`
-
-    Arguments:
-    - `tenant_id`: Tenant identifier
-    ```ignore
-    let response = client.manage_list_datasets()
-        .tenant_id(tenant_id)
-        .send()
-        .await;
-    ```*/
-    pub fn manage_list_datasets(&self) -> builder::ManageListDatasets<'_> {
-        builder::ManageListDatasets::new(self)
-    }
-    /**Sends a `POST` request to `/api/v1/manage/tenants/{tenant_id}/datasets`
-
-    Arguments:
-    - `tenant_id`: Tenant identifier
-    - `body`
-    ```ignore
-    let response = client.manage_create_dataset()
-        .tenant_id(tenant_id)
-        .body(body)
-        .send()
-        .await;
-    ```*/
-    pub fn manage_create_dataset(&self) -> builder::ManageCreateDataset<'_> {
-        builder::ManageCreateDataset::new(self)
-    }
-    /**Sends a `DELETE` request to `/api/v1/manage/tenants/{tenant_id}/datasets/{dataset_name}`
-
-    Arguments:
-    - `tenant_id`: Tenant identifier
-    - `dataset_name`: Dataset name
-    ```ignore
-    let response = client.manage_delete_dataset()
-        .tenant_id(tenant_id)
-        .dataset_name(dataset_name)
-        .send()
-        .await;
-    ```*/
-    pub fn manage_delete_dataset(&self) -> builder::ManageDeleteDataset<'_> {
-        builder::ManageDeleteDataset::new(self)
-    }
-    /**`GET /api/v1/manage/tenants/{tenant_id}/github-installations`
-
-    Always 200, even when `[github]` is unconfigured (`configured: false`).
-    When configured, refreshes each installation's repository list from
-    GitHub; a refresh failure falls back to the last stored list, marked
-    `stale: true`, rather than failing the whole request.
-
-    Sends a `GET` request to `/api/v1/manage/tenants/{tenant_id}/github-installations`
-
-    Arguments:
-    - `tenant_id`: Tenant identifier
-    ```ignore
-    let response = client.manage_list_github_installations()
-        .tenant_id(tenant_id)
-        .send()
-        .await;
-    ```*/
-    pub fn manage_list_github_installations(&self) -> builder::ManageListGithubInstallations<'_> {
-        builder::ManageListGithubInstallations::new(self)
-    }
-    /**`POST /api/v1/manage/tenants/{tenant_id}/github-installations/attach`
-
-    Attaches an installation that already exists on GitHub — e.g. one
-    already linked to another tenant on the same GitHub account — to
-    `tenant_id` directly, with no OAuth install flow. GitHub allows only one
-    App installation per account, so once one tenant has linked it, GitHub's
-    install-flow URL for a second tenant skips straight to its own
-    installation-management page instead of redirecting back here; this
-    endpoint is the escape hatch. Unlike [`start_github_link`]'s flow, there
-    is no user token to check the installation's `installation_id` against
-    — GitHub only scopes [`crate::github::GitHubApp::installation`] to *an*
-    installation of this App, not to any account the caller controls. A
-    `tenant:manage` grant is therefore not enough authorization on its own
-    (it would let a tenant admin attach, and so read the source of, any
-    other org that installed this deployment's App); this endpoint requires
-    `ctx.is_instance_admin`, the same principal that already holds the
-    App's private key. The same read-only-permission check the OAuth
-    callback performs is re-run here.
-
-    Sends a `POST` request to `/api/v1/manage/tenants/{tenant_id}/github-installations/attach`
-
-    Arguments:
-    - `tenant_id`: Tenant identifier
-    - `body`
-    ```ignore
-    let response = client.manage_attach_github_installation()
-        .tenant_id(tenant_id)
-        .body(body)
-        .send()
-        .await;
-    ```*/
-    pub fn manage_attach_github_installation(&self) -> builder::ManageAttachGithubInstallation<'_> {
-        builder::ManageAttachGithubInstallation::new(self)
-    }
-    /**`POST /api/v1/manage/tenants/{tenant_id}/github-installations/link`
-
-    Mints a single-use, tenant-and-admin-bound state token and returns the
-    GitHub install-flow URL carrying it. 404 when `[github]` is not
-    configured.
-
-    Sends a `POST` request to `/api/v1/manage/tenants/{tenant_id}/github-installations/link`
-
-    Arguments:
-    - `tenant_id`: Tenant identifier
-    ```ignore
-    let response = client.manage_start_github_link()
-        .tenant_id(tenant_id)
-        .send()
-        .await;
-    ```*/
-    pub fn manage_start_github_link(&self) -> builder::ManageStartGithubLink<'_> {
-        builder::ManageStartGithubLink::new(self)
-    }
-    /**`DELETE /api/v1/manage/tenants/{tenant_id}/github-installations/{installation_id}`
-
-    Removes the tenant's link and drops any cached installation token, so
-    token minting for that installation stops immediately (spec: "removal
-    takes effect immediately").
-
-    Sends a `DELETE` request to `/api/v1/manage/tenants/{tenant_id}/github-installations/{installation_id}`
-
-    Arguments:
-    - `tenant_id`: Tenant identifier
-    - `installation_id`: GitHub installation identifier
-    ```ignore
-    let response = client.manage_remove_github_installation()
-        .tenant_id(tenant_id)
-        .installation_id(installation_id)
-        .send()
-        .await;
-    ```*/
-    pub fn manage_remove_github_installation(&self) -> builder::ManageRemoveGithubInstallation<'_> {
-        builder::ManageRemoveGithubInstallation::new(self)
-    }
-    /**Sends a `GET` request to `/api/v1/manage/tenants/{tenant_id}/memberships`
-
-    Arguments:
-    - `tenant_id`: Tenant identifier
-    ```ignore
-    let response = client.manage_list_memberships()
-        .tenant_id(tenant_id)
-        .send()
-        .await;
-    ```*/
-    pub fn manage_list_memberships(&self) -> builder::ManageListMemberships<'_> {
-        builder::ManageListMemberships::new(self)
-    }
-    /**Sends a `PUT` request to `/api/v1/manage/tenants/{tenant_id}/memberships`
-
-    Arguments:
-    - `tenant_id`: Tenant identifier
-    - `body`
-    ```ignore
-    let response = client.manage_upsert_membership()
-        .tenant_id(tenant_id)
-        .body(body)
-        .send()
-        .await;
-    ```*/
-    pub fn manage_upsert_membership(&self) -> builder::ManageUpsertMembership<'_> {
-        builder::ManageUpsertMembership::new(self)
-    }
-    /**Sends a `DELETE` request to `/api/v1/manage/tenants/{tenant_id}/memberships/{user_id}`
-
-    Arguments:
-    - `tenant_id`: Tenant identifier
-    - `user_id`: User identifier
-    ```ignore
-    let response = client.manage_remove_membership()
-        .tenant_id(tenant_id)
-        .user_id(user_id)
-        .send()
-        .await;
-    ```*/
-    pub fn manage_remove_membership(&self) -> builder::ManageRemoveMembership<'_> {
-        builder::ManageRemoveMembership::new(self)
-    }
     /**POST /api/v1/ops/compact — trigger a compaction pass now
 
     Sends a `POST` request to `/api/v1/ops/compact`
@@ -16203,6 +15659,23 @@ impl Client {
     ```*/
     pub fn query_sources(&self) -> builder::QuerySources<'_> {
         builder::QuerySources::new(self)
+    }
+    /**Get the registered logical and physical schema for every signal source
+
+    The registered logical (OTel-native, client-visible) schema and the
+    resolved physical (storage) schema for every version of every signal
+    source — read-only and not tenant-scoped (the schema is global, not
+    per-tenant). Readable by any authenticated tenant credential.
+
+    Sends a `GET` request to `/api/v1/schema`
+
+    ```ignore
+    let response = client.get_schema()
+        .send()
+        .await;
+    ```*/
+    pub fn get_schema(&self) -> builder::GetSchema<'_> {
+        builder::GetSchema::new(self)
     }
     /**Sends a `GET` request to `/api/v1/schema/attributes`
 
@@ -16391,36 +15864,317 @@ impl Client {
     pub fn list_available_schemas(&self) -> builder::ListAvailableSchemas<'_> {
         builder::ListAvailableSchemas::new(self)
     }
-    /**GET /tenants
-
-    List all configured tenants
+    /**List tenants visible to the caller
 
     Sends a `GET` request to `/api/v1/tenants`
 
     ```ignore
-    let response = client.list_tenants_self()
+    let response = client.list_tenants()
         .send()
         .await;
     ```*/
-    pub fn list_tenants_self(&self) -> builder::ListTenantsSelf<'_> {
-        builder::ListTenantsSelf::new(self)
+    pub fn list_tenants(&self) -> builder::ListTenants<'_> {
+        builder::ListTenants::new(self)
     }
-    /**GET /tenants/:tenant_id
+    /**Create a new tenant
 
-    Get information about a specific tenant
+    Sends a `POST` request to `/api/v1/tenants`
+
+    ```ignore
+    let response = client.create_tenant()
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn create_tenant(&self) -> builder::CreateTenant<'_> {
+        builder::CreateTenant::new(self)
+    }
+    /**Get a tenant by ID
 
     Sends a `GET` request to `/api/v1/tenants/{tenant_id}`
 
     Arguments:
-    - `tenant_id`: Tenant identifier (must match the authenticated tenant)
+    - `tenant_id`: Tenant identifier
     ```ignore
-    let response = client.get_tenant_self()
+    let response = client.get_tenant()
         .tenant_id(tenant_id)
         .send()
         .await;
     ```*/
-    pub fn get_tenant_self(&self) -> builder::GetTenantSelf<'_> {
-        builder::GetTenantSelf::new(self)
+    pub fn get_tenant(&self) -> builder::GetTenant<'_> {
+        builder::GetTenant::new(self)
+    }
+    /**Delete a database-sourced tenant
+
+    Sends a `DELETE` request to `/api/v1/tenants/{tenant_id}`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    ```ignore
+    let response = client.delete_tenant()
+        .tenant_id(tenant_id)
+        .send()
+        .await;
+    ```*/
+    pub fn delete_tenant(&self) -> builder::DeleteTenant<'_> {
+        builder::DeleteTenant::new(self)
+    }
+    /**Update a tenant's name or default dataset
+
+    Sends a `PATCH` request to `/api/v1/tenants/{tenant_id}`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    - `body`
+    ```ignore
+    let response = client.update_tenant()
+        .tenant_id(tenant_id)
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn update_tenant(&self) -> builder::UpdateTenant<'_> {
+        builder::UpdateTenant::new(self)
+    }
+    /**Sends a `GET` request to `/api/v1/tenants/{tenant_id}/api-keys`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    ```ignore
+    let response = client.list_api_keys()
+        .tenant_id(tenant_id)
+        .send()
+        .await;
+    ```*/
+    pub fn list_api_keys(&self) -> builder::ListApiKeys<'_> {
+        builder::ListApiKeys::new(self)
+    }
+    /**Sends a `POST` request to `/api/v1/tenants/{tenant_id}/api-keys`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    - `body`
+    ```ignore
+    let response = client.create_api_key()
+        .tenant_id(tenant_id)
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn create_api_key(&self) -> builder::CreateApiKey<'_> {
+        builder::CreateApiKey::new(self)
+    }
+    /**Sends a `DELETE` request to `/api/v1/tenants/{tenant_id}/api-keys/{key_id}`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    - `key_id`: API key identifier
+    ```ignore
+    let response = client.revoke_api_key()
+        .tenant_id(tenant_id)
+        .key_id(key_id)
+        .send()
+        .await;
+    ```*/
+    pub fn revoke_api_key(&self) -> builder::RevokeApiKey<'_> {
+        builder::RevokeApiKey::new(self)
+    }
+    /**Sends a `PATCH` request to `/api/v1/tenants/{tenant_id}/api-keys/{key_id}`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    - `key_id`: API key identifier
+    - `body`
+    ```ignore
+    let response = client.update_api_key()
+        .tenant_id(tenant_id)
+        .key_id(key_id)
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn update_api_key(&self) -> builder::UpdateApiKey<'_> {
+        builder::UpdateApiKey::new(self)
+    }
+    /**Sends a `GET` request to `/api/v1/tenants/{tenant_id}/datasets`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    ```ignore
+    let response = client.list_datasets()
+        .tenant_id(tenant_id)
+        .send()
+        .await;
+    ```*/
+    pub fn list_datasets(&self) -> builder::ListDatasets<'_> {
+        builder::ListDatasets::new(self)
+    }
+    /**Sends a `POST` request to `/api/v1/tenants/{tenant_id}/datasets`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    - `body`
+    ```ignore
+    let response = client.create_dataset()
+        .tenant_id(tenant_id)
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn create_dataset(&self) -> builder::CreateDataset<'_> {
+        builder::CreateDataset::new(self)
+    }
+    /**Sends a `DELETE` request to `/api/v1/tenants/{tenant_id}/datasets/{dataset_name}`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    - `dataset_name`: Dataset name
+    ```ignore
+    let response = client.delete_dataset()
+        .tenant_id(tenant_id)
+        .dataset_name(dataset_name)
+        .send()
+        .await;
+    ```*/
+    pub fn delete_dataset(&self) -> builder::DeleteDataset<'_> {
+        builder::DeleteDataset::new(self)
+    }
+    /**`GET /api/v1/tenants/{tenant_id}/github-installations`
+
+    Always 200, even when `[github]` is unconfigured (`configured: false`).
+    When configured, refreshes each installation's repository list from
+    GitHub; a refresh failure falls back to the last stored list, marked
+    `stale: true`, rather than failing the whole request.
+
+    Sends a `GET` request to `/api/v1/tenants/{tenant_id}/github-installations`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    ```ignore
+    let response = client.list_github_installations()
+        .tenant_id(tenant_id)
+        .send()
+        .await;
+    ```*/
+    pub fn list_github_installations(&self) -> builder::ListGithubInstallations<'_> {
+        builder::ListGithubInstallations::new(self)
+    }
+    /**`POST /api/v1/tenants/{tenant_id}/github-installations/attach`
+
+    Attaches an installation that already exists on GitHub — e.g. one
+    already linked to another tenant on the same GitHub account — to
+    `tenant_id` directly, with no OAuth install flow. GitHub allows only one
+    App installation per account, so once one tenant has linked it, GitHub's
+    install-flow URL for a second tenant skips straight to its own
+    installation-management page instead of redirecting back here; this
+    endpoint is the escape hatch. Unlike [`start_github_link`]'s flow, there
+    is no user token to check the installation's `installation_id` against
+    — GitHub only scopes [`crate::github::GitHubApp::installation`] to *an*
+    installation of this App, not to any account the caller controls. A
+    `tenant:manage` grant is therefore not enough authorization on its own
+    (it would let a tenant admin attach, and so read the source of, any
+    other org that installed this deployment's App); this endpoint requires
+    `ctx.is_instance_admin`, the same principal that already holds the
+    App's private key. The same read-only-permission check the OAuth
+    callback performs is re-run here.
+
+    Sends a `POST` request to `/api/v1/tenants/{tenant_id}/github-installations/attach`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    - `body`
+    ```ignore
+    let response = client.attach_github_installation()
+        .tenant_id(tenant_id)
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn attach_github_installation(&self) -> builder::AttachGithubInstallation<'_> {
+        builder::AttachGithubInstallation::new(self)
+    }
+    /**`POST /api/v1/tenants/{tenant_id}/github-installations/link`
+
+    Mints a single-use, tenant-and-admin-bound state token and returns the
+    GitHub install-flow URL carrying it. 404 when `[github]` is not
+    configured.
+
+    Sends a `POST` request to `/api/v1/tenants/{tenant_id}/github-installations/link`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    ```ignore
+    let response = client.start_github_link()
+        .tenant_id(tenant_id)
+        .send()
+        .await;
+    ```*/
+    pub fn start_github_link(&self) -> builder::StartGithubLink<'_> {
+        builder::StartGithubLink::new(self)
+    }
+    /**`DELETE /api/v1/tenants/{tenant_id}/github-installations/{installation_id}`
+
+    Removes the tenant's link and drops any cached installation token, so
+    token minting for that installation stops immediately (spec: "removal
+    takes effect immediately").
+
+    Sends a `DELETE` request to `/api/v1/tenants/{tenant_id}/github-installations/{installation_id}`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    - `installation_id`: GitHub installation identifier
+    ```ignore
+    let response = client.remove_github_installation()
+        .tenant_id(tenant_id)
+        .installation_id(installation_id)
+        .send()
+        .await;
+    ```*/
+    pub fn remove_github_installation(&self) -> builder::RemoveGithubInstallation<'_> {
+        builder::RemoveGithubInstallation::new(self)
+    }
+    /**Sends a `GET` request to `/api/v1/tenants/{tenant_id}/memberships`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    ```ignore
+    let response = client.list_memberships()
+        .tenant_id(tenant_id)
+        .send()
+        .await;
+    ```*/
+    pub fn list_memberships(&self) -> builder::ListMemberships<'_> {
+        builder::ListMemberships::new(self)
+    }
+    /**Sends a `PUT` request to `/api/v1/tenants/{tenant_id}/memberships`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    - `body`
+    ```ignore
+    let response = client.upsert_membership()
+        .tenant_id(tenant_id)
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn upsert_membership(&self) -> builder::UpsertMembership<'_> {
+        builder::UpsertMembership::new(self)
+    }
+    /**Sends a `DELETE` request to `/api/v1/tenants/{tenant_id}/memberships/{user_id}`
+
+    Arguments:
+    - `tenant_id`: Tenant identifier
+    - `user_id`: User identifier
+    ```ignore
+    let response = client.remove_membership()
+        .tenant_id(tenant_id)
+        .user_id(user_id)
+        .send()
+        .await;
+    ```*/
+    pub fn remove_membership(&self) -> builder::RemoveMembership<'_> {
+        builder::RemoveMembership::new(self)
     }
     /**GET /tenants/:tenant_id/schemas
 
@@ -16520,6 +16274,31 @@ impl Client {
     ```*/
     pub fn create_tenant_tables(&self) -> builder::CreateTenantTables<'_> {
         builder::CreateTenantTables::new(self)
+    }
+    /**List human users
+
+    Sends a `GET` request to `/api/v1/users`
+
+    ```ignore
+    let response = client.list_users()
+        .send()
+        .await;
+    ```*/
+    pub fn list_users(&self) -> builder::ListUsers<'_> {
+        builder::ListUsers::new(self)
+    }
+    /**Create a user outright and grant an initial tenant membership
+
+    Sends a `POST` request to `/api/v1/users`
+
+    ```ignore
+    let response = client.create_user()
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn create_user(&self) -> builder::CreateUser<'_> {
+        builder::CreateUser::new(self)
     }
     /**GET /api/v1/whoami
 
@@ -17201,1847 +16980,6 @@ pub mod builder {
                 200u16 => ResponseValue::from_response(response).await,
                 401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::manage_admin_list_tenants`]
-
-    [`Client::manage_admin_list_tenants`]: super::Client::manage_admin_list_tenants*/
-    #[derive(Debug, Clone)]
-    pub struct ManageAdminListTenants<'a> {
-        client: &'a super::Client,
-    }
-    impl<'a> ManageAdminListTenants<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self { client: client }
-        }
-        ///Sends a `GET` request to `/api/v1/manage/admin/tenants`
-        pub async fn send(
-            self,
-        ) -> Result<ResponseValue<types::ListTenantsResponse>, Error<types::ApiError>> {
-            let Self { client } = self;
-            let url = format!("{}/api/v1/manage/admin/tenants", client.baseurl,);
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .get(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "manage_admin_list_tenants",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                200u16 => ResponseValue::from_response(response).await,
-                403u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::manage_admin_get_tenant`]
-
-    [`Client::manage_admin_get_tenant`]: super::Client::manage_admin_get_tenant*/
-    #[derive(Debug, Clone)]
-    pub struct ManageAdminGetTenant<'a> {
-        client: &'a super::Client,
-        tenant_id: Result<::std::string::String, String>,
-    }
-    impl<'a> ManageAdminGetTenant<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                tenant_id: Err("tenant_id was not initialized".to_string()),
-            }
-        }
-        pub fn tenant_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.tenant_id = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
-            });
-            self
-        }
-        ///Sends a `GET` request to `/api/v1/manage/admin/tenants/{tenant_id}`
-        pub async fn send(
-            self,
-        ) -> Result<ResponseValue<types::TenantResponse>, Error<types::ApiError>> {
-            let Self { client, tenant_id } = self;
-            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
-            let url = format!(
-                "{}/api/v1/manage/admin/tenants/{}",
-                client.baseurl,
-                encode_path(&tenant_id.to_string()),
-            );
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .get(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "manage_admin_get_tenant",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                200u16 => ResponseValue::from_response(response).await,
-                403u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                404u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::manage_admin_update_tenant`]
-
-    [`Client::manage_admin_update_tenant`]: super::Client::manage_admin_update_tenant*/
-    #[derive(Debug, Clone)]
-    pub struct ManageAdminUpdateTenant<'a> {
-        client: &'a super::Client,
-        tenant_id: Result<::std::string::String, String>,
-        body: Result<types::builder::UpdateTenantRequest, String>,
-    }
-    impl<'a> ManageAdminUpdateTenant<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                tenant_id: Err("tenant_id was not initialized".to_string()),
-                body: Ok(::std::default::Default::default()),
-            }
-        }
-        pub fn tenant_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.tenant_id = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
-            });
-            self
-        }
-        pub fn body<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<types::UpdateTenantRequest>,
-            <V as std::convert::TryInto<types::UpdateTenantRequest>>::Error: std::fmt::Display,
-        {
-            self.body = value
-                .try_into()
-                .map(From::from)
-                .map_err(|s| format!("conversion to `UpdateTenantRequest` for body failed: {}", s));
-            self
-        }
-        pub fn body_map<F>(mut self, f: F) -> Self
-        where
-            F: std::ops::FnOnce(
-                    types::builder::UpdateTenantRequest,
-                ) -> types::builder::UpdateTenantRequest,
-        {
-            self.body = self.body.map(f);
-            self
-        }
-        ///Sends a `PUT` request to `/api/v1/manage/admin/tenants/{tenant_id}`
-        pub async fn send(
-            self,
-        ) -> Result<ResponseValue<types::TenantResponse>, Error<types::ApiError>> {
-            let Self {
-                client,
-                tenant_id,
-                body,
-            } = self;
-            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
-            let body = body
-                .and_then(|v| types::UpdateTenantRequest::try_from(v).map_err(|e| e.to_string()))
-                .map_err(Error::InvalidRequest)?;
-            let url = format!(
-                "{}/api/v1/manage/admin/tenants/{}",
-                client.baseurl,
-                encode_path(&tenant_id.to_string()),
-            );
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .put(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .json(&body)
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "manage_admin_update_tenant",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                200u16 => ResponseValue::from_response(response).await,
-                403u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                404u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::manage_admin_delete_tenant`]
-
-    [`Client::manage_admin_delete_tenant`]: super::Client::manage_admin_delete_tenant*/
-    #[derive(Debug, Clone)]
-    pub struct ManageAdminDeleteTenant<'a> {
-        client: &'a super::Client,
-        tenant_id: Result<::std::string::String, String>,
-    }
-    impl<'a> ManageAdminDeleteTenant<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                tenant_id: Err("tenant_id was not initialized".to_string()),
-            }
-        }
-        pub fn tenant_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.tenant_id = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
-            });
-            self
-        }
-        ///Sends a `DELETE` request to `/api/v1/manage/admin/tenants/{tenant_id}`
-        pub async fn send(self) -> Result<ResponseValue<()>, Error<types::ApiError>> {
-            let Self { client, tenant_id } = self;
-            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
-            let url = format!(
-                "{}/api/v1/manage/admin/tenants/{}",
-                client.baseurl,
-                encode_path(&tenant_id.to_string()),
-            );
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .delete(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "manage_admin_delete_tenant",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                204u16 => Ok(ResponseValue::empty(response)),
-                403u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                404u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::manage_admin_create_user`]
-
-    [`Client::manage_admin_create_user`]: super::Client::manage_admin_create_user*/
-    #[derive(Debug, Clone)]
-    pub struct ManageAdminCreateUser<'a> {
-        client: &'a super::Client,
-        body: Result<types::builder::CreateUserRequest, String>,
-    }
-    impl<'a> ManageAdminCreateUser<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                body: Ok(::std::default::Default::default()),
-            }
-        }
-        pub fn body<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<types::CreateUserRequest>,
-            <V as std::convert::TryInto<types::CreateUserRequest>>::Error: std::fmt::Display,
-        {
-            self.body = value
-                .try_into()
-                .map(From::from)
-                .map_err(|s| format!("conversion to `CreateUserRequest` for body failed: {}", s));
-            self
-        }
-        pub fn body_map<F>(mut self, f: F) -> Self
-        where
-            F: std::ops::FnOnce(
-                    types::builder::CreateUserRequest,
-                ) -> types::builder::CreateUserRequest,
-        {
-            self.body = self.body.map(f);
-            self
-        }
-        ///Sends a `POST` request to `/api/v1/manage/admin/users`
-        pub async fn send(
-            self,
-        ) -> Result<ResponseValue<types::UserResponse>, Error<types::ApiError>> {
-            let Self { client, body } = self;
-            let body = body
-                .and_then(|v| types::CreateUserRequest::try_from(v).map_err(|e| e.to_string()))
-                .map_err(Error::InvalidRequest)?;
-            let url = format!("{}/api/v1/manage/admin/users", client.baseurl,);
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .post(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .json(&body)
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "manage_admin_create_user",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                201u16 => ResponseValue::from_response(response).await,
-                400u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                403u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                404u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                409u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::manage_get_schema`]
-
-    [`Client::manage_get_schema`]: super::Client::manage_get_schema*/
-    #[derive(Debug, Clone)]
-    pub struct ManageGetSchema<'a> {
-        client: &'a super::Client,
-    }
-    impl<'a> ManageGetSchema<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self { client: client }
-        }
-        ///Sends a `GET` request to `/api/v1/manage/schema`
-        pub async fn send(
-            self,
-        ) -> Result<ResponseValue<types::ManageSchemaResponse>, Error<types::ManageError>> {
-            let Self { client } = self;
-            let url = format!("{}/api/v1/manage/schema", client.baseurl,);
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .get(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "manage_get_schema",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                200u16 => ResponseValue::from_response(response).await,
-                403u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                429u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::manage_create_tenant`]
-
-    [`Client::manage_create_tenant`]: super::Client::manage_create_tenant*/
-    #[derive(Debug, Clone)]
-    pub struct ManageCreateTenant<'a> {
-        client: &'a super::Client,
-        body: Result<types::builder::ManageCreateTenantRequest, String>,
-    }
-    impl<'a> ManageCreateTenant<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                body: Ok(::std::default::Default::default()),
-            }
-        }
-        pub fn body<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<types::ManageCreateTenantRequest>,
-            <V as std::convert::TryInto<types::ManageCreateTenantRequest>>::Error:
-                std::fmt::Display,
-        {
-            self.body = value.try_into().map(From::from).map_err(|s| {
-                format!(
-                    "conversion to `ManageCreateTenantRequest` for body failed: {}",
-                    s
-                )
-            });
-            self
-        }
-        pub fn body_map<F>(mut self, f: F) -> Self
-        where
-            F: std::ops::FnOnce(
-                    types::builder::ManageCreateTenantRequest,
-                ) -> types::builder::ManageCreateTenantRequest,
-        {
-            self.body = self.body.map(f);
-            self
-        }
-        ///Sends a `POST` request to `/api/v1/manage/tenants`
-        pub async fn send(
-            self,
-        ) -> Result<ResponseValue<types::ManageCreatedTenant>, Error<types::ManageError>> {
-            let Self { client, body } = self;
-            let body = body
-                .and_then(|v| {
-                    types::ManageCreateTenantRequest::try_from(v).map_err(|e| e.to_string())
-                })
-                .map_err(Error::InvalidRequest)?;
-            let url = format!("{}/api/v1/manage/tenants", client.baseurl,);
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .post(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .json(&body)
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "manage_create_tenant",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                201u16 => ResponseValue::from_response(response).await,
-                400u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                401u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                403u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                409u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                429u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                500u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::manage_list_api_keys`]
-
-    [`Client::manage_list_api_keys`]: super::Client::manage_list_api_keys*/
-    #[derive(Debug, Clone)]
-    pub struct ManageListApiKeys<'a> {
-        client: &'a super::Client,
-        tenant_id: Result<::std::string::String, String>,
-    }
-    impl<'a> ManageListApiKeys<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                tenant_id: Err("tenant_id was not initialized".to_string()),
-            }
-        }
-        pub fn tenant_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.tenant_id = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
-            });
-            self
-        }
-        ///Sends a `GET` request to `/api/v1/manage/tenants/{tenant_id}/api-keys`
-        pub async fn send(
-            self,
-        ) -> Result<
-            ResponseValue<::std::vec::Vec<types::ManageApiKeyResponse>>,
-            Error<types::ManageError>,
-        > {
-            let Self { client, tenant_id } = self;
-            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
-            let url = format!(
-                "{}/api/v1/manage/tenants/{}/api-keys",
-                client.baseurl,
-                encode_path(&tenant_id.to_string()),
-            );
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .get(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "manage_list_api_keys",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                200u16 => ResponseValue::from_response(response).await,
-                403u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                429u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                500u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::manage_create_api_key`]
-
-    [`Client::manage_create_api_key`]: super::Client::manage_create_api_key*/
-    #[derive(Debug, Clone)]
-    pub struct ManageCreateApiKey<'a> {
-        client: &'a super::Client,
-        tenant_id: Result<::std::string::String, String>,
-        body: Result<types::builder::ManageCreateApiKeyRequest, String>,
-    }
-    impl<'a> ManageCreateApiKey<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                tenant_id: Err("tenant_id was not initialized".to_string()),
-                body: Ok(::std::default::Default::default()),
-            }
-        }
-        pub fn tenant_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.tenant_id = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
-            });
-            self
-        }
-        pub fn body<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<types::ManageCreateApiKeyRequest>,
-            <V as std::convert::TryInto<types::ManageCreateApiKeyRequest>>::Error:
-                std::fmt::Display,
-        {
-            self.body = value.try_into().map(From::from).map_err(|s| {
-                format!(
-                    "conversion to `ManageCreateApiKeyRequest` for body failed: {}",
-                    s
-                )
-            });
-            self
-        }
-        pub fn body_map<F>(mut self, f: F) -> Self
-        where
-            F: std::ops::FnOnce(
-                    types::builder::ManageCreateApiKeyRequest,
-                ) -> types::builder::ManageCreateApiKeyRequest,
-        {
-            self.body = self.body.map(f);
-            self
-        }
-        ///Sends a `POST` request to `/api/v1/manage/tenants/{tenant_id}/api-keys`
-        pub async fn send(
-            self,
-        ) -> Result<ResponseValue<types::ManageCreatedApiKey>, Error<types::ManageError>> {
-            let Self {
-                client,
-                tenant_id,
-                body,
-            } = self;
-            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
-            let body = body
-                .and_then(|v| {
-                    types::ManageCreateApiKeyRequest::try_from(v).map_err(|e| e.to_string())
-                })
-                .map_err(Error::InvalidRequest)?;
-            let url = format!(
-                "{}/api/v1/manage/tenants/{}/api-keys",
-                client.baseurl,
-                encode_path(&tenant_id.to_string()),
-            );
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .post(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .json(&body)
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "manage_create_api_key",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                201u16 => ResponseValue::from_response(response).await,
-                400u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                403u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                409u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                422u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                429u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                500u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::manage_revoke_api_key`]
-
-    [`Client::manage_revoke_api_key`]: super::Client::manage_revoke_api_key*/
-    #[derive(Debug, Clone)]
-    pub struct ManageRevokeApiKey<'a> {
-        client: &'a super::Client,
-        tenant_id: Result<::std::string::String, String>,
-        key_id: Result<::std::string::String, String>,
-    }
-    impl<'a> ManageRevokeApiKey<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                tenant_id: Err("tenant_id was not initialized".to_string()),
-                key_id: Err("key_id was not initialized".to_string()),
-            }
-        }
-        pub fn tenant_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.tenant_id = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
-            });
-            self
-        }
-        pub fn key_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.key_id = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for key_id failed".to_string()
-            });
-            self
-        }
-        ///Sends a `DELETE` request to `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`
-        pub async fn send(self) -> Result<ResponseValue<()>, Error<types::ManageError>> {
-            let Self {
-                client,
-                tenant_id,
-                key_id,
-            } = self;
-            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
-            let key_id = key_id.map_err(Error::InvalidRequest)?;
-            let url = format!(
-                "{}/api/v1/manage/tenants/{}/api-keys/{}",
-                client.baseurl,
-                encode_path(&tenant_id.to_string()),
-                encode_path(&key_id.to_string()),
-            );
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .delete(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "manage_revoke_api_key",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                204u16 => Ok(ResponseValue::empty(response)),
-                403u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                404u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                429u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                500u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::manage_update_api_key`]
-
-    [`Client::manage_update_api_key`]: super::Client::manage_update_api_key*/
-    #[derive(Debug, Clone)]
-    pub struct ManageUpdateApiKey<'a> {
-        client: &'a super::Client,
-        tenant_id: Result<::std::string::String, String>,
-        key_id: Result<::std::string::String, String>,
-        body: Result<types::builder::ManageUpdateApiKeyRequest, String>,
-    }
-    impl<'a> ManageUpdateApiKey<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                tenant_id: Err("tenant_id was not initialized".to_string()),
-                key_id: Err("key_id was not initialized".to_string()),
-                body: Ok(::std::default::Default::default()),
-            }
-        }
-        pub fn tenant_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.tenant_id = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
-            });
-            self
-        }
-        pub fn key_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.key_id = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for key_id failed".to_string()
-            });
-            self
-        }
-        pub fn body<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<types::ManageUpdateApiKeyRequest>,
-            <V as std::convert::TryInto<types::ManageUpdateApiKeyRequest>>::Error:
-                std::fmt::Display,
-        {
-            self.body = value.try_into().map(From::from).map_err(|s| {
-                format!(
-                    "conversion to `ManageUpdateApiKeyRequest` for body failed: {}",
-                    s
-                )
-            });
-            self
-        }
-        pub fn body_map<F>(mut self, f: F) -> Self
-        where
-            F: std::ops::FnOnce(
-                    types::builder::ManageUpdateApiKeyRequest,
-                ) -> types::builder::ManageUpdateApiKeyRequest,
-        {
-            self.body = self.body.map(f);
-            self
-        }
-        ///Sends a `PATCH` request to `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`
-        pub async fn send(
-            self,
-        ) -> Result<ResponseValue<types::ManageApiKeyResponse>, Error<types::ManageError>> {
-            let Self {
-                client,
-                tenant_id,
-                key_id,
-                body,
-            } = self;
-            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
-            let key_id = key_id.map_err(Error::InvalidRequest)?;
-            let body = body
-                .and_then(|v| {
-                    types::ManageUpdateApiKeyRequest::try_from(v).map_err(|e| e.to_string())
-                })
-                .map_err(Error::InvalidRequest)?;
-            let url = format!(
-                "{}/api/v1/manage/tenants/{}/api-keys/{}",
-                client.baseurl,
-                encode_path(&tenant_id.to_string()),
-                encode_path(&key_id.to_string()),
-            );
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .patch(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .json(&body)
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "manage_update_api_key",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                200u16 => ResponseValue::from_response(response).await,
-                400u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                403u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                404u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                409u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                422u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                429u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                500u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::manage_list_datasets`]
-
-    [`Client::manage_list_datasets`]: super::Client::manage_list_datasets*/
-    #[derive(Debug, Clone)]
-    pub struct ManageListDatasets<'a> {
-        client: &'a super::Client,
-        tenant_id: Result<::std::string::String, String>,
-    }
-    impl<'a> ManageListDatasets<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                tenant_id: Err("tenant_id was not initialized".to_string()),
-            }
-        }
-        pub fn tenant_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.tenant_id = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
-            });
-            self
-        }
-        ///Sends a `GET` request to `/api/v1/manage/tenants/{tenant_id}/datasets`
-        pub async fn send(
-            self,
-        ) -> Result<
-            ResponseValue<::std::vec::Vec<types::ManageDatasetResponse>>,
-            Error<types::ManageError>,
-        > {
-            let Self { client, tenant_id } = self;
-            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
-            let url = format!(
-                "{}/api/v1/manage/tenants/{}/datasets",
-                client.baseurl,
-                encode_path(&tenant_id.to_string()),
-            );
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .get(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "manage_list_datasets",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                200u16 => ResponseValue::from_response(response).await,
-                403u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                429u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                500u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::manage_create_dataset`]
-
-    [`Client::manage_create_dataset`]: super::Client::manage_create_dataset*/
-    #[derive(Debug, Clone)]
-    pub struct ManageCreateDataset<'a> {
-        client: &'a super::Client,
-        tenant_id: Result<::std::string::String, String>,
-        body: Result<types::builder::ManageCreateDatasetRequest, String>,
-    }
-    impl<'a> ManageCreateDataset<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                tenant_id: Err("tenant_id was not initialized".to_string()),
-                body: Ok(::std::default::Default::default()),
-            }
-        }
-        pub fn tenant_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.tenant_id = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
-            });
-            self
-        }
-        pub fn body<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<types::ManageCreateDatasetRequest>,
-            <V as std::convert::TryInto<types::ManageCreateDatasetRequest>>::Error:
-                std::fmt::Display,
-        {
-            self.body = value.try_into().map(From::from).map_err(|s| {
-                format!(
-                    "conversion to `ManageCreateDatasetRequest` for body failed: {}",
-                    s
-                )
-            });
-            self
-        }
-        pub fn body_map<F>(mut self, f: F) -> Self
-        where
-            F: std::ops::FnOnce(
-                    types::builder::ManageCreateDatasetRequest,
-                ) -> types::builder::ManageCreateDatasetRequest,
-        {
-            self.body = self.body.map(f);
-            self
-        }
-        ///Sends a `POST` request to `/api/v1/manage/tenants/{tenant_id}/datasets`
-        pub async fn send(
-            self,
-        ) -> Result<ResponseValue<types::ManageDatasetResponse>, Error<types::ManageError>>
-        {
-            let Self {
-                client,
-                tenant_id,
-                body,
-            } = self;
-            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
-            let body = body
-                .and_then(|v| {
-                    types::ManageCreateDatasetRequest::try_from(v).map_err(|e| e.to_string())
-                })
-                .map_err(Error::InvalidRequest)?;
-            let url = format!(
-                "{}/api/v1/manage/tenants/{}/datasets",
-                client.baseurl,
-                encode_path(&tenant_id.to_string()),
-            );
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .post(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .json(&body)
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "manage_create_dataset",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                201u16 => ResponseValue::from_response(response).await,
-                400u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                403u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                409u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                429u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::manage_delete_dataset`]
-
-    [`Client::manage_delete_dataset`]: super::Client::manage_delete_dataset*/
-    #[derive(Debug, Clone)]
-    pub struct ManageDeleteDataset<'a> {
-        client: &'a super::Client,
-        tenant_id: Result<::std::string::String, String>,
-        dataset_name: Result<::std::string::String, String>,
-    }
-    impl<'a> ManageDeleteDataset<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                tenant_id: Err("tenant_id was not initialized".to_string()),
-                dataset_name: Err("dataset_name was not initialized".to_string()),
-            }
-        }
-        pub fn tenant_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.tenant_id = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
-            });
-            self
-        }
-        pub fn dataset_name<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.dataset_name = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for dataset_name failed".to_string()
-            });
-            self
-        }
-        ///Sends a `DELETE` request to `/api/v1/manage/tenants/{tenant_id}/datasets/{dataset_name}`
-        pub async fn send(self) -> Result<ResponseValue<()>, Error<types::ManageError>> {
-            let Self {
-                client,
-                tenant_id,
-                dataset_name,
-            } = self;
-            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
-            let dataset_name = dataset_name.map_err(Error::InvalidRequest)?;
-            let url = format!(
-                "{}/api/v1/manage/tenants/{}/datasets/{}",
-                client.baseurl,
-                encode_path(&tenant_id.to_string()),
-                encode_path(&dataset_name.to_string()),
-            );
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .delete(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "manage_delete_dataset",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                204u16 => Ok(ResponseValue::empty(response)),
-                403u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                404u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                409u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                429u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                500u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::manage_list_github_installations`]
-
-    [`Client::manage_list_github_installations`]: super::Client::manage_list_github_installations*/
-    #[derive(Debug, Clone)]
-    pub struct ManageListGithubInstallations<'a> {
-        client: &'a super::Client,
-        tenant_id: Result<::std::string::String, String>,
-    }
-    impl<'a> ManageListGithubInstallations<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                tenant_id: Err("tenant_id was not initialized".to_string()),
-            }
-        }
-        pub fn tenant_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.tenant_id = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
-            });
-            self
-        }
-        ///Sends a `GET` request to `/api/v1/manage/tenants/{tenant_id}/github-installations`
-        pub async fn send(
-            self,
-        ) -> Result<ResponseValue<types::GitHubInstallationsResponse>, Error<types::ManageError>>
-        {
-            let Self { client, tenant_id } = self;
-            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
-            let url = format!(
-                "{}/api/v1/manage/tenants/{}/github-installations",
-                client.baseurl,
-                encode_path(&tenant_id.to_string()),
-            );
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .get(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "manage_list_github_installations",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                200u16 => ResponseValue::from_response(response).await,
-                403u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                429u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                500u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::manage_attach_github_installation`]
-
-    [`Client::manage_attach_github_installation`]: super::Client::manage_attach_github_installation*/
-    #[derive(Debug, Clone)]
-    pub struct ManageAttachGithubInstallation<'a> {
-        client: &'a super::Client,
-        tenant_id: Result<::std::string::String, String>,
-        body: Result<types::builder::AttachGitHubInstallationRequest, String>,
-    }
-    impl<'a> ManageAttachGithubInstallation<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                tenant_id: Err("tenant_id was not initialized".to_string()),
-                body: Ok(::std::default::Default::default()),
-            }
-        }
-        pub fn tenant_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.tenant_id = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
-            });
-            self
-        }
-        pub fn body<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<types::AttachGitHubInstallationRequest>,
-            <V as std::convert::TryInto<types::AttachGitHubInstallationRequest>>::Error:
-                std::fmt::Display,
-        {
-            self.body = value.try_into().map(From::from).map_err(|s| {
-                format!(
-                    "conversion to `AttachGitHubInstallationRequest` for body failed: {}",
-                    s
-                )
-            });
-            self
-        }
-        pub fn body_map<F>(mut self, f: F) -> Self
-        where
-            F: std::ops::FnOnce(
-                    types::builder::AttachGitHubInstallationRequest,
-                ) -> types::builder::AttachGitHubInstallationRequest,
-        {
-            self.body = self.body.map(f);
-            self
-        }
-        ///Sends a `POST` request to `/api/v1/manage/tenants/{tenant_id}/github-installations/attach`
-        pub async fn send(
-            self,
-        ) -> Result<ResponseValue<types::GitHubInstallationResponse>, Error<types::ManageError>>
-        {
-            let Self {
-                client,
-                tenant_id,
-                body,
-            } = self;
-            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
-            let body = body
-                .and_then(|v| {
-                    types::AttachGitHubInstallationRequest::try_from(v).map_err(|e| e.to_string())
-                })
-                .map_err(Error::InvalidRequest)?;
-            let url = format!(
-                "{}/api/v1/manage/tenants/{}/github-installations/attach",
-                client.baseurl,
-                encode_path(&tenant_id.to_string()),
-            );
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .post(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .json(&body)
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "manage_attach_github_installation",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                201u16 => ResponseValue::from_response(response).await,
-                403u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                404u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                429u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                500u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                502u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::manage_start_github_link`]
-
-    [`Client::manage_start_github_link`]: super::Client::manage_start_github_link*/
-    #[derive(Debug, Clone)]
-    pub struct ManageStartGithubLink<'a> {
-        client: &'a super::Client,
-        tenant_id: Result<::std::string::String, String>,
-    }
-    impl<'a> ManageStartGithubLink<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                tenant_id: Err("tenant_id was not initialized".to_string()),
-            }
-        }
-        pub fn tenant_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.tenant_id = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
-            });
-            self
-        }
-        ///Sends a `POST` request to `/api/v1/manage/tenants/{tenant_id}/github-installations/link`
-        pub async fn send(
-            self,
-        ) -> Result<ResponseValue<types::GitHubLinkStartResponse>, Error<types::ManageError>>
-        {
-            let Self { client, tenant_id } = self;
-            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
-            let url = format!(
-                "{}/api/v1/manage/tenants/{}/github-installations/link",
-                client.baseurl,
-                encode_path(&tenant_id.to_string()),
-            );
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .post(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "manage_start_github_link",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                201u16 => ResponseValue::from_response(response).await,
-                403u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                404u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                429u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                500u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::manage_remove_github_installation`]
-
-    [`Client::manage_remove_github_installation`]: super::Client::manage_remove_github_installation*/
-    #[derive(Debug, Clone)]
-    pub struct ManageRemoveGithubInstallation<'a> {
-        client: &'a super::Client,
-        tenant_id: Result<::std::string::String, String>,
-        installation_id: Result<i64, String>,
-    }
-    impl<'a> ManageRemoveGithubInstallation<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                tenant_id: Err("tenant_id was not initialized".to_string()),
-                installation_id: Err("installation_id was not initialized".to_string()),
-            }
-        }
-        pub fn tenant_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.tenant_id = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
-            });
-            self
-        }
-        pub fn installation_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<i64>,
-        {
-            self.installation_id = value
-                .try_into()
-                .map_err(|_| "conversion to `i64` for installation_id failed".to_string());
-            self
-        }
-        ///Sends a `DELETE` request to `/api/v1/manage/tenants/{tenant_id}/github-installations/{installation_id}`
-        pub async fn send(self) -> Result<ResponseValue<()>, Error<types::ManageError>> {
-            let Self {
-                client,
-                tenant_id,
-                installation_id,
-            } = self;
-            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
-            let installation_id = installation_id.map_err(Error::InvalidRequest)?;
-            let url = format!(
-                "{}/api/v1/manage/tenants/{}/github-installations/{}",
-                client.baseurl,
-                encode_path(&tenant_id.to_string()),
-                encode_path(&installation_id.to_string()),
-            );
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .delete(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "manage_remove_github_installation",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                204u16 => Ok(ResponseValue::empty(response)),
-                403u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                404u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                429u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                500u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::manage_list_memberships`]
-
-    [`Client::manage_list_memberships`]: super::Client::manage_list_memberships*/
-    #[derive(Debug, Clone)]
-    pub struct ManageListMemberships<'a> {
-        client: &'a super::Client,
-        tenant_id: Result<::std::string::String, String>,
-    }
-    impl<'a> ManageListMemberships<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                tenant_id: Err("tenant_id was not initialized".to_string()),
-            }
-        }
-        pub fn tenant_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.tenant_id = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
-            });
-            self
-        }
-        ///Sends a `GET` request to `/api/v1/manage/tenants/{tenant_id}/memberships`
-        pub async fn send(
-            self,
-        ) -> Result<
-            ResponseValue<::std::vec::Vec<types::MembershipResponse>>,
-            Error<types::ManageError>,
-        > {
-            let Self { client, tenant_id } = self;
-            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
-            let url = format!(
-                "{}/api/v1/manage/tenants/{}/memberships",
-                client.baseurl,
-                encode_path(&tenant_id.to_string()),
-            );
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .get(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "manage_list_memberships",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                200u16 => ResponseValue::from_response(response).await,
-                403u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                429u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                500u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::manage_upsert_membership`]
-
-    [`Client::manage_upsert_membership`]: super::Client::manage_upsert_membership*/
-    #[derive(Debug, Clone)]
-    pub struct ManageUpsertMembership<'a> {
-        client: &'a super::Client,
-        tenant_id: Result<::std::string::String, String>,
-        body: Result<types::builder::UpsertMembershipRequest, String>,
-    }
-    impl<'a> ManageUpsertMembership<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                tenant_id: Err("tenant_id was not initialized".to_string()),
-                body: Ok(::std::default::Default::default()),
-            }
-        }
-        pub fn tenant_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.tenant_id = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
-            });
-            self
-        }
-        pub fn body<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<types::UpsertMembershipRequest>,
-            <V as std::convert::TryInto<types::UpsertMembershipRequest>>::Error: std::fmt::Display,
-        {
-            self.body = value.try_into().map(From::from).map_err(|s| {
-                format!(
-                    "conversion to `UpsertMembershipRequest` for body failed: {}",
-                    s
-                )
-            });
-            self
-        }
-        pub fn body_map<F>(mut self, f: F) -> Self
-        where
-            F: std::ops::FnOnce(
-                    types::builder::UpsertMembershipRequest,
-                ) -> types::builder::UpsertMembershipRequest,
-        {
-            self.body = self.body.map(f);
-            self
-        }
-        ///Sends a `PUT` request to `/api/v1/manage/tenants/{tenant_id}/memberships`
-        pub async fn send(
-            self,
-        ) -> Result<ResponseValue<types::MembershipResponse>, Error<types::ManageError>> {
-            let Self {
-                client,
-                tenant_id,
-                body,
-            } = self;
-            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
-            let body = body
-                .and_then(|v| {
-                    types::UpsertMembershipRequest::try_from(v).map_err(|e| e.to_string())
-                })
-                .map_err(Error::InvalidRequest)?;
-            let url = format!(
-                "{}/api/v1/manage/tenants/{}/memberships",
-                client.baseurl,
-                encode_path(&tenant_id.to_string()),
-            );
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .put(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .json(&body)
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "manage_upsert_membership",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                200u16 => ResponseValue::from_response(response).await,
-                403u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                404u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                409u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                429u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                500u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                _ => Err(Error::UnexpectedResponse(response)),
-            }
-        }
-    }
-    /**Builder for [`Client::manage_remove_membership`]
-
-    [`Client::manage_remove_membership`]: super::Client::manage_remove_membership*/
-    #[derive(Debug, Clone)]
-    pub struct ManageRemoveMembership<'a> {
-        client: &'a super::Client,
-        tenant_id: Result<::std::string::String, String>,
-        user_id: Result<::std::string::String, String>,
-    }
-    impl<'a> ManageRemoveMembership<'a> {
-        pub fn new(client: &'a super::Client) -> Self {
-            Self {
-                client: client,
-                tenant_id: Err("tenant_id was not initialized".to_string()),
-                user_id: Err("user_id was not initialized".to_string()),
-            }
-        }
-        pub fn tenant_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.tenant_id = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
-            });
-            self
-        }
-        pub fn user_id<V>(mut self, value: V) -> Self
-        where
-            V: std::convert::TryInto<::std::string::String>,
-        {
-            self.user_id = value.try_into().map_err(|_| {
-                "conversion to `:: std :: string :: String` for user_id failed".to_string()
-            });
-            self
-        }
-        ///Sends a `DELETE` request to `/api/v1/manage/tenants/{tenant_id}/memberships/{user_id}`
-        pub async fn send(self) -> Result<ResponseValue<()>, Error<types::ManageError>> {
-            let Self {
-                client,
-                tenant_id,
-                user_id,
-            } = self;
-            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
-            let user_id = user_id.map_err(Error::InvalidRequest)?;
-            let url = format!(
-                "{}/api/v1/manage/tenants/{}/memberships/{}",
-                client.baseurl,
-                encode_path(&tenant_id.to_string()),
-                encode_path(&user_id.to_string()),
-            );
-            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
-            header_map.append(
-                ::reqwest::header::HeaderName::from_static("api-version"),
-                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
-            );
-            #[allow(unused_mut)]
-            let mut request = client
-                .client
-                .delete(url)
-                .header(
-                    ::reqwest::header::ACCEPT,
-                    ::reqwest::header::HeaderValue::from_static("application/json"),
-                )
-                .headers(header_map)
-                .build()?;
-            let info = OperationInfo {
-                operation_id: "manage_remove_membership",
-            };
-            client.pre(&mut request, &info).await?;
-            let result = client.exec(request, &info).await;
-            client.post(&result, &info).await?;
-            let response = result?;
-            match response.status().as_u16() {
-                204u16 => Ok(ResponseValue::empty(response)),
-                400u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                403u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                409u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                429u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
-                500u16 => Err(Error::ErrorResponse(
-                    ResponseValue::from_response(response).await?,
-                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -19839,6 +17777,51 @@ pub mod builder {
                 401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 503u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::get_schema`]
+
+    [`Client::get_schema`]: super::Client::get_schema*/
+    #[derive(Debug, Clone)]
+    pub struct GetSchema<'a> {
+        client: &'a super::Client,
+    }
+    impl<'a> GetSchema<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self { client: client }
+        }
+        ///Sends a `GET` request to `/api/v1/schema`
+        pub async fn send(self) -> Result<ResponseValue<types::SchemaResponse>, Error<()>> {
+            let Self { client } = self;
+            let url = format!("{}/api/v1/schema", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "get_schema",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -20871,19 +18854,21 @@ pub mod builder {
             }
         }
     }
-    /**Builder for [`Client::list_tenants_self`]
+    /**Builder for [`Client::list_tenants`]
 
-    [`Client::list_tenants_self`]: super::Client::list_tenants_self*/
+    [`Client::list_tenants`]: super::Client::list_tenants*/
     #[derive(Debug, Clone)]
-    pub struct ListTenantsSelf<'a> {
+    pub struct ListTenants<'a> {
         client: &'a super::Client,
     }
-    impl<'a> ListTenantsSelf<'a> {
+    impl<'a> ListTenants<'a> {
         pub fn new(client: &'a super::Client) -> Self {
             Self { client: client }
         }
         ///Sends a `GET` request to `/api/v1/tenants`
-        pub async fn send(self) -> Result<ResponseValue<types::TenantSelfListResponse>, Error<()>> {
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::ListTenantsResponse>, Error<types::ApiError>> {
             let Self { client } = self;
             let url = format!("{}/api/v1/tenants", client.baseurl,);
             let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
@@ -20902,7 +18887,7 @@ pub mod builder {
                 .headers(header_map)
                 .build()?;
             let info = OperationInfo {
-                operation_id: "list_tenants_self",
+                operation_id: "list_tenants",
             };
             client.pre(&mut request, &info).await?;
             let result = client.exec(request, &info).await;
@@ -20910,19 +18895,113 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
+                401u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
     }
-    /**Builder for [`Client::get_tenant_self`]
+    /**Builder for [`Client::create_tenant`]
 
-    [`Client::get_tenant_self`]: super::Client::get_tenant_self*/
+    [`Client::create_tenant`]: super::Client::create_tenant*/
     #[derive(Debug, Clone)]
-    pub struct GetTenantSelf<'a> {
+    pub struct CreateTenant<'a> {
+        client: &'a super::Client,
+        body: Result<types::builder::CreateTenantRequest, String>,
+    }
+    impl<'a> CreateTenant<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::CreateTenantRequest>,
+            <V as std::convert::TryInto<types::CreateTenantRequest>>::Error: std::fmt::Display,
+        {
+            self.body = value
+                .try_into()
+                .map(From::from)
+                .map_err(|s| format!("conversion to `CreateTenantRequest` for body failed: {}", s));
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(
+                    types::builder::CreateTenantRequest,
+                ) -> types::builder::CreateTenantRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/tenants`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::TenantResponse>, Error<types::ApiError>> {
+            let Self { client, body } = self;
+            let body = body
+                .and_then(|v| types::CreateTenantRequest::try_from(v).map_err(|e| e.to_string()))
+                .map_err(Error::InvalidRequest)?;
+            let url = format!("{}/api/v1/tenants", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "create_tenant",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                201u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                401u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::get_tenant`]
+
+    [`Client::get_tenant`]: super::Client::get_tenant*/
+    #[derive(Debug, Clone)]
+    pub struct GetTenant<'a> {
         client: &'a super::Client,
         tenant_id: Result<::std::string::String, String>,
     }
-    impl<'a> GetTenantSelf<'a> {
+    impl<'a> GetTenant<'a> {
         pub fn new(client: &'a super::Client) -> Self {
             Self {
                 client: client,
@@ -20939,7 +19018,9 @@ pub mod builder {
             self
         }
         ///Sends a `GET` request to `/api/v1/tenants/{tenant_id}`
-        pub async fn send(self) -> Result<ResponseValue<types::TenantInfo>, Error<()>> {
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::TenantResponse>, Error<types::ApiError>> {
             let Self { client, tenant_id } = self;
             let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
             let url = format!(
@@ -20963,7 +19044,7 @@ pub mod builder {
                 .headers(header_map)
                 .build()?;
             let info = OperationInfo {
-                operation_id: "get_tenant_self",
+                operation_id: "get_tenant",
             };
             client.pre(&mut request, &info).await?;
             let result = client.exec(request, &info).await;
@@ -20971,8 +19052,1552 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
-                403u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
-                404u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                401u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::delete_tenant`]
+
+    [`Client::delete_tenant`]: super::Client::delete_tenant*/
+    #[derive(Debug, Clone)]
+    pub struct DeleteTenant<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+    }
+    impl<'a> DeleteTenant<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `DELETE` request to `/api/v1/tenants/{tenant_id}`
+        pub async fn send(self) -> Result<ResponseValue<()>, Error<types::ApiError>> {
+            let Self { client, tenant_id } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .delete(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "delete_tenant",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                204u16 => Ok(ResponseValue::empty(response)),
+                401u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::update_tenant`]
+
+    [`Client::update_tenant`]: super::Client::update_tenant*/
+    #[derive(Debug, Clone)]
+    pub struct UpdateTenant<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+        body: Result<types::builder::UpdateTenantRequest, String>,
+    }
+    impl<'a> UpdateTenant<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::UpdateTenantRequest>,
+            <V as std::convert::TryInto<types::UpdateTenantRequest>>::Error: std::fmt::Display,
+        {
+            self.body = value
+                .try_into()
+                .map(From::from)
+                .map_err(|s| format!("conversion to `UpdateTenantRequest` for body failed: {}", s));
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(
+                    types::builder::UpdateTenantRequest,
+                ) -> types::builder::UpdateTenantRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `PATCH` request to `/api/v1/tenants/{tenant_id}`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::TenantResponse>, Error<types::ApiError>> {
+            let Self {
+                client,
+                tenant_id,
+                body,
+            } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let body = body
+                .and_then(|v| types::UpdateTenantRequest::try_from(v).map_err(|e| e.to_string()))
+                .map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .patch(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "update_tenant",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                401u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::list_api_keys`]
+
+    [`Client::list_api_keys`]: super::Client::list_api_keys*/
+    #[derive(Debug, Clone)]
+    pub struct ListApiKeys<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+    }
+    impl<'a> ListApiKeys<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/v1/tenants/{tenant_id}/api-keys`
+        pub async fn send(
+            self,
+        ) -> Result<
+            ResponseValue<::std::vec::Vec<types::ManageApiKeyResponse>>,
+            Error<types::ManageError>,
+        > {
+            let Self { client, tenant_id } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}/api-keys",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "list_api_keys",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                401u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::create_api_key`]
+
+    [`Client::create_api_key`]: super::Client::create_api_key*/
+    #[derive(Debug, Clone)]
+    pub struct CreateApiKey<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+        body: Result<types::builder::ManageCreateApiKeyRequest, String>,
+    }
+    impl<'a> CreateApiKey<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::ManageCreateApiKeyRequest>,
+            <V as std::convert::TryInto<types::ManageCreateApiKeyRequest>>::Error:
+                std::fmt::Display,
+        {
+            self.body = value.try_into().map(From::from).map_err(|s| {
+                format!(
+                    "conversion to `ManageCreateApiKeyRequest` for body failed: {}",
+                    s
+                )
+            });
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(
+                    types::builder::ManageCreateApiKeyRequest,
+                ) -> types::builder::ManageCreateApiKeyRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/tenants/{tenant_id}/api-keys`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::ManageCreatedApiKey>, Error<types::ManageError>> {
+            let Self {
+                client,
+                tenant_id,
+                body,
+            } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let body = body
+                .and_then(|v| {
+                    types::ManageCreateApiKeyRequest::try_from(v).map_err(|e| e.to_string())
+                })
+                .map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}/api-keys",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "create_api_key",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                201u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                401u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                422u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::revoke_api_key`]
+
+    [`Client::revoke_api_key`]: super::Client::revoke_api_key*/
+    #[derive(Debug, Clone)]
+    pub struct RevokeApiKey<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+        key_id: Result<::std::string::String, String>,
+    }
+    impl<'a> RevokeApiKey<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+                key_id: Err("key_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        pub fn key_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.key_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for key_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `DELETE` request to `/api/v1/tenants/{tenant_id}/api-keys/{key_id}`
+        pub async fn send(self) -> Result<ResponseValue<()>, Error<types::ManageError>> {
+            let Self {
+                client,
+                tenant_id,
+                key_id,
+            } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let key_id = key_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}/api-keys/{}",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+                encode_path(&key_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .delete(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "revoke_api_key",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                204u16 => Ok(ResponseValue::empty(response)),
+                401u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::update_api_key`]
+
+    [`Client::update_api_key`]: super::Client::update_api_key*/
+    #[derive(Debug, Clone)]
+    pub struct UpdateApiKey<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+        key_id: Result<::std::string::String, String>,
+        body: Result<types::builder::ManageUpdateApiKeyRequest, String>,
+    }
+    impl<'a> UpdateApiKey<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+                key_id: Err("key_id was not initialized".to_string()),
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        pub fn key_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.key_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for key_id failed".to_string()
+            });
+            self
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::ManageUpdateApiKeyRequest>,
+            <V as std::convert::TryInto<types::ManageUpdateApiKeyRequest>>::Error:
+                std::fmt::Display,
+        {
+            self.body = value.try_into().map(From::from).map_err(|s| {
+                format!(
+                    "conversion to `ManageUpdateApiKeyRequest` for body failed: {}",
+                    s
+                )
+            });
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(
+                    types::builder::ManageUpdateApiKeyRequest,
+                ) -> types::builder::ManageUpdateApiKeyRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `PATCH` request to `/api/v1/tenants/{tenant_id}/api-keys/{key_id}`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::ManageApiKeyResponse>, Error<types::ManageError>> {
+            let Self {
+                client,
+                tenant_id,
+                key_id,
+                body,
+            } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let key_id = key_id.map_err(Error::InvalidRequest)?;
+            let body = body
+                .and_then(|v| {
+                    types::ManageUpdateApiKeyRequest::try_from(v).map_err(|e| e.to_string())
+                })
+                .map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}/api-keys/{}",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+                encode_path(&key_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .patch(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "update_api_key",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                401u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                422u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::list_datasets`]
+
+    [`Client::list_datasets`]: super::Client::list_datasets*/
+    #[derive(Debug, Clone)]
+    pub struct ListDatasets<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+    }
+    impl<'a> ListDatasets<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/v1/tenants/{tenant_id}/datasets`
+        pub async fn send(
+            self,
+        ) -> Result<
+            ResponseValue<::std::vec::Vec<types::ManageDatasetResponse>>,
+            Error<types::ManageError>,
+        > {
+            let Self { client, tenant_id } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}/datasets",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "list_datasets",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                401u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::create_dataset`]
+
+    [`Client::create_dataset`]: super::Client::create_dataset*/
+    #[derive(Debug, Clone)]
+    pub struct CreateDataset<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+        body: Result<types::builder::ManageCreateDatasetRequest, String>,
+    }
+    impl<'a> CreateDataset<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::ManageCreateDatasetRequest>,
+            <V as std::convert::TryInto<types::ManageCreateDatasetRequest>>::Error:
+                std::fmt::Display,
+        {
+            self.body = value.try_into().map(From::from).map_err(|s| {
+                format!(
+                    "conversion to `ManageCreateDatasetRequest` for body failed: {}",
+                    s
+                )
+            });
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(
+                    types::builder::ManageCreateDatasetRequest,
+                ) -> types::builder::ManageCreateDatasetRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/tenants/{tenant_id}/datasets`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::ManageDatasetResponse>, Error<types::ManageError>>
+        {
+            let Self {
+                client,
+                tenant_id,
+                body,
+            } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let body = body
+                .and_then(|v| {
+                    types::ManageCreateDatasetRequest::try_from(v).map_err(|e| e.to_string())
+                })
+                .map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}/datasets",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "create_dataset",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                201u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                401u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::delete_dataset`]
+
+    [`Client::delete_dataset`]: super::Client::delete_dataset*/
+    #[derive(Debug, Clone)]
+    pub struct DeleteDataset<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+        dataset_name: Result<::std::string::String, String>,
+    }
+    impl<'a> DeleteDataset<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+                dataset_name: Err("dataset_name was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        pub fn dataset_name<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.dataset_name = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for dataset_name failed".to_string()
+            });
+            self
+        }
+        ///Sends a `DELETE` request to `/api/v1/tenants/{tenant_id}/datasets/{dataset_name}`
+        pub async fn send(self) -> Result<ResponseValue<()>, Error<types::ManageError>> {
+            let Self {
+                client,
+                tenant_id,
+                dataset_name,
+            } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let dataset_name = dataset_name.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}/datasets/{}",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+                encode_path(&dataset_name.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .delete(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "delete_dataset",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                204u16 => Ok(ResponseValue::empty(response)),
+                401u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::list_github_installations`]
+
+    [`Client::list_github_installations`]: super::Client::list_github_installations*/
+    #[derive(Debug, Clone)]
+    pub struct ListGithubInstallations<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+    }
+    impl<'a> ListGithubInstallations<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/v1/tenants/{tenant_id}/github-installations`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::GitHubInstallationsResponse>, Error<types::ManageError>>
+        {
+            let Self { client, tenant_id } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}/github-installations",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "list_github_installations",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::attach_github_installation`]
+
+    [`Client::attach_github_installation`]: super::Client::attach_github_installation*/
+    #[derive(Debug, Clone)]
+    pub struct AttachGithubInstallation<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+        body: Result<types::builder::AttachGitHubInstallationRequest, String>,
+    }
+    impl<'a> AttachGithubInstallation<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::AttachGitHubInstallationRequest>,
+            <V as std::convert::TryInto<types::AttachGitHubInstallationRequest>>::Error:
+                std::fmt::Display,
+        {
+            self.body = value.try_into().map(From::from).map_err(|s| {
+                format!(
+                    "conversion to `AttachGitHubInstallationRequest` for body failed: {}",
+                    s
+                )
+            });
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(
+                    types::builder::AttachGitHubInstallationRequest,
+                ) -> types::builder::AttachGitHubInstallationRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/tenants/{tenant_id}/github-installations/attach`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::GitHubInstallationResponse>, Error<types::ManageError>>
+        {
+            let Self {
+                client,
+                tenant_id,
+                body,
+            } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let body = body
+                .and_then(|v| {
+                    types::AttachGitHubInstallationRequest::try_from(v).map_err(|e| e.to_string())
+                })
+                .map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}/github-installations/attach",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "attach_github_installation",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                201u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                502u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::start_github_link`]
+
+    [`Client::start_github_link`]: super::Client::start_github_link*/
+    #[derive(Debug, Clone)]
+    pub struct StartGithubLink<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+    }
+    impl<'a> StartGithubLink<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/tenants/{tenant_id}/github-installations/link`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::GitHubLinkStartResponse>, Error<types::ManageError>>
+        {
+            let Self { client, tenant_id } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}/github-installations/link",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "start_github_link",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                201u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::remove_github_installation`]
+
+    [`Client::remove_github_installation`]: super::Client::remove_github_installation*/
+    #[derive(Debug, Clone)]
+    pub struct RemoveGithubInstallation<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+        installation_id: Result<i64, String>,
+    }
+    impl<'a> RemoveGithubInstallation<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+                installation_id: Err("installation_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        pub fn installation_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<i64>,
+        {
+            self.installation_id = value
+                .try_into()
+                .map_err(|_| "conversion to `i64` for installation_id failed".to_string());
+            self
+        }
+        ///Sends a `DELETE` request to `/api/v1/tenants/{tenant_id}/github-installations/{installation_id}`
+        pub async fn send(self) -> Result<ResponseValue<()>, Error<types::ManageError>> {
+            let Self {
+                client,
+                tenant_id,
+                installation_id,
+            } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let installation_id = installation_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}/github-installations/{}",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+                encode_path(&installation_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .delete(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "remove_github_installation",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                204u16 => Ok(ResponseValue::empty(response)),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::list_memberships`]
+
+    [`Client::list_memberships`]: super::Client::list_memberships*/
+    #[derive(Debug, Clone)]
+    pub struct ListMemberships<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+    }
+    impl<'a> ListMemberships<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/v1/tenants/{tenant_id}/memberships`
+        pub async fn send(
+            self,
+        ) -> Result<
+            ResponseValue<::std::vec::Vec<types::MembershipResponse>>,
+            Error<types::ManageError>,
+        > {
+            let Self { client, tenant_id } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}/memberships",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "list_memberships",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                401u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::upsert_membership`]
+
+    [`Client::upsert_membership`]: super::Client::upsert_membership*/
+    #[derive(Debug, Clone)]
+    pub struct UpsertMembership<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+        body: Result<types::builder::UpsertMembershipRequest, String>,
+    }
+    impl<'a> UpsertMembership<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::UpsertMembershipRequest>,
+            <V as std::convert::TryInto<types::UpsertMembershipRequest>>::Error: std::fmt::Display,
+        {
+            self.body = value.try_into().map(From::from).map_err(|s| {
+                format!(
+                    "conversion to `UpsertMembershipRequest` for body failed: {}",
+                    s
+                )
+            });
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(
+                    types::builder::UpsertMembershipRequest,
+                ) -> types::builder::UpsertMembershipRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `PUT` request to `/api/v1/tenants/{tenant_id}/memberships`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::MembershipResponse>, Error<types::ManageError>> {
+            let Self {
+                client,
+                tenant_id,
+                body,
+            } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let body = body
+                .and_then(|v| {
+                    types::UpsertMembershipRequest::try_from(v).map_err(|e| e.to_string())
+                })
+                .map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}/memberships",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .put(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "upsert_membership",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                401u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::remove_membership`]
+
+    [`Client::remove_membership`]: super::Client::remove_membership*/
+    #[derive(Debug, Clone)]
+    pub struct RemoveMembership<'a> {
+        client: &'a super::Client,
+        tenant_id: Result<::std::string::String, String>,
+        user_id: Result<::std::string::String, String>,
+    }
+    impl<'a> RemoveMembership<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                tenant_id: Err("tenant_id was not initialized".to_string()),
+                user_id: Err("user_id was not initialized".to_string()),
+            }
+        }
+        pub fn tenant_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.tenant_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for tenant_id failed".to_string()
+            });
+            self
+        }
+        pub fn user_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.user_id = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for user_id failed".to_string()
+            });
+            self
+        }
+        ///Sends a `DELETE` request to `/api/v1/tenants/{tenant_id}/memberships/{user_id}`
+        pub async fn send(self) -> Result<ResponseValue<()>, Error<types::ManageError>> {
+            let Self {
+                client,
+                tenant_id,
+                user_id,
+            } = self;
+            let tenant_id = tenant_id.map_err(Error::InvalidRequest)?;
+            let user_id = user_id.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/tenants/{}/memberships/{}",
+                client.baseurl,
+                encode_path(&tenant_id.to_string()),
+                encode_path(&user_id.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .delete(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "remove_membership",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                204u16 => Ok(ResponseValue::empty(response)),
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                401u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -21342,6 +20967,142 @@ pub mod builder {
                 201u16 => ResponseValue::from_response(response).await,
                 403u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 500u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::list_users`]
+
+    [`Client::list_users`]: super::Client::list_users*/
+    #[derive(Debug, Clone)]
+    pub struct ListUsers<'a> {
+        client: &'a super::Client,
+    }
+    impl<'a> ListUsers<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self { client: client }
+        }
+        ///Sends a `GET` request to `/api/v1/users`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::ListUsersResponse>, Error<types::ApiError>> {
+            let Self { client } = self;
+            let url = format!("{}/api/v1/users", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "list_users",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                401u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::create_user`]
+
+    [`Client::create_user`]: super::Client::create_user*/
+    #[derive(Debug, Clone)]
+    pub struct CreateUser<'a> {
+        client: &'a super::Client,
+        body: Result<types::builder::CreateUserRequest, String>,
+    }
+    impl<'a> CreateUser<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::CreateUserRequest>,
+            <V as std::convert::TryInto<types::CreateUserRequest>>::Error: std::fmt::Display,
+        {
+            self.body = value
+                .try_into()
+                .map(From::from)
+                .map_err(|s| format!("conversion to `CreateUserRequest` for body failed: {}", s));
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(
+                    types::builder::CreateUserRequest,
+                ) -> types::builder::CreateUserRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/users`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::UserResponse>, Error<types::ApiError>> {
+            let Self { client, body } = self;
+            let body = body
+                .and_then(|v| types::CreateUserRequest::try_from(v).map_err(|e| e.to_string()))
+                .map_err(Error::InvalidRequest)?;
+            let url = format!("{}/api/v1/users", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "create_user",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                201u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                401u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -23865,41 +23626,33 @@ pub mod prelude {
 /// Every operation id declared in the OpenAPI document, alphabetized.
 /// Regenerated by `cargo xtask generate`; see `client-surface-parity`.
 pub const OPERATIONS: &[&str] = &[
+    "attach_github_installation",
     "connection_info",
+    "create_api_key",
+    "create_dataset",
+    "create_tenant",
     "create_tenant_tables",
+    "create_user",
     "current_session",
-    "get_tenant_self",
+    "delete_dataset",
+    "delete_tenant",
+    "get_schema",
+    "get_tenant",
     "github_callback",
+    "list_api_keys",
     "list_available_schemas",
+    "list_datasets",
+    "list_github_installations",
+    "list_memberships",
     "list_tenant_schemas",
     "list_tenant_tables",
-    "list_tenants_self",
+    "list_tenants",
+    "list_users",
     "login_config",
     "logql_label_values",
     "logql_labels",
     "logql_query",
     "logql_query_range",
-    "manage_admin_create_user",
-    "manage_admin_delete_tenant",
-    "manage_admin_get_tenant",
-    "manage_admin_list_tenants",
-    "manage_admin_update_tenant",
-    "manage_attach_github_installation",
-    "manage_create_api_key",
-    "manage_create_dataset",
-    "manage_create_tenant",
-    "manage_delete_dataset",
-    "manage_get_schema",
-    "manage_list_api_keys",
-    "manage_list_datasets",
-    "manage_list_github_installations",
-    "manage_list_memberships",
-    "manage_remove_github_installation",
-    "manage_remove_membership",
-    "manage_revoke_api_key",
-    "manage_start_github_link",
-    "manage_update_api_key",
-    "manage_upsert_membership",
     "oauth_consent_context",
     "oauth_consent_decision",
     "ops_compact",
@@ -23925,6 +23678,9 @@ pub const OPERATIONS: &[&str] = &[
     "query_ir",
     "query_single_trace",
     "query_sources",
+    "remove_github_installation",
+    "remove_membership",
+    "revoke_api_key",
     "schema_create_registry",
     "schema_delete_registry",
     "schema_get_registry",
@@ -23946,5 +23702,9 @@ pub const OPERATIONS: &[&str] = &[
     "session_oidc_start",
     "source_context",
     "source_context_availability",
+    "start_github_link",
+    "update_api_key",
+    "update_tenant",
+    "upsert_membership",
     "whoami",
 ];

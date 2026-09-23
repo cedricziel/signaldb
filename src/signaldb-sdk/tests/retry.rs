@@ -41,7 +41,7 @@ async fn throttled_get_succeeds_after_retry() {
         ScriptedServer::start(vec![Scripted::throttled("0"), Scripted::ok_json(TENANTS)]).await;
     let client = client(&server, fast());
     let resp = client
-        .manage_admin_list_tenants()
+        .list_tenants()
         .send()
         .await
         .expect("succeeds on retry");
@@ -80,11 +80,7 @@ async fn transient_failure_on_get_is_retried() {
     let server =
         ScriptedServer::start(vec![Scripted::status(503), Scripted::ok_json(TENANTS)]).await;
     let client = client(&server, fast());
-    client
-        .manage_admin_list_tenants()
-        .send()
-        .await
-        .expect("503 then 200");
+    client.list_tenants().send().await.expect("503 then 200");
     assert_eq!(server.request_count(), 2);
 }
 
@@ -109,7 +105,7 @@ async fn client_error_is_not_retried() {
         ScriptedServer::start(vec![Scripted::status(400), Scripted::ok_json(TENANTS)]).await;
     let client = client(&server, fast());
     let err = client
-        .manage_admin_list_tenants()
+        .list_tenants()
         .send()
         .await
         .expect_err("400 surfaces");
@@ -123,11 +119,7 @@ async fn retry_after_seconds_is_respected() {
         ScriptedServer::start(vec![Scripted::throttled("1"), Scripted::ok_json(TENANTS)]).await;
     let client = client(&server, fast());
     let started = Instant::now();
-    client
-        .manage_admin_list_tenants()
-        .send()
-        .await
-        .expect("succeeds");
+    client.list_tenants().send().await.expect("succeeds");
     assert!(
         started.elapsed() >= Duration::from_secs(1),
         "waited only {:?}",
@@ -146,11 +138,7 @@ async fn retry_after_http_date_is_respected() {
     .await;
     let client = client(&server, fast());
     let started = Instant::now();
-    client
-        .manage_admin_list_tenants()
-        .send()
-        .await
-        .expect("succeeds");
+    client.list_tenants().send().await.expect("succeeds");
     // HTTP-dates have second resolution, so the parsed wait can be up to a
     // second shorter than the intended one; a retry must still have waited
     // for the visible remainder rather than firing immediately.
@@ -168,7 +156,7 @@ async fn retry_after_beyond_cap_fails_fast() {
     let client = client(&server, fast());
     let started = Instant::now();
     let err = client
-        .manage_admin_list_tenants()
+        .list_tenants()
         .send()
         .await
         .expect_err("fails fast with the 429");
@@ -190,7 +178,7 @@ async fn attempts_are_bounded_and_last_failure_is_returned() {
     .await;
     let client = client(&server, fast());
     let err = client
-        .manage_admin_list_tenants()
+        .list_tenants()
         .send()
         .await
         .expect_err("still throttled after the budget");
@@ -211,7 +199,7 @@ async fn disabled_policy_never_retries() {
         ScriptedServer::start(vec![Scripted::throttled("0"), Scripted::ok_json(TENANTS)]).await;
     let client = client(&server, RetryPolicy::disabled());
     let err = client
-        .manage_admin_list_tenants()
+        .list_tenants()
         .send()
         .await
         .expect_err("429 surfaces on the first attempt");
@@ -234,11 +222,7 @@ async fn observer_sees_one_event_per_retry() {
         sink.lock().unwrap().push(*e);
     }));
     let client = client(&server, policy);
-    client
-        .manage_admin_list_tenants()
-        .send()
-        .await
-        .expect("succeeds");
+    client.list_tenants().send().await.expect("succeeds");
     let events = events.lock().unwrap().clone();
     assert_eq!(events.len(), 2);
     assert_eq!(events[0].attempt, 1);
@@ -264,7 +248,7 @@ async fn connection_failure_on_get_is_retried_up_to_the_budget() {
         .build()
         .unwrap();
     let err = client
-        .manage_admin_list_tenants()
+        .list_tenants()
         .send()
         .await
         .expect_err("nothing listens");

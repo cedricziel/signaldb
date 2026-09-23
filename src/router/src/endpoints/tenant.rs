@@ -7,9 +7,7 @@ use axum::{
     routing::{get, post},
 };
 use common::auth::TenantContextExtractor;
-use common::tenant_api::{
-    ListTablesResponse, ListTenantsResponse, TableInfo, TenantApi, TenantInfo,
-};
+use common::tenant_api::{ListTablesResponse, TableInfo, TenantApi};
 use serde::Serialize;
 use serde_json::json;
 use utoipa::ToSchema;
@@ -33,8 +31,6 @@ pub struct AvailableSchemasResponse {
 /// Create tenant management routes
 pub fn router() -> Router<RouterAppState> {
     Router::new()
-        .route("/tenants", get(list_tenants))
-        .route("/tenants/{tenant_id}", get(get_tenant))
         .route("/tenants/{tenant_id}/tables", get(list_tenant_tables))
         .route(
             "/tenants/{tenant_id}/tables/create",
@@ -42,77 +38,6 @@ pub fn router() -> Router<RouterAppState> {
         )
         .route("/tenants/{tenant_id}/schemas", get(list_tenant_schemas))
         .route("/schemas/available", get(list_available_schemas))
-}
-
-/// GET /tenants
-///
-/// List all configured tenants
-#[utoipa::path(
-    get,
-    path = "/api/v1/tenants",
-    tag = "tenants",
-    operation_id = "list_tenants_self",
-    security(("bearerAuth" = [])),
-    responses(
-        (status = 200, description = "The caller's own tenant, as a single-entry list", body = ListTenantsResponse),
-    )
-)]
-#[tracing::instrument(skip_all)]
-pub async fn list_tenants(
-    state: State<RouterAppState>,
-    TenantContextExtractor(ctx): TenantContextExtractor,
-) -> impl IntoResponse {
-    let api = TenantApi::new(state.config().clone());
-    let mut response = api.list_tenants();
-    response
-        .tenants
-        .retain(|tenant| tenant.tenant_id == ctx.tenant_id);
-    response.default_tenant = ctx.tenant_id;
-    Json(response)
-}
-
-/// GET /tenants/:tenant_id
-///
-/// Get information about a specific tenant
-#[utoipa::path(
-    get,
-    path = "/api/v1/tenants/{tenant_id}",
-    tag = "tenants",
-    operation_id = "get_tenant_self",
-    security(("bearerAuth" = [])),
-    params(("tenant_id" = String, Path, description = "Tenant identifier (must match the authenticated tenant)")),
-    responses(
-        (status = 200, description = "Tenant information", body = TenantInfo),
-        (status = 403, description = "Requested tenant does not match the authenticated tenant"),
-        (status = 404, description = "Tenant not found"),
-    )
-)]
-#[tracing::instrument(skip_all, fields(signaldb.tenant.id = %tenant_id))]
-pub async fn get_tenant(
-    state: State<RouterAppState>,
-    Path(tenant_id): Path<String>,
-    TenantContextExtractor(ctx): TenantContextExtractor,
-) -> impl IntoResponse {
-    if tenant_id != ctx.tenant_id {
-        return forbidden_tenant().into_response();
-    }
-    let api = TenantApi::new(state.config().clone());
-
-    match api.get_tenant(&tenant_id) {
-        Ok(tenant_info) => (
-            StatusCode::OK,
-            Json(serde_json::to_value(tenant_info).unwrap()),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({
-                "error": "Tenant not found",
-                "message": e.to_string()
-            })),
-        )
-            .into_response(),
-    }
 }
 
 /// GET /tenants/:tenant_id/tables
@@ -446,8 +371,8 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(
-            json["error"],
-            "Requested tenant does not match authenticated tenant"
+            json["message"],
+            "Requested tenant does not match the authenticated tenant"
         );
     }
 

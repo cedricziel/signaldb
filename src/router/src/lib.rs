@@ -245,47 +245,35 @@ impl RouterAppState {
     }
 }
 
-/// Mount prefix for the instance-admin routes under `/api/v1/manage`, whose
-/// handlers additionally accept the break-glass `admin_api_key` with no
-/// tenant (see `auth_layer` below and `endpoints::manage_admin`). Relative to
-/// the `/api/v1` nest `auth_layer` is built inside — `Router::nest` strips
-/// the matched `/api/v1` prefix from the request `Uri` before an inner
-/// layer (including this one) ever sees it, so this must NOT include it.
-pub(crate) const MANAGE_ADMIN_PREFIX: &str = "/manage/admin";
-
-/// `POST /api/v1/manage/tenants` (`endpoints::management::create_tenant`):
-/// instance-admin-only like everything under [`MANAGE_ADMIN_PREFIX`], but has
-/// no route of its own there since it already lived at this path before
-/// issue #1561. Included in the same break-glass admin-key bypass so the
-/// CLI's `admin tenant create` works the same way as its list/get/update/
-/// delete siblings. Also relative to the `/api/v1` nest — see
-/// [`MANAGE_ADMIN_PREFIX`].
-pub(crate) const MANAGE_CREATE_TENANT_PATH: &str = "/manage/tenants";
-
-/// Whether `path` is eligible for the break-glass `admin_api_key` bypass in
-/// `auth_layer` below: an exact match on [`MANAGE_CREATE_TENANT_PATH`], a
-/// prefix match on [`MANAGE_ADMIN_PREFIX`], or a
-/// `/manage/tenants/{tenant_id}/api-keys...`/`/manage/tenants/{tenant_id}/datasets...`
-/// path — the tenant-scoped API-key/dataset admin surface the CLI's/TUI's
-/// `admin` commands use (`endpoints::management::authorize_tenant_or_admin_key`).
-/// Every other `/manage/tenants/{id}/...` path (memberships, schema, the
-/// tenant's own self-view) is deliberately excluded: it stays
-/// session/`tenant:manage`-key only.
+/// Whether `path` (relative to the `/api/v1` nest — `Router::nest` strips
+/// that prefix from the request `Uri` before an inner layer like
+/// `auth_layer` below ever sees it) is eligible for the break-glass
+/// `admin_api_key` bypass: the tenant-identity resource
+/// (`/tenants`, `/tenants/{id}`), human users (`/users`), or the
+/// tenant-scoped API-key/dataset/membership/GitHub-installation admin
+/// surface under `/tenants/{id}/...` — matched by route, not by any
+/// privilege-scope path segment (issue #1561 follow-up: there is no
+/// `/manage` or `/manage/admin` prefix left to match on). Every other
+/// `/tenants/{id}/...` path (`tables`, `schemas`, `source-context`) is
+/// deliberately excluded: those stay tenant-credential-only.
 fn is_admin_key_bypass_path(path: &str) -> bool {
-    if path == MANAGE_CREATE_TENANT_PATH || path.starts_with(MANAGE_ADMIN_PREFIX) {
-        return true;
-    }
     let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
     matches!(
         segments.as_slice(),
-        ["manage", "tenants", _, "api-keys", ..] | ["manage", "tenants", _, "datasets", ..]
+        ["tenants"]
+            | ["tenants", _]
+            | ["tenants", _, "api-keys", ..]
+            | ["tenants", _, "datasets", ..]
+            | ["tenants", _, "memberships", ..]
+            | ["tenants", _, "github-installations", ..]
+            | ["users"]
     )
 }
 
 /// Create a new router instance with all routes configured
 pub fn create_router(state: RouterAppState) -> Router {
     // The break-glass admin key, hashed once, shared by the auth layer's
-    // manage/admin bypass below and by `ops_auth_layer`.
+    // admin-key bypass below and by `ops_auth_layer`.
     let admin_key_hash = state
         .config()
         .auth
@@ -295,23 +283,22 @@ pub fn create_router(state: RouterAppState) -> Router {
 
     // Create auth middleware layer. `admin_key_hash` lets a break-glass
     // request through untouched (no TenantContext attached) when it targets
-    // `/api/v1/manage/admin/*`, carries no `X-Tenant-ID`, and its bearer
-    // token matches the configured admin key — the normal auth flow this
-    // layer otherwise runs requires a tenant for every bearer credential,
-    // which the admin key deliberately has none of. The actual authorization
-    // decision (does this request in fact carry that key, or an
-    // instance-admin tenant credential) stays in each `manage_admin` handler
-    // via `endpoints::manage_admin::require_instance_admin_or_admin_key`,
-    // not here.
+    // one of `is_admin_key_bypass_path`'s routes and its bearer token
+    // matches the configured admin key — regardless of whether `X-Tenant-ID`
+    // is *also* present (the MCP server forwards both) — the normal auth
+    // flow this layer otherwise runs requires a tenant for every bearer
+    // credential, which the admin key deliberately has none of. The actual
+    // authorization decision (does this request in fact carry that key, or
+    // an instance-admin tenant credential) stays in each handler via
+    // `endpoints::authz`, not here.
     let authenticator = state.authenticator().clone();
-    let manage_admin_bypass_key_hash = admin_key_hash.clone();
+    let admin_key_bypass_hash = admin_key_hash.clone();
     let auth_layer =
         middleware::from_fn(move |req: axum::extract::Request, next: middleware::Next| {
             let authenticator = authenticator.clone();
-            let admin_key_hash = manage_admin_bypass_key_hash.clone();
+            let admin_key_hash = admin_key_bypass_hash.clone();
             async move {
                 if is_admin_key_bypass_path(req.uri().path())
-                    && req.headers().get("x-tenant-id").is_none()
                     && let Some(expected_hash) = admin_key_hash.as_deref()
                     && let Some(token) = req
                         .headers()
@@ -352,11 +339,11 @@ pub fn create_router(state: RouterAppState) -> Router {
         });
 
     // Create admin auth middleware layer for operational control (compaction).
-    // The admin API itself was removed (issue #1561): instance-admin
-    // operations now live under `/api/v1/manage/admin`, authenticated via
-    // `endpoints::manage_admin::require_instance_admin_or_admin_key` (which
-    // also accepts this same admin key, tenant-less — see `auth_layer`
-    // above).
+    // The old dedicated admin API was removed (issue #1561): instance-admin
+    // operations live on the same plain resource paths as everything else
+    // (`/api/v1/tenants`, `/api/v1/users`, ...), authenticated per-handler via
+    // `endpoints::authz::require_instance_admin_or_admin_key` (which also
+    // accepts this same admin key, tenant-less — see `auth_layer` above).
     let admin_authenticator = state.authenticator().clone();
     let ops_auth_layer = middleware::from_fn(move |req, next| {
         admin_auth_middleware(
@@ -469,13 +456,11 @@ pub fn create_router(state: RouterAppState) -> Router {
         .nest(
             "/api/v1",
             endpoints::tenant::router()
+                .merge(endpoints::tenants::router())
                 .merge(endpoints::source_context::router())
-                .nest(
-                    "/manage",
-                    endpoints::management::router()
-                        .merge(endpoints::github::manage_router())
-                        .nest("/admin", endpoints::manage_admin::router()),
-                )
+                .merge(endpoints::management::router())
+                .merge(endpoints::github::manage_router())
+                .route("/schema", get(endpoints::schema::get_schema))
                 .nest("/schema", endpoints::schema::router())
                 .merge(endpoints::processors::router())
                 .route("/whoami", get(endpoints::session::whoami))
@@ -542,27 +527,24 @@ mod tests {
     use tower::ServiceExt;
 
     #[test]
-    fn admin_key_bypass_path_covers_manage_admin_and_tenant_scoped_admin_keys_datasets() {
-        assert!(is_admin_key_bypass_path("/manage/admin/tenants"));
-        assert!(is_admin_key_bypass_path("/manage/admin/tenants/acme"));
-        assert!(is_admin_key_bypass_path("/manage/admin/users"));
-        assert!(is_admin_key_bypass_path("/manage/tenants"));
-        assert!(is_admin_key_bypass_path("/manage/tenants/acme/api-keys"));
+    fn admin_key_bypass_path_covers_plain_tenant_and_user_resource_paths() {
+        assert!(is_admin_key_bypass_path("/tenants"));
+        assert!(is_admin_key_bypass_path("/tenants/acme"));
+        assert!(is_admin_key_bypass_path("/users"));
+        assert!(is_admin_key_bypass_path("/tenants/acme/api-keys"));
+        assert!(is_admin_key_bypass_path("/tenants/acme/api-keys/key-1"));
+        assert!(is_admin_key_bypass_path("/tenants/acme/datasets"));
+        assert!(is_admin_key_bypass_path("/tenants/acme/datasets/staging"));
+        assert!(is_admin_key_bypass_path("/tenants/acme/memberships"));
+        assert!(is_admin_key_bypass_path("/tenants/acme/memberships/u1"));
         assert!(is_admin_key_bypass_path(
-            "/manage/tenants/acme/api-keys/key-1"
-        ));
-        assert!(is_admin_key_bypass_path("/manage/tenants/acme/datasets"));
-        assert!(is_admin_key_bypass_path(
-            "/manage/tenants/acme/datasets/staging"
+            "/tenants/acme/github-installations"
         ));
 
-        // Every other tenant-scoped path stays session/tenant:manage-key only.
-        assert!(!is_admin_key_bypass_path("/manage/tenants/acme"));
-        assert!(!is_admin_key_bypass_path(
-            "/manage/tenants/acme/memberships"
-        ));
-        assert!(!is_admin_key_bypass_path("/manage/schema"));
-        assert!(!is_admin_key_bypass_path("/tenants"));
+        // Data-plane tenant paths stay tenant-credential-only.
+        assert!(!is_admin_key_bypass_path("/tenants/acme/tables"));
+        assert!(!is_admin_key_bypass_path("/tenants/acme/schemas"));
+        assert!(!is_admin_key_bypass_path("/tenants/acme/source-context"));
         assert!(!is_admin_key_bypass_path("/query"));
     }
 

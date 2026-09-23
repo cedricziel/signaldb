@@ -1,10 +1,10 @@
 pub mod api_error;
+pub mod authz;
 pub mod discovery;
 pub mod flight;
 mod flight_decode;
 pub mod github;
 pub mod logql;
-pub mod manage_admin;
 pub mod management;
 pub mod oauth;
 pub mod oidc;
@@ -18,6 +18,7 @@ pub mod session;
 pub mod source_context;
 pub mod tempo;
 pub mod tenant;
+pub mod tenants;
 
 /// Current time as unix-epoch nanoseconds.
 pub(crate) fn now_ns() -> i64 {

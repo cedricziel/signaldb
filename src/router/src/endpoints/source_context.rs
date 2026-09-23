@@ -707,7 +707,7 @@ mod tests {
 
         let request = Request::builder()
             .method("DELETE")
-            .uri("/api/v1/manage/tenants/acme/github-installations/777")
+            .uri("/api/v1/tenants/acme/github-installations/777")
             .header("authorization", format!("Bearer {ACME_MANAGE_KEY}"))
             .header("x-tenant-id", "acme")
             .body(Body::empty())

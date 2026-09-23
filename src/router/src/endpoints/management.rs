@@ -1,26 +1,24 @@
-//! Tenant management endpoints (`/api/v1/manage/*`).
+//! Tenant-scoped resource endpoints: datasets, API keys, and memberships
+//! under `/api/v1/tenants/{tenant_id}/...`.
 //!
-//! Used by the web UI (session/OAuth principals with the tenant-admin role or
-//! instance-admin flag) and by automation holding an API key that carries the
-//! `tenant:manage` scope. Both act only on the tenant of the caller's context;
-//! tenant creation stays instance-admin-only.
+//! Reachable by the web UI (session/OAuth principals with the tenant-admin
+//! role or instance-admin flag), by automation holding an API key that
+//! carries the `tenant:manage` scope, or by the break-glass admin key with
+//! no tenant at all (see [`crate::endpoints::authz`]).
 
 use crate::RouterAppState;
+use crate::endpoints::authz::authorize_tenant_or_admin_key;
 use axum::{
     Json, Router,
     extract::{Path, State},
     http::StatusCode,
     response::{IntoResponse, Response},
-    routing::{delete, get, post},
+    routing::{delete, get},
 };
 use chrono::{DateTime, Utc};
 use common::{
-    auth::{Authenticator, TenantContext, TenantContextExtractor, validate_id, validate_scopes},
+    auth::{Authenticator, TenantContext, validate_id, validate_scopes},
     catalog::{GrantSource, MembershipRole},
-    schema::{
-        SCHEMA_DEFINITIONS,
-        logical::{AttributeLevel, Filterability, LogicalFieldKind, LogicalSchema, LogicalType},
-    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -28,7 +26,6 @@ use uuid::Uuid;
 
 pub fn router() -> Router<RouterAppState> {
     Router::new()
-        .route("/tenants", post(create_tenant))
         .route(
             "/tenants/{tenant_id}/datasets",
             get(list_datasets).post(create_dataset),
@@ -53,7 +50,6 @@ pub fn router() -> Router<RouterAppState> {
             "/tenants/{tenant_id}/memberships/{user_id}",
             delete(remove_membership),
         )
-        .route("/schema", get(get_schema))
 }
 
 /// Error returned when the principal may not manage the tenant.
@@ -104,30 +100,6 @@ pub(crate) fn error(status: StatusCode, message: impl Into<String>) -> Response 
     (status, Json(json!({ "error": message.into() }))).into_response()
 }
 
-/// Like [`authorize_tenant`], but also accepts the break-glass
-/// `admin_api_key` bearer with no tenant at all (issue #1561 part 2),
-/// generalized from tenant creation to the tenant-scoped API-key/dataset
-/// admin surface the CLI's/TUI's `admin` commands use — so that surface
-/// keeps working unchanged now that it lives under `/api/v1/manage` instead
-/// of the removed `/api/v1/admin`. `ctx` is `None` exactly when `auth_layer`
-/// (see `lib.rs`) let a tenant-less admin-key request through; `tenant_id`
-/// is then trusted from the path with no ownership check, since the admin
-/// key is not scoped to any one tenant.
-pub(crate) fn authorize_tenant_or_admin_key(
-    state: &RouterAppState,
-    headers: &axum::http::HeaderMap,
-    ctx: Option<&TenantContext>,
-    tenant_id: &str,
-) -> Result<(), Box<Response>> {
-    match ctx {
-        Some(ctx) => authorize_tenant(ctx, tenant_id)
-            .map_err(|(status, message)| Box::new(error(status, message))),
-        None => crate::endpoints::manage_admin::require_instance_admin_or_admin_key(
-            state, headers, None,
-        ),
-    }
-}
-
 /// Whether `ctx` is the instance-admin principal — stricter than
 /// [`can_manage`]/[`authorize_tenant`], which also accept a tenant-scoped
 /// `tenant:manage` grant. Used by the handful of operations too privileged
@@ -164,131 +136,10 @@ fn is_last_remaining_admin(
     target_is_admin && admin_count == 1
 }
 
-#[derive(Debug, Deserialize, utoipa::ToSchema)]
-#[schema(as = ManageCreateTenantRequest)]
-pub struct CreateTenantRequest {
-    pub id: String,
-    pub name: String,
-    pub default_dataset: Option<String>,
-}
-
-/// 201 response body for tenant creation via the management API.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub(crate) struct ManageCreatedTenant {
-    id: String,
-}
-
-/// Error response body for the management API.
+/// Error response body for the tenant-scoped resource endpoints.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub(crate) struct ManageError {
     error: String,
-}
-
-#[utoipa::path(
-    post,
-    path = "/api/v1/manage/tenants",
-    tag = "tenants",
-    operation_id = "manage_create_tenant",
-    security(("bearerAuth" = []), ("adminApiKey" = [])),
-    request_body = CreateTenantRequest,
-    responses(
-        (status = 429, response = crate::endpoints::api_error::RateLimited),
-        (status = 201, description = "Tenant created", body = ManageCreatedTenant),
-        (status = 400, description = "Validation error", body = ManageError),
-        (status = 401, description = "Missing or invalid administrator credentials", body = ManageError),
-        (status = 403, description = "Instance administrator required", body = ManageError),
-        (status = 409, description = "Tenant already exists", body = ManageError),
-        (status = 500, description = "Internal error", body = ManageError),
-    )
-)]
-pub(crate) async fn create_tenant(
-    State(state): State<RouterAppState>,
-    headers: axum::http::HeaderMap,
-    ctx: Option<axum::Extension<TenantContext>>,
-    Json(request): Json<CreateTenantRequest>,
-) -> Response {
-    // Also reachable via the break-glass `admin_api_key` with no tenant at
-    // all (issue #1561 part 2), same as `/api/v1/manage/admin/*` — tenant
-    // creation is exactly as instance-admin-only, it just predates that
-    // prefix. See `crate::endpoints::manage_admin::require_instance_admin_or_admin_key`.
-    if let Err(response) = crate::endpoints::manage_admin::require_instance_admin_or_admin_key(
-        &state,
-        &headers,
-        ctx.as_ref().map(|e| &e.0),
-    ) {
-        return *response;
-    }
-    // `None` for the break-glass admin-key path (no tenant, no user) — the
-    // creator-membership grant below is then simply skipped.
-    let actor_user_id = ctx.as_ref().and_then(|e| e.0.user_id.clone());
-    let tenant_id = match validate_id(&request.id) {
-        Ok(value) => value,
-        Err(error_value) => return error(StatusCode::BAD_REQUEST, error_value.to_string()),
-    };
-    let default_dataset = match request.default_dataset.as_deref() {
-        Some(value) => match validate_id(value) {
-            Ok(value) => Some(value),
-            Err(error_value) => return error(StatusCode::BAD_REQUEST, error_value.to_string()),
-        },
-        None => None,
-    };
-    if request.name.trim().is_empty() {
-        return error(StatusCode::BAD_REQUEST, "Tenant name is required");
-    }
-    if state
-        .config()
-        .auth
-        .tenants
-        .iter()
-        .any(|tenant| tenant.id == tenant_id)
-    {
-        return error(
-            StatusCode::CONFLICT,
-            "A configuration-backed tenant already uses this ID",
-        );
-    }
-    match state.catalog().get_tenant(&tenant_id).await {
-        Ok(Some(_)) => return error(StatusCode::CONFLICT, "Tenant already exists"),
-        Ok(None) => {}
-        Err(catalog_error) => {
-            tracing::error!(error = %catalog_error, tenant_id, "tenant existence check failed");
-            return error(StatusCode::INTERNAL_SERVER_ERROR, "Unable to create tenant");
-        }
-    }
-    // Tenant row and default dataset row in one transaction: a tenant whose
-    // `default_dataset` has no row fails authentication closed, and creation
-    // rejects an existing id with 409, so a retry could not repair it.
-    if let Err(catalog_error) = state
-        .catalog()
-        .upsert_tenant_with_default_dataset(
-            &tenant_id,
-            request.name.trim(),
-            default_dataset.as_deref(),
-            "database",
-        )
-        .await
-    {
-        tracing::error!(error = %catalog_error, tenant_id, "tenant creation failed");
-        return error(StatusCode::INTERNAL_SERVER_ERROR, "Unable to create tenant");
-    }
-    if let Some(user_id) = &actor_user_id
-        && let Err(catalog_error) = state
-            .catalog()
-            .upsert_tenant_membership(user_id, &tenant_id, MembershipRole::Admin)
-            .await
-    {
-        tracing::error!(error = %catalog_error, tenant_id, user_id, "creator membership failed");
-        return error(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "Tenant was created but creator access could not be recorded",
-        );
-    }
-    tracing::info!(actor_user_id = ?actor_user_id, tenant_id, "tenant created via UX");
-    (
-        StatusCode::CREATED,
-        Json(ManageCreatedTenant { id: tenant_id }),
-    )
-        .into_response()
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -300,14 +151,15 @@ pub(crate) struct DatasetResponse {
 
 #[utoipa::path(
     get,
-    path = "/api/v1/manage/tenants/{tenant_id}/datasets",
+    path = "/api/v1/tenants/{tenant_id}/datasets",
     tag = "datasets",
-    operation_id = "manage_list_datasets",
+    operation_id = "list_datasets",
     security(("bearerAuth" = []), ("adminApiKey" = [])),
     params(("tenant_id" = String, Path, description = "Tenant identifier")),
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "List of datasets", body = [DatasetResponse]),
+        (status = 401, description = "Missing or invalid credentials", body = ManageError),
         (status = 403, description = "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller", body = ManageError),
         (status = 500, description = "Internal error", body = ManageError),
     )
@@ -320,6 +172,7 @@ pub(crate) async fn list_datasets(
 ) -> Response {
     if let Err(response) =
         authorize_tenant_or_admin_key(&state, &headers, ctx.as_ref().map(|e| &e.0), &tenant_id)
+            .await
     {
         return *response;
     }
@@ -349,9 +202,9 @@ pub(crate) struct CreateDatasetRequest {
 
 #[utoipa::path(
     post,
-    path = "/api/v1/manage/tenants/{tenant_id}/datasets",
+    path = "/api/v1/tenants/{tenant_id}/datasets",
     tag = "datasets",
-    operation_id = "manage_create_dataset",
+    operation_id = "create_dataset",
     security(("bearerAuth" = []), ("adminApiKey" = [])),
     params(("tenant_id" = String, Path, description = "Tenant identifier")),
     request_body = CreateDatasetRequest,
@@ -359,6 +212,7 @@ pub(crate) struct CreateDatasetRequest {
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 201, description = "Dataset created", body = DatasetResponse),
         (status = 400, description = "Validation error", body = ManageError),
+        (status = 401, description = "Missing or invalid credentials", body = ManageError),
         (status = 403, description = "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller", body = ManageError),
         (status = 409, description = "Unable to create dataset", body = ManageError),
     )
@@ -372,6 +226,7 @@ pub(crate) async fn create_dataset(
 ) -> Response {
     if let Err(response) =
         authorize_tenant_or_admin_key(&state, &headers, ctx.as_ref().map(|e| &e.0), &tenant_id)
+            .await
     {
         return *response;
     }
@@ -401,9 +256,9 @@ pub(crate) async fn create_dataset(
 
 #[utoipa::path(
     delete,
-    path = "/api/v1/manage/tenants/{tenant_id}/datasets/{dataset_name}",
+    path = "/api/v1/tenants/{tenant_id}/datasets/{dataset_name}",
     tag = "datasets",
-    operation_id = "manage_delete_dataset",
+    operation_id = "delete_dataset",
     security(("bearerAuth" = []), ("adminApiKey" = [])),
     params(
         ("tenant_id" = String, Path, description = "Tenant identifier"),
@@ -412,6 +267,7 @@ pub(crate) async fn create_dataset(
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 204, description = "Dataset deleted"),
+        (status = 401, description = "Missing or invalid credentials", body = ManageError),
         (status = 403, description = "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller", body = ManageError),
         (status = 404, description = "Dataset not found", body = ManageError),
         (status = 409, description = "Dataset cannot be deleted", body = ManageError),
@@ -426,6 +282,7 @@ pub(crate) async fn delete_dataset(
 ) -> Response {
     if let Err(response) =
         authorize_tenant_or_admin_key(&state, &headers, ctx.as_ref().map(|e| &e.0), &tenant_id)
+            .await
     {
         return *response;
     }
@@ -547,14 +404,15 @@ pub(crate) struct ManageCreatedApiKey {
 
 #[utoipa::path(
     get,
-    path = "/api/v1/manage/tenants/{tenant_id}/api-keys",
+    path = "/api/v1/tenants/{tenant_id}/api-keys",
     tag = "api-keys",
-    operation_id = "manage_list_api_keys",
+    operation_id = "list_api_keys",
     security(("bearerAuth" = []), ("adminApiKey" = [])),
     params(("tenant_id" = String, Path, description = "Tenant identifier")),
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "List of API keys", body = [ApiKeyResponse]),
+        (status = 401, description = "Missing or invalid credentials", body = ManageError),
         (status = 403, description = "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller", body = ManageError),
         (status = 500, description = "Internal error", body = ManageError),
     )
@@ -567,6 +425,7 @@ pub(crate) async fn list_api_keys(
 ) -> Response {
     if let Err(response) =
         authorize_tenant_or_admin_key(&state, &headers, ctx.as_ref().map(|e| &e.0), &tenant_id)
+            .await
     {
         return *response;
     }
@@ -594,9 +453,9 @@ pub(crate) async fn list_api_keys(
 
 #[utoipa::path(
     post,
-    path = "/api/v1/manage/tenants/{tenant_id}/api-keys",
+    path = "/api/v1/tenants/{tenant_id}/api-keys",
     tag = "api-keys",
-    operation_id = "manage_create_api_key",
+    operation_id = "create_api_key",
     security(("bearerAuth" = []), ("adminApiKey" = [])),
     params(("tenant_id" = String, Path, description = "Tenant identifier")),
     request_body = CreateApiKeyRequest,
@@ -605,6 +464,7 @@ pub(crate) async fn list_api_keys(
         (status = 201, description = "API key created", body = ManageCreatedApiKey),
         (status = 400, description = "Dataset does not exist", body = ManageError),
         (status = 422, description = "Invalid or empty scopes", body = ManageError),
+        (status = 401, description = "Missing or invalid credentials", body = ManageError),
         (status = 403, description = "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller", body = ManageError),
         (status = 409, description = "Unable to create API key", body = ManageError),
         (status = 500, description = "Internal error", body = ManageError),
@@ -619,6 +479,7 @@ pub(crate) async fn create_api_key(
 ) -> Response {
     if let Err(response) =
         authorize_tenant_or_admin_key(&state, &headers, ctx.as_ref().map(|e| &e.0), &tenant_id)
+            .await
     {
         return *response;
     }
@@ -732,7 +593,7 @@ async fn validate_dataset_restriction_gate_and_membership(
     ensure_datasets_exist(state, tenant_id, dataset_ids).await
 }
 
-/// Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.
+/// Body for `PATCH /api/v1/tenants/{tenant_id}/api-keys/{key_id}`.
 /// Absent fields are left untouched. `dataset_ids`/`clear_dataset_restriction`
 /// mirror [`signaldb_api::UpdateApiKeyRequest`] (D1a); the legacy singular
 /// `dataset_id` field is rejected via `deny_unknown_fields` rather than
@@ -766,9 +627,9 @@ pub(crate) struct UpdateApiKeyRequest {
 
 #[utoipa::path(
     patch,
-    path = "/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}",
+    path = "/api/v1/tenants/{tenant_id}/api-keys/{key_id}",
     tag = "api-keys",
-    operation_id = "manage_update_api_key",
+    operation_id = "update_api_key",
     security(("bearerAuth" = []), ("adminApiKey" = [])),
     params(
         ("tenant_id" = String, Path, description = "Tenant identifier"),
@@ -779,6 +640,7 @@ pub(crate) struct UpdateApiKeyRequest {
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "API key updated", body = ApiKeyResponse),
         (status = 400, description = "Dataset does not exist", body = ManageError),
+        (status = 401, description = "Missing or invalid credentials", body = ManageError),
         (status = 403, description = "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller", body = ManageError),
         (status = 404, description = "API key not found", body = ManageError),
         (status = 409, description = "API key is revoked", body = ManageError),
@@ -795,6 +657,7 @@ pub(crate) async fn update_api_key(
 ) -> Response {
     if let Err(response) =
         authorize_tenant_or_admin_key(&state, &headers, ctx.as_ref().map(|e| &e.0), &tenant_id)
+            .await
     {
         return *response;
     }
@@ -893,9 +756,9 @@ pub(crate) async fn update_api_key(
 
 #[utoipa::path(
     delete,
-    path = "/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}",
+    path = "/api/v1/tenants/{tenant_id}/api-keys/{key_id}",
     tag = "api-keys",
-    operation_id = "manage_revoke_api_key",
+    operation_id = "revoke_api_key",
     security(("bearerAuth" = []), ("adminApiKey" = [])),
     params(
         ("tenant_id" = String, Path, description = "Tenant identifier"),
@@ -904,6 +767,7 @@ pub(crate) async fn update_api_key(
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 204, description = "API key revoked"),
+        (status = 401, description = "Missing or invalid credentials", body = ManageError),
         (status = 403, description = "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller", body = ManageError),
         (status = 404, description = "API key not found", body = ManageError),
         (status = 500, description = "Internal error", body = ManageError),
@@ -917,6 +781,7 @@ pub(crate) async fn revoke_api_key(
 ) -> Response {
     if let Err(response) =
         authorize_tenant_or_admin_key(&state, &headers, ctx.as_ref().map(|e| &e.0), &tenant_id)
+            .await
     {
         return *response;
     }
@@ -961,24 +826,31 @@ pub(crate) struct MembershipResponse {
 
 #[utoipa::path(
     get,
-    path = "/api/v1/manage/tenants/{tenant_id}/memberships",
+    path = "/api/v1/tenants/{tenant_id}/memberships",
     tag = "memberships",
-    operation_id = "manage_list_memberships",
+    operation_id = "list_memberships",
+    security(("bearerAuth" = []), ("adminApiKey" = [])),
     params(("tenant_id" = String, Path, description = "Tenant identifier")),
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "List of memberships", body = [MembershipResponse]),
+        (status = 401, description = "Missing or invalid credentials", body = ManageError),
         (status = 403, description = "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller", body = ManageError),
+        (status = 404, description = "Tenant not found", body = ManageError),
         (status = 500, description = "Internal error", body = ManageError),
     )
 )]
 pub(crate) async fn list_memberships(
     State(state): State<RouterAppState>,
-    TenantContextExtractor(ctx): TenantContextExtractor,
+    headers: axum::http::HeaderMap,
+    ctx: Option<axum::Extension<TenantContext>>,
     Path(tenant_id): Path<String>,
 ) -> Response {
-    if let Err((status, message)) = authorize_tenant(&ctx, &tenant_id) {
-        return error(status, message);
+    if let Err(response) =
+        authorize_tenant_or_admin_key(&state, &headers, ctx.as_ref().map(|e| &e.0), &tenant_id)
+            .await
+    {
+        return *response;
     }
     let memberships = match state.catalog().list_members_for_tenant(&tenant_id).await {
         Ok(value) => value,
@@ -1021,29 +893,36 @@ pub(crate) struct UpsertMembershipRequest {
 
 #[utoipa::path(
     put,
-    path = "/api/v1/manage/tenants/{tenant_id}/memberships",
+    path = "/api/v1/tenants/{tenant_id}/memberships",
     tag = "memberships",
-    operation_id = "manage_upsert_membership",
+    operation_id = "upsert_membership",
+    security(("bearerAuth" = []), ("adminApiKey" = [])),
     params(("tenant_id" = String, Path, description = "Tenant identifier")),
     request_body = UpsertMembershipRequest,
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "Membership updated", body = MembershipResponse),
+        (status = 401, description = "Missing or invalid credentials", body = ManageError),
         (status = 403, description = "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller", body = ManageError),
-        (status = 404, description = "User not found", body = ManageError),
+        (status = 404, description = "User or tenant not found", body = ManageError),
         (status = 409, description = "Last administrator cannot be demoted", body = ManageError),
         (status = 500, description = "Internal error", body = ManageError),
     )
 )]
 pub(crate) async fn upsert_membership(
     State(state): State<RouterAppState>,
-    TenantContextExtractor(ctx): TenantContextExtractor,
+    headers: axum::http::HeaderMap,
+    ctx: Option<axum::Extension<TenantContext>>,
     Path(tenant_id): Path<String>,
     Json(request): Json<UpsertMembershipRequest>,
 ) -> Response {
-    if let Err((status, message)) = authorize_tenant(&ctx, &tenant_id) {
-        return error(status, message);
+    if let Err(response) =
+        authorize_tenant_or_admin_key(&state, &headers, ctx.as_ref().map(|e| &e.0), &tenant_id)
+            .await
+    {
+        return *response;
     }
+    let actor_user_id = ctx.as_ref().and_then(|e| e.0.user_id.clone());
     let user = match state.catalog().get_user_by_email(&request.email).await {
         Ok(Some(value)) if value.disabled_at.is_none() => value,
         Ok(_) => return error(StatusCode::NOT_FOUND, "Active user not found"),
@@ -1079,7 +958,7 @@ pub(crate) async fn upsert_membership(
         .await
     {
         Ok(()) => {
-            tracing::info!(actor_user_id = ?ctx.user_id, tenant_id, target_user_id = user.id, role = %request.role, "membership updated via UX");
+            tracing::info!(actor_user_id = ?actor_user_id, tenant_id, target_user_id = user.id, role = %request.role, "membership updated via UX");
             Json(MembershipResponse {
                 user_id: user.id,
                 email: user.email,
@@ -1100,9 +979,10 @@ pub(crate) async fn upsert_membership(
 
 #[utoipa::path(
     delete,
-    path = "/api/v1/manage/tenants/{tenant_id}/memberships/{user_id}",
+    path = "/api/v1/tenants/{tenant_id}/memberships/{user_id}",
     tag = "memberships",
-    operation_id = "manage_remove_membership",
+    operation_id = "remove_membership",
+    security(("bearerAuth" = []), ("adminApiKey" = [])),
     params(
         ("tenant_id" = String, Path, description = "Tenant identifier"),
         ("user_id" = String, Path, description = "User identifier"),
@@ -1111,20 +991,27 @@ pub(crate) async fn upsert_membership(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 204, description = "Membership removed"),
         (status = 400, description = "Cannot remove own membership", body = ManageError),
+        (status = 401, description = "Missing or invalid credentials", body = ManageError),
         (status = 403, description = "Tenant administrator role or tenant:manage scope required, and the tenant must match the caller", body = ManageError),
+        (status = 404, description = "Tenant not found", body = ManageError),
         (status = 409, description = "Last administrator cannot be removed", body = ManageError),
         (status = 500, description = "Internal error", body = ManageError),
     )
 )]
 pub(crate) async fn remove_membership(
     State(state): State<RouterAppState>,
-    TenantContextExtractor(ctx): TenantContextExtractor,
+    headers: axum::http::HeaderMap,
+    ctx: Option<axum::Extension<TenantContext>>,
     Path((tenant_id, user_id)): Path<(String, String)>,
 ) -> Response {
-    if let Err((status, message)) = authorize_tenant(&ctx, &tenant_id) {
-        return error(status, message);
+    if let Err(response) =
+        authorize_tenant_or_admin_key(&state, &headers, ctx.as_ref().map(|e| &e.0), &tenant_id)
+            .await
+    {
+        return *response;
     }
-    if ctx.user_id.as_deref() == Some(user_id.as_str()) {
+    let actor_user_id = ctx.as_ref().and_then(|e| e.0.user_id.clone());
+    if actor_user_id.as_deref() == Some(user_id.as_str()) {
         return error(
             StatusCode::BAD_REQUEST,
             "You cannot remove your own active membership",
@@ -1152,7 +1039,7 @@ pub(crate) async fn remove_membership(
         .await
     {
         Ok(()) => {
-            tracing::info!(actor_user_id = ?ctx.user_id, tenant_id, target_user_id = user_id, "membership removed via UX");
+            tracing::info!(actor_user_id = ?actor_user_id, tenant_id, target_user_id = user_id, "membership removed via UX");
             StatusCode::NO_CONTENT.into_response()
         }
         Err(catalog_error) => {
@@ -1162,230 +1049,6 @@ pub(crate) async fn remove_membership(
                 "Unable to remove membership",
             )
         }
-    }
-}
-
-/// One logical (client-visible, OTel-native) field, as registered in
-/// [`common::schema::logical::LogicalSchema`].
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub(crate) struct ManageLogicalField {
-    source: String,
-    /// `resource` | `scope` | `record`, absent when the field isn't
-    /// attribute-scoped (a plain `String` here, not `Option<AttributeLevel>`
-    /// — utoipa emits a nullable `$ref` enum as `oneOf: [{type: null}, ref]`,
-    /// which the progenitor-generated Rust SDK client can't parse).
-    level: Option<String>,
-    name: String,
-    value_type: LogicalType,
-    filterability: Filterability,
-    kind: LogicalFieldKind,
-    non_native: bool,
-}
-
-fn attribute_level_str(level: Option<AttributeLevel>) -> Option<String> {
-    level.map(|level| {
-        match level {
-            AttributeLevel::Resource => "resource",
-            AttributeLevel::Scope => "scope",
-            AttributeLevel::Record => "record",
-        }
-        .to_string()
-    })
-}
-
-/// One physical (storage) column, as resolved from `schemas.toml`.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub(crate) struct ManagePhysicalField {
-    name: String,
-    field_type: String,
-    required: bool,
-    computed: Option<String>,
-    physical_only: bool,
-}
-
-/// One resolved table-schema version for one signal source.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub(crate) struct ManagePhysicalSchema {
-    source: String,
-    version: String,
-    is_current: bool,
-    description: String,
-    partition_by: Vec<String>,
-    fields: Vec<ManagePhysicalField>,
-}
-
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub(crate) struct ManageSchemaResponse {
-    logical_schema_version: String,
-    logical: Vec<ManageLogicalField>,
-    physical: Vec<ManagePhysicalSchema>,
-}
-
-fn physical_schemas_for_source(
-    source: &str,
-    versions: &std::collections::HashMap<
-        String,
-        common::schema::schema_parser::TableSchemaDefinition,
-    >,
-    current_version: &str,
-) -> Vec<ManagePhysicalSchema> {
-    let mut names: Vec<&String> = versions.keys().collect();
-    names.sort();
-    names
-        .into_iter()
-        .filter_map(|version| {
-            SCHEMA_DEFINITIONS
-                .resolve_table_schema(versions, version)
-                .ok()
-                .map(|resolved| ManagePhysicalSchema {
-                    source: source.to_string(),
-                    version: resolved.version.clone(),
-                    is_current: resolved.version == current_version,
-                    description: resolved.description,
-                    partition_by: resolved.partition_by,
-                    fields: resolved
-                        .fields
-                        .into_iter()
-                        .map(|f| ManagePhysicalField {
-                            name: f.name,
-                            field_type: f.field_type,
-                            required: f.required,
-                            computed: f.computed,
-                            physical_only: f.physical_only,
-                        })
-                        .collect(),
-                })
-        })
-        .collect()
-}
-
-/// GET /api/v1/manage/schema
-///
-/// The registered logical (OTel-native, client-visible) schema and the
-/// resolved physical (storage) schema for every version of every signal
-/// source — read-only and not tenant-scoped (the schema is global, not
-/// per-tenant). Readable by a tenant administrator, an instance
-/// administrator, or an API key carrying `tenant:manage`.
-#[utoipa::path(
-    get,
-    path = "/api/v1/manage/schema",
-    tag = "schema",
-    operation_id = "manage_get_schema",
-    responses(
-        (status = 429, response = crate::endpoints::api_error::RateLimited),
-        (status = 200, description = "Logical and physical schema", body = ManageSchemaResponse),
-        (status = 403, description = "Tenant administrator role or tenant:manage scope required", body = ManageError),
-    )
-)]
-pub(crate) async fn get_schema(
-    State(_state): State<RouterAppState>,
-    TenantContextExtractor(ctx): TenantContextExtractor,
-) -> Response {
-    if !can_manage(&ctx) {
-        return error(StatusCode::FORBIDDEN, MANAGE_FORBIDDEN);
-    }
-
-    let mut logical: Vec<ManageLogicalField> = LogicalSchema::core()
-        .fields()
-        .map(|field| ManageLogicalField {
-            source: field.id.source.clone(),
-            level: attribute_level_str(field.id.level),
-            name: field.id.name.clone(),
-            value_type: field.value_type,
-            filterability: field.filterability,
-            kind: field.kind,
-            non_native: field.non_native,
-        })
-        .collect();
-    logical.sort_by(|a, b| (&a.source, &a.name).cmp(&(&b.source, &b.name)));
-
-    let mut physical = Vec::new();
-    physical.extend(physical_schemas_for_source(
-        "traces",
-        &SCHEMA_DEFINITIONS.traces,
-        SCHEMA_DEFINITIONS.current_trace_version(),
-    ));
-    physical.extend(physical_schemas_for_source(
-        "logs",
-        &SCHEMA_DEFINITIONS.logs,
-        &SCHEMA_DEFINITIONS.metadata.current_log_version,
-    ));
-    for (source, versions) in [
-        ("metrics_gauge", &SCHEMA_DEFINITIONS.metrics_gauge),
-        ("metrics_sum", &SCHEMA_DEFINITIONS.metrics_sum),
-        ("metrics_histogram", &SCHEMA_DEFINITIONS.metrics_histogram),
-    ] {
-        physical.extend(physical_schemas_for_source(
-            source,
-            versions,
-            &SCHEMA_DEFINITIONS.metadata.current_metric_version,
-        ));
-    }
-
-    Json(ManageSchemaResponse {
-        logical_schema_version: SCHEMA_DEFINITIONS.logical_schema_version().to_string(),
-        logical,
-        physical,
-    })
-    .into_response()
-}
-
-#[cfg(test)]
-mod schema_tests {
-    use super::*;
-
-    #[test]
-    fn physical_schemas_for_source_resolves_every_version_sorted_and_flags_current() {
-        let schemas = physical_schemas_for_source(
-            "traces",
-            &SCHEMA_DEFINITIONS.traces,
-            SCHEMA_DEFINITIONS.current_trace_version(),
-        );
-
-        // schemas.toml registers physical-v1, physical-v2, physical-v3
-        // (#1208: span_kind_number/status_code_number/dropped counts), and
-        // physical-v4 (#1340: resource_identity) for traces.
-        assert_eq!(schemas.len(), 4);
-        let versions: Vec<&str> = schemas.iter().map(|s| s.version.as_str()).collect();
-        assert_eq!(
-            versions,
-            vec!["physical-v1", "physical-v2", "physical-v3", "physical-v4"],
-            "sorted by version name"
-        );
-
-        let current: Vec<&str> = schemas
-            .iter()
-            .filter(|s| s.is_current)
-            .map(|s| s.version.as_str())
-            .collect();
-        assert_eq!(current, vec![SCHEMA_DEFINITIONS.current_trace_version()]);
-
-        for schema in &schemas {
-            assert_eq!(schema.source, "traces");
-            assert!(!schema.fields.is_empty());
-            assert!(schema.fields.iter().any(|f| f.name == "trace_id"));
-        }
-    }
-
-    #[test]
-    fn get_schema_dto_covers_every_signal_source() {
-        let logical: Vec<ManageLogicalField> = LogicalSchema::core()
-            .fields()
-            .map(|field| ManageLogicalField {
-                source: field.id.source.clone(),
-                level: attribute_level_str(field.id.level),
-                name: field.id.name.clone(),
-                value_type: field.value_type,
-                filterability: field.filterability,
-                kind: field.kind,
-                non_native: field.non_native,
-            })
-            .collect();
-
-        let sources: std::collections::HashSet<&str> =
-            logical.iter().map(|f| f.source.as_str()).collect();
-        assert!(sources.contains("traces"));
-        assert!(sources.contains("logs"));
     }
 }
 
@@ -1592,7 +1255,7 @@ mod key_scope_authorization_tests {
             &app,
             MANAGE_KEY,
             Method::GET,
-            "/api/v1/manage/tenants/acme/datasets",
+            "/api/v1/tenants/acme/datasets",
             None,
         )
         .await;
@@ -1601,7 +1264,7 @@ mod key_scope_authorization_tests {
             &app,
             MANAGE_KEY,
             Method::POST,
-            "/api/v1/manage/tenants/acme/datasets",
+            "/api/v1/tenants/acme/datasets",
             Some(json!({ "name": "staging" })),
         )
         .await;
@@ -1610,7 +1273,7 @@ mod key_scope_authorization_tests {
             &app,
             MANAGE_KEY,
             Method::GET,
-            "/api/v1/manage/tenants/acme/datasets",
+            "/api/v1/tenants/acme/datasets",
             None,
         )
         .await;
@@ -1626,7 +1289,7 @@ mod key_scope_authorization_tests {
             &app,
             MANAGE_KEY,
             Method::DELETE,
-            "/api/v1/manage/tenants/acme/datasets/staging",
+            "/api/v1/tenants/acme/datasets/staging",
             None,
         )
         .await;
@@ -1637,7 +1300,7 @@ mod key_scope_authorization_tests {
             &app,
             MANAGE_KEY,
             Method::GET,
-            "/api/v1/manage/tenants/acme/api-keys",
+            "/api/v1/tenants/acme/api-keys",
             None,
         )
         .await;
@@ -1646,7 +1309,7 @@ mod key_scope_authorization_tests {
             &app,
             MANAGE_KEY,
             Method::POST,
-            "/api/v1/manage/tenants/acme/api-keys",
+            "/api/v1/tenants/acme/api-keys",
             Some(json!({ "name": "ci", "scopes": ["traces:write"] })),
         )
         .await;
@@ -1657,7 +1320,7 @@ mod key_scope_authorization_tests {
             &app,
             MANAGE_KEY,
             Method::PATCH,
-            &format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"),
+            &format!("/api/v1/tenants/acme/api-keys/{key_id}"),
             Some(json!({ "scopes": ["traces:write", "logs:write"] })),
         )
         .await;
@@ -1666,7 +1329,7 @@ mod key_scope_authorization_tests {
             &app,
             MANAGE_KEY,
             Method::DELETE,
-            &format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"),
+            &format!("/api/v1/tenants/acme/api-keys/{key_id}"),
             None,
         )
         .await;
@@ -1677,7 +1340,7 @@ mod key_scope_authorization_tests {
             &app,
             MANAGE_KEY,
             Method::GET,
-            "/api/v1/manage/tenants/acme/memberships",
+            "/api/v1/tenants/acme/memberships",
             None,
         )
         .await;
@@ -1686,7 +1349,7 @@ mod key_scope_authorization_tests {
             &app,
             MANAGE_KEY,
             Method::PUT,
-            "/api/v1/manage/tenants/acme/memberships",
+            "/api/v1/tenants/acme/memberships",
             Some(json!({ "email": "member@example.com", "role": "admin" })),
         )
         .await;
@@ -1697,7 +1360,7 @@ mod key_scope_authorization_tests {
             &app,
             MANAGE_KEY,
             Method::PUT,
-            "/api/v1/manage/tenants/acme/memberships",
+            "/api/v1/tenants/acme/memberships",
             Some(json!({ "email": "member@example.com", "role": "member" })),
         )
         .await;
@@ -1706,15 +1369,14 @@ mod key_scope_authorization_tests {
             &app,
             MANAGE_KEY,
             Method::DELETE,
-            &format!("/api/v1/manage/tenants/acme/memberships/{user_id}"),
+            &format!("/api/v1/tenants/acme/memberships/{user_id}"),
             None,
         )
         .await;
         assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
 
         // Schema view.
-        let (status, body) =
-            call(&app, MANAGE_KEY, Method::GET, "/api/v1/manage/schema", None).await;
+        let (status, body) = call(&app, MANAGE_KEY, Method::GET, "/api/v1/schema", None).await;
         assert_eq!(status, StatusCode::OK, "{body}");
         assert!(body["logical"].is_array(), "{body}");
     }
@@ -1726,7 +1388,7 @@ mod key_scope_authorization_tests {
             &app,
             MANAGE_KEY,
             Method::GET,
-            "/api/v1/manage/tenants/acme/memberships",
+            "/api/v1/tenants/acme/memberships",
             None,
         )
         .await;
@@ -1780,7 +1442,7 @@ mod key_scope_authorization_tests {
             &app,
             MANAGE_KEY,
             Method::GET,
-            "/api/v1/manage/tenants/acme/memberships",
+            "/api/v1/tenants/acme/memberships",
             None,
         )
         .await;
@@ -1808,15 +1470,14 @@ mod key_scope_authorization_tests {
     async fn ingest_only_key_is_refused_on_every_management_endpoint() {
         let app = test_app().await;
         for (method, uri, body) in [
-            (Method::GET, "/api/v1/manage/tenants/acme/datasets", None),
+            (Method::GET, "/api/v1/tenants/acme/datasets", None),
             (
                 Method::POST,
-                "/api/v1/manage/tenants/acme/datasets",
+                "/api/v1/tenants/acme/datasets",
                 Some(json!({ "name": "staging" })),
             ),
-            (Method::GET, "/api/v1/manage/tenants/acme/api-keys", None),
-            (Method::GET, "/api/v1/manage/tenants/acme/memberships", None),
-            (Method::GET, "/api/v1/manage/schema", None),
+            (Method::GET, "/api/v1/tenants/acme/api-keys", None),
+            (Method::GET, "/api/v1/tenants/acme/memberships", None),
         ] {
             let (status, json) = call(&app, INGEST_KEY, method.clone(), uri, body).await;
             assert_eq!(status, StatusCode::FORBIDDEN, "{method} {uri}: {json}");
@@ -1837,13 +1498,10 @@ mod key_scope_authorization_tests {
             &app,
             LEGACY_KEY,
             Method::GET,
-            "/api/v1/manage/tenants/acme/datasets",
+            "/api/v1/tenants/acme/datasets",
             None,
         )
         .await;
-        assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
-        let (status, json) =
-            call(&app, LEGACY_KEY, Method::GET, "/api/v1/manage/schema", None).await;
         assert_eq!(status, StatusCode::FORBIDDEN, "{json}");
     }
 
@@ -1854,7 +1512,7 @@ mod key_scope_authorization_tests {
             &app,
             MANAGE_KEY,
             Method::GET,
-            "/api/v1/manage/tenants/globex/datasets",
+            "/api/v1/tenants/globex/datasets",
             None,
         )
         .await;
@@ -1863,7 +1521,7 @@ mod key_scope_authorization_tests {
             &app,
             MANAGE_KEY,
             Method::POST,
-            "/api/v1/manage/tenants/globex/api-keys",
+            "/api/v1/tenants/globex/api-keys",
             Some(json!({ "name": "evil", "scopes": [TENANT_MANAGE_SCOPE] })),
         )
         .await;
@@ -1877,7 +1535,7 @@ mod key_scope_authorization_tests {
             &app,
             MANAGE_KEY,
             Method::POST,
-            "/api/v1/manage/tenants",
+            "/api/v1/tenants",
             Some(json!({ "id": "newco", "name": "NewCo" })),
         )
         .await;
@@ -1951,19 +1609,13 @@ mod admin_key_bypass_for_tenant_scoped_admin_surface_tests {
     async fn admin_key_manages_datasets_for_any_tenant() {
         let app = test_app().await;
 
-        let (status, body) = call(
-            &app,
-            Method::GET,
-            "/api/v1/manage/tenants/acme/datasets",
-            None,
-        )
-        .await;
+        let (status, body) = call(&app, Method::GET, "/api/v1/tenants/acme/datasets", None).await;
         assert_eq!(status, StatusCode::OK, "{body}");
 
         let (status, body) = call(
             &app,
             Method::POST,
-            "/api/v1/manage/tenants/acme/datasets",
+            "/api/v1/tenants/acme/datasets",
             Some(json!({ "name": "staging" })),
         )
         .await;
@@ -1972,7 +1624,7 @@ mod admin_key_bypass_for_tenant_scoped_admin_surface_tests {
         let (status, body) = call(
             &app,
             Method::DELETE,
-            "/api/v1/manage/tenants/acme/datasets/staging",
+            "/api/v1/tenants/acme/datasets/staging",
             None,
         )
         .await;
@@ -1986,26 +1638,20 @@ mod admin_key_bypass_for_tenant_scoped_admin_surface_tests {
         let (status, body) = call(
             &app,
             Method::POST,
-            "/api/v1/manage/tenants/acme/api-keys",
+            "/api/v1/tenants/acme/api-keys",
             Some(json!({ "name": "ci", "scopes": ["traces:write"] })),
         )
         .await;
         assert_eq!(status, StatusCode::CREATED, "{body}");
         let key_id = body["id"].as_str().unwrap().to_string();
 
-        let (status, body) = call(
-            &app,
-            Method::GET,
-            "/api/v1/manage/tenants/acme/api-keys",
-            None,
-        )
-        .await;
+        let (status, body) = call(&app, Method::GET, "/api/v1/tenants/acme/api-keys", None).await;
         assert_eq!(status, StatusCode::OK, "{body}");
 
         let (status, body) = call(
             &app,
             Method::PATCH,
-            &format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"),
+            &format!("/api/v1/tenants/acme/api-keys/{key_id}"),
             Some(json!({ "scopes": ["traces:write", "logs:write"] })),
         )
         .await;
@@ -2014,27 +1660,30 @@ mod admin_key_bypass_for_tenant_scoped_admin_surface_tests {
         let (status, body) = call(
             &app,
             Method::DELETE,
-            &format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"),
+            &format!("/api/v1/tenants/acme/api-keys/{key_id}"),
             None,
         )
         .await;
         assert_eq!(status, StatusCode::NO_CONTENT, "{body}");
     }
 
-    /// A path outside the admin-key bypass allowlist (memberships) still
-    /// requires a real tenant credential — the admin key gets no wider
-    /// reach than the API-key/dataset surface it was extended to cover.
+    /// Memberships are a tenant-scoped resource like datasets and API keys:
+    /// the break-glass admin key reaches them for any tenant too.
     #[tokio::test]
-    async fn admin_key_does_not_reach_memberships() {
+    async fn admin_key_manages_memberships_for_any_tenant() {
         let app = test_app().await;
-        let (status, _) = call(
-            &app,
-            Method::GET,
-            "/api/v1/manage/tenants/acme/memberships",
-            None,
-        )
-        .await;
-        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        let (status, body) =
+            call(&app, Method::GET, "/api/v1/tenants/acme/memberships", None).await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+    }
+
+    /// An unknown tenant returns 404 on the admin-key path rather than
+    /// silently operating on nothing.
+    #[tokio::test]
+    async fn admin_key_gets_404_for_unknown_tenant() {
+        let app = test_app().await;
+        let (status, body) = call(&app, Method::GET, "/api/v1/tenants/ghost/datasets", None).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{body}");
     }
 }
 
@@ -2162,7 +1811,7 @@ mod dataset_restriction_tests {
             &app,
             MANAGE_KEY,
             Method::POST,
-            "/api/v1/manage/tenants/acme/api-keys",
+            "/api/v1/tenants/acme/api-keys",
             Some(json!({ "name": "multi", "scopes": ["traces:read"], "dataset_ids": ["production", "staging"] })),
         )
         .await;
@@ -2193,7 +1842,7 @@ mod dataset_restriction_tests {
             &app,
             MANAGE_KEY,
             Method::PATCH,
-            &format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"),
+            &format!("/api/v1/tenants/acme/api-keys/{key_id}"),
             Some(json!({ "clear_dataset_restriction": true })),
         )
         .await;
@@ -2212,7 +1861,7 @@ mod dataset_restriction_tests {
             &app,
             MANAGE_KEY,
             Method::POST,
-            "/api/v1/manage/tenants/acme/api-keys",
+            "/api/v1/tenants/acme/api-keys",
             Some(json!({ "scopes": ["traces:read"] })),
         )
         .await;
@@ -2226,7 +1875,7 @@ mod dataset_restriction_tests {
             &app,
             MANAGE_KEY,
             Method::GET,
-            "/api/v1/manage/tenants/acme/api-keys",
+            "/api/v1/tenants/acme/api-keys",
             None,
         )
         .await;
@@ -2248,7 +1897,7 @@ mod dataset_restriction_tests {
             &app,
             MANAGE_KEY,
             Method::POST,
-            "/api/v1/manage/tenants/acme/api-keys",
+            "/api/v1/tenants/acme/api-keys",
             Some(json!({ "scopes": ["traces:read"], "dataset_ids": [] })),
         )
         .await;
@@ -2258,7 +1907,7 @@ mod dataset_restriction_tests {
             &app,
             MANAGE_KEY,
             Method::POST,
-            "/api/v1/manage/tenants/acme/api-keys",
+            "/api/v1/tenants/acme/api-keys",
             Some(json!({ "name": "k", "scopes": ["traces:read"], "dataset_ids": ["production"] })),
         )
         .await;
@@ -2269,7 +1918,7 @@ mod dataset_restriction_tests {
             &app,
             MANAGE_KEY,
             Method::PATCH,
-            &format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"),
+            &format!("/api/v1/tenants/acme/api-keys/{key_id}"),
             Some(json!({ "dataset_ids": [], "clear_dataset_restriction": true })),
         )
         .await;
@@ -2281,7 +1930,7 @@ mod dataset_restriction_tests {
             &app,
             MANAGE_KEY,
             Method::PATCH,
-            &format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"),
+            &format!("/api/v1/tenants/acme/api-keys/{key_id}"),
             Some(json!({ "dataset_ids": ["staging"], "clear_dataset_restriction": true })),
         )
         .await;
@@ -2296,7 +1945,7 @@ mod dataset_restriction_tests {
             &app,
             MANAGE_KEY,
             Method::POST,
-            "/api/v1/manage/tenants/acme/api-keys",
+            "/api/v1/tenants/acme/api-keys",
             Some(
                 json!({ "name": "origin-restricted", "scopes": ["traces:read"], "allowed_origins": ["https://example.com"] }),
             ),
@@ -2314,7 +1963,7 @@ mod dataset_restriction_tests {
             &app,
             MANAGE_KEY,
             Method::PATCH,
-            &format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"),
+            &format!("/api/v1/tenants/acme/api-keys/{key_id}"),
             Some(json!({ "allowed_origins": ["https://other.example"] })),
         )
         .await;
@@ -2329,7 +1978,7 @@ mod dataset_restriction_tests {
             &app,
             MANAGE_KEY,
             Method::PATCH,
-            &format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"),
+            &format!("/api/v1/tenants/acme/api-keys/{key_id}"),
             Some(json!({ "clear_allowed_origins": true })),
         )
         .await;
@@ -2345,7 +1994,7 @@ mod dataset_restriction_tests {
             &app,
             MANAGE_KEY,
             Method::POST,
-            "/api/v1/manage/tenants/acme/api-keys",
+            "/api/v1/tenants/acme/api-keys",
             Some(json!({ "scopes": ["traces:read"], "allowed_origins": [] })),
         )
         .await;
@@ -2355,7 +2004,7 @@ mod dataset_restriction_tests {
             &app,
             MANAGE_KEY,
             Method::POST,
-            "/api/v1/manage/tenants/acme/api-keys",
+            "/api/v1/tenants/acme/api-keys",
             Some(
                 json!({ "name": "k", "scopes": ["traces:read"], "allowed_origins": ["https://example.com"] }),
             ),
@@ -2368,7 +2017,7 @@ mod dataset_restriction_tests {
             &app,
             MANAGE_KEY,
             Method::PATCH,
-            &format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"),
+            &format!("/api/v1/tenants/acme/api-keys/{key_id}"),
             Some(
                 json!({ "allowed_origins": ["https://other.example"], "clear_allowed_origins": true }),
             ),
@@ -2385,7 +2034,7 @@ mod dataset_restriction_tests {
             &app,
             MANAGE_KEY,
             Method::POST,
-            "/api/v1/manage/tenants/acme/api-keys",
+            "/api/v1/tenants/acme/api-keys",
             Some(json!({ "scopes": ["traces:read"], "dataset_id": "production" })),
         )
         .await;
@@ -2395,7 +2044,7 @@ mod dataset_restriction_tests {
             &app,
             MANAGE_KEY,
             Method::POST,
-            "/api/v1/manage/tenants/acme/api-keys",
+            "/api/v1/tenants/acme/api-keys",
             Some(json!({ "name": "k", "scopes": ["traces:read"] })),
         )
         .await;
@@ -2406,7 +2055,7 @@ mod dataset_restriction_tests {
             &app,
             MANAGE_KEY,
             Method::PATCH,
-            &format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"),
+            &format!("/api/v1/tenants/acme/api-keys/{key_id}"),
             Some(json!({ "dataset_id": "production" })),
         )
         .await;
@@ -2420,7 +2069,7 @@ mod dataset_restriction_tests {
             &app,
             MANAGE_KEY,
             Method::POST,
-            "/api/v1/manage/tenants/acme/api-keys",
+            "/api/v1/tenants/acme/api-keys",
             Some(json!({ "scopes": ["traces:read"], "dataset_ids": ["production", "ghost"] })),
         )
         .await;
@@ -2435,7 +2084,7 @@ mod dataset_restriction_tests {
             &app,
             MANAGE_KEY,
             Method::POST,
-            "/api/v1/manage/tenants/acme/api-keys",
+            "/api/v1/tenants/acme/api-keys",
             Some(json!({ "scopes": ["traces:read"], "dataset_ids": ["production", "staging"] })),
         )
         .await;
@@ -2453,7 +2102,7 @@ mod dataset_restriction_tests {
             &app,
             MANAGE_KEY,
             Method::POST,
-            "/api/v1/manage/tenants/acme/api-keys",
+            "/api/v1/tenants/acme/api-keys",
             Some(json!({ "scopes": ["traces:read"], "dataset_ids": ["production"] })),
         )
         .await;
@@ -2462,7 +2111,7 @@ mod dataset_restriction_tests {
             &app,
             MANAGE_KEY,
             Method::POST,
-            "/api/v1/manage/tenants/acme/api-keys",
+            "/api/v1/tenants/acme/api-keys",
             Some(json!({ "scopes": ["traces:read"] })),
         )
         .await;
@@ -2481,7 +2130,7 @@ mod dataset_restriction_tests {
             &app,
             RESTRICTED_MANAGE_KEY,
             Method::POST,
-            "/api/v1/manage/tenants/acme/api-keys",
+            "/api/v1/tenants/acme/api-keys",
             Some(json!({ "name": "evil", "scopes": ["traces:read"] })),
         )
         .await;
@@ -2491,7 +2140,7 @@ mod dataset_restriction_tests {
             &app,
             RESTRICTED_MANAGE_KEY,
             Method::DELETE,
-            "/api/v1/manage/tenants/acme/datasets/staging",
+            "/api/v1/tenants/acme/datasets/staging",
             None,
         )
         .await;
@@ -2568,7 +2217,7 @@ mod dataset_provisioning_tests {
         let app = create_router(RouterAppState::new(catalog, config.clone()));
         let request = Request::builder()
             .method(Method::POST)
-            .uri("/api/v1/manage/tenants/acme/datasets")
+            .uri("/api/v1/tenants/acme/datasets")
             .header("authorization", format!("Bearer {MANAGE_KEY}"))
             .header("x-tenant-id", "acme")
             .header("content-type", "application/json")

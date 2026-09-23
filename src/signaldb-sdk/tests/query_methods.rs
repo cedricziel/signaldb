@@ -140,7 +140,7 @@ async fn client_forwards_credentials_via_default_headers() {
         signaldb_sdk::RetryPolicy::default(),
     );
     client
-        .manage_admin_list_tenants()
+        .list_tenants()
         .send()
         .await
         .expect("mock server responds to list_tenants");
