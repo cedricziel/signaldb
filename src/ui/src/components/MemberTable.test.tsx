@@ -173,6 +173,54 @@ describe("MemberTable", () => {
     expect(names).toEqual(["GET /pay", "GET /ok", "GET /meh"]);
   });
 
+  it("opens sorted by time desc by default", () => {
+    render(
+      <MemberTable
+        members={[member("t1", "s1", "GET /pay", "gateway", "1000", 12)]}
+        error={null}
+        what="spans"
+        identityLabel="Span"
+        emptyMessage="No spans."
+        onOpenTrace={vi.fn()}
+      />,
+    );
+    expect(screen.getByRole("columnheader", { name: "Time" })).toHaveAttribute(
+      "aria-sort",
+      "descending",
+    );
+    expect(
+      screen.getByRole("columnheader", { name: "Duration" }),
+    ).not.toHaveAttribute("aria-sort");
+  });
+
+  it("opens sorted by the given initialSort instead of the time default", () => {
+    render(
+      <MemberTable
+        members={[
+          member("t1", "s1", "GET /fast", "gateway", "1000", 5),
+          member("t2", "s2", "GET /slow", "gateway", "2000", 500),
+        ]}
+        error={null}
+        what="traces"
+        identityLabel="Root"
+        emptyMessage="No traces."
+        initialSort={{ key: "duration", dir: "desc" }}
+        onOpenTrace={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole("columnheader", { name: "Duration" }),
+    ).toHaveAttribute("aria-sort", "descending");
+    expect(
+      screen.getByRole("columnheader", { name: "Time" }),
+    ).not.toHaveAttribute("aria-sort");
+    const names = screen
+      .getAllByRole("row")
+      .slice(1)
+      .map((r) => r.querySelector(".trace-open")?.textContent);
+    expect(names).toEqual(["GET /slow", "GET /fast"]);
+  });
+
   it("renders the footnote only when supplied", () => {
     const { rerender } = render(
       <MemberTable

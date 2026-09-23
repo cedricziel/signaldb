@@ -85,6 +85,22 @@ describe("DependencyBreakdown bar tooltip", () => {
   });
 });
 
+describe("DependencyBreakdown legend", () => {
+  it("gives each legend label a small swatch dot rather than a full-block background", async () => {
+    fetchDependencyBreakdown.mockResolvedValue([
+      { key: "database", label: "Database", durationNs: 300, count: 3 },
+    ]);
+    renderBreakdown();
+    const label = await screen.findByText("Database");
+    // The label's own element must not carry the bare `dep-database` class
+    // that colors a full block (that class is for the bar segment) — only
+    // the shared `dep-swatch` marker, colored via `--kind-color` like
+    // `DependencyTable`'s Kind column.
+    expect(label.className).toBe("dep-swatch");
+    expect(label.style.getPropertyValue("--kind-color")).toBe("var(--svc-a)");
+  });
+});
+
 describe("DependencyBreakdown roving focus", () => {
   it("gives the first segment the only tab stop and moves it with ArrowRight", async () => {
     fetchDependencyBreakdown.mockResolvedValue([

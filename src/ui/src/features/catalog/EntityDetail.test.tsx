@@ -445,7 +445,7 @@ describe("EntityDetail", () => {
     expect(screen.queryByText("Operations")).not.toBeInTheDocument();
   });
 
-  it("shows recent matching spans and opens one into the trace waterfall", async () => {
+  it("shows the slowest traces and opens one into the trace waterfall", async () => {
     // Regression: this used to only set `trace`, which is meaningless
     // within the catalog signal (only TracesView renders a waterfall for
     // it) — the row silently did nothing visible. It must also switch to
@@ -462,10 +462,53 @@ describe("EntityDetail", () => {
     );
   });
 
+  it("opens the slowest traces table sorted by duration, not time", async () => {
+    fetchTraceGroupMembers.mockResolvedValue([
+      member("t1", "s1", "GET /health", "gateway"),
+    ]);
+    renderView();
+    await screen.findByText("GET /health");
+    expect(
+      screen.getByRole("columnheader", { name: "Duration" }),
+    ).toHaveAttribute("aria-sort", "descending");
+    expect(
+      screen.getByRole("columnheader", { name: "Time" }),
+    ).not.toHaveAttribute("aria-sort");
+  });
+
   it('the "Traces" button filters Traces to this entity', async () => {
     const update = renderView();
     const user = userEvent.setup();
     await user.click(await screen.findByRole("button", { name: "Traces" }));
+    expect(update).toHaveBeenCalledWith(
+      {
+        signal: "traces",
+        traceFilters: [{ field: "service.name", value: "gateway" }],
+      },
+      { push: true },
+    );
+  });
+
+  it("fetches the slowest traces as root spans, sorted by duration, capped at 8", async () => {
+    renderView();
+    await waitFor(() => expect(fetchTraceGroupMembers).toHaveBeenCalled());
+    expect(fetchTraceGroupMembers).toHaveBeenCalledWith(
+      ["service.name", "service.namespace"],
+      ["gateway", "edge"],
+      expect.anything(),
+      [],
+      "traces",
+      8,
+      { field: "duration_nanos", dir: "desc" },
+    );
+  });
+
+  it('the Slowest traces section\'s "Open in Traces" button filters Traces to this entity', async () => {
+    const update = renderView();
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: "Open in Traces" }),
+    );
     expect(update).toHaveBeenCalledWith(
       {
         signal: "traces",
@@ -590,7 +633,7 @@ describe("EntityDetail", () => {
         entityType("database")!,
       );
 
-      await screen.findByText("Recent matching spans");
+      await screen.findByText("Slowest traces");
       expect(screen.queryByText("Time by dependency")).not.toBeInTheDocument();
       expect(fetchDependencyBreakdown).not.toHaveBeenCalled();
     });
@@ -612,7 +655,7 @@ describe("EntityDetail", () => {
       });
       renderView({ catalogSecondary: "GET /health" });
 
-      await screen.findByText("Recent matching spans");
+      await screen.findByText("Slowest traces");
       await waitFor(() => expect(fetchEntityMetricSeries).toHaveBeenCalled());
       for (const call of fetchEntityMetricSeries.mock.calls) {
         expect(call[1]).toEqual([
@@ -628,7 +671,7 @@ describe("EntityDetail", () => {
         entityType("database")!,
       );
 
-      await screen.findByText("Recent matching spans");
+      await screen.findByText("Slowest traces");
       expect(screen.queryByText("Error groups")).not.toBeInTheDocument();
     });
 
@@ -646,7 +689,7 @@ describe("EntityDetail", () => {
       });
       renderView({ catalogSecondary: "GET /health" });
 
-      await screen.findByText("Recent matching spans");
+      await screen.findByText("Slowest traces");
       expect(screen.queryByText("Time by dependency")).not.toBeInTheDocument();
     });
   });

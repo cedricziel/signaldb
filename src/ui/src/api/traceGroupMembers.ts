@@ -32,6 +32,19 @@ export interface TraceGroupMember {
  * `exists`, not `eq null`, since the group's "(not set)" row means the field
  * is absent, not that it equals the literal value null.
  */
+/** What to order the members by — defaults to newest first
+ * (`start_time_unix_nano` desc), the group drill-in's own shape. The
+ * "Slowest traces" section instead sorts by `duration_nanos` desc. */
+export interface MembersSort {
+  field: "start_time_unix_nano" | "duration_nanos";
+  dir: "asc" | "desc";
+}
+
+const DEFAULT_MEMBERS_SORT: MembersSort = {
+  field: "start_time_unix_nano",
+  dir: "desc",
+};
+
 export function buildMembersDoc(
   dims: string[],
   values: (string | null)[],
@@ -39,6 +52,7 @@ export function buildMembersDoc(
   filters: TraceFilter[],
   grain: GroupGrain,
   limit: number,
+  sort: MembersSort = DEFAULT_MEMBERS_SORT,
 ): QueryIrRequest {
   const scope: Record<string, unknown>[] =
     grain === "traces"
@@ -74,7 +88,7 @@ export function buildMembersDoc(
       ...scope,
       ...active,
       ...pinned,
-      { order: [{ of: "start_time_unix_nano", dir: "desc" }] },
+      { order: [{ of: sort.field, dir: sort.dir }] },
       { limit },
     ],
   };
@@ -117,10 +131,11 @@ export async function fetchTraceGroupMembers(
   filters: TraceFilter[],
   grain: GroupGrain,
   limit: number,
+  sort?: MembersSort,
 ): Promise<TraceGroupMember[]> {
   return membersFromIrResponse(
     await runIrQuery(
-      buildMembersDoc(dims, values, range, filters, grain, limit),
+      buildMembersDoc(dims, values, range, filters, grain, limit, sort),
     ),
   );
 }

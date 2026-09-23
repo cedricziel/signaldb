@@ -3,7 +3,7 @@
 // api/dependencyBreakdown.ts for how the numbers are derived (five
 // sum(duration) queries combined client-side; no dedicated backend
 // aggregation exists for a derived category like this).
-import { useRef, useState } from "react";
+import { useRef, useState, type CSSProperties } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchDependencyBreakdown } from "../../api/dependencyBreakdown";
 import { QueryError } from "../../components/QueryError";
@@ -119,7 +119,16 @@ export function DependencyBreakdown({
       <dl className="dep-legend">
         {categories.map((c) => (
           <div key={c.key} className="dep-legend-item">
-            <dt className={`dep-swatch dep-${c.key}`}>{c.label}</dt>
+            <dt
+              className="dep-swatch"
+              style={
+                {
+                  "--kind-color": DEP_COLORS[c.key] ?? "var(--faint)",
+                } as CSSProperties & { "--kind-color": string }
+              }
+            >
+              {c.label}
+            </dt>
             <dd>
               {formatDurationMs(c.durationNs / 1e6)} ·{" "}
               {formatShare(c.durationNs, total)} · {plural(c.count, "call")}

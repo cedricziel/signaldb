@@ -10,7 +10,10 @@ import {
   pinsKey,
   type EntityPin,
 } from "../../api/catalog";
-import { fetchTraceGroupMembers } from "../../api/traceGroupMembers";
+import {
+  fetchTraceGroupMembers,
+  type MembersSort,
+} from "../../api/traceGroupMembers";
 import { QueryError } from "../../components/QueryError";
 import { KpiCard, KpiStrip } from "../../components/KpiCard";
 import { Sparkline } from "../../components/Sparkline";
@@ -63,9 +66,15 @@ interface Props {
   update: UpdateFn;
 }
 
-/** "Recent" is illustrative context, not the main list — a small, fixed
- * bound rather than the traces tab's user-configurable limit. */
-const MEMBER_LIMIT = 25;
+/** How many of the entity's own slowest root spans the "Slowest traces"
+ * section shows — a leaderboard, not the traces tab's user-configurable
+ * limit. */
+const SLOWEST_TRACES_LIMIT = 8;
+
+const SLOWEST_TRACES_SORT: MembersSort = {
+  field: "duration_nanos",
+  dir: "desc",
+};
 
 /** Identity fields that describe the emitting resource, which OTel logs
  * carry the same way spans do — as opposed to a span-only attribute
@@ -181,9 +190,9 @@ export function EntityDetail({ entity, range, state, update }: Props) {
     atSecondary && breakdownEntity
       ? [...primaryValues, state.catalogSecondary]
       : primaryValues;
-  const membersQuery = useQuery({
+  const slowestTracesQuery = useQuery({
     queryKey: [
-      "catalog-entity-members",
+      "catalog-entity-slowest-traces",
       entity.id,
       rangeKey,
       compositeKey(memberValues),
@@ -194,8 +203,9 @@ export function EntityDetail({ entity, range, state, update }: Props) {
         memberValues,
         range,
         [],
-        "spans",
-        MEMBER_LIMIT,
+        "traces",
+        SLOWEST_TRACES_LIMIT,
+        SLOWEST_TRACES_SORT,
       ),
   });
 
@@ -379,16 +389,6 @@ export function EntityDetail({ entity, range, state, update }: Props) {
 
       {kpiBody}
 
-      {/* Pinned to the entity, never to `currentPinned`: a breakdown row is a
-          dimension within the entity, not something a resource attribute
-          identifies, so metrics pinned to it could not exist. */}
-      <EntityMetricsPanel
-        entity={entity}
-        pinned={primaryPinned}
-        range={range}
-        rangeKey={rangeKey}
-      />
-
       {!atSecondary && breakdownEntity && (
         <OperationsTable
           entity={breakdownEntity}
@@ -439,17 +439,36 @@ export function EntityDetail({ entity, range, state, update }: Props) {
       )}
 
       <div className="catalog-headline">
-        <span className="catalog-title">Recent matching spans</span>
+        <span className="catalog-title">Slowest traces</span>
+        {drillable && (
+          <button className="btn" onClick={openTraces}>
+            Open in Traces
+          </button>
+        )}
       </div>
       <MemberTable
-        members={membersQuery.data}
-        error={membersQuery.error}
-        what="spans"
-        identityLabel="Span"
-        emptyMessage="No spans in this range"
+        members={slowestTracesQuery.data}
+        error={slowestTracesQuery.error}
+        what="traces"
+        identityLabel="Root"
+        emptyMessage="No traces in this range"
+        footnote={`Slowest ${SLOWEST_TRACES_LIMIT} root spans for ${title} in this window.`}
+        initialSort={{ key: "duration", dir: "desc" }}
         onOpenTrace={(traceId) =>
           update({ signal: "traces", trace: traceId }, { push: true })
         }
+      />
+
+      {/* Pinned to the entity, never to `currentPinned`: a breakdown row is a
+          dimension within the entity, not something a resource attribute
+          identifies, so metrics pinned to it could not exist. Last on the
+          page — metrics are supplementary context, not the primary signal a
+          service/host/process page leads with. */}
+      <EntityMetricsPanel
+        entity={entity}
+        pinned={primaryPinned}
+        range={range}
+        rangeKey={rangeKey}
       />
     </div>
   );
