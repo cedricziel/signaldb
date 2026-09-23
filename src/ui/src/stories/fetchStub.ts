@@ -147,6 +147,66 @@ export const emptyIrSeries = {
   series: [],
 };
 
+/** A Query IR `table` response for `api/entityDetailStats.ts`'s
+ * `buildEntityStatsDoc` — one row of `[...identity, n, errors, p50, p95,
+ * p99, last]`, the shape its decoder reads positionally. */
+export function irEntityStatsResponse(row: {
+  identity?: (string | null)[];
+  n: number;
+  errors: number;
+  p50Ns: number;
+  p95Ns: number;
+  p99Ns: number;
+  lastNs: string;
+}) {
+  return {
+    result: "table",
+    window: { start_ns: 0, end_ns: 0 },
+    rows: [
+      [
+        ...(row.identity ?? []),
+        row.n,
+        row.errors,
+        row.p50Ns,
+        row.p95Ns,
+        row.p99Ns,
+        row.lastNs,
+      ],
+    ],
+  };
+}
+
+/** A Query IR `series` response for a single stepped count/quantile series
+ * (`buildEntityCountSeriesDoc`/`buildEntityP95SeriesDoc` in
+ * `api/entityDetailStats.ts`), or the empty table's no-data case. */
+export function irEntitySeriesResponse(
+  points: [number, number][],
+  labels: Record<string, string> = {},
+) {
+  return {
+    result: "series",
+    window: { start_ns: 0, end_ns: 0 },
+    series: points.length === 0 ? [] : [{ labels, points }],
+  };
+}
+
+/** A Query IR `series` response for `api/operationSeries.ts`'s grouped
+ * per-operation query — one `ResultSeries` per operation, keyed by the
+ * breakdown field's Loki-style label. */
+export function irOperationSeriesResponse(
+  labelKey: string,
+  byOperation: Record<string, [number, number][]>,
+) {
+  return {
+    result: "series",
+    window: { start_ns: 0, end_ns: 0 },
+    series: Object.entries(byOperation).map(([operation, points]) => ({
+      labels: { [labelKey]: operation },
+      points,
+    })),
+  };
+}
+
 /** Universal fallback for any `/api/v1/query` call a story doesn't
  * specifically care about — every consumer reads the envelope through
  * optional chaining, so `{}` is a safe "nothing here" for any result kind,

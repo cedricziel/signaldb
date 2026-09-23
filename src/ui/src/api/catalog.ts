@@ -73,6 +73,20 @@ function sourceIdentity(entityType: EntityTypeDef, source: string): string[] {
  * only to bias which rows survive the per-source budget below toward the
  * ones most likely to matter.
  */
+/** One `where` stage per pin: an equality check, or — for a pin recording
+ * "this record carries no value here" — an absence check. Shared by every
+ * module that pins a query to an already-known identity (this file,
+ * `entityDetailStats.ts`, `operationSeries.ts`), so a change to how a pin
+ * compiles can't leave one of them behind. */
+export function pinsWhere(pinned: EntityPin[]): Record<string, unknown>[] {
+  return pinned.map((p) => ({
+    where:
+      p.value === null
+        ? { not: { field: p.field, op: "exists" } }
+        : { field: p.field, op: "eq", value: p.value },
+  }));
+}
+
 export function buildEntitySourceDoc(
   entityType: EntityTypeDef,
   source: string,
@@ -93,12 +107,7 @@ export function buildEntitySourceDoc(
           },
         ]
       : []),
-    ...pinned.map((p) => ({
-      where:
-        p.value === null
-          ? { not: { field: p.field, op: "exists" } }
-          : { field: p.field, op: "eq", value: p.value },
-    })),
+    ...pinsWhere(pinned),
   ];
 
   return {
