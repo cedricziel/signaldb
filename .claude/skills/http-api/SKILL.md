@@ -75,12 +75,12 @@ check written in the handler travels with it.
   - `DELETE` removes, returning `204`
 - A verb segment (`POST .../tables/create`) is allowed only for operations
   that aren't CRUD. Prefer modelling the result as a resource.
-- Scope shows in the path so a reader can tell it at a glance:
-  - `/api/v1/...` acts on the caller's tenant
-  - `/api/v1/...` acts across tenants
-  - `/api/v1/ops/...` is operational control
-
-  The path is still only descriptive; enforcement is rule 2.
+- Tenant/user resources live on one shared path family
+  (`/api/v1/tenants[/{id}]`, `/api/v1/tenants/{id}/...`, `/api/v1/users`);
+  the path does not distinguish a caller acting on its own tenant from an
+  instance admin acting across tenants — every handler authorizes the
+  caller itself (`endpoints::authz`), per rule 2.
+  `/api/v1/ops/...` is operational control, on its own path.
 
 ## 4. Self-discoverable (hypermedia)
 
@@ -136,6 +136,7 @@ links, without building URLs from documentation.
 
   An `operation_id` is unique across the whole spec. Renaming one is a
   breaking change for generated clients, so treat it as such (rule 7).
+
 - Every operation also sets `tag` (one per resource area, declared in
   `openapi.rs`'s `tags(...)`), a one-line `summary` saying what it does in
   the caller's terms, and `params`/`request_body`/`responses` with concrete

@@ -40,7 +40,10 @@ flowchart LR
   surface (tenant-admin session, `tenant:manage` key, or the break-glass
   admin key with no tenant), in `src/router/src/endpoints/management.rs`.
   Field names and serde attributes define the JSON wire format; `ToSchema`
-  makes each struct an OpenAPI component.
+  makes each struct an OpenAPI component. `TenantResponse`,
+  `ListTenantsResponse`, and `CreateTenantRequest` are handler-local structs
+  defined directly in `endpoints/tenants.rs`, distinct from the DTOs
+  `signaldb-api` exports.
 - **Operations** are declared with `#[utoipa::path(...)]` on the handlers in
   `endpoints/tenants.rs` (`/api/v1/...`, instance-admin
   tenant/user management — reachable by an instance-admin session or the

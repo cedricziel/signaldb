@@ -185,7 +185,7 @@ operator via one of:
 | Method        | Where                                                                                                                                                                                                                                                                                |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Static config | `[[auth.tenants]]` blocks in `signaldb.toml`                                                                                                                                                                                                                                         |
-| Admin API     | `/api/v1/*` (instance-admin tenant/user management) and `/api/v1/tenants/{id}/api-keys\|datasets` on the router (port 3000), authenticated with `Authorization: Bearer <admin-api-key>` and no `X-Tenant-ID`                                                     |
+| Admin API     | `/api/v1/*` (instance-admin tenant/user management) and `/api/v1/tenants/{id}/api-keys\|datasets` on the router (port 3000), authenticated with `Authorization: Bearer <admin-api-key>` and no `X-Tenant-ID`                                                                         |
 | CLI           | `signaldb-cli admin tenant\|api-key\|dataset ...` — a client for the admin API (`--url`, default `http://localhost:3000`; `--admin-key` or `SIGNALDB_ADMIN_KEY`; `--no-retry` / `SIGNALDB_NO_RETRY=1` to fail fast on throttling, exit code 4 — see [client retry](client-retry.md)) |
 
 Example (operator-side):
@@ -390,7 +390,7 @@ credential than any valid tenant key.
 
 ## Tenant management API
 
-`/api/v1/...` (the `manage_*` SDK operations) manages one tenant from
+`/api/v1/...` manages one tenant from
 the inside: its datasets, API keys, user memberships, and the registered
 logical/physical schema. Every request acts on the tenant of the caller's
 context; the path `tenant_id` must match it (`403` otherwise), so a caller can
@@ -414,8 +414,8 @@ Tenant _creation_ (`POST /api/v1/tenants`) stays instance-admin-only;
 API-key automation creates tenants through the admin API
 (`signaldb-cli admin tenant create`).
 
-| Method | Path                                                                        | SDK operation                       | CLI / MCP                                                                            |
-| ------ | --------------------------------------------------------------------------- | ----------------------------------- | ------------------------------------------------------------------------------------ |
+| Method | Path                                                                 | SDK operation                | CLI / MCP                                                                            |
+| ------ | -------------------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------ |
 | GET    | `/api/v1/tenants/{tenant_id}/datasets`                               | `list_datasets`              | `signaldb-cli tenant dataset list` / `tenant_list_datasets`                          |
 | POST   | `/api/v1/tenants/{tenant_id}/datasets`                               | `create_dataset`             | `signaldb-cli tenant dataset create <name>` / `tenant_create_dataset`                |
 | DELETE | `/api/v1/tenants/{tenant_id}/datasets/{name}`                        | `delete_dataset`             | `signaldb-cli tenant dataset delete <name>` / `tenant_delete_dataset`                |
