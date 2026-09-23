@@ -1,0 +1,62 @@
+/* The entity detail page's own "Error groups" leaderboard — a compact
+   version of the Errors tab's own table (see errors.css for the shared
+   `.errors-source` badge), scoped to one service's top groups. */
+.entity-error-groups .catalog-headline {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.error-groups-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.error-groups-table th {
+  text-align: left;
+  padding: 6px 10px;
+  font-size: 12px;
+  color: var(--faint);
+  font-weight: 400;
+}
+
+.error-groups-table td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+.error-groups-row {
+  cursor: pointer;
+}
+
+.error-groups-row:hover {
+  background: var(--surface2);
+}
+
+.error-groups-spark {
+  width: 96px;
+}
+
+.error-groups-error {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-width: 420px;
+  overflow: hidden;
+}
+
+.error-groups-type {
+  font-family: var(--mono);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.error-groups-message {
+  color: var(--dim);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
