@@ -162,8 +162,8 @@ fn logs_fixture() -> SessionContext {
 /// doc comment.
 fn records() -> Vec<(i64, Record)> {
     ROWS.iter()
-        .map(|(ts, _, attrs)| {
-            let record: Record = attrs
+        .map(|(ts, body, attrs)| {
+            let mut record: Record = attrs
                 .iter()
                 .map(|(k, v)| {
                     let value = match v {
@@ -173,6 +173,10 @@ fn records() -> Vec<(i64, Record)> {
                     (k.to_string(), value)
                 })
                 .collect();
+            record.insert(
+                "body".to_string(),
+                serde_json::Value::String(body.to_string()),
+            );
             (*ts, record)
         })
         .collect()
