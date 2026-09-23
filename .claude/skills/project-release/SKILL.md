@@ -108,13 +108,20 @@ background, not in a blocking call:
 
 ```bash
 id=$(gh run list -w "Release Please" -L 1 --json databaseId -q '.[0].databaseId')
-gh run watch "$id" --exit-status
-gh release view signaldb-bin-v<X> --json assets -q '.assets|length'
+gh run view "$id" --json status,conclusion   # poll every minute or two
+gh api repos/cedricziel/signaldb/releases/<release-id>/assets --jq length
 ```
+
+`gh run watch` polls every few seconds and can exhaust the API rate limit
+during a long build, so poll slowly. Count assets through the `/assets`
+endpoint: `gh release view` and the release list can report 0 for several
+minutes after the upload finished. Expect 13 files on `signaldb-bin`.
 
 GitHub rejects `--latest` on a pre-release (HTTP 422), and on its own it may
 put Latest on whichever release was created last, often `grafana-plugin`.
-Once the tarballs are attached, promote every release from this run and give
+Once the tarballs are attached, promote every release from this run
+(`gh api 'repos/cedricziel/signaldb/releases?per_page=30' --jq '.[]|select(.prerelease)|.tag_name'`
+lists them; the core crates, `signaldb-cli` and `signaldb-api` count too) and give
 Latest to `signaldb-bin`, because that is where users download from:
 
 ```bash
