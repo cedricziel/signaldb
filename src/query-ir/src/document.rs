@@ -87,26 +87,43 @@ impl Document {
     /// `validate` rejects a document declaring less than this.
     pub fn minimum_ir_version(&self) -> i64 {
         use super::stage::Stage;
+        use super::version::{Feature, OperatorRegistry};
 
         let mut needed = 1;
         if self.result == ResultEnvelope::Heatmap {
-            needed = needed.max(2);
+            needed = needed.max(OperatorRegistry::feature_min_version(Feature::Heatmap));
         }
         if self.result == ResultEnvelope::Metadata {
-            needed = needed.max(4);
+            needed = needed.max(OperatorRegistry::feature_min_version(Feature::Describe));
         }
         for stage in &self.pipeline {
             needed = needed.max(match stage {
-                Stage::Heatmap(_) => 2,
-                Stage::HistogramQuantile(_) => 3,
-                Stage::Describe(_) => 4,
+                Stage::Heatmap(_) => OperatorRegistry::feature_min_version(Feature::Heatmap),
+                Stage::HistogramQuantile(_) => {
+                    OperatorRegistry::feature_min_version(Feature::HistogramQuantile)
+                }
+                Stage::Describe(_) => OperatorRegistry::feature_min_version(Feature::Describe),
                 Stage::Aggregate(a) => a
                     .aggs
                     .iter()
                     .map(|agg| {
-                        agg.func
-                            .min_ir_version()
-                            .max(if agg.divisor.is_some() { 5 } else { 1 })
+                        let mut agg_needed = OperatorRegistry::agg_min_version(agg.func);
+                        if agg.divisor.is_some() {
+                            agg_needed = agg_needed.max(OperatorRegistry::feature_min_version(
+                                Feature::AggregateDivisor,
+                            ));
+                        }
+                        if agg.across.is_some() {
+                            agg_needed = agg_needed.max(OperatorRegistry::feature_min_version(
+                                Feature::AggregateAcross,
+                            ));
+                        }
+                        if agg.window.is_some() {
+                            agg_needed = agg_needed.max(OperatorRegistry::feature_min_version(
+                                Feature::AggregateWindow,
+                            ));
+                        }
+                        agg_needed
                     })
                     .max()
                     .unwrap_or(1),
