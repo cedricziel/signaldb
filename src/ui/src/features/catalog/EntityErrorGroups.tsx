@@ -173,7 +173,7 @@ export function EntityErrorGroups({
                 <th>Last hour</th>
                 <th>Error</th>
                 <th>Source</th>
-                <th>Count</th>
+                <th className="num">Count</th>
                 <th>Last seen</th>
               </tr>
             </thead>

@@ -477,91 +477,135 @@ const entityP95SeriesRoute: JsonRoute = {
 /** The entity detail's "Error groups" section (`EntityErrorGroups`,
  * `api/errors.ts`'s `buildErrorGroupDoc`) — five realistic exception groups
  * for the "checkout" service, ranked by count so the section's own
- * top-5-by-count slicing has something to prove: [type, message, service,
- * escaped, n, first, last]. Split across both sources `fetchErrorGroups`
- * merges (see `errorGroupsLogsRoute` below) so both badge styles show. */
-const errorGroupsTracesRoute: JsonRoute = {
-  match: "/api/v1/query",
-  bodyMatch: (b) =>
-    irBody((body) => body.result === "table" && body.from === "traces")(b) &&
-    aggregateBy(b).includes("exception.type"),
-  body: {
-    result: "table",
-    rows: [
-      [
-        "PaymentDeclinedError",
-        "card declined by issuer",
-        "checkout",
-        "true",
-        128,
-        "1700003000000000000",
-        "1700003600000000000",
-      ],
-      [
-        "DeadlineExceededError",
-        "upstream call timed out",
-        "checkout",
-        "true",
-        94,
-        "1700002800000000000",
-        "1700003580000000000",
-      ],
-      [
-        "UpstreamServiceError",
-        "503 from payments-gateway",
-        "checkout",
-        "true",
-        15,
-        "1700002200000000000",
-        "1700003300000000000",
-      ],
-    ],
+ * top-5-by-count slicing has something to prove. Split across both sources
+ * `fetchErrorGroups` merges so both badge styles show; DeadlineExceeded and
+ * PoolExhausted get a spike in their own volume series below (see
+ * `errorGroupSeries`), the other three a steadier trickle. */
+const ERROR_GROUPS = [
+  {
+    type: "PaymentDeclinedError",
+    message: "card declined by issuer",
+    source: "traces" as const,
+    escaped: "true",
+    n: 128,
+    first: "1700003000000000000",
+    last: "1700003600000000000",
+    spiky: false,
   },
-};
+  {
+    type: "DeadlineExceededError",
+    message: "upstream call timed out",
+    source: "traces" as const,
+    escaped: "true",
+    n: 94,
+    first: "1700002800000000000",
+    last: "1700003580000000000",
+    spiky: true,
+  },
+  {
+    type: "PoolExhaustedError",
+    message: "connection pool exhausted",
+    source: "logs" as const,
+    escaped: "true",
+    n: 61,
+    first: "1700002600000000000",
+    last: "1700003500000000000",
+    spiky: true,
+  },
+  {
+    type: "NullPointerException",
+    message: "null reference in checkout handler",
+    source: "logs" as const,
+    escaped: "false",
+    n: 37,
+    first: "1700002400000000000",
+    last: "1700003400000000000",
+    spiky: false,
+  },
+  {
+    type: "UpstreamServiceError",
+    message: "503 from payments-gateway",
+    source: "traces" as const,
+    escaped: "true",
+    n: 15,
+    first: "1700002200000000000",
+    last: "1700003300000000000",
+    spiky: false,
+  },
+];
 
-/** The same "Error groups" section's logs-sourced half of the merge (see
- * `fetchErrorGroups`) — two groups only ever observed as log exception
- * attributes, so the row list shows both the `traces` and `logs` badge. */
-const errorGroupsLogsRoute: JsonRoute = {
-  match: "/api/v1/query",
-  bodyMatch: (b) =>
-    irBody((body) => body.result === "table" && body.from === "logs")(b) &&
-    aggregateBy(b).includes("exception.type"),
-  body: {
-    result: "table",
-    rows: [
-      [
-        "PoolExhaustedError",
-        "connection pool exhausted",
+function errorGroupsRoute(source: "traces" | "logs"): JsonRoute {
+  return {
+    match: "/api/v1/query",
+    bodyMatch: (b) =>
+      irBody((body) => body.result === "table" && body.from === source)(b) &&
+      aggregateBy(b).includes("exception.type"),
+    body: {
+      result: "table",
+      rows: ERROR_GROUPS.filter((g) => g.source === source).map((g) => [
+        g.type,
+        g.message,
         "checkout",
-        "true",
-        61,
-        "1700002600000000000",
-        "1700003500000000000",
-      ],
-      [
-        "NullPointerException",
-        "null reference in checkout handler",
-        "checkout",
-        "false",
-        37,
-        "1700002400000000000",
-        "1700003400000000000",
-      ],
-    ],
-  },
-};
+        g.escaped,
+        g.n,
+        g.first,
+        g.last,
+      ]),
+    },
+  };
+}
+const errorGroupsTracesRoute = errorGroupsRoute("traces");
+const errorGroupsLogsRoute = errorGroupsRoute("logs");
+
+/** The exact value a request's own `where` stage pins a field to, if any —
+ * distinguishes each error group's own "last hour" volume request from every
+ * other group's (all share the same `aggregate.by: ["exception.type"]`
+ * shape; only the pin differs). */
+function whereValue(b: unknown, field: string): string | undefined {
+  const body = b as {
+    pipeline?: Array<{ where?: { field?: string; value?: unknown } }>;
+  };
+  for (const stage of body.pipeline ?? []) {
+    if (stage.where?.field === field) return String(stage.where.value);
+  }
+  return undefined;
+}
+
+/** One error group's own "last hour" series — 30 two-minute buckets summing
+ * to roughly its own count, with a seeded wobble (same `mulberry32` PRNG as
+ * `operationSeries`, keyed by the group's own type) and, for the two spiky
+ * groups, one bucket well above the rest. */
+function errorGroupSeries(
+  g: (typeof ERROR_GROUPS)[number],
+): [number, number][] {
+  const seed = hashString(g.type);
+  const rand = mulberry32(seed);
+  const phase = (seed % 628) / 100;
+  const spikeAt = g.spiky ? 20 + (seed % 8) : -1;
+  const avg = g.n / 30;
+  return Array.from({ length: 30 }, (_, i) => {
+    const wave = 1 + 0.3 * Math.sin(phase + i * 0.4);
+    const noise = 1 + (rand() - 0.5) * 0.4;
+    const spike = i === spikeAt ? 3 : 1;
+    return [
+      1_700_000_000_000_000_000 + i * 120_000_000_000,
+      Math.max(0, Math.round(avg * wave * noise * spike)),
+    ];
+  });
+}
 
 /** Each error-group row's own "Last hour" sparkline (`fetchErrorGroupVolume`,
  * `aggregate.by: ["exception.type"]` only — distinct from the KPI strip's
- * `service.name`-keyed series above). One shared shape for every row. */
-const errorGroupVolumeRoute: JsonRoute = {
+ * `service.name`-keyed series above) — one route per group, keyed by the
+ * request's own `exception.type` pin, so every row draws its own shape. */
+const errorGroupVolumeRoutes: JsonRoute[] = ERROR_GROUPS.map((g) => ({
   match: "/api/v1/query",
   bodyMatch: (b) =>
     irBody((body) => body.result === "series")(b) &&
-    aggregateBy(b).join() === "exception.type",
-  body: irEntitySeriesResponse(bucketedSeries(3, 4, 4)),
-};
+    aggregateBy(b).join() === "exception.type" &&
+    whereValue(b, "exception.type") === g.type,
+  body: irEntitySeriesResponse(errorGroupSeries(g)),
+}));
 
 const routes: JsonRoute[] = [
   irCatchAll,
@@ -580,7 +624,7 @@ const routes: JsonRoute[] = [
   operationSeriesRoute,
   errorGroupsTracesRoute,
   errorGroupsLogsRoute,
-  errorGroupVolumeRoute,
+  ...errorGroupVolumeRoutes,
 ];
 
 function CatalogPage({ state }: { state: ExploreState }) {
