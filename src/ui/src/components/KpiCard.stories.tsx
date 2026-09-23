@@ -52,6 +52,7 @@ export const WithSparkline: Story = {
 };
 
 export const Strip: Story = {
+  args: { label: "unused", value: "unused" },
   render: () => (
     <KpiStrip>
       <KpiCard label="Requests" value="1,204" unit="req/s" />

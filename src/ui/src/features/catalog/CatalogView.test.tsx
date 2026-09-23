@@ -624,7 +624,8 @@ describe("the entity list's sparkline column", () => {
     await screen.findByText("spans");
 
     const bands = await waitFor(() => {
-      const found = document.querySelectorAll(".entity-sparkline-hit");
+      // Structural: hit bands now come from the shared `Sparkline`.
+      const found = document.querySelectorAll(".sparkline-hit");
       expect(found.length).toBeGreaterThan(0);
       return found;
     });

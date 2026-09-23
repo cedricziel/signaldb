@@ -17,11 +17,17 @@ export interface ShareBarProps {
   fraction?: number;
   fillColor?: string;
   legend?: boolean;
-  /** Extra DOM props (event handlers, aria, tabIndex, ref) per segment. */
+  /**
+   * Extra DOM props (event handlers, aria, tabIndex, ref) per segment. `ref`
+   * takes `HTMLOrSVGElement` so a caller's roving-focus hook — typed for
+   * both HTML and SVG marks — can wire straight through.
+   */
   segmentProps?: (
     segment: ShareBarSegment,
     index: number,
-  ) => HTMLAttributes<HTMLSpanElement> & { ref?: React.Ref<HTMLSpanElement> };
+  ) => HTMLAttributes<HTMLSpanElement> & {
+    ref?: (el: HTMLOrSVGElement | null) => void;
+  };
   ariaLabel?: string;
 }
 
@@ -39,12 +45,14 @@ export function ShareBar({
       <div className="share-bar-wrap">
         <div className="share-bar" role="group" aria-label={ariaLabel}>
           {segments.map((s, i) => {
-            const extra = segmentProps?.(s, i) ?? {};
+            const { className, ...extra } = segmentProps?.(s, i) ?? {};
             return (
               <span
                 key={s.key}
                 data-testid="share-bar-seg"
-                className="share-bar-seg"
+                className={
+                  className ? `share-bar-seg ${className}` : "share-bar-seg"
+                }
                 style={{
                   width: `${total > 0 ? (s.value / total) * 100 : 0}%`,
                   background: s.color,

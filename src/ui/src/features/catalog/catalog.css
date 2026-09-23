@@ -166,12 +166,12 @@
 }
 
 /* ---------- dependency-type breakdown ---------- */
+/* The bar itself is the shared `ShareBar`; these override its layout for the
+   taller, bordered look this view uses. */
 
-.dep-bar {
-  display: flex;
+.dep-breakdown .share-bar {
   height: 20px;
   border-radius: 4px;
-  overflow: hidden;
   border: 1px solid var(--border);
 }
 
@@ -305,20 +305,4 @@
   width: 88px;
   padding-top: 2px;
   padding-bottom: 2px;
-}
-
-.entity-sparkline {
-  display: block;
-  overflow: visible;
-}
-
-.entity-sparkline polyline {
-  stroke: var(--accent);
-  vector-effect: non-scaling-stroke;
-}
-
-/* An SVG rect with no fill paints opaque black. These exist only to catch a
-   pointer the one-pixel line cannot. */
-.entity-sparkline-hit {
-  fill: transparent;
 }

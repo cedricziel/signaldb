@@ -86,10 +86,10 @@ export function Sparkline({
     return null;
   }
 
-  const numericWidth =
-    typeof width === "number"
-      ? width
-      : (rootRef.current?.getBoundingClientRect().width ?? DEFAULT_WIDTH);
+  // A string width (a percentage) stretches the SVG via CSS; the viewBox
+  // just needs *a* unit space to lay the points out in, since
+  // `preserveAspectRatio="none"` stretches non-uniformly to fit regardless.
+  const numericWidth = typeof width === "number" ? width : DEFAULT_WIDTH;
   const values = points.map((p) => p.v);
   const min = Math.min(...values);
   const max = Math.max(...values);
@@ -112,9 +112,16 @@ export function Sparkline({
         : points[active]!;
 
   const svgStyle = typeof width === "string" ? { width } : undefined;
+  // The host is `inline-block` by default so it shrink-wraps a fixed-width
+  // chart; a string width (a percentage, say) needs it to fill its parent
+  // instead, or the svg's own "100%" has nothing to measure against.
+  const hostStyle =
+    typeof width === "string"
+      ? { width, display: "block" as const }
+      : undefined;
 
   return (
-    <div className="sparkline-host viz-host" ref={rootRef}>
+    <div className="sparkline-host viz-host" ref={rootRef} style={hostStyle}>
       <svg
         className="sparkline"
         width={typeof width === "number" ? width : undefined}
