@@ -196,6 +196,22 @@ describe("promSeries' SERIES_COLOR_VARS resolve to pairwise-distinct colors", ()
   }
 });
 
+describe("data-theme scoping applies to nested elements, not just :root", () => {
+  it("a non-root [data-theme=dark] selector exists and sets --bg/--text tokens", () => {
+    const match =
+      /\[data-theme="dark"\][^{]*\{[^}]*--bg:\s*#0d1014/.exec(css) !== null;
+    expect(match).toBe(true);
+  });
+
+  it("a non-root [data-theme] selector paints its own background/color", () => {
+    const match =
+      /\[data-theme="dark"\]:not\(:root\)[^{]*\{[^}]*background:\s*var\(--bg\);\s*color:\s*var\(--text\)/.exec(
+        css,
+      );
+    expect(match).not.toBeNull();
+  });
+});
+
 describe("--ok-text meets WCAG AA on --surface", () => {
   for (const [theme, getBlock] of Object.entries(themeBlocks)) {
     it(`${theme} theme: --ok-text on --surface is >= 4.5:1`, () => {

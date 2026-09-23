@@ -3,6 +3,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { testQueryClient } from "../../lib/queryClient";
 import { irCatchAll, irBody, type JsonRoute } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
+import { DarkScope } from "../../stories/DarkScope";
 import { Instrumentation } from "./Instrumentation";
 
 /** Ingest-status count queries (`fetchIngestStatus`, `from: <signal>`,
@@ -72,4 +73,12 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
   render: () => <InstrumentationPage />,
+};
+
+export const Dark: Story = {
+  render: () => (
+    <DarkScope>
+      <InstrumentationPage />
+    </DarkScope>
+  ),
 };

@@ -5,6 +5,7 @@ import { testQueryClient } from "../../lib/queryClient";
 import type { LoginConfigResponse } from "../../api/session";
 import type { JsonRoute } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
+import { DarkScope } from "../../stories/DarkScope";
 import { LoginRoute } from "./LoginRoute";
 
 function routesFor(config: LoginConfigResponse): JsonRoute[] {
@@ -52,6 +53,16 @@ type Story = StoryObj<typeof meta>;
 export const PasswordOnly: Story = {
   render: () => (
     <LoginPage config={{ demo: null, oidc: null, password_enabled: true }} />
+  ),
+};
+
+export const Dark: Story = {
+  render: () => (
+    <DarkScope>
+      <LoginPage
+        config={{ demo: null, oidc: { name: "Okta" }, password_enabled: true }}
+      />
+    </DarkScope>
   ),
 };
 

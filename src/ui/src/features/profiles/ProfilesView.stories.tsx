@@ -5,6 +5,7 @@ import { testQueryClient } from "../../lib/queryClient";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import { irCatchAll, type JsonRoute } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
+import { DarkScope } from "../../stories/DarkScope";
 import { ProfilesView } from "./ProfilesView";
 
 function isDescribeFields(body: unknown): boolean {
@@ -177,5 +178,13 @@ type Story = StoryObj<typeof meta>;
 export const Default: Story = {
   render: () => (
     <ProfilesPage state={{ ...DEFAULT_STATE, signal: "profiles" }} />
+  ),
+};
+
+export const Dark: Story = {
+  render: () => (
+    <DarkScope>
+      <ProfilesPage state={{ ...DEFAULT_STATE, signal: "profiles" }} />
+    </DarkScope>
   ),
 };

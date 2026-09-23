@@ -5,6 +5,7 @@ import { testQueryClient } from "../../lib/queryClient";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import { irCatchAll, type JsonRoute } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
+import { DarkScope } from "../../stories/DarkScope";
 import { MetricsView } from "./MetricsView";
 
 const START_NS = 1_700_000_000_000_000_000;
@@ -151,4 +152,14 @@ export const Default: Story = {
 
 export const Empty: Story = {
   render: () => <MetricsPage state={{ ...DEFAULT_STATE, signal: "metrics" }} />,
+};
+
+export const Dark: Story = {
+  render: () => (
+    <DarkScope>
+      <MetricsPage
+        state={{ ...DEFAULT_STATE, signal: "metrics", metricQuery: RAN_QUERY }}
+      />
+    </DarkScope>
+  ),
 };

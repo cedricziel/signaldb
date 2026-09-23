@@ -13,6 +13,7 @@ import { PROCESSORS } from "./paths";
 import { TestPanel } from "./TestPanel";
 import { useProcessorsSession } from "./useProcessorsSession";
 import { toErrorMessage } from "../../api/http";
+import "./processors.css";
 
 const SIGNALS = ["traces", "logs", "metrics"] as const;
 type Signal = (typeof SIGNALS)[number];
@@ -28,8 +29,7 @@ const ALL_DATASETS = "";
  */
 export function ProcessorEditor() {
   const { name } = useParams<{ name?: string }>();
-  const { isTenantAdmin, isLoading, tenant, datasets } =
-    useProcessorsSession();
+  const { isTenantAdmin, isLoading, tenant, datasets } = useProcessorsSession();
   const editing = name !== undefined;
   const stored = useQuery({
     queryKey: ["processors", tenant, name],
@@ -53,9 +53,7 @@ export function ProcessorEditor() {
       </div>
     );
   }
-  return (
-    <EditorForm key={name} datasets={datasets} stored={stored.data} />
-  );
+  return <EditorForm key={name} datasets={datasets} stored={stored.data} />;
 }
 
 function EditorForm({
@@ -155,9 +153,7 @@ function EditorForm({
   });
 
   const errorForLine = (index: number): StatementError | undefined =>
-    statementsCurrent
-      ? errors.find((e) => e.statement === index)
-      : undefined;
+    statementsCurrent ? errors.find((e) => e.statement === index) : undefined;
 
   const canSave = isValidated && name.trim() !== "" && !save.isPending;
 

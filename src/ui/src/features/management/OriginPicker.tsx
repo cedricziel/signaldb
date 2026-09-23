@@ -5,6 +5,7 @@
 
 import { useState } from "react";
 import { useDirtyForm } from "../../lib/dirtyForms";
+import "./OriginPicker.css";
 
 /** The subset of a key/response shape needed to read its allowed-origins
  * restriction: the `allowed_origins` set, or absent/null for unrestricted. */
@@ -108,12 +109,7 @@ export function OriginPicker({
             }
           }}
         />
-        <button
-          type="button"
-          className="btn"
-          onClick={add}
-          disabled={disabled}
-        >
+        <button type="button" className="btn" onClick={add} disabled={disabled}>
           Add
         </button>
       </div>

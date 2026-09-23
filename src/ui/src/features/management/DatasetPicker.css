@@ -1,0 +1,28 @@
+/* Used by both ApiKeys.tsx's create/update forms and ManagementPanel.tsx's
+   create-key form — owned here, not by either caller, so every DatasetPicker
+   renders styled regardless of which page mounts it. */
+.dataset-picker {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  margin: 0;
+}
+
+.dataset-picker legend {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0 4px;
+}
+
+.dataset-option {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: 8px;
+}
+
+.dataset-option label {
+  font: 11px var(--mono);
+}

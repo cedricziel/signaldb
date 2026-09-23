@@ -20,18 +20,32 @@
 }
 
 .processors-status-invalid {
-  color: var(--color-error, #c0392b);
+  color: var(--err);
   font-weight: 600;
 }
 
 .processors-status-ok {
-  color: var(--color-success, #2e7d32);
+  color: var(--ok);
 }
 
 .processors-line-errors {
   list-style: none;
   padding: 0;
   margin: 0;
+}
+
+/* The editor form's plain <input>/<select>/<textarea> had no rule at all
+   (browser default: white, regardless of theme) — same token treatment the
+   other feature forms (ApiKeys.css, management.css) give theirs. */
+.processors-page input,
+.processors-page select,
+.processors-page textarea {
+  font: inherit;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface2);
+  padding: 6px 8px;
 }
 
 .processors-statements-textarea,
