@@ -9,23 +9,27 @@ release-please owns versions, tags and changelogs. The job here is the part
 it gets wrong or leaves undone: a sane version, readable notes, and releases
 that end up as full releases with the right one marked Latest.
 
-A SignalDB release happens in two stages, and each needs its own go from
-the user:
+A SignalDB release happens in two stages:
 
 - **Pre-release.** Merging the release PR tags every component and publishes
   it as a GitHub pre-release. Tarballs and images exist and can be tested, but
   `releases/latest` does not move and the release is flagged as not ready for
-  general use. "Cut a release" or "merge the release PR" authorizes this
-  stage (steps 1 to 4). "Should we release?" does not.
+  general use (steps 1 to 4).
 - **Public release.** Promoting the pre-releases to full releases and marking
   `signaldb-bin` as Latest. This is what users, install scripts and
-  `releases/latest/download` links pick up. Only do it when the user asks for
-  it ("make it public", "mark as latest", "promote"), or when they asked for
-  the full release up front. Otherwise finish stage one, report, and ask.
+  `releases/latest/download` links pick up (step 5).
+
+Don't infer the target stage from how the request is worded. Before merging,
+ask the user with `AskUserQuestion` whether this release should stay a
+pre-release or become public, and offer "Pre-release" and "Public release"
+as the options. Ask even when the request sounds clear: "cut a release" and
+"ship it" can mean either stage. A question like "should we release?" only
+authorizes the assessment in step 1.
 
 A release can sit as a pre-release as long as it needs to, for example
 while it runs on a test instance. Stopping after stage one is a normal
-outcome, not an unfinished job.
+outcome, not an unfinished job. When the user later wants it public, run
+step 5 alone.
 
 ## 1. Decide whether a release is due
 
