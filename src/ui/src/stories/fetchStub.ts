@@ -14,6 +14,13 @@ export type JsonRoute = {
   method?: string;
   /** When set, only match requests whose parsed JSON body satisfies it. */
   bodyMatch?: (body: unknown) => boolean;
+  /** When set, computes the response from the request's own parsed body
+   * instead of the static `body` above — for a fixture that must agree with
+   * whatever window/range the request itself asked for (a Storybook
+   * design-sync capture freezes the clock, so a fixture keyed off
+   * `Date.now()` at module-load time can disagree with it; one derived from
+   * the request's own `range` cannot). */
+  bodyFor?: (requestBody: unknown) => unknown;
 };
 
 /** Mirrors `test/render.tsx`'s `stubFetchRoutes`: stubs both raw `fetch`
@@ -61,7 +68,10 @@ export function installFetchStub(routes: JsonRoute[]): { restore: () => void } {
         status: 404,
       });
     }
-    return new Response(JSON.stringify(route.body), {
+    const body = route.bodyFor
+      ? route.bodyFor(await requestBody())
+      : route.body;
+    return new Response(JSON.stringify(body), {
       status: route.status ?? 200,
       headers: { "Content-Type": "application/json" },
     });

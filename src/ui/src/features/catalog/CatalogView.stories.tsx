@@ -659,35 +659,52 @@ function whereValue(b: unknown, field: string): string | undefined {
   return undefined;
 }
 
+/** The `range.to` a request's own body carries, in nanoseconds — used to
+ * anchor a fixture's timestamps to whatever window the request actually
+ * asked for, rather than to a module-load-time `Date.now()` (which a
+ * Storybook design-sync capture's frozen clock can disagree with, and which
+ * doesn't survive `volumeFromResponse`'s ns→ms conversion — see
+ * `errorGroupSeries` below). */
+function requestRangeToNs(b: unknown): bigint {
+  const body = b as { range?: { to?: string } };
+  return BigInt(body.range?.to ?? "0");
+}
+
 /** One error group's own "last hour" series — 30 two-minute buckets summing
  * to roughly its own count, with a seeded wobble (same `mulberry32` PRNG as
  * `operationSeries`, keyed by the group's own type) and, for the two spiky
  * groups, one bucket well above the rest.
  *
- * Anchored to real `Date.now()`, not a fixed epoch: `EntityErrorGroups`
- * pads its row sparkline to `[now - 1h, now]` (`SPARK_WINDOW_MS`/`SPARK_STEP`
- * in `EntityErrorGroups.tsx`), and `padBuckets` sorts any bucket outside that
- * window to wherever its timestamp falls — a fixed-epoch series from 2023
- * landed entirely before the padded grid, so only its first point (sorted
- * leftmost) showed and the rest of the row read as a flat trailing line. */
+ * Points are `[timestampNs, value]`, in **nanoseconds**: `fetchErrorGroupVolume`
+ * (`volumeFromResponse` in `api/errors.ts`) divides each point's timestamp by
+ * `1e6` to get milliseconds, same as every other IR series response. An
+ * earlier version of this fixture supplied millisecond timestamps directly —
+ * dividing those by another `1e6` collapsed them to just after the Unix
+ * epoch, so every row's one real point sorted to the far left of
+ * `padBuckets`'s zero-filled grid (`EntityErrorGroups`'s `[now-1h, now]`) and
+ * the rest of the row read as a flat trailing line.
+ *
+ * Anchored to the request's own `range.to` (ns), not `Date.now()`, so the
+ * series lines up with `EntityErrorGroups`'s `[now-1h, now]` padding window
+ * whatever the real clock reads when this story is captured. */
 function errorGroupSeries(
   g: (typeof ERROR_GROUPS)[number],
+  toNs: bigint,
 ): [number, number][] {
   const seed = hashString(g.type);
   const rand = mulberry32(seed);
   const phase = (seed % 628) / 100;
   const spikeAt = g.spiky ? 20 + (seed % 8) : -1;
   const avg = g.n / 30;
-  const stepMs = 120_000;
-  const windowMs = 60 * 60 * 1000; // matches EntityErrorGroups' SPARK_WINDOW_MS
-  const nowMs = Date.now();
-  const startMs = Math.floor((nowMs - windowMs) / stepMs) * stepMs;
+  const stepNs = 120_000_000_000n; // 2m, matches EntityErrorGroups' SPARK_STEP
+  const windowNs = 3_600_000_000_000n; // 1h, matches SPARK_WINDOW_MS
+  const startNs = ((toNs - windowNs) / stepNs) * stepNs;
   return Array.from({ length: 30 }, (_, i) => {
     const wave = 1 + 0.3 * Math.sin(phase + i * 0.4);
     const noise = 1 + (rand() - 0.5) * 0.4;
     const spike = i === spikeAt ? 3 : 1;
     return [
-      startMs + i * stepMs,
+      Number(startNs + BigInt(i) * stepNs),
       Math.max(0, Math.round(avg * wave * noise * spike)),
     ];
   });
@@ -703,7 +720,9 @@ const errorGroupVolumeRoutes: JsonRoute[] = ERROR_GROUPS.map((g) => ({
     irBody((body) => body.result === "series")(b) &&
     aggregateBy(b).join() === "exception.type" &&
     whereValue(b, "exception.type") === g.type,
-  body: irEntitySeriesResponse(errorGroupSeries(g)),
+  body: undefined,
+  bodyFor: (b) =>
+    irEntitySeriesResponse(errorGroupSeries(g, requestRangeToNs(b))),
 }));
 
 /**
