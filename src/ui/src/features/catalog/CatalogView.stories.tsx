@@ -9,6 +9,7 @@ import {
   irCatchAll,
   irEntitySeriesResponse,
   irEntityStatsResponse,
+  irOperationSeriesResponse,
   type JsonRoute,
 } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
@@ -186,6 +187,45 @@ const servicesRoute: JsonRoute = {
   },
 };
 
+/** ~20 realistic, distinct operations for the checkout service, ranked by
+ * rate and summing to about the KPI strip's own rate (`entityStatsCurrentRoute`'s
+ * `n: 18_200`) — enough rows to show the Operations table's top-8/show-all
+ * toggle and its filter doing real work. */
+const OPERATIONS = [
+  { name: "POST /checkout", n: 4_200, errRate: 0.021, p50: 40, p95: 190 },
+  { name: "GET /cart", n: 3_100, errRate: 0.002, p50: 15, p95: 60 },
+  { name: "GET /cart/:id", n: 2_400, errRate: 0.004, p50: 18, p95: 65 },
+  {
+    name: "POST /checkout/validate",
+    n: 1_800,
+    errRate: 0.011,
+    p50: 30,
+    p95: 160,
+  },
+  { name: "GET /products", n: 1_500, errRate: 0.001, p50: 22, p95: 80 },
+  { name: "POST /cart/items", n: 1_200, errRate: 0.006, p50: 25, p95: 95 },
+  { name: "GET /orders/:id", n: 950, errRate: 0.003, p50: 20, p95: 70 },
+  { name: "DELETE /cart/items/:id", n: 800, errRate: 0.002, p50: 12, p95: 45 },
+  { name: "POST /checkout/payment", n: 650, errRate: 0.034, p50: 55, p95: 240 },
+  { name: "GET /promotions", n: 500, errRate: 0, p50: 10, p95: 35 },
+  { name: "POST /cart/coupon", n: 420, errRate: 0.019, p50: 28, p95: 110 },
+  { name: "GET /shipping/rates", n: 350, errRate: 0.008, p50: 45, p95: 150 },
+  { name: "POST /checkout/address", n: 300, errRate: 0.005, p50: 20, p95: 75 },
+  { name: "GET /inventory/:sku", n: 250, errRate: 0.002, p50: 14, p95: 50 },
+  {
+    name: "PATCH /cart/items/:id",
+    n: 200,
+    errRate: 0.004,
+    p50: 18,
+    p95: 60,
+  },
+  { name: "GET /checkout/summary", n: 150, errRate: 0.001, p50: 16, p95: 55 },
+  { name: "POST /wishlist/items", n: 120, errRate: 0, p50: 12, p95: 40 },
+  { name: "GET /recommendations", n: 90, errRate: 0.003, p50: 35, p95: 130 },
+  { name: "POST /checkout/gift-card", n: 70, errRate: 0.012, p50: 22, p95: 85 },
+  { name: "GET /returns/:id", n: 50, errRate: 0.006, p50: 19, p95: 70 },
+];
+
 /** The entity detail's operations breakdown (`EntityDetail.tsx`'s
  * `breakdownEntity`, identity `["span.name"]`, pinned to the drilled-in
  * service): [span.name, n, errors, p50, p95, last]. */
@@ -196,26 +236,42 @@ const operationsBreakdownRoute: JsonRoute = {
     aggregateBy(b).includes("span.name"),
   body: {
     result: "table",
-    rows: [
-      [
-        "POST /checkout",
-        12_400,
-        88,
-        40_000_000,
-        190_000_000,
-        "1700003600000000000",
-      ],
-      ["GET /cart", 4_100, 6, 15_000_000, 60_000_000, "1700003550000000000"],
-      [
-        "POST /checkout/validate",
-        1_700,
-        18,
-        30_000_000,
-        160_000_000,
-        "1700003500000000000",
-      ],
-    ],
+    rows: OPERATIONS.map((op, i) => [
+      op.name,
+      op.n,
+      Math.round(op.n * op.errRate),
+      op.p50 * 1_000_000,
+      op.p95 * 1_000_000,
+      String(1_700_003_600_000_000_000 - i * 5_000_000_000),
+    ]),
   },
+};
+
+/** The Operations table's per-operation "last hour" sparklines
+ * (`useOperationSeries`/`fetchOperationSeries`, `from: "traces", result:
+ * "series"`, grouped by `span.name`) — a mild wobble around each
+ * operation's own rate so the sparklines read as real activity rather than
+ * flat lines. */
+const operationSeriesRoute: JsonRoute = {
+  match: "/api/v1/query",
+  bodyMatch: (b) =>
+    irBody((body) => body.result === "series" && body.from === "traces")(b) &&
+    aggregateBy(b).includes("span.name"),
+  body: irOperationSeriesResponse(
+    "span_name",
+    Object.fromEntries(
+      OPERATIONS.map((op) => [
+        op.name,
+        Array.from({ length: 30 }, (_, i) => [
+          1_700_000_000_000_000_000 + i * 120_000_000_000,
+          Math.max(
+            0,
+            Math.round((op.n / 30) * (0.7 + (0.6 * ((i * 7) % 5)) / 5)),
+          ),
+        ]) as [number, number][],
+      ]),
+    ),
+  ),
 };
 
 /** The entity list's activity sparkline (`buildActivityDoc`, `from:
@@ -399,6 +455,7 @@ const routes: JsonRoute[] = [
   entityRateSeriesRoute,
   entityErrorSeriesRoute,
   entityP95SeriesRoute,
+  operationSeriesRoute,
 ];
 
 function CatalogPage({ state }: { state: ExploreState }) {
