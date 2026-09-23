@@ -201,6 +201,11 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* The legend's own small swatch — a colored dot before the label, not a
+   full-block background behind it (that was the ShareBar segment's look,
+   `.dep-<key>`, bleeding into the legend because the `dt` used to carry
+   that same class). Color comes from `--kind-color`, set inline from
+   `DEP_COLORS`, mirroring `DependencyTable`'s `.dep-table-kind`. */
 .dep-swatch {
   display: flex;
   align-items: center;
@@ -212,33 +217,29 @@
 .dep-swatch::before {
   content: "";
   display: inline-block;
-  width: 9px;
-  height: 9px;
+  width: 8px;
+  height: 8px;
   border-radius: 2px;
+  background: var(--kind-color);
 }
 
-.dep-database,
-.dep-swatch.dep-database::before {
+.dep-database {
   background: var(--svc-a);
 }
 
-.dep-http,
-.dep-swatch.dep-http::before {
+.dep-http {
   background: var(--svc-b);
 }
 
-.dep-rpc,
-.dep-swatch.dep-rpc::before {
+.dep-rpc {
   background: var(--svc-c);
 }
 
-.dep-messaging,
-.dep-swatch.dep-messaging::before {
+.dep-messaging {
   background: var(--svc-d);
 }
 
-.dep-other,
-.dep-swatch.dep-other::before {
+.dep-other {
   background: var(--faint);
 }
 
