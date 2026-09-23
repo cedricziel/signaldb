@@ -74,6 +74,10 @@ function timeField(source: ErrorSource): string {
 export function buildErrorGroupDoc(
   source: ErrorSource,
   range: ResolvedRange,
+  /** Pins the group query to one service — the entity detail page's own
+   * "Error groups" section (`EntityErrorGroups`), unlike the standalone
+   * Errors tab which shows every service at once. */
+  serviceName?: string,
 ): QueryIrRequest {
   return {
     irVersion: 1,
@@ -82,6 +86,9 @@ export function buildErrorGroupDoc(
     result: "table",
     pipeline: [
       { where: { field: "exception.type", op: "exists" } },
+      ...(serviceName != null
+        ? [{ where: { field: "service.name", op: "eq", value: serviceName } }]
+        : []),
       {
         aggregate: {
           by: GROUP_DIMENSIONS,
@@ -129,10 +136,11 @@ function groupsFromResponse(
 
 export async function fetchErrorGroups(
   range: ResolvedRange,
+  serviceName?: string,
 ): Promise<ErrorGroupResult> {
   const [tracesRes, logsRes] = await Promise.all([
-    runIrQuery(buildErrorGroupDoc("traces", range)),
-    runIrQuery(buildErrorGroupDoc("logs", range)),
+    runIrQuery(buildErrorGroupDoc("traces", range, serviceName)),
+    runIrQuery(buildErrorGroupDoc("logs", range, serviceName)),
   ]);
   const groups = [
     ...groupsFromResponse(tracesRes, "traces"),
