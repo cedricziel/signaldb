@@ -4,6 +4,7 @@
 // from a story/meta decorator, and always call the returned `restore()` on
 // cleanup so one story's stub can't leak `fetch` into the next.
 import { client as generatedClient } from "../api/gen/client.gen";
+import type { WhoamiResponse } from "../api/session";
 
 export type JsonRoute = {
   match: string | RegExp;
@@ -146,6 +147,25 @@ export const emptyIrSeries = {
   series: [],
 };
 
+/** Universal fallback for any `/api/v1/query` call a story doesn't
+ * specifically care about — every consumer reads the envelope through
+ * optional chaining, so `{}` is a safe "nothing here" for any result kind,
+ * whatever picker or metadata fetch fired it. Placed first in a story's
+ * `routes` array so a more specific route later in the array overrides it
+ * (`installFetchStub` matches last-route-wins). */
+export const irCatchAll: JsonRoute = { match: "/api/v1/query", body: {} };
+
+/** Narrows a Query IR request body to its `result`/`from` fields for
+ * routing a story's several distinct `/api/v1/query` calls to different
+ * stubbed responses — the discriminator every IR-backed view's stories use
+ * (see `TracesView.stories.tsx`, `ErrorsView.stories.tsx`,
+ * `CatalogView.stories.tsx`). */
+export function irBody(
+  match: (body: { result?: string; from?: string }) => boolean,
+) {
+  return (b: unknown) => match((b ?? {}) as { result?: string; from?: string });
+}
+
 /** A `describe: fields` response naming `names` as declared, filterable
  * fields — for stubbing a field-picker's discovery request. */
 export function describeFieldsResponse(names: string[]) {
@@ -168,5 +188,44 @@ export function describeFieldsResponse(names: string[]) {
         origin: "declared",
       })),
     },
+  };
+}
+
+/** A `GET /api/v1/whoami` response for "alice@example.com" in "acme" —
+ * shared by every story that stubs the top bar's tenant/user context
+ * (`TopBar`, `Pages/App Shell`). */
+export function sampleWhoami(
+  overrides: Partial<WhoamiResponse> = {},
+): WhoamiResponse {
+  return {
+    user: {
+      id: "user-1",
+      email: "alice@example.com",
+      display_name: "Alice",
+      is_instance_admin: false,
+    },
+    memberships: [{ tenant_id: "acme", role: "admin" }],
+    tenant: { id: "acme", slug: "acme", name: "Acme Corp" },
+    datasets: [
+      { id: "production", slug: "production", is_default: true },
+      { id: "staging", slug: "staging", is_default: false },
+    ],
+    default_dataset: "production",
+    ...overrides,
+  };
+}
+
+/** The matching `GET /ui/session` response for {@link sampleWhoami} — same
+ * user/tenant/memberships, the shape `currentSession()` returns. */
+export function sampleCurrentSession(
+  who: WhoamiResponse,
+  extra: Record<string, unknown> = {},
+) {
+  return {
+    user: who.user,
+    tenant: who.tenant.id,
+    dataset: who.default_dataset,
+    memberships: who.memberships,
+    ...extra,
   };
 }

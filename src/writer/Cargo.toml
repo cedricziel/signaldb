@@ -13,7 +13,6 @@ common.workspace = true
 
 datafusion.workspace = true
 arrow-flight.workspace = true
-object_store.workspace = true
 
 # Iceberg table format support
 iceberg-rust.workspace = true

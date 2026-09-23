@@ -13,7 +13,6 @@ use datafusion::prelude::SessionContext;
 use datafusion_iceberg::DataFusionTable;
 use iceberg_rust::catalog::identifier::Identifier;
 use iceberg_rust::catalog::tabular::Tabular;
-use object_store::memory::InMemory;
 use std::sync::Arc;
 use tempfile::tempdir;
 use writer::{IcebergTableWriter, WalProcessor};
@@ -148,11 +147,9 @@ async fn test_wal_processor_integration() -> Result<()> {
     let wal_manager = Arc::new(WalManager::uniform(wal_config));
     let wal = wal_manager.get_wal("default", "default", "metrics").await?;
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     // Create WAL processor
-    let mut processor =
-        WalProcessor::new(wal_manager.clone(), catalog_manager.clone(), object_store);
+    let mut processor = WalProcessor::new(wal_manager.clone(), catalog_manager.clone());
 
     // Serialize a schema-correct metrics batch and write it to WAL.
     let batch = metrics_gauge_batch(&[1.0, 2.0])?;

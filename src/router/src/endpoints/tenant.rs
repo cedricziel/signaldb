@@ -144,10 +144,13 @@ pub async fn list_tenant_tables(
     // with no `[[auth.tenants]]` block — resolves here too, the same as
     // `create_tenant_tables`; otherwise a listing right after provisioning
     // such a tenant would see nothing.
-    let mut api = TenantApi::new(state.config().clone())
-        .with_tenant_source(std::sync::Arc::new(state.catalog().clone()));
-
-    match api.list_tables(&tenant_id).await {
+    let listing = async {
+        crate::tenant_api(&state)
+            .await?
+            .list_tables(&tenant_id)
+            .await
+    };
+    match listing.await {
         Ok(response) => (
             StatusCode::OK,
             Json(serde_json::to_value(response).unwrap()),
@@ -198,10 +201,13 @@ pub async fn create_tenant_tables(
     }
     // Attach the SQL catalog so a tenant created through the admin API — one
     // with no `[[auth.tenants]]` block — resolves here too.
-    let mut api = TenantApi::new(state.config().clone())
-        .with_tenant_source(std::sync::Arc::new(state.catalog().clone()));
-
-    match api.create_default_tables(&tenant_id).await {
+    let created = async {
+        crate::tenant_api(&state)
+            .await?
+            .create_default_tables(&tenant_id)
+            .await
+    };
+    match created.await {
         Ok(()) => (
             StatusCode::CREATED,
             Json(CreateTenantTablesResponse {

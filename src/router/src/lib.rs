@@ -37,6 +37,35 @@ pub(crate) const OPENAPI_JSON_PATH: &str = "/api/v1/openapi.json";
 /// Concrete state that every route handler depends on: the catalog, service
 /// registry, configuration, and authenticator, plus the shared handles built
 /// from them.
+type SharedCatalogManager = tokio::sync::OnceCell<Arc<common::CatalogManager>>;
+
+/// The router's `CatalogManager`, carrying the catalog as tenant source.
+///
+/// Built once on first use and reused, so per-request callers stop opening a
+/// new connection pool each time. Nothing in it needs invalidating: the
+/// router's config is fixed at startup, and tenants/datasets are read live
+/// from the tenant source on every lookup. A failed build is not cached.
+async fn catalog_manager(state: &RouterAppState) -> anyhow::Result<Arc<common::CatalogManager>> {
+    state
+        .catalog_manager
+        .get_or_try_init(|| async {
+            let manager = common::CatalogManager::new(state.config().clone()).await?;
+            Ok(Arc::new(
+                manager.with_tenant_source(Arc::new(state.catalog().clone())),
+            ))
+        })
+        .await
+        .cloned()
+}
+
+/// A [`common::tenant_api::TenantApi`] over the shared `CatalogManager`.
+pub(crate) async fn tenant_api(
+    state: &RouterAppState,
+) -> anyhow::Result<common::tenant_api::TenantApi> {
+    Ok(common::tenant_api::TenantApi::new(state.config().clone())
+        .with_catalog_manager(catalog_manager(state).await?))
+}
+
 #[derive(Clone)]
 pub struct RouterAppState {
     catalog: Catalog,
@@ -48,6 +77,7 @@ pub struct RouterAppState {
     oidc: Option<Arc<oidc::OidcRuntime>>,
     github: Option<Arc<github::GitHubApp>>,
     source_context: Option<Arc<source_context::SourceContextService>>,
+    catalog_manager: Arc<SharedCatalogManager>,
 }
 
 impl std::fmt::Debug for RouterAppState {
@@ -90,6 +120,7 @@ impl RouterAppState {
             oidc,
             github,
             source_context,
+            catalog_manager: Arc::default(),
         }
     }
 
@@ -123,6 +154,7 @@ impl RouterAppState {
             oidc,
             github,
             source_context,
+            catalog_manager: Arc::default(),
         }
     }
 }
@@ -190,6 +222,17 @@ impl RouterAppState {
         self.processor_registry.clone()
     }
 
+    /// Share an externally built processor registry, e.g. the one the
+    /// acceptor's ingest handlers use, so processors created through the
+    /// router are visible on the ingest path.
+    pub fn with_processor_registry(
+        mut self,
+        registry: Arc<common::processors::ProcessorRegistry>,
+    ) -> Self {
+        self.processor_registry = registry;
+        self
+    }
+
     pub fn oidc(&self) -> Option<&Arc<oidc::OidcRuntime>> {
         self.oidc.as_ref()
     }
@@ -200,6 +243,11 @@ impl RouterAppState {
 
     pub fn source_context(&self) -> Option<&Arc<source_context::SourceContextService>> {
         self.source_context.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn catalog_manager_cell(&self) -> &SharedCatalogManager {
+        &self.catalog_manager
     }
 }
 

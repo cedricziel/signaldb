@@ -988,7 +988,6 @@ pub(crate) fn detect_metric_type(
         return DetectedMetricInfo {
             base_name: base.to_string(),
             metric_type: PrometheusMetricType::Histogram,
-            suffix: Some("bucket".to_string()),
         };
     }
 
@@ -998,7 +997,6 @@ pub(crate) fn detect_metric_type(
         return DetectedMetricInfo {
             base_name: base.to_string(),
             metric_type: PrometheusMetricType::Counter,
-            suffix: Some("total".to_string()),
         };
     }
 
@@ -1016,7 +1014,6 @@ pub(crate) fn detect_metric_type(
             return DetectedMetricInfo {
                 base_name: base.to_string(),
                 metric_type: metadata.metric_type,
-                suffix: Some(suffix.trim_start_matches('_').to_string()),
             };
         }
 
@@ -1024,7 +1021,6 @@ pub(crate) fn detect_metric_type(
         return DetectedMetricInfo {
             base_name: base.to_string(),
             metric_type: PrometheusMetricType::Histogram,
-            suffix: Some(suffix.trim_start_matches('_').to_string()),
         };
     }
 
@@ -1034,7 +1030,6 @@ pub(crate) fn detect_metric_type(
         return DetectedMetricInfo {
             base_name: base.to_string(),
             metric_type: PrometheusMetricType::Counter,
-            suffix: Some("created".to_string()),
         };
     }
 
@@ -1043,7 +1038,6 @@ pub(crate) fn detect_metric_type(
         return DetectedMetricInfo {
             base_name: metric_name.to_string(),
             metric_type: PrometheusMetricType::Info,
-            suffix: None,
         };
     }
 
@@ -1051,7 +1045,6 @@ pub(crate) fn detect_metric_type(
     DetectedMetricInfo {
         base_name: metric_name.to_string(),
         metric_type: PrometheusMetricType::Gauge,
-        suffix: None,
     }
 }
 
@@ -1093,6 +1086,69 @@ mod tests {
                 length: *length,
             })
             .collect()
+    }
+
+    #[test]
+    fn detect_metric_type_bucket_suffix() {
+        let metadata_map = HashMap::new();
+        let detected = detect_metric_type("http_request_duration_seconds_bucket", &metadata_map);
+        assert_eq!(detected.metric_type, PrometheusMetricType::Histogram);
+        assert_eq!(detected.base_name, "http_request_duration_seconds");
+    }
+
+    #[test]
+    fn detect_metric_type_count_suffix_without_metadata() {
+        let metadata_map = HashMap::new();
+        let detected = detect_metric_type("http_request_duration_seconds_count", &metadata_map);
+        assert_eq!(detected.metric_type, PrometheusMetricType::Histogram);
+        assert_eq!(detected.base_name, "http_request_duration_seconds");
+    }
+
+    #[test]
+    fn detect_metric_type_sum_suffix_without_metadata() {
+        let metadata_map = HashMap::new();
+        let detected = detect_metric_type("http_request_duration_seconds_sum", &metadata_map);
+        assert_eq!(detected.metric_type, PrometheusMetricType::Histogram);
+        assert_eq!(detected.base_name, "http_request_duration_seconds");
+    }
+
+    #[test]
+    fn detect_metric_type_count_suffix_uses_metadata_type() {
+        let metadata = PrometheusMetricMetadata {
+            metric_family_name: "my_summary".to_string(),
+            metric_type: PrometheusMetricType::Summary,
+            help: String::new(),
+            unit: String::new(),
+        };
+        let mut metadata_map: HashMap<&str, &PrometheusMetricMetadata> = HashMap::new();
+        metadata_map.insert("my_summary", &metadata);
+        let detected = detect_metric_type("my_summary_count", &metadata_map);
+        assert_eq!(detected.metric_type, PrometheusMetricType::Summary);
+        assert_eq!(detected.base_name, "my_summary");
+    }
+
+    #[test]
+    fn detect_metric_type_total_suffix() {
+        let metadata_map = HashMap::new();
+        let detected = detect_metric_type("http_requests_total", &metadata_map);
+        assert_eq!(detected.metric_type, PrometheusMetricType::Counter);
+        assert_eq!(detected.base_name, "http_requests");
+    }
+
+    #[test]
+    fn detect_metric_type_created_suffix() {
+        let metadata_map = HashMap::new();
+        let detected = detect_metric_type("http_requests_total_created", &metadata_map);
+        assert_eq!(detected.metric_type, PrometheusMetricType::Counter);
+        assert_eq!(detected.base_name, "http_requests_total");
+    }
+
+    #[test]
+    fn detect_metric_type_plain_gauge() {
+        let metadata_map = HashMap::new();
+        let detected = detect_metric_type("process_cpu_seconds", &metadata_map);
+        assert_eq!(detected.metric_type, PrometheusMetricType::Gauge);
+        assert_eq!(detected.base_name, "process_cpu_seconds");
     }
 
     #[test]

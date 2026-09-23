@@ -136,7 +136,8 @@ by a trimmed [OpenTelemetry Demo](https://github.com/open-telemetry/opentelemetr
 checkout, payment, shipping, quote, email, flagd with every flag off, and the
 Locust load generator — no Kafka or Envoy). The flag definitions and the product
 list, which upstream mounts from its source tree, are inlined as compose
-`configs:`. All demo telemetry lands in tenant `demo`, dataset
+`configs:`. The collector drops the spans from the Node services' startup probes of
+the AWS/GCP metadata endpoints, which always fail off-cloud. All demo telemetry lands in tenant `demo`, dataset
 `otel-demo`.
 
 - `signaldb.toml` is inlined through a compose `configs:` entry, so the data

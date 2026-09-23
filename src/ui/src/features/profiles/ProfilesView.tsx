@@ -17,6 +17,9 @@ import { TimeRangePicker } from "../../components/TimeRangePicker";
 import { FlameGraph, FlamePane } from "./FlameGraph";
 import { decodeFlamebearer } from "../../lib/flamebearer";
 import "./profiles.css";
+// `.backbtn` (the "← profiles" back-navigation button) is a shared button
+// style this view reuses from the Traces tab rather than profiles.css.
+import "../traces/traces.css";
 import { useSourceContextEnabled } from "../../lib/useSourceContextEnabled";
 
 interface Props {

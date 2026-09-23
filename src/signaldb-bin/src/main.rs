@@ -241,10 +241,6 @@ async fn main() -> Result<()> {
     );
     tracing::info!("Created shared catalog manager");
 
-    // Initialize Writer components
-    let object_store = common::storage::create_object_store(&config.storage)
-        .context("Failed to initialize object store")?;
-
     // WRITER_WAL_DIR override wins, otherwise [wal].wal_dir + "/writer".
     let writer_wal_dir = config.wal.wal_dir_for_service(
         "writer",
@@ -268,7 +264,6 @@ async fn main() -> Result<()> {
     // Create Iceberg-based Flight ingestion service with CatalogManager
     let writer_flight_service = IcebergWriterFlightService::new(
         catalog_manager.clone(),
-        object_store.clone(),
         writer_wal_manager.clone(),
         &config.writer,
     );

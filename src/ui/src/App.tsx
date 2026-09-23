@@ -7,7 +7,7 @@ import {
   persistTenantContext,
   setTenantContext,
 } from "./api/http";
-import { ThrottleBanner } from "./features/shell/ThrottleBanner";
+import { ThrottleBanner } from "./components/ThrottleBanner";
 import { TopBar } from "./features/shell/TopBar";
 import { UpdateBanner } from "./features/shell/UpdateBanner";
 import { maybeAutoApplyUpdate } from "./lib/pwaUpdate";

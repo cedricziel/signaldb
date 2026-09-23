@@ -142,7 +142,7 @@ describe("ProcessorEditor", () => {
     expect(
       await screen.findByText(/statement 0: 1 match, 0 errors/),
     ).toBeInTheDocument();
-    expect(screen.getByLabelText("payload diff")).toHaveTextContent(
+    expect(screen.getByLabelText("diff")).toHaveTextContent(
       "[redacted]",
     );
   });

@@ -135,10 +135,6 @@ pub async fn run(common: &CommonArgs, args: Args) -> anyhow::Result<()> {
             .with_tenant_source(sql_catalog),
     );
 
-    // Initialize object store from configuration
-    let object_store = common::storage::create_object_store(&config.storage)
-        .context("Failed to initialize object store")?;
-
     // Initialize WAL for durability. The --wal-dir / WRITER_WAL_DIR override
     // wins, otherwise [wal].wal_dir from the configuration with the service
     // suffix appended.
@@ -163,12 +159,8 @@ pub async fn run(common: &CommonArgs, args: Args) -> anyhow::Result<()> {
     wal_manager.warn_if_fd_headroom_thin("writer").await;
 
     // Create Iceberg-based Flight ingestion service with CatalogManager
-    let flight_service = IcebergWriterFlightService::new(
-        catalog_manager,
-        object_store,
-        wal_manager.clone(),
-        &config.writer,
-    );
+    let flight_service =
+        IcebergWriterFlightService::new(catalog_manager, wal_manager.clone(), &config.writer);
 
     // Start background WAL processing for Iceberg writes
     let writer_bg_handle = flight_service.start_background_processing();

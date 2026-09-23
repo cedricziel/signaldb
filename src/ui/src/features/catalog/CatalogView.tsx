@@ -43,6 +43,9 @@ import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
 import { useMobileSidebar } from "../../hooks/useMobileSidebar";
 import { formatTimeBucket, formatValue } from "../../lib/vizFormat";
 import "./catalog.css";
+// `.trace-open` (a drillable row's primary-cell button) is a shared button
+// style this view reuses from the Traces tab rather than catalog.css.
+import "../traces/traces.css";
 
 interface Props {
   state: ExploreState;
@@ -500,7 +503,7 @@ export function EntityTable({
                         {v ?? NOT_SET}
                       </button>
                     ) : (
-                      v ?? NOT_SET
+                      (v ?? NOT_SET)
                     )}
                   </td>
                 ))}

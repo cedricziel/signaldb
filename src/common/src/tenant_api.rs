@@ -185,6 +185,12 @@ impl TenantApi {
         self
     }
 
+    /// Reuse a shared `CatalogManager` rather than building one per call.
+    pub fn with_catalog_manager(mut self, manager: Arc<crate::CatalogManager>) -> Self {
+        self.registry = self.registry.with_catalog_manager(manager);
+        self
+    }
+
     /// List all tenants
     pub fn list_tenants(&self) -> ListTenantsResponse {
         let mut tenants: Vec<TenantInfo> = self

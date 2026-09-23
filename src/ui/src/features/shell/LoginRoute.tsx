@@ -11,12 +11,15 @@ import { BrandMark } from "../../components/BrandMark";
 import { isAuthError, toErrorMessage } from "../../api/http";
 import { deleteSession } from "../../api/session";
 import { useLoginConfig } from "../../lib/useLoginConfig";
-import { safeRedirectTarget, withTenantDataset } from "../../lib/redirectTarget";
+import {
+  safeRedirectTarget,
+  withTenantDataset,
+} from "../../lib/redirectTarget";
 import { CHOOSE_TENANT_HINT, useTenantStep } from "../../lib/tenantResolution";
 import { useCurrentSession } from "../../lib/useWhoami";
-import { LoginCard } from "./LoginCard";
+import { LoginCard } from "../../components/LoginCard";
 import { LoginMethods } from "./LoginMethods";
-import { TenantPicker } from "./TenantPicker";
+import { TenantPicker } from "../../components/TenantPicker";
 import "./LoginPanel.css";
 import "./LoginPage.css";
 
