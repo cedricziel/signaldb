@@ -173,6 +173,12 @@ impl Predicate {
     /// Evaluate the predicate against a record — the **denotational** reference
     /// semantics in three-valued [`Truth`]. A field missing from `record`, or
     /// present with a JSON `null`, is *absent*.
+    ///
+    /// Checked against the querier's real lowering to a DataFusion plan by
+    /// `querier::query::predicate_differential` (`src/querier/src/query/predicate_differential.rs`),
+    /// which lowers a table-driven list of predicates through
+    /// `ir_planner::plan_document` and asserts the kept-row set matches this
+    /// evaluator's.
     pub fn evaluate(&self, record: &Record) -> Truth {
         match self {
             Predicate::Not(p) => !p.evaluate(record),
