@@ -285,10 +285,27 @@ fn cmp_truth(
     b: &serde_json::Value,
     pred: impl Fn(std::cmp::Ordering) -> bool,
 ) -> Truth {
-    match cmp_json(a, b) {
+    match cmp_ordered(a, b) {
         Some(o) => Truth::from_bool(pred(o)),
         None => Truth::False,
     }
+}
+
+/// Ordering for `gt`/`gte`/`lt`/`lte` only. An untyped attribute has no
+/// declared logical type, so its resolved value is always a JSON `String`
+/// even when the underlying data is numeric-looking (see
+/// `querier::query::ir_planner::Lowering::ordered`, which numerically
+/// `TRY_CAST`s an untyped attribute against a numeric literal for the same
+/// reason). Mirror that here: a JSON `String` actual compared against a JSON
+/// `Number` expected parses the string as `f64` and compares numerically: a
+/// non-numeric-looking string (fails to parse) has no defined ordering and
+/// the caller's `cmp_truth` maps that to `Truth::False`, same as it does for
+/// any other unordered pair via [`cmp_json`].
+fn cmp_ordered(a: &serde_json::Value, b: &serde_json::Value) -> Option<std::cmp::Ordering> {
+    if let (serde_json::Value::String(s), serde_json::Value::Number(n)) = (a, b) {
+        return s.parse::<f64>().ok()?.partial_cmp(&n.as_f64()?);
+    }
+    cmp_json(a, b)
 }
 
 #[cfg(test)]
@@ -364,5 +381,26 @@ mod tests {
             serde_json::from_value(json!({ "field": "env", "op": "eq", "value": "prod" })).unwrap();
         let null_row = record(&[("env", json!(null))]);
         assert_eq!(p.evaluate(&null_row), Truth::Absent);
+    }
+
+    // #1670 — an ordered comparison against a JSON number literal, where the
+    // actual value is a JSON string (the shape an untyped attribute always
+    // carries), parses the string numerically rather than comparing
+    // lexicographically.
+    #[test]
+    fn ordered_comparison_of_numeric_literal_against_string_value_is_numeric() {
+        let p: Predicate =
+            serde_json::from_value(json!({ "field": "num", "op": "gt", "value": 10 })).unwrap();
+        // "50" > 10 numerically, even though "50" < "10" lexicographically.
+        assert_eq!(p.evaluate(&record(&[("num", json!("50"))])), Truth::True);
+        // "9" > 10 is false numerically, even though "9" > "10" lexically.
+        assert_eq!(p.evaluate(&record(&[("num", json!("9"))])), Truth::False);
+    }
+
+    #[test]
+    fn ordered_comparison_of_numeric_literal_against_non_numeric_string_is_false() {
+        let p: Predicate =
+            serde_json::from_value(json!({ "field": "num", "op": "gt", "value": 10 })).unwrap();
+        assert_eq!(p.evaluate(&record(&[("num", json!("abc"))])), Truth::False);
     }
 }

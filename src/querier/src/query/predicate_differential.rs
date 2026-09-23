@@ -70,6 +70,7 @@ const ROWS: &[(i64, &str, &[Attr])] = &[
         &[("name", Some("")), ("num", Some("5")), ("empty", Some("x"))],
     ),
     (60, "row5", &[("name", None), ("num", Some("9"))]),
+    (70, "row6", &[("num", Some("50"))]),
 ];
 
 fn map_field_named(name: &str) -> Field {
@@ -161,8 +162,8 @@ fn logs_fixture() -> SessionContext {
 /// doc comment.
 fn records() -> Vec<(i64, Record)> {
     ROWS.iter()
-        .map(|(ts, _, attrs)| {
-            let record: Record = attrs
+        .map(|(ts, body, attrs)| {
+            let mut record: Record = attrs
                 .iter()
                 .map(|(k, v)| {
                     let value = match v {
@@ -172,6 +173,10 @@ fn records() -> Vec<(i64, Record)> {
                     (k.to_string(), value)
                 })
                 .collect();
+            record.insert(
+                "body".to_string(),
+                serde_json::Value::String(body.to_string()),
+            );
             (*ts, record)
         })
         .collect()
@@ -348,24 +353,37 @@ async fn regex_diverges_from_the_reference_evaluators_documented_approximation()
     assert_agrees("regex_documented_divergence", &p).await;
 }
 
-/// **Known divergence — numeric literal against an untyped string
-/// attribute.** An attribute field with no declared logical type resolves to
-/// `ValueType::String` (`SchemaResolver::resolve`'s fallback), so a JSON
-/// *number* literal is coerced to its decimal string form
-/// (`query_ir::value::coerce`'s `ValueType::String` arm) and the plan does a
-/// **lexicographic** string comparison against the (also string) attribute
-/// value: `"9" > "10"` lexicographically, so row0/row5 (`num = "9"`) pass
-/// `num > 10`. `Predicate::evaluate`'s `cmp_json`, given a JSON `String`
-/// actual and a JSON `Number` expected, returns `None` (no defined ordering
-/// between mismatched JSON types) — `Truth::False` for every row, never
-/// matching. Both sides are internally consistent; they disagree because an
-/// untyped attribute's comparison type depends on how the *literal* was
-/// spelled in the query (a JSON number vs. a JSON string), which the
-/// reference evaluator has no equivalent concept of. Left `#[ignore]`d and
-/// reported rather than changing planner behaviour.
+/// **Numeric literal against an untyped string attribute (#1670).** An
+/// attribute field with no declared logical type resolves to
+/// `ValueType::String` (`SchemaResolver::resolve`'s fallback). An ordered
+/// comparison (`gt`/`gte`/`lt`/`lte`) against a JSON *number* literal now
+/// lowers to a numeric `TRY_CAST` (`ir_planner::Lowering::ordered`) instead of
+/// a lexicographic string comparison, so `num > 10` excludes row0/row5
+/// (`num = "9"`, `9 > 10` is false) rather than keeping them on a
+/// lexicographic `"9" > "10"`. `Predicate::evaluate`'s `cmp_ordered` mirrors
+/// this: a JSON `String` actual against a JSON `Number` expected parses the
+/// string as `f64` and compares numerically, `Truth::False` when it doesn't
+/// parse. Was `#[ignore]`d as a known divergence; now asserted.
 #[tokio::test]
-#[ignore = "known divergence: an untyped attribute's numeric-literal comparison is string-lexicographic in the plan but always False in Predicate::evaluate (mismatched JSON types) — see this test's doc comment"]
-async fn numeric_literal_against_string_attribute_diverges() {
+async fn numeric_literal_against_string_attribute_agrees() {
     let p = leaf("num", ComparisonOp::Gt, Some(serde_json::json!(10)));
-    assert_agrees("numeric_vs_string_attribute_divergence", &p).await;
+    assert_agrees("numeric_vs_string_attribute_agrees", &p).await;
+}
+
+/// Planner-level check (#1670): `num > 10` against the untyped `num`
+/// attribute keeps `"50"` (`50 > 10`), and excludes both `"9"` (`9 > 10` is
+/// false, not a lexicographic `"9" > "10"` true) and `"apple"` (non-numeric,
+/// `TRY_CAST` to `NULL`, never matches).
+#[tokio::test]
+async fn num_gt_10_keeps_numeric_above_and_excludes_below_and_non_numeric() {
+    let ctx = logs_fixture();
+    let p = leaf("num", ComparisonOp::Gt, Some(serde_json::json!(10)));
+    let kept = planned_kept(&ctx, &p).await;
+    assert!(kept.contains(&70), "row6 (num = \"50\") should be kept");
+    assert!(!kept.contains(&10), "row0 (num = \"9\") should not be kept");
+    assert!(!kept.contains(&60), "row5 (num = \"9\") should not be kept");
+    assert!(
+        !kept.contains(&40),
+        "row3 (num = \"apple\") should not be kept"
+    );
 }

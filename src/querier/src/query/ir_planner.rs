@@ -55,7 +55,7 @@ use datafusion::logical_expr::SortExpr;
 use datafusion::logical_expr::TableProviderFilterPushDown;
 use datafusion::logical_expr::{
     ColumnarValue, Expr, ExprFunctionExt, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
-    TypeSignature, Volatility, cast, col, lit, not,
+    TypeSignature, Volatility, cast, col, lit, not, try_cast,
 };
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::ScalarFunctionExpr;
@@ -931,6 +931,16 @@ impl SchemaResolver {
             name: field.to_string(),
             value_type,
         })
+    }
+
+    /// Whether the logical schema itself declares a type for `field` —
+    /// unlike [`FieldResolver::is_known`], this ignores a promoted-but-
+    /// undeclared `label_*` column. Used to decide whether an attribute is
+    /// "untyped" for the numeric-ordered-comparison rule (`Lowering::
+    /// ordered`): a materialized column being present says nothing about
+    /// the field's declared type, only that it has been promoted.
+    fn has_declared_type(&self, field: &str) -> bool {
+        self.logical_schema.resolve(&self.source, field).is_some()
     }
 }
 
@@ -2350,7 +2360,7 @@ impl Lowering<'_> {
     fn lower_leaf(&self, leaf: &Leaf) -> Result<Expr, QuerierError> {
         // An extract-derived or aggregate-output column takes precedence over
         // registry resolution (it is a real DataFrame column now).
-        let (is_json, value_type, field_expr, is_body) = if let Some(alias) =
+        let (is_json, value_type, field_expr, is_body, untyped) = if let Some(alias) =
             self.col_of.get(&leaf.field)
         {
             let ty = self
@@ -2358,13 +2368,21 @@ impl Lowering<'_> {
                 .get(&leaf.field)
                 .cloned()
                 .unwrap_or(ValueType::String);
-            (false, ty, ident(alias.clone()), false)
+            (false, ty, ident(alias.clone()), false, false)
         } else {
             let resolved = self.resolver.resolve("", &leaf.field).ok_or_else(|| {
                 QuerierError::InvalidInput(format!("unknown field '{}'", leaf.field))
             })?;
             let is_json = resolved.is_advisory_type();
             let ty = resolved.value_type().clone();
+            // `has_declared_type` is false when the logical schema has no
+            // entry for the field — whether or not a promoted `label_*`
+            // column exists (unlike `is_known`, which treats a promoted
+            // column as "known"). No declared type means its `String` type
+            // is a hardcoded default, not a declared one. That is the
+            // "untyped" case `ordered` needs, distinct from a field the
+            // schema registry explicitly declares as `String`.
+            let untyped = !self.resolver.has_declared_type(&leaf.field);
             // The physical `body` column is JSON-encoded at ingest (issue
             // #1410): a plain-string body is stored quoted. `eq`/`ne`/`in`
             // stay pushdown-friendly by JSON-encoding the *literal* instead
@@ -2387,7 +2405,7 @@ impl Lowering<'_> {
                 Resolved::SpanEvents { events_column } => span_events_expr(events_column),
                 Resolved::PromotedColumn { name, key, .. } => self.promoted_column_expr(name, key),
             };
-            (is_json, ty, expr, is_body)
+            (is_json, ty, expr, is_body, untyped)
         };
         // The decoded form of `field_expr`, used by every operator except
         // `eq`/`ne`/`in` (which compare against the encoded literal instead,
@@ -2426,7 +2444,14 @@ impl Lowering<'_> {
             }
             ComparisonOp::Gt | ComparisonOp::Gte | ComparisonOp::Lt | ComparisonOp::Lte => {
                 let v = self.require_value(leaf)?;
-                self.ordered(decoded_field_expr(), leaf.op, v, &value_type, is_json)?
+                self.ordered(
+                    decoded_field_expr(),
+                    leaf.op,
+                    v,
+                    &value_type,
+                    is_json,
+                    untyped,
+                )?
             }
             ComparisonOp::Contains => {
                 let v = self.require_value(leaf)?;
@@ -2494,15 +2519,42 @@ impl Lowering<'_> {
         value: &serde_json::Value,
         value_type: &ValueType,
         is_json: bool,
+        untyped: bool,
     ) -> Result<Expr, QuerierError> {
-        // Route on the resolved ValueType, not the storage form, so a field
-        // compares the same whether promoted (typed column) or unpromoted
-        // (Utf8 attribute extraction) — promotion invariance. A numeric type
-        // compares numerically in both cases (an attribute's Utf8 value is cast
-        // to Float64); a string type compares lexically in both.
-        let literal =
-            coerce(value, value_type).map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
-        let (lhs, rhs) = if is_numeric(value_type) {
+        // An untyped attribute (no declared logical type — resolved as
+        // `String` only by the resolver's permissive fallback, see
+        // `lower_leaf`) compared against a JSON *number* literal: comparing
+        // lexicographically would silently misorder ("9" > "10") since the
+        // attribute's actual type is unknown. Route it through a numeric
+        // `TRY_CAST` instead — a non-numeric-looking value casts to NULL and
+        // so never matches, same as `Predicate::evaluate`'s unparsable-string
+        // case (see `query_ir::predicate::eval_leaf`). A declared `String`
+        // field keeps the lexicographic comparison: its type was a choice,
+        // not a fallback default.
+        // An untyped attribute (no declared logical type — resolved as
+        // `String` only by the resolver's permissive fallback, see
+        // `lower_leaf`) compared against a JSON *number* literal: comparing
+        // lexicographically would silently misorder ("9" > "10") since the
+        // attribute's actual type is unknown. Route it through a numeric
+        // `TRY_CAST` instead — a non-numeric-looking value casts to NULL and
+        // so never matches, same as `Predicate::evaluate`'s unparsable-string
+        // case (see `query_ir::predicate::eval_leaf`). A declared `String`
+        // field keeps the lexicographic comparison below: its type was a
+        // choice, not a fallback default.
+        let (lhs, rhs) = if !is_numeric(value_type)
+            && untyped
+            && let Some(f) = value.as_f64()
+        {
+            (try_cast(field_expr, DataType::Float64), lit(f))
+        } else if is_numeric(value_type) {
+            // Route on the resolved ValueType, not the storage form, so a
+            // field compares the same whether promoted (typed column) or
+            // unpromoted (Utf8 attribute extraction) — promotion invariance.
+            // A numeric type compares numerically in both cases (an
+            // attribute's Utf8 value is cast to Float64); a string type
+            // compares lexically in both.
+            let literal =
+                coerce(value, value_type).map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
             if is_json {
                 (
                     cast(field_expr, DataType::Float64),
@@ -2512,6 +2564,8 @@ impl Lowering<'_> {
                 (field_expr, self.value_lit(&literal, false))
             }
         } else {
+            let literal =
+                coerce(value, value_type).map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
             (field_expr, self.value_lit(&literal, is_json))
         };
         Ok(match op {
@@ -8427,6 +8481,64 @@ mod tests {
             services,
             vec!["svc3", "svc1", "svc2"],
             "order must follow the attribute-map fallback value, not the null column"
+        );
+    }
+
+    /// Regression (#1672): a promoted attribute with no declared logical
+    /// type is still "untyped" for the numeric-ordered-comparison rule in
+    /// `Lowering::lower_leaf`. `SchemaResolver::is_known` also returns `true`
+    /// once a materialized `label_*` column exists for the field, so using
+    /// it to decide "untyped" wrongly treated a promoted-but-undeclared
+    /// `num` as typed `String` and compared lexicographically ("9" > "50"
+    /// as strings), keeping the wrong rows. `num` here is fully promoted
+    /// (`label_num` populated, no JSON fallback needed) and never declared
+    /// in the logical schema, so `num > 10` must still route through the
+    /// numeric `TRY_CAST` path and keep only `"50"`.
+    #[tokio::test]
+    async fn promoted_untyped_attribute_compares_numerically() {
+        let fields = vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, true),
+            map_field(),
+            Field::new("label_num", DataType::Utf8, true),
+        ];
+        let schema = Arc::new(Schema::new(fields));
+
+        let ts = TimestampNanosecondArray::from(vec![10_i64, 20, 30]);
+        let service = StringArray::from(vec![Some("svc1"), Some("svc2"), Some("svc3")]);
+        let log_attrs = build_map(&[&[("num", "9")], &[("num", "50")], &[("num", "abc")]]);
+        let label_num = StringArray::from(vec![Some("9"), Some("50"), Some("abc")]);
+
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(ts),
+                Arc::new(service),
+                log_attrs,
+                Arc::new(label_num),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("logs".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+
+        let pred = serde_json::json!({ "field": "num", "op": "gt", "value": 10 });
+        let services = matching_services(&ctx, pred).await;
+        assert_eq!(
+            services,
+            vec!["svc2".to_string()],
+            "num > 10 must keep only svc2 (num=\"50\"), not svc1 (num=\"9\" lexicographically \
+             greater than \"10\") or svc3 (num=\"abc\", non-numeric)"
         );
     }
 }
