@@ -14,13 +14,16 @@ import type { ResolvedRange } from "../../lib/time";
 import { formatShare, formatValue } from "../../lib/vizFormat";
 import { formatDurationMs } from "../../lib/waterfall";
 import { SkeletonLines } from "../explore/Skeleton";
+import { DependencyTable } from "./DependencyTable";
 
 function plural(n: number, noun: string): string {
   return `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
 }
 
-/** Tooltip swatch per category — mirrors the `.dep-*` rules in catalog.css. */
-const DEP_COLORS: Record<string, string> = {
+/** Tooltip swatch per category — mirrors the `.dep-*` rules in catalog.css.
+ * Exported so `DependencyTable`'s per-row kind swatch reuses the same
+ * mapping rather than inventing a second palette. */
+export const DEP_COLORS: Record<string, string> = {
   database: "var(--svc-a)",
   http: "var(--svc-b)",
   rpc: "var(--svc-c)",
@@ -144,6 +147,11 @@ export function DependencyBreakdown({
           ]}
         />
       )}
+      <DependencyTable
+        serviceName={serviceName}
+        range={range}
+        rangeKey={rangeKey}
+      />
     </div>
   );
 }

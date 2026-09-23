@@ -1,0 +1,75 @@
+/* Per-dependency table under the "Time by dependency" bar — its own file
+   per this view's "each component imports its own CSS" rule, distinct from
+   catalog.css which the bar/legend above it still uses. */
+
+.dep-table-scroll {
+  overflow-x: auto;
+  margin-top: 16px;
+}
+
+.dep-table {
+  width: 100%;
+  min-width: 560px;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.dep-table th,
+.dep-table td {
+  padding: 6px 10px;
+  text-align: left;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.dep-table th {
+  color: var(--dim);
+  font-weight: 500;
+}
+
+.dep-table td.dep-table-num {
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+.dep-table-target {
+  font-family: var(--mono, monospace);
+  color: var(--text);
+}
+
+.dep-table-op {
+  color: var(--dim);
+  font-size: 11px;
+  margin-top: 2px;
+}
+
+.dep-table-kind {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.dep-table-kind::before {
+  content: "";
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  background: var(--kind-color);
+}
+
+.dep-table-share {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.dep-table-share .share-bar-track {
+  width: 72px;
+}
+
+.dep-table-share-pct {
+  font-variant-numeric: tabular-nums;
+  min-width: 3.5em;
+  text-align: right;
+}
