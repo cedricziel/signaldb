@@ -97,6 +97,26 @@ describe("EntityErrorGroups", () => {
     expect(screen.getByText("42")).toBeInTheDocument();
   });
 
+  it("shows the row sparkline as a red line, not bars", async () => {
+    fetchErrorGroupVolume.mockResolvedValue([
+      {
+        key: "s0",
+        points: [
+          [0, 1],
+          [120_000, 3],
+        ],
+      },
+    ]);
+    fetchErrorGroups.mockResolvedValue(result([makeGroup("BoomError", 5)]));
+    renderView();
+    const row = await screen.findByTestId("error-groups-row");
+    const line = await within(row).findByRole("img", {
+      name: "Occurrences over the last hour",
+    });
+    expect(line.querySelector("polyline")).toHaveClass("sparkline-tone-error");
+    expect(line.querySelector("rect[data-testid='sparkline-bar']")).toBeNull();
+  });
+
   it("shows an empty state naming the service when there are no groups", async () => {
     fetchErrorGroups.mockResolvedValue(result([]));
     renderView();

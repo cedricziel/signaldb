@@ -475,10 +475,11 @@ const entityP95SeriesRoute: JsonRoute = {
 };
 
 /** The entity detail's "Error groups" section (`EntityErrorGroups`,
- * `api/errors.ts`'s `buildErrorGroupDoc`, `from: "traces"`) — five realistic
- * exception groups for the "checkout" service, ranked by count so the
- * section's own top-5-by-count slicing has something to prove: [type,
- * message, service, escaped, n, first, last]. */
+ * `api/errors.ts`'s `buildErrorGroupDoc`) — five realistic exception groups
+ * for the "checkout" service, ranked by count so the section's own
+ * top-5-by-count slicing has something to prove: [type, message, service,
+ * escaped, n, first, last]. Split across both sources `fetchErrorGroups`
+ * merges (see `errorGroupsLogsRoute` below) so both badge styles show. */
 const errorGroupsTracesRoute: JsonRoute = {
   match: "/api/v1/query",
   bodyMatch: (b) =>
@@ -506,6 +507,30 @@ const errorGroupsTracesRoute: JsonRoute = {
         "1700003580000000000",
       ],
       [
+        "UpstreamServiceError",
+        "503 from payments-gateway",
+        "checkout",
+        "true",
+        15,
+        "1700002200000000000",
+        "1700003300000000000",
+      ],
+    ],
+  },
+};
+
+/** The same "Error groups" section's logs-sourced half of the merge (see
+ * `fetchErrorGroups`) — two groups only ever observed as log exception
+ * attributes, so the row list shows both the `traces` and `logs` badge. */
+const errorGroupsLogsRoute: JsonRoute = {
+  match: "/api/v1/query",
+  bodyMatch: (b) =>
+    irBody((body) => body.result === "table" && body.from === "logs")(b) &&
+    aggregateBy(b).includes("exception.type"),
+  body: {
+    result: "table",
+    rows: [
+      [
         "PoolExhaustedError",
         "connection pool exhausted",
         "checkout",
@@ -523,28 +548,8 @@ const errorGroupsTracesRoute: JsonRoute = {
         "1700002400000000000",
         "1700003400000000000",
       ],
-      [
-        "UpstreamServiceError",
-        "503 from payments-gateway",
-        "checkout",
-        "true",
-        15,
-        "1700002200000000000",
-        "1700003300000000000",
-      ],
     ],
   },
-};
-
-/** The same "Error groups" section's logs-sourced half of the merge (see
- * `fetchErrorGroups`) — empty, so the story's five groups above aren't
- * doubled by an identical logs-sourced set. */
-const errorGroupsLogsRoute: JsonRoute = {
-  match: "/api/v1/query",
-  bodyMatch: (b) =>
-    irBody((body) => body.result === "table" && body.from === "logs")(b) &&
-    aggregateBy(b).includes("exception.type"),
-  body: { result: "table", rows: [] },
 };
 
 /** Each error-group row's own "Last hour" sparkline (`fetchErrorGroupVolume`,

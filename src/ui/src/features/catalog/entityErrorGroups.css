@@ -37,7 +37,10 @@
   width: 96px;
 }
 
-.error-groups-error {
+/* The td itself stays a plain table cell (a `display: flex` cell used to
+   break the row's own border-collapse, leaving a gap under this column) —
+   the flex layout and truncation width live on an inner div instead. */
+.error-groups-error-inner {
   display: flex;
   flex-direction: column;
   gap: 2px;

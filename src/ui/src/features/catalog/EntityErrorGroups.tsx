@@ -11,7 +11,8 @@ import {
   type ErrorGroup,
 } from "../../api/errors";
 import { groupKey } from "../errors/ErrorsView";
-import { ErrorSparkline } from "../errors/ErrorSparkline";
+import { Sparkline } from "../../components/Sparkline";
+import { bucketizeSeries, padBuckets } from "../../components/SignalHistogram";
 import { QueryError } from "../../components/QueryError";
 import { EmptyState } from "../../components/EmptyState";
 import { SkeletonRows } from "../explore/Skeleton";
@@ -21,7 +22,7 @@ import {
   nanosToMs,
   type ResolvedRange,
 } from "../../lib/time";
-import { formatValue } from "../../lib/vizFormat";
+import { formatTimeBucket, formatValue } from "../../lib/vizFormat";
 import type { UpdateFn } from "../../lib/urlState";
 import "../errors/errors.css";
 import "./entityErrorGroups.css";
@@ -64,6 +65,14 @@ function EntityErrorGroupRow({
     queryKey: ["entity-error-group-volume", groupKey(group)],
     queryFn: () => fetchErrorGroupVolume(group, sparkRange, SPARK_STEP),
   });
+  let points: { x: number; v: number }[] = [];
+  if (volumeQuery.data) {
+    let buckets = bucketizeSeries(volumeQuery.data);
+    if (buckets.length > 0) {
+      buckets = padBuckets(buckets, sparkRange.fromMs, sparkRange.toMs, stepMs);
+    }
+    points = buckets.map((b) => ({ x: b.tMs, v: b.total }));
+  }
 
   return (
     <tr
@@ -72,22 +81,30 @@ function EntityErrorGroupRow({
       data-testid="error-groups-row"
     >
       <td className="error-groups-spark">
-        {volumeQuery.data && (
-          <ErrorSparkline
-            series={volumeQuery.data}
-            rangeMs={sparkRange}
-            stepMs={stepMs}
-          />
-        )}
+        <Sparkline
+          points={points}
+          variant="line"
+          tone="error"
+          width="100%"
+          height={18}
+          ariaLabel="Occurrences over the last hour"
+          valueLabel="occurrences"
+          formatValue={(v) => formatValue(v)}
+          formatLabel={(x) => formatTimeBucket(x, stepMs)}
+        />
       </td>
       <td className="error-groups-error">
-        <span className="error-groups-type">{group.exceptionType ?? "—"}</span>
-        <span
-          className="error-groups-message"
-          title={group.exceptionMessage ?? undefined}
-        >
-          {group.exceptionMessage ?? "—"}
-        </span>
+        <div className="error-groups-error-inner">
+          <span className="error-groups-type">
+            {group.exceptionType ?? "—"}
+          </span>
+          <span
+            className="error-groups-message"
+            title={group.exceptionMessage ?? undefined}
+          >
+            {group.exceptionMessage ?? "—"}
+          </span>
+        </div>
       </td>
       <td>
         <span className={`errors-source errors-source-${group.source}`}>
