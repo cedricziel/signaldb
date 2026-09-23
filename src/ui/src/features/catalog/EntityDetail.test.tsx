@@ -12,8 +12,10 @@ import * as membersApi from "../../api/traceGroupMembers";
 import * as dependencyBreakdownApi from "../../api/dependencyBreakdown";
 import * as entityMetricSeriesApi from "../../api/entityMetricSeries";
 import * as entityMetricsHook from "./useEntityMetrics";
+import * as entityKpisHook from "./useEntityKpis";
 import type { CatalogEntity } from "../../api/catalog";
 import type { TraceGroupMember } from "../../api/traceGroupMembers";
+import type { EntityKpis } from "../../api/entityDetailStats";
 
 vi.mock("../../api/catalog", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../api/catalog")>();
@@ -38,6 +40,10 @@ vi.mock("./useEntityMetrics", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./useEntityMetrics")>();
   return { ...actual, useEntityMetrics: vi.fn() };
 });
+vi.mock("./useEntityKpis", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./useEntityKpis")>();
+  return { ...actual, useEntityKpis: vi.fn() };
+});
 
 const fetchCatalogEntities = vi.mocked(catalogApi.fetchCatalogEntities);
 const fetchTraceGroupMembers = vi.mocked(membersApi.fetchTraceGroupMembers);
@@ -48,6 +54,47 @@ const fetchEntityMetricSeries = vi.mocked(
   entityMetricSeriesApi.fetchEntityMetricSeries,
 );
 const useEntityMetrics = vi.mocked(entityMetricsHook.useEntityMetrics);
+const useEntityKpis = vi.mocked(entityKpisHook.useEntityKpis);
+
+/** A default, "there's traffic" KPI result, so a test that doesn't care
+ * about the KPI cards still sees the row instead of a loading skeleton or
+ * the empty state. */
+const defaultKpis: EntityKpis = {
+  current: {
+    count: 1240,
+    ratePerSec: 2.3,
+    errorRate: 0.05,
+    p50Ms: 12,
+    p95Ms: 48,
+    p99Ms: 90,
+    peakRatePerSec: 3.1,
+    lastNs: "1700000000000000000",
+  },
+  previous: {
+    count: 1000,
+    ratePerSec: 2,
+    errorRate: 0.02,
+    p50Ms: 10,
+    p95Ms: 40,
+    p99Ms: 80,
+    peakRatePerSec: 2.5,
+    lastNs: "1699999000000000000",
+  },
+  series: {
+    rate: [
+      { tMs: 0, value: 1 },
+      { tMs: 60_000, value: 2 },
+    ],
+    errorRate: [
+      { tMs: 0, value: 0.01 },
+      { tMs: 60_000, value: 0.05 },
+    ],
+    p95: [
+      { tMs: 0, value: 40 },
+      { tMs: 60_000, value: 48 },
+    ],
+  },
+};
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -75,6 +122,13 @@ beforeEach(() => {
     isPending: false,
     isError: false,
   });
+  useEntityKpis.mockReset();
+  useEntityKpis.mockReturnValue({
+    data: defaultKpis,
+    isPending: false,
+    isError: false,
+    error: null,
+  } as never);
 });
 
 function group(
@@ -155,21 +209,103 @@ describe("EntityDetail", () => {
     );
   });
 
-  it("shows the entity's own RED numbers, pinned to its identity values", async () => {
-    fetchCatalogEntities.mockImplementation(async (entityType) => {
-      if (entityType.id === "service") {
-        return {
-          entities: [
-            group(["gateway", "edge"], 1240, 5, 12, 48, "1700000000000000000"),
-          ],
-          truncated: false,
-        };
-      }
-      return { entities: [], truncated: false };
-    });
+  it("shows the rate, error, and duration KPI cards from useEntityKpis", async () => {
     renderView();
-    expect(await screen.findByText("12 ms")).toBeInTheDocument();
+    expect(
+      await screen.findByText("Rate", { selector: ".kpi-label" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("2.3/s")).toBeInTheDocument();
+    expect(screen.getByText("peak 3.1/s · 1,240 total")).toBeInTheDocument();
+
+    expect(
+      screen.getByText("Errors", { selector: ".kpi-label" }),
+    ).toBeInTheDocument();
+    expect(screen.getByText("5%")).toBeInTheDocument();
+    expect(screen.getByText("62 failed")).toBeInTheDocument();
+
+    expect(
+      screen.getByText("Duration", { selector: ".kpi-label" }),
+    ).toBeInTheDocument();
     expect(screen.getByText("48 ms")).toBeInTheDocument();
+    expect(screen.getByText("p50 12 ms · p99 90 ms")).toBeInTheDocument();
+  });
+
+  it("colors the error-rate value when it's above zero", async () => {
+    renderView();
+    const errorsCard = (
+      await screen.findByText("Errors", { selector: ".kpi-label" })
+    ).closest(".kpi-card") as HTMLElement;
+    expect(within(errorsCard).getByText("5%")).toHaveClass("kpi-value-error");
+  });
+
+  it("shows a change figure vs. the previous period, toned by direction", async () => {
+    renderView();
+    // Rate is up but stays neutral — an increase isn't inherently good.
+    const rateCard = (
+      await screen.findByText("Rate", { selector: ".kpi-label" })
+    ).closest(".kpi-card") as HTMLElement;
+    expect(within(rateCard).getByText("+15% vs prev")).toHaveClass(
+      "kpi-change-neutral",
+    );
+    // The error rate rose (2% -> 5%), which is bad.
+    const errorsCard = screen
+      .getByText("Errors", { selector: ".kpi-label" })
+      .closest(".kpi-card") as HTMLElement;
+    expect(within(errorsCard).getByText("+3pp vs prev")).toHaveClass(
+      "kpi-change-bad",
+    );
+    // p95 rose too (40ms -> 48ms), also bad for duration.
+    const durationCard = screen
+      .getByText("Duration", { selector: ".kpi-label" })
+      .closest(".kpi-card") as HTMLElement;
+    expect(within(durationCard).getByText("+20% vs prev")).toHaveClass(
+      "kpi-change-bad",
+    );
+  });
+
+  it("hides the change figure when there's no previous-period data", async () => {
+    useEntityKpis.mockReturnValue({
+      data: { ...defaultKpis, previous: undefined },
+      isPending: false,
+      isError: false,
+      error: null,
+    } as never);
+    renderView();
+    await screen.findByText("Rate", { selector: ".kpi-label" });
+    expect(screen.queryByText(/vs prev/)).not.toBeInTheDocument();
+  });
+
+  it("shows a loading skeleton while the KPIs are pending", () => {
+    useEntityKpis.mockReturnValue({
+      data: undefined,
+      isPending: true,
+      isError: false,
+      error: null,
+    } as never);
+    renderView();
+    expect(
+      screen.queryByText("Rate", { selector: ".kpi-label" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("shows the empty note when there are no matching spans", async () => {
+    useEntityKpis.mockReturnValue({
+      data: {
+        current: undefined,
+        previous: undefined,
+        series: { rate: [], errorRate: [], p95: [] },
+      },
+      isPending: false,
+      isError: false,
+      error: null,
+    } as never);
+    renderView();
+    expect(
+      await screen.findByText("No matching spans in this window."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText("Rate", { selector: ".kpi-label" }),
+    ).not.toBeInTheDocument();
   });
 
   // Regression: a null second-identity-dimension pin used to be dropped
@@ -189,24 +325,6 @@ describe("EntityDetail", () => {
   });
 
   it("prefixes last-seen with the date on a multi-day range", async () => {
-    fetchCatalogEntities.mockImplementation(async (entityType) => {
-      if (entityType.id === "service") {
-        return {
-          entities: [
-            group(
-              ["gateway", "edge"],
-              1240,
-              5,
-              12,
-              48,
-              "1700000100000000000",
-            ),
-          ],
-          truncated: false,
-        };
-      }
-      return { entities: [], truncated: false };
-    });
     const update = vi.fn();
     renderWithClient(
       <EntityDetail
@@ -226,11 +344,11 @@ describe("EntityDetail", () => {
       />,
     );
     expect(
-      await screen.findByText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/),
+      await screen.findByText(/^Last seen \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/),
     ).toBeInTheDocument();
   });
 
-  it("names the signals covering the entity, without sample counts", async () => {
+  it("names the signals covering the entity, without sample counts, next to the title", async () => {
     fetchCatalogEntities.mockImplementation(async (entityType) => {
       if (entityType.id === "service") {
         return {
@@ -253,11 +371,11 @@ describe("EntityDetail", () => {
     renderView();
     // Which signals see this entity is worth knowing — it is what explains a
     // missing RED measurement. How many samples each carries is not.
-    const kpis = (await screen.findByText("Signals")).closest("div")!;
-    expect(within(kpis).getByText("traces")).toBeInTheDocument();
-    expect(within(kpis).getByText("logs")).toBeInTheDocument();
-    expect(within(kpis).queryByText("400")).not.toBeInTheDocument();
-    expect(within(kpis).queryByText("2000")).not.toBeInTheDocument();
+    const observed = await screen.findByText("traces");
+    const titleRow = observed.closest(".entity-detail-title") as HTMLElement;
+    expect(within(titleRow).getByText("logs")).toBeInTheDocument();
+    expect(within(titleRow).queryByText("400")).not.toBeInTheDocument();
+    expect(within(titleRow).queryByText("2000")).not.toBeInTheDocument();
   });
 
   it("shows the breakdown table for an entity type that defines one", async () => {
@@ -320,12 +438,10 @@ describe("EntityDetail", () => {
     );
   });
 
-  it('offers a "view matching traces" escape hatch that filters Traces', async () => {
+  it('the "Traces" button filters Traces to this entity', async () => {
     const update = renderView();
     const user = userEvent.setup();
-    await user.click(
-      await screen.findByRole("button", { name: /View matching traces/ }),
-    );
+    await user.click(await screen.findByRole("button", { name: "Traces" }));
     expect(update).toHaveBeenCalledWith(
       {
         signal: "traces",
@@ -335,14 +451,12 @@ describe("EntityDetail", () => {
     );
   });
 
-  it('the "view matching traces" escape hatch also pins the operation at the breakdown level', async () => {
+  it('the "Traces" button also pins the operation at the breakdown level', async () => {
     const update = renderView({
       catalogSecondary: compositeKey(["POST /checkout"]),
     });
     const user = userEvent.setup();
-    await user.click(
-      await screen.findByRole("button", { name: /View matching traces/ }),
-    );
+    await user.click(await screen.findByRole("button", { name: "Traces" }));
     expect(update).toHaveBeenCalledWith(
       {
         signal: "traces",
@@ -353,6 +467,33 @@ describe("EntityDetail", () => {
       },
       { push: true },
     );
+  });
+
+  it('the "Logs" button filters Logs to this entity\'s identity attributes', async () => {
+    const update = renderView();
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: "Logs" }));
+    expect(update).toHaveBeenCalledWith(
+      {
+        signal: "logs",
+        filters: [
+          { label: "service.name", op: "=", value: "gateway" },
+          { label: "service.namespace", op: "=", value: "edge" },
+        ],
+      },
+      { push: true },
+    );
+  });
+
+  it("has no Logs button for an entity type pinned on a span-only attribute", async () => {
+    renderView(
+      { catalogPrimary: compositeKey(["prod", "postgres"]) },
+      entityType("database")!,
+    );
+    await screen.findByRole("button", { name: "Traces" });
+    expect(
+      screen.queryByRole("button", { name: "Logs" }),
+    ).not.toBeInTheDocument();
   });
 
   it("shows a read-only top-values table for an entity type that defines one", async () => {
