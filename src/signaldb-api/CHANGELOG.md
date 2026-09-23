@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.2.2](https://github.com/cedricziel/signaldb/compare/signaldb-api-v0.2.1...signaldb-api-v0.2.2) (2026-09-23)
+
+
+### Features
+
+* per-API-key allowed origins for browser (CORS) ingestion ([#1548](https://github.com/cedricziel/signaldb/issues/1548)) ([6e966dd](https://github.com/cedricziel/signaldb/commit/6e966ddaf2740e3648583223828c6af715b6d331))
+* per-tenant, per-dataset OTTL telemetry processors ([#1603](https://github.com/cedricziel/signaldb/issues/1603)) ([2fc1022](https://github.com/cedricziel/signaldb/commit/2fc102232b1d925418b02e68393af8917184016e))
+* **router:** serialize API timestamps as native UTC DateTime ([#1643](https://github.com/cedricziel/signaldb/issues/1643)) ([1327fae](https://github.com/cedricziel/signaldb/commit/1327fae5760510f7e2180ab9e323ba6961d8b657))
+
 ## [0.2.1](https://github.com/cedricziel/signaldb/compare/signaldb-api-v0.2.0...signaldb-api-v0.2.1) (2026-09-12)
 
 

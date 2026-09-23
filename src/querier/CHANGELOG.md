@@ -1,5 +1,24 @@
 # Changelog
 
+## [0.4.1](https://github.com/cedricziel/signaldb/compare/querier-v0.4.0...querier-v0.4.1) (2026-09-23)
+
+
+### Features
+
+* **logs:** filter on an attribute's real dotted key from the explore UI ([#1594](https://github.com/cedricziel/signaldb/issues/1594)) ([523633b](https://github.com/cedricziel/signaldb/commit/523633b43096658ff884886134753e783500e1e6))
+* **ui:** move the explore UI onto the query IR ([#1627](https://github.com/cedricziel/signaldb/issues/1627)) ([c20ad3e](https://github.com/cedricziel/signaldb/commit/c20ad3e6a91e43ba01c201c6c37faafd376d6b6d))
+
+
+### Bug Fixes
+
+* **querier:** bound the scan batch, spill reservation and monolith memory pool ([#1602](https://github.com/cedricziel/signaldb/issues/1602)) ([edc1947](https://github.com/cedricziel/signaldb/commit/edc19477c0dc49d8b09ac54934e55cb153d6f9da))
+* **querier:** fall back to attribute extraction when materialized label columns collide ([#1642](https://github.com/cedricziel/signaldb/issues/1642)) ([998b004](https://github.com/cedricziel/signaldb/commit/998b004767b035eef4329ae765fd7d950050bc38))
+
+
+### Tests
+
+* **querier:** check Predicate::evaluate against the planned DataFusion filter ([#1671](https://github.com/cedricziel/signaldb/issues/1671)) ([d8285bf](https://github.com/cedricziel/signaldb/commit/d8285bf9b98e3a1aef0be53843bfd55f55e4ab78))
+
 ## [0.4.0](https://github.com/cedricziel/signaldb/compare/querier-v0.3.0...querier-v0.4.0) (2026-09-12)
 
 
