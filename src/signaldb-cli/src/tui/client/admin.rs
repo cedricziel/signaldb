@@ -242,12 +242,12 @@ impl AdminClient {
     pub async fn delete_dataset(
         &self,
         tenant_id: &str,
-        dataset_id: &str,
+        dataset_name: &str,
     ) -> Result<(), AdminClientError> {
         self.client
             .delete_dataset()
             .tenant_id(tenant_id)
-            .dataset_name(dataset_id)
+            .dataset_name(dataset_name)
             .send()
             .await
             .map_err(|e| self.map_error(&e))?;

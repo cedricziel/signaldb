@@ -60,13 +60,16 @@ async fn scoped_key(catalog: &Catalog, secret: &str, scopes: &[&str]) {
         .unwrap();
 }
 
-/// Serve the full router with tenant `acme`, a `tenant:manage` key, and an
-/// ingest-only key.
-async fn serve_router() -> (String, Catalog) {
+const ADMIN_KEY: &str = "sk-break-glass-admin";
+
+/// Serve the full router with tenant `acme`, a `tenant:manage` key, an
+/// ingest-only key, and (when `with_admin_key`) the break-glass admin key.
+async fn serve_router_with(with_admin_key: bool) -> (String, Catalog) {
     let catalog = Catalog::new("sqlite::memory:").await.unwrap();
     let config = Configuration {
         auth: AuthConfig {
             tenants: vec![tenant_config()],
+            admin_api_key: with_admin_key.then(|| ADMIN_KEY.to_string()),
             ..Default::default()
         },
         // `GET /api/v1/tenants/{id}` (`tenant show` / `tenant_info`) answers
@@ -97,6 +100,12 @@ async fn serve_router() -> (String, Catalog) {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
     (format!("http://{addr}"), catalog)
+}
+
+/// Serve the full router with tenant `acme`, a `tenant:manage` key, and an
+/// ingest-only key.
+async fn serve_router() -> (String, Catalog) {
+    serve_router_with(false).await
 }
 
 fn cli_args<'a>(router_url: &'a str, key: &'a str, extra: &[&'a str]) -> Vec<&'a str> {
@@ -182,6 +191,69 @@ async fn tenant_manage_key_drives_the_cli_and_an_ingest_key_is_denied() {
     run_cli(&router_url, "sk-acme-legacy", &["dataset", "list"])
         .await
         .expect_err("legacy unscoped key must be denied");
+}
+
+/// The admin `dataset delete` CLI command deletes by dataset *name*
+/// (issue #1685 follow-up): the router's delete route is
+/// `/api/v1/tenants/{tenant_id}/datasets/{dataset_name}` and looks the
+/// dataset up by name, not by its opaque catalog `id`, which differs from
+/// the name for a database-sourced dataset.
+#[tokio::test]
+async fn admin_dataset_delete_deletes_by_name_not_catalog_id() {
+    let (router_url, catalog) = serve_router_with(true).await;
+
+    run_cli(&router_url, MANAGE_KEY, &["dataset", "create", "by-name"])
+        .await
+        .expect("dataset create succeeds");
+    let datasets = catalog.get_datasets(TENANT).await.unwrap();
+    let record = datasets
+        .iter()
+        .find(|d| d.name == "by-name")
+        .expect("dataset exists after create");
+    assert_ne!(
+        record.id, record.name,
+        "test needs a catalog id distinct from the dataset name"
+    );
+
+    let admin_args = |extra: &[&str]| -> Vec<String> {
+        let mut args = vec![
+            "signaldb-cli".to_string(),
+            "--url".to_string(),
+            router_url.clone(),
+            "--admin-key".to_string(),
+            ADMIN_KEY.to_string(),
+            "admin".to_string(),
+            "dataset".to_string(),
+            "delete".to_string(),
+        ];
+        args.extend(extra.iter().map(|s| s.to_string()));
+        args
+    };
+
+    // The catalog id is not a valid dataset_name for this tenant: deleting
+    // by it must fail, and must not remove the dataset.
+    signaldb_cli::commands::Cli::try_parse_from(admin_args(&[TENANT, &record.id]))
+        .unwrap_or_else(|e| panic!("`admin dataset delete` parses: {e}"))
+        .run()
+        .await
+        .expect_err("deleting by catalog id must fail");
+    let datasets = catalog.get_datasets(TENANT).await.unwrap();
+    assert!(
+        datasets.iter().any(|d| d.name == "by-name"),
+        "delete-by-id performed no change: {datasets:?}"
+    );
+
+    // Deleting by name succeeds and actually removes it.
+    signaldb_cli::commands::Cli::try_parse_from(admin_args(&[TENANT, "by-name"]))
+        .unwrap_or_else(|e| panic!("`admin dataset delete` parses: {e}"))
+        .run()
+        .await
+        .expect("deleting by dataset name succeeds");
+    let datasets = catalog.get_datasets(TENANT).await.unwrap();
+    assert!(
+        !datasets.iter().any(|d| d.name == "by-name"),
+        "dataset gone after delete-by-name: {datasets:?}"
+    );
 }
 
 /// Minimal Streamable HTTP MCP client over the in-process `mcp_http_router`,

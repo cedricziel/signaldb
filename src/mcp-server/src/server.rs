@@ -1332,17 +1332,17 @@ struct CreateDatasetParams {
     name: String,
 }
 
-/// Parameters for `delete_dataset` (admin API — identifies the dataset by
-/// its opaque `dataset_id`; the management API's `tenant_delete_dataset`
-/// identifies it by name instead — see [`TenantDeleteDatasetParams`]).
+/// Parameters for `delete_dataset` (admin API; the router's delete route
+/// identifies a dataset by name, like the management API's
+/// `tenant_delete_dataset` — see [`TenantDeleteDatasetParams`]).
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct DeleteDatasetParams {
     /// Tenant the dataset belongs to.
     tenant_id: String,
-    /// Dataset ID to delete.
-    dataset_id: String,
-    /// Must equal `dataset_id`, confirming the deletion.
+    /// Dataset name to delete.
+    dataset_name: String,
+    /// Must equal `dataset_name`, confirming the deletion.
     confirm: String,
 }
 
@@ -2983,7 +2983,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Delete a tenant's dataset by ID (admin API; requires the administrative credential). Requires `confirm` equal to `dataset_id`.",
+        description = "Delete a tenant's dataset by name (admin API; requires the administrative credential). Requires `confirm` equal to `dataset_name`.",
         annotations(destructive_hint = true, read_only_hint = false)
     )]
     async fn delete_dataset(
@@ -2991,16 +2991,16 @@ impl McpServer {
         Parameters(p): Parameters<DeleteDatasetParams>,
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
-        require_confirm(&p.confirm, &p.dataset_id, "dataset_id")?;
+        require_confirm(&p.confirm, &p.dataset_name, "dataset_name")?;
         let client = self.router_client(&parts, None)?;
         client
             .delete_dataset()
             .tenant_id(&p.tenant_id)
-            .dataset_name(&p.dataset_id)
+            .dataset_name(&p.dataset_name)
             .send()
             .await
             .map_err(|e| map_sdk_err(e, "delete_dataset"))?;
-        json_result(&serde_json::json!({ "deleted": true, "dataset_id": p.dataset_id }))
+        json_result(&serde_json::json!({ "deleted": true, "dataset_name": p.dataset_name }))
     }
 
     #[tool(
