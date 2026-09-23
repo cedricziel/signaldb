@@ -4,6 +4,7 @@
 // shares `name="dataset"`, so a submitting form collects the checked set via
 // `FormData.getAll("dataset")`.
 import type { WhoamiDataset } from "../../api/session";
+import "./DatasetPicker.css";
 
 /** The subset of a key/response shape needed to read its dataset
  * restriction: the `dataset_ids` set, or absent/null for unrestricted. */

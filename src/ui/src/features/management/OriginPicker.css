@@ -1,0 +1,56 @@
+/* Used by both ApiKeys.tsx's create/update forms and ManagementPanel.tsx's
+   create-key form — owned here, not by either caller, so every OriginPicker
+   renders styled regardless of which page mounts it. */
+.origin-picker {
+  display: grid;
+  gap: 6px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  margin: 0;
+}
+
+.origin-picker legend {
+  font-size: 12px;
+  font-weight: 600;
+  padding: 0 4px;
+}
+
+.origin-picker-help {
+  color: var(--dim);
+  font-size: 11px;
+  margin: 0;
+}
+
+.origin-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.origin-chip {
+  font-family: var(--mono);
+  background: var(--surface2);
+}
+
+.origin-chip button {
+  border: none;
+  background: none;
+  color: var(--dim);
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+
+.origin-chip button:hover {
+  color: var(--err);
+}
+
+.origin-add {
+  display: flex;
+  gap: 8px;
+}
+
+.origin-add input {
+  flex: 1;
+}
