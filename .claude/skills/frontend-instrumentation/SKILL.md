@@ -172,6 +172,13 @@ browser OTel does not capture these on its own, so _something_ has to install
 the listeners, and this package's instrumentation does it as log-record
 `exception` events.
 
+React render errors never reach `window`: React Router's error boundary
+catches them. `RouteErrorBoundary` (the root route's `errorElement`) records
+them through `recordRenderError` in `telemetry/renderErrors.ts`, as the same
+`exception` log records. `createRoot`'s `onUncaughtError` covers render errors
+outside the router. Don't also wire `onCaughtError`: it fires for errors the
+boundary already recorded, so each one would be logged twice.
+
 ### Manual spans
 
 Import `tracer` from `telemetry` for user-meaningful operations that aren't a
