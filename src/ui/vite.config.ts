@@ -111,6 +111,9 @@ export default defineConfig(({ mode }) => {
     ],
     // Served by the router at root in production (SPA fallback).
     base: "/",
+    // Shipped alongside the bundle so minified stack frames can be mapped
+    // back to source (DevTools today, server-side symbolication per #1677).
+    build: { sourcemap: true },
     // Surface the dev defaults so the tenant selector can display them, plus
     // the telemetry config baked in at build time (see src/telemetry).
     define: {

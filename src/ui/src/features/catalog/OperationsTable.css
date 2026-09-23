@@ -1,0 +1,50 @@
+/* The entity detail page's Operations section — a breakdown table with its
+   own header row (title + count + filter), a scrolling body capped at
+   ~420px so a busy service's operations don't push the rest of the page
+   down, and a centered toggle below it. */
+
+.operations-headline {
+  align-items: center;
+  justify-content: space-between;
+}
+
+.operations-title-group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.operations-headline .search-input {
+  width: 220px;
+  flex: none;
+}
+
+.operations-scroll {
+  max-height: 420px;
+  overflow: auto;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+}
+
+.operations-grid thead th {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: var(--surface);
+}
+
+/* A shape at cell size, deliberately without axes or legend — unlike
+   `EntityTable`'s shared-tooltip sparkline column, this cell renders the
+   `Sparkline` component's own tooltip, so it must not clip it. */
+.operations-sparkline-cell {
+  width: 88px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+  overflow: visible;
+}
+
+.operations-toggle {
+  display: flex;
+  justify-content: center;
+  margin-top: 12px;
+}
