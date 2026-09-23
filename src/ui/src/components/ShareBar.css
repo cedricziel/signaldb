@@ -1,0 +1,56 @@
+.share-bar-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.share-bar {
+  display: flex;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+  background: var(--surface2);
+}
+
+.share-bar-seg {
+  height: 100%;
+  min-width: 2px;
+}
+
+.share-bar-track {
+  height: 8px;
+  border-radius: 4px;
+  background: var(--surface2);
+  overflow: hidden;
+}
+
+.share-bar-fill {
+  display: block;
+  height: 100%;
+  border-radius: 4px;
+}
+
+.share-bar-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 0;
+}
+
+.share-bar-legend-item {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+.share-bar-legend-item dt {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+}
+
+.share-bar-legend-item dd {
+  margin: 0;
+}

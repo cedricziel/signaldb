@@ -1,0 +1,43 @@
+.sparkline-host {
+  position: relative;
+  display: inline-block;
+  line-height: 0;
+}
+
+.sparkline {
+  display: block;
+}
+
+.sparkline-line {
+  stroke: var(--dim);
+}
+
+.sparkline-tone-neutral {
+  stroke: var(--dim);
+  fill: var(--dim);
+}
+
+.sparkline-tone-error {
+  stroke: var(--err);
+  fill: var(--err);
+}
+
+.sparkline-tone-accent {
+  stroke: var(--accent);
+  fill: var(--accent);
+}
+
+.sparkline-hit {
+  fill: transparent;
+  cursor: default;
+}
+
+.sparkline-hit:focus-visible {
+  outline: 1px solid var(--accent);
+  outline-offset: -1px;
+}
+
+.sparkline-empty {
+  font-size: 11px;
+  color: var(--faint);
+}
