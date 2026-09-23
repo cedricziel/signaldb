@@ -5,6 +5,7 @@ import { testQueryClient } from "../../lib/queryClient";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import type { JsonRoute } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
+import { DarkScope } from "../../stories/DarkScope";
 import { TracesView } from "./TracesView";
 
 /** Matches a Query IR request body by its `result` envelope and `from`
@@ -231,6 +232,17 @@ export const Default: Story = {
       state={{ ...DEFAULT_STATE, signal: "traces" }}
       routes={baseRoutes}
     />
+  ),
+};
+
+export const Dark: Story = {
+  render: () => (
+    <DarkScope>
+      <TracesPage
+        state={{ ...DEFAULT_STATE, signal: "traces" }}
+        routes={baseRoutes}
+      />
+    </DarkScope>
   ),
 };
 

@@ -6,6 +6,7 @@ import { compositeKey } from "../../lib/traceGroups";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import { irBody, irCatchAll, type JsonRoute } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
+import { DarkScope } from "../../stories/DarkScope";
 import { CatalogView } from "./CatalogView";
 
 /** The metric-definition/registry lookups behind the sparkline column and
@@ -276,6 +277,14 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
   render: () => <CatalogPage state={{ ...DEFAULT_STATE, signal: "catalog" }} />,
+};
+
+export const Dark: Story = {
+  render: () => (
+    <DarkScope>
+      <CatalogPage state={{ ...DEFAULT_STATE, signal: "catalog" }} />
+    </DarkScope>
+  ),
 };
 
 export const EntityDetail: Story = {

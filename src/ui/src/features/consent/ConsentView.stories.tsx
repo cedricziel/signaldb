@@ -6,6 +6,7 @@ import { testQueryClient } from "../../lib/queryClient";
 import type { ConsentContextResponse } from "../../api/consent";
 import type { JsonRoute } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
+import { DarkScope } from "../../stories/DarkScope";
 import { ConsentView } from "./ConsentView";
 
 const AUTHORIZE_QUERY =
@@ -95,4 +96,12 @@ export const SingleTenant: Story = {
 
 export const MultipleTenants: Story = {
   render: () => <ConsentPage context={MULTI_TENANT} />,
+};
+
+export const Dark: Story = {
+  render: () => (
+    <DarkScope>
+      <ConsentPage context={SINGLE_TENANT} />
+    </DarkScope>
+  ),
 };

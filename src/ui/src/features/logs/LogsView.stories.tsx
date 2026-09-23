@@ -11,6 +11,7 @@ import {
   type JsonRoute,
 } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
+import { DarkScope } from "../../stories/DarkScope";
 import { LogsView } from "./LogsView";
 
 const isRowsQuery = (b: unknown) =>
@@ -136,4 +137,12 @@ export const Default: Story = {
 
 export const Empty: Story = {
   render: () => <LogsPage routes={emptyRoutes} />,
+};
+
+export const Dark: Story = {
+  render: () => (
+    <DarkScope>
+      <LogsPage routes={populatedRoutes} />
+    </DarkScope>
+  ),
 };

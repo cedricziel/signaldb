@@ -10,6 +10,7 @@ import {
   type JsonRoute,
 } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
+import { DarkScope } from "../../stories/DarkScope";
 import { ApiKeys } from "./ApiKeys";
 
 const tenant = "acme";
@@ -85,4 +86,12 @@ type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
   render: () => <ApiKeysPage />,
+};
+
+export const Dark: Story = {
+  render: () => (
+    <DarkScope>
+      <ApiKeysPage />
+    </DarkScope>
+  ),
 };

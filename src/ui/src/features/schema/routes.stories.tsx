@@ -10,6 +10,7 @@ import {
   type JsonRoute,
 } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
+import { DarkScope } from "../../stories/DarkScope";
 import { schemaRoutes } from "./routes";
 
 const who = sampleWhoami({
@@ -268,6 +269,20 @@ export const RegistryBrowser: Story = {
         { match: "/api/v1/schema/registries/acme/1.0.0", body: acmeRegistry },
       ]}
     />
+  ),
+};
+
+export const Dark: Story = {
+  render: () => (
+    <DarkScope>
+      <SchemaPage
+        initialEntries={["/schema/conventions/acme/1.0.0"]}
+        routes={[
+          ...baseRoutes,
+          { match: "/api/v1/schema/registries/acme/1.0.0", body: acmeRegistry },
+        ]}
+      />
+    </DarkScope>
   ),
 };
 

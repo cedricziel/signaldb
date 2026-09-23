@@ -11,6 +11,7 @@ import {
   type JsonRoute,
 } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
+import { DarkScope } from "../../stories/DarkScope";
 import { processorsRoutes } from "./routes";
 
 const who = sampleWhoami();
@@ -138,6 +139,21 @@ export const List: Story = {
         { match: "/api/v1/processors", body: processorsList },
       ]}
     />
+  ),
+};
+
+export const Dark: Story = {
+  render: () => (
+    <DarkScope>
+      <ProcessorsPage
+        initialEntries={["/processors"]}
+        routes={[
+          irCatchAll,
+          { match: "/api/v1/whoami", body: who },
+          { match: "/api/v1/processors", body: processorsList },
+        ]}
+      />
+    </DarkScope>
   ),
 };
 

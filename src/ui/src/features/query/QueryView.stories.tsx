@@ -5,6 +5,7 @@ import { testQueryClient } from "../../lib/queryClient";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import type { JsonRoute } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
+import { DarkScope } from "../../stories/DarkScope";
 import { QueryView } from "./QueryView";
 
 const ROWS_COLUMNS = [
@@ -76,16 +77,22 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
+const populatedState = {
+  ...DEFAULT_STATE,
+  signal: "query",
+  querySource: "logs",
+  queryResult: "rows",
+  queryRun: true,
+} as const;
+
 export const Default: Story = {
+  render: () => <QueryPage state={populatedState} />,
+};
+
+export const Dark: Story = {
   render: () => (
-    <QueryPage
-      state={{
-        ...DEFAULT_STATE,
-        signal: "query",
-        querySource: "logs",
-        queryResult: "rows",
-        queryRun: true,
-      }}
-    />
+    <DarkScope>
+      <QueryPage state={populatedState} />
+    </DarkScope>
   ),
 };

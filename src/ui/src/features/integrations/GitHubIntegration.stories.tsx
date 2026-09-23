@@ -10,6 +10,7 @@ import {
   type JsonRoute,
 } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
+import { DarkScope } from "../../stories/DarkScope";
 import { GitHubIntegration } from "./GitHubIntegration";
 
 const tenant = "acme";
@@ -46,34 +47,36 @@ const meta = {
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Linked: Story = {
-  render: () =>
-    page([
-      irCatchAll,
-      { match: "/api/v1/whoami", body: who },
-      {
-        match: `/api/v1/manage/tenants/${tenant}/github-installations`,
-        body: {
-          configured: true,
-          installations: [
-            {
-              installation_id: 4821,
-              account_login: "acme-corp",
-              account_type: "Organization",
-              stale: false,
-              linked_by_github_login: "alice",
-              manage_url:
-                "https://github.com/organizations/acme-corp/settings/installations/4821",
-              repositories: [
-                "acme-corp/storefront",
-                "acme-corp/payments-service",
-              ],
-              repositories_synced_at: "2026-09-22T10:00:00Z",
-            },
-          ],
+const linkedRoutes: JsonRoute[] = [
+  irCatchAll,
+  { match: "/api/v1/whoami", body: who },
+  {
+    match: `/api/v1/manage/tenants/${tenant}/github-installations`,
+    body: {
+      configured: true,
+      installations: [
+        {
+          installation_id: 4821,
+          account_login: "acme-corp",
+          account_type: "Organization",
+          stale: false,
+          linked_by_github_login: "alice",
+          manage_url:
+            "https://github.com/organizations/acme-corp/settings/installations/4821",
+          repositories: ["acme-corp/storefront", "acme-corp/payments-service"],
+          repositories_synced_at: "2026-09-22T10:00:00Z",
         },
-      },
-    ]),
+      ],
+    },
+  },
+];
+
+export const Linked: Story = {
+  render: () => page(linkedRoutes),
+};
+
+export const Dark: Story = {
+  render: () => <DarkScope>{page(linkedRoutes)}</DarkScope>,
 };
 
 export const NotLinked: Story = {
