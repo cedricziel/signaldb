@@ -736,6 +736,26 @@ const DEP_TARGETS = {
   },
 } as const;
 
+/** Matches `dependencyBreakdown.ts`/`dependencyTargets.ts`'s own totals
+ * query shape (`aggs: [sum(duration) as total, count as n]`, `by:
+ * ["service.name"]`) — distinct from `buildEntitySourceDoc`'s RED aggregate
+ * (`n, errors, p50, p95, last`) and the breakdown/top-values entity types'
+ * own single-field `by` (`["span.name"]`, say), which an `aggregateBy`
+ * length check alone would have collided with. */
+function isDependencyTotalsShape(b: unknown): boolean {
+  return (
+    aggNames(b).join() === "total,n" && aggregateBy(b).join() === "service.name"
+  );
+}
+
+/** Matches `dependencyTargets.ts`'s per-kind query shape (`aggs: [sum, count,
+ * quantile(0.95) as p95]`, `by: ["service.name", <target>, <op1>, <op2>]`). */
+function isDependencyKindShape(b: unknown): boolean {
+  return (
+    aggNames(b).join() === "total,n,p95" && aggregateBy(b)[0] === "service.name"
+  );
+}
+
 /** `DependencyBreakdown`/`DependencyTable`'s shared "total downstream CLIENT
  * time" query — the bar's baseline (before subtracting known kinds) and
  * the table's self-time subtrahend. */
@@ -743,7 +763,7 @@ const dependencyClientTotalRoute: JsonRoute = {
   match: "/api/v1/query",
   bodyMatch: (b) =>
     irBody((body) => body.result === "table" && body.from === "traces")(b) &&
-    aggregateBy(b).length === 1 &&
+    isDependencyTotalsShape(b) &&
     whereExistsField(b) === undefined &&
     whereFieldValue(b, "span_kind") === "Client",
   body: {
@@ -758,7 +778,7 @@ const dependencyServerTotalRoute: JsonRoute = {
   match: "/api/v1/query",
   bodyMatch: (b) =>
     irBody((body) => body.result === "table" && body.from === "traces")(b) &&
-    aggregateBy(b).length === 1 &&
+    isDependencyTotalsShape(b) &&
     whereFieldValue(b, "span_kind") === "Server",
   body: {
     result: "table",
@@ -774,7 +794,7 @@ const dependencyBreakdownKindRoutes: JsonRoute[] = Object.values(
   match: "/api/v1/query",
   bodyMatch: (b: unknown) =>
     irBody((body) => body.result === "table" && body.from === "traces")(b) &&
-    aggregateBy(b).length === 1 &&
+    isDependencyTotalsShape(b) &&
     whereExistsField(b) === cfg.filterAttr,
   body: {
     result: "table",
@@ -789,7 +809,7 @@ const dependencyTargetsKindRoutes: JsonRoute[] = Object.values(DEP_TARGETS).map(
     match: "/api/v1/query",
     bodyMatch: (b: unknown) =>
       irBody((body) => body.result === "table" && body.from === "traces")(b) &&
-      aggregateBy(b).length > 1 &&
+      isDependencyKindShape(b) &&
       whereExistsField(b) === cfg.filterAttr,
     body: {
       result: "table",
