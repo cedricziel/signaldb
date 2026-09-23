@@ -172,7 +172,7 @@ describe("SchemaExplorer", () => {
   it("renders logical fields grouped by source with their qualified name, titled as an h1", async () => {
     stubFetchRoutes([
       { match: "/api/v1/whoami", body: WHOAMI_INSTANCE_ADMIN },
-      { match: "/api/v1/manage/schema", body: SCHEMA },
+      { match: "/api/v1/schema", body: SCHEMA },
     ]);
     renderSchemaExplorer();
 
@@ -226,7 +226,7 @@ describe("SchemaExplorer", () => {
     setTenantContext({ tenant: "acme-corp", dataset: "" });
     const fetchMock = stubFetchRoutes([
       { match: "/api/v1/whoami", body: WHOAMI_INSTANCE_ADMIN },
-      { match: "/api/v1/manage/schema", body: SCHEMA },
+      { match: "/api/v1/schema", body: SCHEMA },
     ]);
     renderWithClient(
       <MemoryRouter initialEntries={["/schema/storage"]}>
@@ -240,7 +240,7 @@ describe("SchemaExplorer", () => {
       fetchMock.mock.calls.filter(
         ([input]) =>
           input instanceof Request &&
-          input.url.includes("/api/v1/manage/schema"),
+          input.url.includes("/api/v1/schema"),
       ).length;
     const before = schemaCalls();
 
@@ -253,7 +253,7 @@ describe("SchemaExplorer", () => {
       .filter(
         ([input]) =>
           input instanceof Request &&
-          input.url.includes("/api/v1/manage/schema"),
+          input.url.includes("/api/v1/schema"),
       )
       .at(-1)![0] as Request;
     expect(lastCall.headers.get("X-Tenant-ID")).toBe("globex");
@@ -262,7 +262,7 @@ describe("SchemaExplorer", () => {
   it("marks the current physical schema version and shows its columns", async () => {
     stubFetchRoutes([
       { match: "/api/v1/whoami", body: WHOAMI_INSTANCE_ADMIN },
-      { match: "/api/v1/manage/schema", body: SCHEMA },
+      { match: "/api/v1/schema", body: SCHEMA },
     ]);
     renderSchemaExplorer();
 

@@ -177,7 +177,7 @@ describe("App", () => {
       { match: "query_range", body: emptyStreams },
       { match: "/api/v1/query", body: emptyIrLogs },
       { match: "/api/v1/schema/registries", body: { registries: [] } },
-      { match: "/api/v1/manage/schema", body: { logical: [], physical: [] } },
+      { match: "/api/v1/schema", body: { logical: [], physical: [] } },
       {
         match: "/api/v1/whoami",
         body: {

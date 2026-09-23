@@ -60,7 +60,7 @@ describe("github API", () => {
 
     const req = fetchMock.mock.calls[0]?.[0] as Request;
     expect(req.url).toContain(
-      "/api/v1/manage/tenants/acme/github-installations",
+      "/api/v1/tenants/acme/github-installations",
     );
     expect(req.method).toBe("GET");
     expect(req.headers.get("X-Tenant-ID")).toBe("acme");
@@ -83,7 +83,7 @@ describe("github API", () => {
     expect(result.install_url).toContain("state=abc");
     const req = fetchMock.mock.calls[0]?.[0] as Request;
     expect(req.url).toContain(
-      "/api/v1/manage/tenants/acme/github-installations/link",
+      "/api/v1/tenants/acme/github-installations/link",
     );
     expect(req.method).toBe("POST");
   });
@@ -100,7 +100,7 @@ describe("github API", () => {
 
     const req = fetchMock.mock.calls[0]?.[0] as Request;
     expect(req.url).toContain(
-      "/api/v1/manage/tenants/acme/github-installations/42",
+      "/api/v1/tenants/acme/github-installations/42",
     );
     expect(req.method).toBe("DELETE");
   });

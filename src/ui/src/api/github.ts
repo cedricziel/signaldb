@@ -1,18 +1,18 @@
 // GitHub App integration API, layered over the generated OpenAPI SDK — the
 // tenant management endpoints behind the Explore UI's Integrations → GitHub
 // page (see docs/operations/github-app.md). Same shape as management.ts:
-// each export delegates to a generated `manage*` operation and unwraps the
-// result into the historical contract (data on success, `ApiError` on
-// failure).
+// each export delegates to a generated operation and unwraps the result into
+// the historical contract (data on success, `ApiError` on failure).
 import "./client";
 
 import {
-  manageAttachGithubInstallation,
-  manageListGithubInstallations,
-  manageRemoveGithubInstallation,
-  manageStartGithubLink,
+  attachGithubInstallation as generatedAttachGithubInstallation,
+  listGithubInstallations as generatedListGithubInstallations,
+  removeGithubInstallation as generatedRemoveGithubInstallation,
+  startGithubLink as generatedStartGithubLink,
   type GitHubInstallationResponse,
   type GitHubInstallationsResponse,
+  type StartGithubLinkResponse,
 } from "./gen";
 import { type SdkResult, unwrapErrorEnvelope } from "./http";
 
@@ -26,22 +26,26 @@ export type GithubInstallation = GitHubInstallationResponse;
 const unwrap = <T>(result: SdkResult<T>): T =>
   unwrapErrorEnvelope(result, "GitHub");
 
-/** `GET /api/v1/manage/tenants/{id}/github-installations`: whether
+/** `GET /api/v1/tenants/{id}/github-installations`: whether
  * `[github]` is configured on this deployment and, if so, every installation
  * linked to the tenant. Always 200 — an unconfigured deployment answers with
  * `configured: false` rather than a 404. */
 export const listGithubInstallations = async (
   tenant: string,
 ): Promise<GithubInstallations> =>
-  unwrap(await manageListGithubInstallations({ path: { tenant_id: tenant } }));
+  unwrap(
+    await generatedListGithubInstallations({ path: { tenant_id: tenant } }),
+  );
 
-/** `POST /api/v1/manage/tenants/{id}/github-installations/link`: mints a
+/** `POST /api/v1/tenants/{id}/github-installations/link`: mints a
  * single-use install link for this tenant/admin. Follow `install_url` to
  * hand the browser to GitHub's install flow. */
-export const startGithubLink = async (tenant: string) =>
-  unwrap(await manageStartGithubLink({ path: { tenant_id: tenant } }));
+export const startGithubLink = async (
+  tenant: string,
+): Promise<StartGithubLinkResponse> =>
+  unwrap(await generatedStartGithubLink({ path: { tenant_id: tenant } }));
 
-/** `POST /api/v1/manage/tenants/{id}/github-installations/attach`: attaches
+/** `POST /api/v1/tenants/{id}/github-installations/attach`: attaches
  * an installation that already exists for this GitHub App — e.g. one
  * already linked to another tenant on the same account — directly, with no
  * OAuth install flow. */
@@ -50,13 +54,13 @@ export const attachGithubInstallation = async (
   installationId: number,
 ): Promise<GithubInstallation> =>
   unwrap(
-    await manageAttachGithubInstallation({
+    await generatedAttachGithubInstallation({
       path: { tenant_id: tenant },
       body: { installation_id: installationId },
     }),
   );
 
-/** `DELETE /api/v1/manage/tenants/{id}/github-installations/{id}`: removes
+/** `DELETE /api/v1/tenants/{id}/github-installations/{id}`: removes
  * the link immediately (SignalDB stops using it); the App stays installed on
  * GitHub until uninstalled there. */
 export const removeGithubInstallation = async (
@@ -64,7 +68,7 @@ export const removeGithubInstallation = async (
   installationId: number,
 ): Promise<void> => {
   unwrap(
-    await manageRemoveGithubInstallation({
+    await generatedRemoveGithubInstallation({
       path: { tenant_id: tenant, installation_id: installationId },
     }),
   );

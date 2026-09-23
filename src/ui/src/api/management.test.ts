@@ -64,7 +64,7 @@ describe("management API", () => {
     expect(result.key).toBe("sdbk_secret");
 
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/tenants/acme/api-keys");
+    expect(req.url).toContain("/api/v1/tenants/acme/api-keys");
     expect(req.method).toBe("POST");
     expect(await req.clone().json()).toEqual({
       name: "collector",
@@ -85,7 +85,7 @@ describe("management API", () => {
     await expect(revokeApiKey("acme", "key-1")).resolves.toBeUndefined();
 
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/tenants/acme/api-keys/key-1");
+    expect(req.url).toContain("/api/v1/tenants/acme/api-keys/key-1");
     expect(req.method).toBe("DELETE");
   });
 
@@ -130,7 +130,7 @@ describe("management API", () => {
     expect(result.scopes).toEqual(["schema:read", "traces:write"]);
 
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/tenants/acme/api-keys/key-1");
+    expect(req.url).toContain("/api/v1/tenants/acme/api-keys/key-1");
     expect(req.method).toBe("PATCH");
     expect(await req.clone().json()).toEqual({
       scopes: ["schema:read", "traces:write"],
@@ -271,7 +271,7 @@ describe("management API", () => {
 
     expect(result).toEqual([{ id: "key-1" }]);
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/tenants/acme/api-keys");
+    expect(req.url).toContain("/api/v1/tenants/acme/api-keys");
     expect(req.method).toBe("GET");
   });
 
@@ -285,7 +285,7 @@ describe("management API", () => {
 
     expect(result).toEqual({ id: "staging" });
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/tenants/acme/datasets");
+    expect(req.url).toContain("/api/v1/tenants/acme/datasets");
     expect(req.method).toBe("POST");
     expect(await req.clone().json()).toEqual({ name: "staging" });
   });
@@ -299,7 +299,7 @@ describe("management API", () => {
     await expect(deleteDataset("acme", "staging")).resolves.toBeUndefined();
 
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/tenants/acme/datasets/staging");
+    expect(req.url).toContain("/api/v1/tenants/acme/datasets/staging");
     expect(req.method).toBe("DELETE");
   });
 
@@ -317,7 +317,7 @@ describe("management API", () => {
 
     expect(result).toEqual({ id: "acme" });
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/tenants");
+    expect(req.url).toContain("/api/v1/tenants");
     expect(req.method).toBe("POST");
     expect(await req.clone().json()).toEqual({
       id: "acme",
@@ -336,7 +336,7 @@ describe("management API", () => {
 
     expect(result).toEqual([{ user_id: "u1", role: "admin" }]);
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/tenants/acme/memberships");
+    expect(req.url).toContain("/api/v1/tenants/acme/memberships");
     expect(req.method).toBe("GET");
   });
 
@@ -355,7 +355,7 @@ describe("management API", () => {
 
     expect(result).toEqual({ email: "alice@example.com", role: "member" });
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/tenants/acme/memberships");
+    expect(req.url).toContain("/api/v1/tenants/acme/memberships");
     expect(req.method).toBe("PUT");
     expect(await req.clone().json()).toEqual({
       email: "alice@example.com",
@@ -395,7 +395,7 @@ describe("management API", () => {
 
     expect(result).toEqual(body);
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/schema");
+    expect(req.url).toContain("/api/v1/schema");
     expect(req.method).toBe("GET");
   });
 
@@ -408,7 +408,7 @@ describe("management API", () => {
     await expect(removeMembership("acme", "u1")).resolves.toBeUndefined();
 
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/tenants/acme/memberships/u1");
+    expect(req.url).toContain("/api/v1/tenants/acme/memberships/u1");
     expect(req.method).toBe("DELETE");
   });
 

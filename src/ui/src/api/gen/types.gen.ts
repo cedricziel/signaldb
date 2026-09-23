@@ -381,6 +381,12 @@ export type ConsentTenantGrant = {
  */
 export type CostMode = 'metadata' | 'sampled_scan' | 'none';
 
+export type CreateTenantRequest = {
+    default_dataset?: string | null;
+    id: string;
+    name: string;
+};
+
 /**
  * Response body for `POST /tenants/{tenant_id}/tables/create`.
  */
@@ -901,14 +907,32 @@ export type ListTablesResponse = {
     tenant_id: string;
 };
 
-/**
- * Response containing a list of tenants.
- */
 export type ListTenantsResponse = {
-    /**
-     * List of tenant records.
-     */
     tenants: Array<TenantResponse>;
+};
+
+export type ListUsersResponse = {
+    users: Array<UserResponse>;
+};
+
+/**
+ * One logical (client-visible, OTel-native) field, as registered in
+ * [`common::schema::logical::LogicalSchema`].
+ */
+export type LogicalField = {
+    filterability: Filterability;
+    kind: LogicalFieldKind;
+    /**
+     * `resource` | `scope` | `record`, absent when the field isn't
+     * attribute-scoped (a plain `String` here, not `Option<AttributeLevel>`
+     * — utoipa emits a nullable `$ref` enum as `oneOf: [{type: null}, ref]`,
+     * which the progenitor-generated Rust SDK client can't parse).
+     */
+    level?: string | null;
+    name: string;
+    non_native: boolean;
+    source: string;
+    value_type: LogicalType;
 };
 
 /**
@@ -961,12 +985,6 @@ export type ManageCreateDatasetRequest = {
     name: string;
 };
 
-export type ManageCreateTenantRequest = {
-    default_dataset?: string | null;
-    id: string;
-    name: string;
-};
-
 /**
  * 201 response body for API key creation via the management API.
  *
@@ -982,76 +1000,20 @@ export type ManageCreatedApiKey = {
     scopes: Array<string>;
 };
 
-/**
- * 201 response body for tenant creation via the management API.
- */
-export type ManageCreatedTenant = {
-    id: string;
-};
-
 export type ManageDatasetResponse = {
     id: string;
     name: string;
 };
 
 /**
- * Error response body for the management API.
+ * Error response body for the tenant-scoped resource endpoints.
  */
 export type ManageError = {
     error: string;
 };
 
 /**
- * One logical (client-visible, OTel-native) field, as registered in
- * [`common::schema::logical::LogicalSchema`].
- */
-export type ManageLogicalField = {
-    filterability: Filterability;
-    kind: LogicalFieldKind;
-    /**
-     * `resource` | `scope` | `record`, absent when the field isn't
-     * attribute-scoped (a plain `String` here, not `Option<AttributeLevel>`
-     * — utoipa emits a nullable `$ref` enum as `oneOf: [{type: null}, ref]`,
-     * which the progenitor-generated Rust SDK client can't parse).
-     */
-    level?: string | null;
-    name: string;
-    non_native: boolean;
-    source: string;
-    value_type: LogicalType;
-};
-
-/**
- * One physical (storage) column, as resolved from `schemas.toml`.
- */
-export type ManagePhysicalField = {
-    computed?: string | null;
-    field_type: string;
-    name: string;
-    physical_only: boolean;
-    required: boolean;
-};
-
-/**
- * One resolved table-schema version for one signal source.
- */
-export type ManagePhysicalSchema = {
-    description: string;
-    fields: Array<ManagePhysicalField>;
-    is_current: boolean;
-    partition_by: Array<string>;
-    source: string;
-    version: string;
-};
-
-export type ManageSchemaResponse = {
-    logical: Array<ManageLogicalField>;
-    logical_schema_version: string;
-    physical: Array<ManagePhysicalSchema>;
-};
-
-/**
- * Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.
+ * Body for `PATCH /api/v1/tenants/{tenant_id}/api-keys/{key_id}`.
  * Absent fields are left untouched. `dataset_ids`/`clear_dataset_restriction`
  * mirror [`signaldb_api::UpdateApiKeyRequest`] (D1a); the legacy singular
  * `dataset_id` field is rejected via `deny_unknown_fields` rather than
@@ -1248,6 +1210,29 @@ export type OtlpHttpPaths = {
     metrics: string;
     profiles: string;
     traces: string;
+};
+
+/**
+ * One physical (storage) column, as resolved from `schemas.toml`.
+ */
+export type PhysicalField = {
+    computed?: string | null;
+    field_type: string;
+    name: string;
+    physical_only: boolean;
+    required: boolean;
+};
+
+/**
+ * One resolved table-schema version for one signal source.
+ */
+export type PhysicalSchema = {
+    description: string;
+    fields: Array<PhysicalField>;
+    is_current: boolean;
+    partition_by: Array<string>;
+    source: string;
+    version: string;
 };
 
 /**
@@ -1589,6 +1574,12 @@ export type SchemaError = {
     errors?: Array<ValidationError>;
 };
 
+export type SchemaResponse = {
+    logical: Array<LogicalField>;
+    logical_schema_version: string;
+    physical: Array<PhysicalSchema>;
+};
+
 /**
  * Result of GET /api/search
  * See <https://grafana.com/docs/tempo/latest/api_docs/#example-of-traceql-search>
@@ -1831,79 +1822,17 @@ export type TagValuesResponse = {
 };
 
 /**
- * API response for tenant information
- */
-export type TenantInfo = {
-    /**
-     * Custom schema definitions
-     */
-    custom_schemas?: {
-        [key: string]: string;
-    } | null;
-    /**
-     * Whether tenant is enabled
-     */
-    enabled: boolean;
-    /**
-     * Tenant-specific schema configuration
-     */
-    schema: {
-        [key: string]: unknown;
-    } | null;
-    /**
-     * Tenant ID
-     */
-    tenant_id: string;
-};
-
-/**
- * Tenant information returned by the API.
+ * Superset tenant response: the catalog-backed identity fields
+ * (`id`/`name`/`default_dataset`/`source`/timestamps) every caller of the
+ * old admin surface relied on, unchanged.
  */
 export type TenantResponse = {
-    /**
-     * RFC 3339 creation timestamp.
-     */
     created_at: string;
-    /**
-     * Default dataset name.
-     */
     default_dataset?: string | null;
-    /**
-     * Unique tenant identifier.
-     */
     id: string;
-    /**
-     * Human-readable tenant name.
-     */
     name: string;
-    /**
-     * Source of the tenant record (config or database).
-     */
     source: string;
-    /**
-     * RFC 3339 last-updated timestamp.
-     */
     updated_at: string;
-};
-
-/**
- * API response for listing tenants
- *
- * Renamed in the OpenAPI document (`#[schema(as = ...)]`) to avoid
- * colliding with `signaldb_api::ListTenantsResponse` (the admin API's
- * tenant list, a different shape) — both are plain Rust structs named
- * `ListTenantsResponse`, and utoipa keys OpenAPI schema components by Rust
- * type name unless told otherwise.
- */
-export type TenantSelfListResponse = {
-    /**
-     * Default tenant ID
-     */
-    default_tenant: string;
-    /**
-     * List of tenants
-     */
-    tenants: Array<TenantInfo>;
 };
 
 export type TestRequest = {
@@ -2233,1144 +2162,6 @@ export type ConnectionInfoResponses = {
 };
 
 export type ConnectionInfoResponse2 = ConnectionInfoResponses[keyof ConnectionInfoResponses];
-
-export type ManageAdminListTenantsData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/v1/manage/admin/tenants';
-};
-
-export type ManageAdminListTenantsErrors = {
-    /**
-     * Instance administrator required
-     */
-    403: ApiError;
-};
-
-export type ManageAdminListTenantsError = ManageAdminListTenantsErrors[keyof ManageAdminListTenantsErrors];
-
-export type ManageAdminListTenantsResponses = {
-    /**
-     * List of tenants
-     */
-    200: ListTenantsResponse;
-};
-
-export type ManageAdminListTenantsResponse = ManageAdminListTenantsResponses[keyof ManageAdminListTenantsResponses];
-
-export type ManageAdminDeleteTenantData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/manage/admin/tenants/{tenant_id}';
-};
-
-export type ManageAdminDeleteTenantErrors = {
-    /**
-     * Config-sourced tenants cannot be deleted, or instance administrator required
-     */
-    403: ApiError;
-    /**
-     * Tenant not found
-     */
-    404: ApiError;
-};
-
-export type ManageAdminDeleteTenantError = ManageAdminDeleteTenantErrors[keyof ManageAdminDeleteTenantErrors];
-
-export type ManageAdminDeleteTenantResponses = {
-    /**
-     * Tenant deleted
-     */
-    204: void;
-};
-
-export type ManageAdminDeleteTenantResponse = ManageAdminDeleteTenantResponses[keyof ManageAdminDeleteTenantResponses];
-
-export type ManageAdminGetTenantData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/manage/admin/tenants/{tenant_id}';
-};
-
-export type ManageAdminGetTenantErrors = {
-    /**
-     * Instance administrator required
-     */
-    403: ApiError;
-    /**
-     * Tenant not found
-     */
-    404: ApiError;
-};
-
-export type ManageAdminGetTenantError = ManageAdminGetTenantErrors[keyof ManageAdminGetTenantErrors];
-
-export type ManageAdminGetTenantResponses = {
-    /**
-     * Tenant found
-     */
-    200: TenantResponse;
-};
-
-export type ManageAdminGetTenantResponse = ManageAdminGetTenantResponses[keyof ManageAdminGetTenantResponses];
-
-export type ManageAdminUpdateTenantData = {
-    body: UpdateTenantRequest;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/manage/admin/tenants/{tenant_id}';
-};
-
-export type ManageAdminUpdateTenantErrors = {
-    /**
-     * Config-sourced tenants cannot be modified, or instance administrator required
-     */
-    403: ApiError;
-    /**
-     * Tenant not found
-     */
-    404: ApiError;
-};
-
-export type ManageAdminUpdateTenantError = ManageAdminUpdateTenantErrors[keyof ManageAdminUpdateTenantErrors];
-
-export type ManageAdminUpdateTenantResponses = {
-    /**
-     * Tenant updated
-     */
-    200: TenantResponse;
-};
-
-export type ManageAdminUpdateTenantResponse = ManageAdminUpdateTenantResponses[keyof ManageAdminUpdateTenantResponses];
-
-export type ManageAdminCreateUserData = {
-    body: CreateUserRequest;
-    path?: never;
-    query?: never;
-    url: '/api/v1/manage/admin/users';
-};
-
-export type ManageAdminCreateUserErrors = {
-    /**
-     * Validation error
-     */
-    400: ApiError;
-    /**
-     * Instance administrator required
-     */
-    403: ApiError;
-    /**
-     * Tenant not found
-     */
-    404: ApiError;
-    /**
-     * User already exists
-     */
-    409: ApiError;
-};
-
-export type ManageAdminCreateUserError = ManageAdminCreateUserErrors[keyof ManageAdminCreateUserErrors];
-
-export type ManageAdminCreateUserResponses = {
-    /**
-     * User created
-     */
-    201: UserResponse;
-};
-
-export type ManageAdminCreateUserResponse = ManageAdminCreateUserResponses[keyof ManageAdminCreateUserResponses];
-
-export type ManageGetSchemaData = {
-    body?: never;
-    path?: never;
-    query?: never;
-    url: '/api/v1/manage/schema';
-};
-
-export type ManageGetSchemaErrors = {
-    /**
-     * Tenant administrator role or tenant:manage scope required
-     */
-    403: ManageError;
-    /**
-     * The JSON envelope every query-surface error responds with: `status` is
-     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
-     * human-readable message, and `retryAfterMs` present only on rate-limit
-     * rejections. Exists as a real (rather than `serde_json::json!`-built)
-     * type so the OpenAPI document can declare its schema on the `429`
-     * response of every rate-limited operation.
-     */
-    429: {
-        error: string;
-        errorType: string;
-        /**
-         * Milliseconds until the request would be admitted; present only when
-         * `errorType` is `"rate_limited"`.
-         */
-        retryAfterMs?: number | null;
-        /**
-         * Always `"error"`.
-         */
-        status: string;
-    };
-};
-
-export type ManageGetSchemaError = ManageGetSchemaErrors[keyof ManageGetSchemaErrors];
-
-export type ManageGetSchemaResponses = {
-    /**
-     * Logical and physical schema
-     */
-    200: ManageSchemaResponse;
-};
-
-export type ManageGetSchemaResponse = ManageGetSchemaResponses[keyof ManageGetSchemaResponses];
-
-export type ManageCreateTenantData = {
-    body: ManageCreateTenantRequest;
-    path?: never;
-    query?: never;
-    url: '/api/v1/manage/tenants';
-};
-
-export type ManageCreateTenantErrors = {
-    /**
-     * Validation error
-     */
-    400: ManageError;
-    /**
-     * Missing or invalid administrator credentials
-     */
-    401: ManageError;
-    /**
-     * Instance administrator required
-     */
-    403: ManageError;
-    /**
-     * Tenant already exists
-     */
-    409: ManageError;
-    /**
-     * The JSON envelope every query-surface error responds with: `status` is
-     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
-     * human-readable message, and `retryAfterMs` present only on rate-limit
-     * rejections. Exists as a real (rather than `serde_json::json!`-built)
-     * type so the OpenAPI document can declare its schema on the `429`
-     * response of every rate-limited operation.
-     */
-    429: {
-        error: string;
-        errorType: string;
-        /**
-         * Milliseconds until the request would be admitted; present only when
-         * `errorType` is `"rate_limited"`.
-         */
-        retryAfterMs?: number | null;
-        /**
-         * Always `"error"`.
-         */
-        status: string;
-    };
-    /**
-     * Internal error
-     */
-    500: ManageError;
-};
-
-export type ManageCreateTenantError = ManageCreateTenantErrors[keyof ManageCreateTenantErrors];
-
-export type ManageCreateTenantResponses = {
-    /**
-     * Tenant created
-     */
-    201: ManageCreatedTenant;
-};
-
-export type ManageCreateTenantResponse = ManageCreateTenantResponses[keyof ManageCreateTenantResponses];
-
-export type ManageListApiKeysData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/api-keys';
-};
-
-export type ManageListApiKeysErrors = {
-    /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
-     */
-    403: ManageError;
-    /**
-     * The JSON envelope every query-surface error responds with: `status` is
-     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
-     * human-readable message, and `retryAfterMs` present only on rate-limit
-     * rejections. Exists as a real (rather than `serde_json::json!`-built)
-     * type so the OpenAPI document can declare its schema on the `429`
-     * response of every rate-limited operation.
-     */
-    429: {
-        error: string;
-        errorType: string;
-        /**
-         * Milliseconds until the request would be admitted; present only when
-         * `errorType` is `"rate_limited"`.
-         */
-        retryAfterMs?: number | null;
-        /**
-         * Always `"error"`.
-         */
-        status: string;
-    };
-    /**
-     * Internal error
-     */
-    500: ManageError;
-};
-
-export type ManageListApiKeysError = ManageListApiKeysErrors[keyof ManageListApiKeysErrors];
-
-export type ManageListApiKeysResponses = {
-    /**
-     * List of API keys
-     */
-    200: Array<ManageApiKeyResponse>;
-};
-
-export type ManageListApiKeysResponse = ManageListApiKeysResponses[keyof ManageListApiKeysResponses];
-
-export type ManageCreateApiKeyData = {
-    body: ManageCreateApiKeyRequest;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/api-keys';
-};
-
-export type ManageCreateApiKeyErrors = {
-    /**
-     * Dataset does not exist
-     */
-    400: ManageError;
-    /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
-     */
-    403: ManageError;
-    /**
-     * Unable to create API key
-     */
-    409: ManageError;
-    /**
-     * Invalid or empty scopes
-     */
-    422: ManageError;
-    /**
-     * The JSON envelope every query-surface error responds with: `status` is
-     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
-     * human-readable message, and `retryAfterMs` present only on rate-limit
-     * rejections. Exists as a real (rather than `serde_json::json!`-built)
-     * type so the OpenAPI document can declare its schema on the `429`
-     * response of every rate-limited operation.
-     */
-    429: {
-        error: string;
-        errorType: string;
-        /**
-         * Milliseconds until the request would be admitted; present only when
-         * `errorType` is `"rate_limited"`.
-         */
-        retryAfterMs?: number | null;
-        /**
-         * Always `"error"`.
-         */
-        status: string;
-    };
-    /**
-     * Internal error
-     */
-    500: ManageError;
-};
-
-export type ManageCreateApiKeyError = ManageCreateApiKeyErrors[keyof ManageCreateApiKeyErrors];
-
-export type ManageCreateApiKeyResponses = {
-    /**
-     * API key created
-     */
-    201: ManageCreatedApiKey;
-};
-
-export type ManageCreateApiKeyResponse = ManageCreateApiKeyResponses[keyof ManageCreateApiKeyResponses];
-
-export type ManageRevokeApiKeyData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-        /**
-         * API key identifier
-         */
-        key_id: string;
-    };
-    query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}';
-};
-
-export type ManageRevokeApiKeyErrors = {
-    /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
-     */
-    403: ManageError;
-    /**
-     * API key not found
-     */
-    404: ManageError;
-    /**
-     * The JSON envelope every query-surface error responds with: `status` is
-     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
-     * human-readable message, and `retryAfterMs` present only on rate-limit
-     * rejections. Exists as a real (rather than `serde_json::json!`-built)
-     * type so the OpenAPI document can declare its schema on the `429`
-     * response of every rate-limited operation.
-     */
-    429: {
-        error: string;
-        errorType: string;
-        /**
-         * Milliseconds until the request would be admitted; present only when
-         * `errorType` is `"rate_limited"`.
-         */
-        retryAfterMs?: number | null;
-        /**
-         * Always `"error"`.
-         */
-        status: string;
-    };
-    /**
-     * Internal error
-     */
-    500: ManageError;
-};
-
-export type ManageRevokeApiKeyError = ManageRevokeApiKeyErrors[keyof ManageRevokeApiKeyErrors];
-
-export type ManageRevokeApiKeyResponses = {
-    /**
-     * API key revoked
-     */
-    204: void;
-};
-
-export type ManageRevokeApiKeyResponse = ManageRevokeApiKeyResponses[keyof ManageRevokeApiKeyResponses];
-
-export type ManageUpdateApiKeyData = {
-    body: ManageUpdateApiKeyRequest;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-        /**
-         * API key identifier
-         */
-        key_id: string;
-    };
-    query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}';
-};
-
-export type ManageUpdateApiKeyErrors = {
-    /**
-     * Dataset does not exist
-     */
-    400: ManageError;
-    /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
-     */
-    403: ManageError;
-    /**
-     * API key not found
-     */
-    404: ManageError;
-    /**
-     * API key is revoked
-     */
-    409: ManageError;
-    /**
-     * Invalid or empty scopes
-     */
-    422: ManageError;
-    /**
-     * The JSON envelope every query-surface error responds with: `status` is
-     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
-     * human-readable message, and `retryAfterMs` present only on rate-limit
-     * rejections. Exists as a real (rather than `serde_json::json!`-built)
-     * type so the OpenAPI document can declare its schema on the `429`
-     * response of every rate-limited operation.
-     */
-    429: {
-        error: string;
-        errorType: string;
-        /**
-         * Milliseconds until the request would be admitted; present only when
-         * `errorType` is `"rate_limited"`.
-         */
-        retryAfterMs?: number | null;
-        /**
-         * Always `"error"`.
-         */
-        status: string;
-    };
-    /**
-     * Internal error
-     */
-    500: ManageError;
-};
-
-export type ManageUpdateApiKeyError = ManageUpdateApiKeyErrors[keyof ManageUpdateApiKeyErrors];
-
-export type ManageUpdateApiKeyResponses = {
-    /**
-     * API key updated
-     */
-    200: ManageApiKeyResponse;
-};
-
-export type ManageUpdateApiKeyResponse = ManageUpdateApiKeyResponses[keyof ManageUpdateApiKeyResponses];
-
-export type ManageListDatasetsData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/datasets';
-};
-
-export type ManageListDatasetsErrors = {
-    /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
-     */
-    403: ManageError;
-    /**
-     * The JSON envelope every query-surface error responds with: `status` is
-     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
-     * human-readable message, and `retryAfterMs` present only on rate-limit
-     * rejections. Exists as a real (rather than `serde_json::json!`-built)
-     * type so the OpenAPI document can declare its schema on the `429`
-     * response of every rate-limited operation.
-     */
-    429: {
-        error: string;
-        errorType: string;
-        /**
-         * Milliseconds until the request would be admitted; present only when
-         * `errorType` is `"rate_limited"`.
-         */
-        retryAfterMs?: number | null;
-        /**
-         * Always `"error"`.
-         */
-        status: string;
-    };
-    /**
-     * Internal error
-     */
-    500: ManageError;
-};
-
-export type ManageListDatasetsError = ManageListDatasetsErrors[keyof ManageListDatasetsErrors];
-
-export type ManageListDatasetsResponses = {
-    /**
-     * List of datasets
-     */
-    200: Array<ManageDatasetResponse>;
-};
-
-export type ManageListDatasetsResponse = ManageListDatasetsResponses[keyof ManageListDatasetsResponses];
-
-export type ManageCreateDatasetData = {
-    body: ManageCreateDatasetRequest;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/datasets';
-};
-
-export type ManageCreateDatasetErrors = {
-    /**
-     * Validation error
-     */
-    400: ManageError;
-    /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
-     */
-    403: ManageError;
-    /**
-     * Unable to create dataset
-     */
-    409: ManageError;
-    /**
-     * The JSON envelope every query-surface error responds with: `status` is
-     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
-     * human-readable message, and `retryAfterMs` present only on rate-limit
-     * rejections. Exists as a real (rather than `serde_json::json!`-built)
-     * type so the OpenAPI document can declare its schema on the `429`
-     * response of every rate-limited operation.
-     */
-    429: {
-        error: string;
-        errorType: string;
-        /**
-         * Milliseconds until the request would be admitted; present only when
-         * `errorType` is `"rate_limited"`.
-         */
-        retryAfterMs?: number | null;
-        /**
-         * Always `"error"`.
-         */
-        status: string;
-    };
-};
-
-export type ManageCreateDatasetError = ManageCreateDatasetErrors[keyof ManageCreateDatasetErrors];
-
-export type ManageCreateDatasetResponses = {
-    /**
-     * Dataset created
-     */
-    201: ManageDatasetResponse;
-};
-
-export type ManageCreateDatasetResponse = ManageCreateDatasetResponses[keyof ManageCreateDatasetResponses];
-
-export type ManageDeleteDatasetData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-        /**
-         * Dataset name
-         */
-        dataset_name: string;
-    };
-    query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/datasets/{dataset_name}';
-};
-
-export type ManageDeleteDatasetErrors = {
-    /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
-     */
-    403: ManageError;
-    /**
-     * Dataset not found
-     */
-    404: ManageError;
-    /**
-     * Dataset cannot be deleted
-     */
-    409: ManageError;
-    /**
-     * The JSON envelope every query-surface error responds with: `status` is
-     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
-     * human-readable message, and `retryAfterMs` present only on rate-limit
-     * rejections. Exists as a real (rather than `serde_json::json!`-built)
-     * type so the OpenAPI document can declare its schema on the `429`
-     * response of every rate-limited operation.
-     */
-    429: {
-        error: string;
-        errorType: string;
-        /**
-         * Milliseconds until the request would be admitted; present only when
-         * `errorType` is `"rate_limited"`.
-         */
-        retryAfterMs?: number | null;
-        /**
-         * Always `"error"`.
-         */
-        status: string;
-    };
-    /**
-     * Internal error
-     */
-    500: ManageError;
-};
-
-export type ManageDeleteDatasetError = ManageDeleteDatasetErrors[keyof ManageDeleteDatasetErrors];
-
-export type ManageDeleteDatasetResponses = {
-    /**
-     * Dataset deleted
-     */
-    204: void;
-};
-
-export type ManageDeleteDatasetResponse = ManageDeleteDatasetResponses[keyof ManageDeleteDatasetResponses];
-
-export type ManageListGithubInstallationsData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/github-installations';
-};
-
-export type ManageListGithubInstallationsErrors = {
-    /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
-     */
-    403: ManageError;
-    /**
-     * The JSON envelope every query-surface error responds with: `status` is
-     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
-     * human-readable message, and `retryAfterMs` present only on rate-limit
-     * rejections. Exists as a real (rather than `serde_json::json!`-built)
-     * type so the OpenAPI document can declare its schema on the `429`
-     * response of every rate-limited operation.
-     */
-    429: {
-        error: string;
-        errorType: string;
-        /**
-         * Milliseconds until the request would be admitted; present only when
-         * `errorType` is `"rate_limited"`.
-         */
-        retryAfterMs?: number | null;
-        /**
-         * Always `"error"`.
-         */
-        status: string;
-    };
-    /**
-     * Internal error
-     */
-    500: ManageError;
-};
-
-export type ManageListGithubInstallationsError = ManageListGithubInstallationsErrors[keyof ManageListGithubInstallationsErrors];
-
-export type ManageListGithubInstallationsResponses = {
-    /**
-     * Linked GitHub installations
-     */
-    200: GitHubInstallationsResponse;
-};
-
-export type ManageListGithubInstallationsResponse = ManageListGithubInstallationsResponses[keyof ManageListGithubInstallationsResponses];
-
-export type ManageAttachGithubInstallationData = {
-    body: AttachGitHubInstallationRequest;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/github-installations/attach';
-};
-
-export type ManageAttachGithubInstallationErrors = {
-    /**
-     * Instance administrator required, or the installation carries a write-capable permission
-     */
-    403: ManageError;
-    /**
-     * GitHub integration is not configured, or the installation was not found on GitHub
-     */
-    404: ManageError;
-    /**
-     * The JSON envelope every query-surface error responds with: `status` is
-     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
-     * human-readable message, and `retryAfterMs` present only on rate-limit
-     * rejections. Exists as a real (rather than `serde_json::json!`-built)
-     * type so the OpenAPI document can declare its schema on the `429`
-     * response of every rate-limited operation.
-     */
-    429: {
-        error: string;
-        errorType: string;
-        /**
-         * Milliseconds until the request would be admitted; present only when
-         * `errorType` is `"rate_limited"`.
-         */
-        retryAfterMs?: number | null;
-        /**
-         * Always `"error"`.
-         */
-        status: string;
-    };
-    /**
-     * Internal error
-     */
-    500: ManageError;
-    /**
-     * GitHub request failed
-     */
-    502: ManageError;
-};
-
-export type ManageAttachGithubInstallationError = ManageAttachGithubInstallationErrors[keyof ManageAttachGithubInstallationErrors];
-
-export type ManageAttachGithubInstallationResponses = {
-    /**
-     * Installation attached
-     */
-    201: GitHubInstallationResponse;
-};
-
-export type ManageAttachGithubInstallationResponse = ManageAttachGithubInstallationResponses[keyof ManageAttachGithubInstallationResponses];
-
-export type ManageStartGithubLinkData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/github-installations/link';
-};
-
-export type ManageStartGithubLinkErrors = {
-    /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
-     */
-    403: ManageError;
-    /**
-     * GitHub integration is not configured
-     */
-    404: ManageError;
-    /**
-     * The JSON envelope every query-surface error responds with: `status` is
-     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
-     * human-readable message, and `retryAfterMs` present only on rate-limit
-     * rejections. Exists as a real (rather than `serde_json::json!`-built)
-     * type so the OpenAPI document can declare its schema on the `429`
-     * response of every rate-limited operation.
-     */
-    429: {
-        error: string;
-        errorType: string;
-        /**
-         * Milliseconds until the request would be admitted; present only when
-         * `errorType` is `"rate_limited"`.
-         */
-        retryAfterMs?: number | null;
-        /**
-         * Always `"error"`.
-         */
-        status: string;
-    };
-    /**
-     * Internal error
-     */
-    500: ManageError;
-};
-
-export type ManageStartGithubLinkError = ManageStartGithubLinkErrors[keyof ManageStartGithubLinkErrors];
-
-export type ManageStartGithubLinkResponses = {
-    /**
-     * Link flow started
-     */
-    201: GitHubLinkStartResponse;
-};
-
-export type ManageStartGithubLinkResponse = ManageStartGithubLinkResponses[keyof ManageStartGithubLinkResponses];
-
-export type ManageRemoveGithubInstallationData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-        /**
-         * GitHub installation identifier
-         */
-        installation_id: number;
-    };
-    query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/github-installations/{installation_id}';
-};
-
-export type ManageRemoveGithubInstallationErrors = {
-    /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
-     */
-    403: ManageError;
-    /**
-     * GitHub installation not found for this tenant, or GitHub integration is not configured
-     */
-    404: ManageError;
-    /**
-     * The JSON envelope every query-surface error responds with: `status` is
-     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
-     * human-readable message, and `retryAfterMs` present only on rate-limit
-     * rejections. Exists as a real (rather than `serde_json::json!`-built)
-     * type so the OpenAPI document can declare its schema on the `429`
-     * response of every rate-limited operation.
-     */
-    429: {
-        error: string;
-        errorType: string;
-        /**
-         * Milliseconds until the request would be admitted; present only when
-         * `errorType` is `"rate_limited"`.
-         */
-        retryAfterMs?: number | null;
-        /**
-         * Always `"error"`.
-         */
-        status: string;
-    };
-    /**
-     * Internal error
-     */
-    500: ManageError;
-};
-
-export type ManageRemoveGithubInstallationError = ManageRemoveGithubInstallationErrors[keyof ManageRemoveGithubInstallationErrors];
-
-export type ManageRemoveGithubInstallationResponses = {
-    /**
-     * Installation link removed
-     */
-    204: void;
-};
-
-export type ManageRemoveGithubInstallationResponse = ManageRemoveGithubInstallationResponses[keyof ManageRemoveGithubInstallationResponses];
-
-export type ManageListMembershipsData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/memberships';
-};
-
-export type ManageListMembershipsErrors = {
-    /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
-     */
-    403: ManageError;
-    /**
-     * The JSON envelope every query-surface error responds with: `status` is
-     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
-     * human-readable message, and `retryAfterMs` present only on rate-limit
-     * rejections. Exists as a real (rather than `serde_json::json!`-built)
-     * type so the OpenAPI document can declare its schema on the `429`
-     * response of every rate-limited operation.
-     */
-    429: {
-        error: string;
-        errorType: string;
-        /**
-         * Milliseconds until the request would be admitted; present only when
-         * `errorType` is `"rate_limited"`.
-         */
-        retryAfterMs?: number | null;
-        /**
-         * Always `"error"`.
-         */
-        status: string;
-    };
-    /**
-     * Internal error
-     */
-    500: ManageError;
-};
-
-export type ManageListMembershipsError = ManageListMembershipsErrors[keyof ManageListMembershipsErrors];
-
-export type ManageListMembershipsResponses = {
-    /**
-     * List of memberships
-     */
-    200: Array<MembershipResponse>;
-};
-
-export type ManageListMembershipsResponse = ManageListMembershipsResponses[keyof ManageListMembershipsResponses];
-
-export type ManageUpsertMembershipData = {
-    body: UpsertMembershipRequest;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/memberships';
-};
-
-export type ManageUpsertMembershipErrors = {
-    /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
-     */
-    403: ManageError;
-    /**
-     * User not found
-     */
-    404: ManageError;
-    /**
-     * Last administrator cannot be demoted
-     */
-    409: ManageError;
-    /**
-     * The JSON envelope every query-surface error responds with: `status` is
-     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
-     * human-readable message, and `retryAfterMs` present only on rate-limit
-     * rejections. Exists as a real (rather than `serde_json::json!`-built)
-     * type so the OpenAPI document can declare its schema on the `429`
-     * response of every rate-limited operation.
-     */
-    429: {
-        error: string;
-        errorType: string;
-        /**
-         * Milliseconds until the request would be admitted; present only when
-         * `errorType` is `"rate_limited"`.
-         */
-        retryAfterMs?: number | null;
-        /**
-         * Always `"error"`.
-         */
-        status: string;
-    };
-    /**
-     * Internal error
-     */
-    500: ManageError;
-};
-
-export type ManageUpsertMembershipError = ManageUpsertMembershipErrors[keyof ManageUpsertMembershipErrors];
-
-export type ManageUpsertMembershipResponses = {
-    /**
-     * Membership updated
-     */
-    200: MembershipResponse;
-};
-
-export type ManageUpsertMembershipResponse = ManageUpsertMembershipResponses[keyof ManageUpsertMembershipResponses];
-
-export type ManageRemoveMembershipData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-        /**
-         * User identifier
-         */
-        user_id: string;
-    };
-    query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/memberships/{user_id}';
-};
-
-export type ManageRemoveMembershipErrors = {
-    /**
-     * Cannot remove own membership
-     */
-    400: ManageError;
-    /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
-     */
-    403: ManageError;
-    /**
-     * Last administrator cannot be removed
-     */
-    409: ManageError;
-    /**
-     * The JSON envelope every query-surface error responds with: `status` is
-     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
-     * human-readable message, and `retryAfterMs` present only on rate-limit
-     * rejections. Exists as a real (rather than `serde_json::json!`-built)
-     * type so the OpenAPI document can declare its schema on the `429`
-     * response of every rate-limited operation.
-     */
-    429: {
-        error: string;
-        errorType: string;
-        /**
-         * Milliseconds until the request would be admitted; present only when
-         * `errorType` is `"rate_limited"`.
-         */
-        retryAfterMs?: number | null;
-        /**
-         * Always `"error"`.
-         */
-        status: string;
-    };
-    /**
-     * Internal error
-     */
-    500: ManageError;
-};
-
-export type ManageRemoveMembershipError = ManageRemoveMembershipErrors[keyof ManageRemoveMembershipErrors];
-
-export type ManageRemoveMembershipResponses = {
-    /**
-     * Membership removed
-     */
-    204: void;
-};
-
-export type ManageRemoveMembershipResponse = ManageRemoveMembershipResponses[keyof ManageRemoveMembershipResponses];
 
 export type OpsCompactData = {
     body?: never;
@@ -3951,6 +2742,52 @@ export type QuerySourcesResponses = {
 };
 
 export type QuerySourcesResponse = QuerySourcesResponses[keyof QuerySourcesResponses];
+
+export type GetSchemaData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/schema';
+};
+
+export type GetSchemaErrors = {
+    /**
+     * Missing or invalid credentials
+     */
+    401: unknown;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type GetSchemaError = GetSchemaErrors[keyof GetSchemaErrors];
+
+export type GetSchemaResponses = {
+    /**
+     * Logical and physical schema
+     */
+    200: SchemaResponse;
+};
+
+export type GetSchemaResponse = GetSchemaResponses[keyof GetSchemaResponses];
 
 export type SchemaSearchAttributesData = {
     body?: never;
@@ -4658,27 +3495,98 @@ export type ListAvailableSchemasResponses = {
 
 export type ListAvailableSchemasResponse = ListAvailableSchemasResponses[keyof ListAvailableSchemasResponses];
 
-export type ListTenantsSelfData = {
+export type ListTenantsData = {
     body?: never;
     path?: never;
     query?: never;
     url: '/api/v1/tenants';
 };
 
-export type ListTenantsSelfResponses = {
+export type ListTenantsErrors = {
     /**
-     * The caller's own tenant, as a single-entry list
+     * Missing or invalid credentials
      */
-    200: TenantSelfListResponse;
+    401: ApiError;
 };
 
-export type ListTenantsSelfResponse = ListTenantsSelfResponses[keyof ListTenantsSelfResponses];
+export type ListTenantsError = ListTenantsErrors[keyof ListTenantsErrors];
 
-export type GetTenantSelfData = {
+export type ListTenantsResponses = {
+    /**
+     * Tenants visible to the caller
+     */
+    200: ListTenantsResponse;
+};
+
+export type ListTenantsResponse2 = ListTenantsResponses[keyof ListTenantsResponses];
+
+export type CreateTenantData = {
+    body: CreateTenantRequest;
+    path?: never;
+    query?: never;
+    url: '/api/v1/tenants';
+};
+
+export type CreateTenantErrors = {
+    /**
+     * Validation error
+     */
+    400: ApiError;
+    /**
+     * Missing or invalid credentials
+     */
+    401: ApiError;
+    /**
+     * Instance administrator required
+     */
+    403: ApiError;
+    /**
+     * Tenant already exists
+     */
+    409: ApiError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ApiError;
+};
+
+export type CreateTenantError = CreateTenantErrors[keyof CreateTenantErrors];
+
+export type CreateTenantResponses = {
+    /**
+     * Tenant created
+     */
+    201: TenantResponse;
+};
+
+export type CreateTenantResponse = CreateTenantResponses[keyof CreateTenantResponses];
+
+export type DeleteTenantData = {
     body?: never;
     path: {
         /**
-         * Tenant identifier (must match the authenticated tenant)
+         * Tenant identifier
          */
         tenant_id: string;
     };
@@ -4686,25 +3594,1025 @@ export type GetTenantSelfData = {
     url: '/api/v1/tenants/{tenant_id}';
 };
 
-export type GetTenantSelfErrors = {
+export type DeleteTenantErrors = {
     /**
-     * Requested tenant does not match the authenticated tenant
+     * Missing or invalid credentials
      */
-    403: unknown;
+    401: ApiError;
+    /**
+     * Config-sourced tenants cannot be deleted, or instance administrator required
+     */
+    403: ApiError;
     /**
      * Tenant not found
      */
-    404: unknown;
+    404: ApiError;
 };
 
-export type GetTenantSelfResponses = {
+export type DeleteTenantError = DeleteTenantErrors[keyof DeleteTenantErrors];
+
+export type DeleteTenantResponses = {
     /**
-     * Tenant information
+     * Tenant deleted
      */
-    200: TenantInfo;
+    204: void;
 };
 
-export type GetTenantSelfResponse = GetTenantSelfResponses[keyof GetTenantSelfResponses];
+export type DeleteTenantResponse = DeleteTenantResponses[keyof DeleteTenantResponses];
+
+export type GetTenantData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}';
+};
+
+export type GetTenantErrors = {
+    /**
+     * Missing or invalid credentials
+     */
+    401: ApiError;
+    /**
+     * Requested tenant does not match the authenticated tenant
+     */
+    403: ApiError;
+    /**
+     * Tenant not found
+     */
+    404: ApiError;
+};
+
+export type GetTenantError = GetTenantErrors[keyof GetTenantErrors];
+
+export type GetTenantResponses = {
+    /**
+     * Tenant found
+     */
+    200: TenantResponse;
+};
+
+export type GetTenantResponse = GetTenantResponses[keyof GetTenantResponses];
+
+export type UpdateTenantData = {
+    body: UpdateTenantRequest;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}';
+};
+
+export type UpdateTenantErrors = {
+    /**
+     * Validation error
+     */
+    400: ApiError;
+    /**
+     * Missing or invalid credentials
+     */
+    401: ApiError;
+    /**
+     * Config-sourced tenants cannot be modified, or instance administrator required
+     */
+    403: ApiError;
+    /**
+     * Tenant not found
+     */
+    404: ApiError;
+};
+
+export type UpdateTenantError = UpdateTenantErrors[keyof UpdateTenantErrors];
+
+export type UpdateTenantResponses = {
+    /**
+     * Tenant updated
+     */
+    200: TenantResponse;
+};
+
+export type UpdateTenantResponse = UpdateTenantResponses[keyof UpdateTenantResponses];
+
+export type ListApiKeysData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/api-keys';
+};
+
+export type ListApiKeysErrors = {
+    /**
+     * Missing or invalid credentials
+     */
+    401: ManageError;
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type ListApiKeysError = ListApiKeysErrors[keyof ListApiKeysErrors];
+
+export type ListApiKeysResponses = {
+    /**
+     * List of API keys
+     */
+    200: Array<ManageApiKeyResponse>;
+};
+
+export type ListApiKeysResponse = ListApiKeysResponses[keyof ListApiKeysResponses];
+
+export type CreateApiKeyData = {
+    body: ManageCreateApiKeyRequest;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/api-keys';
+};
+
+export type CreateApiKeyErrors = {
+    /**
+     * Dataset does not exist
+     */
+    400: ManageError;
+    /**
+     * Missing or invalid credentials
+     */
+    401: ManageError;
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * Unable to create API key
+     */
+    409: ManageError;
+    /**
+     * Invalid or empty scopes
+     */
+    422: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type CreateApiKeyError = CreateApiKeyErrors[keyof CreateApiKeyErrors];
+
+export type CreateApiKeyResponses = {
+    /**
+     * API key created
+     */
+    201: ManageCreatedApiKey;
+};
+
+export type CreateApiKeyResponse = CreateApiKeyResponses[keyof CreateApiKeyResponses];
+
+export type RevokeApiKeyData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+        /**
+         * API key identifier
+         */
+        key_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/api-keys/{key_id}';
+};
+
+export type RevokeApiKeyErrors = {
+    /**
+     * Missing or invalid credentials
+     */
+    401: ManageError;
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * API key not found
+     */
+    404: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type RevokeApiKeyError = RevokeApiKeyErrors[keyof RevokeApiKeyErrors];
+
+export type RevokeApiKeyResponses = {
+    /**
+     * API key revoked
+     */
+    204: void;
+};
+
+export type RevokeApiKeyResponse = RevokeApiKeyResponses[keyof RevokeApiKeyResponses];
+
+export type UpdateApiKeyData = {
+    body: ManageUpdateApiKeyRequest;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+        /**
+         * API key identifier
+         */
+        key_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/api-keys/{key_id}';
+};
+
+export type UpdateApiKeyErrors = {
+    /**
+     * Dataset does not exist
+     */
+    400: ManageError;
+    /**
+     * Missing or invalid credentials
+     */
+    401: ManageError;
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * API key not found
+     */
+    404: ManageError;
+    /**
+     * API key is revoked
+     */
+    409: ManageError;
+    /**
+     * Invalid or empty scopes
+     */
+    422: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type UpdateApiKeyError = UpdateApiKeyErrors[keyof UpdateApiKeyErrors];
+
+export type UpdateApiKeyResponses = {
+    /**
+     * API key updated
+     */
+    200: ManageApiKeyResponse;
+};
+
+export type UpdateApiKeyResponse = UpdateApiKeyResponses[keyof UpdateApiKeyResponses];
+
+export type ListDatasetsData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/datasets';
+};
+
+export type ListDatasetsErrors = {
+    /**
+     * Missing or invalid credentials
+     */
+    401: ManageError;
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type ListDatasetsError = ListDatasetsErrors[keyof ListDatasetsErrors];
+
+export type ListDatasetsResponses = {
+    /**
+     * List of datasets
+     */
+    200: Array<ManageDatasetResponse>;
+};
+
+export type ListDatasetsResponse = ListDatasetsResponses[keyof ListDatasetsResponses];
+
+export type CreateDatasetData = {
+    body: ManageCreateDatasetRequest;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/datasets';
+};
+
+export type CreateDatasetErrors = {
+    /**
+     * Validation error
+     */
+    400: ManageError;
+    /**
+     * Missing or invalid credentials
+     */
+    401: ManageError;
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * Unable to create dataset
+     */
+    409: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type CreateDatasetError = CreateDatasetErrors[keyof CreateDatasetErrors];
+
+export type CreateDatasetResponses = {
+    /**
+     * Dataset created
+     */
+    201: ManageDatasetResponse;
+};
+
+export type CreateDatasetResponse = CreateDatasetResponses[keyof CreateDatasetResponses];
+
+export type DeleteDatasetData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+        /**
+         * Dataset name
+         */
+        dataset_name: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/datasets/{dataset_name}';
+};
+
+export type DeleteDatasetErrors = {
+    /**
+     * Missing or invalid credentials
+     */
+    401: ManageError;
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * Dataset not found
+     */
+    404: ManageError;
+    /**
+     * Dataset cannot be deleted
+     */
+    409: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type DeleteDatasetError = DeleteDatasetErrors[keyof DeleteDatasetErrors];
+
+export type DeleteDatasetResponses = {
+    /**
+     * Dataset deleted
+     */
+    204: void;
+};
+
+export type DeleteDatasetResponse = DeleteDatasetResponses[keyof DeleteDatasetResponses];
+
+export type ListGithubInstallationsData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/github-installations';
+};
+
+export type ListGithubInstallationsErrors = {
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type ListGithubInstallationsError = ListGithubInstallationsErrors[keyof ListGithubInstallationsErrors];
+
+export type ListGithubInstallationsResponses = {
+    /**
+     * Linked GitHub installations
+     */
+    200: GitHubInstallationsResponse;
+};
+
+export type ListGithubInstallationsResponse = ListGithubInstallationsResponses[keyof ListGithubInstallationsResponses];
+
+export type AttachGithubInstallationData = {
+    body: AttachGitHubInstallationRequest;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/github-installations/attach';
+};
+
+export type AttachGithubInstallationErrors = {
+    /**
+     * Instance administrator required, or the installation carries a write-capable permission
+     */
+    403: ManageError;
+    /**
+     * GitHub integration is not configured, or the installation was not found on GitHub
+     */
+    404: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+    /**
+     * GitHub request failed
+     */
+    502: ManageError;
+};
+
+export type AttachGithubInstallationError = AttachGithubInstallationErrors[keyof AttachGithubInstallationErrors];
+
+export type AttachGithubInstallationResponses = {
+    /**
+     * Installation attached
+     */
+    201: GitHubInstallationResponse;
+};
+
+export type AttachGithubInstallationResponse = AttachGithubInstallationResponses[keyof AttachGithubInstallationResponses];
+
+export type StartGithubLinkData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/github-installations/link';
+};
+
+export type StartGithubLinkErrors = {
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * GitHub integration is not configured
+     */
+    404: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type StartGithubLinkError = StartGithubLinkErrors[keyof StartGithubLinkErrors];
+
+export type StartGithubLinkResponses = {
+    /**
+     * Link flow started
+     */
+    201: GitHubLinkStartResponse;
+};
+
+export type StartGithubLinkResponse = StartGithubLinkResponses[keyof StartGithubLinkResponses];
+
+export type RemoveGithubInstallationData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+        /**
+         * GitHub installation identifier
+         */
+        installation_id: number;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/github-installations/{installation_id}';
+};
+
+export type RemoveGithubInstallationErrors = {
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * GitHub installation not found for this tenant, or GitHub integration is not configured
+     */
+    404: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type RemoveGithubInstallationError = RemoveGithubInstallationErrors[keyof RemoveGithubInstallationErrors];
+
+export type RemoveGithubInstallationResponses = {
+    /**
+     * Installation link removed
+     */
+    204: void;
+};
+
+export type RemoveGithubInstallationResponse = RemoveGithubInstallationResponses[keyof RemoveGithubInstallationResponses];
+
+export type ListMembershipsData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/memberships';
+};
+
+export type ListMembershipsErrors = {
+    /**
+     * Missing or invalid credentials
+     */
+    401: ManageError;
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * Tenant not found
+     */
+    404: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type ListMembershipsError = ListMembershipsErrors[keyof ListMembershipsErrors];
+
+export type ListMembershipsResponses = {
+    /**
+     * List of memberships
+     */
+    200: Array<MembershipResponse>;
+};
+
+export type ListMembershipsResponse = ListMembershipsResponses[keyof ListMembershipsResponses];
+
+export type UpsertMembershipData = {
+    body: UpsertMembershipRequest;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/memberships';
+};
+
+export type UpsertMembershipErrors = {
+    /**
+     * Missing or invalid credentials
+     */
+    401: ManageError;
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * User or tenant not found
+     */
+    404: ManageError;
+    /**
+     * Last administrator cannot be demoted
+     */
+    409: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type UpsertMembershipError = UpsertMembershipErrors[keyof UpsertMembershipErrors];
+
+export type UpsertMembershipResponses = {
+    /**
+     * Membership updated
+     */
+    200: MembershipResponse;
+};
+
+export type UpsertMembershipResponse = UpsertMembershipResponses[keyof UpsertMembershipResponses];
+
+export type RemoveMembershipData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+        /**
+         * User identifier
+         */
+        user_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/memberships/{user_id}';
+};
+
+export type RemoveMembershipErrors = {
+    /**
+     * Cannot remove own membership
+     */
+    400: ManageError;
+    /**
+     * Missing or invalid credentials
+     */
+    401: ManageError;
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * Tenant not found
+     */
+    404: ManageError;
+    /**
+     * Last administrator cannot be removed
+     */
+    409: ManageError;
+    /**
+     * The JSON envelope every query-surface error responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type RemoveMembershipError = RemoveMembershipErrors[keyof RemoveMembershipErrors];
+
+export type RemoveMembershipResponses = {
+    /**
+     * Membership removed
+     */
+    204: void;
+};
+
+export type RemoveMembershipResponse = RemoveMembershipResponses[keyof RemoveMembershipResponses];
 
 export type ListTenantSchemasData = {
     body?: never;
@@ -4911,6 +4819,72 @@ export type CreateTenantTablesResponses = {
 };
 
 export type CreateTenantTablesResponse2 = CreateTenantTablesResponses[keyof CreateTenantTablesResponses];
+
+export type ListUsersData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/users';
+};
+
+export type ListUsersErrors = {
+    /**
+     * Missing or invalid credentials
+     */
+    401: ApiError;
+};
+
+export type ListUsersError = ListUsersErrors[keyof ListUsersErrors];
+
+export type ListUsersResponses = {
+    /**
+     * Users visible to the caller
+     */
+    200: ListUsersResponse;
+};
+
+export type ListUsersResponse2 = ListUsersResponses[keyof ListUsersResponses];
+
+export type CreateUserData = {
+    body: CreateUserRequest;
+    path?: never;
+    query?: never;
+    url: '/api/v1/users';
+};
+
+export type CreateUserErrors = {
+    /**
+     * Validation error
+     */
+    400: ApiError;
+    /**
+     * Missing or invalid credentials
+     */
+    401: ApiError;
+    /**
+     * Instance administrator required
+     */
+    403: ApiError;
+    /**
+     * Tenant not found
+     */
+    404: ApiError;
+    /**
+     * User already exists
+     */
+    409: ApiError;
+};
+
+export type CreateUserError = CreateUserErrors[keyof CreateUserErrors];
+
+export type CreateUserResponses = {
+    /**
+     * User created
+     */
+    201: UserResponse;
+};
+
+export type CreateUserResponse = CreateUserResponses[keyof CreateUserResponses];
 
 export type WhoamiData = {
     body?: never;

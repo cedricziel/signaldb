@@ -122,7 +122,7 @@ afterEach(() => {
   resetDirtyForms();
 });
 
-const API_KEYS_PATH = "/api/v1/manage/tenants/acme/api-keys";
+const API_KEYS_PATH = "/api/v1/tenants/acme/api-keys";
 
 describe("ApiKeys page", () => {
   it("redirects to /logs when user is not admin", async () => {
@@ -150,7 +150,7 @@ describe("ApiKeys page", () => {
       { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
       { match: API_KEYS_PATH, body: [] },
       {
-        match: "/api/v1/manage/tenants/globex/api-keys",
+        match: "/api/v1/tenants/globex/api-keys",
         body: [],
       },
     ]);

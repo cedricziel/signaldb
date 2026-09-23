@@ -87,7 +87,7 @@ const CONFIGURED_EMPTY = {
   installations: [],
 };
 
-const INSTALLATIONS_PATH = "/api/v1/manage/tenants/acme/github-installations";
+const INSTALLATIONS_PATH = "/api/v1/tenants/acme/github-installations";
 
 const ONE_INSTALLATION = {
   configured: true,

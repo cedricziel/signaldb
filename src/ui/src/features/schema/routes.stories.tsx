@@ -304,7 +304,7 @@ export const StorageExplorer: Story = {
       initialEntries={["/schema/storage"]}
       routes={[
         ...baseRoutes,
-        { match: "/api/v1/manage/schema", body: managedSchema },
+        { match: "/api/v1/schema", body: managedSchema },
       ]}
     />
   ),
