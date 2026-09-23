@@ -38,12 +38,12 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use super::api_error::ApiError;
-use crate::RouterState;
+use crate::RouterAppState;
 
-pub fn router<S: RouterState>() -> Router<S> {
+pub fn router() -> Router<RouterAppState> {
     Router::new()
-        .route("/query", post(query_ir::<S>))
-        .route("/query/sources", get(super::discovery::query_sources::<S>))
+        .route("/query", post(query_ir))
+        .route("/query/sources", get(super::discovery::query_sources))
 }
 
 /// The query time range. `from`/`to` are timestamp literal **strings**: RFC3339,
@@ -329,8 +329,8 @@ pub struct QueryIrResponse {
         (status = 503, description = "No querier service available"),
     )
 )]
-pub async fn query_ir<S: RouterState>(
-    state: State<S>,
+pub async fn query_ir(
+    state: State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     axum::Json(body): axum::Json<QueryIrRequestBody>,
 ) -> Result<axum::Json<QueryIrResponse>, ApiError> {
@@ -346,8 +346,8 @@ pub async fn query_ir<S: RouterState>(
     source = %req.from,
     result = %req.result,
 ))]
-async fn query_ir_single<S: RouterState>(
-    State(state): State<S>,
+async fn query_ir_single(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     req: QueryIrRequest,
 ) -> Result<axum::Json<QueryIrResponse>, ApiError> {
@@ -404,8 +404,8 @@ async fn query_ir_single<S: RouterState>(
     query_count = req.queries.len(),
     formula_count = req.formulas.len(),
 ))]
-async fn query_ir_multi<S: RouterState>(
-    State(state): State<S>,
+async fn query_ir_multi(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     req: MultiQueryIrRequest,
 ) -> Result<axum::Json<QueryIrResponse>, ApiError> {
@@ -541,8 +541,8 @@ fn to_multi_document(
 /// formula evaluator's input shape — rather than the HTTP `ResultSeries`
 /// envelope. `validate_multi` already required this query's declared result
 /// to be `series`.
-async fn execute_inner_series_query<S: RouterState>(
-    state: &S,
+async fn execute_inner_series_query(
+    state: &RouterAppState,
     ctx: &TenantContext,
     req: &QueryIrRequest,
     now_ns: i64,
@@ -757,8 +757,8 @@ fn resolve_window(range: &QueryRange, now_ns: i64) -> Result<ResolvedWindow, Api
 }
 
 /// Send a `query_ir` Flight ticket to a querier and collect the result batches.
-pub(super) async fn execute_ticket<S: RouterState>(
-    state: &S,
+pub(super) async fn execute_ticket(
+    state: &RouterAppState,
     ticket_content: String,
 ) -> Result<Vec<RecordBatch>, ApiError> {
     let (mut client, server_address) = state

@@ -34,7 +34,7 @@ use common::config::{OidcConfig, PublicEndpointsConfig};
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::RouterState;
+use crate::RouterAppState;
 use crate::oidc::{
     self, PENDING_COOKIE_NAME, PENDING_COOKIE_PATH, PENDING_COOKIE_TTL_SECS, VerifiedIdentity,
 };
@@ -51,10 +51,10 @@ const ERROR_SSO_FAILED: &str = "sso_failed";
 const ERROR_NO_MEMBERSHIP: &str = "no_membership";
 
 /// Routes mounted at the router root, beside `/ui/session`.
-pub fn router<S: RouterState>() -> Router<S> {
+pub fn router() -> Router<RouterAppState> {
     Router::new()
-        .route("/ui/session/oidc/start", get(start::<S>))
-        .route("/ui/session/oidc/callback", get(callback::<S>))
+        .route("/ui/session/oidc/start", get(start))
+        .route("/ui/session/oidc/callback", get(callback))
 }
 
 /// Query parameters `GET /ui/session/oidc/start` accepts.
@@ -91,8 +91,8 @@ pub struct StartParams {
         (status = 503, description = "OIDC provider is currently unavailable"),
     )
 )]
-pub async fn start<S: RouterState>(
-    State(state): State<S>,
+pub async fn start(
+    State(state): State<RouterAppState>,
     Query(params): Query<StartParams>,
 ) -> Response {
     let Some(runtime) = state.oidc() else {
@@ -210,8 +210,8 @@ pub struct CallbackParams {
         (status = 404, description = "OIDC is not configured"),
     )
 )]
-pub async fn callback<S: RouterState>(
-    State(state): State<S>,
+pub async fn callback(
+    State(state): State<RouterAppState>,
     Query(params): Query<CallbackParams>,
     headers: HeaderMap,
 ) -> Response {
@@ -463,8 +463,8 @@ fn reject_with_code(clear_pending_cookie: &str, code: &str, target: Option<&str>
 /// `Ok(None)` means "refuse without creating anything" (allowlist refusal or
 /// no email to provision from) — the caller maps that to the same generic
 /// rejection as every other failure.
-async fn resolve_identity<S: RouterState>(
-    state: &S,
+async fn resolve_identity(
+    state: &RouterAppState,
     issuer_url: &str,
     identity: &VerifiedIdentity,
     config: &OidcConfig,

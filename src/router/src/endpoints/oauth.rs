@@ -32,7 +32,7 @@ use url::Url;
 use utoipa::{IntoParams, ToSchema};
 use uuid::Uuid;
 
-use crate::RouterState;
+use crate::RouterAppState;
 
 /// An OAuth error rendered in the RFC 6749 §5.2 shape
 /// (`{"error": ..., "error_description": ...}`) with an appropriate status.
@@ -76,18 +76,18 @@ impl IntoResponse for OAuthError {
 
 /// Routes mounted at the router root. The caller gates mounting on
 /// `config.mcp.oauth.enabled` so a plain deployment exposes no OAuth surface.
-pub fn router<S: RouterState>() -> Router<S> {
+pub fn router() -> Router<RouterAppState> {
     Router::new()
         .route(
             "/.well-known/oauth-authorization-server",
-            get(authorization_server_metadata::<S>),
+            get(authorization_server_metadata),
         )
-        .route("/oauth/register", post(register::<S>))
-        .route("/oauth/authorize", get(authorize::<S>))
-        .route("/oauth/consent/context", get(consent_context::<S>))
-        .route("/oauth/authorize/decision", post(authorize_decision::<S>))
-        .route("/oauth/token", post(token::<S>))
-        .route("/oauth/introspect", post(introspect::<S>))
+        .route("/oauth/register", post(register))
+        .route("/oauth/authorize", get(authorize))
+        .route("/oauth/consent/context", get(consent_context))
+        .route("/oauth/authorize/decision", post(authorize_decision))
+        .route("/oauth/token", post(token))
+        .route("/oauth/introspect", post(introspect))
 }
 
 /// The signal read scopes a consent may grant, as a `Vec` for convenience.
@@ -137,8 +137,8 @@ fn redirect_with_params(base: &str, params: &[(&str, &str)]) -> Result<String, O
 /// RFC 8414 Authorization Server Metadata. Absolute URLs are built from the
 /// configured issuer so external clients reach the same authority they came in
 /// on (correct behind a TLS terminator, unlike deriving from `Host`).
-async fn authorization_server_metadata<S: RouterState>(
-    State(state): State<S>,
+async fn authorization_server_metadata(
+    State(state): State<RouterAppState>,
 ) -> Result<Response, OAuthError> {
     let oauth = &state.config().mcp.oauth;
     let issuer = oauth.issuer_url.as_deref().ok_or_else(|| {
@@ -221,8 +221,8 @@ const MAX_CLIENT_NAME_LEN: usize = 256;
 
 /// Dynamic Client Registration (RFC 7591). Registers a public PKCE client and
 /// returns a fresh `client_id`. No client secret is issued.
-async fn register<S: RouterState>(
-    State(state): State<S>,
+async fn register(
+    State(state): State<RouterAppState>,
     Json(req): Json<RegistrationRequest>,
 ) -> Result<Response, OAuthError> {
     if req.redirect_uris.is_empty() {
@@ -317,8 +317,8 @@ struct AuthorizeParams {
 /// to the consent screen (a route in the explore-UI served at root). The code
 /// is minted by [`authorize_decision`] once the human approves. PKCE is
 /// mandatory.
-async fn authorize<S: RouterState>(
-    State(state): State<S>,
+async fn authorize(
+    State(state): State<RouterAppState>,
     Query(p): Query<AuthorizeParams>,
 ) -> Result<Response, OAuthError> {
     // Validate client and redirect_uri BEFORE trusting the redirect target;
@@ -479,8 +479,8 @@ pub struct ConsentDecisionResponse {
         (status = 400, description = "Invalid client, redirect URI, or PKCE"),
     )
 )]
-pub(crate) async fn authorize_decision<S: RouterState>(
-    State(state): State<S>,
+pub(crate) async fn authorize_decision(
+    State(state): State<RouterAppState>,
     headers: HeaderMap,
     Json(d): Json<ConsentDecision>,
 ) -> Result<Response, OAuthError> {
@@ -749,8 +749,8 @@ pub struct ConsentContextResponse {
         (status = 400, description = "Unknown client"),
     )
 )]
-pub(crate) async fn consent_context<S: RouterState>(
-    State(state): State<S>,
+pub(crate) async fn consent_context(
+    State(state): State<RouterAppState>,
     headers: HeaderMap,
     Query(q): Query<ConsentContextQuery>,
 ) -> Result<Response, OAuthError> {
@@ -875,8 +875,8 @@ fn no_store(body: TokenResponse) -> Response {
 /// Token endpoint (RFC 6749). Supports the `authorization_code` grant (with
 /// mandatory PKCE) and the `refresh_token` grant. Public clients only — no
 /// client authentication is required or accepted.
-async fn token<S: RouterState>(
-    State(state): State<S>,
+async fn token(
+    State(state): State<RouterAppState>,
     Form(req): Form<TokenRequest>,
 ) -> Result<Response, OAuthError> {
     match req.grant_type.as_str() {
@@ -889,8 +889,8 @@ async fn token<S: RouterState>(
     }
 }
 
-async fn token_authorization_code<S: RouterState>(
-    state: &S,
+async fn token_authorization_code(
+    state: &RouterAppState,
     req: TokenRequest,
 ) -> Result<Response, OAuthError> {
     let code = req
@@ -957,10 +957,7 @@ async fn token_authorization_code<S: RouterState>(
     .await
 }
 
-async fn token_refresh<S: RouterState>(
-    state: &S,
-    req: TokenRequest,
-) -> Result<Response, OAuthError> {
+async fn token_refresh(state: &RouterAppState, req: TokenRequest) -> Result<Response, OAuthError> {
     let refresh = req
         .refresh_token
         .as_deref()
@@ -1017,8 +1014,8 @@ async fn token_refresh<S: RouterState>(
 /// input, needs validating), `true` for a refresh (the grant is read off
 /// an already-validated catalog row, not user input — see
 /// [`common::catalog::Catalog::create_access_token_trusted`]'s doc comment).
-async fn issue_tokens<S: RouterState>(
-    state: &S,
+async fn issue_tokens(
+    state: &RouterAppState,
     client_id: &str,
     user_id: &str,
     tenant_grants: &[common::catalog::TenantGrant],
@@ -1164,8 +1161,8 @@ impl IntrospectResponse {
 /// Not yet part of the generated OpenAPI spec (like `/oauth/register` and
 /// `/oauth/token` above, this is an RFC-standard endpoint outside
 /// SignalDB's own documented surface) — task 4.1 of this change adds it.
-async fn introspect<S: RouterState>(
-    State(state): State<S>,
+async fn introspect(
+    State(state): State<RouterAppState>,
     Form(req): Form<IntrospectRequest>,
 ) -> Response {
     // A catalog error (store unavailable) is not the same thing as "this

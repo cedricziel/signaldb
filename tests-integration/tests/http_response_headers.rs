@@ -6,46 +6,16 @@
 //! OTel/tracing state (subscriber + propagator) that must not leak into other
 //! tests.
 
-use std::sync::Arc;
-
 use common::catalog::Catalog;
 use common::config::Configuration;
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
-use router::RouterState;
-use router::discovery::ServiceRegistry;
+use router::RouterAppState;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tracing_subscriber::layer::SubscriberExt;
 
 const CALLER_TRACEPARENT: &str = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01";
-
-#[derive(Clone)]
-struct State {
-    catalog: Catalog,
-    service_registry: ServiceRegistry,
-    config: Configuration,
-    authenticator: Arc<common::auth::Authenticator>,
-}
-impl std::fmt::Debug for State {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("State")
-    }
-}
-impl RouterState for State {
-    fn catalog(&self) -> &Catalog {
-        &self.catalog
-    }
-    fn service_registry(&self) -> &ServiceRegistry {
-        &self.service_registry
-    }
-    fn config(&self) -> &Configuration {
-        &self.config
-    }
-    fn authenticator(&self) -> &Arc<common::auth::Authenticator> {
-        &self.authenticator
-    }
-}
 
 fn install_global_otel() {
     let exporter = InMemorySpanExporter::default();
@@ -119,18 +89,7 @@ async fn all_http_surfaces_return_trace_context_headers() {
     let catalog_dsn = format!("sqlite://{}", temp_dir.path().join("catalog.db").display());
     let catalog = Catalog::new(&catalog_dsn).await.unwrap();
     let config = Configuration::default();
-    let service_registry = ServiceRegistry::new(catalog.clone());
-    let authenticator = Arc::new(common::auth::Authenticator::new(
-        config.auth.clone(),
-        Arc::new(catalog.clone()),
-    ));
-    let router_base = serve(router::create_router(State {
-        catalog,
-        service_registry,
-        config,
-        authenticator,
-    }))
-    .await;
+    let router_base = serve(router::create_router(RouterAppState::new(catalog, config))).await;
 
     let client = reqwest::Client::new();
     let response = client

@@ -12,7 +12,7 @@ use common::wal::WalConfig;
 use common::wal::manager::WalManager;
 use compactor::service::CompactorService;
 use querier::QuerierFlightService;
-use router::{RouterAppState, RouterState, create_flight_service, create_router};
+use router::{RouterAppState, create_flight_service, create_router};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::oneshot;

@@ -1,4 +1,4 @@
-use crate::RouterState;
+use crate::RouterAppState;
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -31,19 +31,16 @@ pub struct AvailableSchemasResponse {
 }
 
 /// Create tenant management routes
-pub fn router<S: RouterState>() -> Router<S> {
+pub fn router() -> Router<RouterAppState> {
     Router::new()
-        .route("/tenants", get(list_tenants::<S>))
-        .route("/tenants/{tenant_id}", get(get_tenant::<S>))
-        .route("/tenants/{tenant_id}/tables", get(list_tenant_tables::<S>))
+        .route("/tenants", get(list_tenants))
+        .route("/tenants/{tenant_id}", get(get_tenant))
+        .route("/tenants/{tenant_id}/tables", get(list_tenant_tables))
         .route(
             "/tenants/{tenant_id}/tables/create",
-            post(create_tenant_tables::<S>),
+            post(create_tenant_tables),
         )
-        .route(
-            "/tenants/{tenant_id}/schemas",
-            get(list_tenant_schemas::<S>),
-        )
+        .route("/tenants/{tenant_id}/schemas", get(list_tenant_schemas))
         .route("/schemas/available", get(list_available_schemas))
 }
 
@@ -61,8 +58,8 @@ pub fn router<S: RouterState>() -> Router<S> {
     )
 )]
 #[tracing::instrument(skip_all)]
-pub async fn list_tenants<S: RouterState>(
-    state: State<S>,
+pub async fn list_tenants(
+    state: State<RouterAppState>,
     TenantContextExtractor(ctx): TenantContextExtractor,
 ) -> impl IntoResponse {
     let api = TenantApi::new(state.config().clone());
@@ -91,8 +88,8 @@ pub async fn list_tenants<S: RouterState>(
     )
 )]
 #[tracing::instrument(skip_all, fields(signaldb.tenant.id = %tenant_id))]
-pub async fn get_tenant<S: RouterState>(
-    state: State<S>,
+pub async fn get_tenant(
+    state: State<RouterAppState>,
     Path(tenant_id): Path<String>,
     TenantContextExtractor(ctx): TenantContextExtractor,
 ) -> impl IntoResponse {
@@ -135,8 +132,8 @@ pub async fn get_tenant<S: RouterState>(
     )
 )]
 #[tracing::instrument(skip_all, fields(signaldb.tenant.id = %tenant_id))]
-pub async fn list_tenant_tables<S: RouterState>(
-    state: State<S>,
+pub async fn list_tenant_tables(
+    state: State<RouterAppState>,
     Path(tenant_id): Path<String>,
     TenantContextExtractor(ctx): TenantContextExtractor,
 ) -> impl IntoResponse {
@@ -184,8 +181,8 @@ pub async fn list_tenant_tables<S: RouterState>(
     )
 )]
 #[tracing::instrument(skip_all, fields(signaldb.tenant.id = %tenant_id))]
-pub async fn create_tenant_tables<S: RouterState>(
-    state: State<S>,
+pub async fn create_tenant_tables(
+    state: State<RouterAppState>,
     Path(tenant_id): Path<String>,
     TenantContextExtractor(ctx): TenantContextExtractor,
 ) -> impl IntoResponse {
@@ -241,8 +238,8 @@ pub async fn create_tenant_tables<S: RouterState>(
     )
 )]
 #[tracing::instrument(skip_all, fields(signaldb.tenant.id = %tenant_id))]
-pub async fn list_tenant_schemas<S: RouterState>(
-    state: State<S>,
+pub async fn list_tenant_schemas(
+    state: State<RouterAppState>,
     Path(tenant_id): Path<String>,
     TenantContextExtractor(ctx): TenantContextExtractor,
 ) -> impl IntoResponse {

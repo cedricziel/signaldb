@@ -34,61 +34,9 @@ pub(crate) const PYROSCOPE_PREFIX: &str = "/pyroscope";
 pub(crate) const QUERY_IR_PATH: &str = "/api/v1/query";
 pub(crate) const OPENAPI_JSON_PATH: &str = "/api/v1/openapi.json";
 
-/// The shared state that route handlers depend on.
-///
-/// This is the narrow interface every handler needs from the router's state —
-/// the catalog, service registry, configuration, and authenticator. Handlers
-/// are generic over this trait so they can be exercised against any state that
-/// satisfies the contract; [`RouterAppState`] is the concrete implementation
-/// used in production and tests.
-pub trait RouterState: std::fmt::Debug + Clone + Send + Sync + 'static {
-    fn catalog(&self) -> &Catalog;
-    fn service_registry(&self) -> &discovery::ServiceRegistry;
-    fn config(&self) -> &Configuration;
-    fn authenticator(&self) -> &Arc<Authenticator>;
-    /// The schema-registry resolver. The default builds a fresh (uncached)
-    /// resolver over the catalog, which is fine for tests; the app state
-    /// overrides it with a shared instance whose per-tenant index persists
-    /// across requests.
-    fn schema_resolver(&self) -> SchemaResolver {
-        SchemaResolver::new(self.catalog().clone())
-    }
-    /// The tenant OTTL processor registry (change: tenant-ottl-processors).
-    /// The default builds a fresh (uncached) registry over the catalog,
-    /// fine for tests; the app state overrides it with a shared instance
-    /// whose per-tenant cache persists across requests.
-    fn processor_registry(&self) -> Arc<common::processors::ProcessorRegistry> {
-        Arc::new(common::processors::ProcessorRegistry::new(
-            Arc::new(self.catalog().clone()),
-            &self.config().processors,
-        ))
-    }
-    /// The OIDC relying-party runtime (change: oidc-login). `None` when
-    /// `[auth.oidc]` is absent — the endpoints 404 and no background
-    /// discovery task ever runs. Defaulted so the trait stays satisfiable by
-    /// any test state that doesn't care about OIDC.
-    fn oidc(&self) -> Option<&Arc<oidc::OidcRuntime>> {
-        None
-    }
-    /// The GitHub App client (change: github-app-source-context). `None`
-    /// when `[github]` is absent, or when the configured private key failed
-    /// to parse — either way the GitHub management endpoints and the
-    /// install-flow callback answer 404. Defaulted so the trait stays
-    /// satisfiable by any test state that doesn't care about GitHub.
-    fn github(&self) -> Option<&Arc<github::GitHubApp>> {
-        None
-    }
-    /// The source-context snippet-lookup service (change:
-    /// github-app-source-context). `None` under the same conditions as
-    /// [`Self::github`] — it wraps the same [`github::GitHubApp`]. Defaulted
-    /// so the trait stays satisfiable by any test state that doesn't care
-    /// about source context.
-    fn source_context(&self) -> Option<&Arc<source_context::SourceContextService>> {
-        None
-    }
-}
-
-/// Concrete [`RouterState`] holding the router's shared handles.
+/// Concrete state that every route handler depends on: the catalog, service
+/// registry, configuration, and authenticator, plus the shared handles built
+/// from them.
 #[derive(Clone)]
 pub struct RouterAppState {
     catalog: Catalog,
@@ -217,46 +165,46 @@ fn build_github(
     (Some(app), Some(source_context))
 }
 
-impl RouterState for RouterAppState {
-    fn catalog(&self) -> &Catalog {
+impl RouterAppState {
+    pub fn catalog(&self) -> &Catalog {
         &self.catalog
     }
 
-    fn service_registry(&self) -> &discovery::ServiceRegistry {
+    pub fn service_registry(&self) -> &discovery::ServiceRegistry {
         &self.service_registry
     }
 
-    fn config(&self) -> &Configuration {
+    pub fn config(&self) -> &Configuration {
         &self.config
     }
 
-    fn authenticator(&self) -> &Arc<Authenticator> {
+    pub fn authenticator(&self) -> &Arc<Authenticator> {
         &self.authenticator
     }
 
-    fn schema_resolver(&self) -> SchemaResolver {
+    pub fn schema_resolver(&self) -> SchemaResolver {
         self.schema_resolver.clone()
     }
 
-    fn processor_registry(&self) -> Arc<common::processors::ProcessorRegistry> {
+    pub fn processor_registry(&self) -> Arc<common::processors::ProcessorRegistry> {
         self.processor_registry.clone()
     }
 
-    fn oidc(&self) -> Option<&Arc<oidc::OidcRuntime>> {
+    pub fn oidc(&self) -> Option<&Arc<oidc::OidcRuntime>> {
         self.oidc.as_ref()
     }
 
-    fn github(&self) -> Option<&Arc<github::GitHubApp>> {
+    pub fn github(&self) -> Option<&Arc<github::GitHubApp>> {
         self.github.as_ref()
     }
 
-    fn source_context(&self) -> Option<&Arc<source_context::SourceContextService>> {
+    pub fn source_context(&self) -> Option<&Arc<source_context::SourceContextService>> {
         self.source_context.as_ref()
     }
 }
 
 /// Create a new router instance with all routes configured
-pub fn create_router<S: RouterState>(state: S) -> Router {
+pub fn create_router(state: RouterAppState) -> Router {
     // Create auth middleware layer
     let authenticator = state.authenticator().clone();
     let auth_layer =
@@ -313,46 +261,39 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
 
     // Build admin routes
     let admin_router = Router::new()
-        .route("/tenants", get(endpoints::admin::list_tenants::<S>))
-        .route("/tenants", post(endpoints::admin::create_tenant::<S>))
+        .route("/tenants", get(endpoints::admin::list_tenants))
+        .route("/tenants", post(endpoints::admin::create_tenant))
+        .route("/tenants/{tenant_id}", get(endpoints::admin::get_tenant))
+        .route("/tenants/{tenant_id}", put(endpoints::admin::update_tenant))
         .route(
             "/tenants/{tenant_id}",
-            get(endpoints::admin::get_tenant::<S>),
-        )
-        .route(
-            "/tenants/{tenant_id}",
-            put(endpoints::admin::update_tenant::<S>),
-        )
-        .route(
-            "/tenants/{tenant_id}",
-            delete(endpoints::admin::delete_tenant::<S>),
+            delete(endpoints::admin::delete_tenant),
         )
         .route(
             "/tenants/{tenant_id}/api-keys",
-            get(endpoints::admin::list_api_keys::<S>),
+            get(endpoints::admin::list_api_keys),
         )
         .route(
             "/tenants/{tenant_id}/api-keys",
-            post(endpoints::admin::create_api_key::<S>),
+            post(endpoints::admin::create_api_key),
         )
         .route(
             "/tenants/{tenant_id}/api-keys/{key_id}",
-            delete(endpoints::admin::revoke_api_key::<S>)
-                .patch(endpoints::admin::update_api_key::<S>),
+            delete(endpoints::admin::revoke_api_key).patch(endpoints::admin::update_api_key),
         )
         .route(
             "/tenants/{tenant_id}/datasets",
-            get(endpoints::admin::list_datasets::<S>),
+            get(endpoints::admin::list_datasets),
         )
         .route(
             "/tenants/{tenant_id}/datasets",
-            post(endpoints::admin::create_dataset::<S>),
+            post(endpoints::admin::create_dataset),
         )
         .route(
             "/tenants/{tenant_id}/datasets/{dataset_id}",
-            delete(endpoints::admin::delete_dataset::<S>),
+            delete(endpoints::admin::delete_dataset),
         )
-        .route("/users", post(endpoints::admin::create_user::<S>))
+        .route("/users", post(endpoints::admin::create_user))
         .layer(admin_auth_layer);
 
     // Serialize the OpenAPI spec once at startup; served as pre-encoded bytes
@@ -439,11 +380,11 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .merge(endpoints::session::router())
         // OIDC SSO login (public; change: oidc-login) — 404s on every route
         // when `[auth.oidc]` is absent.
-        .merge(endpoints::oidc::router::<S>())
+        .merge(endpoints::oidc::router())
         // GitHub App install-flow callback (public; change:
         // github-app-source-context) — 404s when `[github]` is absent (see
         // `endpoints::github::callback`).
-        .merge(endpoints::github::callback_router::<S>())
+        .merge(endpoints::github::callback_router())
         // OAuth 2.1 authorization-server endpoints (public: discovery + DCR are
         // unauthenticated by spec; empty unless mcp.oauth.enabled)
         .merge(oauth_routes)
@@ -453,20 +394,20 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         // compactor's Flight do_action surface.
         .nest(
             "/api/v1/ops",
-            endpoints::ops::router::<S>().layer(ops_auth_layer),
+            endpoints::ops::router().layer(ops_auth_layer),
         )
         .nest(
             "/api/v1",
             endpoints::tenant::router()
-                .merge(endpoints::source_context::router::<S>())
+                .merge(endpoints::source_context::router())
                 .nest(
                     "/manage",
-                    endpoints::management::router().merge(endpoints::github::manage_router::<S>()),
+                    endpoints::management::router().merge(endpoints::github::manage_router()),
                 )
                 .nest("/schema", endpoints::schema::router())
-                .merge(endpoints::processors::router::<S>())
-                .route("/whoami", get(endpoints::session::whoami::<S>))
-                .route("/connection", get(endpoints::session::connection_info::<S>))
+                .merge(endpoints::processors::router())
+                .route("/whoami", get(endpoints::session::whoami))
+                .route("/connection", get(endpoints::session::connection_info))
                 .merge(endpoints::query::router())
                 .layer(query_rate_layer)
                 .layer(auth_layer),
@@ -484,7 +425,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         // user's own — see `demo_guard` for the allowlist.
         .layer(middleware::from_fn_with_state(
             state.clone(),
-            demo_guard::demo_write_guard::<S>,
+            demo_guard::demo_write_guard,
         ))
         // OTel HTTP server metrics for all routes (no-op unless
         // self-monitoring is enabled)
@@ -501,9 +442,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
 }
 
 /// Create a new Flight service instance
-pub fn create_flight_service<S: RouterState>(
-    state: S,
-) -> endpoints::flight::SignalDBFlightService<S> {
+pub fn create_flight_service(state: RouterAppState) -> endpoints::flight::SignalDBFlightService {
     endpoints::flight::SignalDBFlightService::new(state)
 }
 

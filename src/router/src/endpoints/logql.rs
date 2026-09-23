@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use tracing::Instrument;
 
 use super::api_error::ApiError;
-use crate::RouterState;
+use crate::RouterAppState;
 use arrow_flight::Ticket;
 use axum::{
     Router,
@@ -36,14 +36,14 @@ use loki_api::{
 };
 use serde::Deserialize;
 
-pub fn router<S: RouterState>() -> Router<S> {
+pub fn router() -> Router<RouterAppState> {
     Router::new()
-        .route("/api/v1/query", get(query::<S>))
-        .route("/api/v1/query_range", get(query_range::<S>))
-        .route("/api/v1/labels", get(labels::<S>))
-        .route("/api/v1/label/{name}/values", get(label_values::<S>))
-        .route("/api/v1/series", get(series::<S>))
-        .route("/api/v1/detected_fields", get(detected_fields::<S>))
+        .route("/api/v1/query", get(query))
+        .route("/api/v1/query_range", get(query_range))
+        .route("/api/v1/labels", get(labels))
+        .route("/api/v1/label/{name}/values", get(label_values))
+        .route("/api/v1/series", get(series))
+        .route("/api/v1/detected_fields", get(detected_fields))
 }
 
 fn default_limit() -> u32 {
@@ -155,8 +155,8 @@ fn validate_direction(direction: &str) -> Result<(), ApiError> {
         signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
-pub async fn query<S: RouterState>(
-    State(state): State<S>,
+pub async fn query(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<InstantQueryParams>,
 ) -> Result<axum::Json<QueryResponse>, ApiError> {
@@ -207,8 +207,8 @@ pub async fn query<S: RouterState>(
         signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
-pub async fn query_range<S: RouterState>(
-    State(state): State<S>,
+pub async fn query_range(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<RangeQueryParams>,
 ) -> Result<axum::Json<QueryResponse>, ApiError> {
@@ -266,8 +266,8 @@ pub async fn query_range<S: RouterState>(
         signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
-pub async fn labels<S: RouterState>(
-    State(state): State<S>,
+pub async fn labels(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<MetadataParams>,
 ) -> Result<axum::Json<LabelsResponse>, ApiError> {
@@ -307,8 +307,8 @@ pub async fn labels<S: RouterState>(
         label = %name
     )
 )]
-pub async fn label_values<S: RouterState>(
-    State(state): State<S>,
+pub async fn label_values(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Path(name): Path<String>,
     Query(params): Query<MetadataParams>,
@@ -335,8 +335,8 @@ pub async fn label_values<S: RouterState>(
         signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
-pub async fn series<S: RouterState>(
-    State(state): State<S>,
+pub async fn series(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<MetadataParams>,
 ) -> Result<axum::Json<SeriesResponse>, ApiError> {
@@ -385,8 +385,8 @@ pub struct DetectedFieldsParams {
         signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
-pub async fn detected_fields<S: RouterState>(
-    State(state): State<S>,
+pub async fn detected_fields(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<DetectedFieldsParams>,
 ) -> Result<axum::Json<DetectedFieldsResponse>, ApiError> {
@@ -427,8 +427,8 @@ const HOUR_NS: i64 = 3_600_000_000_000;
 
 /// Build and execute a `query_logs` ticket, converting the result batches
 /// into Loki streams.
-async fn run_log_query<S: RouterState>(
-    state: &S,
+async fn run_log_query(
+    state: &RouterAppState,
     tenant_ctx: &TenantContextExtractor,
     logql: &str,
     start: i64,
@@ -459,8 +459,8 @@ fn is_metric_query(logql: &str) -> bool {
 
 /// Build and execute a `query_metric` ticket, converting the result into a
 /// Loki matrix.
-async fn run_metric_query<S: RouterState>(
-    state: &S,
+async fn run_metric_query(
+    state: &RouterAppState,
     tenant_ctx: &TenantContextExtractor,
     logql: &str,
     start: i64,
@@ -590,8 +590,8 @@ fn default_step_ns(start: i64, end: i64) -> i64 {
 }
 
 /// Send a Flight ticket to a querier and collect the result batches.
-async fn execute_ticket<S: RouterState>(
-    state: &S,
+async fn execute_ticket(
+    state: &RouterAppState,
     ticket_content: String,
 ) -> Result<Vec<RecordBatch>, ApiError> {
     let (mut client, server_address) = state

@@ -1,4 +1,4 @@
-use crate::RouterState;
+use crate::RouterAppState;
 use axum::{
     Json,
     extract::{Path, State},
@@ -54,7 +54,7 @@ fn quota_exceeded_response(limit: u32, message: String) -> axum::response::Respo
         (status = 200, description = "List of tenants", body = ListTenantsResponse),
     )
 )]
-pub async fn list_tenants<S: RouterState>(state: State<S>) -> impl IntoResponse {
+pub async fn list_tenants(state: State<RouterAppState>) -> impl IntoResponse {
     match state.catalog().list_tenants().await {
         Ok(tenants) => {
             let response = ListTenantsResponse {
@@ -87,8 +87,8 @@ pub async fn list_tenants<S: RouterState>(state: State<S>) -> impl IntoResponse 
         (status = 409, description = "Tenant already exists", body = ApiError),
     )
 )]
-pub async fn create_tenant<S: RouterState>(
-    state: State<S>,
+pub async fn create_tenant(
+    state: State<RouterAppState>,
     Json(request): Json<CreateTenantRequest>,
 ) -> impl IntoResponse {
     if request.id.is_empty() {
@@ -211,8 +211,8 @@ pub async fn create_tenant<S: RouterState>(
         (status = 404, description = "Tenant not found", body = ApiError),
     )
 )]
-pub async fn get_tenant<S: RouterState>(
-    state: State<S>,
+pub async fn get_tenant(
+    state: State<RouterAppState>,
     Path(tenant_id): Path<String>,
 ) -> impl IntoResponse {
     match state.catalog().get_tenant(&tenant_id).await {
@@ -254,8 +254,8 @@ pub async fn get_tenant<S: RouterState>(
         (status = 404, description = "Tenant not found", body = ApiError),
     )
 )]
-pub async fn update_tenant<S: RouterState>(
-    state: State<S>,
+pub async fn update_tenant(
+    state: State<RouterAppState>,
     Path(tenant_id): Path<String>,
     Json(request): Json<UpdateTenantRequest>,
 ) -> impl IntoResponse {
@@ -375,8 +375,8 @@ pub async fn update_tenant<S: RouterState>(
         (status = 404, description = "Tenant not found", body = ApiError),
     )
 )]
-pub async fn delete_tenant<S: RouterState>(
-    state: State<S>,
+pub async fn delete_tenant(
+    state: State<RouterAppState>,
     Path(tenant_id): Path<String>,
 ) -> impl IntoResponse {
     // Check tenant exists and source
@@ -453,8 +453,8 @@ pub async fn delete_tenant<S: RouterState>(
         (status = 404, description = "Tenant not found", body = ApiError),
     )
 )]
-pub async fn list_api_keys<S: RouterState>(
-    state: State<S>,
+pub async fn list_api_keys(
+    state: State<RouterAppState>,
     Path(tenant_id): Path<String>,
 ) -> impl IntoResponse {
     // Verify tenant exists
@@ -521,8 +521,8 @@ pub async fn list_api_keys<S: RouterState>(
         (status = 422, description = "Invalid or empty scopes", body = ApiError),
     )
 )]
-pub async fn create_api_key<S: RouterState>(
-    state: State<S>,
+pub async fn create_api_key(
+    state: State<RouterAppState>,
     Path(tenant_id): Path<String>,
     Json(request): Json<CreateApiKeyRequest>,
 ) -> impl IntoResponse {
@@ -589,7 +589,7 @@ pub async fn create_api_key<S: RouterState>(
     };
     if let Some(ids) = &dataset_ids
         && let Err(response) =
-            validate_dataset_restriction_gate_and_membership(&*state, &tenant_id, ids).await
+            validate_dataset_restriction_gate_and_membership(&state, &tenant_id, ids).await
     {
         return *response;
     }
@@ -667,8 +667,8 @@ pub async fn create_api_key<S: RouterState>(
         (status = 422, description = "Invalid scopes", body = ApiError),
     )
 )]
-pub async fn update_api_key<S: RouterState>(
-    state: State<S>,
+pub async fn update_api_key(
+    state: State<RouterAppState>,
     Path((tenant_id, key_id)): Path<(String, String)>,
     Json(request): Json<UpdateApiKeyRequest>,
 ) -> impl IntoResponse {
@@ -686,7 +686,7 @@ pub async fn update_api_key<S: RouterState>(
     };
     if let common::catalog::DatasetRestrictionUpdate::Set(ids) = &dataset_update
         && let Err(response) =
-            validate_dataset_restriction_gate_and_membership(&*state, &tenant_id, ids).await
+            validate_dataset_restriction_gate_and_membership(&state, &tenant_id, ids).await
     {
         return *response;
     }
@@ -804,8 +804,8 @@ fn validate_scopes_response(scopes: &[String]) -> Result<(), Box<axum::response:
 
 /// `400 invalid_dataset` unless every dataset in `dataset_ids` exists in the
 /// tenant — the whole request is rejected on the first missing element.
-async fn validate_datasets_exist<S: RouterState>(
-    state: &S,
+async fn validate_datasets_exist(
+    state: &RouterAppState,
     tenant_id: &str,
     dataset_ids: &[String],
 ) -> Result<(), Box<axum::response::Response>> {
@@ -837,8 +837,8 @@ async fn validate_datasets_exist<S: RouterState>(
 /// mixed-version rollout gate (`[auth].dataset_restriction_rollout_complete`)
 /// is not yet `true` (D2), or when any element does not belong to
 /// `tenant_id` (checked via [`validate_datasets_exist`]).
-async fn validate_dataset_restriction_gate_and_membership<S: RouterState>(
-    state: &S,
+async fn validate_dataset_restriction_gate_and_membership(
+    state: &RouterAppState,
     tenant_id: &str,
     dataset_ids: &[String],
 ) -> Result<(), Box<axum::response::Response>> {
@@ -871,8 +871,8 @@ async fn validate_dataset_restriction_gate_and_membership<S: RouterState>(
         (status = 404, description = "API key not found", body = ApiError),
     )
 )]
-pub async fn revoke_api_key<S: RouterState>(
-    state: State<S>,
+pub async fn revoke_api_key(
+    state: State<RouterAppState>,
     Path((tenant_id, key_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     // Verify the key exists and belongs to this tenant
@@ -938,8 +938,8 @@ pub async fn revoke_api_key<S: RouterState>(
         (status = 404, description = "Tenant not found", body = ApiError),
     )
 )]
-pub async fn list_datasets<S: RouterState>(
-    state: State<S>,
+pub async fn list_datasets(
+    state: State<RouterAppState>,
     Path(tenant_id): Path<String>,
 ) -> impl IntoResponse {
     // Verify tenant exists
@@ -1012,8 +1012,8 @@ pub async fn list_datasets<S: RouterState>(
             )),
     )
 )]
-pub async fn create_dataset<S: RouterState>(
-    state: State<S>,
+pub async fn create_dataset(
+    state: State<RouterAppState>,
     Path(tenant_id): Path<String>,
     Json(request): Json<CreateDatasetRequest>,
 ) -> impl IntoResponse {
@@ -1134,8 +1134,8 @@ pub async fn create_dataset<S: RouterState>(
         (status = 404, description = "Dataset not found", body = ApiError),
     )
 )]
-pub async fn delete_dataset<S: RouterState>(
-    state: State<S>,
+pub async fn delete_dataset(
+    state: State<RouterAppState>,
     Path((tenant_id, dataset_id)): Path<(String, String)>,
 ) -> impl IntoResponse {
     match state
@@ -1192,8 +1192,8 @@ fn tenant_record_to_response(record: common::catalog::TenantRecord) -> TenantRes
         (status = 409, description = "User already exists", body = ApiError),
     )
 )]
-pub async fn create_user<S: RouterState>(
-    state: State<S>,
+pub async fn create_user(
+    state: State<RouterAppState>,
     Json(request): Json<CreateUserRequest>,
 ) -> impl IntoResponse {
     fn bad(code: &str, msg: impl Into<String>) -> (StatusCode, Json<serde_json::Value>) {
@@ -1366,37 +1366,22 @@ mod tests {
 
     fn admin_router(state: RouterAppState) -> Router {
         Router::new()
-            .route("/tenants", get(list_tenants::<RouterAppState>))
-            .route("/tenants", post(create_tenant::<RouterAppState>))
-            .route("/tenants/{tenant_id}", get(get_tenant::<RouterAppState>))
-            .route("/tenants/{tenant_id}", put(update_tenant::<RouterAppState>))
-            .route(
-                "/tenants/{tenant_id}",
-                delete(delete_tenant::<RouterAppState>),
-            )
-            .route(
-                "/tenants/{tenant_id}/api-keys",
-                get(list_api_keys::<RouterAppState>),
-            )
-            .route(
-                "/tenants/{tenant_id}/api-keys",
-                post(create_api_key::<RouterAppState>),
-            )
+            .route("/tenants", get(list_tenants))
+            .route("/tenants", post(create_tenant))
+            .route("/tenants/{tenant_id}", get(get_tenant))
+            .route("/tenants/{tenant_id}", put(update_tenant))
+            .route("/tenants/{tenant_id}", delete(delete_tenant))
+            .route("/tenants/{tenant_id}/api-keys", get(list_api_keys))
+            .route("/tenants/{tenant_id}/api-keys", post(create_api_key))
             .route(
                 "/tenants/{tenant_id}/api-keys/{key_id}",
-                delete(revoke_api_key::<RouterAppState>).patch(update_api_key::<RouterAppState>),
+                delete(revoke_api_key).patch(update_api_key),
             )
-            .route(
-                "/tenants/{tenant_id}/datasets",
-                get(list_datasets::<RouterAppState>),
-            )
-            .route(
-                "/tenants/{tenant_id}/datasets",
-                post(create_dataset::<RouterAppState>),
-            )
+            .route("/tenants/{tenant_id}/datasets", get(list_datasets))
+            .route("/tenants/{tenant_id}/datasets", post(create_dataset))
             .route(
                 "/tenants/{tenant_id}/datasets/{dataset_id}",
-                delete(delete_dataset::<RouterAppState>),
+                delete(delete_dataset),
             )
             .with_state(state)
     }

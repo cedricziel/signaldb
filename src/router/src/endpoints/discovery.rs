@@ -32,7 +32,7 @@ use tracing::Instrument;
 
 use super::api_error::ApiError;
 use super::query::{QueryIrResponse, QueryWarning, ResolvedWindow, execute_ticket, ir_table};
-use crate::RouterState;
+use crate::RouterAppState;
 
 /// The low-cardinality string a discovery span records for a [`CostMode`]
 /// once the answer is known — its own `snake_case` `Serialize` output, so a
@@ -52,8 +52,8 @@ fn cost_mode_label(mode: CostMode) -> String {
 /// path's cost is visible in self-monitoring next to the querier's
 /// `signaldb.query.execute` — most `describe` requests never reach a querier;
 /// a sampled `describe: values` does, and records `cost_mode = sampled_scan`.
-pub(super) async fn answer_describe<S: RouterState>(
-    state: &S,
+pub(super) async fn answer_describe(
+    state: &RouterAppState,
     ctx: &TenantContext,
     doc: &Document,
     describe: &Describe,
@@ -134,8 +134,8 @@ fn warnings_for(metadata: &MetadataResult) -> Vec<QueryWarning> {
         signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
-pub async fn query_sources<S: RouterState>(
-    State(state): State<S>,
+pub async fn query_sources(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
 ) -> Result<axum::Json<QueryIrResponse>, ApiError> {
     let ctx = &tenant_ctx.0;
@@ -146,8 +146,8 @@ pub async fn query_sources<S: RouterState>(
 /// The body of [`query_sources`], split out so the boundary span
 /// (`signaldb.discovery`) wraps the whole read rather than just the handler
 /// signature.
-async fn query_sources_body<S: RouterState>(
-    state: &S,
+async fn query_sources_body(
+    state: &RouterAppState,
     ctx: &TenantContext,
 ) -> Result<axum::Json<QueryIrResponse>, ApiError> {
     let tables = tenant_tables(state, ctx).await?;
@@ -198,8 +198,8 @@ fn source_tables(source: &str) -> &'static [&'static str] {
 }
 
 /// The tenant's table names in the authenticated dataset.
-async fn tenant_tables<S: RouterState>(
-    state: &S,
+async fn tenant_tables(
+    state: &RouterAppState,
     ctx: &TenantContext,
 ) -> Result<Vec<String>, ApiError> {
     let mut api = TenantApi::new(state.config().clone())
@@ -221,8 +221,8 @@ async fn tenant_tables<S: RouterState>(
 
 /// The queryable fields of a source: declared schema, enriched by the tenant's
 /// registries, plus the attribute keys the statistics observed.
-async fn fields<S: RouterState>(
-    state: &S,
+async fn fields(
+    state: &RouterAppState,
     ctx: &TenantContext,
     source: &str,
     describe: &Describe,
@@ -275,8 +275,8 @@ async fn fields<S: RouterState>(
 /// Value suggestions for one field, in tier order: a declared value set, then
 /// — only when the client explicitly opted in — the ordinary IR aggregation
 /// over the window. Otherwise no values, and the reason why.
-async fn values<S: RouterState>(
-    state: &S,
+async fn values(
+    state: &RouterAppState,
     ctx: &TenantContext,
     doc: &Document,
     describe: &Describe,
@@ -388,8 +388,8 @@ async fn values<S: RouterState>(
 
 /// Run the counted top-values aggregation over the window, through the same
 /// IR path as any other query.
-async fn sampled_values<S: RouterState>(
-    state: &S,
+async fn sampled_values(
+    state: &RouterAppState,
     ctx: &TenantContext,
     source: &str,
     field: &str,
