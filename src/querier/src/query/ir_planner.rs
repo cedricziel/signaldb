@@ -55,7 +55,7 @@ use datafusion::logical_expr::SortExpr;
 use datafusion::logical_expr::TableProviderFilterPushDown;
 use datafusion::logical_expr::{
     ColumnarValue, Expr, ExprFunctionExt, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
-    TypeSignature, Volatility, cast, col, lit, not,
+    TypeSignature, Volatility, cast, col, lit, not, try_cast,
 };
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::ScalarFunctionExpr;
@@ -2350,7 +2350,7 @@ impl Lowering<'_> {
     fn lower_leaf(&self, leaf: &Leaf) -> Result<Expr, QuerierError> {
         // An extract-derived or aggregate-output column takes precedence over
         // registry resolution (it is a real DataFrame column now).
-        let (is_json, value_type, field_expr, is_body) = if let Some(alias) =
+        let (is_json, value_type, field_expr, is_body, untyped) = if let Some(alias) =
             self.col_of.get(&leaf.field)
         {
             let ty = self
@@ -2358,13 +2358,20 @@ impl Lowering<'_> {
                 .get(&leaf.field)
                 .cloned()
                 .unwrap_or(ValueType::String);
-            (false, ty, ident(alias.clone()), false)
+            (false, ty, ident(alias.clone()), false, false)
         } else {
             let resolved = self.resolver.resolve("", &leaf.field).ok_or_else(|| {
                 QuerierError::InvalidInput(format!("unknown field '{}'", leaf.field))
             })?;
             let is_json = resolved.is_advisory_type();
             let ty = resolved.value_type().clone();
+            // `is_known` is false exactly for the resolver's permissive
+            // unknown-name fallback (`SchemaResolver::resolve`'s last arm):
+            // no logical-schema entry and no promoted column, so its `String`
+            // type is a hardcoded default, not a declared one. That is the
+            // "untyped" case `ordered` needs, distinct from a field the
+            // schema registry explicitly declares as `String`.
+            let untyped = !self.resolver.is_known("", &leaf.field);
             // The physical `body` column is JSON-encoded at ingest (issue
             // #1410): a plain-string body is stored quoted. `eq`/`ne`/`in`
             // stay pushdown-friendly by JSON-encoding the *literal* instead
@@ -2387,7 +2394,7 @@ impl Lowering<'_> {
                 Resolved::SpanEvents { events_column } => span_events_expr(events_column),
                 Resolved::PromotedColumn { name, key, .. } => self.promoted_column_expr(name, key),
             };
-            (is_json, ty, expr, is_body)
+            (is_json, ty, expr, is_body, untyped)
         };
         // The decoded form of `field_expr`, used by every operator except
         // `eq`/`ne`/`in` (which compare against the encoded literal instead,
@@ -2426,7 +2433,14 @@ impl Lowering<'_> {
             }
             ComparisonOp::Gt | ComparisonOp::Gte | ComparisonOp::Lt | ComparisonOp::Lte => {
                 let v = self.require_value(leaf)?;
-                self.ordered(decoded_field_expr(), leaf.op, v, &value_type, is_json)?
+                self.ordered(
+                    decoded_field_expr(),
+                    leaf.op,
+                    v,
+                    &value_type,
+                    is_json,
+                    untyped,
+                )?
             }
             ComparisonOp::Contains => {
                 let v = self.require_value(leaf)?;
@@ -2494,15 +2508,42 @@ impl Lowering<'_> {
         value: &serde_json::Value,
         value_type: &ValueType,
         is_json: bool,
+        untyped: bool,
     ) -> Result<Expr, QuerierError> {
-        // Route on the resolved ValueType, not the storage form, so a field
-        // compares the same whether promoted (typed column) or unpromoted
-        // (Utf8 attribute extraction) — promotion invariance. A numeric type
-        // compares numerically in both cases (an attribute's Utf8 value is cast
-        // to Float64); a string type compares lexically in both.
-        let literal =
-            coerce(value, value_type).map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
-        let (lhs, rhs) = if is_numeric(value_type) {
+        // An untyped attribute (no declared logical type — resolved as
+        // `String` only by the resolver's permissive fallback, see
+        // `lower_leaf`) compared against a JSON *number* literal: comparing
+        // lexicographically would silently misorder ("9" > "10") since the
+        // attribute's actual type is unknown. Route it through a numeric
+        // `TRY_CAST` instead — a non-numeric-looking value casts to NULL and
+        // so never matches, same as `Predicate::evaluate`'s unparsable-string
+        // case (see `query_ir::predicate::eval_leaf`). A declared `String`
+        // field keeps the lexicographic comparison: its type was a choice,
+        // not a fallback default.
+        // An untyped attribute (no declared logical type — resolved as
+        // `String` only by the resolver's permissive fallback, see
+        // `lower_leaf`) compared against a JSON *number* literal: comparing
+        // lexicographically would silently misorder ("9" > "10") since the
+        // attribute's actual type is unknown. Route it through a numeric
+        // `TRY_CAST` instead — a non-numeric-looking value casts to NULL and
+        // so never matches, same as `Predicate::evaluate`'s unparsable-string
+        // case (see `query_ir::predicate::eval_leaf`). A declared `String`
+        // field keeps the lexicographic comparison below: its type was a
+        // choice, not a fallback default.
+        let (lhs, rhs) = if !is_numeric(value_type)
+            && untyped
+            && let Some(f) = value.as_f64()
+        {
+            (try_cast(field_expr, DataType::Float64), lit(f))
+        } else if is_numeric(value_type) {
+            // Route on the resolved ValueType, not the storage form, so a
+            // field compares the same whether promoted (typed column) or
+            // unpromoted (Utf8 attribute extraction) — promotion invariance.
+            // A numeric type compares numerically in both cases (an
+            // attribute's Utf8 value is cast to Float64); a string type
+            // compares lexically in both.
+            let literal =
+                coerce(value, value_type).map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
             if is_json {
                 (
                     cast(field_expr, DataType::Float64),
@@ -2512,6 +2553,8 @@ impl Lowering<'_> {
                 (field_expr, self.value_lit(&literal, false))
             }
         } else {
+            let literal =
+                coerce(value, value_type).map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
             (field_expr, self.value_lit(&literal, is_json))
         };
         Ok(match op {
