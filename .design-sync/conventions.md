@@ -11,7 +11,7 @@ const { QueryClientProvider, previewQueryClient } = window.SignalDBUI;
 <QueryClientProvider client={previewQueryClient}>{app}</QueryClientProvider>
 ```
 
-The theme comes from `prefers-color-scheme`. To force one, put `data-theme="light"` or `data-theme="dark"` on `<html>`. The page background is `var(--bg)`, and panels and cards sit on `var(--surface)`.
+Every design must work in both light and dark. The theme follows `prefers-color-scheme`. To force one, put `data-theme="light"` or `data-theme="dark"` on `<html>`, or on any element to theme just that subtree: it re-points every token and paints its own `var(--bg)`/`var(--text)`. So `<div data-theme="dark">…</div>` previews a dark panel inside a light page. The page background is `var(--bg)`, and panels and cards sit on `var(--surface)`. Never hard-code colours (hex, `white`, `black`, named colours). Use the tokens below so both themes stay correct; BrandMark's fixed colours are the one deliberate exception.
 
 ## Styling: CSS custom properties plus a few global classes
 
