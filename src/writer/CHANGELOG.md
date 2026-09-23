@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.4.1](https://github.com/cedricziel/signaldb/compare/writer-v0.4.0...writer-v0.4.1) (2026-09-23)
+
+
+### Features
+
+* **writer:** match WAL label columns by stamped origin key ([#1640](https://github.com/cedricziel/signaldb/issues/1640)) ([ec23d82](https://github.com/cedricziel/signaldb/commit/ec23d82325ccecdd4694ee9af32fb09c7cd73593))
+
+
+### Bug Fixes
+
+* **writer:** retire stale WAL markers on dormant tables from the reconciler ([#1635](https://github.com/cedricziel/signaldb/issues/1635)) ([d0ce9e5](https://github.com/cedricziel/signaldb/commit/d0ce9e52f0ec740541339bd741b10e0e1c3f371e))
+
+
+### Code Refactoring
+
+* **writer:** drop unused object_store from WalProcessor ([#1665](https://github.com/cedricziel/signaldb/issues/1665)) ([b34a85d](https://github.com/cedricziel/signaldb/commit/b34a85d14c584bfd2c3215c78fe78f0ad3484b35))
+* **writer:** drop unused object_store handle from IcebergTableWriter ([#1650](https://github.com/cedricziel/signaldb/issues/1650)) ([c2e3112](https://github.com/cedricziel/signaldb/commit/c2e31121ce10d9175ba5a9b54d67d3cbf9035ca8))
+
 ## [0.4.0](https://github.com/cedricziel/signaldb/compare/writer-v0.3.0...writer-v0.4.0) (2026-09-12)
 
 

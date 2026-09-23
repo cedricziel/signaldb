@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.2.2](https://github.com/cedricziel/signaldb/compare/signaldb-sdk-v0.2.1...signaldb-sdk-v0.2.2) (2026-09-23)
+
+
+### Features
+
+* demo mode and a TrueNAS demo app with a trimmed OpenTelemetry Demo ([#1632](https://github.com/cedricziel/signaldb/issues/1632)) ([d6da0cf](https://github.com/cedricziel/signaldb/commit/d6da0cfb53d79b8167d92e0c3689aea65323d97b))
+* GitHub App integration for connecting a tenant's repositories ([#1600](https://github.com/cedricziel/signaldb/issues/1600)) ([6c9721e](https://github.com/cedricziel/signaldb/commit/6c9721ef0cf630df85e227a07be6ae30ee263191))
+* multi-tenant MCP OAuth grants ([#1541](https://github.com/cedricziel/signaldb/issues/1541)) ([c5b49b0](https://github.com/cedricziel/signaldb/commit/c5b49b018f749a72b639366a18223081cecef7cc))
+* per-API-key allowed origins for browser (CORS) ingestion ([#1548](https://github.com/cedricziel/signaldb/issues/1548)) ([6e966dd](https://github.com/cedricziel/signaldb/commit/6e966ddaf2740e3648583223828c6af715b6d331))
+* per-tenant, per-dataset OTTL telemetry processors ([#1603](https://github.com/cedricziel/signaldb/issues/1603)) ([2fc1022](https://github.com/cedricziel/signaldb/commit/2fc102232b1d925418b02e68393af8917184016e))
+* **router:** attach an existing GitHub App installation to a tenant ([#1618](https://github.com/cedricziel/signaldb/issues/1618)) ([0ab8e95](https://github.com/cedricziel/signaldb/commit/0ab8e95581f5213b02e8cded8af5b2b71c827516))
+* **router:** serialize API timestamps as native UTC DateTime ([#1643](https://github.com/cedricziel/signaldb/issues/1643)) ([1327fae](https://github.com/cedricziel/signaldb/commit/1327fae5760510f7e2180ab9e323ba6961d8b657))
+* source context for stack frames from linked GitHub repositories ([#1601](https://github.com/cedricziel/signaldb/issues/1601)) ([acca49c](https://github.com/cedricziel/signaldb/commit/acca49ca770ab96464b12676211144bc20b5cc7c))
+* **ui:** move the explore UI onto the query IR ([#1627](https://github.com/cedricziel/signaldb/issues/1627)) ([c20ad3e](https://github.com/cedricziel/signaldb/commit/c20ad3e6a91e43ba01c201c6c37faafd376d6b6d))
+
 ## [0.2.1](https://github.com/cedricziel/signaldb/compare/signaldb-sdk-v0.2.0...signaldb-sdk-v0.2.1) (2026-09-12)
 
 
