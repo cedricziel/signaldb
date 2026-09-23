@@ -7,6 +7,7 @@ import { useRef, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchDependencyBreakdown } from "../../api/dependencyBreakdown";
 import { QueryError } from "../../components/QueryError";
+import { ShareBar } from "../../components/ShareBar";
 import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
 import { useRovingFocus } from "../../hooks/useRovingFocus";
 import type { ResolvedRange } from "../../lib/time";
@@ -68,48 +69,50 @@ export function DependencyBreakdown({
 
   return (
     <div className="dep-breakdown viz-host" ref={rootRef}>
-      <div
-        className="dep-bar"
-        role="group"
-        aria-label={`Time spent by dependency type: ${categories
+      <ShareBar
+        segments={categories.map((c) => ({
+          key: c.key,
+          value: c.durationNs,
+          // The `.dep-*` classes in catalog.css set the actual background;
+          // this only satisfies `ShareBarSegment`'s shape.
+          color: DEP_COLORS[c.key] ?? "var(--faint)",
+          label: c.label,
+        }))}
+        ariaLabel={`Time spent by dependency type: ${categories
           .map((c) => `${c.label} ${formatShare(c.durationNs, total)}`)
           .join(", ")}`}
-      >
-        {categories.map((c, i) => {
+        segmentProps={(_seg, i) => {
+          const c = categories[i]!;
           const item = roving.itemProps(i);
-          return (
-            <span
-              key={c.key}
-              className={`dep-seg dep-${c.key}`}
-              data-testid="dep-seg"
-              style={{ width: `${(c.durationNs / total) * 100}%` }}
-              tabIndex={item.tabIndex}
-              ref={item.ref}
-              onKeyDown={item.onKeyDown}
-              aria-label={`${c.label}: ${formatDurationMs(c.durationNs / 1e6)}, ${formatShare(c.durationNs, total)}`}
-              aria-describedby={active === c.key ? "dep-tip" : undefined}
-              onPointerMove={(e) => {
-                setActive(c.key);
-                roving.setActiveIndex(i);
-                pointer.track(e);
-              }}
-              onPointerLeave={() => {
-                setActive((a) => (a === c.key ? null : a));
-                pointer.clear();
-              }}
-              onFocus={(e) => {
-                item.onFocus();
-                setActive(c.key);
-                pointer.anchorTo(e.currentTarget);
-              }}
-              onBlur={() => {
-                setActive((a) => (a === c.key ? null : a));
-                pointer.clear();
-              }}
-            />
-          );
-        })}
-      </div>
+          return {
+            className: `dep-seg dep-${c.key}`,
+            "data-testid": "dep-seg",
+            tabIndex: item.tabIndex,
+            ref: item.ref,
+            onKeyDown: item.onKeyDown,
+            "aria-label": `${c.label}: ${formatDurationMs(c.durationNs / 1e6)}, ${formatShare(c.durationNs, total)}`,
+            "aria-describedby": active === c.key ? "dep-tip" : undefined,
+            onPointerMove: (e) => {
+              setActive(c.key);
+              roving.setActiveIndex(i);
+              pointer.track(e);
+            },
+            onPointerLeave: () => {
+              setActive((a) => (a === c.key ? null : a));
+              pointer.clear();
+            },
+            onFocus: (e) => {
+              item.onFocus();
+              setActive(c.key);
+              pointer.anchorTo(e.currentTarget);
+            },
+            onBlur: () => {
+              setActive((a) => (a === c.key ? null : a));
+              pointer.clear();
+            },
+          };
+        }}
+      />
       <dl className="dep-legend">
         {categories.map((c) => (
           <div key={c.key} className="dep-legend-item">
