@@ -107,10 +107,10 @@ describe("buildMembersDoc", () => {
       [],
       "traces",
       8,
-      { field: "duration_nanos", dir: "desc" },
+      { field: "duration", dir: "desc" },
     );
     expect(doc.pipeline?.at(-2)).toEqual({
-      order: [{ of: "duration_nanos", dir: "desc" }],
+      order: [{ of: "duration", dir: "desc" }],
     });
     expect(doc.pipeline?.at(-1)).toEqual({ limit: 8 });
   });
