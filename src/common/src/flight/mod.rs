@@ -28,6 +28,16 @@ pub mod chunk;
 pub mod conversion;
 pub mod decode;
 pub mod schema;
+
+/// Arrow schema `metadata` key a Query IR `correlate` stage's result carries
+/// when its join hit `[querier].correlate_max_rows` (`openspec/changes/
+/// query-ir-span-join`): `"true"` when present. Set by the querier on the
+/// `RecordBatch` schema it hands to [`batches_to_compressed_flight_data`],
+/// which encodes that schema (not a per-batch one) into the Flight stream's
+/// one schema message — the ground-truth signal the router reads back to
+/// decide whether to warn the caller, since Flight carries record batches
+/// only, no side channel for an out-of-band flag.
+pub const CORRELATE_TRUNCATED_METADATA_KEY: &str = "signaldb.correlate_truncated";
 pub mod trace_context;
 pub mod transport;
 

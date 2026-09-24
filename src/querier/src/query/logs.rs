@@ -317,7 +317,7 @@ impl LogsService {
         )
         .await?;
         Ok(match planned {
-            Some((df, _window)) => IrOutcome::Planned(Box::new(df)),
+            Some((df, _window, _correlate_truncated)) => IrOutcome::Planned(Box::new(df)),
             None => IrOutcome::NoTable,
         })
     }

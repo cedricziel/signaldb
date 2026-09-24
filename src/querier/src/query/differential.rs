@@ -530,7 +530,7 @@ async fn new_traceql_plan(
     let mut doc = ql_ir::traceql_to_ir(q, FROM_NS, TO_NS)
         .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
     set_fields(&mut doc, fields);
-    let (df, _) = plan_document(
+    let (df, _, _) = plan_document(
         ctx,
         &doc,
         super::ir_planner::PlanRequest::new(TENANT, DATASET, 0),
@@ -561,7 +561,7 @@ async fn new_tags_plan(
         fields: Some(fields.iter().map(|s| s.to_string()).collect()),
         pipeline: vec![Stage::Where(predicate)],
     };
-    let (df, _) = plan_document(
+    let (df, _, _) = plan_document(
         ctx,
         &doc,
         super::ir_planner::PlanRequest::new(TENANT, DATASET, 0),
@@ -607,7 +607,7 @@ async fn new_logql_log_plan(
     let mut doc = ql_ir::logql_to_ir(q, FROM_NS, TO_NS)
         .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
     set_fields(&mut doc, fields);
-    let (df, _) = plan_document(
+    let (df, _, _) = plan_document(
         ctx,
         &doc,
         super::ir_planner::PlanRequest::new(TENANT, DATASET, 0),
@@ -755,7 +755,7 @@ async fn unscoped_attribute_coalesces_by_container_priority() {
 
     let mut doc = ql_ir::traceql_to_ir(q, FROM_NS, TO_NS).unwrap();
     set_fields(&mut doc, &fields);
-    let (df, _) = plan_document(
+    let (df, _, _) = plan_document(
         &ctx,
         &doc,
         super::ir_planner::PlanRequest::new(TENANT, DATASET, 0),
@@ -1039,7 +1039,7 @@ async fn logql_metric_corpus_row_level_equivalence() {
         // The IR's `Series` result returns the aggregate output unprojected
         // (`apply_projection`'s early-return for `series_shaped`), so no
         // `fields` override is needed or honoured here.
-        let (df, _) = plan_document(
+        let (df, _, _) = plan_document(
             &ctx,
             &doc,
             super::ir_planner::PlanRequest::new(TENANT, DATASET, 0),
@@ -1145,7 +1145,7 @@ async fn adversarial_ungrouped_range_aggregation_default_grouping_agrees() {
     let q = r#"count_over_time({service_name="api"}[1h])"#;
 
     let doc = ql_ir::logql_to_ir(q, FROM_NS, TO_NS).unwrap_or_else(|e| panic!("{q}: {e}"));
-    let (df, _) = plan_document(
+    let (df, _, _) = plan_document(
         &ctx,
         &doc,
         super::ir_planner::PlanRequest::new(TENANT, DATASET, 0),
@@ -1193,7 +1193,7 @@ async fn explicitly_ungrouped_vector_aggregation_collapses_to_one_row() {
     let q = r#"sum(count_over_time({service_name="api"}[1h]))"#;
 
     let doc = ql_ir::logql_to_ir(q, FROM_NS, TO_NS).unwrap_or_else(|e| panic!("{q}: {e}"));
-    let (df, _) = plan_document(
+    let (df, _, _) = plan_document(
         &ctx,
         &doc,
         super::ir_planner::PlanRequest::new(TENANT, DATASET, 0),
@@ -1401,7 +1401,7 @@ async fn tags_escaping_values_match_the_fixture_row() {
             fields: Some(fields.iter().map(|s| s.to_string()).collect()),
             pipeline: vec![Stage::Where(predicate)],
         };
-        let (df, _) = plan_document(
+        let (df, _, _) = plan_document(
             &ctx,
             &doc,
             super::ir_planner::PlanRequest::new(TENANT, DATASET, 0),
@@ -1491,7 +1491,7 @@ async fn mixed_case_grouping_label_groups_correctly() {
     let q = r#"sum by (StatusCode) (count_over_time({service_name="api"}[1m]))"#;
 
     let doc = ql_ir::logql_to_ir(q, FROM_NS, TO_NS).unwrap_or_else(|e| panic!("{q}: {e}"));
-    let (df, _) = plan_document(
+    let (df, _, _) = plan_document(
         &ctx,
         &doc,
         super::ir_planner::PlanRequest::new(TENANT, DATASET, 0),
@@ -1688,7 +1688,7 @@ async fn new_logql_log_bodies(ctx: &SessionContext, q: &str) -> Vec<String> {
     let fields = ["body"];
     let mut doc = ql_ir::logql_to_ir(q, FROM_NS, TO_NS).unwrap();
     set_fields(&mut doc, &fields);
-    let (df, _) = plan_document(
+    let (df, _, _) = plan_document(
         ctx,
         &doc,
         super::ir_planner::PlanRequest::new(TENANT, DATASET, 0),

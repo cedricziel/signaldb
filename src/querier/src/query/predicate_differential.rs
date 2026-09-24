@@ -200,7 +200,7 @@ async fn planned_kept(ctx: &SessionContext, predicate: &Predicate) -> HashSet<i6
         fields: Some(vec!["timestamp".to_string()]),
         pipeline: vec![Stage::Where(predicate.clone())],
     };
-    let (df, _) = plan_document(
+    let (df, _, _) = plan_document(
         ctx,
         &doc,
         super::ir_planner::PlanRequest::new(TENANT, DATASET, 0),

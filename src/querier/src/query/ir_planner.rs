@@ -397,6 +397,13 @@ async fn scan_source_tables(
 /// `DuplicateQualifiedField` error once a `Map`-typed attribute container
 /// column (e.g. `span_attributes`) is involved — plain scalar columns
 /// happen not to trip it, which is why the child side needs no such trick.
+///
+/// The synthetic reference is safe to build against the shared, long-lived
+/// `SessionContext` every `IrService` call reuses: [`scan_provider`] builds
+/// a bare `LogicalPlanBuilder::scan` over the reference, never calling
+/// `SessionContext::register_table`, so it never mutates the shared
+/// context's catalog — concurrent queries (including concurrent
+/// `correlate`s) never observe or collide with each other's synthetic name.
 async fn scan_parent_traces(
     ctx: &SessionContext,
     tenant_slug: &str,
@@ -426,6 +433,12 @@ async fn scan_parent_traces(
             table,
         } => TableReference::full(catalog, schema, format!("{table}__correlate_parent")),
     };
+    // Same coercion the child scan gets in `scan_source_tables`'s
+    // single-table branch: a legacy Utf8-JSON attribute container (a table
+    // created before the Map-typed migration) must present as a typed map
+    // here too, or a `parent.span.<key>`/`parent.resource.<key>` attribute
+    // reference silently reads nothing instead of erroring or matching.
+    let provider = coerce_legacy_containers(provider, source)?;
     Ok(Some(scan_provider(ctx, parent_ref, provider)?))
 }
 
@@ -1134,8 +1147,8 @@ impl IrService {
             .map_err(|e| QuerierError::InvalidInput(format!("invalid IR document: {e}")))?;
         // Stage spans (INTERNAL) under the Flight SERVER span, so a slow
         // query is attributable to planning vs execution.
-        let Some((mut df, window)) = self
-            .plan(&doc, tenant_slug, dataset_slug, params.now_ns)
+        let Some((mut df, window, correlate_truncated)) = self
+            .plan_with_correlate_truncation(&doc, tenant_slug, dataset_slug, params.now_ns)
             .instrument(tracing::info_span!("signaldb.query.plan"))
             .await?
         else {
@@ -1170,6 +1183,11 @@ impl IrService {
                 window,
             ));
         }
+        let batches = if correlate_truncated {
+            stamp_correlate_truncated(batches)?
+        } else {
+            batches
+        };
         Ok((batches, window))
     }
 
@@ -1178,7 +1196,12 @@ impl IrService {
     /// Delegates to [`plan_document`], the planner's single entry point —
     /// `IrService`'s Flight-ticket path and any other caller (the compat
     /// lowerings, once they route through this planner) build the same plan
-    /// the same way.
+    /// the same way. `IrService::query` itself now calls
+    /// [`Self::plan_with_correlate_truncation`] directly instead, so this
+    /// two-tuple form is exercised by the planner's own tests only —
+    /// `#[cfg_attr(not(test), allow(dead_code))]` says exactly that, rather
+    /// than a blanket allow.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub async fn plan(
         &self,
         doc: &Document,
@@ -1186,6 +1209,27 @@ impl IrService {
         dataset_slug: &str,
         now_ns: i64,
     ) -> Result<Option<(DataFrame, ResolvedWindow)>, QuerierError> {
+        Ok(self
+            .plan_with_correlate_truncation(doc, tenant_slug, dataset_slug, now_ns)
+            .await?
+            .map(|(df, window, _truncated)| (df, window)))
+    }
+
+    /// Like [`Self::plan`], but also reports whether a `correlate` stage's
+    /// join was truncated by `correlate_max_rows` — ground truth captured
+    /// at the join itself, needed by [`Self::query`] to stamp the final
+    /// result's Arrow schema metadata for the router. Kept private to
+    /// [`Self::plan`]'s public two-tuple shape: the dozens of existing
+    /// planner-only tests and compat lowerings that call `plan` never
+    /// reach a `correlate` stage, so they don't need to spell out a third
+    /// element they'd only discard.
+    async fn plan_with_correlate_truncation(
+        &self,
+        doc: &Document,
+        tenant_slug: &str,
+        dataset_slug: &str,
+        now_ns: i64,
+    ) -> Result<Option<(DataFrame, ResolvedWindow, bool)>, QuerierError> {
         plan_document(
             &self.session_context,
             doc,
@@ -1213,7 +1257,7 @@ pub(crate) async fn plan_document(
     ctx: &SessionContext,
     doc: &Document,
     request: PlanRequest<'_>,
-) -> Result<Option<(DataFrame, ResolvedWindow)>, QuerierError> {
+) -> Result<Option<(DataFrame, ResolvedWindow, bool)>, QuerierError> {
     let PlanRequest {
         tenant_slug,
         dataset_slug,
@@ -1255,6 +1299,7 @@ pub(crate) async fn plan_document(
             .map(|f| f.name().to_string())
             .collect(),
         correlated: false,
+        correlate_truncated: false,
     };
 
     let mut df = lowering.apply_time_window(base, &window)?;
@@ -1285,7 +1330,7 @@ pub(crate) async fn plan_document(
         };
     }
     df = lowering.apply_projection(df, doc)?;
-    Ok(Some((df, window)))
+    Ok(Some((df, window, lowering.correlate_truncated)))
 }
 
 /// Decode full-payload profile rows, aggregate them into one flamegraph, and
@@ -1330,6 +1375,62 @@ fn encode_flamegraph_batch(
             None,
         ))
     })
+}
+
+/// Stamp `common::flight::CORRELATE_TRUNCATED_METADATA_KEY` onto every
+/// batch's schema — ground truth from [`Lowering::lower_correlate`] that a
+/// `correlate` stage's join hit `correlate_max_rows`, carried across Flight
+/// to the router (see [`batches_to_compressed_flight_data`]'s doc comment
+/// on why the schema, not a data column, is the vehicle: the router must
+/// never see a phantom column it has to filter back out of the response).
+/// A no-op on an empty result — nothing to attach the metadata to, and an
+/// empty result is not observably truncated to a caller regardless.
+fn stamp_correlate_truncated(batches: Vec<RecordBatch>) -> Result<Vec<RecordBatch>, QuerierError> {
+    let Some(first) = batches.first() else {
+        return Ok(batches);
+    };
+    let mut metadata = first.schema().metadata().clone();
+    metadata.insert(
+        common::flight::CORRELATE_TRUNCATED_METADATA_KEY.to_string(),
+        "true".to_string(),
+    );
+    let schema = Arc::new(Schema::new_with_metadata(
+        first.schema().fields().clone(),
+        metadata,
+    ));
+    batches
+        .into_iter()
+        .map(|b| {
+            RecordBatch::try_new(schema.clone(), b.columns().to_vec()).map_err(|e| {
+                QuerierError::QueryFailed(datafusion::error::DataFusionError::ArrowError(
+                    Box::new(e),
+                    None,
+                ))
+            })
+        })
+        .collect()
+}
+
+/// Trim `batches` down to `limit` total rows, dropping whole batches once
+/// the limit is reached and slicing the batch that straddles it. Used by
+/// [`Lowering::lower_correlate`] to enforce `correlate_max_rows` exactly
+/// after requesting one extra row to detect the overflow.
+fn trim_batches_to_rows(batches: Vec<RecordBatch>, limit: usize) -> Vec<RecordBatch> {
+    let mut remaining = limit;
+    let mut trimmed = Vec::with_capacity(batches.len());
+    for batch in batches {
+        if remaining == 0 {
+            break;
+        }
+        if batch.num_rows() <= remaining {
+            remaining -= batch.num_rows();
+            trimmed.push(batch);
+        } else {
+            trimmed.push(batch.slice(0, remaining));
+            remaining = 0;
+        }
+    }
+    trimmed
 }
 
 fn validate_heatmap_window(doc: &Document, window: &ResolvedWindow) -> Result<(), QuerierError> {
@@ -1467,6 +1568,12 @@ struct Lowering<'a> {
     /// name>` (see [`Self::lower_correlate`]); [`Self::parent_column`] gates
     /// on this to resolve a `parent.<field>` reference.
     correlated: bool,
+    /// `true` once a `correlate` stage's join hit `correlate_max_rows` and
+    /// was truncated. Ground truth captured at the join itself (before any
+    /// later `aggregate`/`where`/`limit` can shrink or hide the row count),
+    /// carried to [`IrService::query`] and stamped onto the final result's
+    /// Arrow schema metadata for the router to read back.
+    correlate_truncated: bool,
 }
 
 impl Lowering<'_> {
@@ -1612,6 +1719,10 @@ impl Lowering<'_> {
             scan_parent_traces(ctx, tenant_slug, dataset_slug, self.source).await?
         else {
             // No traces table to join against: every child is parentless.
+            // Still mark the relation correlated, so a later `parent.*`
+            // reference resolves (to an always-empty/always-null column)
+            // rather than erroring as if `correlate` had never run.
+            self.correlated = true;
             return match join_type {
                 JoinType::Inner => df.limit(0, Some(0)).map_err(QuerierError::QueryFailed),
                 _ => Ok(df),
@@ -1660,12 +1771,43 @@ impl Lowering<'_> {
         }
         let joined = joined
             .select(select_exprs)
+            .map_err(QuerierError::QueryFailed)?;
+        let joined_schema = Arc::new(joined.schema().as_arrow().clone());
+        // Request one row past the cap so truncation is ground truth, not a
+        // guess — the same trick `IrService::query`'s flamegraph path uses.
+        // This must be resolved *here*, not left for `IrService::query`'s
+        // final `.collect()`: a later `aggregate`/`where`/`limit` stage can
+        // shrink or hide the row count, but the join's own overflow already
+        // happened and must still be reported.
+        let batches = joined
+            .limit(0, Some(correlate_max_rows + 1))
             .map_err(QuerierError::QueryFailed)?
-            .limit(0, Some(correlate_max_rows))
+            .collect()
+            .await
+            .map_err(QuerierError::QueryFailed)?;
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        let (batches, truncated) = if total_rows > correlate_max_rows {
+            (trim_batches_to_rows(batches, correlate_max_rows), true)
+        } else {
+            (batches, false)
+        };
+        // Re-inject the (possibly-trimmed) result as a fresh lazy scan so
+        // later stages keep composing normally. `ctx.read_batches` falls
+        // back to an empty schema when `batches` is empty, which would lose
+        // every column this join produced — pass the schema explicitly via
+        // one empty batch in that case, same shape either way.
+        let batches = if batches.is_empty() {
+            vec![RecordBatch::new_empty(joined_schema)]
+        } else {
+            batches
+        };
+        let joined = ctx
+            .read_batches(batches)
             .map_err(QuerierError::QueryFailed)?;
 
         self.schema_cols = schema_cols;
         self.correlated = true;
+        self.correlate_truncated = truncated;
         Ok(joined)
     }
 
@@ -6808,6 +6950,179 @@ mod tests {
         assert_eq!(
             total, 1,
             "two rows join, but correlate_max_rows=1 bounds the output"
+        );
+    }
+
+    fn correlate_ir_params(
+        kind: &str,
+        extra: Vec<serde_json::Value>,
+        result: &str,
+    ) -> IrQueryParams {
+        let mut pipeline =
+            vec![serde_json::json!({ "correlate": { "to": "parent", "kind": kind } })];
+        pipeline.extend(extra);
+        IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 8, "from": "traces", "range": { "from": 0, "to": 1000 },
+                "result": result,
+                "pipeline": pipeline
+            }),
+            now_ns: 0,
+        }
+    }
+
+    fn correlate_truncated_flag(batches: &[RecordBatch]) -> bool {
+        batches.first().is_some_and(|b| {
+            b.schema()
+                .metadata()
+                .get(common::flight::CORRELATE_TRUNCATED_METADATA_KEY)
+                .map(String::as_str)
+                == Some("true")
+        })
+    }
+
+    /// A ground-truth truncation signal (task 2's "critical" fix): the join
+    /// itself is capped to `correlate_max_rows`, detected before an
+    /// `aggregate` reduces the row count to something that can no longer
+    /// prove anything about the join's own size.
+    #[tokio::test]
+    async fn correlate_truncation_survives_a_following_aggregate() {
+        let svc = IrService::new(correlate_ctx()).with_correlate_max_rows(1);
+        let params = correlate_ir_params(
+            "inner",
+            vec![serde_json::json!({ "aggregate": {
+                "by": ["parent.service.name", "service.name"],
+                "aggs": [{ "fn": "count", "as": "n" }]
+            } })],
+            "table",
+        );
+        let (batches, _) = svc.query(&params, "t", "d").await.unwrap();
+        assert!(
+            correlate_truncated_flag(&batches),
+            "two rows joined but the cap is 1; the aggregate must not hide the truncation"
+        );
+    }
+
+    /// The same cap, but `correlate_max_rows` covers every row the join
+    /// actually produces — no truncation happened, so no flag.
+    #[tokio::test]
+    async fn no_truncation_flag_when_the_cap_is_not_reached() {
+        let svc = IrService::new(correlate_ctx()).with_correlate_max_rows(2);
+        let params = correlate_ir_params("inner", vec![], "rows");
+        let (batches, _) = svc.query(&params, "t", "d").await.unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 2, "exactly the cap, but not beyond it");
+        assert!(
+            !correlate_truncated_flag(&batches),
+            "the join produced exactly the cap without overflowing it"
+        );
+    }
+
+    /// A `where`/`limit` after `correlate` can shrink the final row count
+    /// well below the cap — truncation must still be reported, since it
+    /// already happened at the join.
+    #[tokio::test]
+    async fn correlate_truncation_survives_a_following_where_and_limit() {
+        let svc = IrService::new(correlate_ctx()).with_correlate_max_rows(1);
+        let params = correlate_ir_params(
+            "inner",
+            vec![
+                serde_json::json!({ "where": { "field": "service.name", "op": "eq", "value": "api" } }),
+                serde_json::json!({ "limit": 1 }),
+            ],
+            "rows",
+        );
+        let (batches, _) = svc.query(&params, "t", "d").await.unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 1, "limit narrows the final result to 1 row");
+        assert!(
+            correlate_truncated_flag(&batches),
+            "the join itself was already truncated by the cap before where/limit ran"
+        );
+    }
+
+    /// Task 5 — the parent-side scan finds no traces table at all (a new
+    /// tenant/dataset with no data yet), exercised directly against
+    /// `Lowering::lower_correlate` since `plan_document` itself would
+    /// already have returned `None` before reaching any stage if the
+    /// *child* side's table were equally absent — this is specifically the
+    /// "child data exists, parent scan targets an empty context" case.
+    #[tokio::test]
+    async fn correlate_with_missing_parent_table_inner_is_empty_left_keeps_children_with_nulls() {
+        let source = SourcePlan::for_source("traces").unwrap();
+        let child_ctx = correlate_ctx();
+        let child_table = child_ctx.table("t.d.traces").await.unwrap();
+        let resolver = SchemaResolver::new(child_table.schema(), &source);
+        let child_batches = child_table.collect().await.unwrap();
+        let schema_cols: Vec<String> = child_batches[0]
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().to_string())
+            .collect();
+        let window = ResolvedWindow {
+            start_ns: 0,
+            end_ns: 1000,
+        };
+        // The tenant/dataset catalog exists (as it would for a real,
+        // freshly-provisioned tenant), but no `traces` table is registered
+        // in it yet.
+        let no_parent_ctx = SessionContext::new();
+        let empty_schema = Arc::new(MemorySchemaProvider::new());
+        let empty_catalog = Arc::new(MemoryCatalogProvider::new());
+        empty_catalog.register_schema("d", empty_schema).unwrap();
+        no_parent_ctx.register_catalog("t", empty_catalog);
+
+        let run = |kind: JoinKind| {
+            let resolver = &resolver;
+            let source = &source;
+            let child_batches = child_batches.clone();
+            let no_parent_ctx = no_parent_ctx.clone();
+            let schema_cols = schema_cols.clone();
+            async move {
+                let mut lowering = Lowering {
+                    source,
+                    resolver,
+                    now_ns: 0,
+                    aggregated: false,
+                    series_shaped: false,
+                    col_of: HashMap::new(),
+                    derived_types: HashMap::new(),
+                    schema_cols,
+                    correlated: false,
+                    correlate_truncated: false,
+                };
+                let child_df = no_parent_ctx.read_batches(child_batches).unwrap();
+                let correlate = Correlate {
+                    to: CorrelateTarget::Parent,
+                    kind,
+                };
+                let scan = CorrelateScan {
+                    tenant_slug: "t",
+                    dataset_slug: "d",
+                    window: &window,
+                    correlate_max_rows: 100,
+                };
+                let out = lowering
+                    .lower_correlate(&no_parent_ctx, child_df, &correlate, scan)
+                    .await
+                    .unwrap();
+                out.collect().await.unwrap()
+            }
+        };
+
+        let inner = run(JoinKind::Inner).await;
+        let inner_rows: usize = inner.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            inner_rows, 0,
+            "inner join against a missing parent table returns nothing"
+        );
+
+        let left = run(JoinKind::Left).await;
+        let left_rows: usize = left.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            left_rows, 5,
+            "left join keeps every child row when the parent table is missing"
         );
     }
 

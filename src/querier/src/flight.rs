@@ -2643,6 +2643,107 @@ mod tests {
         assert_eq!(rows, 10, "raw SQL results must be capped at max_sql_rows");
     }
 
+    /// Register `acme.prod.traces` with two parent/child span pairs
+    /// (trace `t0`: root `r0` -> child `c0`; trace `t1`: root `r1` -> child
+    /// `c1`), for the `correlate_max_rows` config-threading test below.
+    fn register_traces_catalog(service: &QuerierFlightService, tenant: &str, dataset: &str) {
+        use datafusion::arrow::array::{Int64Array, StringArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::catalog::MemoryCatalogProvider;
+        use datafusion::catalog::MemorySchemaProvider;
+        use datafusion::datasource::MemTable;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, false),
+            Field::new("span_id", DataType::Utf8, false),
+            Field::new("parent_span_id", DataType::Utf8, true),
+            Field::new("span_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("start_time_unix_nano", DataType::Int64, false),
+            Field::new("duration_nanos", DataType::Int64, false),
+            Field::new("status_code", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["t0", "t0", "t1", "t1"])),
+                Arc::new(StringArray::from(vec!["r0", "c0", "r1", "c1"])),
+                Arc::new(StringArray::from(vec![None, Some("r0"), None, Some("r1")])),
+                Arc::new(StringArray::from(vec!["a", "b", "c", "d"])),
+                Arc::new(StringArray::from(vec!["web", "api", "web", "api"])),
+                Arc::new(Int64Array::from(vec![10_i64, 20, 10, 20])),
+                Arc::new(Int64Array::from(vec![100_i64, 50, 100, 50])),
+                Arc::new(StringArray::from(vec![
+                    Some("OK"),
+                    Some("OK"),
+                    Some("OK"),
+                    Some("OK"),
+                ])),
+            ],
+        )
+        .unwrap();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let schema_provider = MemorySchemaProvider::new();
+        schema_provider
+            .register_table("traces".to_string(), Arc::new(table))
+            .unwrap();
+        let catalog = MemoryCatalogProvider::new();
+        catalog
+            .register_schema(dataset, Arc::new(schema_provider))
+            .unwrap();
+        service
+            .session_ctx
+            .register_catalog(tenant, Arc::new(catalog));
+    }
+
+    fn correlate_ir_params() -> IrQueryParams {
+        IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 8, "from": "traces", "range": { "from": 0, "to": 1000 },
+                "result": "rows",
+                "pipeline": [{ "correlate": { "to": "parent", "kind": "inner" } }]
+            }),
+            now_ns: 0,
+        }
+    }
+
+    /// Task 3 — `QuerierFlightService::new_with_limits` must actually wire
+    /// `config.querier.correlate_max_rows` into the `IrService` it builds,
+    /// not just accept the config and drop it (`with_correlate_max_rows`
+    /// exists precisely so every production construction site can do this).
+    #[tokio::test]
+    async fn correlate_max_rows_config_takes_effect_in_the_ir_service() {
+        let capped = make_service_with_limits(QuerierConfig {
+            correlate_max_rows: 1,
+            ..QuerierConfig::default()
+        })
+        .await;
+        register_traces_catalog(&capped, "acme", "prod");
+        let (batches, _) = capped
+            .ir_service
+            .query(&correlate_ir_params(), "acme", "prod")
+            .await
+            .unwrap();
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            rows, 1,
+            "correlate_max_rows: 1 from config must bound the join, not the compiled-in default"
+        );
+
+        let uncapped = make_service_with_limits(QuerierConfig::default()).await;
+        register_traces_catalog(&uncapped, "acme", "prod");
+        let (batches, _) = uncapped
+            .ir_service
+            .query(&correlate_ir_params(), "acme", "prod")
+            .await
+            .unwrap();
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            rows, 2,
+            "the default cap is far above 2 rows, so both pairs join"
+        );
+    }
+
     #[tokio::test]
     async fn concurrent_query_cap_is_enforced_per_tenant() {
         let service = make_service_with_limits(QuerierConfig {
