@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1790137348075,
+  "lastUpdate": 1790224553699,
   "repoUrl": "https://github.com/cedricziel/signaldb",
   "entries": {
     "Criterion": [
@@ -10847,6 +10847,334 @@ window.BENCHMARK_DATA = {
             "name": "trace_index_scaling/1000000",
             "value": 826135,
             "range": "± 7084",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "name": "Cedric Ziel",
+            "username": "cedricziel",
+            "email": "mail@cedric-ziel.com"
+          },
+          "committer": {
+            "name": "GitHub",
+            "username": "web-flow",
+            "email": "noreply@github.com"
+          },
+          "id": "75aa56af63ca4b8c8d9f2e3e8310afe92b459ea2",
+          "message": "fix(ui): finish styling the Processors pages (#1696)\n\n* fix(ui): finish styling the Processors pages\n\nDefine the processors-* classes the list/editor/test-panel components\nrendered but processors.css never defined (title, subtitle, note,\napplies-hint, button, row-actions, table, test-panel, test-head,\nstatement-results), leaving a default browser table, plain links, and\nan unstyled Delete. The table styling reuses the Schema pages'\n.schema-table treatment (bordered header, padded rows, row hover)\nrather than inventing a new look. Row delete now goes through\nConfirmButton, matching the confirm-before-destroy pattern used\nelsewhere (e.g. ApiKeys revoke) instead of deleting on a single click.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n* fix(ui): remove link underlines and finish the Processors editor form\n\n.btn never carried text-decoration:none, so any Link styled as a\nbutton (the \"New\" and \"Cancel\" processors actions) rendered with a\nbrowser-default underline; add it globally since .btn is reused as a\nLink elsewhere too. Row-name links in the processors table now follow\nthe app's row-link convention (no underline, underline on hover, see\ncatalog-breadcrumb/schema-section).\n\nThe editor's \"Validate\" and the test panel's \"Reset sample\" were bare\n<button>s with no class, so they inherited full-width stretch from the\ncolumn-flex page layout and rendered as centred plain text; give them\nbtn/btn-ghost and keep Validate scoped to its own row so it stays\nleft-aligned next to the statements field instead of stretching.\nCancel now matches Save's row treatment with a plain .btn (same\npattern as the API key editor's Save/Cancel pair).\n\nGroup each editor label+field pair into a .processors-field with a\nconsistent gap and a dim, small label, instead of a flat stack of\nalternating <label>/<input> siblings.\n\nCo-Authored-By: Claude Sonnet 5 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Sonnet 5 <noreply@anthropic.com>",
+          "timestamp": "2026-09-23T21:06:09Z",
+          "url": "https://github.com/cedricziel/signaldb/commit/75aa56af63ca4b8c8d9f2e3e8310afe92b459ea2"
+        },
+        "date": 1790224552196,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "acceptor_ingest/otlp_decode_and_convert",
+            "value": 1724531,
+            "range": "± 40716",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest/otlp_convert_only",
+            "value": 1054845,
+            "range": "± 25757",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "wal/record_batch_roundtrip",
+            "value": 723234,
+            "range": "± 4973",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_decode_and_convert",
+            "value": 1334185,
+            "range": "± 10029",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_logs/otlp_convert_only",
+            "value": 631121,
+            "range": "± 4643",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_decode_and_convert",
+            "value": 1784382,
+            "range": "± 16729",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "acceptor_ingest_metrics/otlp_convert_only",
+            "value": 1157849,
+            "range": "± 10538",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100_rows_0.0MB",
+            "value": 1307991,
+            "range": "± 7130",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/1000_rows_0.4MB",
+            "value": 2704023,
+            "range": "± 145991",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/10000_rows_3.5MB",
+            "value": 13248451,
+            "range": "± 101177",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "single_batch_writes/100000_rows_37.4MB",
+            "value": 112079375,
+            "range": "± 630623",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/2_batches_2000_rows",
+            "value": 4117286,
+            "range": "± 37554",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/5_batches_5000_rows",
+            "value": 8659025,
+            "range": "± 127182",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/10_batches_10000_rows",
+            "value": 16321015,
+            "range": "± 330124",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "multi_batch_writes/20_batches_20000_rows",
+            "value": 31925730,
+            "range": "± 376393",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "writer/creation",
+            "value": 1158602,
+            "range": "± 8358",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/2_writers",
+            "value": 2286981,
+            "range": "± 68568",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/4_writers",
+            "value": 3711427,
+            "range": "± 85842",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent_writes/8_writers",
+            "value": 6659354,
+            "range": "± 194435",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/1000",
+            "value": 57257,
+            "range": "± 448",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/1000",
+            "value": 97112,
+            "range": "± 734",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/10000",
+            "value": 505256,
+            "range": "± 3251",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/10000",
+            "value": 1104148,
+            "range": "± 13735",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/in_order/100000",
+            "value": 5541444,
+            "range": "± 213292",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "ingest_sort/shuffled/100000",
+            "value": 21912670,
+            "range": "± 569155",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "schema_transform/transform_trace_v1_to_v2",
+            "value": 1332492,
+            "range": "± 21055",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "compactor/rewrite_6_files",
+            "value": 18625171,
+            "range": "± 608736",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_unbounded",
+            "value": 23609768,
+            "range": "± 664626",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_without_cache",
+            "value": 22499046,
+            "range": "± 277719",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_cold_with_cache",
+            "value": 22616581,
+            "range": "± 276910",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_warm_with_cache",
+            "value": 22660541,
+            "range": "± 308899",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_windowed",
+            "value": 5771379,
+            "range": "± 267345",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_lookup_by_id_via_index",
+            "value": 13391399,
+            "range": "± 281719",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_read/trace_search_groups",
+            "value": 22583264,
+            "range": "± 353780",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested",
+            "value": 7749867,
+            "range": "± 208063",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/attested_split_off",
+            "value": 7943425,
+            "range": "± 241768",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/recent_first_topk/unattested",
+            "value": 7871239,
+            "range": "± 212609",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested",
+            "value": 6612400,
+            "range": "± 126455",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/attested_split_off",
+            "value": 6783544,
+            "range": "± 151427",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/oldest_first_topk/unattested",
+            "value": 7716377,
+            "range": "± 174000",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested",
+            "value": 13176609,
+            "range": "± 253441",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/attested_split_off",
+            "value": 18082244,
+            "range": "± 315274",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "declared_ordering/ordered_full_scan/unattested",
+            "value": 13484379,
+            "range": "± 441911",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id",
+            "value": 23520244,
+            "range": "± 1235922",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/find_trace_by_id_hinted",
+            "value": 5555622,
+            "range": "± 138884",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/search_traces_recent",
+            "value": 64428383,
+            "range": "± 1589199",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/promql_range_avg_by_service",
+            "value": 104984599,
+            "range": "± 1331629",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "querier_service/logql_line_filter",
+            "value": 110219492,
+            "range": "± 1566602",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/10000",
+            "value": 1077968,
+            "range": "± 30982",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/100000",
+            "value": 1078137,
+            "range": "± 36569",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "trace_index_scaling/1000000",
+            "value": 1137265,
+            "range": "± 19294",
             "unit": "ns/iter"
           }
         ]
