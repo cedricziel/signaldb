@@ -568,7 +568,8 @@ impl QuerierFlightService {
             .with_max_search_limit(limits.max_search_limit);
         let logs_service = LogsService::new(session_ctx.as_ref().clone());
         let metrics_service = MetricsService::new(session_ctx.as_ref().clone());
-        let ir_service = IrService::new(session_ctx.as_ref().clone());
+        let ir_service = IrService::new(session_ctx.as_ref().clone())
+            .with_correlate_max_rows(limits.correlate_max_rows);
 
         Self {
             _flight_transport: flight_transport,
@@ -651,7 +652,8 @@ impl QuerierFlightService {
             .with_max_search_limit(limits.max_search_limit);
         let logs_service = LogsService::new(session_ctx.as_ref().clone());
         let metrics_service = MetricsService::new(session_ctx.as_ref().clone());
-        let ir_service = IrService::new(session_ctx.as_ref().clone());
+        let ir_service = IrService::new(session_ctx.as_ref().clone())
+            .with_correlate_max_rows(limits.correlate_max_rows);
 
         Ok(Self {
             _flight_transport: flight_transport,
@@ -1460,13 +1462,21 @@ impl QuerierFlightService {
     /// `caller_tenant` and `metadata` are needed by the raw-SQL arm alone:
     /// tenant-scoped callers are pinned to their authenticated tenant, and
     /// only internal or unauthenticated callers may scope via headers.
+    ///
+    /// Returns the result batches alongside whether a `correlate` stage's
+    /// join was truncated by `correlate_max_rows` — only the `QueryIr` arm
+    /// ever sets this; every other ticket type leaves it `false`. `do_get`
+    /// carries it into a Flight `app_metadata` trailer (see
+    /// [`Self::do_get`]) since it's only known once the query has actually
+    /// streamed to completion, too late for the schema message.
     async fn execute_ticket(
         &self,
         ticket_request: TicketRequest,
         caller_tenant: Option<&common::auth::TenantContext>,
         metadata: &tonic::metadata::MetadataMap,
-    ) -> Result<Vec<RecordBatch>, Status> {
-        Ok(match ticket_request {
+    ) -> Result<(Vec<RecordBatch>, bool), Status> {
+        let mut correlate_truncated = false;
+        let batches = match ticket_request {
             TicketRequest::FindTrace {
                 tenant_slug,
                 dataset_slug,
@@ -1705,11 +1715,12 @@ impl QuerierFlightService {
                     dataset_slug = %dataset_slug,
                     "Executing query_ir"
                 );
-                let (batches, _window) = self
+                let (batches, _window, truncated) = self
                     .ir_service
                     .query(&params, &tenant_slug, &dataset_slug)
                     .await
                     .map_err(querier_error_to_status(SIGNAL_QUERY_IR))?;
+                correlate_truncated = truncated;
                 batches
             }
             TicketRequest::QueryLogsLabels {
@@ -1935,7 +1946,8 @@ impl QuerierFlightService {
                     .await
                     .map_err(|e| Status::internal(format!("Query execution failed: {e}")))?
             }
-        })
+        };
+        Ok((batches, correlate_truncated))
     }
 }
 
@@ -2172,7 +2184,7 @@ impl FlightService for QuerierFlightService {
                             self.execute_ticket(ticket_request, caller_tenant.as_ref(), &metadata);
                         // Bound every query's wall-clock time so a heavy scan cannot
                         // occupy the querier indefinitely.
-                        let batches_result: Result<Vec<_>, Status> =
+                        let batches_result: Result<(Vec<_>, bool), Status> =
                             match tokio::time::timeout(self.limits.query_timeout, query_future)
                                 .await
                             {
@@ -2192,8 +2204,8 @@ impl FlightService for QuerierFlightService {
                             query_start.elapsed().as_secs_f64(),
                             &[opentelemetry::KeyValue::new("rpc.method", "do_get")],
                         );
-                        let batches = match batches_result {
-                            Ok(batches) => batches,
+                        let (batches, correlate_truncated) = match batches_result {
+                            Ok(result) => result,
                             Err(status) => {
                                 app_metrics.query_errors.add(1, &query_attrs);
                                 return Err(status);
@@ -2211,10 +2223,17 @@ impl FlightService for QuerierFlightService {
 
                         // Convert results to Flight data
                         let schema = batches[0].schema();
-                        let flight_data = batches_to_compressed_flight_data(&schema, batches)
+                        let mut flight_data = batches_to_compressed_flight_data(&schema, batches)
                             .map_err(|e| {
-                                Status::internal(format!("Failed to convert results: {e}"))
-                            })?;
+                            Status::internal(format!("Failed to convert results: {e}"))
+                        })?;
+                        // Trailing, data-free message: the join-truncation flag is
+                        // only known once the query above has fully streamed, too
+                        // late for the schema message already sent above (see
+                        // `common::flight::correlate_truncated_trailer`).
+                        if correlate_truncated {
+                            flight_data.push(common::flight::correlate_truncated_trailer());
+                        }
 
                         let out = stream::iter(flight_data.into_iter().map(Ok)).boxed();
                         Ok(Response::new(out))
@@ -2639,6 +2658,243 @@ mod tests {
             .unwrap();
         let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(rows, 10, "raw SQL results must be capped at max_sql_rows");
+    }
+
+    /// Register `acme.prod.traces` with two parent/child span pairs
+    /// (trace `t0`: root `r0` -> child `c0`; trace `t1`: root `r1` -> child
+    /// `c1`), for the `correlate_max_rows` config-threading test below.
+    /// Shared by every `traces` catalog test fixture below: the columns
+    /// `correlate`'s span self-join reads and produces.
+    fn traces_schema() -> datafusion::arrow::datatypes::SchemaRef {
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, false),
+            Field::new("span_id", DataType::Utf8, false),
+            Field::new("parent_span_id", DataType::Utf8, true),
+            Field::new("span_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("start_time_unix_nano", DataType::Int64, false),
+            Field::new("duration_nanos", DataType::Int64, false),
+            Field::new("status_code", DataType::Utf8, true),
+        ]))
+    }
+
+    fn register_traces_catalog(service: &QuerierFlightService, tenant: &str, dataset: &str) {
+        use datafusion::arrow::array::{Int64Array, StringArray};
+        use datafusion::catalog::MemoryCatalogProvider;
+        use datafusion::catalog::MemorySchemaProvider;
+        use datafusion::datasource::MemTable;
+
+        let schema = traces_schema();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["t0", "t0", "t1", "t1"])),
+                Arc::new(StringArray::from(vec!["r0", "c0", "r1", "c1"])),
+                Arc::new(StringArray::from(vec![None, Some("r0"), None, Some("r1")])),
+                Arc::new(StringArray::from(vec!["a", "b", "c", "d"])),
+                Arc::new(StringArray::from(vec!["web", "api", "web", "api"])),
+                Arc::new(Int64Array::from(vec![10_i64, 20, 10, 20])),
+                Arc::new(Int64Array::from(vec![100_i64, 50, 100, 50])),
+                Arc::new(StringArray::from(vec![
+                    Some("OK"),
+                    Some("OK"),
+                    Some("OK"),
+                    Some("OK"),
+                ])),
+            ],
+        )
+        .unwrap();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let schema_provider = MemorySchemaProvider::new();
+        schema_provider
+            .register_table("traces".to_string(), Arc::new(table))
+            .unwrap();
+        let catalog = MemoryCatalogProvider::new();
+        catalog
+            .register_schema(dataset, Arc::new(schema_provider))
+            .unwrap();
+        service
+            .session_ctx
+            .register_catalog(tenant, Arc::new(catalog));
+    }
+
+    fn correlate_ir_params() -> IrQueryParams {
+        IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 8, "from": "traces", "range": { "from": 0, "to": 1000 },
+                "result": "rows",
+                "pipeline": [{ "correlate": { "to": "parent", "kind": "inner" } }]
+            }),
+            now_ns: 0,
+        }
+    }
+
+    /// Task 3 — `QuerierFlightService::new_with_limits` must actually wire
+    /// `config.querier.correlate_max_rows` into the `IrService` it builds,
+    /// not just accept the config and drop it (`with_correlate_max_rows`
+    /// exists precisely so every production construction site can do this).
+    #[tokio::test]
+    async fn correlate_max_rows_config_takes_effect_in_the_ir_service() {
+        let capped = make_service_with_limits(QuerierConfig {
+            correlate_max_rows: 1,
+            ..QuerierConfig::default()
+        })
+        .await;
+        register_traces_catalog(&capped, "acme", "prod");
+        let (batches, _, _) = capped
+            .ir_service
+            .query(&correlate_ir_params(), "acme", "prod")
+            .await
+            .unwrap();
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            rows, 1,
+            "correlate_max_rows: 1 from config must bound the join, not the compiled-in default"
+        );
+
+        let uncapped = make_service_with_limits(QuerierConfig::default()).await;
+        register_traces_catalog(&uncapped, "acme", "prod");
+        let (batches, _, _) = uncapped
+            .ir_service
+            .query(&correlate_ir_params(), "acme", "prod")
+            .await
+            .unwrap();
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            rows, 2,
+            "the default cap is far above 2 rows, so both pairs join"
+        );
+    }
+
+    /// Register `acme.prod.traces` with one root span (`r0`, trace `t0`)
+    /// and `n_children` children all parented to it, split across many
+    /// small `RecordBatch`es — a 1:N self-join fan-out that lets a `correlate`
+    /// join's *probe* side (the children) vastly outgrow one batch while its
+    /// *build* side (the single root) stays tiny, isolating what
+    /// `correlate_row_cap_streams_without_buffering_the_whole_join` proves:
+    /// `CorrelateCapExec` itself never buffers beyond the batch it is
+    /// currently forwarding, regardless of how large the join's total
+    /// output is.
+    fn register_fanout_traces_catalog(
+        service: &QuerierFlightService,
+        tenant: &str,
+        dataset: &str,
+        n_children: usize,
+    ) {
+        use datafusion::arrow::array::{Int64Array, StringArray};
+        use datafusion::catalog::MemoryCatalogProvider;
+        use datafusion::catalog::MemorySchemaProvider;
+        use datafusion::datasource::MemTable;
+
+        let schema = traces_schema();
+        const ROWS_PER_BATCH: usize = 2_000;
+        let root_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["t0"])),
+                Arc::new(StringArray::from(vec!["r0"])),
+                Arc::new(StringArray::from(vec![None::<&str>])),
+                Arc::new(StringArray::from(vec!["root"])),
+                Arc::new(StringArray::from(vec!["web"])),
+                Arc::new(Int64Array::from(vec![0_i64])),
+                Arc::new(Int64Array::from(vec![100_i64])),
+                Arc::new(StringArray::from(vec![Some("OK")])),
+            ],
+        )
+        .unwrap();
+        let mut batches = vec![root_batch];
+        let mut remaining = n_children;
+        let mut next_id = 0usize;
+        while remaining > 0 {
+            let n = remaining.min(ROWS_PER_BATCH);
+            let ids: Vec<String> = (0..n).map(|i| format!("c{}", next_id + i)).collect();
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(StringArray::from(vec!["t0"; n])),
+                    Arc::new(StringArray::from(ids)),
+                    Arc::new(StringArray::from(vec![Some("r0"); n])),
+                    Arc::new(StringArray::from(vec!["child"; n])),
+                    Arc::new(StringArray::from(vec!["api"; n])),
+                    Arc::new(Int64Array::from(vec![10_i64; n])),
+                    Arc::new(Int64Array::from(vec![5_i64; n])),
+                    Arc::new(StringArray::from(vec![Some("OK"); n])),
+                ],
+            )
+            .unwrap();
+            batches.push(batch);
+            next_id += n;
+            remaining -= n;
+        }
+        let table = MemTable::try_new(schema, vec![batches]).unwrap();
+        let schema_provider = MemorySchemaProvider::new();
+        schema_provider
+            .register_table("traces".to_string(), Arc::new(table))
+            .unwrap();
+        let catalog = MemoryCatalogProvider::new();
+        catalog
+            .register_schema(dataset, Arc::new(schema_provider))
+            .unwrap();
+        service
+            .session_ctx
+            .register_catalog(tenant, Arc::new(catalog));
+    }
+
+    /// Round 4 of `query-ir-span-join`: `lower_correlate` must enforce
+    /// `correlate_max_rows` *streaming*, not by eagerly `.collect()`-ing
+    /// the join before a following stage runs. Proof: a join whose output
+    /// (100,000 rows, `ROWS_PER_BATCH = 2,000` each) is far larger than the
+    /// [`common::datafusion_runtime::bounded_memory_pool`] budget below,
+    /// followed by an `aggregate` — `aggregate`'s own state is O(groups),
+    /// not O(rows), so if the row cap in between is enforced by an
+    /// `ExecutionPlan` that only ever holds the one batch currently in
+    /// flight (see `query::correlate_cap`), the whole pipeline's peak
+    /// memory stays near one batch's size; the eager
+    /// `.limit(cap + 1).collect()` this replaced would instead have tried
+    /// to materialize the entire 100,000-row join first and blown the
+    /// budget.
+    #[tokio::test]
+    async fn correlate_row_cap_streams_without_buffering_the_whole_join() {
+        const N_CHILDREN: usize = 100_000;
+        const MEMORY_LIMIT_MB: u64 = 16;
+
+        let service = make_service_with_limits(QuerierConfig {
+            memory_limit_mb: Some(MEMORY_LIMIT_MB),
+            ..QuerierConfig::default()
+        })
+        .await;
+        register_fanout_traces_catalog(&service, "acme", "prod", N_CHILDREN);
+
+        let params = IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 8, "from": "traces", "range": { "from": 0, "to": 1000 },
+                "result": "table",
+                "pipeline": [
+                    { "correlate": { "to": "parent", "kind": "inner" } },
+                    { "aggregate": { "by": ["parent.service.name"],
+                                      "aggs": [{ "fn": "count", "as": "n" }] } }
+                ]
+            }),
+            now_ns: 0,
+        };
+        let (batches, _, truncated) = service
+            .ir_service
+            .query(&params, "acme", "prod")
+            .await
+            .unwrap_or_else(|e| {
+                panic!(
+                    "correlate + aggregate over {N_CHILDREN} joined rows must fit \
+                     the {MEMORY_LIMIT_MB} MiB budget by streaming through the cap, \
+                     not buffering the whole join first: {e}"
+                )
+            });
+        assert!(
+            !truncated,
+            "correlate_max_rows default is far above 100,000"
+        );
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(rows, 1, "one group: every child shares parent 'r0'");
     }
 
     #[tokio::test]

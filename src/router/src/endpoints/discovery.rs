@@ -406,7 +406,7 @@ async fn sampled_values(
         "query_ir:{}:{}:{payload}",
         ctx.tenant_slug, ctx.dataset_slug
     );
-    let batches = execute_ticket(state, ticket).await?;
+    let (batches, _correlate_truncated) = execute_ticket(state, ticket).await?;
     let (columns, rows) = ir_table(&batches);
 
     let key = common::query_ir::safe_ident(field);

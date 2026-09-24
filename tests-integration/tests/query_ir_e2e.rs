@@ -131,6 +131,13 @@ fn test_config(catalog_dsn: &str) -> Configuration {
 }
 
 pub(crate) async fn setup() -> TestServices {
+    setup_with(|_config| {}).await
+}
+
+/// Like [`setup`], with a hook to override `config` before the stack boots
+/// — e.g. lowering `config.querier.correlate_max_rows` to exercise the
+/// truncation path without shrinking it for every other test.
+pub(crate) async fn setup_with(config_override: impl FnOnce(&mut Configuration)) -> TestServices {
     let temp_dir = TempDir::new().unwrap();
     let storage_path = temp_dir.path().join("storage");
     std::fs::create_dir_all(&storage_path).unwrap();
@@ -140,6 +147,7 @@ pub(crate) async fn setup() -> TestServices {
     let catalog_dsn = format!("sqlite://{}", catalog_db_path.display());
     let mut config = test_config(&catalog_dsn);
     config.storage.dsn = storage_dsn.clone();
+    config_override(&mut config);
     config.schema.catalog_uri = format!(
         "sqlite://{}",
         temp_dir.path().join("iceberg_catalog.db").display()
@@ -225,7 +233,7 @@ pub(crate) async fn setup() -> TestServices {
     let querier_service = QuerierFlightService::new_with_catalog_manager(
         flight_transport.clone(),
         catalog_manager,
-        common::config::QuerierConfig::default(),
+        config.querier.clone(),
     )
     .await
     .expect("querier service");
@@ -1382,5 +1390,453 @@ async fn processor_created_via_router_api_redacts_pii_end_to_end() {
     assert!(
         !body.to_string().contains(PII_EMAIL),
         "the raw PII value must never appear anywhere in the query response: {body}"
+    );
+}
+
+// query-ir-span-join task 2.3 — the span-to-parent `correlate` stage (IR v8)
+// across the full ingest→store→query stack: two tenants, three services,
+// caller/callee pair counts, and tenant isolation through
+// `POST /api/v1/query`.
+
+/// Like [`span`], but with explicit trace/span/parent identity so two spans
+/// from different `traces_request` calls (different services, since a
+/// resource's `service.name` applies to the whole call) can share one trace.
+fn span_with_ids(
+    name: &str,
+    trace_id: u8,
+    span_id: u8,
+    parent_span_id: Option<u8>,
+    dur_ns: i64,
+) -> Span {
+    Span {
+        trace_id: vec![trace_id; 16],
+        span_id: vec![span_id; 8],
+        parent_span_id: parent_span_id.map(|p| vec![p; 8]).unwrap_or_default(),
+        name: name.to_string(),
+        kind: 1,
+        start_time_unix_nano: BASE_NS as u64,
+        end_time_unix_nano: (BASE_NS + dur_ns) as u64,
+        attributes: vec![],
+        dropped_attributes_count: 0,
+        events: vec![],
+        dropped_events_count: 0,
+        links: vec![],
+        dropped_links_count: 0,
+        status: Some(Status {
+            code: 1,
+            message: String::new(),
+        }),
+        trace_state: String::new(),
+        flags: 0,
+    }
+}
+
+/// Poll a tenant-scoped `POST /api/v1/query` until the `caller`/`callee`
+/// pair count columns hold at least `min_rows` rows or the deadline elapses
+/// (mirrors [`post_ir_until_rows`], parameterized on tenant/key).
+async fn post_ir_as_until_rows(
+    app: &Router,
+    doc: serde_json::Value,
+    key: &str,
+    tenant: &str,
+    min_rows: usize,
+) -> (StatusCode, serde_json::Value) {
+    let mut last = (StatusCode::OK, serde_json::Value::Null);
+    for _ in 0..40 {
+        let (status, body) = post_ir_as(app, doc.clone(), key, tenant, None).await;
+        let rows = body
+            .get("rows")
+            .and_then(|r| r.as_array())
+            .map(Vec::len)
+            .unwrap_or(0);
+        if status == StatusCode::OK && rows >= min_rows {
+            return (status, body);
+        }
+        last = (status, body);
+        sleep(Duration::from_millis(500)).await;
+    }
+    last
+}
+
+/// Read a `table` envelope's `(caller, callee, count)` triples, sorted by
+/// caller then callee — addressing columns by their physical (`safe_ident`)
+/// name, same as [`table_pairs`].
+fn caller_callee_counts(body: &serde_json::Value) -> Vec<(String, String, i64)> {
+    let columns = body["columns"].as_array().expect("columns array");
+    let index_of = |name: &str| {
+        columns
+            .iter()
+            .position(|c| c["name"] == name)
+            .unwrap_or_else(|| panic!("column '{name}' missing from {body}"))
+    };
+    let caller_idx = index_of("parent_service_name");
+    let callee_idx = index_of("service_name");
+    let count_idx = index_of("n");
+    let mut pairs: Vec<(String, String, i64)> = body["rows"]
+        .as_array()
+        .expect("rows array")
+        .iter()
+        .map(|row| {
+            (
+                row[caller_idx].as_str().unwrap().to_string(),
+                row[callee_idx].as_str().unwrap().to_string(),
+                row[count_idx].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    pairs.sort();
+    pairs
+}
+
+fn correlate_pair_counts_document() -> serde_json::Value {
+    serde_json::json!({
+        "irVersion": 8,
+        "from": "traces",
+        "range": range(),
+        "result": "table",
+        "pipeline": [
+            { "correlate": { "to": "parent", "kind": "inner" } },
+            { "aggregate": {
+                "by": ["parent.service.name", "service.name"],
+                "aggs": [{ "fn": "count", "as": "n" }]
+            } }
+        ]
+    })
+}
+
+#[tokio::test]
+async fn correlate_caller_callee_pair_counts_isolated_by_tenant() {
+    let services = setup().await;
+
+    // Tenant A ("test-tenant"): gateway calls checkout twice (two distinct
+    // traces) and billing once.
+    let tenant_a = test_tenant_context();
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &tenant_a,
+            traces_request(
+                "gateway",
+                vec![
+                    span_with_ids("GET /checkout", 1, 1, None, 50_000_000),
+                    span_with_ids("GET /checkout", 2, 3, None, 50_000_000),
+                    span_with_ids("GET /bill", 3, 5, None, 50_000_000),
+                ],
+            ),
+        )
+        .await
+        .expect("ingest tenant A gateway spans");
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &tenant_a,
+            traces_request(
+                "checkout",
+                vec![
+                    span_with_ids("POST /charge", 1, 2, Some(1), 20_000_000),
+                    span_with_ids("POST /charge", 2, 4, Some(3), 20_000_000),
+                ],
+            ),
+        )
+        .await
+        .expect("ingest tenant A checkout spans");
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &tenant_a,
+            traces_request(
+                "billing",
+                vec![span_with_ids("POST /invoice", 3, 6, Some(5), 20_000_000)],
+            ),
+        )
+        .await
+        .expect("ingest tenant A billing span");
+
+    // Tenant B ("other-tenant"): web calls api once, deliberately reusing
+    // trace_id=1 — storage is siloed per tenant, so this must not join
+    // against tenant A's rows at all.
+    let tenant_b = tenant_context("other-tenant", "test-dataset", "other-key-123");
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &tenant_b,
+            traces_request(
+                "web",
+                vec![span_with_ids("GET /home", 1, 101, None, 30_000_000)],
+            ),
+        )
+        .await
+        .expect("ingest tenant B web span");
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &tenant_b,
+            traces_request(
+                "api",
+                vec![span_with_ids("GET /data", 1, 102, Some(101), 15_000_000)],
+            ),
+        )
+        .await
+        .expect("ingest tenant B api span");
+
+    let app = build_router(&services).await;
+
+    let (status, body) = post_ir_as_until_rows(
+        &app,
+        correlate_pair_counts_document(),
+        "test-key-123",
+        "test-tenant",
+        2,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "tenant A correlate query: {body}");
+    assert_eq!(
+        caller_callee_counts(&body),
+        vec![
+            ("gateway".to_string(), "billing".to_string(), 1),
+            ("gateway".to_string(), "checkout".to_string(), 2),
+        ],
+        "tenant A must see only its own caller/callee pairs: {body}"
+    );
+
+    let (status, body) = post_ir_as_until_rows(
+        &app,
+        correlate_pair_counts_document(),
+        "other-key-123",
+        "other-tenant",
+        1,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "tenant B correlate query: {body}");
+    assert_eq!(
+        caller_callee_counts(&body),
+        vec![("web".to_string(), "api".to_string(), 1)],
+        "tenant B must see only its own caller/callee pair, never tenant A's: {body}"
+    );
+}
+
+/// Task 4a — a low `[querier].correlate_max_rows` truncates a
+/// correlate→aggregate query, and the router surfaces it as a warning
+/// (ground truth from the querier, not the document-sniffing heuristic
+/// this replaced).
+#[tokio::test]
+async fn correlate_truncation_warns_through_the_full_stack() {
+    let services = setup_with(|config| config.querier.correlate_max_rows = 1).await;
+    let ctx = test_tenant_context();
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &ctx,
+            traces_request(
+                "gateway",
+                vec![
+                    span_with_ids("GET /a", 1, 1, None, 50_000_000),
+                    span_with_ids("GET /b", 2, 3, None, 50_000_000),
+                ],
+            ),
+        )
+        .await
+        .expect("ingest gateway spans");
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &ctx,
+            traces_request(
+                "checkout",
+                vec![
+                    span_with_ids("POST /charge", 1, 2, Some(1), 20_000_000),
+                    span_with_ids("POST /charge", 2, 4, Some(3), 20_000_000),
+                ],
+            ),
+        )
+        .await
+        .expect("ingest checkout spans");
+
+    let app = build_router(&services).await;
+    let (status, body) = post_ir_as_until_rows(
+        &app,
+        correlate_pair_counts_document(),
+        "test-key-123",
+        "test-tenant",
+        1,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "correlate+aggregate query: {body}");
+    let warnings = body["warnings"].as_array().expect("warnings array");
+    assert!(
+        warnings.iter().any(|w| w["code"] == "correlate_row_limit"),
+        "expected a correlate_row_limit warning: {body}"
+    );
+}
+
+/// Task 4b — a `left` join keeps a root span (no parent) with every
+/// `parent.*` field null, end to end.
+#[tokio::test]
+async fn correlate_left_join_keeps_root_span_with_null_parent_fields() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &ctx,
+            traces_request("gateway", vec![span("GET /root", 1, 50_000_000)]),
+        )
+        .await
+        .expect("ingest root span");
+
+    let app = build_router(&services).await;
+    let document = serde_json::json!({
+        "irVersion": 8, "from": "traces", "range": range(), "result": "rows",
+        "fields": ["span.name", "parent.service.name"],
+        "pipeline": [{ "correlate": { "to": "parent", "kind": "left" } }]
+    });
+    let (status, body) = post_ir_until_rows(&app, document).await;
+    assert_eq!(status, StatusCode::OK, "left correlate query: {body}");
+    let rows = body["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 1, "the root span survives a left join: {body}");
+    assert_eq!(rows[0][0], "GET /root");
+    assert!(
+        rows[0][1].is_null(),
+        "a root span has no parent, so parent.service.name is null: {body}"
+    );
+}
+
+/// Task 4c — a `parent.<key>` attribute reference resolves against the
+/// parent side end to end. Sets the attribute via a processor (the same
+/// mechanism `processor_created_via_router_api_redacts_pii_end_to_end`
+/// already proves round-trips through real ingest→query) rather than the
+/// OTLP payload directly, so the fixture reuses an already-proven path.
+#[tokio::test]
+async fn correlate_resolves_a_parent_span_attribute() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+    let app = build_router(&services).await;
+
+    let create = Request::builder()
+        .method("POST")
+        .uri("/api/v1/processors")
+        .header("Authorization", "Bearer test-key-123")
+        .header("X-Tenant-ID", "test-tenant")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "name": "set-parent-route",
+                "signal": "traces",
+                "statements": [
+                    r#"set(attributes["checkout.route"], "/checkout")"#
+                ],
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(create).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED, "processor create");
+
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &ctx,
+            traces_request(
+                "gateway",
+                vec![span_with_ids("GET /checkout", 1, 1, None, 50_000_000)],
+            ),
+        )
+        .await
+        .expect("ingest root span");
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &ctx,
+            traces_request(
+                "checkout",
+                vec![span_with_ids("POST /charge", 1, 2, Some(1), 20_000_000)],
+            ),
+        )
+        .await
+        .expect("ingest child span");
+
+    let document = serde_json::json!({
+        "irVersion": 8, "from": "traces", "range": range(), "result": "rows",
+        "fields": ["span.name", "parent.checkout.route"],
+        "pipeline": [
+            { "correlate": { "to": "parent", "kind": "inner" } },
+            { "where": { "field": "service.name", "op": "eq", "value": "checkout" } }
+        ]
+    });
+    let (status, body) = post_ir_until_rows(&app, document).await;
+    assert_eq!(status, StatusCode::OK, "parent attribute query: {body}");
+    let rows = body["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 1, "{body}");
+    assert_eq!(rows[0][1], "/checkout", "{body}");
+}
+
+/// Task 4d — a parent that starts before the query window is treated as
+/// missing, end to end.
+#[tokio::test]
+async fn correlate_parent_outside_the_window_is_missing() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+    // The root starts at BASE_NS; the child starts 5s later, so a window
+    // opening after BASE_NS but before that excludes only the root.
+    let child_offset_ns: i64 = 5_000_000_000;
+    let mut root = span_with_ids("GET /a", 1, 1, None, 50_000_000);
+    root.start_time_unix_nano = BASE_NS as u64;
+    root.end_time_unix_nano = (BASE_NS + 50_000_000) as u64;
+    let mut child = span_with_ids("POST /charge", 1, 2, Some(1), 20_000_000);
+    child.start_time_unix_nano = (BASE_NS + child_offset_ns) as u64;
+    child.end_time_unix_nano = (BASE_NS + child_offset_ns + 20_000_000) as u64;
+
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(&ctx, traces_request("gateway", vec![root]))
+        .await
+        .expect("ingest root span");
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(&ctx, traces_request("checkout", vec![child]))
+        .await
+        .expect("ingest child span");
+
+    let app = build_router(&services).await;
+    let correlate_where_checkout = |range: serde_json::Value| {
+        serde_json::json!({
+            "irVersion": 8, "from": "traces", "range": range, "result": "rows",
+            "fields": ["span.name"],
+            "pipeline": [
+                { "correlate": { "to": "parent", "kind": "inner" } },
+                { "where": { "field": "service.name", "op": "eq", "value": "checkout" } }
+            ]
+        })
+    };
+
+    // Sanity check over the full window: both spans are persisted and the
+    // join finds the parent before narrowing the range.
+    let wide_range = serde_json::json!({
+        "from": (BASE_NS - 1_000_000_000).to_string(),
+        "to": (BASE_NS + child_offset_ns + 10_000_000_000).to_string(),
+    });
+    let (status, body) = post_ir_until_rows(&app, correlate_where_checkout(wide_range)).await;
+    assert_eq!(status, StatusCode::OK, "wide-window sanity query: {body}");
+    assert_eq!(
+        body["rows"].as_array().expect("rows array").len(),
+        1,
+        "sanity: the join finds the parent inside the full window: {body}"
+    );
+
+    // A window opening after the root but before the child: the parent
+    // falls outside it.
+    let narrow_range = serde_json::json!({
+        "from": (BASE_NS + 1_000_000_000).to_string(),
+        "to": (BASE_NS + child_offset_ns + 10_000_000_000).to_string(),
+    });
+    let (status, body) = post_ir(&app, correlate_where_checkout(narrow_range)).await;
+    assert_eq!(status, StatusCode::OK, "narrow-window query: {body}");
+    // An empty `rows` is omitted from the JSON entirely
+    // (`#[serde(skip_serializing_if = "Vec::is_empty")]`), not serialized
+    // as `[]` — a present, non-empty array would be the failure case here.
+    let row_count = body["rows"].as_array().map(Vec::len).unwrap_or(0);
+    assert_eq!(
+        row_count, 0,
+        "the parent starts before the narrowed window, so the inner join drops the child: {body}"
     );
 }

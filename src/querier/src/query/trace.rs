@@ -535,12 +535,10 @@ impl TraceService {
             pipeline,
         };
 
-        let Some((df, _window)) = super::ir_planner::plan_document(
+        let Some((df, _window, _correlate_truncated)) = super::ir_planner::plan_document(
             &self.session_context,
             &doc,
-            tenant_slug,
-            dataset_slug,
-            0,
+            super::ir_planner::PlanRequest::new(tenant_slug, dataset_slug, 0),
         )
         .await?
         else {

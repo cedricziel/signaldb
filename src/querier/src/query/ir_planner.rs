@@ -28,6 +28,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 use common::profile::aggregate_profiles_to_flamegraph;
 use common::query_ir::{
@@ -73,6 +74,7 @@ use super::histogram::{
 };
 use super::profile::batch_to_models;
 use super::table_lookup::{optional_table_provider, scan_provider, string_column};
+use datafusion::common::TableReference;
 
 /// Upper bound on profile rows aggregated into one `flamegraph` result.
 /// Matches `QuerierConfig::max_search_limit`'s default — the same cap the
@@ -385,6 +387,60 @@ async fn scan_source_tables(
             Ok(union)
         }
     }
+}
+
+/// Scan the `traces` table a second time for a `correlate` stage's parent
+/// side, under a synthetic table reference distinct from the child scan's —
+/// both read the identical provider (same data, same schema), but giving
+/// each scan its own [`TableReference`] keeps DataFusion's optimizer from
+/// conflating their column provenance while pushing projections through the
+/// join. Without this, two scans sharing one qualified name produce a
+/// `DuplicateQualifiedField` error once a `Map`-typed attribute container
+/// column (e.g. `span_attributes`) is involved — plain scalar columns
+/// happen not to trip it, which is why the child side needs no such trick.
+///
+/// The synthetic reference is safe to build against the shared, long-lived
+/// `SessionContext` every `IrService` call reuses: [`scan_provider`] builds
+/// a bare `LogicalPlanBuilder::scan` over the reference, never calling
+/// `SessionContext::register_table`, so it never mutates the shared
+/// context's catalog — concurrent queries (including concurrent
+/// `correlate`s) never observe or collide with each other's synthetic name.
+async fn scan_parent_traces(
+    ctx: &SessionContext,
+    tenant_slug: &str,
+    dataset_slug: &str,
+    source: &SourcePlan,
+) -> Result<Option<DataFrame>, QuerierError> {
+    let [table] = source.tables else {
+        return Err(QuerierError::InvalidInput(
+            "correlate only supports the traces source".to_string(),
+        ));
+    };
+    let Some((table_ref, provider)) =
+        optional_table_provider(ctx, tenant_slug, dataset_slug, table).await?
+    else {
+        return Ok(None);
+    };
+    let parent_ref = match table_ref {
+        TableReference::Bare { table } => {
+            TableReference::bare(format!("{table}__correlate_parent"))
+        }
+        TableReference::Partial { schema, table } => {
+            TableReference::partial(schema, format!("{table}__correlate_parent"))
+        }
+        TableReference::Full {
+            catalog,
+            schema,
+            table,
+        } => TableReference::full(catalog, schema, format!("{table}__correlate_parent")),
+    };
+    // Same coercion the child scan gets in `scan_source_tables`'s
+    // single-table branch: a legacy Utf8-JSON attribute container (a table
+    // created before the Map-typed migration) must present as a typed map
+    // here too, or a `parent.span.<key>`/`parent.resource.<key>` attribute
+    // reference silently reads nothing instead of erroring or matching.
+    let provider = coerce_legacy_containers(provider, source)?;
+    Ok(Some(scan_provider(ctx, parent_ref, provider)?))
 }
 
 /// The type each unioned column should have: the first `Map` seen when any
@@ -1046,6 +1102,13 @@ fn logical_to_value_type(value_type: LogicalType) -> ValueType {
 #[derive(Clone)]
 pub struct IrService {
     session_context: Arc<SessionContext>,
+    /// Row cap on a `correlate` stage's joined output
+    /// (`[querier].correlate_max_rows`, default [`DEFAULT_CORRELATE_MAX_ROWS`]).
+    /// Set via [`Self::with_correlate_max_rows`]; the production Flight
+    /// service sets it from config, every other caller (compat lowerings,
+    /// tests) keeps the default — none of those can ever reach a `correlate`
+    /// stage, so the value is moot for them.
+    correlate_max_rows: usize,
 }
 
 /// The resolved absolute time window `[t0, t1]` (unix epoch nanoseconds),
@@ -1060,31 +1123,43 @@ impl IrService {
     pub fn new(session_context: SessionContext) -> Self {
         Self {
             session_context: Arc::new(session_context),
+            correlate_max_rows: DEFAULT_CORRELATE_MAX_ROWS,
         }
     }
 
-    /// Execute an IR query ticket, returning the projected RecordBatches. The
-    /// resolved window is echoed via the returned [`ResolvedWindow`].
+    /// Override the `correlate` row cap (default [`DEFAULT_CORRELATE_MAX_ROWS`]),
+    /// from `[querier].correlate_max_rows`.
+    pub fn with_correlate_max_rows(mut self, correlate_max_rows: usize) -> Self {
+        self.correlate_max_rows = correlate_max_rows;
+        self
+    }
+
+    /// Executes an IR query ticket, returning the projected RecordBatches,
+    /// the resolved window, and whether a `correlate` stage's join was
+    /// truncated by `correlate_max_rows`. The flag is only known once
+    /// `.collect()` below has actually run the stream to completion — it is
+    /// an [`AtomicBool`] flipped by `CorrelateCapExec` (`correlate_cap`) as
+    /// it streams, not something plan-time can predict.
     pub async fn query(
         &self,
         params: &IrQueryParams,
         tenant_slug: &str,
         dataset_slug: &str,
-    ) -> Result<(Vec<RecordBatch>, ResolvedWindow), QuerierError> {
+    ) -> Result<(Vec<RecordBatch>, ResolvedWindow, bool), QuerierError> {
         use tracing::Instrument;
 
         let doc: Document = serde_json::from_value(params.document.clone())
             .map_err(|e| QuerierError::InvalidInput(format!("invalid IR document: {e}")))?;
         // Stage spans (INTERNAL) under the Flight SERVER span, so a slow
         // query is attributable to planning vs execution.
-        let Some((mut df, window)) = self
-            .plan(&doc, tenant_slug, dataset_slug, params.now_ns)
+        let Some((mut df, window, correlate_truncated)) = self
+            .plan_with_correlate_truncation(&doc, tenant_slug, dataset_slug, params.now_ns)
             .instrument(tracing::info_span!("signaldb.query.plan"))
             .await?
         else {
             // No storage for this source in this dataset: no rows, but the
             // window is still resolved so the caller can echo it back.
-            return Ok((Vec::new(), resolve_window(&doc, params.now_ns)?));
+            return Ok((Vec::new(), resolve_window(&doc, params.now_ns)?, false));
         };
         // The flamegraph aggregation happens in Rust, not DataFusion (see
         // `plan`'s doc comment on `apply_projection`'s flamegraph carve-out);
@@ -1107,13 +1182,15 @@ impl IrService {
         let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         exec_span.record("signaldb.query.rows", rows as i64);
         exec_span.record("signaldb.query.batches", batches.len() as i64);
+        let truncated = correlate_truncated.is_some_and(|flag| flag.load(AtomicOrdering::Relaxed));
         if doc.result == ResultEnvelope::Flamegraph {
             return Ok((
                 vec![encode_flamegraph_batch(&batches, FLAMEGRAPH_PROFILE_CAP)?],
                 window,
+                truncated,
             ));
         }
-        Ok((batches, window))
+        Ok((batches, window, truncated))
     }
 
     /// Build the `DataFrame` for a document (split out for planner tests).
@@ -1121,7 +1198,12 @@ impl IrService {
     /// Delegates to [`plan_document`], the planner's single entry point —
     /// `IrService`'s Flight-ticket path and any other caller (the compat
     /// lowerings, once they route through this planner) build the same plan
-    /// the same way.
+    /// the same way. `IrService::query` itself now calls
+    /// [`Self::plan_with_correlate_truncation`] directly instead, so this
+    /// two-tuple form is exercised by the planner's own tests only —
+    /// `#[cfg_attr(not(test), allow(dead_code))]` says exactly that, rather
+    /// than a blanket allow.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub async fn plan(
         &self,
         doc: &Document,
@@ -1129,12 +1211,32 @@ impl IrService {
         dataset_slug: &str,
         now_ns: i64,
     ) -> Result<Option<(DataFrame, ResolvedWindow)>, QuerierError> {
+        Ok(self
+            .plan_with_correlate_truncation(doc, tenant_slug, dataset_slug, now_ns)
+            .await?
+            .map(|(df, window, _truncated)| (df, window)))
+    }
+
+    /// Like [`Self::plan`], but also reports whether a `correlate` stage's
+    /// join was truncated by `correlate_max_rows` — ground truth captured
+    /// at the join itself, needed by [`Self::query`] to stamp the final
+    /// result's Arrow schema metadata for the router. Kept private to
+    /// [`Self::plan`]'s public two-tuple shape: the dozens of existing
+    /// planner-only tests and compat lowerings that call `plan` never
+    /// reach a `correlate` stage, so they don't need to spell out a third
+    /// element they'd only discard.
+    async fn plan_with_correlate_truncation(
+        &self,
+        doc: &Document,
+        tenant_slug: &str,
+        dataset_slug: &str,
+        now_ns: i64,
+    ) -> Result<Option<(DataFrame, ResolvedWindow, Option<Arc<AtomicBool>>)>, QuerierError> {
         plan_document(
             &self.session_context,
             doc,
-            tenant_slug,
-            dataset_slug,
-            now_ns,
+            PlanRequest::new(tenant_slug, dataset_slug, now_ns)
+                .with_correlate_max_rows(self.correlate_max_rows),
         )
         .await
     }
@@ -1156,10 +1258,14 @@ impl IrService {
 pub(crate) async fn plan_document(
     ctx: &SessionContext,
     doc: &Document,
-    tenant_slug: &str,
-    dataset_slug: &str,
-    now_ns: i64,
-) -> Result<Option<(DataFrame, ResolvedWindow)>, QuerierError> {
+    request: PlanRequest<'_>,
+) -> Result<Option<(DataFrame, ResolvedWindow, Option<Arc<AtomicBool>>)>, QuerierError> {
+    let PlanRequest {
+        tenant_slug,
+        dataset_slug,
+        now_ns,
+        correlate_max_rows,
+    } = request;
     let source = SourcePlan::for_source(&doc.from)
         .ok_or_else(|| QuerierError::InvalidInput(format!("unknown source '{}'", doc.from)))?;
 
@@ -1195,6 +1301,7 @@ pub(crate) async fn plan_document(
             .map(|f| f.name().to_string())
             .collect(),
         correlated: false,
+        correlate_truncated: None,
     };
 
     let mut df = lowering.apply_time_window(base, &window)?;
@@ -1208,14 +1315,24 @@ pub(crate) async fn plan_document(
             // the resolved window, both only available here.
             Stage::Correlate(correlate) => {
                 lowering
-                    .lower_correlate(ctx, df, correlate, tenant_slug, dataset_slug, &window)
+                    .lower_correlate(
+                        ctx,
+                        df,
+                        correlate,
+                        CorrelateScan {
+                            tenant_slug,
+                            dataset_slug,
+                            window: &window,
+                            correlate_max_rows,
+                        },
+                    )
                     .await?
             }
             other => lowering.lower_stage(df, other)?,
         };
     }
     df = lowering.apply_projection(df, doc)?;
-    Ok(Some((df, window)))
+    Ok(Some((df, window, lowering.correlate_truncated)))
 }
 
 /// Decode full-payload profile rows, aggregate them into one flamegraph, and
@@ -1327,20 +1444,57 @@ use datafusion::arrow::array::RecordBatch;
 /// parsed as a qualifier.
 const PARENT_COLUMN_PREFIX: &str = "parent.";
 
-/// The relation alias given to the child side of a `correlate` join, paired
-/// with [`PARENT_RELATION_ALIAS`] — see its doc comment.
-const CHILD_RELATION_ALIAS: &str = "correlate_child";
-/// The relation alias given to the parent-side scan before the join, so its
-/// columns are DataFusion-qualified distinctly from the child's — both sides
-/// scan the same physical table, so without this the joined schema would
-/// carry two identically-qualified `trace_id`/`parent_span_id` columns.
-const PARENT_RELATION_ALIAS: &str = "correlate_parent";
+/// A collision-free rename applied to the parent-side scan before the join —
+/// see [`Lowering::lower_correlate`] for why a flat rename is used instead
+/// of a `DataFrame::alias` table qualifier.
+const PARENT_JOIN_TMP_PREFIX: &str = "__correlate_parent__";
 
-/// Row cap on a `correlate` stage's joined output
-/// (`openspec/changes/query-ir-span-join`'s design). Mirrors
-/// `QuerierConfig::correlate_max_rows`'s default; not yet read from config
-/// (task 2.2 follow-up).
-const CORRELATE_MAX_ROWS: usize = 5_000_000;
+/// Default row cap on a `correlate` stage's joined output
+/// (`openspec/changes/query-ir-span-join`'s design), also
+/// `QuerierConfig::correlate_max_rows`'s default. [`IrService::query`]'s real
+/// callers use [`IrService::with_correlate_max_rows`] to override it from
+/// config; every other caller of `plan_document` (compat lowerings, tests)
+/// keeps this default, which is moot for them since none can reach a
+/// `correlate` stage.
+pub(crate) const DEFAULT_CORRELATE_MAX_ROWS: usize = 5_000_000;
+
+/// [`plan_document`]'s request-scoped parameters — tenant/dataset scope, the
+/// query clock, and the `correlate` row cap — bundled so a caller that
+/// never reaches a `correlate` stage (every compat lowering, every
+/// differential/predicate test) can build one with [`PlanRequest::new`] and
+/// not spell out the cap's default at every call site.
+pub(crate) struct PlanRequest<'a> {
+    pub tenant_slug: &'a str,
+    pub dataset_slug: &'a str,
+    pub now_ns: i64,
+    pub correlate_max_rows: usize,
+}
+
+impl<'a> PlanRequest<'a> {
+    pub(crate) fn new(tenant_slug: &'a str, dataset_slug: &'a str, now_ns: i64) -> Self {
+        Self {
+            tenant_slug,
+            dataset_slug,
+            now_ns,
+            correlate_max_rows: DEFAULT_CORRELATE_MAX_ROWS,
+        }
+    }
+
+    pub(crate) fn with_correlate_max_rows(mut self, correlate_max_rows: usize) -> Self {
+        self.correlate_max_rows = correlate_max_rows;
+        self
+    }
+}
+
+/// The request-scoped context [`Lowering::lower_correlate`] needs beyond
+/// what it already carries — bundled to keep the method's argument count
+/// down, not a reusable abstraction.
+struct CorrelateScan<'a> {
+    tenant_slug: &'a str,
+    dataset_slug: &'a str,
+    window: &'a ResolvedWindow,
+    correlate_max_rows: usize,
+}
 
 struct Lowering<'a> {
     source: &'a SourcePlan,
@@ -1360,6 +1514,13 @@ struct Lowering<'a> {
     /// name>` (see [`Self::lower_correlate`]); [`Self::parent_column`] gates
     /// on this to resolve a `parent.<field>` reference.
     correlated: bool,
+    /// `Some` once a `correlate` stage has streamed into `CorrelateCapExec`
+    /// (`correlate_cap`) — the shared flag it flips if the join's row count
+    /// crosses `correlate_max_rows`. Ground truth captured *during*
+    /// execution, only readable after `.collect()` finishes
+    /// ([`IrService::query`] does the read); `None` when the pipeline never
+    /// reached `correlate`.
+    correlate_truncated: Option<Arc<AtomicBool>>,
 }
 
 impl Lowering<'_> {
@@ -1472,10 +1633,14 @@ impl Lowering<'_> {
     ///
     /// The parent side is a second, independent scan of the same table,
     /// bounded by the same time window as the child side (D of the design:
-    /// "both sides bounded by the outer range") and given its own relation
-    /// alias (`PARENT_RELATION_ALIAS`) to disambiguate its columns from the
-    /// child's during the join. The final output carries every parent column
-    /// under `parent_<physical name>`. The joined output is capped by
+    /// "both sides bounded by the outer range") and renamed column-by-column
+    /// (`PARENT_JOIN_TMP_PREFIX`) before the join, so nothing on that side
+    /// collides with the child's own column names — a `DataFrame::alias`
+    /// table qualifier would do the same for scalar columns, but DataFusion's
+    /// optimizer reports a spurious "ambiguous reference" once a `Map`-typed
+    /// attribute container column is involved. The final output carries
+    /// every parent column under `parent.<physical name>`
+    /// (`PARENT_COLUMN_PREFIX`). The joined output is capped by
     /// `[querier].correlate_max_rows` — a plain row limit, since a span has
     /// at most one parent and the only fan-out risk is a duplicate `span_id`.
     async fn lower_correlate(
@@ -1483,10 +1648,14 @@ impl Lowering<'_> {
         ctx: &SessionContext,
         df: DataFrame,
         correlate: &Correlate,
-        tenant_slug: &str,
-        dataset_slug: &str,
-        window: &ResolvedWindow,
+        scan: CorrelateScan<'_>,
     ) -> Result<DataFrame, QuerierError> {
+        let CorrelateScan {
+            tenant_slug,
+            dataset_slug,
+            window,
+            correlate_max_rows,
+        } = scan;
         let CorrelateTarget::Parent = correlate.to;
         let join_type = match correlate.kind {
             JoinKind::Inner => JoinType::Inner,
@@ -1494,9 +1663,13 @@ impl Lowering<'_> {
         };
 
         let Some(parent_base) =
-            scan_source_tables(ctx, tenant_slug, dataset_slug, self.source).await?
+            scan_parent_traces(ctx, tenant_slug, dataset_slug, self.source).await?
         else {
             // No traces table to join against: every child is parentless.
+            // Still mark the relation correlated, so a later `parent.*`
+            // reference resolves (to an always-empty/always-null column)
+            // rather than erroring as if `correlate` had never run.
+            self.correlated = true;
             return match join_type {
                 JoinType::Inner => df.limit(0, Some(0)).map_err(QuerierError::QueryFailed),
                 _ => Ok(df),
@@ -1510,67 +1683,112 @@ impl Lowering<'_> {
             .map(|f| f.name().to_string())
             .collect();
         // Both sides scan the same physical table, so every column name
-        // (`trace_id`, `service_name`, ...) exists identically on both —
-        // without distinct relation aliases, the join predicate and every
-        // column reference below would be ambiguous.
-        let child_scan = df
-            .alias(CHILD_RELATION_ALIAS)
-            .map_err(QuerierError::QueryFailed)?;
+        // (`trace_id`, `service_name`, ...) exists identically on both. A
+        // `DataFrame::alias` table qualifier disambiguates scalar columns
+        // fine, but produces a spurious "ambiguous reference" from
+        // DataFusion's optimizer once a `Map`-typed attribute container
+        // column (`span_attributes`) is involved — so instead, rename every
+        // parent-side column to a unique flat name up front, before the
+        // join, leaving the child side untouched. With no overlapping names
+        // left, the join predicate and every later reference need no
+        // qualifier at all.
+        let parent_renamed: Vec<Expr> = parent_cols
+            .iter()
+            .map(|c| col(c.as_str()).alias(format!("{PARENT_JOIN_TMP_PREFIX}{c}")))
+            .collect();
         let parent_scan = parent_windowed
-            .alias(PARENT_RELATION_ALIAS)
+            .select(parent_renamed)
             .map_err(QuerierError::QueryFailed)?;
 
         let on = vec![
-            col(format!("{CHILD_RELATION_ALIAS}.trace_id"))
-                .eq(col(format!("{PARENT_RELATION_ALIAS}.trace_id"))),
-            col(format!("{CHILD_RELATION_ALIAS}.parent_span_id"))
-                .eq(col(format!("{PARENT_RELATION_ALIAS}.span_id"))),
+            col("trace_id").eq(col(format!("{PARENT_JOIN_TMP_PREFIX}trace_id"))),
+            col("parent_span_id").eq(col(format!("{PARENT_JOIN_TMP_PREFIX}span_id"))),
         ];
-        let joined = child_scan
+        let joined = df
             .join_on(parent_scan, join_type, on)
             .map_err(QuerierError::QueryFailed)?;
 
-        let mut select_exprs: Vec<Expr> = self
-            .schema_cols
-            .iter()
-            .map(|c| col(format!("{CHILD_RELATION_ALIAS}.{c}")).alias(c.clone()))
-            .collect();
+        let mut select_exprs: Vec<Expr> =
+            self.schema_cols.iter().map(|c| col(c.as_str())).collect();
         let mut schema_cols = self.schema_cols.clone();
         for c in &parent_cols {
             let out_name = format!("{PARENT_COLUMN_PREFIX}{c}");
-            select_exprs.push(col(format!("{PARENT_RELATION_ALIAS}.{c}")).alias(out_name.clone()));
+            select_exprs.push(col(format!("{PARENT_JOIN_TMP_PREFIX}{c}")).alias(out_name.clone()));
             schema_cols.push(out_name);
         }
         let joined = joined
             .select(select_exprs)
-            .map_err(QuerierError::QueryFailed)?
-            .limit(0, Some(CORRELATE_MAX_ROWS))
             .map_err(QuerierError::QueryFailed)?;
+        // The cap is enforced *inside* the plan, streaming — `CorrelateCapExec`
+        // passes batches through unchanged up to `correlate_max_rows` and, on
+        // the batch that would cross it, slices off the excess, flags
+        // `truncated`, and ends its stream. This must be resolved at the join
+        // itself, not left for `IrService::query`'s final `.collect()`: a
+        // later `aggregate`/`where`/`limit` stage can shrink or hide the row
+        // count, but the join's own overflow already happened and must still
+        // be reported — without ever materializing the join's full output
+        // first (see `correlate_cap`'s module doc comment).
+        let truncated = Arc::new(AtomicBool::new(false));
+        let joined = super::correlate_cap::wrap_with_cap(
+            joined,
+            correlate_max_rows,
+            Arc::clone(&truncated),
+        )?;
 
         self.schema_cols = schema_cols;
         self.correlated = true;
+        self.correlate_truncated = Some(truncated);
         Ok(joined)
     }
 
-    /// Resolve a `parent.<logical>` reference to its physical column, once
-    /// `correlate` has joined the relation (see [`Self::lower_correlate`]).
-    /// Scoped to plain columns for now — a parent-side attribute container
-    /// reference is accepted by `query-ir` validation but not yet lowered
-    /// here.
-    fn parent_column(&self, stripped: &str) -> Result<String, QuerierError> {
+    /// Resolve a `parent.<logical>` reference to the expression that reads
+    /// its value, once `correlate` has joined the relation (see
+    /// [`Self::lower_correlate`]) — a physical column, a promoted column
+    /// (coalesced with its attribute fallback, same as
+    /// [`Self::promoted_column_expr`]), or an attribute-container
+    /// extraction ([`Self::parent_attr_expr`]), all read against the
+    /// `parent.<physical>` columns the join produced rather than the
+    /// child's own. Returns the expression plus the field's canonical type
+    /// and whether that type is advisory (mirrors
+    /// [`Resolved::is_advisory_type`]).
+    fn parent_field(&self, stripped: &str) -> Result<(Expr, ValueType, bool), QuerierError> {
         if !self.correlated {
             return Err(QuerierError::InvalidInput(format!(
                 "field 'parent.{stripped}' has no canonical type"
             )));
         }
         match self.resolver.resolve("", stripped) {
-            Some(Resolved::Column { name, .. } | Resolved::PromotedColumn { name, .. }) => {
-                Ok(format!("{PARENT_COLUMN_PREFIX}{name}"))
+            Some(Resolved::Column { name, value_type }) => Ok((
+                ident(format!("{PARENT_COLUMN_PREFIX}{name}")),
+                value_type,
+                false,
+            )),
+            Some(Resolved::JsonPath {
+                key, value_type, ..
+            }) => Ok((self.parent_attr_expr(&key), value_type, true)),
+            Some(Resolved::PromotedColumn {
+                name,
+                key,
+                value_type,
+            }) => {
+                let parent_name = format!("{PARENT_COLUMN_PREFIX}{name}");
+                Ok((
+                    coalesce(vec![ident(parent_name), self.parent_attr_expr(&key)]),
+                    value_type,
+                    true,
+                ))
             }
             _ => Err(QuerierError::InvalidInput(format!(
                 "field 'parent.{stripped}' is not yet supported by correlate"
             ))),
         }
+    }
+
+    /// Extract an attribute value from the parent side's containers,
+    /// mirroring [`Self::attr_expr`] but reading the `parent.<container>`
+    /// columns the join produced instead of the child's own.
+    fn parent_attr_expr(&self, key: &str) -> Expr {
+        self.attr_expr_with_prefix(key, PARENT_COLUMN_PREFIX)
     }
 
     /// Lower an `extract` stage: derive typed, query-local columns from the log
@@ -2403,7 +2621,8 @@ impl Lowering<'_> {
             return Ok(ident(c.clone()));
         }
         if let Some(stripped) = logical.strip_prefix("parent.") {
-            return Ok(ident(self.parent_column(stripped)?));
+            let (expr, ..) = self.parent_field(stripped)?;
+            return Ok(expr);
         }
         match self.resolver.resolve("", logical) {
             // `body` decodes the same way the projection does (issue #1433):
@@ -2433,12 +2652,25 @@ impl Lowering<'_> {
     /// Extract an attribute value, coalescing over the source's containers that
     /// are present in the scanned schema.
     fn attr_expr(&self, key: &str) -> Expr {
+        self.attr_expr_with_prefix(key, "")
+    }
+
+    /// Shared implementation of [`Self::attr_expr`]/[`Self::parent_attr_expr`]:
+    /// extract an attribute value, coalescing over the source's containers
+    /// present in the scanned schema. `prefix` is empty for the child side
+    /// and [`PARENT_COLUMN_PREFIX`] for a `parent.`-scoped reference — the
+    /// container column addressed is `<prefix><container>` either way.
+    /// Always built with `ident()`, never `col()`: a prefixed container
+    /// name contains a `.` that must not be parsed as a qualifier, and an
+    /// unprefixed name has no qualifier to parse regardless.
+    fn attr_expr_with_prefix(&self, key: &str, prefix: &str) -> Expr {
         // An explicit container qualifier reads that container only. Checked
         // before the coalesce so `resource.x` and `log.x` stay distinguishable
         // when the same key exists at both scopes.
         if let Some((container, bare)) = self.qualified_attr(key) {
-            return if self.schema_cols.iter().any(|s| s == container) {
-                get_field(col(container), bare)
+            let container = format!("{prefix}{container}");
+            return if self.schema_cols.iter().any(|s| s == &container) {
+                get_field(ident(container), bare)
             } else {
                 lit(ScalarValue::Utf8(None))
             };
@@ -2447,8 +2679,9 @@ impl Lowering<'_> {
             .source
             .containers
             .iter()
-            .filter(|c| self.schema_cols.iter().any(|s| s == *c))
-            .map(|c| get_field(col(*c), key))
+            .map(|c| format!("{prefix}{c}"))
+            .filter(|c| self.schema_cols.iter().any(|s| s == c))
+            .map(|c| get_field(ident(c), key))
             .collect();
         match parts.len() {
             0 => lit(ScalarValue::Utf8(None)),
@@ -2522,13 +2755,8 @@ impl Lowering<'_> {
                 .unwrap_or(ValueType::String);
             (false, ty, ident(alias.clone()), false, false)
         } else if let Some(stripped) = leaf.field.strip_prefix("parent.") {
-            let name = self.parent_column(stripped)?;
-            let ty = self
-                .resolver
-                .resolve("", stripped)
-                .map(|r| r.value_type().clone())
-                .unwrap_or(ValueType::String);
-            (false, ty, ident(name), false, false)
+            let (expr, ty, advisory) = self.parent_field(stripped)?;
+            (advisory, ty, expr, false, advisory)
         } else {
             let resolved = self.resolver.resolve("", &leaf.field).ok_or_else(|| {
                 QuerierError::InvalidInput(format!("unknown field '{}'", leaf.field))
@@ -2777,10 +3005,11 @@ impl Lowering<'_> {
                         // Aggregate output or extract-derived column.
                         ident(self.df_col(f))
                     } else if let Some(stripped) = f.strip_prefix("parent.") {
-                        let name = self
-                            .parent_column(stripped)
-                            .unwrap_or_else(|_| safe_ident(f));
-                        ident(name).alias(safe_ident(f))
+                        let expr = self
+                            .parent_field(stripped)
+                            .map(|(expr, ..)| expr)
+                            .unwrap_or_else(|_| ident(safe_ident(f)));
+                        expr.alias(safe_ident(f))
                     } else {
                         match self.resolver.resolve("", f) {
                             Some(Resolved::Column { name, .. }) => body_projection_expr(&name),
@@ -5364,7 +5593,7 @@ mod tests {
             }),
             now_ns: 0,
         };
-        let (batches, _) = svc.query(&params, "t", "d").await.unwrap();
+        let (batches, _, _) = svc.query(&params, "t", "d").await.unwrap();
         assert_eq!(batches.len(), 1);
         let flamegraph = flamegraph_from_batch(&batches[0]);
         assert_eq!(flamegraph.total, 100);
@@ -5385,7 +5614,7 @@ mod tests {
             }),
             now_ns: 0,
         };
-        let (batches, _) = svc.query(&params, "t", "d").await.unwrap();
+        let (batches, _, _) = svc.query(&params, "t", "d").await.unwrap();
         let flamegraph = flamegraph_from_batch(&batches[0]);
         // p1 (main/foo, 100) + p2 (main/bar, 50) match service=api; p3 (web) does not.
         assert_eq!(flamegraph.total, 150);
@@ -6521,10 +6750,12 @@ mod tests {
         ctx
     }
 
-    /// Two traces with real parent/child span pairs, for the `correlate`
+    /// Three traces with real parent/child span pairs, for the `correlate`
     /// stage (`irVersion` 8): trace `t0` has root `r0` (service `web`, no
     /// parent) calling child `c0` (service `api`, parent `r0`); trace `t1`
-    /// has a lone root `r1` (service `web`, no parent, no children).
+    /// has a lone root `r1` (service `web`, no parent, no children); trace
+    /// `t2` has root `r2` (service `web`) calling child `c2` (service
+    /// `api`), a second joinable pair for the row-cap test.
     fn correlate_ctx() -> SessionContext {
         let schema = Arc::new(Schema::new(vec![
             Field::new("trace_id", DataType::Utf8, false),
@@ -6539,14 +6770,28 @@ mod tests {
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(StringArray::from(vec!["t0", "t0", "t1"])),
-                Arc::new(StringArray::from(vec!["r0", "c0", "r1"])),
-                Arc::new(StringArray::from(vec![None, Some("r0"), None])),
-                Arc::new(StringArray::from(vec!["GET /a", "GET /b", "GET /c"])),
-                Arc::new(StringArray::from(vec!["web", "api", "web"])),
-                Arc::new(Int64Array::from(vec![10_i64, 20, 10])),
-                Arc::new(Int64Array::from(vec![100_i64, 50, 10])),
-                Arc::new(StringArray::from(vec![Some("OK"), Some("OK"), Some("OK")])),
+                Arc::new(StringArray::from(vec!["t0", "t0", "t1", "t2", "t2"])),
+                Arc::new(StringArray::from(vec!["r0", "c0", "r1", "r2", "c2"])),
+                Arc::new(StringArray::from(vec![
+                    None,
+                    Some("r0"),
+                    None,
+                    None,
+                    Some("r2"),
+                ])),
+                Arc::new(StringArray::from(vec![
+                    "GET /a", "GET /b", "GET /c", "GET /d", "GET /e",
+                ])),
+                Arc::new(StringArray::from(vec!["web", "api", "web", "web", "api"])),
+                Arc::new(Int64Array::from(vec![10_i64, 20, 10, 10, 20])),
+                Arc::new(Int64Array::from(vec![100_i64, 50, 10, 100, 50])),
+                Arc::new(StringArray::from(vec![
+                    Some("OK"),
+                    Some("OK"),
+                    Some("OK"),
+                    Some("OK"),
+                    Some("OK"),
+                ])),
             ],
         )
         .unwrap();
@@ -6579,24 +6824,25 @@ mod tests {
         let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
         let batches = df.collect().await.unwrap();
         let total: usize = batches.iter().map(|b| b.num_rows()).sum();
-        assert_eq!(total, 1, "only c0 has a parent in the window");
-        let batch = &batches[0];
-        let child_service = batch
-            .column_by_name("service_name")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap()
-            .value(0);
-        let parent_service = batch
-            .column_by_name("parent.service_name")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap()
-            .value(0);
-        assert_eq!(child_service, "api");
-        assert_eq!(parent_service, "web");
+        assert_eq!(total, 2, "c0 and c2 each have a parent in the window");
+        for batch in &batches {
+            let child_service = batch
+                .column_by_name("service_name")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let parent_service = batch
+                .column_by_name("parent.service_name")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            for i in 0..batch.num_rows() {
+                assert_eq!(child_service.value(i), "api");
+                assert_eq!(parent_service.value(i), "web");
+            }
+        }
     }
 
     #[tokio::test]
@@ -6606,7 +6852,7 @@ mod tests {
         let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
         let batches = df.collect().await.unwrap();
         let total: usize = batches.iter().map(|b| b.num_rows()).sum();
-        assert_eq!(total, 3, "every child row survives a left join");
+        assert_eq!(total, 5, "every child row survives a left join");
         let mut null_parent_rows = 0usize;
         for batch in &batches {
             let parent_service = batch
@@ -6621,7 +6867,262 @@ mod tests {
                 }
             }
         }
-        assert_eq!(null_parent_rows, 2, "the two roots have no parent");
+        assert_eq!(null_parent_rows, 3, "the three roots have no parent");
+    }
+
+    #[tokio::test]
+    async fn correlate_row_cap_bounds_the_joined_output() {
+        let svc = IrService::new(correlate_ctx()).with_correlate_max_rows(1);
+        let d = correlate_doc("inner", vec![]);
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let batches = df.collect().await.unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            total, 1,
+            "two rows join, but correlate_max_rows=1 bounds the output"
+        );
+    }
+
+    fn correlate_ir_params(
+        kind: &str,
+        extra: Vec<serde_json::Value>,
+        result: &str,
+    ) -> IrQueryParams {
+        let mut pipeline =
+            vec![serde_json::json!({ "correlate": { "to": "parent", "kind": kind } })];
+        pipeline.extend(extra);
+        IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 8, "from": "traces", "range": { "from": 0, "to": 1000 },
+                "result": result,
+                "pipeline": pipeline
+            }),
+            now_ns: 0,
+        }
+    }
+
+    /// A ground-truth truncation signal (task 2's "critical" fix): the join
+    /// itself is capped to `correlate_max_rows`, detected before an
+    /// `aggregate` reduces the row count to something that can no longer
+    /// prove anything about the join's own size.
+    #[tokio::test]
+    async fn correlate_truncation_survives_a_following_aggregate() {
+        let svc = IrService::new(correlate_ctx()).with_correlate_max_rows(1);
+        let params = correlate_ir_params(
+            "inner",
+            vec![serde_json::json!({ "aggregate": {
+                "by": ["parent.service.name", "service.name"],
+                "aggs": [{ "fn": "count", "as": "n" }]
+            } })],
+            "table",
+        );
+        let (_, _, truncated) = svc.query(&params, "t", "d").await.unwrap();
+        assert!(
+            truncated,
+            "two rows joined but the cap is 1; the aggregate must not hide the truncation"
+        );
+    }
+
+    /// The same cap, but `correlate_max_rows` covers every row the join
+    /// actually produces — no truncation happened, so no flag.
+    #[tokio::test]
+    async fn no_truncation_flag_when_the_cap_is_not_reached() {
+        let svc = IrService::new(correlate_ctx()).with_correlate_max_rows(2);
+        let params = correlate_ir_params("inner", vec![], "rows");
+        let (batches, _, truncated) = svc.query(&params, "t", "d").await.unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 2, "exactly the cap, but not beyond it");
+        assert!(
+            !truncated,
+            "the join produced exactly the cap without overflowing it"
+        );
+    }
+
+    /// A `where`/`limit` after `correlate` can shrink the final row count
+    /// well below the cap — truncation must still be reported, since it
+    /// already happened at the join.
+    #[tokio::test]
+    async fn correlate_truncation_survives_a_following_where_and_limit() {
+        let svc = IrService::new(correlate_ctx()).with_correlate_max_rows(1);
+        let params = correlate_ir_params(
+            "inner",
+            vec![
+                serde_json::json!({ "where": { "field": "service.name", "op": "eq", "value": "api" } }),
+                serde_json::json!({ "limit": 1 }),
+            ],
+            "rows",
+        );
+        let (batches, _, truncated) = svc.query(&params, "t", "d").await.unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 1, "limit narrows the final result to 1 row");
+        assert!(
+            truncated,
+            "the join itself was already truncated by the cap before where/limit ran"
+        );
+    }
+
+    /// Task 5 — the parent-side scan finds no traces table at all (a new
+    /// tenant/dataset with no data yet), exercised directly against
+    /// `Lowering::lower_correlate` since `plan_document` itself would
+    /// already have returned `None` before reaching any stage if the
+    /// *child* side's table were equally absent — this is specifically the
+    /// "child data exists, parent scan targets an empty context" case.
+    #[tokio::test]
+    async fn correlate_with_missing_parent_table_inner_is_empty_left_keeps_children_with_nulls() {
+        let source = SourcePlan::for_source("traces").unwrap();
+        let child_ctx = correlate_ctx();
+        let child_table = child_ctx.table("t.d.traces").await.unwrap();
+        let resolver = SchemaResolver::new(child_table.schema(), &source);
+        let child_batches = child_table.collect().await.unwrap();
+        let schema_cols: Vec<String> = child_batches[0]
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().to_string())
+            .collect();
+        let window = ResolvedWindow {
+            start_ns: 0,
+            end_ns: 1000,
+        };
+        // The tenant/dataset catalog exists (as it would for a real,
+        // freshly-provisioned tenant), but no `traces` table is registered
+        // in it yet.
+        let no_parent_ctx = SessionContext::new();
+        let empty_schema = Arc::new(MemorySchemaProvider::new());
+        let empty_catalog = Arc::new(MemoryCatalogProvider::new());
+        empty_catalog.register_schema("d", empty_schema).unwrap();
+        no_parent_ctx.register_catalog("t", empty_catalog);
+
+        let run = |kind: JoinKind| {
+            let resolver = &resolver;
+            let source = &source;
+            let child_batches = child_batches.clone();
+            let no_parent_ctx = no_parent_ctx.clone();
+            let schema_cols = schema_cols.clone();
+            async move {
+                let mut lowering = Lowering {
+                    source,
+                    resolver,
+                    now_ns: 0,
+                    aggregated: false,
+                    series_shaped: false,
+                    col_of: HashMap::new(),
+                    derived_types: HashMap::new(),
+                    schema_cols,
+                    correlated: false,
+                    correlate_truncated: None,
+                };
+                let child_df = no_parent_ctx.read_batches(child_batches).unwrap();
+                let correlate = Correlate {
+                    to: CorrelateTarget::Parent,
+                    kind,
+                };
+                let scan = CorrelateScan {
+                    tenant_slug: "t",
+                    dataset_slug: "d",
+                    window: &window,
+                    correlate_max_rows: 100,
+                };
+                let out = lowering
+                    .lower_correlate(&no_parent_ctx, child_df, &correlate, scan)
+                    .await
+                    .unwrap();
+                out.collect().await.unwrap()
+            }
+        };
+
+        let inner = run(JoinKind::Inner).await;
+        let inner_rows: usize = inner.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            inner_rows, 0,
+            "inner join against a missing parent table returns nothing"
+        );
+
+        let left = run(JoinKind::Left).await;
+        let left_rows: usize = left.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            left_rows, 5,
+            "left join keeps every child row when the parent table is missing"
+        );
+    }
+
+    /// One trace: root `r0` (`span.http.route = "/checkout"`) calls child
+    /// `c0`. For the `parent.span.<key>` attribute-scope test.
+    fn correlate_attrs_ctx() -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, false),
+            Field::new("span_id", DataType::Utf8, false),
+            Field::new("parent_span_id", DataType::Utf8, true),
+            Field::new("span_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("start_time_unix_nano", DataType::Int64, false),
+            Field::new("duration_nanos", DataType::Int64, false),
+            map_field_named("span_attributes"),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["t0", "t0"])),
+                Arc::new(StringArray::from(vec!["r0", "c0"])),
+                Arc::new(StringArray::from(vec![None, Some("r0")])),
+                Arc::new(StringArray::from(vec!["GET /a", "GET /b"])),
+                Arc::new(StringArray::from(vec!["web", "api"])),
+                Arc::new(Int64Array::from(vec![10_i64, 20])),
+                Arc::new(Int64Array::from(vec![100_i64, 50])),
+                build_map(&[&[("http.route", "/checkout")], &[]]),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("traces".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
+    #[tokio::test]
+    async fn group_by_parent_attribute_scope() {
+        let svc = IrService::new(correlate_attrs_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 8, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [
+                { "correlate": { "to": "parent", "kind": "inner" } },
+                { "aggregate": {
+                    "by": ["parent.span.http.route"],
+                    "aggs": [{ "fn": "count", "as": "n" }]
+                } }
+            ]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let batches = df.collect().await.unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 1, "one distinct parent route");
+        let batch = &batches[0];
+        let route = batch
+            .column_by_name("parent_span_http_route")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0);
+        assert_eq!(route, "/checkout");
+        let n = batch
+            .column_by_name("n")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .unwrap()
+            .value(0);
+        assert_eq!(n, 1);
     }
 
     #[tokio::test]
@@ -6648,7 +7149,7 @@ mod tests {
             .downcast_ref::<datafusion::arrow::array::Int64Array>()
             .unwrap()
             .value(0);
-        assert_eq!(n, 1);
+        assert_eq!(n, 2);
     }
 
     #[tokio::test]
@@ -8028,7 +8529,7 @@ mod tests {
     #[tokio::test]
     async fn query_on_absent_source_table_is_empty() {
         let svc = IrService::new(empty_dataset_ctx());
-        let (batches, window) = svc
+        let (batches, window, _) = svc
             .query(&logs_ir_params(), "t", "d")
             .await
             .expect("absent table must not error");

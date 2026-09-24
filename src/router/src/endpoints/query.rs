@@ -387,9 +387,12 @@ async fn query_ir_single(
         ctx.tenant_slug, ctx.dataset_slug, payload
     );
 
-    let batches = execute_ticket(&state, ticket).await?;
+    let (batches, correlate_truncated) = execute_ticket(&state, ticket).await?;
     let mut response = build_envelope(&req.result, window, &batches, &document)?;
     response.warnings = unknown_group_by_warnings(&req.from, &document, &batches);
+    response
+        .warnings
+        .extend(correlate_truncation_warning(correlate_truncated));
     Ok(axum::Json(response))
 }
 
@@ -557,7 +560,7 @@ async fn execute_inner_series_query(
         "query_ir:{}:{}:{}",
         ctx.tenant_slug, ctx.dataset_slug, payload
     );
-    let batches = execute_ticket(state, ticket).await?;
+    let (batches, _correlate_truncated) = execute_ticket(state, ticket).await?;
     let (series, _step_ns) = to_series(&batches);
     let eval_series = series
         .into_iter()
@@ -653,6 +656,28 @@ fn unknown_group_by_warnings(
         });
     }
     warnings
+}
+
+const CORRELATE_ROW_LIMIT: &str = "correlate_row_limit";
+
+/// A `correlate` stage's row cap (`[querier].correlate_max_rows`) was
+/// reached. Ground truth, not a heuristic: the querier's `CorrelateCapExec`
+/// operator detects the overflow at the join itself, streaming, before any
+/// `aggregate`/`where`/`limit` stage can shrink or hide the row count, and
+/// [`execute_ticket`] reads it back from the querier's Flight trailer
+/// message (see `common::flight::correlate_truncated_trailer`).
+fn correlate_truncation_warning(truncated: bool) -> Option<QueryWarning> {
+    if !truncated {
+        return None;
+    }
+    Some(QueryWarning {
+        code: CORRELATE_ROW_LIMIT.to_string(),
+        message: "a correlate stage's joined row count reached the server limit \
+                   ([querier].correlate_max_rows); the result was truncated"
+            .to_string(),
+        field: None,
+        suggestions: Vec::new(),
+    })
 }
 
 /// Whether `column` exists in every batch and is null on every row of a
@@ -756,11 +781,13 @@ fn resolve_window(range: &QueryRange, now_ns: i64) -> Result<ResolvedWindow, Api
     })
 }
 
-/// Send a `query_ir` Flight ticket to a querier and collect the result batches.
+/// Send a `query_ir` Flight ticket to a querier and collect the result
+/// batches, alongside whether a `correlate` stage's join was truncated by
+/// `[querier].correlate_max_rows` (see [`correlate_truncation_warning`]).
 pub(super) async fn execute_ticket(
     state: &RouterAppState,
     ticket_content: String,
-) -> Result<Vec<RecordBatch>, ApiError> {
+) -> Result<(Vec<RecordBatch>, bool), ApiError> {
     let (mut client, server_address) = state
         .service_registry()
         .get_flight_client_and_address_for_capability(ServiceCapability::QueryExecution)
@@ -802,8 +829,18 @@ pub(super) async fn execute_ticket(
             // unbounded result set for up to the timeout.
             let mut data = Vec::new();
             let mut bytes: usize = 0;
+            let mut correlate_truncated = false;
             while let Some(flight_data) = stream.next().await {
                 let fd = flight_data.map_err(|e| ApiError::from_flight(&e, "query_ir"))?;
+                // The trailer the querier appends after a truncated `correlate`
+                // join (see `common::flight::correlate_truncated_trailer`) is a
+                // data-free message: recognized and dropped here rather than
+                // handed to `decode_flight_batches`, which expects only schema
+                // and record-batch messages.
+                if fd.app_metadata.as_ref() == common::flight::CORRELATE_TRUNCATED_APP_METADATA {
+                    correlate_truncated = true;
+                    continue;
+                }
                 bytes = bytes.saturating_add(fd.data_body.len());
                 if bytes > MAX_IR_RESULT_BYTES {
                     return Err(ApiError::new(
@@ -818,9 +855,10 @@ pub(super) async fn execute_ticket(
                 common::self_monitoring::spans::RpcBoundary::Client,
                 tonic::Code::Ok,
             );
-            super::flight_decode::decode_flight_batches(data, "query_ir")
+            let batches = super::flight_decode::decode_flight_batches(data, "query_ir")
                 .await
-                .map_err(ApiError::from)
+                .map_err(ApiError::from)?;
+            Ok((batches, correlate_truncated))
         }
         .instrument(rpc_span),
     )
@@ -1461,6 +1499,28 @@ mod group_by_warnings {
         let warnings = unknown_group_by_warnings("logs", &doc, &batches);
 
         assert!(warnings.is_empty(), "{warnings:?}");
+    }
+}
+
+/// The `correlate` stage's row cap (`[querier].correlate_max_rows`) reached
+/// during the join — the querier truncates rather than fails, and this
+/// warning is the caller's only signal that it happened.
+#[cfg(test)]
+mod correlate_warnings {
+    use super::{CORRELATE_ROW_LIMIT, correlate_truncation_warning};
+
+    #[test]
+    fn truncated_flag_warns() {
+        let warnings = correlate_truncation_warning(true);
+        assert_eq!(
+            warnings.map(|w| w.code),
+            Some(CORRELATE_ROW_LIMIT.to_string())
+        );
+    }
+
+    #[test]
+    fn untruncated_flag_does_not_warn() {
+        assert!(correlate_truncation_warning(false).is_none());
     }
 }
 

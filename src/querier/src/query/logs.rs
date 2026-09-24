@@ -313,13 +313,11 @@ impl LogsService {
         let planned = super::ir_planner::plan_document(
             &self.session_context,
             &doc,
-            tenant_slug,
-            dataset_slug,
-            0,
+            super::ir_planner::PlanRequest::new(tenant_slug, dataset_slug, 0),
         )
         .await?;
         Ok(match planned {
-            Some((df, _window)) => IrOutcome::Planned(Box::new(df)),
+            Some((df, _window, _correlate_truncated)) => IrOutcome::Planned(Box::new(df)),
             None => IrOutcome::NoTable,
         })
     }
