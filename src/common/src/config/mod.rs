@@ -2222,6 +2222,13 @@ pub struct QuerierConfig {
     /// DataFusion scan/pushdown tuning for the query engine. See
     /// `[querier.datafusion]` in `signaldb.dist.toml`.
     pub datafusion: QuerierDataFusionConfig,
+    /// Row cap on a Query IR `correlate` stage's joined output (`irVersion`
+    /// 8's span-to-parent join). A span has at most one parent, so the join
+    /// itself can't fan out beyond the child side except for duplicate
+    /// `span_id`s; this bounds that pathological case. Reaching the cap
+    /// truncates the result rather than failing the query, reported through
+    /// the response's warnings.
+    pub correlate_max_rows: usize,
 }
 
 impl QuerierConfig {
@@ -2262,6 +2269,7 @@ impl Default for QuerierConfig {
             max_search_limit: 1_000,
             max_concurrent_queries_per_tenant: None,
             datafusion: QuerierDataFusionConfig::default(),
+            correlate_max_rows: 5_000_000,
         }
     }
 }
@@ -2677,6 +2685,7 @@ mod tests {
         assert_eq!(config.querier.query_timeout, Duration::from_secs(60));
         assert_eq!(config.querier.max_sql_rows, 1_000_000);
         assert_eq!(config.querier.max_search_limit, 1_000);
+        assert_eq!(config.querier.correlate_max_rows, 5_000_000);
 
         Jail::expect_with(|jail| {
             jail.create_file(
@@ -2688,6 +2697,7 @@ mod tests {
                 query_timeout = "5s"
                 max_sql_rows = 1000
                 max_search_limit = 50
+                correlate_max_rows = 2000
                 "#,
             )?;
             let config: Configuration = Figment::new()
@@ -2699,6 +2709,7 @@ mod tests {
             assert_eq!(config.querier.query_timeout, Duration::from_secs(5));
             assert_eq!(config.querier.max_sql_rows, 1000);
             assert_eq!(config.querier.max_search_limit, 50);
+            assert_eq!(config.querier.correlate_max_rows, 2000);
             Ok(())
         });
     }
