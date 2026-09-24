@@ -390,11 +390,9 @@ async fn query_ir_single(
     let batches = execute_ticket(&state, ticket).await?;
     let mut response = build_envelope(&req.result, window, &batches, &document)?;
     response.warnings = unknown_group_by_warnings(&req.from, &document, &batches);
-    response.warnings.extend(correlate_truncation_warning(
-        &document,
-        &batches,
-        state.config().querier.correlate_max_rows,
-    ));
+    response
+        .warnings
+        .extend(correlate_truncation_warning(&batches));
     Ok(axum::Json(response))
 }
 
@@ -663,40 +661,29 @@ fn unknown_group_by_warnings(
 const CORRELATE_ROW_LIMIT: &str = "correlate_row_limit";
 
 /// A `correlate` stage's row cap (`[querier].correlate_max_rows`) was
-/// reached, as best determined from the already-collected result: a
-/// `correlate` stage is present, no `aggregate` follows it (the querier
-/// enforces the cap on the join output regardless, but only when nothing
-/// downstream reduces the row count is a result row count at exactly the
-/// cap good evidence of truncation rather than coincidence), and the total
-/// row count equals the configured cap exactly — the querier never returns
-/// more than that.
-fn correlate_truncation_warning(
-    document: &serde_json::Value,
-    batches: &[RecordBatch],
-    correlate_max_rows: usize,
-) -> Option<QueryWarning> {
-    let doc: common::query_ir::Document = serde_json::from_value(document.clone()).ok()?;
-    let has_correlate = doc
-        .pipeline
-        .iter()
-        .any(|stage| matches!(stage, common::query_ir::Stage::Correlate(_)));
-    let has_aggregate = doc
-        .pipeline
-        .iter()
-        .any(|stage| matches!(stage, common::query_ir::Stage::Aggregate(_)));
-    if !has_correlate || has_aggregate || correlate_max_rows == 0 {
-        return None;
-    }
-    let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-    if rows != correlate_max_rows {
+/// reached. Ground truth, not a heuristic: the querier detects the overflow
+/// at the join itself, before any `aggregate`/`where`/`limit` stage can
+/// shrink or hide the row count, and stamps
+/// `common::flight::CORRELATE_TRUNCATED_METADATA_KEY` onto the result's
+/// Arrow schema metadata — the one channel that survives the querier↔router
+/// Flight hop unchanged, since Flight carries record batches (and their
+/// schema), not an out-of-band flag.
+fn correlate_truncation_warning(batches: &[RecordBatch]) -> Option<QueryWarning> {
+    let truncated = batches.first().is_some_and(|b| {
+        b.schema()
+            .metadata()
+            .get(common::flight::CORRELATE_TRUNCATED_METADATA_KEY)
+            .map(String::as_str)
+            == Some("true")
+    });
+    if !truncated {
         return None;
     }
     Some(QueryWarning {
         code: CORRELATE_ROW_LIMIT.to_string(),
-        message: format!(
-            "the correlate stage's joined row count reached the server limit \
-             ({correlate_max_rows}); the result was truncated"
-        ),
+        message: "a correlate stage's joined row count reached the server limit \
+                   ([querier].correlate_max_rows); the result was truncated"
+            .to_string(),
         field: None,
         suggestions: Vec::new(),
     })
@@ -1521,34 +1508,28 @@ mod correlate_warnings {
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
 
-    fn rows_of(n: usize) -> RecordBatch {
+    fn rows_of(n: usize, truncated: bool) -> RecordBatch {
         let ids: ArrayRef = Arc::new(StringArray::from(
             (0..n).map(|i| Some(i.to_string())).collect::<Vec<_>>(),
         ));
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "trace_id",
-            DataType::Utf8,
-            false,
-        )]));
+        let mut metadata = std::collections::HashMap::new();
+        if truncated {
+            metadata.insert(
+                common::flight::CORRELATE_TRUNCATED_METADATA_KEY.to_string(),
+                "true".to_string(),
+            );
+        }
+        let schema = Arc::new(Schema::new_with_metadata(
+            vec![Field::new("trace_id", DataType::Utf8, false)],
+            metadata,
+        ));
         RecordBatch::try_new(schema, vec![ids]).unwrap()
     }
 
-    fn correlate_document(extra_pipeline: Vec<serde_json::Value>) -> serde_json::Value {
-        let mut pipeline =
-            vec![serde_json::json!({ "correlate": { "to": "parent", "kind": "inner" } })];
-        pipeline.extend(extra_pipeline);
-        serde_json::json!({
-            "irVersion": 8, "from": "traces",
-            "range": { "from": "now-1h", "to": "now" },
-            "result": "rows",
-            "pipeline": pipeline
-        })
-    }
-
     #[test]
-    fn row_count_at_the_cap_warns() {
-        let batches = [rows_of(3)];
-        let warnings = correlate_truncation_warning(&correlate_document(vec![]), &batches, 3);
+    fn truncated_metadata_warns() {
+        let batches = [rows_of(1, true)];
+        let warnings = correlate_truncation_warning(&batches);
         assert_eq!(
             warnings.map(|w| w.code),
             Some(CORRELATE_ROW_LIMIT.to_string())
@@ -1556,33 +1537,14 @@ mod correlate_warnings {
     }
 
     #[test]
-    fn row_count_under_the_cap_does_not_warn() {
-        let batches = [rows_of(2)];
-        assert!(correlate_truncation_warning(&correlate_document(vec![]), &batches, 3).is_none());
+    fn no_metadata_does_not_warn() {
+        let batches = [rows_of(2, false)];
+        assert!(correlate_truncation_warning(&batches).is_none());
     }
 
     #[test]
-    fn no_correlate_stage_never_warns() {
-        let batches = [rows_of(3)];
-        let doc = serde_json::json!({
-            "irVersion": 1, "from": "traces",
-            "range": { "from": "now-1h", "to": "now" },
-            "result": "rows",
-            "pipeline": []
-        });
-        assert!(correlate_truncation_warning(&doc, &batches, 3).is_none());
-    }
-
-    /// The cap can't be attributed to the join once an `aggregate` follows
-    /// it — the raw joined row count and the final row count are different
-    /// things, so a coincidental match isn't evidence of anything.
-    #[test]
-    fn correlate_followed_by_aggregate_never_warns() {
-        let batches = [rows_of(3)];
-        let doc = correlate_document(vec![serde_json::json!({
-            "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "count", "as": "n" }] }
-        })]);
-        assert!(correlate_truncation_warning(&doc, &batches, 3).is_none());
+    fn no_batches_does_not_warn() {
+        assert!(correlate_truncation_warning(&[]).is_none());
     }
 }
 
