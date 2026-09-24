@@ -1,0 +1,96 @@
+.service-graph {
+  overflow: auto;
+}
+
+.service-graph-status {
+  padding: 24px;
+  color: var(--dim);
+}
+
+.service-graph-cap {
+  margin-bottom: 8px;
+}
+
+.service-graph-host {
+  position: relative;
+}
+
+.service-graph-edges {
+  position: absolute;
+  top: 0;
+  left: 0;
+  pointer-events: none;
+}
+
+.sg-edge {
+  pointer-events: stroke;
+  fill: none;
+}
+
+.sg-edge-neutral {
+  stroke: var(--border);
+}
+
+.sg-edge-warn {
+  stroke: var(--warn-bar);
+}
+
+.sg-edge-critical {
+  stroke: var(--err);
+}
+
+.sg-node {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 2px;
+  padding: 8px 12px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  text-align: left;
+  cursor: pointer;
+  font: inherit;
+  color: var(--text);
+}
+
+.sg-node:hover,
+.sg-node:focus-visible {
+  border-color: var(--accent);
+}
+
+.sg-node.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent-soft);
+}
+
+.sg-node.external {
+  border-style: dashed;
+}
+
+.sg-node-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sg-node-dot {
+  flex: none;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--err);
+}
+
+.sg-node-metric {
+  font-size: 11px;
+  color: var(--dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
