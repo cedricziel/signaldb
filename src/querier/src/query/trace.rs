@@ -538,9 +538,7 @@ impl TraceService {
         let Some((df, _window)) = super::ir_planner::plan_document(
             &self.session_context,
             &doc,
-            tenant_slug,
-            dataset_slug,
-            0,
+            super::ir_planner::PlanRequest::new(tenant_slug, dataset_slug, 0),
         )
         .await?
         else {

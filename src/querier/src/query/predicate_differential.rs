@@ -200,10 +200,14 @@ async fn planned_kept(ctx: &SessionContext, predicate: &Predicate) -> HashSet<i6
         fields: Some(vec!["timestamp".to_string()]),
         pipeline: vec![Stage::Where(predicate.clone())],
     };
-    let (df, _) = plan_document(ctx, &doc, TENANT, DATASET, 0)
-        .await
-        .expect("document plans")
-        .expect("logs table is registered");
+    let (df, _) = plan_document(
+        ctx,
+        &doc,
+        super::ir_planner::PlanRequest::new(TENANT, DATASET, 0),
+    )
+    .await
+    .expect("document plans")
+    .expect("logs table is registered");
     let batches = df.collect().await.expect("plan executes");
     let mut kept = HashSet::new();
     for batch in &batches {
