@@ -2229,6 +2229,10 @@ pub struct QuerierConfig {
     /// truncates the result rather than failing the query, reported through
     /// the response's warnings.
     pub correlate_max_rows: usize,
+    /// Node cap on a Query IR `graph` result. Past it the graph keeps the
+    /// `focus` node, then the highest-traffic nodes, and reports how many
+    /// it dropped in a warning.
+    pub graph_max_nodes: usize,
 }
 
 impl QuerierConfig {
@@ -2270,6 +2274,7 @@ impl Default for QuerierConfig {
             max_concurrent_queries_per_tenant: None,
             datafusion: QuerierDataFusionConfig::default(),
             correlate_max_rows: 5_000_000,
+            graph_max_nodes: 200,
         }
     }
 }
@@ -2686,6 +2691,7 @@ mod tests {
         assert_eq!(config.querier.max_sql_rows, 1_000_000);
         assert_eq!(config.querier.max_search_limit, 1_000);
         assert_eq!(config.querier.correlate_max_rows, 5_000_000);
+        assert_eq!(config.querier.graph_max_nodes, 200);
 
         Jail::expect_with(|jail| {
             jail.create_file(
@@ -2698,6 +2704,7 @@ mod tests {
                 max_sql_rows = 1000
                 max_search_limit = 50
                 correlate_max_rows = 2000
+                graph_max_nodes = 50
                 "#,
             )?;
             let config: Configuration = Figment::new()
@@ -2710,6 +2717,7 @@ mod tests {
             assert_eq!(config.querier.max_sql_rows, 1000);
             assert_eq!(config.querier.max_search_limit, 50);
             assert_eq!(config.querier.correlate_max_rows, 2000);
+            assert_eq!(config.querier.graph_max_nodes, 50);
             Ok(())
         });
     }
