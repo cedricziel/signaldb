@@ -2615,7 +2615,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Execute a native Query IR document (the structured, versioned query surface). Provide `query` as the IR JSON object. Returns the enveloped result scoped to your tenant. Reach for this over search_traces/search_logs/query_metrics when you need a pipeline stage those dialects can't express (topk/bottomk, extract, a multi-stage aggregate with step) or you're building from discover_sources/discover_fields/discover_field_values; see `get_skill(\"query-ir\")` (or the `skill://query-ir/SKILL.md` resource) for the full document reference."
+        description = "Execute a native Query IR document (the structured, versioned query surface). Provide `query` as the IR JSON object. Returns the enveloped result scoped to your tenant. Reach for this over search_traces/search_logs/query_metrics when you need a pipeline stage those dialects can't express (topk/bottomk, extract, a multi-stage aggregate with step, or — at `irVersion` 8 — a `correlate` stage joining each span to its parent so you can group by caller and callee service) or you're building from discover_sources/discover_fields/discover_field_values; see `get_skill(\"query-ir\")` (or the `skill://query-ir/SKILL.md` resource) for the full document reference."
     )]
     async fn query_ir(
         &self,
@@ -6832,6 +6832,33 @@ mod tests {
         assert!(
             request.pipeline.len() == 1 && request.pipeline[0].contains_key("heatmap"),
             "the heatmap stage must survive the conversion: {:?}",
+            request.pipeline
+        );
+    }
+
+    #[test]
+    fn generic_query_ir_tool_parameters_accept_a_v8_correlate_document() {
+        let params: QueryIrParams = serde_json::from_value(serde_json::json!({
+            "query": {
+                "irVersion": 8, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+                "result": "table",
+                "pipeline": [
+                    { "correlate": { "to": "parent", "kind": "inner" } },
+                    { "aggregate": {
+                        "by": ["parent.service.name", "service.name"],
+                        "aggs": [{ "fn": "count", "as": "n" }]
+                    } }
+                ]
+            },
+            "tenant": "acme", "dataset": "production"
+        }))
+        .unwrap();
+        let request: signaldb_sdk::types::QueryIrRequest =
+            serde_json::from_value(params.query).unwrap();
+        assert_eq!(request.ir_version, 8);
+        assert!(
+            request.pipeline[0].contains_key("correlate"),
+            "the correlate stage must survive the conversion: {:?}",
             request.pipeline
         );
     }
