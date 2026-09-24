@@ -1384,3 +1384,225 @@ async fn processor_created_via_router_api_redacts_pii_end_to_end() {
         "the raw PII value must never appear anywhere in the query response: {body}"
     );
 }
+
+// query-ir-span-join task 2.3 — the span-to-parent `correlate` stage (IR v8)
+// across the full ingest→store→query stack: two tenants, three services,
+// caller/callee pair counts, and tenant isolation through
+// `POST /api/v1/query`.
+
+/// Like [`span`], but with explicit trace/span/parent identity so two spans
+/// from different `traces_request` calls (different services, since a
+/// resource's `service.name` applies to the whole call) can share one trace.
+fn span_with_ids(
+    name: &str,
+    trace_id: u8,
+    span_id: u8,
+    parent_span_id: Option<u8>,
+    dur_ns: i64,
+) -> Span {
+    Span {
+        trace_id: vec![trace_id; 16],
+        span_id: vec![span_id; 8],
+        parent_span_id: parent_span_id.map(|p| vec![p; 8]).unwrap_or_default(),
+        name: name.to_string(),
+        kind: 1,
+        start_time_unix_nano: BASE_NS as u64,
+        end_time_unix_nano: (BASE_NS + dur_ns) as u64,
+        attributes: vec![],
+        dropped_attributes_count: 0,
+        events: vec![],
+        dropped_events_count: 0,
+        links: vec![],
+        dropped_links_count: 0,
+        status: Some(Status {
+            code: 1,
+            message: String::new(),
+        }),
+        trace_state: String::new(),
+        flags: 0,
+    }
+}
+
+/// Poll a tenant-scoped `POST /api/v1/query` until the `caller`/`callee`
+/// pair count columns hold at least `min_rows` rows or the deadline elapses
+/// (mirrors [`post_ir_until_rows`], parameterized on tenant/key).
+async fn post_ir_as_until_rows(
+    app: &Router,
+    doc: serde_json::Value,
+    key: &str,
+    tenant: &str,
+    min_rows: usize,
+) -> (StatusCode, serde_json::Value) {
+    let mut last = (StatusCode::OK, serde_json::Value::Null);
+    for _ in 0..40 {
+        let (status, body) = post_ir_as(app, doc.clone(), key, tenant, None).await;
+        let rows = body
+            .get("rows")
+            .and_then(|r| r.as_array())
+            .map(Vec::len)
+            .unwrap_or(0);
+        if status == StatusCode::OK && rows >= min_rows {
+            return (status, body);
+        }
+        last = (status, body);
+        sleep(Duration::from_millis(500)).await;
+    }
+    last
+}
+
+/// Read a `table` envelope's `(caller, callee, count)` triples, sorted by
+/// caller then callee — addressing columns by their physical (`safe_ident`)
+/// name, same as [`table_pairs`].
+fn caller_callee_counts(body: &serde_json::Value) -> Vec<(String, String, i64)> {
+    let columns = body["columns"].as_array().expect("columns array");
+    let index_of = |name: &str| {
+        columns
+            .iter()
+            .position(|c| c["name"] == name)
+            .unwrap_or_else(|| panic!("column '{name}' missing from {body}"))
+    };
+    let caller_idx = index_of("parent_service_name");
+    let callee_idx = index_of("service_name");
+    let count_idx = index_of("n");
+    let mut pairs: Vec<(String, String, i64)> = body["rows"]
+        .as_array()
+        .expect("rows array")
+        .iter()
+        .map(|row| {
+            (
+                row[caller_idx].as_str().unwrap().to_string(),
+                row[callee_idx].as_str().unwrap().to_string(),
+                row[count_idx].as_i64().unwrap(),
+            )
+        })
+        .collect();
+    pairs.sort();
+    pairs
+}
+
+fn correlate_pair_counts_document() -> serde_json::Value {
+    serde_json::json!({
+        "irVersion": 8,
+        "from": "traces",
+        "range": range(),
+        "result": "table",
+        "pipeline": [
+            { "correlate": { "to": "parent", "kind": "inner" } },
+            { "aggregate": {
+                "by": ["parent.service.name", "service.name"],
+                "aggs": [{ "fn": "count", "as": "n" }]
+            } }
+        ]
+    })
+}
+
+#[tokio::test]
+async fn correlate_caller_callee_pair_counts_isolated_by_tenant() {
+    let services = setup().await;
+
+    // Tenant A ("test-tenant"): gateway calls checkout twice (two distinct
+    // traces) and billing once.
+    let tenant_a = test_tenant_context();
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &tenant_a,
+            traces_request(
+                "gateway",
+                vec![
+                    span_with_ids("GET /checkout", 1, 1, None, 50_000_000),
+                    span_with_ids("GET /checkout", 2, 3, None, 50_000_000),
+                    span_with_ids("GET /bill", 3, 5, None, 50_000_000),
+                ],
+            ),
+        )
+        .await
+        .expect("ingest tenant A gateway spans");
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &tenant_a,
+            traces_request(
+                "checkout",
+                vec![
+                    span_with_ids("POST /charge", 1, 2, Some(1), 20_000_000),
+                    span_with_ids("POST /charge", 2, 4, Some(3), 20_000_000),
+                ],
+            ),
+        )
+        .await
+        .expect("ingest tenant A checkout spans");
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &tenant_a,
+            traces_request(
+                "billing",
+                vec![span_with_ids("POST /invoice", 3, 6, Some(5), 20_000_000)],
+            ),
+        )
+        .await
+        .expect("ingest tenant A billing span");
+
+    // Tenant B ("other-tenant"): web calls api once, deliberately reusing
+    // trace_id=1 — storage is siloed per tenant, so this must not join
+    // against tenant A's rows at all.
+    let tenant_b = tenant_context("other-tenant", "test-dataset", "other-key-123");
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &tenant_b,
+            traces_request(
+                "web",
+                vec![span_with_ids("GET /home", 1, 101, None, 30_000_000)],
+            ),
+        )
+        .await
+        .expect("ingest tenant B web span");
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &tenant_b,
+            traces_request(
+                "api",
+                vec![span_with_ids("GET /data", 1, 102, Some(101), 15_000_000)],
+            ),
+        )
+        .await
+        .expect("ingest tenant B api span");
+
+    let app = build_router(&services).await;
+
+    let (status, body) = post_ir_as_until_rows(
+        &app,
+        correlate_pair_counts_document(),
+        "test-key-123",
+        "test-tenant",
+        2,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "tenant A correlate query: {body}");
+    assert_eq!(
+        caller_callee_counts(&body),
+        vec![
+            ("gateway".to_string(), "billing".to_string(), 1),
+            ("gateway".to_string(), "checkout".to_string(), 2),
+        ],
+        "tenant A must see only its own caller/callee pairs: {body}"
+    );
+
+    let (status, body) = post_ir_as_until_rows(
+        &app,
+        correlate_pair_counts_document(),
+        "other-key-123",
+        "other-tenant",
+        1,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "tenant B correlate query: {body}");
+    assert_eq!(
+        caller_callee_counts(&body),
+        vec![("web".to_string(), "api".to_string(), 1)],
+        "tenant B must see only its own caller/callee pair, never tenant A's: {body}"
+    );
+}
