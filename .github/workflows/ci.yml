@@ -158,6 +158,74 @@ jobs:
           path: src/ui/playwright-report/
           retention-days: 7
 
+  # Live end-to-end suite: the built UI against a real signaldb monolith
+  # seeded with real OTLP telemetry (src/ui/e2e-live, playwright.live.config.ts).
+  # Distinct from the `ui` job's mocked e2e/ suite — this is what catches a
+  # page sending a Query IR document the server actually rejects (see
+  # src/ui/README.md#end-to-end-tests).
+  ui-e2e-live:
+    name: UI E2E (live backend)
+    runs-on: ubuntu-latest
+    # Tests the release binaries and UI bundle the images ship, instead of
+    # compiling its own.
+    needs: [changes, build-musl-amd64, build-ui]
+    if: >-
+      !cancelled()
+      && needs.build-musl-amd64.result == 'success'
+      && needs.build-ui.result == 'success'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download musl binaries
+        uses: actions/download-artifact@v8
+        with:
+          name: musl-binaries-amd64
+          path: e2e-bin/
+
+      - name: Download e2e seeding tool
+        uses: actions/download-artifact@v8
+        with:
+          name: e2e-tools-amd64
+          path: e2e-bin/
+
+      - name: Download UI dist
+        uses: actions/download-artifact@v8
+        with:
+          name: ui-dist
+          path: src/ui/dist/
+
+      - name: Make binaries executable
+        run: chmod +x e2e-bin/*
+
+      - uses: pnpm/action-setup@v6.1.0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `--with-deps` shells out to apt, which can stall for hours on a bad
+      # mirror; cap it so the job fails rather than blocking the queue.
+      - name: Install Playwright browsers
+        timeout-minutes: 10
+        run: pnpm --filter signaldb-ui exec playwright install --with-deps chromium
+
+      - name: Live E2E tests
+        env:
+          SIGNALDB_E2E_BIN_DIR: ${{ github.workspace }}/e2e-bin
+        run: pnpm --filter signaldb-ui exec playwright test --config=playwright.live.config.ts
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-live
+          path: src/ui/playwright-report/
+          retention-days: 7
+
   # Verify the generated clients are in sync with the code-first OpenAPI spec.
   # `cargo xtask check` regenerates the progenitor Rust SDK and the hey-api
   # TypeScript UI client from api/signaldb-api.json and fails on any drift, so
@@ -434,7 +502,14 @@ jobs:
     name: Build musl Binaries (amd64)
     runs-on: ubuntu-latest
     needs: [changes, check]
-    if: needs.changes.outputs.images == 'true'
+    # Also feeds the live UI e2e job, so it runs for any core or UI change,
+    # not only image-affecting ones. `check` is skipped on UI-only PRs.
+    if: >-
+      !cancelled()
+      && (needs.check.result == 'success' || needs.check.result == 'skipped')
+      && (needs.changes.outputs.images == 'true'
+          || needs.changes.outputs.core == 'true'
+          || needs.changes.outputs.ui == 'true')
     steps:
       - uses: actions/checkout@v7
 
@@ -471,20 +546,30 @@ jobs:
           cargo build --release --target x86_64-unknown-linux-musl \
             --features signaldb-bin/jemalloc \
             --bin signaldb \
-            --bin signaldb-cli
+            --bin signaldb-cli \
+            --bin signal-producer
 
       - name: Stage binaries
         run: |
-          mkdir -p dist
+          mkdir -p dist e2e-tools
           cp target/x86_64-unknown-linux-musl/release/signaldb \
              target/x86_64-unknown-linux-musl/release/signaldb-cli \
              dist/
+          cp target/x86_64-unknown-linux-musl/release/signal-producer e2e-tools/
 
       - name: Upload musl binaries
         uses: actions/upload-artifact@v7
         with:
           name: musl-binaries-amd64
           path: dist/
+          retention-days: 7
+
+      # Kept out of dist/ so the Docker images don't pick it up.
+      - name: Upload e2e seeding tool
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-tools-amd64
+          path: e2e-tools/
           retention-days: 7
 
   # Heap-profiling build of the monolithic binary. Separate from the musl
@@ -613,7 +698,10 @@ jobs:
     name: Build UI dist
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.images == 'true'
+    if: >-
+      needs.changes.outputs.images == 'true'
+      || needs.changes.outputs.core == 'true'
+      || needs.changes.outputs.ui == 'true'
     steps:
       - uses: actions/checkout@v7
 
@@ -646,7 +734,8 @@ jobs:
     runs-on: ubuntu-latest
     # test gates the image push: a commit with a red test suite must not
     # be published to ghcr, even though the binaries already built
-    needs: [build-musl-amd64, build-ui, test]
+    needs: [changes, build-musl-amd64, build-ui, test]
+    if: needs.changes.outputs.images == 'true'
     permissions:
       contents: read
       packages: write
@@ -888,7 +977,8 @@ jobs:
   deployment-test:
     name: Deployment Test
     runs-on: ubuntu-latest
-    needs: build-musl-amd64
+    needs: [changes, build-musl-amd64]
+    if: needs.changes.outputs.images == 'true'
     strategy:
       matrix:
         deployment: [monolithic, microservices]

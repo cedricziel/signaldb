@@ -29,4 +29,14 @@ pnpm ui:test       # vitest, single run
 pnpm --filter signaldb-ui test:watch
 pnpm --filter signaldb-ui test:coverage
 pnpm --filter signaldb-ui lint
+pnpm --filter signaldb-ui test:e2e       # mocked Playwright suite (src/ui/e2e)
+pnpm --filter signaldb-ui test:e2e:live  # live Playwright suite (src/ui/e2e-live)
 ```
+
+## End-to-end tests
+
+- `e2e/` (`pnpm test:e2e`): routing and navigation tests against the
+  production build, with mocked API calls. No Rust toolchain needed.
+- `e2e-live/` (`pnpm test:e2e:live`): the UI against a real, seeded
+  `signaldb` backend. Any rejected API call fails the test. See
+  [docs/contributing/ui-e2e-live.md](../../docs/contributing/ui-e2e-live.md).

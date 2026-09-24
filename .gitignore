@@ -66,6 +66,8 @@ src/ui/coverage/
 src/ui/test-results/
 src/ui/playwright-report/
 src/ui/e2e/.auth/
+src/ui/e2e-live/.live-env.json
+src/ui/e2e-live/.live-storage-state.json
 .env.local
 site/
 

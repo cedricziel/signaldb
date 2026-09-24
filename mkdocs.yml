@@ -93,3 +93,4 @@ nav:
       - contributing/rust.md
       - contributing/compat-crates.md
       - contributing/benchmarking.md
+      - contributing/ui-e2e-live.md

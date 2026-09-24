@@ -132,9 +132,10 @@ export default defineConfig(({ mode }) => {
       environment: "jsdom",
       setupFiles: "./src/test/setup.ts",
       css: false,
-      // e2e/** are Playwright specs (see playwright.config.ts) — a
-      // different runner, different test() import, not vitest's.
-      exclude: [...configDefaults.exclude, "e2e/**"],
+      // e2e/** and e2e-live/** are Playwright specs (see
+      // playwright.config.ts / playwright.live.config.ts) — a different
+      // runner, different test() import, not vitest's.
+      exclude: [...configDefaults.exclude, "e2e/**", "e2e-live/**"],
       coverage: {
         provider: "v8",
         include: ["src/**/*.{ts,tsx}"],
