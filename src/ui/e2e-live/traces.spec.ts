@@ -1,17 +1,16 @@
 import { expect, test } from "./fixtures";
 
-test("traces list shows seeded spans and a trace can be opened", async ({
+test("traces list shows seeded groups and a group can be opened", async ({
   page,
   liveEnv,
 }) => {
   await page.goto(
     `/traces?tenant=${liveEnv.tenant}&dataset=${liveEnv.dataset}`,
   );
-  await expect(page.getByText(liveEnv.seededService).first()).toBeVisible({
-    timeout: 15_000,
-  });
+  const firstGroup = page.getByRole("row").nth(1).getByRole("button").first();
+  await expect(firstGroup).toBeVisible({ timeout: 15_000 });
   await expect(page.getByText("Could not load")).toHaveCount(0);
 
-  await page.getByText(liveEnv.seededService).first().click();
+  await firstGroup.click();
   await expect(page.getByText("Could not load")).toHaveCount(0);
 });
