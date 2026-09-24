@@ -29,9 +29,11 @@ per-series range functions cover counter rates and windowed reductions (see
 [More range functions](#more-range-functions-across-and-window-v7)).
 Arithmetic across several queries' results — formulas — is a separate
 multi-query document shape (see
-[Formulas](#formulas-cross-query-arithmetic-d5)). Cross-signal correlation and
-structural trace matching are separate, later capabilities (see
-[Roadmap](#roadmap)).
+[Formulas](#formulas-cross-query-arithmetic-d5)). A `correlate` stage (v8)
+joins each span to its parent within `traces` (see
+[Joining spans to their parents](#joining-spans-to-their-parents-v8));
+joining across signals and structural trace matching are separate, later
+capabilities (see [Roadmap](#roadmap)).
 
 ## The endpoint
 
@@ -57,9 +59,7 @@ body. The response is the declared result envelope (see
   "range": { "from": "now-1h", "to": "now" },
   "result": "series", // v1: rows | series | table; v2 adds heatmap; flamegraph is profiles-only
   "fields": ["service.name"], // optional curated projection (rows/table)
-  "pipeline": [
-    /* ordered transform stages */
-  ],
+  "pipeline": [/* ordered transform stages */],
 }
 ```
 
@@ -772,6 +772,55 @@ bucket. Missing cells inside the declared window are zero. The server accepts
 at most 32 y-axis bounds and rejects non-positive steps or non-increasing
 bounds before execution.
 
+## Joining spans to their parents (v8)
+
+A `correlate` stage (IR v8) joins the current `traces` relation to the span in
+the same trace whose `span_id` equals the row's `parent_span_id` — the
+building block for "which service called which". It only ever appears once in
+a pipeline, only on the `traces` source, and only before an `aggregate` stage:
+
+```json
+{
+  "irVersion": 8,
+  "from": "traces",
+  "range": { "from": "now-1h", "to": "now" },
+  "result": "table",
+  "pipeline": [
+    { "correlate": { "to": "parent", "kind": "inner" } },
+    {
+      "where": {
+        "field": "parent.service.name",
+        "op": "ne",
+        "value": "service.name"
+      }
+    },
+    {
+      "aggregate": {
+        "by": ["parent.service.name", "service.name"],
+        "aggs": [{ "fn": "count", "as": "calls" }]
+      }
+    }
+  ]
+}
+```
+
+- **`to`** — closed to `"parent"` today; a later change may add other join
+  targets.
+- **`kind`** — `"inner"` drops a row whose parent isn't in the window (a root
+  span, or a parent that started before the window); `"left"` keeps it with
+  every `parent.*` field `null`.
+- Every field of the parent span is addressable as `parent.<field>`,
+  including attribute scopes (`parent.span.<key>`, `parent.resource.<key>`) —
+  the same logical names as the unprefixed child side. Later `where` and
+  `aggregate` stages accept fields from both sides, as in the caller/callee
+  example above.
+- Both sides of the join are read from the query's own time range and the
+  caller's tenant/dataset only; a parent stored outside either is treated as
+  missing, same as a parent genuinely absent from storage.
+- The joined row count is capped by a server-side limit
+  (`[querier].correlate_max_rows`, default 5,000,000). Reaching it truncates
+  the result — the query still succeeds — rather than failing.
+
 ## Formulas: cross-query arithmetic (D5)
 
 A formula computes arithmetic across the `series` results of several named
@@ -1073,15 +1122,20 @@ so it is designed and reviewed on its own risk profile:
   (part of the streaming epic), and **pagination** for walking a large result.
   Field discovery itself has landed: see
   [Discovery](#discovery-what-can-i-query).
-- **cross-signal correlate** — a `correlate` join stage (the IR becomes a DAG).
+- **cross-signal correlate** — widening the `correlate` stage (see
+  [Joining spans to their parents](#joining-spans-to-their-parents-v8)) to
+  join across signals, not just a span to its own parent.
 - **structural traces** — a `match` stage + a `trace` result envelope.
 
 `rate`/`increase`/`irate`/`*_over_time` (counter delta and windowed
 reductions over a window — see
 [Counter rate](#counter-rate-rateincrease-v6) and
-[More range functions](#more-range-functions-across-and-window-v7)) and
+[More range functions](#more-range-functions-across-and-window-v7)),
 cross-query formulas (see
-[Formulas](#formulas-cross-query-arithmetic-d5)) already work today.
+[Formulas](#formulas-cross-query-arithmetic-d5)), and the span-to-parent
+`correlate` stage (see
+[Joining spans to their parents](#joining-spans-to-their-parents-v8)) already
+work today.
 
 Also deferred: the compatibility dialects lowering _into_ the IR (one engine),
 and full attribute promotion. None of these change the document shape defined
