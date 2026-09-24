@@ -1971,15 +1971,15 @@ fn graph_edge<'a>(
         .unwrap_or_else(|| panic!("no edge {source} -> {target}: {body}"))
 }
 
-fn graph_node_names(body: &serde_json::Value) -> Vec<String> {
-    let mut names: Vec<String> = body["graph"]["nodes"]
+fn graph_node_ids(body: &serde_json::Value) -> Vec<String> {
+    let mut ids: Vec<String> = body["graph"]["nodes"]
         .as_array()
         .expect("nodes")
         .iter()
-        .map(|n| n["name"].as_str().expect("name").to_string())
+        .map(|n| n["id"].as_str().expect("id").to_string())
         .collect();
-    names.sort();
-    names
+    ids.sort();
+    ids
 }
 
 #[tokio::test]
@@ -1987,8 +1987,33 @@ async fn service_graph_end_to_end_isolated_by_tenant() {
     let services = setup().await;
     let tenant_a = test_tenant_context();
     ingest_graph_traces(&services.trace_handler, &tenant_a, &[(1, false), (2, true)]).await;
+    // A database named like the `orders` service must stay its own node.
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &tenant_a,
+            traces_request(
+                "checkout",
+                vec![graph_span(
+                    3,
+                    31,
+                    None,
+                    3,
+                    false,
+                    &[("db.system.name", "postgresql"), ("db.namespace", "orders")],
+                )],
+            ),
+        )
+        .await
+        .expect("ingest tenant A colliding db span");
+    // Tenant B reuses tenant A's trace ids, with no failures.
     let tenant_b = tenant_context("other-tenant", "test-dataset", "other-key-123");
-    ingest_graph_traces(&services.trace_handler, &tenant_b, &[(1, false)]).await;
+    ingest_graph_traces(
+        &services.trace_handler,
+        &tenant_b,
+        &[(1, false), (2, false)],
+    )
+    .await;
     let app = build_router(&services).await;
 
     let body = post_graph_until_edges(
@@ -1996,42 +2021,69 @@ async fn service_graph_end_to_end_isolated_by_tenant() {
         graph_document(serde_json::json!({})),
         "test-key-123",
         "test-tenant",
-        3,
+        4,
     )
     .await;
     assert_eq!(
-        graph_node_names(&body),
-        ["checkout", "frontend", "orders", "orders-db"],
+        graph_node_ids(&body),
+        [
+            "external:database:orders",
+            "external:database:orders-db",
+            "service:checkout",
+            "service:frontend",
+            "service:orders",
+        ],
         "no external node for the instrumented checkout:8080 call: {body}"
     );
-    assert_eq!(graph_edge(&body, "frontend", "checkout")["count"], 2);
-    let orders = graph_edge(&body, "checkout", "orders");
+    assert_eq!(
+        graph_edge(&body, "service:frontend", "service:checkout")["count"],
+        2
+    );
+    let orders = graph_edge(&body, "service:checkout", "service:orders");
     assert_eq!(
         orders["count"], 2,
         "tenant B's spans must not count: {body}"
     );
     assert_eq!(orders["error_rate"], 0.5);
+    assert_eq!(
+        graph_edge(&body, "service:checkout", "external:database:orders")["count"],
+        1
+    );
     let db = body["graph"]["nodes"]
         .as_array()
         .expect("nodes")
         .iter()
-        .find(|n| n["name"] == "orders-db")
+        .find(|n| n["id"] == "external:database:orders-db")
         .expect("orders-db node");
+    assert_eq!(db["name"], "orders-db");
     assert_eq!(db["kind"], "external");
     assert_eq!(db["dependency_kind"], "database");
-    assert_eq!(graph_edge(&body, "orders", "orders-db")["count"], 2);
+    assert_eq!(
+        graph_edge(&body, "service:orders", "external:database:orders-db")["count"],
+        2
+    );
 
     let body = post_graph_until_edges(
         &app,
         graph_document(serde_json::json!({ "focus": "checkout" })),
         "test-key-123",
         "test-tenant",
-        2,
+        3,
     )
     .await;
-    assert_eq!(graph_node_names(&body), ["checkout", "frontend", "orders"]);
-    assert_eq!(body["graph"]["edges"].as_array().map(Vec::len), Some(2));
+    assert_eq!(
+        graph_node_ids(&body),
+        [
+            "external:database:orders",
+            "service:checkout",
+            "service:frontend",
+            "service:orders",
+        ]
+    );
+    assert_eq!(body["graph"]["edges"].as_array().map(Vec::len), Some(3));
 
+    // Trace 2 exists in both tenants; tenant A's failing call must be the
+    // only one counted.
     let body = post_graph_until_edges(
         &app,
         graph_document(serde_json::json!({ "trace_id": "02".repeat(16) })),
@@ -2040,8 +2092,11 @@ async fn service_graph_end_to_end_isolated_by_tenant() {
         3,
     )
     .await;
-    let orders = graph_edge(&body, "checkout", "orders");
-    assert_eq!(orders["count"], 1, "one call in trace 2: {body}");
+    let orders = graph_edge(&body, "service:checkout", "service:orders");
+    assert_eq!(
+        orders["count"], 1,
+        "only tenant A's call in trace 2: {body}"
+    );
     assert_eq!(orders["error_rate"], 1.0);
 
     let body = post_graph_until_edges(
@@ -2052,6 +2107,18 @@ async fn service_graph_end_to_end_isolated_by_tenant() {
         3,
     )
     .await;
-    assert_eq!(graph_edge(&body, "frontend", "checkout")["count"], 1);
-    assert_eq!(graph_edge(&body, "checkout", "orders")["error_rate"], 0.0);
+    assert_eq!(
+        graph_edge(&body, "service:frontend", "service:checkout")["count"],
+        2
+    );
+    assert_eq!(
+        graph_edge(&body, "service:checkout", "service:orders")["error_rate"],
+        0.0
+    );
+    assert!(
+        graph_node_ids(&body)
+            .iter()
+            .all(|id| id != "external:database:orders"),
+        "tenant A's colliding db span must not leak: {body}"
+    );
 }
