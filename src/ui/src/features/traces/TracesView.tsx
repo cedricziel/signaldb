@@ -103,6 +103,12 @@ import { fetchTraceGroupMembers } from "../../api/traceGroupMembers";
 import { SkeletonLines, SkeletonRows } from "../explore/Skeleton";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
 import { buildWaterfall, formatDurationMs } from "../../lib/waterfall";
+import { traceToGraph } from "../../lib/traceToGraph";
+import {
+  ServiceGraph,
+  type ServiceGraphEdge,
+  type ServiceGraphNode,
+} from "../../components/ServiceGraph";
 import { fetchWindowTotal, looksUnresolved } from "./unresolvedGroup";
 import { describeService, groupSpanAttributes } from "./spanAttributes";
 import { SortTh, useSort } from "../../lib/sortTable";
@@ -170,6 +176,33 @@ function spanTooltipRows(
     { label: "status", value: span.status },
   ];
 }
+
+/** Maps the pure `traceToGraph` derivation onto `ServiceGraph`'s props —
+ * the metric line is time spent in the service, the mockup's "time in
+ * service" figure. */
+function traceGraphView(spans: TempoSpan[]): {
+  nodes: ServiceGraphNode[];
+  edges: ServiceGraphEdge[];
+} {
+  const { nodes, edges } = traceToGraph(spans);
+  return {
+    nodes: nodes.map((n) => ({
+      id: n.service,
+      label: n.service,
+      failed: n.failed,
+      external: n.external,
+      metricLine: `${formatDurationMs(n.durationMs)} in service`,
+    })),
+    edges: edges.map((e) => ({
+      from: e.from,
+      to: e.to,
+      count: e.count,
+      failed: e.failed,
+    })),
+  };
+}
+
+type TraceViewMode = "waterfall" | "map" | "both";
 
 function plural(n: number, noun: string): string {
   return `${n} ${noun}${n === 1 ? "" : "s"}`;
@@ -876,6 +909,11 @@ function GroupDetail({
 
 function TraceDetail({ state, update }: Props) {
   const [selected, setSelected] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<TraceViewMode>("waterfall");
+  // Set by clicking a service node in the map; narrows the waterfall to
+  // that service's spans until cleared (waterfall/both modes only — the
+  // map itself always shows the whole trace).
+  const [serviceFilter, setServiceFilter] = useState<string | null>(null);
   const mobileDetail = useMobileSidebar();
   // Waterfall hover tooltip: the shared VizTooltip, hosted on the (non-
   // scrolling) trace body so it can overlap the detail pane and isn't
@@ -915,6 +953,20 @@ function TraceDetail({ state, update }: Props) {
   const waterfall = useMemo(
     () => (trace.data ? buildWaterfall(trace.data.spans) : undefined),
     [trace.data],
+  );
+  // Built from the already-loaded spans — no extra request for the map.
+  const graph = useMemo(
+    () => (trace.data ? traceGraphView(trace.data.spans) : undefined),
+    [trace.data],
+  );
+  const visibleRows = useMemo(
+    () =>
+      serviceFilter
+        ? (waterfall?.rows.filter(
+            (r) => r.span.serviceName === serviceFilter,
+          ) ?? [])
+        : (waterfall?.rows ?? []),
+    [waterfall, serviceFilter],
   );
 
   if (trace.isError || (trace.isSuccess && trace.data === null)) {
@@ -992,6 +1044,29 @@ function TraceDetail({ state, update }: Props) {
           )}
         </span>
         <span className="trace-id">{traceData.traceId}</span>
+        <div className="trace-volume-mode" role="group" aria-label="Trace view">
+          <button
+            type="button"
+            aria-pressed={viewMode === "waterfall"}
+            onClick={() => setViewMode("waterfall")}
+          >
+            Waterfall
+          </button>
+          <button
+            type="button"
+            aria-pressed={viewMode === "map"}
+            onClick={() => setViewMode("map")}
+          >
+            Map
+          </button>
+          <button
+            type="button"
+            aria-pressed={viewMode === "both"}
+            onClick={() => setViewMode("both")}
+          >
+            Both
+          </button>
+        </div>
         {selectedRow && (
           <MobileFiltersToggle
             open={mobileDetail.open}
@@ -1000,7 +1075,37 @@ function TraceDetail({ state, update }: Props) {
           />
         )}
       </div>
-      {Object.keys(spanKinds).length > 0 && (
+      {serviceFilter && viewMode !== "map" && (
+        <div className="filter-chips" aria-label="Active filters">
+          <button
+            className="filter-chip chip"
+            aria-label={`Clear service filter ${serviceFilter}`}
+            onClick={() => setServiceFilter(null)}
+          >
+            <span className="filter-chip-k">service</span>
+            <span className="filter-chip-v">{serviceFilter}</span>
+            <span className="filter-chip-x">×</span>
+          </button>
+        </div>
+      )}
+      {(viewMode === "map" || viewMode === "both") && graph && (
+        <div
+          className="trace-map"
+          role="group"
+          aria-label="Services in this trace"
+        >
+          <h4 className="trace-map-title">Services in this trace</h4>
+          <ServiceGraph
+            nodes={graph.nodes}
+            edges={graph.edges}
+            selected={serviceFilter}
+            onNodeClick={(id) =>
+              setServiceFilter((current) => (current === id ? null : id))
+            }
+          />
+        </div>
+      )}
+      {viewMode !== "map" && Object.keys(spanKinds).length > 0 && (
         <div className="span-kind-legend" aria-label="Span kind legend">
           {Array.from(new Set(Object.values(spanKinds)))
             .sort()
@@ -1011,101 +1116,103 @@ function TraceDetail({ state, update }: Props) {
             ))}
         </div>
       )}
-      <div className="trace-body viz-host" ref={bodyRef}>
-        {/* A labelled group of native buttons, not a listbox: a proper
+      {viewMode !== "map" && (
+        <div className="trace-body viz-host" ref={bodyRef}>
+          {/* A labelled group of native buttons, not a listbox: a proper
             listbox owes its `option`s a roving-focus keyboard pattern
             (arrow-key navigation, one tab stop) that this doesn't implement
             yet — that lands in a later pass. `aria-pressed` states each
             span's selection without asserting a pattern the markup doesn't
             back up. */}
-        <div
-          className="waterfall"
-          role="group"
-          aria-label="Spans"
-          onPointerLeave={clearHover}
-        >
-          {waterfall.rows.map((row) => (
-            <button
-              key={row.span.spanId}
-              className="span-row"
-              aria-pressed={selectedRow?.span.spanId === row.span.spanId}
-              aria-describedby={
-                hoveredSpanId === row.span.spanId ? tipId : undefined
-              }
-              onClick={() => setSelected(row.span.spanId)}
-              onPointerMove={(e) => {
-                setHoveredSpanId(row.span.spanId);
-                pointer.track(e);
-              }}
-              onFocus={(e) => {
-                setHoveredSpanId(row.span.spanId);
-                pointer.anchorTo(e.currentTarget);
-              }}
-              onBlur={clearHover}
-            >
-              <span
-                className="span-label"
-                style={{ paddingLeft: row.depth * 16 }}
+          <div
+            className="waterfall"
+            role="group"
+            aria-label="Spans"
+            onPointerLeave={clearHover}
+          >
+            {visibleRows.map((row) => (
+              <button
+                key={row.span.spanId}
+                className="span-row"
+                aria-pressed={selectedRow?.span.spanId === row.span.spanId}
+                aria-describedby={
+                  hoveredSpanId === row.span.spanId ? tipId : undefined
+                }
+                onClick={() => setSelected(row.span.spanId)}
+                onPointerMove={(e) => {
+                  setHoveredSpanId(row.span.spanId);
+                  pointer.track(e);
+                }}
+                onFocus={(e) => {
+                  setHoveredSpanId(row.span.spanId);
+                  pointer.anchorTo(e.currentTarget);
+                }}
+                onBlur={clearHover}
               >
-                <span className="span-svc">{row.span.serviceName}</span>
-                <span className="span-name">{row.span.name}</span>
-              </span>
-              <span className="span-track">
                 <span
-                  className={`span-bar ${kindClass(spanKinds[row.span.spanId])}${row.span.status === "error" ? " error" : ""}${row.extentInferred ? " inferred" : ""}`}
-                  title={
-                    row.extentInferred
-                      ? "No duration recorded; drawn over its child spans"
-                      : undefined
-                  }
-                  style={{
-                    left: `${row.leftPct}%`,
-                    width: `${row.widthPct}%`,
-                  }}
-                />
-              </span>
-              <span
-                className={`span-dur${row.span.status === "error" ? " error" : ""}`}
+                  className="span-label"
+                  style={{ paddingLeft: row.depth * 16 }}
+                >
+                  <span className="span-svc">{row.span.serviceName}</span>
+                  <span className="span-name">{row.span.name}</span>
+                </span>
+                <span className="span-track">
+                  <span
+                    className={`span-bar ${kindClass(spanKinds[row.span.spanId])}${row.span.status === "error" ? " error" : ""}${row.extentInferred ? " inferred" : ""}`}
+                    title={
+                      row.extentInferred
+                        ? "No duration recorded; drawn over its child spans"
+                        : undefined
+                    }
+                    style={{
+                      left: `${row.leftPct}%`,
+                      width: `${row.widthPct}%`,
+                    }}
+                  />
+                </span>
+                <span
+                  className={`span-dur${row.span.status === "error" ? " error" : ""}`}
+                >
+                  {formatDurationMs(row.durationMs)}
+                </span>
+              </button>
+            ))}
+          </div>
+          {selectedRow && (
+            <>
+              <SidebarResizer panel={spanDetailWidth} />
+              <MobileSidebarDrawer
+                open={mobileDetail.open}
+                onClose={mobileDetail.close}
+                side="right"
               >
-                {formatDurationMs(row.durationMs)}
-              </span>
-            </button>
-          ))}
+                <SpanDetail
+                  span={selectedRow.span}
+                  traceId={traceData.traceId}
+                  profiles={traceData.profiles}
+                  kind={spanKinds[selectedRow.span.spanId]}
+                  update={update}
+                  traceFilters={state.traceFilters}
+                  tenant={state.tenant}
+                />
+              </MobileSidebarDrawer>
+            </>
+          )}
+          {hoveredRow && pointer.anchor && (
+            <VizTooltip
+              id={tipId}
+              anchor={pointer.anchor}
+              host={pointer.host}
+              title={hoveredRow.span.name}
+              rows={spanTooltipRows(
+                hoveredRow.span,
+                hoveredRow.durationMs,
+                spanKinds[hoveredRow.span.spanId],
+              )}
+            />
+          )}
         </div>
-        {selectedRow && (
-          <>
-            <SidebarResizer panel={spanDetailWidth} />
-            <MobileSidebarDrawer
-              open={mobileDetail.open}
-              onClose={mobileDetail.close}
-              side="right"
-            >
-              <SpanDetail
-                span={selectedRow.span}
-                traceId={traceData.traceId}
-                profiles={traceData.profiles}
-                kind={spanKinds[selectedRow.span.spanId]}
-                update={update}
-                traceFilters={state.traceFilters}
-                tenant={state.tenant}
-              />
-            </MobileSidebarDrawer>
-          </>
-        )}
-        {hoveredRow && pointer.anchor && (
-          <VizTooltip
-            id={tipId}
-            anchor={pointer.anchor}
-            host={pointer.host}
-            title={hoveredRow.span.name}
-            rows={spanTooltipRows(
-              hoveredRow.span,
-              hoveredRow.durationMs,
-              spanKinds[hoveredRow.span.spanId],
-            )}
-          />
-        )}
-      </div>
+      )}
     </div>
   );
 }

@@ -2005,6 +2005,48 @@ describe("TracesView detail", () => {
       );
     });
   });
+
+  describe("trace map", () => {
+    it("marks the failed call's node in the map", async () => {
+      stubFetchRoutes(traceRoutes(TRACE_BODY));
+      renderView({ trace: "t1cafe" });
+      await screen.findByRole("group", { name: "Spans" });
+
+      await userEvent.click(screen.getByRole("button", { name: "Map" }));
+      const paymentsNode = screen.getByRole("button", { name: /payments/ });
+      expect(paymentsNode.className).toContain("failed");
+      const gatewayNode = screen.getByRole("button", { name: /gateway/ });
+      expect(gatewayNode.className).not.toContain("failed");
+    });
+
+    it("filters the waterfall to the clicked service until cleared", async () => {
+      stubFetchRoutes(traceRoutes(TRACE_BODY));
+      renderView({ trace: "t1cafe" });
+      await screen.findByRole("group", { name: "Spans" });
+
+      await userEvent.click(screen.getByRole("button", { name: "Both" }));
+      const mapGroup = screen.getByRole("group", {
+        name: "Services in this trace",
+      });
+      await userEvent.click(
+        within(mapGroup).getByRole("button", { name: /payments/ }),
+      );
+
+      const spanGroup = screen.getByRole("group", { name: "Spans" });
+      const spans = within(spanGroup).getAllByRole("button");
+      expect(spans).toHaveLength(1);
+      expect(spans[0]).toHaveTextContent("payments");
+
+      await userEvent.click(
+        screen.getByRole("button", { name: /Clear service filter/ }),
+      );
+      expect(
+        within(screen.getByRole("group", { name: "Spans" })).getAllByRole(
+          "button",
+        ),
+      ).toHaveLength(2);
+    });
+  });
 });
 
 const VOLUME_BODY = {
