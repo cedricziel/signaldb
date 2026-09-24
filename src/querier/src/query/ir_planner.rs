@@ -31,9 +31,10 @@ use std::sync::Arc;
 
 use common::profile::aggregate_profiles_to_flamegraph;
 use common::query_ir::{
-    Aggregate, ComparisonOp, Document, Extract, FieldResolver, Heatmap, HistogramMode,
-    HistogramQuantile, Leaf, Literal, Parser, Predicate, Resolved, ResultEnvelope, SourceRegistry,
-    Stage, TimestampLiteral, ValueType, coerce, safe_ident, validate,
+    Aggregate, ComparisonOp, Correlate, CorrelateTarget, Document, Extract, FieldResolver, Heatmap,
+    HistogramMode, HistogramQuantile, JoinKind, Leaf, Literal, Parser, Predicate, Resolved,
+    ResultEnvelope, SourceRegistry, Stage, TimestampLiteral, ValueType, coerce, safe_ident,
+    validate,
 };
 use common::schema::logical::{Filterability, LogicalSchema, LogicalType};
 use datafusion::arrow::array::{
@@ -54,8 +55,8 @@ use datafusion::functions_window::expr_fn::lag;
 use datafusion::logical_expr::SortExpr;
 use datafusion::logical_expr::TableProviderFilterPushDown;
 use datafusion::logical_expr::{
-    ColumnarValue, Expr, ExprFunctionExt, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
-    TypeSignature, Volatility, cast, col, lit, not, try_cast,
+    ColumnarValue, Expr, ExprFunctionExt, JoinType, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl,
+    Signature, TypeSignature, Volatility, cast, col, lit, not, try_cast,
 };
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::ScalarFunctionExpr;
@@ -1193,6 +1194,7 @@ pub(crate) async fn plan_document(
             .iter()
             .map(|f| f.name().to_string())
             .collect(),
+        correlated: false,
     };
 
     let mut df = lowering.apply_time_window(base, &window)?;
@@ -1202,6 +1204,13 @@ pub(crate) async fn plan_document(
             // (merging bucket-array columns element-wise isn't expressible
             // as a DataFusion aggregate) — see lower_histogram_quantile.
             Stage::HistogramQuantile(hq) => lowering.lower_histogram_quantile(ctx, df, hq).await?,
+            // Needs its own scan of the traces table (the parent side) and
+            // the resolved window, both only available here.
+            Stage::Correlate(correlate) => {
+                lowering
+                    .lower_correlate(ctx, df, correlate, tenant_slug, dataset_slug, &window)
+                    .await?
+            }
             other => lowering.lower_stage(df, other)?,
         };
     }
@@ -1310,6 +1319,29 @@ fn resolve_instant(value: &serde_json::Value, now_ns: i64) -> Result<i64, Querie
 
 use datafusion::arrow::array::RecordBatch;
 
+/// The output physical column name for a parent-side field after
+/// `correlate`: `parent.<child physical name>` — a literal dot, matching the
+/// IR's `parent.` field scope directly and never colliding with a real
+/// child column (`parent_span_id`, with an underscore, is one).
+/// Referenced via `ident()`, never `col()`, since the dot must not be
+/// parsed as a qualifier.
+const PARENT_COLUMN_PREFIX: &str = "parent.";
+
+/// The relation alias given to the child side of a `correlate` join, paired
+/// with [`PARENT_RELATION_ALIAS`] — see its doc comment.
+const CHILD_RELATION_ALIAS: &str = "correlate_child";
+/// The relation alias given to the parent-side scan before the join, so its
+/// columns are DataFusion-qualified distinctly from the child's — both sides
+/// scan the same physical table, so without this the joined schema would
+/// carry two identically-qualified `trace_id`/`parent_span_id` columns.
+const PARENT_RELATION_ALIAS: &str = "correlate_parent";
+
+/// Row cap on a `correlate` stage's joined output
+/// (`openspec/changes/query-ir-span-join`'s design). Mirrors
+/// `QuerierConfig::correlate_max_rows`'s default; not yet read from config
+/// (task 2.2 follow-up).
+const CORRELATE_MAX_ROWS: usize = 5_000_000;
+
 struct Lowering<'a> {
     source: &'a SourcePlan,
     resolver: &'a SchemaResolver,
@@ -1323,6 +1355,11 @@ struct Lowering<'a> {
     derived_types: HashMap<String, ValueType>,
     /// The current base-table physical column names.
     schema_cols: Vec<String>,
+    /// `true` once a `correlate` stage has joined the relation to its parent
+    /// span. Every parent-side physical column is `parent_<child physical
+    /// name>` (see [`Self::lower_correlate`]); [`Self::parent_column`] gates
+    /// on this to resolve a `parent.<field>` reference.
+    correlated: bool,
 }
 
 impl Lowering<'_> {
@@ -1421,6 +1458,118 @@ impl Lowering<'_> {
             Stage::Describe(_) => Err(QuerierError::InvalidInput(
                 "describe introspects a source and is not executable as a query".into(),
             )),
+            // Handled directly in `plan_document`'s stage loop (needs its own
+            // async scan of the traces table) — never reached.
+            Stage::Correlate(_) => Err(QuerierError::InvalidInput(
+                "correlate requires async lowering".into(),
+            )),
+        }
+    }
+
+    /// Lower the `correlate` stage (`irVersion` 8): join the traces relation
+    /// to the span in the same trace whose `span_id` equals this row's
+    /// `parent_span_id`, per `openspec/changes/query-ir-span-join`.
+    ///
+    /// The parent side is a second, independent scan of the same table,
+    /// bounded by the same time window as the child side (D of the design:
+    /// "both sides bounded by the outer range") and given its own relation
+    /// alias (`PARENT_RELATION_ALIAS`) to disambiguate its columns from the
+    /// child's during the join. The final output carries every parent column
+    /// under `parent_<physical name>`. The joined output is capped by
+    /// `[querier].correlate_max_rows` — a plain row limit, since a span has
+    /// at most one parent and the only fan-out risk is a duplicate `span_id`.
+    async fn lower_correlate(
+        &mut self,
+        ctx: &SessionContext,
+        df: DataFrame,
+        correlate: &Correlate,
+        tenant_slug: &str,
+        dataset_slug: &str,
+        window: &ResolvedWindow,
+    ) -> Result<DataFrame, QuerierError> {
+        let CorrelateTarget::Parent = correlate.to;
+        let join_type = match correlate.kind {
+            JoinKind::Inner => JoinType::Inner,
+            JoinKind::Left => JoinType::Left,
+        };
+
+        let Some(parent_base) =
+            scan_source_tables(ctx, tenant_slug, dataset_slug, self.source).await?
+        else {
+            // No traces table to join against: every child is parentless.
+            return match join_type {
+                JoinType::Inner => df.limit(0, Some(0)).map_err(QuerierError::QueryFailed),
+                _ => Ok(df),
+            };
+        };
+        let parent_windowed = self.apply_time_window(parent_base, window)?;
+        let parent_cols: Vec<String> = parent_windowed
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().to_string())
+            .collect();
+        // Both sides scan the same physical table, so every column name
+        // (`trace_id`, `service_name`, ...) exists identically on both —
+        // without distinct relation aliases, the join predicate and every
+        // column reference below would be ambiguous.
+        let child_scan = df
+            .alias(CHILD_RELATION_ALIAS)
+            .map_err(QuerierError::QueryFailed)?;
+        let parent_scan = parent_windowed
+            .alias(PARENT_RELATION_ALIAS)
+            .map_err(QuerierError::QueryFailed)?;
+
+        let on = vec![
+            col(format!("{CHILD_RELATION_ALIAS}.trace_id"))
+                .eq(col(format!("{PARENT_RELATION_ALIAS}.trace_id"))),
+            col(format!("{CHILD_RELATION_ALIAS}.parent_span_id"))
+                .eq(col(format!("{PARENT_RELATION_ALIAS}.span_id"))),
+        ];
+        let joined = child_scan
+            .join_on(parent_scan, join_type, on)
+            .map_err(QuerierError::QueryFailed)?;
+
+        let mut select_exprs: Vec<Expr> = self
+            .schema_cols
+            .iter()
+            .map(|c| col(format!("{CHILD_RELATION_ALIAS}.{c}")).alias(c.clone()))
+            .collect();
+        let mut schema_cols = self.schema_cols.clone();
+        for c in &parent_cols {
+            let out_name = format!("{PARENT_COLUMN_PREFIX}{c}");
+            select_exprs.push(col(format!("{PARENT_RELATION_ALIAS}.{c}")).alias(out_name.clone()));
+            schema_cols.push(out_name);
+        }
+        let joined = joined
+            .select(select_exprs)
+            .map_err(QuerierError::QueryFailed)?
+            .limit(0, Some(CORRELATE_MAX_ROWS))
+            .map_err(QuerierError::QueryFailed)?;
+
+        self.schema_cols = schema_cols;
+        self.correlated = true;
+        Ok(joined)
+    }
+
+    /// Resolve a `parent.<logical>` reference to its physical column, once
+    /// `correlate` has joined the relation (see [`Self::lower_correlate`]).
+    /// Scoped to plain columns for now — a parent-side attribute container
+    /// reference is accepted by `query-ir` validation but not yet lowered
+    /// here.
+    fn parent_column(&self, stripped: &str) -> Result<String, QuerierError> {
+        if !self.correlated {
+            return Err(QuerierError::InvalidInput(format!(
+                "field 'parent.{stripped}' has no canonical type"
+            )));
+        }
+        match self.resolver.resolve("", stripped) {
+            Some(Resolved::Column { name, .. } | Resolved::PromotedColumn { name, .. }) => {
+                Ok(format!("{PARENT_COLUMN_PREFIX}{name}"))
+            }
+            _ => Err(QuerierError::InvalidInput(format!(
+                "field 'parent.{stripped}' is not yet supported by correlate"
+            ))),
         }
     }
 
@@ -2253,6 +2402,9 @@ impl Lowering<'_> {
         if let Some(c) = self.col_of.get(logical) {
             return Ok(ident(c.clone()));
         }
+        if let Some(stripped) = logical.strip_prefix("parent.") {
+            return Ok(ident(self.parent_column(stripped)?));
+        }
         match self.resolver.resolve("", logical) {
             // `body` decodes the same way the projection does (issue #1433):
             // grouping, ordering, and an aggregate operand must agree with
@@ -2369,6 +2521,14 @@ impl Lowering<'_> {
                 .cloned()
                 .unwrap_or(ValueType::String);
             (false, ty, ident(alias.clone()), false, false)
+        } else if let Some(stripped) = leaf.field.strip_prefix("parent.") {
+            let name = self.parent_column(stripped)?;
+            let ty = self
+                .resolver
+                .resolve("", stripped)
+                .map(|r| r.value_type().clone())
+                .unwrap_or(ValueType::String);
+            (false, ty, ident(name), false, false)
         } else {
             let resolved = self.resolver.resolve("", &leaf.field).ok_or_else(|| {
                 QuerierError::InvalidInput(format!("unknown field '{}'", leaf.field))
@@ -2616,6 +2776,11 @@ impl Lowering<'_> {
                     if self.aggregated || self.col_of.contains_key(f) {
                         // Aggregate output or extract-derived column.
                         ident(self.df_col(f))
+                    } else if let Some(stripped) = f.strip_prefix("parent.") {
+                        let name = self
+                            .parent_column(stripped)
+                            .unwrap_or_else(|_| safe_ident(f));
+                        ident(name).alias(safe_ident(f))
                     } else {
                         match self.resolver.resolve("", f) {
                             Some(Resolved::Column { name, .. }) => body_projection_expr(&name),
@@ -2647,13 +2812,27 @@ impl Lowering<'_> {
                 // A `table` default is the (already-curated) aggregate output.
                 return Ok(df);
             }
-            None => self
-                .source
-                .row_defaults
-                .iter()
-                .filter(|c| self.schema_cols.iter().any(|s| s == *c))
-                .map(|c| body_projection_expr(c))
-                .collect(),
+            None => {
+                let mut projection: Vec<Expr> = self
+                    .source
+                    .row_defaults
+                    .iter()
+                    .filter(|c| self.schema_cols.iter().any(|s| s == *c))
+                    .map(|c| body_projection_expr(c))
+                    .collect();
+                // A `correlate` join adds the parent side's columns to the
+                // default `rows` projection too — otherwise a client that
+                // never named `fields` would see only the child.
+                if self.correlated {
+                    projection.extend(
+                        self.schema_cols
+                            .iter()
+                            .filter(|c| c.starts_with(PARENT_COLUMN_PREFIX))
+                            .map(|c| ident(c.clone())),
+                    );
+                }
+                projection
+            }
         };
         df.select(projection).map_err(QuerierError::QueryFailed)
     }
@@ -6340,6 +6519,153 @@ mod tests {
         cat.register_schema("d", sp).unwrap();
         ctx.register_catalog("t", cat);
         ctx
+    }
+
+    /// Two traces with real parent/child span pairs, for the `correlate`
+    /// stage (`irVersion` 8): trace `t0` has root `r0` (service `web`, no
+    /// parent) calling child `c0` (service `api`, parent `r0`); trace `t1`
+    /// has a lone root `r1` (service `web`, no parent, no children).
+    fn correlate_ctx() -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, false),
+            Field::new("span_id", DataType::Utf8, false),
+            Field::new("parent_span_id", DataType::Utf8, true),
+            Field::new("span_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("start_time_unix_nano", DataType::Int64, false),
+            Field::new("duration_nanos", DataType::Int64, false),
+            Field::new("status_code", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["t0", "t0", "t1"])),
+                Arc::new(StringArray::from(vec!["r0", "c0", "r1"])),
+                Arc::new(StringArray::from(vec![None, Some("r0"), None])),
+                Arc::new(StringArray::from(vec!["GET /a", "GET /b", "GET /c"])),
+                Arc::new(StringArray::from(vec!["web", "api", "web"])),
+                Arc::new(Int64Array::from(vec![10_i64, 20, 10])),
+                Arc::new(Int64Array::from(vec![100_i64, 50, 10])),
+                Arc::new(StringArray::from(vec![Some("OK"), Some("OK"), Some("OK")])),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("traces".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
+    fn correlate_doc(kind: &str, extra: Vec<serde_json::Value>) -> Document {
+        let mut pipeline =
+            vec![serde_json::json!({ "correlate": { "to": "parent", "kind": kind } })];
+        pipeline.extend(extra);
+        doc(serde_json::json!({
+            "irVersion": 8, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "pipeline": pipeline
+        }))
+    }
+
+    #[tokio::test]
+    async fn correlate_inner_pairs_child_and_parent_and_drops_the_root() {
+        let svc = IrService::new(correlate_ctx());
+        let d = correlate_doc("inner", vec![]);
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let batches = df.collect().await.unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 1, "only c0 has a parent in the window");
+        let batch = &batches[0];
+        let child_service = batch
+            .column_by_name("service_name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0);
+        let parent_service = batch
+            .column_by_name("parent.service_name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0);
+        assert_eq!(child_service, "api");
+        assert_eq!(parent_service, "web");
+    }
+
+    #[tokio::test]
+    async fn correlate_left_keeps_roots_with_null_parent_fields() {
+        let svc = IrService::new(correlate_ctx());
+        let d = correlate_doc("left", vec![]);
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let batches = df.collect().await.unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 3, "every child row survives a left join");
+        let mut null_parent_rows = 0usize;
+        for batch in &batches {
+            let parent_service = batch
+                .column_by_name("parent.service_name")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            for i in 0..batch.num_rows() {
+                if parent_service.is_null(i) {
+                    null_parent_rows += 1;
+                }
+            }
+        }
+        assert_eq!(null_parent_rows, 2, "the two roots have no parent");
+    }
+
+    #[tokio::test]
+    async fn group_by_caller_and_callee_gives_per_pair_counts() {
+        let svc = IrService::new(correlate_ctx());
+        let d = correlate_doc(
+            "inner",
+            vec![serde_json::json!({ "aggregate": {
+                "by": ["parent.service.name", "service.name"],
+                "aggs": [{ "fn": "count", "as": "n" }]
+            } })],
+        );
+        let mut d = d;
+        d.result = ResultEnvelope::Table;
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let batches = df.collect().await.unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 1, "one caller/callee pair: web -> api");
+        let batch = &batches[0];
+        let n = batch
+            .column_by_name("n")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .unwrap()
+            .value(0);
+        assert_eq!(n, 1);
+    }
+
+    #[tokio::test]
+    async fn correlate_parent_outside_window_is_missing() {
+        let svc = IrService::new(correlate_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 8, "from": "traces", "range": { "from": 15, "to": 1000 },
+            "result": "rows",
+            "pipeline": [{ "correlate": { "to": "parent", "kind": "inner" } }]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let batches = df.collect().await.unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            total, 0,
+            "r0 (start_time 10) is outside the window, so c0 has no joinable parent"
+        );
     }
 
     /// Like [`traces_ctx`], plus the `events` column: three spans, one

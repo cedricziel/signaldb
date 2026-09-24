@@ -316,6 +316,13 @@ max_search_limit = 1000
 # Maximum queries a single tenant may run concurrently; excess queries
 # are rejected with RESOURCE_EXHAUSTED (retryable). Unset = unlimited.
 # max_concurrent_queries_per_tenant = 8
+#
+# Row cap on a Query IR `correlate` stage's joined output (the
+# span-to-parent join, irVersion 8). A span has at most one parent, so
+# the join itself can't fan out beyond the child side except for
+# duplicate span_ids; this bounds that pathological case. Reaching the
+# cap truncates the result rather than failing the query.
+correlate_max_rows = 5000000
 
 [querier.datafusion]
 # DataFusion scan/pushdown tuning. All three default to true (DataFusion's
