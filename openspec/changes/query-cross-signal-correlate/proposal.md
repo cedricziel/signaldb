@@ -10,6 +10,13 @@ is worth building.
 > Status: **stub** — scope + hard problems captured, not yet designed. Depends on
 > `query-ir-core` (the relation type system it composes onto).
 
+This change extends the `correlate` stage `query-ir-span-join` already shipped
+(IR v8, `{"correlate": {"to": "parent", "kind": "inner"|"left"}}`, a span-to-its-own-parent
+join within `traces`): the stage shape, its `to` enum, and its version gate are
+the starting point here, widened with new `to` targets rather than redesigned
+from scratch. `query-ir-span-join`'s design doc records why the narrow case
+shipped first and which of the hard problems below it deliberately left open.
+
 ## What Changes (intended)
 
 - A `correlate` stage taking a target signal and a join key, lowering to a
