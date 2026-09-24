@@ -529,6 +529,19 @@
   outline-offset: 1px;
 }
 
+.trace-map {
+  padding: 0 16px 8px;
+}
+
+.trace-map-title {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+}
+
 .span-kind-legend {
   display: flex;
   align-items: center;

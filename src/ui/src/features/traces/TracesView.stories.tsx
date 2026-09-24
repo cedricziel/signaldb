@@ -1,5 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { fireEvent, within } from "storybook/test";
 import { MemoryRouter } from "react-router";
 import { testQueryClient } from "../../lib/queryClient";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
@@ -253,4 +254,21 @@ export const TraceDetail: Story = {
       routes={detailRoutes}
     />
   ),
+};
+
+/** Waterfall | Map | Both, switched to Both — `spanRoute` above already
+ * carries a failed `payments` call, so the map's `gateway -> payments` edge
+ * and node render failed. */
+export const TraceMap: Story = {
+  render: () => (
+    <TracesPage
+      state={{ ...DEFAULT_STATE, signal: "traces", trace: "t1cafe" }}
+      routes={detailRoutes}
+    />
+  ),
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const both = await canvas.findByRole("button", { name: "Both" });
+    fireEvent.click(both);
+  },
 };
