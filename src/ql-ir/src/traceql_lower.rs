@@ -54,6 +54,9 @@ pub fn traceql_to_ir(query: &str, from: &str, to: &str) -> Result<Document, Lowe
         // freeze a projection this crate has no basis to choose.
         fields: None,
         pipeline,
+        focus: None,
+        depth: None,
+        trace_id: None,
     })
 }
 

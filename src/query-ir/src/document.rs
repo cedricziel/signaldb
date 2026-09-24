@@ -28,6 +28,10 @@ pub enum ResultEnvelope {
     /// Introspection about the source rather than its records. Legal only for
     /// a pipeline whose terminal stage is `describe`; see `query_ir::validate`.
     Metadata,
+    /// A service dependency graph (nodes and edges) over `traces`. Legal only
+    /// for the `traces` source at IR version 8 or later; see
+    /// `query_ir::validate`.
+    Graph,
 }
 
 impl ResultEnvelope {
@@ -39,6 +43,7 @@ impl ResultEnvelope {
             ResultEnvelope::Heatmap => "heatmap",
             ResultEnvelope::Flamegraph => "flamegraph",
             ResultEnvelope::Metadata => "metadata",
+            ResultEnvelope::Graph => "graph",
         }
     }
 }
@@ -73,6 +78,18 @@ pub struct Document {
     pub fields: Option<Vec<String>>,
     #[serde(default)]
     pub pipeline: Vec<Stage>,
+    /// `graph` scoping: restrict to the neighbourhood of this service (see
+    /// `depth`). Legal only with `result: graph`; mutually exclusive with
+    /// `trace_id`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus: Option<String>,
+    /// `graph` scoping: hop count from `focus`, 1 to 3, default 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<i64>,
+    /// `graph` scoping: restrict to the services and calls in this trace.
+    /// Mutually exclusive with `focus`/`depth`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
 }
 
 impl Document {

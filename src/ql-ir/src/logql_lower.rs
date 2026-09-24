@@ -41,6 +41,9 @@ fn lower_log_query(q: &LogQuery, from: &str, to: &str) -> Result<Document, Lower
         result: ResultEnvelope::Rows,
         fields: None,
         pipeline: predicate.into_iter().map(Stage::Where).collect(),
+        focus: None,
+        depth: None,
+        trace_id: None,
     })
 }
 
@@ -273,6 +276,9 @@ fn lower_metric_query(q: &MetricQuery, from: &str, to: &str) -> Result<Document,
         result: ResultEnvelope::Series,
         fields: None,
         pipeline,
+        focus: None,
+        depth: None,
+        trace_id: None,
     };
     doc.ir_version = doc.minimum_ir_version();
     Ok(doc)

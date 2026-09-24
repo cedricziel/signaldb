@@ -199,6 +199,9 @@ async fn planned_kept(ctx: &SessionContext, predicate: &Predicate) -> HashSet<i6
         result: ResultEnvelope::Rows,
         fields: Some(vec!["timestamp".to_string()]),
         pipeline: vec![Stage::Where(predicate.clone())],
+        focus: None,
+        depth: None,
+        trace_id: None,
     };
     let (df, _, _) = plan_document(
         ctx,

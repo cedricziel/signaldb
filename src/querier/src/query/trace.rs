@@ -533,6 +533,9 @@ impl TraceService {
                     .collect(),
             ),
             pipeline,
+            focus: None,
+            depth: None,
+            trace_id: None,
         };
 
         let Some((df, _window, _correlate_truncated)) = super::ir_planner::plan_document(
