@@ -104,8 +104,9 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   already loaded, no extra query — as nodes sized by time spent in each
   service, with edges showing the calls between them; a failed call colours
   both its edge and the callee node red. Clicking a service node filters the
-  waterfall to that service's spans until you clear the filter chip, and
-  hovering a node or edge shows its figures in a tooltip.
+  waterfall to that service's spans until you clear the filter chip or click
+  the same node again, and hovering a node or edge shows its figures in a
+  tooltip.
 - **Metrics** — a visual query builder (metric picker, tag filters,
   aggregation, and the `rate`/`increase` counter-rate functions, all
   populated from label metadata) with multi-query formulas for ratios —
