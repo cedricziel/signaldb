@@ -1840,3 +1840,218 @@ async fn correlate_parent_outside_the_window_is_missing() {
         "the parent starts before the narrowed window, so the inner join drops the child: {body}"
     );
 }
+
+// service-map task 1.5 — the `graph` envelope (IR v8) across the full
+// ingest→store→query stack: three services and a postgres client span per
+// trace, a second tenant reusing the same service names.
+
+/// A span with an explicit OTLP kind (2 = server, 3 = client), error
+/// status, and string attributes.
+fn graph_span(
+    trace_id: u8,
+    span_id: u8,
+    parent_span_id: Option<u8>,
+    kind: i32,
+    error: bool,
+    attrs: &[(&str, &str)],
+) -> Span {
+    Span {
+        kind,
+        attributes: attrs
+            .iter()
+            .map(|(k, v)| KeyValue {
+                key: k.to_string(),
+                value: Some(string_value(v)),
+                ..Default::default()
+            })
+            .collect(),
+        status: Some(Status {
+            code: if error { 2 } else { 1 },
+            message: String::new(),
+        }),
+        ..span_with_ids("op", trace_id, span_id, parent_span_id, 10_000_000)
+    }
+}
+
+/// Ingest one `frontend → checkout → orders → orders-db` trace per
+/// `(trace_id, orders_fails)`. Span ids are `trace_id * 10 + n`.
+async fn ingest_graph_traces(handler: &TraceHandler, ctx: &TenantContext, traces: &[(u8, bool)]) {
+    let mut by_service: Vec<(&str, Vec<Span>)> = vec![
+        ("frontend", vec![]),
+        ("checkout", vec![]),
+        ("orders", vec![]),
+    ];
+    for &(t, orders_fails) in traces {
+        let id = |n: u8| t * 10 + n;
+        by_service[0]
+            .1
+            .push(graph_span(t, id(1), None, 2, false, &[]));
+        by_service[0].1.push(graph_span(
+            t,
+            id(2),
+            Some(id(1)),
+            3,
+            false,
+            &[
+                ("server.address", "checkout:8080"),
+                ("http.request.method", "GET"),
+            ],
+        ));
+        by_service[1]
+            .1
+            .push(graph_span(t, id(3), Some(id(2)), 2, false, &[]));
+        by_service[1]
+            .1
+            .push(graph_span(t, id(4), Some(id(3)), 3, false, &[]));
+        by_service[2]
+            .1
+            .push(graph_span(t, id(5), Some(id(4)), 2, orders_fails, &[]));
+        by_service[2].1.push(graph_span(
+            t,
+            id(6),
+            Some(id(5)),
+            3,
+            false,
+            &[
+                ("db.system.name", "postgresql"),
+                ("db.namespace", "orders-db"),
+            ],
+        ));
+    }
+    for (service, spans) in by_service {
+        handler
+            .handle_grpc_otlp_traces(ctx, traces_request(service, spans))
+            .await
+            .expect("ingest graph spans");
+    }
+}
+
+fn graph_document(extra: serde_json::Value) -> serde_json::Value {
+    let mut doc = serde_json::json!({
+        "irVersion": 8, "from": "traces", "range": range(),
+        "result": "graph", "pipeline": []
+    });
+    for (k, v) in extra.as_object().into_iter().flatten() {
+        doc[k] = v.clone();
+    }
+    doc
+}
+
+/// Poll until the graph holds at least `min_edges` edges.
+async fn post_graph_until_edges(
+    app: &Router,
+    doc: serde_json::Value,
+    key: &str,
+    tenant: &str,
+    min_edges: usize,
+) -> serde_json::Value {
+    let mut last = serde_json::Value::Null;
+    for _ in 0..40 {
+        let (status, body) = post_ir_as(app, doc.clone(), key, tenant, None).await;
+        assert_eq!(status, StatusCode::OK, "graph query: {body}");
+        if body["graph"]["edges"].as_array().map_or(0, Vec::len) >= min_edges {
+            return body;
+        }
+        last = body;
+        sleep(Duration::from_millis(500)).await;
+    }
+    panic!("graph never reached {min_edges} edges: {last}");
+}
+
+fn graph_edge<'a>(
+    body: &'a serde_json::Value,
+    source: &str,
+    target: &str,
+) -> &'a serde_json::Value {
+    body["graph"]["edges"]
+        .as_array()
+        .expect("edges")
+        .iter()
+        .find(|e| e["source"] == source && e["target"] == target)
+        .unwrap_or_else(|| panic!("no edge {source} -> {target}: {body}"))
+}
+
+fn graph_node_names(body: &serde_json::Value) -> Vec<String> {
+    let mut names: Vec<String> = body["graph"]["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .map(|n| n["name"].as_str().expect("name").to_string())
+        .collect();
+    names.sort();
+    names
+}
+
+#[tokio::test]
+async fn service_graph_end_to_end_isolated_by_tenant() {
+    let services = setup().await;
+    let tenant_a = test_tenant_context();
+    ingest_graph_traces(&services.trace_handler, &tenant_a, &[(1, false), (2, true)]).await;
+    let tenant_b = tenant_context("other-tenant", "test-dataset", "other-key-123");
+    ingest_graph_traces(&services.trace_handler, &tenant_b, &[(1, false)]).await;
+    let app = build_router(&services).await;
+
+    let body = post_graph_until_edges(
+        &app,
+        graph_document(serde_json::json!({})),
+        "test-key-123",
+        "test-tenant",
+        3,
+    )
+    .await;
+    assert_eq!(
+        graph_node_names(&body),
+        ["checkout", "frontend", "orders", "orders-db"],
+        "no external node for the instrumented checkout:8080 call: {body}"
+    );
+    assert_eq!(graph_edge(&body, "frontend", "checkout")["count"], 2);
+    let orders = graph_edge(&body, "checkout", "orders");
+    assert_eq!(
+        orders["count"], 2,
+        "tenant B's spans must not count: {body}"
+    );
+    assert_eq!(orders["error_rate"], 0.5);
+    let db = body["graph"]["nodes"]
+        .as_array()
+        .expect("nodes")
+        .iter()
+        .find(|n| n["name"] == "orders-db")
+        .expect("orders-db node");
+    assert_eq!(db["kind"], "external");
+    assert_eq!(db["dependency_kind"], "database");
+    assert_eq!(graph_edge(&body, "orders", "orders-db")["count"], 2);
+
+    let body = post_graph_until_edges(
+        &app,
+        graph_document(serde_json::json!({ "focus": "checkout" })),
+        "test-key-123",
+        "test-tenant",
+        2,
+    )
+    .await;
+    assert_eq!(graph_node_names(&body), ["checkout", "frontend", "orders"]);
+    assert_eq!(body["graph"]["edges"].as_array().map(Vec::len), Some(2));
+
+    let body = post_graph_until_edges(
+        &app,
+        graph_document(serde_json::json!({ "trace_id": "02".repeat(16) })),
+        "test-key-123",
+        "test-tenant",
+        3,
+    )
+    .await;
+    let orders = graph_edge(&body, "checkout", "orders");
+    assert_eq!(orders["count"], 1, "one call in trace 2: {body}");
+    assert_eq!(orders["error_rate"], 1.0);
+
+    let body = post_graph_until_edges(
+        &app,
+        graph_document(serde_json::json!({})),
+        "other-key-123",
+        "other-tenant",
+        3,
+    )
+    .await;
+    assert_eq!(graph_edge(&body, "frontend", "checkout")["count"], 1);
+    assert_eq!(graph_edge(&body, "checkout", "orders")["error_rate"], 0.0);
+}
