@@ -14,7 +14,7 @@
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
-    "test:e2e:live": "playwright test --config=playwright.live.config.ts",
+    "test:e2e:live": "cargo build --bin signaldb --bin signaldb-cli --bin signal-producer && pnpm run build && playwright test --config=playwright.live.config.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src",
     "generate:api": "openapi-ts",

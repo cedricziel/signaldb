@@ -2,8 +2,9 @@
 // temp dir, seeds it with realistic OTLP data via the signal-producer binary,
 // waits for that data to be queryable, then logs a browser session in and
 // saves it as Playwright storageState so every live spec starts already
-// authenticated. See src/ui/playwright.live.config.ts for how this plugs in
-// and docs/contributing/ui-e2e-live.md for the full picture.
+// authenticated. The `test:e2e:live` script builds the binaries and the UI
+// bundle first, so the build does not count against Playwright's global
+// timeout. See docs/contributing/ui-e2e-live.md.
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -108,20 +109,6 @@ export default async function globalSetup(_config: FullConfig) {
   tempDir = mkdtempSync(path.join(tmpdir(), "signaldb-ui-e2e-live-"));
   const configPath = writeConfig(tempDir);
 
-  console.log("[e2e-live] building signaldb, signaldb-cli, signal-producer …");
-  run("cargo", [
-    "build",
-    "--bin",
-    "signaldb",
-    "--bin",
-    "signaldb-cli",
-    "--bin",
-    "signal-producer",
-  ]);
-
-  console.log("[e2e-live] building the UI …");
-  run("pnpm", ["run", "build"], { cwd: UI_DIR });
-
   const targetDir = path.join(REPO_ROOT, "target", "debug");
 
   console.log("[e2e-live] starting the signaldb monolith …");
@@ -213,19 +200,16 @@ export default async function globalSetup(_config: FullConfig) {
         body: JSON.stringify({
           irVersion: 1,
           from: "traces",
-          range: { from: "now-1h", to: "now" },
+          range: {
+            from: String((Date.now() - 3_600_000) * 1_000_000),
+            to: String((Date.now() + 60_000) * 1_000_000),
+          },
           result: "rows",
           pipeline: [
             {
-              filter: {
-                expr: {
-                  op: "eq",
-                  field: "service.name",
-                  value: SEEDED_SERVICE,
-                },
-              },
+              where: { field: "service.name", op: "eq", value: SEEDED_SERVICE },
             },
-            { limit: { count: 1 } },
+            { limit: 1 },
           ],
         }),
       });
