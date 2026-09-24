@@ -211,15 +211,15 @@ pub(crate) async fn build_graph(
     let graph = cap_nodes(graph, focus.as_deref(), limits.max_nodes);
     if graph.dropped_nodes > 0 {
         tracing::warn!(
-            signaldb.graph.dropped_nodes = graph.dropped_nodes,
-            signaldb.graph.max_nodes = limits.max_nodes,
+            signaldb.graph.dropped_nodes = graph.dropped_nodes as i64,
+            signaldb.graph.max_nodes = limits.max_nodes as i64,
             "graph node cap dropped nodes"
         );
     }
     let truncated = truncation.iter().any(|flag| flag.load(Ordering::Relaxed));
     if truncated {
         tracing::warn!(
-            signaldb.graph.max_rows = limits.correlate_max_rows,
+            signaldb.graph.max_rows = limits.correlate_max_rows as i64,
             "graph sub-query reached the row cap; the graph is incomplete"
         );
     }
