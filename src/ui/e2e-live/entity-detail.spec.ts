@@ -28,6 +28,13 @@ test("entity detail page renders data for a seeded service", async ({
     timeout: 15_000,
   });
   await expect(page.getByText(/^[1-9]\d* operations?, by rate$/)).toBeVisible();
+  // Rendered only once the slowest-traces query returned rows. The seeded
+  // service sits mid-chain, so this needs the inbound-span scope.
+  await expect(
+    page.getByText(
+      new RegExp(`Slowest 8 inbound requests to ${liveEnv.seededService}`),
+    ),
+  ).toBeVisible();
   await expect(page.getByText("No matching spans in this window.")).toHaveCount(
     0,
   );
