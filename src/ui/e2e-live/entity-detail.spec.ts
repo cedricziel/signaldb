@@ -1,35 +1,35 @@
-// The regression this whole suite exists for: PR #1695 fixed the entity
-// detail page's "Slowest traces" section sending a Query IR document that
-// ordered by `duration_nanos` — a physical column the server rejects
-// ("names a physical column or storage detail; use a logical name"). Every
-// pre-existing spec mocks the server, so the rejection never surfaced. This
-// spec hits a real backend and, via the shared `/api/v1/*` >=400 fixture,
-// fails loudly if that query — or any other on this page — is rejected.
+// The regression this suite exists for: PR #1695 fixed the entity detail
+// page's "Slowest traces" section ordering by `duration_nanos`, a physical
+// column the server rejects. The shared fixture fails this spec on any
+// rejected query on the page.
 import { expect, test } from "./fixtures";
 
 test("entity detail page renders data for a seeded service", async ({
   page,
   liveEnv,
 }) => {
+  // Open the entity from the catalog list: a service's identity is
+  // name + namespace, and the list's link carries both.
   await page.goto(
-    `/catalog/service/${liveEnv.seededService}?tenant=${liveEnv.tenant}&dataset=${liveEnv.dataset}`,
+    `/catalog/service?tenant=${liveEnv.tenant}&dataset=${liveEnv.dataset}`,
   );
+  await page
+    .getByRole("button", { name: liveEnv.seededService, exact: true })
+    .or(page.getByRole("link", { name: liveEnv.seededService, exact: true }))
+    .first()
+    .click({ timeout: 15_000 });
 
-  await expect(
-    page.getByText(liveEnv.seededService, { exact: true }).first(),
-  ).toBeVisible({ timeout: 15_000 });
-
-  // Operations, error groups, dependency breakdown, and slowest traces all
-  // load without hitting the "Could not load" error path — each is a
-  // separate Query IR document sent to the real backend.
   await expect(page.getByText("Operations", { exact: true })).toBeVisible({
     timeout: 15_000,
   });
   await expect(page.getByText("Slowest traces", { exact: true })).toBeVisible();
-  // The query that PR #1695 fixed actually returned data: the empty-state
-  // copy is absent.
-  await expect(page.getByText("No traces in this range")).toHaveCount(0, {
+  // KPIs and the operations table load from the seeded spans.
+  await expect(page.locator(".entity-last-seen")).toBeVisible({
     timeout: 15_000,
   });
+  await expect(page.getByText(/^[1-9]\d* operations?, by rate$/)).toBeVisible();
+  await expect(page.getByText("No matching spans in this window.")).toHaveCount(
+    0,
+  );
   await expect(page.getByText("Could not load")).toHaveCount(0);
 });
