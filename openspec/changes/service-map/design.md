@@ -15,13 +15,13 @@
 
 ## Decisions
 
-**A `graph` envelope, not a new endpoint.** Follows the rule that first-party reads go through the Query IR. The envelope is declared with scoping options (`focus`, `depth`, `trace_id`) on the document, and the querier builds it with fixed internal pipelines: an edge query (correlate inner, where parent service differs or span kind is server/consumer, aggregate by `parent.service_name, service_name`), a node query (server/consumer spans aggregated by `service_name`), and an external-edge query (client/producer spans left-joined to children, kept where the child is null, grouped by the naming attribute). Rejected: letting clients compose the three queries themselves. Every surface would reimplement the merge, which is what the UI's dependency table already does client-side.
+**A `graph` envelope, not a new endpoint.** Follows the rule that first-party reads go through the Query IR. The envelope is declared with scoping options (`focus`, `depth`, `trace_id`) on the document, and the querier builds it with fixed internal pipelines: an edge query (correlate inner, where parent service differs or span kind is server/consumer, aggregate by `parent.service_name, service_name`), a node query (server/consumer spans aggregated by `service_name`), and an external-edge query. `correlate` only joins a span to its parent, so the external-edge query cannot be written in the IR: the querier builds it internally as an anti-join, client/producer spans whose `(trace_id, span_id)` does not appear as the `(trace_id, parent_span_id)` of any server/consumer span in the window, grouped by the naming attribute. This internal anti-join is not exposed as an IR stage. Rejected: letting clients compose the three queries themselves. Every surface would reimplement the merge, which is what the UI's dependency table already does client-side.
 
 **External node naming order.** `db.namespace`, `messaging.destination.name`, `rpc.service`, `server.address`, `peer.service`, matching the order the UI dependency table already uses, so today's table and the new map agree. `peer.service` is last because it is deprecated in current semantic conventions.
 
 **Depth scoping in the querier.** For `focus` with `depth > 1`, the querier computes the full edge set once and walks it in memory; edge sets are small after aggregation. Capped at depth 3 to keep the UI readable.
 
-**Node cap.** `[querier].graph_max_nodes`, default 200, keeping the busiest nodes by request rate. The UI shows the warning above the map.
+**Node cap.** `[querier].graph_max_nodes`, default 200, always keeping the focus node, then the nodes with the most call traffic on their edges (the only measure both service and external nodes have). The UI shows the warning above the map.
 
 **Trace map is client-side.** The trace detail already holds all spans. A small function derives nodes and edges from parent links and runs in the browser; the MCP `get_trace` summary uses the same derivation in Rust in the MCP server. The server `graph` envelope with `trace_id` exists for CLI and API parity but the UI does not need it.
 
@@ -34,7 +34,7 @@
 ## Risks / Trade-offs
 
 - [Whole-system graph over a long window is slow] → Default the Map view to the last hour, show the node cap warning, and reuse the correlate row bound. If still too slow, ingest-time edge aggregation is the follow-up.
-- [Edges lost at the window start when the parent is outside it] → Documented in the user guide; inherent to window-bounded joins.
+- [Edges lost at the window start when the parent is outside it, and calls in flight at the window end shown as external] → Both documented in the user guide; inherent to window-bounded joins.
 - [External node names differ per client library] → Naming follows semantic conventions; a tenant's schema registry can be used to add aliases later.
 - [Layout library adds a UI dependency] → Pick a small, permissively licensed library with few transitive dependencies.
 

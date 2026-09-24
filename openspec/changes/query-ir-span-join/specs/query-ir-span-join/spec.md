@@ -58,7 +58,7 @@ Both sides of the join SHALL be read from the query's time range only. A parent 
 
 #### Scenario: Parent outside the window
 
-- **WHEN** a child span falls inside the query window but its parent starts before it
+- **WHEN** a child span starts inside the query window but its parent span starts before the window's start
 - **THEN** a `left` join returns the child with null parent fields and an `inner` join omits it
 
 #### Scenario: Row bound reached
