@@ -114,6 +114,22 @@ describe("buildMembersDoc", () => {
     });
     expect(doc.pipeline?.at(-1)).toEqual({ limit: 8 });
   });
+
+  it("scopes to a span kind when one is given", () => {
+    const doc = buildMembersDoc(
+      ["service.name"],
+      ["checkout"],
+      range,
+      [],
+      "spans",
+      8,
+      { field: "duration", dir: "desc" },
+      "Server",
+    );
+    expect(doc.pipeline).toContainEqual({
+      where: { field: "span_kind", op: "eq", value: "Server" },
+    });
+  });
 });
 
 describe("membersFromIrResponse", () => {

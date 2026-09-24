@@ -489,7 +489,9 @@ describe("EntityDetail", () => {
     );
   });
 
-  it("fetches the slowest traces as root spans, sorted by duration, capped at 8", async () => {
+  it("fetches the slowest traces as the service's inbound spans, sorted by duration, capped at 8", async () => {
+    // Not root spans: a service in the middle of a call chain never emits
+    // one, so the section was always empty for it.
     renderView();
     await waitFor(() => expect(fetchTraceGroupMembers).toHaveBeenCalled());
     expect(fetchTraceGroupMembers).toHaveBeenCalledWith(
@@ -497,9 +499,10 @@ describe("EntityDetail", () => {
       ["gateway", "edge"],
       expect.anything(),
       [],
-      "traces",
+      "spans",
       8,
       { field: "duration", dir: "desc" },
+      "Server",
     );
   });
 

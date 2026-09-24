@@ -13,6 +13,7 @@ import { runIrQuery } from "./queryIr";
 import { ROOT_SPAN_SENTINEL, type GroupGrain } from "./traceGroups";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 import { filterStages, type TraceFilter } from "../lib/traceFilters";
+import { spanKindWhere } from "./catalog";
 
 export interface TraceGroupMember {
   traceId: string;
@@ -53,6 +54,7 @@ export function buildMembersDoc(
   grain: GroupGrain,
   limit: number,
   sort: MembersSort = DEFAULT_MEMBERS_SORT,
+  spanKind?: string,
 ): QueryIrRequest {
   const scope: Record<string, unknown>[] =
     grain === "traces"
@@ -86,6 +88,7 @@ export function buildMembersDoc(
     result: "rows",
     pipeline: [
       ...scope,
+      ...spanKindWhere(spanKind),
       ...active,
       ...pinned,
       { order: [{ of: sort.field, dir: sort.dir }] },
@@ -132,10 +135,20 @@ export async function fetchTraceGroupMembers(
   grain: GroupGrain,
   limit: number,
   sort?: MembersSort,
+  spanKind?: string,
 ): Promise<TraceGroupMember[]> {
   return membersFromIrResponse(
     await runIrQuery(
-      buildMembersDoc(dims, values, range, filters, grain, limit, sort),
+      buildMembersDoc(
+        dims,
+        values,
+        range,
+        filters,
+        grain,
+        limit,
+        sort,
+        spanKind,
+      ),
     ),
   );
 }
