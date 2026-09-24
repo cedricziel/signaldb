@@ -379,7 +379,7 @@ const activitySparklineRoute: JsonRoute = {
   },
 };
 
-/** Root spans for the entity detail's "Slowest traces" table (`buildMembersDoc`,
+/** Spans for the entity detail's "Slowest traces" table (`buildMembersDoc`,
  * `from: "traces"`, `result: "rows"`, ordered by `duration` desc) — same
  * eight-column shape `TracesView.stories.tsx`'s span route uses, eight rows so
  * the "top 8" cap has something to show, slowest first. */

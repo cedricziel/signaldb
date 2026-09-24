@@ -345,8 +345,11 @@ Selecting a row opens that entity's own page, top to bottom:
   `rpc.system`, `messaging.system`), and beneath it a per-dependency table
   (target, kind, share of request time, P95, calls/request) with a `(self)`
   row for the time no downstream call accounts for.
-- **Slowest traces**: the entity's top 8 root spans by duration in the
-  current window, with an "Open in Traces" link that jumps to the Traces tab
+- **Slowest traces**: the entity's 8 slowest spans in the current window.
+  For a service these are its inbound (server) spans, the requests it
+  handled, so a service in the middle of a call chain lists its own slow
+  requests too. Other entity types list their slowest spans that carry the
+  entity's identity. The section has an "Open in Traces" link that jumps to the Traces tab
   pre-filtered the same way the header's Traces button does. Opening a row
   goes straight to its trace waterfall.
 - The entity's **metrics** panel, last on the page — supplementary context

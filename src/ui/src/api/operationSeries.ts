@@ -6,7 +6,7 @@
  * by the breakdown field's own value rather than the entity's identity.
  */
 import type { QueryIrRequest, QueryIrResponse } from "./gen";
-import { pinsWhere, type EntityPin } from "./catalog";
+import { pinsWhere, spanKindWhere, type EntityPin } from "./catalog";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 import { toLokiLabel } from "../lib/labelSuggestions";
@@ -37,17 +37,7 @@ export function buildOperationSeriesDoc(
     },
     result: "series",
     pipeline: [
-      ...(entity.spanKindScope
-        ? [
-            {
-              where: {
-                field: "span_kind",
-                op: "eq",
-                value: entity.spanKindScope,
-              },
-            },
-          ]
-        : []),
+      ...spanKindWhere(entity.spanKindScope),
       ...pinsWhere(pinned),
       {
         aggregate: {

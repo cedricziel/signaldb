@@ -66,7 +66,7 @@ interface Props {
   update: UpdateFn;
 }
 
-/** How many of the entity's own slowest root spans the "Slowest traces"
+/** How many of the entity's own slowest inbound spans the "Slowest traces"
  * section shows — a leaderboard, not the traces tab's user-configurable
  * limit. */
 const SLOWEST_TRACES_LIMIT = 8;
@@ -194,6 +194,7 @@ export function EntityDetail({ entity, range, state, update }: Props) {
     queryKey: [
       "catalog-entity-slowest-traces",
       entity.id,
+      entity.spanKindScope,
       rangeKey,
       compositeKey(memberValues),
     ],
@@ -203,9 +204,10 @@ export function EntityDetail({ entity, range, state, update }: Props) {
         memberValues,
         range,
         [],
-        "traces",
+        "spans",
         SLOWEST_TRACES_LIMIT,
         SLOWEST_TRACES_SORT,
+        entity.spanKindScope,
       ),
   });
 
@@ -450,9 +452,9 @@ export function EntityDetail({ entity, range, state, update }: Props) {
         members={slowestTracesQuery.data}
         error={slowestTracesQuery.error}
         what="traces"
-        identityLabel="Root"
+        identityLabel="Span"
         emptyMessage="No traces in this range"
-        footnote={`Slowest ${SLOWEST_TRACES_LIMIT} root spans for ${title} in this window.`}
+        footnote={`Slowest ${SLOWEST_TRACES_LIMIT} ${entity.spanKindScope ? "inbound requests to" : "spans for"} ${title} in this window.`}
         initialSort={{ key: "duration", dir: "desc" }}
         onOpenTrace={(traceId) =>
           update({ signal: "traces", trace: traceId }, { push: true })
