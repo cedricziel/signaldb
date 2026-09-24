@@ -20,9 +20,14 @@ pub enum GraphNodeKind {
 /// A service or an uninstrumented dependency.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct GraphNode {
-    /// The service name, or for an external node the first present of
+    /// Stable identity, distinct from `name`: `service:<name>` for a
+    /// service, `external:<kind>:<name>` for an external dependency, and
+    /// `external:<kind>:unnamed:<caller>` for an external with no naming
+    /// attribute. Edges reference nodes by this id.
+    pub id: String,
+    /// Display name: the service name, or for an external node the first present of
     /// `db.namespace`, `messaging.destination.name`, `rpc.service`,
-    /// `server.address`, `peer.service`.
+    /// `server.address`, `peer.service` (`unnamed <kind>` if none is set).
     pub name: String,
     pub kind: GraphNodeKind,
     /// External nodes only: `database`, `messaging`, `rpc`, `http` or `other`.
@@ -42,7 +47,9 @@ pub struct GraphNode {
 /// Calls from `source` to `target` in the window.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct GraphEdge {
+    /// The calling node's `id`.
     pub source: String,
+    /// The called node's `id`.
     pub target: String,
     pub count: u64,
     /// Calls per second: `count` over the window length in seconds.

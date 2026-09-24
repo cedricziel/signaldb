@@ -559,6 +559,7 @@ The response carries a `graph` field:
   "graph": {
     "nodes": [
       {
+        "id": "service:checkout",
         "name": "checkout",
         "kind": "service",
         "request_rate": 0.4,
@@ -566,6 +567,7 @@ The response carries a `graph` field:
         "p95_ns": 20000000,
       },
       {
+        "id": "service:frontend",
         "name": "frontend",
         "kind": "service",
         "request_rate": 0.4,
@@ -573,6 +575,7 @@ The response carries a `graph` field:
         "p95_ns": 12000000,
       },
       {
+        "id": "external:database:orders-db",
         "name": "orders-db",
         "kind": "external",
         "dependency_kind": "database",
@@ -580,16 +583,16 @@ The response carries a `graph` field:
     ],
     "edges": [
       {
-        "source": "frontend",
-        "target": "checkout",
+        "source": "service:frontend",
+        "target": "service:checkout",
         "count": 4,
         "rate": 0.4,
         "error_rate": 0.25,
         "p95_ns": 20000000,
       },
       {
-        "source": "checkout",
-        "target": "orders-db",
+        "source": "service:checkout",
+        "target": "external:database:orders-db",
         "count": 4,
         "rate": 0.4,
         "error_rate": 0.0,
@@ -601,6 +604,10 @@ The response carries a `graph` field:
 }
 ```
 
+- **Node ids.** Every node has an `id` separate from its display `name`:
+  `service:<name>` for a service and `external:<kind>:<name>` for an
+  external dependency. Edge `source` and `target` are node ids, so a
+  database called `orders` and a service called `orders` stay two nodes.
 - **Edges between services.** An edge `A → B` counts the server and consumer
   spans of `B` whose parent span belongs to `A`. `count` is the number of such
   calls. `rate` is `count` divided by the window length in seconds.
@@ -613,7 +620,10 @@ The response carries a `graph` field:
   child in the window becomes an edge to an `external` node. The node is named
   after the first attribute present out of `db.namespace`,
   `messaging.destination.name`, `rpc.service`, `server.address` and
-  `peer.service`. If none is present, it is named after its kind.
+  `peer.service`. If none is present, the dependency is scoped to its
+  caller: id `external:<kind>:unnamed:<caller>`, name `unnamed <kind>`. Two
+  services with unnamed HTTP calls therefore get two separate nodes, not one
+  shared `http` node.
   `dependency_kind` is `database`, `messaging`, `rpc`, `http` or `other`,
   taken from `db.system.name`, `messaging.system`, `rpc.system` or
   `http.request.method`.
@@ -623,8 +633,13 @@ The response carries a `graph` field:
   Edges to dropped nodes are removed as well. `dropped_nodes` gives the count,
   and the response carries a `graph_node_limit` warning.
 - An unknown `focus` returns an empty graph, not an error.
-- The edge query uses a `correlate` join, so `[querier].correlate_max_rows`
-  and its `correlate_row_limit` warning apply here too.
+- **Row bound.** The service-edge query uses a `correlate` join, and the
+  external-edge query is an anti-join whose two inputs (client/producer spans
+  and server/consumer spans) are capped the same way. Both are bounded by
+  `[querier].correlate_max_rows`. If any of them reaches the cap, the graph
+  is built from the truncated rows and the response carries a
+  `correlate_row_limit` warning. When the callee side is truncated, some
+  instrumented calls can show up as external edges.
 
 ### Window edges
 

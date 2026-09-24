@@ -4,7 +4,7 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use common::query_ir::Document;
 use common::service_graph::{GRAPH_JSON_COLUMN, GraphEdge, GraphNode, GraphNodeKind, ServiceGraph};
@@ -17,6 +17,7 @@ use datafusion::logical_expr::{Expr, JoinType, col, lit, when};
 use datafusion::prelude::{DataFrame, SessionContext};
 use serde_json::json;
 
+use super::correlate_cap::wrap_with_cap;
 use super::error::QuerierError;
 use super::ir_planner::{PlanRequest, ResolvedWindow, plan_document};
 
@@ -75,14 +76,16 @@ pub(crate) async fn build_graph(
     let Some((_, window, _)) = plan_document(ctx, doc, request()).await? else {
         return Ok(None);
     };
-    let plan = |internal: Document| async move {
+    // Every row-cap flag a sub-query sets, read once all of them have run.
+    let mut truncation: Vec<Arc<AtomicBool>> = Vec::new();
+    let plan = async |internal: Document| {
         plan_document(ctx, &internal, request())
             .await?
             .map(|(df, _, truncated)| (df, truncated))
             .ok_or_else(|| QuerierError::InvalidInput("traces table disappeared".into()))
     };
 
-    let (edges_df, truncated) = plan(internal_doc(
+    let (edges_df, flag) = plan(internal_doc(
         doc,
         true,
         &CALLEE_KINDS,
@@ -93,6 +96,7 @@ pub(crate) async fn build_graph(
         None,
     )?)
     .await?;
+    truncation.extend(flag);
     let (nodes_df, _) = plan(internal_doc(
         doc,
         true,
@@ -123,6 +127,14 @@ pub(crate) async fn build_graph(
         Some(&["trace_id", "parent_span_id"]),
     )?)
     .await?;
+    // The anti-join is not a `correlate` stage, so bound both of its inputs
+    // with the same streaming row cap.
+    let mut capped = |df: DataFrame| {
+        let flag = Arc::new(AtomicBool::new(false));
+        truncation.push(Arc::clone(&flag));
+        wrap_with_cap(df, limits.correlate_max_rows, flag)
+    };
+    let (callers_df, callees_df) = (capped(callers_df)?, capped(callees_df)?);
     let externals_df = external_calls(callers_df, callees_df)?;
 
     let window_secs = ((window.end_ns - window.start_ns) as f64 / 1e9).max(f64::MIN_POSITIVE);
@@ -132,64 +144,57 @@ pub(crate) async fn build_graph(
         call_rows(nodes_df, 1),
         call_rows(externals_df, 3),
     )?;
-    let mut edges: Vec<GraphEdge> = edge_rows
+    let edge_rows: Vec<CallRow> = edge_rows
         .into_iter()
         .filter(|row| row.keys[0] != row.keys[1])
-        .map(|row| row.edge(&row.keys[1], window_secs))
+        .collect();
+    let mut edges: Vec<GraphEdge> = edge_rows
+        .iter()
+        .map(|row| row.edge(service_id(&row.keys[1]), window_secs))
         .collect();
     let mut nodes: BTreeMap<String, GraphNode> = BTreeMap::new();
-    for row in node_rows {
-        let name = row.keys[0].clone();
-        nodes.insert(
-            name.clone(),
-            GraphNode {
-                request_rate: Some(row.calls as f64 / window_secs),
-                error_rate: Some(row.error_rate()),
-                p95_ns: row.p95_ns,
-                ..service_node(&name)
-            },
-        );
-    }
-    // Two groups (say, differing kind attributes) can share one external
-    // name; fold them into one edge.
-    let mut external_edges: BTreeMap<(String, String), (GraphEdge, String)> = BTreeMap::new();
-    for row in external_rows {
-        // A client span with no naming attribute is named after its kind.
-        let kind = row.keys[2].clone();
-        let target = if row.keys[1].is_empty() {
-            &kind
-        } else {
-            &row.keys[1]
+    for row in &node_rows {
+        let node = GraphNode {
+            request_rate: Some(row.calls as f64 / window_secs),
+            error_rate: Some(row.error_rate()),
+            p95_ns: row.p95_ns,
+            ..service_node(&row.keys[0])
         };
-        let edge = row.edge(target, window_secs);
-        match external_edges.entry((edge.source.clone(), edge.target.clone())) {
-            std::collections::btree_map::Entry::Vacant(v) => {
-                v.insert((edge, kind));
-            }
-            std::collections::btree_map::Entry::Occupied(mut o) => {
-                merge_edge(&mut o.get_mut().0, &edge, window_secs);
-            }
-        }
+        nodes.insert(node.id.clone(), node);
     }
-    for (edge, kind) in external_edges.into_values() {
-        nodes
-            .entry(edge.target.clone())
-            .or_insert_with(|| GraphNode {
-                kind: GraphNodeKind::External,
-                dependency_kind: Some(kind),
-                ..service_node(&edge.target)
-            });
-        edges.push(edge);
+    // Rows are grouped by (caller, name, kind), so every external edge is
+    // distinct. An external with no naming attribute is scoped to its
+    // caller rather than merged into one global node per kind.
+    for row in &external_rows {
+        let (caller, name, kind) = (&row.keys[0], &row.keys[1], &row.keys[2]);
+        let (id, name) = if name.is_empty() {
+            (
+                format!("external:{kind}:unnamed:{caller}"),
+                format!("unnamed {kind}"),
+            )
+        } else {
+            (format!("external:{kind}:{name}"), name.clone())
+        };
+        edges.push(row.edge(id.clone(), window_secs));
+        nodes.entry(id.clone()).or_insert_with(|| GraphNode {
+            id,
+            name,
+            kind: GraphNodeKind::External,
+            dependency_kind: Some(kind.clone()),
+            request_rate: None,
+            error_rate: None,
+            p95_ns: None,
+        });
     }
-    // A caller with no server/consumer spans of its own (a cron job, a
-    // frontend) still needs a node.
-    for edge in &edges {
-        nodes
-            .entry(edge.source.clone())
-            .or_insert_with(|| service_node(&edge.source));
-        nodes
-            .entry(edge.target.clone())
-            .or_insert_with(|| service_node(&edge.target));
+    // A service with no server/consumer spans of its own (a cron job, a
+    // frontend) still needs a node when it appears on an edge.
+    let edge_services = edge_rows
+        .iter()
+        .flat_map(|row| [&row.keys[0], &row.keys[1]])
+        .chain(external_rows.iter().map(|row| &row.keys[0]));
+    for name in edge_services {
+        let node = service_node(name);
+        nodes.entry(node.id.clone()).or_insert(node);
     }
     edges.sort_by(|a, b| (&a.source, &a.target).cmp(&(&b.source, &b.target)));
 
@@ -198,15 +203,27 @@ pub(crate) async fn build_graph(
         edges,
         dropped_nodes: 0,
     };
-    if let Some(focus) = &doc.focus {
+    let focus = doc.focus.as_deref().map(service_id);
+    if let Some(focus) = &focus {
         let depth = usize::try_from(doc.depth.unwrap_or(1)).unwrap_or(1);
         graph = scope_to_focus(graph, focus, depth);
     }
-    Ok(Some((
-        cap_nodes(graph, doc.focus.as_deref(), limits.max_nodes),
-        window,
-        truncated.is_some_and(|flag| flag.load(Ordering::Relaxed)),
-    )))
+    let graph = cap_nodes(graph, focus.as_deref(), limits.max_nodes);
+    if graph.dropped_nodes > 0 {
+        tracing::warn!(
+            signaldb.graph.dropped_nodes = graph.dropped_nodes,
+            signaldb.graph.max_nodes = limits.max_nodes,
+            "graph node cap dropped nodes"
+        );
+    }
+    let truncated = truncation.iter().any(|flag| flag.load(Ordering::Relaxed));
+    if truncated {
+        tracing::warn!(
+            signaldb.graph.max_rows = limits.correlate_max_rows,
+            "graph sub-query reached the row cap; the graph is incomplete"
+        );
+    }
+    Ok(Some((graph, window, truncated)))
 }
 
 /// The graph as a one-row `graph_json: Utf8` batch, the shape it crosses
@@ -230,8 +247,13 @@ pub(crate) fn encode_graph_batch(graph: &ServiceGraph) -> Result<RecordBatch, Qu
     })
 }
 
+fn service_id(name: &str) -> String {
+    format!("service:{name}")
+}
+
 fn service_node(name: &str) -> GraphNode {
     GraphNode {
+        id: service_id(name),
         name: name.to_string(),
         kind: GraphNodeKind::Service,
         dependency_kind: None,
@@ -239,15 +261,6 @@ fn service_node(name: &str) -> GraphNode {
         error_rate: None,
         p95_ns: None,
     }
-}
-
-/// Fold `other` into `into`; the p95 keeps the larger of the two.
-fn merge_edge(into: &mut GraphEdge, other: &GraphEdge, window_secs: f64) {
-    let errors = into.error_rate * into.count as f64 + other.error_rate * other.count as f64;
-    into.count += other.count;
-    into.rate = into.count as f64 / window_secs;
-    into.error_rate = errors / into.count.max(1) as f64;
-    into.p95_ns = into.p95_ns.max(other.p95_ns);
 }
 
 /// One internal IR document: the caller's range and (optionally) `where`
@@ -373,11 +386,11 @@ impl CallRow {
         self.errors as f64 / self.calls.max(1) as f64
     }
 
-    /// An edge from `keys[0]` to `target`.
-    fn edge(&self, target: &str, window_secs: f64) -> GraphEdge {
+    /// An edge from the service `keys[0]` to the node id `target`.
+    fn edge(&self, target: String, window_secs: f64) -> GraphEdge {
         GraphEdge {
-            source: self.keys[0].clone(),
-            target: target.to_string(),
+            source: service_id(&self.keys[0]),
+            target,
             count: self.calls,
             rate: self.calls as f64 / window_secs,
             error_rate: self.error_rate(),
@@ -441,11 +454,11 @@ fn cast_column(
     })
 }
 
-/// Keep the nodes within `depth` hops of `focus` (either direction), and the
+/// Keep the nodes within `depth` hops of the node id `focus` (either direction), and the
 /// edges the walk crossed: those with an endpoint closer than `depth`. An
 /// unknown focus is an empty graph.
 fn scope_to_focus(graph: ServiceGraph, focus: &str, depth: usize) -> ServiceGraph {
-    if !graph.nodes.iter().any(|n| n.name == focus) {
+    if !graph.nodes.iter().any(|n| n.id == focus) {
         return ServiceGraph::default();
     }
     let mut dist: HashMap<&str, usize> = HashMap::from([(focus, 0)]);
@@ -479,7 +492,7 @@ fn scope_to_focus(graph: ServiceGraph, focus: &str, depth: usize) -> ServiceGrap
         nodes: graph
             .nodes
             .iter()
-            .filter(|n| dist.contains_key(n.name.as_str()))
+            .filter(|n| dist.contains_key(n.id.as_str()))
             .cloned()
             .collect(),
         edges: graph.edges.iter().filter(|e| crossed(e)).cloned().collect(),
@@ -488,7 +501,7 @@ fn scope_to_focus(graph: ServiceGraph, focus: &str, depth: usize) -> ServiceGrap
 }
 
 /// Cap the graph at `max_nodes`: the focus first, then the nodes with the
-/// most call traffic (the sum of counts on their edges), name as the tie
+/// most call traffic (the sum of counts on their edges), id as the tie
 /// break. Edges touching a dropped node go with it.
 fn cap_nodes(mut graph: ServiceGraph, focus: Option<&str>, max_nodes: usize) -> ServiceGraph {
     if graph.nodes.len() <= max_nodes {
@@ -501,19 +514,19 @@ fn cap_nodes(mut graph: ServiceGraph, focus: Option<&str>, max_nodes: usize) -> 
     }
     let rank = |n: &GraphNode| {
         (
-            focus != Some(n.name.as_str()),
-            std::cmp::Reverse(traffic.get(n.name.as_str()).copied().unwrap_or(0)),
+            focus != Some(n.id.as_str()),
+            std::cmp::Reverse(traffic.get(n.id.as_str()).copied().unwrap_or(0)),
         )
     };
     let mut ranked: Vec<&GraphNode> = graph.nodes.iter().collect();
-    ranked.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.name.cmp(&b.name)));
+    ranked.sort_by(|a, b| rank(a).cmp(&rank(b)).then_with(|| a.id.cmp(&b.id)));
     let kept: HashSet<String> = ranked
         .into_iter()
         .take(max_nodes)
-        .map(|n| n.name.clone())
+        .map(|n| n.id.clone())
         .collect();
     graph.dropped_nodes = (graph.nodes.len() - kept.len()) as u64;
-    graph.nodes.retain(|n| kept.contains(&n.name));
+    graph.nodes.retain(|n| kept.contains(&n.id));
     graph
         .edges
         .retain(|e| kept.contains(&e.source) && kept.contains(&e.target));
@@ -705,17 +718,25 @@ mod tests {
         serde_json::from_value(v).unwrap()
     }
 
+    async fn run_spans(
+        spans: &[Span],
+        extra: serde_json::Value,
+        limits: GraphLimits,
+    ) -> (ServiceGraph, bool) {
+        let (graph, _, truncated) =
+            build_graph(&ctx_with(spans), &graph_doc(extra), "t", "d", 0, limits)
+                .await
+                .unwrap()
+                .expect("traces table is registered");
+        (graph, truncated)
+    }
+
     async fn run_with(extra: serde_json::Value, max_nodes: usize) -> ServiceGraph {
-        let ctx = ctx_with(&fixture());
         let limits = GraphLimits {
             correlate_max_rows: 1_000,
             max_nodes,
         };
-        build_graph(&ctx, &graph_doc(extra), "t", "d", 0, limits)
-            .await
-            .unwrap()
-            .expect("traces table is registered")
-            .0
+        run_spans(&fixture(), extra, limits).await.0
     }
 
     async fn run(extra: serde_json::Value) -> ServiceGraph {
@@ -745,7 +766,7 @@ mod tests {
     #[tokio::test]
     async fn service_edge_carries_count_rate_error_rate_and_p95() {
         let g = run(serde_json::json!({})).await;
-        let e = edge(&g, "frontend", "checkout");
+        let e = edge(&g, "service:frontend", "service:checkout");
         assert_eq!(e.count, 4);
         assert!((e.rate - 0.4).abs() < 1e-9, "4 calls over 10s: {}", e.rate);
         assert!((e.error_rate - 0.25).abs() < 1e-9, "{}", e.error_rate);
@@ -769,14 +790,17 @@ mod tests {
         let db = node(&g, "checkout-db");
         assert_eq!(db.kind, GraphNodeKind::External);
         assert_eq!(db.dependency_kind.as_deref(), Some("database"));
-        assert_eq!(edge(&g, "checkout", "checkout-db").count, 4);
+        assert_eq!(
+            edge(&g, "service:checkout", "external:database:checkout-db").count,
+            4
+        );
     }
 
     #[tokio::test]
     async fn nested_client_span_is_not_an_instrumented_callee() {
         let g = run(serde_json::json!({})).await;
         assert_eq!(node(&g, "orders-db").kind, GraphNodeKind::External);
-        edge(&g, "orders", "orders-db");
+        edge(&g, "service:orders", "external:database:orders-db");
     }
 
     #[tokio::test]
@@ -822,7 +846,10 @@ mod tests {
     async fn trace_scope_keeps_only_that_trace() {
         let g = run(serde_json::json!({ "trace_id": "t5" })).await;
         assert_eq!(names(&g), ["orders", "orders-db"]);
-        assert_eq!(edge(&g, "orders", "orders-db").count, 2);
+        assert_eq!(
+            edge(&g, "service:orders", "external:database:orders-db").count,
+            2
+        );
     }
 
     #[tokio::test]
@@ -862,6 +889,73 @@ mod tests {
         let g: ServiceGraph = serde_json::from_str(cell).unwrap();
         assert_eq!(g.nodes.len(), 2);
         assert_eq!(g.dropped_nodes, 3);
+    }
+
+    #[tokio::test]
+    async fn external_named_like_a_service_is_its_own_node() {
+        const ORDERS_NAMESPACE: &[(&str, &str)] =
+            &[("db.system.name", "postgresql"), ("db.namespace", "orders")];
+        let spans = [
+            span("t1", "os", None, "orders", "Server"),
+            span("t1", "cs", None, "checkout", "Server"),
+            Span {
+                attrs: ORDERS_NAMESPACE,
+                ..span("t1", "cdb", Some("cs"), "checkout", "Client")
+            },
+        ];
+        let (g, _) = run_spans(&spans, serde_json::json!({}), limits(1_000)).await;
+        let mut ids: Vec<&str> = g.nodes.iter().map(|n| n.id.as_str()).collect();
+        ids.sort_unstable();
+        assert_eq!(
+            ids,
+            [
+                "external:database:orders",
+                "service:checkout",
+                "service:orders"
+            ]
+        );
+        let e = edge(&g, "service:checkout", "external:database:orders");
+        assert_eq!(e.count, 1);
+        assert!(g.edges.iter().all(|e| e.target != "service:orders"));
+    }
+
+    #[tokio::test]
+    async fn unnamed_externals_are_scoped_per_caller() {
+        const BARE_HTTP: &[(&str, &str)] = &[("http.request.method", "GET")];
+        let spans = [
+            Span {
+                attrs: BARE_HTTP,
+                ..span("t1", "a1", None, "alpha", "Client")
+            },
+            Span {
+                attrs: BARE_HTTP,
+                ..span("t2", "b1", None, "beta", "Client")
+            },
+        ];
+        let (g, _) = run_spans(&spans, serde_json::json!({}), limits(1_000)).await;
+        for caller in ["alpha", "beta"] {
+            let target = format!("external:http:unnamed:{caller}");
+            edge(&g, &format!("service:{caller}"), &target);
+            let n = g.nodes.iter().find(|n| n.id == target).unwrap();
+            assert_eq!(n.name, "unnamed http");
+        }
+    }
+
+    #[tokio::test]
+    async fn external_query_rows_count_against_the_correlate_cap() {
+        // The correlate join yields 4 rows (the checkout server spans) and
+        // stays under the cap; the 10 client spans of the anti-join do not.
+        let (_, truncated) = run_spans(&fixture(), serde_json::json!({}), limits(5)).await;
+        assert!(truncated, "the external anti-join input exceeded the cap");
+        let (_, truncated) = run_spans(&fixture(), serde_json::json!({}), limits(1_000)).await;
+        assert!(!truncated);
+    }
+
+    fn limits(correlate_max_rows: usize) -> GraphLimits {
+        GraphLimits {
+            correlate_max_rows,
+            max_nodes: 200,
+        }
     }
 
     #[tokio::test]
