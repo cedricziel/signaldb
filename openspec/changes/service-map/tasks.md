@@ -14,11 +14,11 @@
 ## 3. UI
 
 - [ ] 3.1 Write failing tests for a client-side trace-to-graph derivation (nodes, edges, time per service, failed calls). Verify with the UI test suite on Node 24.
-- [ ] 3.2 Implement the derivation and a shared graph component (layered layout, VizTooltip on hover) with Storybook stories. Verify tests and stories pass.
-- [ ] 3.3 Trace detail: Waterfall | Map | Both switch and click-to-filter, with tests for the filter and failed-call marking. Verify tests pass.
-- [ ] 3.4 Service page: neighbourhood map using the `graph` envelope with `focus` via the generated client, Map | Table switch, empty-callers state, with tests. Verify tests pass.
-- [ ] 3.5 Catalog: List | Map switch kept in the URL, side panel, hide-external toggle, node-cap warning, with tests. Verify tests pass.
-- [ ] 3.6 Sync the new stories to Claude Design with /design-sync and compare against the mockups in `ui_kits/console/service-map/`.
+- [ ] 3.2 Implement the derivation and a shared `ServiceGraph` component in `src/ui/src/components/` (the directory /design-sync reads), with a layered layout and VizTooltip on hover. Add `ServiceGraph.stories.tsx` covering: whole-system graph, one-hop neighbourhood, single trace, selected node, error edges at each threshold, external nodes shown and hidden, empty graph, node-cap warning, loading and error. Verify tests pass and `pnpm --filter signaldb-ui build-storybook` succeeds.
+- [ ] 3.3 Trace detail: Waterfall | Map | Both switch and click-to-filter, with tests for the filter and failed-call marking, and a `TracesView` story for the trace map (Both mode, failed call). Verify tests and Storybook build pass.
+- [ ] 3.4 Service page: neighbourhood map using the `graph` envelope with `focus` via the generated client, Map | Table switch, empty-callers state, with tests and a `CatalogView` story for the service page with the map (plus the no-callers state). Verify tests and Storybook build pass.
+- [ ] 3.5 Catalog: List | Map switch kept in the URL, side panel, hide-external toggle, node-cap warning, with tests and `CatalogView` stories for Map view (default, node selected, node-cap warning). Verify tests and Storybook build pass.
+- [ ] 3.6 Run /design-sync to push `ServiceGraph` and the updated view stories to the "SignalDB UI" Claude Design project (`.design-sync/config.json`; add a `titleMap` entry if the story title differs from the export name). Verify the new cards render there and compare them against the mockups in the "SignalDB Design System" project, `ui_kits/console/service-map/`.
 
 ## 4. MCP
 
