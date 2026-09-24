@@ -166,30 +166,36 @@ jobs:
   ui-e2e-live:
     name: UI E2E (live backend)
     runs-on: ubuntu-latest
-    needs: changes
-    if: needs.changes.outputs.core == 'true' || needs.changes.outputs.ui == 'true'
+    # Tests the release binaries and UI bundle the images ship, instead of
+    # compiling its own.
+    needs: [changes, build-musl-amd64, build-ui]
+    if: >-
+      !cancelled()
+      && needs.build-musl-amd64.result == 'success'
+      && needs.build-ui.result == 'success'
     steps:
       - uses: actions/checkout@v7
 
-      - name: Init submodules
-        run: git submodule update --init --recursive
-
-      - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v2
+      - name: Download musl binaries
+        uses: actions/download-artifact@v8
         with:
-          cache: false # Using Swatinem/rust-cache instead
+          name: musl-binaries-amd64
+          path: e2e-bin/
 
-      - name: Setup Rust cache
-        uses: Swatinem/rust-cache@v2
+      - name: Download e2e seeding tool
+        uses: actions/download-artifact@v8
         with:
-          shared-key: "ui-e2e-live"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-          cache-on-failure: true
+          name: e2e-tools-amd64
+          path: e2e-bin/
 
-      - name: Install system dependencies
-        uses: ./.github/actions/apt-install
+      - name: Download UI dist
+        uses: actions/download-artifact@v8
         with:
-          packages: protobuf-compiler mold clang
+          name: ui-dist
+          path: src/ui/dist/
+
+      - name: Make binaries executable
+        run: chmod +x e2e-bin/*
 
       - uses: pnpm/action-setup@v6.1.0
 
@@ -208,7 +214,9 @@ jobs:
         run: pnpm --filter signaldb-ui exec playwright install --with-deps chromium
 
       - name: Live E2E tests
-        run: pnpm --filter signaldb-ui test:e2e:live
+        env:
+          SIGNALDB_E2E_BIN_DIR: ${{ github.workspace }}/e2e-bin
+        run: pnpm --filter signaldb-ui exec playwright test --config=playwright.live.config.ts
 
       - name: Upload Playwright report
         if: failure()
@@ -494,7 +502,14 @@ jobs:
     name: Build musl Binaries (amd64)
     runs-on: ubuntu-latest
     needs: [changes, check]
-    if: needs.changes.outputs.images == 'true'
+    # Also feeds the live UI e2e job, so it runs for any core or UI change,
+    # not only image-affecting ones. `check` is skipped on UI-only PRs.
+    if: >-
+      !cancelled()
+      && (needs.check.result == 'success' || needs.check.result == 'skipped')
+      && (needs.changes.outputs.images == 'true'
+          || needs.changes.outputs.core == 'true'
+          || needs.changes.outputs.ui == 'true')
     steps:
       - uses: actions/checkout@v7
 
@@ -531,20 +546,30 @@ jobs:
           cargo build --release --target x86_64-unknown-linux-musl \
             --features signaldb-bin/jemalloc \
             --bin signaldb \
-            --bin signaldb-cli
+            --bin signaldb-cli \
+            --bin signal-producer
 
       - name: Stage binaries
         run: |
-          mkdir -p dist
+          mkdir -p dist e2e-tools
           cp target/x86_64-unknown-linux-musl/release/signaldb \
              target/x86_64-unknown-linux-musl/release/signaldb-cli \
              dist/
+          cp target/x86_64-unknown-linux-musl/release/signal-producer e2e-tools/
 
       - name: Upload musl binaries
         uses: actions/upload-artifact@v7
         with:
           name: musl-binaries-amd64
           path: dist/
+          retention-days: 7
+
+      # Kept out of dist/ so the Docker images don't pick it up.
+      - name: Upload e2e seeding tool
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-tools-amd64
+          path: e2e-tools/
           retention-days: 7
 
   # Heap-profiling build of the monolithic binary. Separate from the musl
@@ -673,7 +698,10 @@ jobs:
     name: Build UI dist
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.images == 'true'
+    if: >-
+      needs.changes.outputs.images == 'true'
+      || needs.changes.outputs.core == 'true'
+      || needs.changes.outputs.ui == 'true'
     steps:
       - uses: actions/checkout@v7
 
@@ -706,7 +734,8 @@ jobs:
     runs-on: ubuntu-latest
     # test gates the image push: a commit with a red test suite must not
     # be published to ghcr, even though the binaries already built
-    needs: [build-musl-amd64, build-ui, test]
+    needs: [changes, build-musl-amd64, build-ui, test]
+    if: needs.changes.outputs.images == 'true'
     permissions:
       contents: read
       packages: write
@@ -948,7 +977,8 @@ jobs:
   deployment-test:
     name: Deployment Test
     runs-on: ubuntu-latest
-    needs: build-musl-amd64
+    needs: [changes, build-musl-amd64]
+    if: needs.changes.outputs.images == 'true'
     strategy:
       matrix:
         deployment: [monolithic, microservices]
