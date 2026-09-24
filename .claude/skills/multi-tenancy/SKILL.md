@@ -306,6 +306,8 @@ API shape.
 
 Per-tenant WAL instances are cached and reopened on demand, but the cache is soft-capped (`[wal].max_instances`, default 256); see `docs/operations/wal-persistence.md#instance-cap`.
 
+The Query IR `correlate` stage (span-to-parent join, `irVersion` 8) never crosses this boundary: both sides of the join scan the same tenant/dataset the query is already scoped to, so a parent span stored under another tenant or dataset is always treated as missing, the same as a genuinely absent one.
+
 ## Slug-Based Naming
 
 All storage paths and Iceberg identifiers use **slugs** (URL-friendly), not raw IDs.

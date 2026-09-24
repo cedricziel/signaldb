@@ -818,8 +818,12 @@ a pipeline, only on the `traces` source, and only before an `aggregate` stage:
   caller's tenant/dataset only; a parent stored outside either is treated as
   missing, same as a parent genuinely absent from storage.
 - The joined row count is capped by a server-side limit
-  (`[querier].correlate_max_rows`, default 5,000,000). Reaching it truncates
-  the result — the query still succeeds — rather than failing.
+  (`[querier].correlate_max_rows`, default 5,000,000), enforced at the join
+  itself — before any later `aggregate`/`where`/`limit` stage — so hitting it
+  is never hidden by what those stages do to the row count afterward.
+  Reaching it truncates the result to the cap and adds a
+  `correlate_row_limit` warning; the query still succeeds rather than
+  failing.
 
 ## Formulas: cross-query arithmetic (D5)
 
