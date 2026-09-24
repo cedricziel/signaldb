@@ -109,7 +109,9 @@ export default async function globalSetup(_config: FullConfig) {
   tempDir = mkdtempSync(path.join(tmpdir(), "signaldb-ui-e2e-live-"));
   const configPath = writeConfig(tempDir);
 
-  const targetDir = path.join(REPO_ROOT, "target", "debug");
+  // CI points this at the release binaries built by the musl job.
+  const targetDir =
+    process.env.SIGNALDB_E2E_BIN_DIR ?? path.join(REPO_ROOT, "target", "debug");
 
   console.log("[e2e-live] starting the signaldb monolith …");
   serverProcess = spawn(
