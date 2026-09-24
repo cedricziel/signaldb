@@ -66,5 +66,17 @@ service name on the catalog page.
 ## CI
 
 The `UI E2E (live backend)` job in `.github/workflows/ci.yml` runs the suite
-when core or UI code changes. When it fails, download the
-`playwright-report-live` artifact for traces and screenshots.
+when core or UI code changes. It does not compile anything. It downloads
+these artifacts from other jobs:
+
+- `musl-binaries-amd64`: the release `signaldb` and `signaldb-cli`
+  binaries that the Docker images ship.
+- `e2e-tools-amd64`: the `signal-producer` binary.
+- `ui-dist`: the production UI bundle.
+
+The job sets `SIGNALDB_E2E_BIN_DIR` to the download directory, and global
+setup starts the binaries from there instead of `target/debug`. You can set
+the same variable locally to test prebuilt binaries.
+
+When the job fails, download the `playwright-report-live` artifact for
+traces and screenshots.
