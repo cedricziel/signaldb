@@ -387,12 +387,12 @@ async fn query_ir_single(
         ctx.tenant_slug, ctx.dataset_slug, payload
     );
 
-    let batches = execute_ticket(&state, ticket).await?;
+    let (batches, correlate_truncated) = execute_ticket(&state, ticket).await?;
     let mut response = build_envelope(&req.result, window, &batches, &document)?;
     response.warnings = unknown_group_by_warnings(&req.from, &document, &batches);
     response
         .warnings
-        .extend(correlate_truncation_warning(&batches));
+        .extend(correlate_truncation_warning(correlate_truncated));
     Ok(axum::Json(response))
 }
 
@@ -560,7 +560,7 @@ async fn execute_inner_series_query(
         "query_ir:{}:{}:{}",
         ctx.tenant_slug, ctx.dataset_slug, payload
     );
-    let batches = execute_ticket(state, ticket).await?;
+    let (batches, _correlate_truncated) = execute_ticket(state, ticket).await?;
     let (series, _step_ns) = to_series(&batches);
     let eval_series = series
         .into_iter()
@@ -661,21 +661,12 @@ fn unknown_group_by_warnings(
 const CORRELATE_ROW_LIMIT: &str = "correlate_row_limit";
 
 /// A `correlate` stage's row cap (`[querier].correlate_max_rows`) was
-/// reached. Ground truth, not a heuristic: the querier detects the overflow
-/// at the join itself, before any `aggregate`/`where`/`limit` stage can
-/// shrink or hide the row count, and stamps
-/// `common::flight::CORRELATE_TRUNCATED_METADATA_KEY` onto the result's
-/// Arrow schema metadata — the one channel that survives the querier↔router
-/// Flight hop unchanged, since Flight carries record batches (and their
-/// schema), not an out-of-band flag.
-fn correlate_truncation_warning(batches: &[RecordBatch]) -> Option<QueryWarning> {
-    let truncated = batches.first().is_some_and(|b| {
-        b.schema()
-            .metadata()
-            .get(common::flight::CORRELATE_TRUNCATED_METADATA_KEY)
-            .map(String::as_str)
-            == Some("true")
-    });
+/// reached. Ground truth, not a heuristic: the querier's `CorrelateCapExec`
+/// operator detects the overflow at the join itself, streaming, before any
+/// `aggregate`/`where`/`limit` stage can shrink or hide the row count, and
+/// [`execute_ticket`] reads it back from the querier's Flight trailer
+/// message (see `common::flight::correlate_truncated_trailer`).
+fn correlate_truncation_warning(truncated: bool) -> Option<QueryWarning> {
     if !truncated {
         return None;
     }
@@ -790,11 +781,13 @@ fn resolve_window(range: &QueryRange, now_ns: i64) -> Result<ResolvedWindow, Api
     })
 }
 
-/// Send a `query_ir` Flight ticket to a querier and collect the result batches.
+/// Send a `query_ir` Flight ticket to a querier and collect the result
+/// batches, alongside whether a `correlate` stage's join was truncated by
+/// `[querier].correlate_max_rows` (see [`correlate_truncation_warning`]).
 pub(super) async fn execute_ticket(
     state: &RouterAppState,
     ticket_content: String,
-) -> Result<Vec<RecordBatch>, ApiError> {
+) -> Result<(Vec<RecordBatch>, bool), ApiError> {
     let (mut client, server_address) = state
         .service_registry()
         .get_flight_client_and_address_for_capability(ServiceCapability::QueryExecution)
@@ -836,8 +829,18 @@ pub(super) async fn execute_ticket(
             // unbounded result set for up to the timeout.
             let mut data = Vec::new();
             let mut bytes: usize = 0;
+            let mut correlate_truncated = false;
             while let Some(flight_data) = stream.next().await {
                 let fd = flight_data.map_err(|e| ApiError::from_flight(&e, "query_ir"))?;
+                // The trailer the querier appends after a truncated `correlate`
+                // join (see `common::flight::correlate_truncated_trailer`) is a
+                // data-free message: recognized and dropped here rather than
+                // handed to `decode_flight_batches`, which expects only schema
+                // and record-batch messages.
+                if fd.app_metadata.as_ref() == common::flight::CORRELATE_TRUNCATED_APP_METADATA {
+                    correlate_truncated = true;
+                    continue;
+                }
                 bytes = bytes.saturating_add(fd.data_body.len());
                 if bytes > MAX_IR_RESULT_BYTES {
                     return Err(ApiError::new(
@@ -852,9 +855,10 @@ pub(super) async fn execute_ticket(
                 common::self_monitoring::spans::RpcBoundary::Client,
                 tonic::Code::Ok,
             );
-            super::flight_decode::decode_flight_batches(data, "query_ir")
+            let batches = super::flight_decode::decode_flight_batches(data, "query_ir")
                 .await
-                .map_err(ApiError::from)
+                .map_err(ApiError::from)?;
+            Ok((batches, correlate_truncated))
         }
         .instrument(rpc_span),
     )
@@ -1504,32 +1508,10 @@ mod group_by_warnings {
 #[cfg(test)]
 mod correlate_warnings {
     use super::{CORRELATE_ROW_LIMIT, correlate_truncation_warning};
-    use datafusion::arrow::array::{ArrayRef, RecordBatch, StringArray};
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use std::sync::Arc;
-
-    fn rows_of(n: usize, truncated: bool) -> RecordBatch {
-        let ids: ArrayRef = Arc::new(StringArray::from(
-            (0..n).map(|i| Some(i.to_string())).collect::<Vec<_>>(),
-        ));
-        let mut metadata = std::collections::HashMap::new();
-        if truncated {
-            metadata.insert(
-                common::flight::CORRELATE_TRUNCATED_METADATA_KEY.to_string(),
-                "true".to_string(),
-            );
-        }
-        let schema = Arc::new(Schema::new_with_metadata(
-            vec![Field::new("trace_id", DataType::Utf8, false)],
-            metadata,
-        ));
-        RecordBatch::try_new(schema, vec![ids]).unwrap()
-    }
 
     #[test]
-    fn truncated_metadata_warns() {
-        let batches = [rows_of(1, true)];
-        let warnings = correlate_truncation_warning(&batches);
+    fn truncated_flag_warns() {
+        let warnings = correlate_truncation_warning(true);
         assert_eq!(
             warnings.map(|w| w.code),
             Some(CORRELATE_ROW_LIMIT.to_string())
@@ -1537,14 +1519,8 @@ mod correlate_warnings {
     }
 
     #[test]
-    fn no_metadata_does_not_warn() {
-        let batches = [rows_of(2, false)];
-        assert!(correlate_truncation_warning(&batches).is_none());
-    }
-
-    #[test]
-    fn no_batches_does_not_warn() {
-        assert!(correlate_truncation_warning(&[]).is_none());
+    fn untruncated_flag_does_not_warn() {
+        assert!(correlate_truncation_warning(false).is_none());
     }
 }
 

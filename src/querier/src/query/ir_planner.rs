@@ -28,6 +28,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 use common::profile::aggregate_profiles_to_flamegraph;
 use common::query_ir::{
@@ -1133,14 +1134,18 @@ impl IrService {
         self
     }
 
-    /// Execute an IR query ticket, returning the projected RecordBatches. The
-    /// resolved window is echoed via the returned [`ResolvedWindow`].
+    /// Executes an IR query ticket, returning the projected RecordBatches,
+    /// the resolved window, and whether a `correlate` stage's join was
+    /// truncated by `correlate_max_rows`. The flag is only known once
+    /// `.collect()` below has actually run the stream to completion — it is
+    /// an [`AtomicBool`] flipped by `CorrelateCapExec` (`correlate_cap`) as
+    /// it streams, not something plan-time can predict.
     pub async fn query(
         &self,
         params: &IrQueryParams,
         tenant_slug: &str,
         dataset_slug: &str,
-    ) -> Result<(Vec<RecordBatch>, ResolvedWindow), QuerierError> {
+    ) -> Result<(Vec<RecordBatch>, ResolvedWindow, bool), QuerierError> {
         use tracing::Instrument;
 
         let doc: Document = serde_json::from_value(params.document.clone())
@@ -1154,7 +1159,7 @@ impl IrService {
         else {
             // No storage for this source in this dataset: no rows, but the
             // window is still resolved so the caller can echo it back.
-            return Ok((Vec::new(), resolve_window(&doc, params.now_ns)?));
+            return Ok((Vec::new(), resolve_window(&doc, params.now_ns)?, false));
         };
         // The flamegraph aggregation happens in Rust, not DataFusion (see
         // `plan`'s doc comment on `apply_projection`'s flamegraph carve-out);
@@ -1177,18 +1182,15 @@ impl IrService {
         let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         exec_span.record("signaldb.query.rows", rows as i64);
         exec_span.record("signaldb.query.batches", batches.len() as i64);
+        let truncated = correlate_truncated.is_some_and(|flag| flag.load(AtomicOrdering::Relaxed));
         if doc.result == ResultEnvelope::Flamegraph {
             return Ok((
                 vec![encode_flamegraph_batch(&batches, FLAMEGRAPH_PROFILE_CAP)?],
                 window,
+                truncated,
             ));
         }
-        let batches = if correlate_truncated {
-            stamp_correlate_truncated(batches)?
-        } else {
-            batches
-        };
-        Ok((batches, window))
+        Ok((batches, window, truncated))
     }
 
     /// Build the `DataFrame` for a document (split out for planner tests).
@@ -1229,7 +1231,7 @@ impl IrService {
         tenant_slug: &str,
         dataset_slug: &str,
         now_ns: i64,
-    ) -> Result<Option<(DataFrame, ResolvedWindow, bool)>, QuerierError> {
+    ) -> Result<Option<(DataFrame, ResolvedWindow, Option<Arc<AtomicBool>>)>, QuerierError> {
         plan_document(
             &self.session_context,
             doc,
@@ -1257,7 +1259,7 @@ pub(crate) async fn plan_document(
     ctx: &SessionContext,
     doc: &Document,
     request: PlanRequest<'_>,
-) -> Result<Option<(DataFrame, ResolvedWindow, bool)>, QuerierError> {
+) -> Result<Option<(DataFrame, ResolvedWindow, Option<Arc<AtomicBool>>)>, QuerierError> {
     let PlanRequest {
         tenant_slug,
         dataset_slug,
@@ -1299,7 +1301,7 @@ pub(crate) async fn plan_document(
             .map(|f| f.name().to_string())
             .collect(),
         correlated: false,
-        correlate_truncated: false,
+        correlate_truncated: None,
     };
 
     let mut df = lowering.apply_time_window(base, &window)?;
@@ -1375,62 +1377,6 @@ fn encode_flamegraph_batch(
             None,
         ))
     })
-}
-
-/// Stamp `common::flight::CORRELATE_TRUNCATED_METADATA_KEY` onto every
-/// batch's schema — ground truth from [`Lowering::lower_correlate`] that a
-/// `correlate` stage's join hit `correlate_max_rows`, carried across Flight
-/// to the router (see [`batches_to_compressed_flight_data`]'s doc comment
-/// on why the schema, not a data column, is the vehicle: the router must
-/// never see a phantom column it has to filter back out of the response).
-/// A no-op on an empty result — nothing to attach the metadata to, and an
-/// empty result is not observably truncated to a caller regardless.
-fn stamp_correlate_truncated(batches: Vec<RecordBatch>) -> Result<Vec<RecordBatch>, QuerierError> {
-    let Some(first) = batches.first() else {
-        return Ok(batches);
-    };
-    let mut metadata = first.schema().metadata().clone();
-    metadata.insert(
-        common::flight::CORRELATE_TRUNCATED_METADATA_KEY.to_string(),
-        "true".to_string(),
-    );
-    let schema = Arc::new(Schema::new_with_metadata(
-        first.schema().fields().clone(),
-        metadata,
-    ));
-    batches
-        .into_iter()
-        .map(|b| {
-            RecordBatch::try_new(schema.clone(), b.columns().to_vec()).map_err(|e| {
-                QuerierError::QueryFailed(datafusion::error::DataFusionError::ArrowError(
-                    Box::new(e),
-                    None,
-                ))
-            })
-        })
-        .collect()
-}
-
-/// Trim `batches` down to `limit` total rows, dropping whole batches once
-/// the limit is reached and slicing the batch that straddles it. Used by
-/// [`Lowering::lower_correlate`] to enforce `correlate_max_rows` exactly
-/// after requesting one extra row to detect the overflow.
-fn trim_batches_to_rows(batches: Vec<RecordBatch>, limit: usize) -> Vec<RecordBatch> {
-    let mut remaining = limit;
-    let mut trimmed = Vec::with_capacity(batches.len());
-    for batch in batches {
-        if remaining == 0 {
-            break;
-        }
-        if batch.num_rows() <= remaining {
-            remaining -= batch.num_rows();
-            trimmed.push(batch);
-        } else {
-            trimmed.push(batch.slice(0, remaining));
-            remaining = 0;
-        }
-    }
-    trimmed
 }
 
 fn validate_heatmap_window(doc: &Document, window: &ResolvedWindow) -> Result<(), QuerierError> {
@@ -1568,12 +1514,13 @@ struct Lowering<'a> {
     /// name>` (see [`Self::lower_correlate`]); [`Self::parent_column`] gates
     /// on this to resolve a `parent.<field>` reference.
     correlated: bool,
-    /// `true` once a `correlate` stage's join hit `correlate_max_rows` and
-    /// was truncated. Ground truth captured at the join itself (before any
-    /// later `aggregate`/`where`/`limit` can shrink or hide the row count),
-    /// carried to [`IrService::query`] and stamped onto the final result's
-    /// Arrow schema metadata for the router to read back.
-    correlate_truncated: bool,
+    /// `Some` once a `correlate` stage has streamed into `CorrelateCapExec`
+    /// (`correlate_cap`) — the shared flag it flips if the join's row count
+    /// crosses `correlate_max_rows`. Ground truth captured *during*
+    /// execution, only readable after `.collect()` finishes
+    /// ([`IrService::query`] does the read); `None` when the pipeline never
+    /// reached `correlate`.
+    correlate_truncated: Option<Arc<AtomicBool>>,
 }
 
 impl Lowering<'_> {
@@ -1772,42 +1719,25 @@ impl Lowering<'_> {
         let joined = joined
             .select(select_exprs)
             .map_err(QuerierError::QueryFailed)?;
-        let joined_schema = Arc::new(joined.schema().as_arrow().clone());
-        // Request one row past the cap so truncation is ground truth, not a
-        // guess — the same trick `IrService::query`'s flamegraph path uses.
-        // This must be resolved *here*, not left for `IrService::query`'s
-        // final `.collect()`: a later `aggregate`/`where`/`limit` stage can
-        // shrink or hide the row count, but the join's own overflow already
-        // happened and must still be reported.
-        let batches = joined
-            .limit(0, Some(correlate_max_rows + 1))
-            .map_err(QuerierError::QueryFailed)?
-            .collect()
-            .await
-            .map_err(QuerierError::QueryFailed)?;
-        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-        let (batches, truncated) = if total_rows > correlate_max_rows {
-            (trim_batches_to_rows(batches, correlate_max_rows), true)
-        } else {
-            (batches, false)
-        };
-        // Re-inject the (possibly-trimmed) result as a fresh lazy scan so
-        // later stages keep composing normally. `ctx.read_batches` falls
-        // back to an empty schema when `batches` is empty, which would lose
-        // every column this join produced — pass the schema explicitly via
-        // one empty batch in that case, same shape either way.
-        let batches = if batches.is_empty() {
-            vec![RecordBatch::new_empty(joined_schema)]
-        } else {
-            batches
-        };
-        let joined = ctx
-            .read_batches(batches)
-            .map_err(QuerierError::QueryFailed)?;
+        // The cap is enforced *inside* the plan, streaming — `CorrelateCapExec`
+        // passes batches through unchanged up to `correlate_max_rows` and, on
+        // the batch that would cross it, slices off the excess, flags
+        // `truncated`, and ends its stream. This must be resolved at the join
+        // itself, not left for `IrService::query`'s final `.collect()`: a
+        // later `aggregate`/`where`/`limit` stage can shrink or hide the row
+        // count, but the join's own overflow already happened and must still
+        // be reported — without ever materializing the join's full output
+        // first (see `correlate_cap`'s module doc comment).
+        let truncated = Arc::new(AtomicBool::new(false));
+        let joined = super::correlate_cap::wrap_with_cap(
+            joined,
+            correlate_max_rows,
+            Arc::clone(&truncated),
+        )?;
 
         self.schema_cols = schema_cols;
         self.correlated = true;
-        self.correlate_truncated = truncated;
+        self.correlate_truncated = Some(truncated);
         Ok(joined)
     }
 
@@ -5663,7 +5593,7 @@ mod tests {
             }),
             now_ns: 0,
         };
-        let (batches, _) = svc.query(&params, "t", "d").await.unwrap();
+        let (batches, _, _) = svc.query(&params, "t", "d").await.unwrap();
         assert_eq!(batches.len(), 1);
         let flamegraph = flamegraph_from_batch(&batches[0]);
         assert_eq!(flamegraph.total, 100);
@@ -5684,7 +5614,7 @@ mod tests {
             }),
             now_ns: 0,
         };
-        let (batches, _) = svc.query(&params, "t", "d").await.unwrap();
+        let (batches, _, _) = svc.query(&params, "t", "d").await.unwrap();
         let flamegraph = flamegraph_from_batch(&batches[0]);
         // p1 (main/foo, 100) + p2 (main/bar, 50) match service=api; p3 (web) does not.
         assert_eq!(flamegraph.total, 150);
@@ -6971,16 +6901,6 @@ mod tests {
         }
     }
 
-    fn correlate_truncated_flag(batches: &[RecordBatch]) -> bool {
-        batches.first().is_some_and(|b| {
-            b.schema()
-                .metadata()
-                .get(common::flight::CORRELATE_TRUNCATED_METADATA_KEY)
-                .map(String::as_str)
-                == Some("true")
-        })
-    }
-
     /// A ground-truth truncation signal (task 2's "critical" fix): the join
     /// itself is capped to `correlate_max_rows`, detected before an
     /// `aggregate` reduces the row count to something that can no longer
@@ -6996,9 +6916,9 @@ mod tests {
             } })],
             "table",
         );
-        let (batches, _) = svc.query(&params, "t", "d").await.unwrap();
+        let (_, _, truncated) = svc.query(&params, "t", "d").await.unwrap();
         assert!(
-            correlate_truncated_flag(&batches),
+            truncated,
             "two rows joined but the cap is 1; the aggregate must not hide the truncation"
         );
     }
@@ -7009,11 +6929,11 @@ mod tests {
     async fn no_truncation_flag_when_the_cap_is_not_reached() {
         let svc = IrService::new(correlate_ctx()).with_correlate_max_rows(2);
         let params = correlate_ir_params("inner", vec![], "rows");
-        let (batches, _) = svc.query(&params, "t", "d").await.unwrap();
+        let (batches, _, truncated) = svc.query(&params, "t", "d").await.unwrap();
         let total: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(total, 2, "exactly the cap, but not beyond it");
         assert!(
-            !correlate_truncated_flag(&batches),
+            !truncated,
             "the join produced exactly the cap without overflowing it"
         );
     }
@@ -7032,11 +6952,11 @@ mod tests {
             ],
             "rows",
         );
-        let (batches, _) = svc.query(&params, "t", "d").await.unwrap();
+        let (batches, _, truncated) = svc.query(&params, "t", "d").await.unwrap();
         let total: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(total, 1, "limit narrows the final result to 1 row");
         assert!(
-            correlate_truncated_flag(&batches),
+            truncated,
             "the join itself was already truncated by the cap before where/limit ran"
         );
     }
@@ -7090,7 +7010,7 @@ mod tests {
                     derived_types: HashMap::new(),
                     schema_cols,
                     correlated: false,
-                    correlate_truncated: false,
+                    correlate_truncated: None,
                 };
                 let child_df = no_parent_ctx.read_batches(child_batches).unwrap();
                 let correlate = Correlate {
@@ -8609,7 +8529,7 @@ mod tests {
     #[tokio::test]
     async fn query_on_absent_source_table_is_empty() {
         let svc = IrService::new(empty_dataset_ctx());
-        let (batches, window) = svc
+        let (batches, window, _) = svc
             .query(&logs_ir_params(), "t", "d")
             .await
             .expect("absent table must not error");

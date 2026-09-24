@@ -1,3 +1,4 @@
+mod correlate_cap;
 #[cfg(test)]
 mod differential;
 pub mod error;

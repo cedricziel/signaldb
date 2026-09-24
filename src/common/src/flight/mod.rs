@@ -29,15 +29,31 @@ pub mod conversion;
 pub mod decode;
 pub mod schema;
 
-/// Arrow schema `metadata` key a Query IR `correlate` stage's result carries
-/// when its join hit `[querier].correlate_max_rows` (`openspec/changes/
-/// query-ir-span-join`): `"true"` when present. Set by the querier on the
-/// `RecordBatch` schema it hands to [`batches_to_compressed_flight_data`],
-/// which encodes that schema (not a per-batch one) into the Flight stream's
-/// one schema message — the ground-truth signal the router reads back to
-/// decide whether to warn the caller, since Flight carries record batches
-/// only, no side channel for an out-of-band flag.
-pub const CORRELATE_TRUNCATED_METADATA_KEY: &str = "signaldb.correlate_truncated";
+/// `app_metadata` payload for the trailing, data-free `FlightData` message
+/// the querier appends after a Query IR `correlate` stage's join hit
+/// `[querier].correlate_max_rows` (`openspec/changes/query-ir-span-join`).
+///
+/// Whether the join was truncated is only known once its
+/// `CorrelateCapExec` operator (`querier::query::correlate_cap`) has
+/// actually streamed to completion — too late for the one schema message,
+/// which Flight sends first. It rides as a final trailer message instead:
+/// [`FlightData::app_metadata`] is otherwise unused on this path, so a
+/// message carrying only this metadata (empty header and body) is
+/// unambiguous. The router reads it while draining the stream (see
+/// `router::endpoints::query`) and excludes it from batch decoding.
+pub const CORRELATE_TRUNCATED_APP_METADATA: &[u8] = br#"{"correlate_truncated":true}"#;
+
+/// Build the trailing `FlightData` message signaling a truncated
+/// `correlate` join (see [`CORRELATE_TRUNCATED_APP_METADATA`]).
+pub fn correlate_truncated_trailer() -> FlightData {
+    FlightData {
+        data_header: vec![].into(),
+        data_body: vec![].into(),
+        app_metadata: CORRELATE_TRUNCATED_APP_METADATA.to_vec().into(),
+        flight_descriptor: None,
+    }
+}
+
 pub mod trace_context;
 pub mod transport;
 
