@@ -131,6 +131,13 @@ fn test_config(catalog_dsn: &str) -> Configuration {
 }
 
 pub(crate) async fn setup() -> TestServices {
+    setup_with(|_config| {}).await
+}
+
+/// Like [`setup`], with a hook to override `config` before the stack boots
+/// — e.g. lowering `config.querier.correlate_max_rows` to exercise the
+/// truncation path without shrinking it for every other test.
+pub(crate) async fn setup_with(config_override: impl FnOnce(&mut Configuration)) -> TestServices {
     let temp_dir = TempDir::new().unwrap();
     let storage_path = temp_dir.path().join("storage");
     std::fs::create_dir_all(&storage_path).unwrap();
@@ -140,6 +147,7 @@ pub(crate) async fn setup() -> TestServices {
     let catalog_dsn = format!("sqlite://{}", catalog_db_path.display());
     let mut config = test_config(&catalog_dsn);
     config.storage.dsn = storage_dsn.clone();
+    config_override(&mut config);
     config.schema.catalog_uri = format!(
         "sqlite://{}",
         temp_dir.path().join("iceberg_catalog.db").display()
@@ -225,7 +233,7 @@ pub(crate) async fn setup() -> TestServices {
     let querier_service = QuerierFlightService::new_with_catalog_manager(
         flight_transport.clone(),
         catalog_manager,
-        common::config::QuerierConfig::default(),
+        config.querier.clone(),
     )
     .await
     .expect("querier service");
@@ -1604,5 +1612,231 @@ async fn correlate_caller_callee_pair_counts_isolated_by_tenant() {
         caller_callee_counts(&body),
         vec![("web".to_string(), "api".to_string(), 1)],
         "tenant B must see only its own caller/callee pair, never tenant A's: {body}"
+    );
+}
+
+/// Task 4a — a low `[querier].correlate_max_rows` truncates a
+/// correlate→aggregate query, and the router surfaces it as a warning
+/// (ground truth from the querier, not the document-sniffing heuristic
+/// this replaced).
+#[tokio::test]
+async fn correlate_truncation_warns_through_the_full_stack() {
+    let services = setup_with(|config| config.querier.correlate_max_rows = 1).await;
+    let ctx = test_tenant_context();
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &ctx,
+            traces_request(
+                "gateway",
+                vec![
+                    span_with_ids("GET /a", 1, 1, None, 50_000_000),
+                    span_with_ids("GET /b", 2, 3, None, 50_000_000),
+                ],
+            ),
+        )
+        .await
+        .expect("ingest gateway spans");
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &ctx,
+            traces_request(
+                "checkout",
+                vec![
+                    span_with_ids("POST /charge", 1, 2, Some(1), 20_000_000),
+                    span_with_ids("POST /charge", 2, 4, Some(3), 20_000_000),
+                ],
+            ),
+        )
+        .await
+        .expect("ingest checkout spans");
+
+    let app = build_router(&services).await;
+    let (status, body) = post_ir_as_until_rows(
+        &app,
+        correlate_pair_counts_document(),
+        "test-key-123",
+        "test-tenant",
+        1,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "correlate+aggregate query: {body}");
+    let warnings = body["warnings"].as_array().expect("warnings array");
+    assert!(
+        warnings.iter().any(|w| w["code"] == "correlate_row_limit"),
+        "expected a correlate_row_limit warning: {body}"
+    );
+}
+
+/// Task 4b — a `left` join keeps a root span (no parent) with every
+/// `parent.*` field null, end to end.
+#[tokio::test]
+async fn correlate_left_join_keeps_root_span_with_null_parent_fields() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &ctx,
+            traces_request("gateway", vec![span("GET /root", 1, 50_000_000)]),
+        )
+        .await
+        .expect("ingest root span");
+
+    let app = build_router(&services).await;
+    let document = serde_json::json!({
+        "irVersion": 8, "from": "traces", "range": range(), "result": "rows",
+        "fields": ["span.name", "parent.service.name"],
+        "pipeline": [{ "correlate": { "to": "parent", "kind": "left" } }]
+    });
+    let (status, body) = post_ir_until_rows(&app, document).await;
+    assert_eq!(status, StatusCode::OK, "left correlate query: {body}");
+    let rows = body["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 1, "the root span survives a left join: {body}");
+    assert_eq!(rows[0][0], "GET /root");
+    assert!(
+        rows[0][1].is_null(),
+        "a root span has no parent, so parent.service.name is null: {body}"
+    );
+}
+
+/// Task 4c — a `parent.<key>` attribute reference resolves against the
+/// parent side end to end. Sets the attribute via a processor (the same
+/// mechanism `processor_created_via_router_api_redacts_pii_end_to_end`
+/// already proves round-trips through real ingest→query) rather than the
+/// OTLP payload directly, so the fixture reuses an already-proven path.
+#[tokio::test]
+async fn correlate_resolves_a_parent_span_attribute() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+    let app = build_router(&services).await;
+
+    let create = Request::builder()
+        .method("POST")
+        .uri("/api/v1/processors")
+        .header("Authorization", "Bearer test-key-123")
+        .header("X-Tenant-ID", "test-tenant")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            serde_json::json!({
+                "name": "set-parent-route",
+                "signal": "traces",
+                "statements": [
+                    r#"set(attributes["checkout.route"], "/checkout")"#
+                ],
+            })
+            .to_string(),
+        ))
+        .unwrap();
+    let response = app.clone().oneshot(create).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED, "processor create");
+
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &ctx,
+            traces_request(
+                "gateway",
+                vec![span_with_ids("GET /checkout", 1, 1, None, 50_000_000)],
+            ),
+        )
+        .await
+        .expect("ingest root span");
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &ctx,
+            traces_request(
+                "checkout",
+                vec![span_with_ids("POST /charge", 1, 2, Some(1), 20_000_000)],
+            ),
+        )
+        .await
+        .expect("ingest child span");
+
+    let document = serde_json::json!({
+        "irVersion": 8, "from": "traces", "range": range(), "result": "rows",
+        "fields": ["span.name", "parent.checkout.route"],
+        "pipeline": [
+            { "correlate": { "to": "parent", "kind": "inner" } },
+            { "where": { "field": "service.name", "op": "eq", "value": "checkout" } }
+        ]
+    });
+    let (status, body) = post_ir_until_rows(&app, document).await;
+    assert_eq!(status, StatusCode::OK, "parent attribute query: {body}");
+    let rows = body["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 1, "{body}");
+    assert_eq!(rows[0][1], "/checkout", "{body}");
+}
+
+/// Task 4d — a parent that starts before the query window is treated as
+/// missing, end to end.
+#[tokio::test]
+async fn correlate_parent_outside_the_window_is_missing() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+    // The root starts at BASE_NS; the child starts 5s later, so a window
+    // opening after BASE_NS but before that excludes only the root.
+    let child_offset_ns: i64 = 5_000_000_000;
+    let mut root = span_with_ids("GET /a", 1, 1, None, 50_000_000);
+    root.start_time_unix_nano = BASE_NS as u64;
+    root.end_time_unix_nano = (BASE_NS + 50_000_000) as u64;
+    let mut child = span_with_ids("POST /charge", 1, 2, Some(1), 20_000_000);
+    child.start_time_unix_nano = (BASE_NS + child_offset_ns) as u64;
+    child.end_time_unix_nano = (BASE_NS + child_offset_ns + 20_000_000) as u64;
+
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(&ctx, traces_request("gateway", vec![root]))
+        .await
+        .expect("ingest root span");
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(&ctx, traces_request("checkout", vec![child]))
+        .await
+        .expect("ingest child span");
+
+    let app = build_router(&services).await;
+    let correlate_where_checkout = |range: serde_json::Value| {
+        serde_json::json!({
+            "irVersion": 8, "from": "traces", "range": range, "result": "rows",
+            "fields": ["span.name"],
+            "pipeline": [
+                { "correlate": { "to": "parent", "kind": "inner" } },
+                { "where": { "field": "service.name", "op": "eq", "value": "checkout" } }
+            ]
+        })
+    };
+
+    // Sanity check over the full window: both spans are persisted and the
+    // join finds the parent before narrowing the range.
+    let wide_range = serde_json::json!({
+        "from": (BASE_NS - 1_000_000_000).to_string(),
+        "to": (BASE_NS + child_offset_ns + 10_000_000_000).to_string(),
+    });
+    let (status, body) = post_ir_until_rows(&app, correlate_where_checkout(wide_range)).await;
+    assert_eq!(status, StatusCode::OK, "wide-window sanity query: {body}");
+    assert_eq!(
+        body["rows"].as_array().expect("rows array").len(),
+        1,
+        "sanity: the join finds the parent inside the full window: {body}"
+    );
+
+    // A window opening after the root but before the child: the parent
+    // falls outside it.
+    let narrow_range = serde_json::json!({
+        "from": (BASE_NS + 1_000_000_000).to_string(),
+        "to": (BASE_NS + child_offset_ns + 10_000_000_000).to_string(),
+    });
+    let (status, body) = post_ir(&app, correlate_where_checkout(narrow_range)).await;
+    assert_eq!(status, StatusCode::OK, "narrow-window query: {body}");
+    // An empty `rows` is omitted from the JSON entirely
+    // (`#[serde(skip_serializing_if = "Vec::is_empty")]`), not serialized
+    // as `[]` — a present, non-empty array would be the failure case here.
+    let row_count = body["rows"].as_array().map(Vec::len).unwrap_or(0);
+    assert_eq!(
+        row_count, 0,
+        "the parent starts before the narrowed window, so the inner join drops the child: {body}"
     );
 }
