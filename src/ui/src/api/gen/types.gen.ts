@@ -863,7 +863,13 @@ export type GraphEdge = {
      * Calls per second: `count` over the window length in seconds.
      */
     rate: number;
+    /**
+     * The calling node's `id`.
+     */
     source: string;
+    /**
+     * The called node's `id`.
+     */
     target: string;
 };
 
@@ -879,11 +885,18 @@ export type GraphNode = {
      * Share (0..1) of the node's server/consumer spans with error status.
      */
     error_rate?: number | null;
+    /**
+     * Stable identity, distinct from `name`: `service:<name>` for a
+     * service, `external:<kind>:<name>` for an external dependency, and
+     * `external:<kind>:unnamed:<caller>` for an external with no naming
+     * attribute. Edges reference nodes by this id.
+     */
+    id: string;
     kind: GraphNodeKind;
     /**
-     * The service name, or for an external node the first present of
+     * Display name: the service name, or for an external node the first present of
      * `db.namespace`, `messaging.destination.name`, `rpc.service`,
-     * `server.address`, `peer.service`.
+     * `server.address`, `peer.service` (`unnamed <kind>` if none is set).
      */
     name: string;
     /**

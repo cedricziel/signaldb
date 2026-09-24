@@ -6628,10 +6628,12 @@
             "description": "Calls per second: `count` over the window length in seconds."
           },
           "source": {
-            "type": "string"
+            "type": "string",
+            "description": "The calling node's `id`."
           },
           "target": {
-            "type": "string"
+            "type": "string",
+            "description": "The called node's `id`."
           }
         }
       },
@@ -6639,6 +6641,7 @@
         "type": "object",
         "description": "A service or an uninstrumented dependency.",
         "required": [
+          "id",
           "name",
           "kind"
         ],
@@ -6658,12 +6661,16 @@
             "format": "double",
             "description": "Share (0..1) of the node's server/consumer spans with error status."
           },
+          "id": {
+            "type": "string",
+            "description": "Stable identity, distinct from `name`: `service:<name>` for a\nservice, `external:<kind>:<name>` for an external dependency, and\n`external:<kind>:unnamed:<caller>` for an external with no naming\nattribute. Edges reference nodes by this id."
+          },
           "kind": {
             "$ref": "#/components/schemas/GraphNodeKind"
           },
           "name": {
             "type": "string",
-            "description": "The service name, or for an external node the first present of\n`db.namespace`, `messaging.destination.name`, `rpc.service`,\n`server.address`, `peer.service`."
+            "description": "Display name: the service name, or for an external node the first present of\n`db.namespace`, `messaging.destination.name`, `rpc.service`,\n`server.address`, `peer.service` (`unnamed <kind>` if none is set)."
           },
           "p95_ns": {
             "type": [

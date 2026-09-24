@@ -1906,11 +1906,12 @@ mod tests {
         use std::sync::Arc;
         let graph_json = serde_json::json!({
             "nodes": [
-                { "name": "orders", "kind": "service", "request_rate": 1.5,
+                { "id": "service:orders", "name": "orders", "kind": "service", "request_rate": 1.5,
                   "error_rate": 0.0, "p95_ns": 100 },
-                { "name": "orders-db", "kind": "external", "dependency_kind": "database" }
+                { "id": "external:database:orders-db", "name": "orders-db", "kind": "external",
+                  "dependency_kind": "database" }
             ],
-            "edges": [{ "source": "orders", "target": "orders-db", "count": 3,
+            "edges": [{ "source": "service:orders", "target": "external:database:orders-db", "count": 3,
                         "rate": 0.05, "error_rate": 0.0, "p95_ns": 50 }],
             "dropped_nodes": 3
         })

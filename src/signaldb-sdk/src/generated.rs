@@ -1144,7 +1144,9 @@ pub mod types {
         pub p95_ns: ::std::option::Option<i64>,
         ///Calls per second: `count` over the window length in seconds.
         pub rate: f64,
+        ///The calling node's `id`.
         pub source: ::std::string::String,
+        ///The called node's `id`.
         pub target: ::std::string::String,
     }
     impl GraphEdge {
@@ -1161,10 +1163,15 @@ pub mod types {
         ///Share (0..1) of the node's server/consumer spans with error status.
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub error_rate: ::std::option::Option<f64>,
+        /**Stable identity, distinct from `name`: `service:<name>` for a
+        service, `external:<kind>:<name>` for an external dependency, and
+        `external:<kind>:unnamed:<caller>` for an external with no naming
+        attribute. Edges reference nodes by this id.*/
+        pub id: ::std::string::String,
         pub kind: GraphNodeKind,
-        /**The service name, or for an external node the first present of
+        /**Display name: the service name, or for an external node the first present of
         `db.namespace`, `messaging.destination.name`, `rpc.service`,
-        `server.address`, `peer.service`.*/
+        `server.address`, `peer.service` (`unnamed <kind>` if none is set).*/
         pub name: ::std::string::String,
         ///p95 duration of the node's server/consumer spans, in nanoseconds.
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
@@ -7905,6 +7912,7 @@ pub mod types {
                 ::std::string::String,
             >,
             error_rate: ::std::result::Result<::std::option::Option<f64>, ::std::string::String>,
+            id: ::std::result::Result<::std::string::String, ::std::string::String>,
             kind: ::std::result::Result<super::GraphNodeKind, ::std::string::String>,
             name: ::std::result::Result<::std::string::String, ::std::string::String>,
             p95_ns: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
@@ -7915,6 +7923,7 @@ pub mod types {
                 Self {
                     dependency_kind: Ok(Default::default()),
                     error_rate: Ok(Default::default()),
+                    id: Err("no value supplied for id".to_string()),
                     kind: Err("no value supplied for kind".to_string()),
                     name: Err("no value supplied for name".to_string()),
                     p95_ns: Ok(Default::default()),
@@ -7941,6 +7950,16 @@ pub mod types {
                 self.error_rate = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for error_rate: {e}"));
+                self
+            }
+            pub fn id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
                 self
             }
             pub fn kind<T>(mut self, value: T) -> Self
@@ -7992,6 +8011,7 @@ pub mod types {
                 Ok(Self {
                     dependency_kind: value.dependency_kind?,
                     error_rate: value.error_rate?,
+                    id: value.id?,
                     kind: value.kind?,
                     name: value.name?,
                     p95_ns: value.p95_ns?,
@@ -8004,6 +8024,7 @@ pub mod types {
                 Self {
                     dependency_kind: Ok(value.dependency_kind),
                     error_rate: Ok(value.error_rate),
+                    id: Ok(value.id),
                     kind: Ok(value.kind),
                     name: Ok(value.name),
                     p95_ns: Ok(value.p95_ns),
