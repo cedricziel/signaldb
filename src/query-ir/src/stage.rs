@@ -346,6 +346,36 @@ pub struct Describe {
     pub sample: bool,
 }
 
+/// What a `correlate` stage joins the current relation to. Closed today (only
+/// `parent`, one hop within `traces`); the cross-signal change
+/// (`query-cross-signal-correlate`) widens this enum with new targets rather
+/// than changing what `"parent"` means (`irVersion` 8).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CorrelateTarget {
+    /// The span in the same trace whose `span_id` equals this row's
+    /// `parent_span_id`.
+    Parent,
+}
+
+/// A join kind for a `correlate` stage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum JoinKind {
+    Inner,
+    Left,
+}
+
+/// The `correlate` stage: join each row to its parent span in the same trace
+/// (`irVersion` 8). Parent-side columns come back under a fixed `parent.`
+/// prefix; see `resolver`/`validate` for how that scope resolves.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Correlate {
+    pub to: CorrelateTarget,
+    pub kind: JoinKind,
+}
+
 /// A transform stage in the pipeline. Externally tagged: a single-key object
 /// whose key names the stage. An unknown key is an unsupported stage and is
 /// rejected by name.
@@ -362,6 +392,7 @@ pub enum Stage {
     Heatmap(Heatmap),
     HistogramQuantile(HistogramQuantile),
     Describe(Describe),
+    Correlate(Correlate),
 }
 
 impl Stage {
@@ -378,6 +409,7 @@ impl Stage {
             Stage::Heatmap(_) => "heatmap",
             Stage::HistogramQuantile(_) => "histogram_quantile",
             Stage::Describe(_) => "describe",
+            Stage::Correlate(_) => "correlate",
         }
     }
 }
@@ -407,8 +439,55 @@ mod tests {
 
     #[test]
     fn unknown_stage_key_is_rejected_by_name() {
-        let err = serde_json::from_value::<Stage>(json!({ "correlate": {} })).unwrap_err();
-        assert!(err.to_string().contains("correlate"), "got: {err}");
+        let err = serde_json::from_value::<Stage>(json!({ "frobnicate": {} })).unwrap_err();
+        assert!(err.to_string().contains("frobnicate"), "got: {err}");
+    }
+
+    #[test]
+    fn correlate_parent_inner_parses() {
+        let s: Stage =
+            serde_json::from_value(json!({ "correlate": { "to": "parent", "kind": "inner" } }))
+                .unwrap();
+        let Stage::Correlate(c) = s else {
+            panic!("expected a correlate stage");
+        };
+        assert_eq!(c.to, CorrelateTarget::Parent);
+        assert_eq!(c.kind, JoinKind::Inner);
+        assert_eq!(Stage::Correlate(c).name(), "correlate");
+    }
+
+    #[test]
+    fn correlate_left_parses() {
+        let s: Stage =
+            serde_json::from_value(json!({ "correlate": { "to": "parent", "kind": "left" } }))
+                .unwrap();
+        assert!(matches!(
+            s,
+            Stage::Correlate(Correlate {
+                kind: JoinKind::Left,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn correlate_rejects_unknown_inner_key() {
+        assert!(
+            serde_json::from_value::<Stage>(json!({
+                "correlate": { "to": "parent", "kind": "inner", "bogus": 1 }
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn correlate_rejects_unknown_target() {
+        assert!(
+            serde_json::from_value::<Stage>(json!({
+                "correlate": { "to": "grandparent", "kind": "inner" }
+            }))
+            .is_err()
+        );
     }
 
     #[test]
