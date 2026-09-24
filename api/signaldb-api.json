@@ -6593,6 +6593,104 @@
           }
         }
       },
+      "GraphEdge": {
+        "type": "object",
+        "description": "Calls from `source` to `target` in the window.",
+        "required": [
+          "source",
+          "target",
+          "count",
+          "rate",
+          "error_rate"
+        ],
+        "properties": {
+          "count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "error_rate": {
+            "type": "number",
+            "format": "double",
+            "description": "Share (0..1) of the calls with error status."
+          },
+          "p95_ns": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "p95 call duration in nanoseconds."
+          },
+          "rate": {
+            "type": "number",
+            "format": "double",
+            "description": "Calls per second: `count` over the window length in seconds."
+          },
+          "source": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          }
+        }
+      },
+      "GraphNode": {
+        "type": "object",
+        "description": "A service or an uninstrumented dependency.",
+        "required": [
+          "name",
+          "kind"
+        ],
+        "properties": {
+          "dependency_kind": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "External nodes only: `database`, `messaging`, `rpc`, `http` or `other`."
+          },
+          "error_rate": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Share (0..1) of the node's server/consumer spans with error status."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/GraphNodeKind"
+          },
+          "name": {
+            "type": "string",
+            "description": "The service name, or for an external node the first present of\n`db.namespace`, `messaging.destination.name`, `rpc.service`,\n`server.address`, `peer.service`."
+          },
+          "p95_ns": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "p95 duration of the node's server/consumer spans, in nanoseconds."
+          },
+          "request_rate": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Service nodes with server/consumer spans only: requests per second."
+          }
+        }
+      },
+      "GraphNodeKind": {
+        "type": "string",
+        "description": "Whether a node reported spans of its own or was inferred from a client\nor producer span with no instrumented callee.",
+        "enum": [
+          "service",
+          "external"
+        ]
+      },
       "HeatmapAxisX": {
         "type": "object",
         "description": "Epoch-aligned time axis with a fixed nanosecond step.",
@@ -7825,6 +7923,14 @@
           "result"
         ],
         "properties": {
+          "depth": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`graph` only: hops from `focus` (1-3, default 1)."
+          },
           "fields": {
             "type": [
               "array",
@@ -7834,6 +7940,13 @@
               "type": "string"
             },
             "description": "Curated projection (logical field names) for `rows`/`table`."
+          },
+          "focus": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`graph` only: restrict to this service's neighbourhood."
           },
           "from": {
             "type": "string",
@@ -7857,8 +7970,15 @@
           },
           "result": {
             "type": "string",
-            "description": "Declared result envelope: `rows`, `series`, `table`, `heatmap`, or\n(for the `profiles` source only) `flamegraph`.",
+            "description": "Declared result envelope: `rows`, `series`, `table`, `heatmap`,\n(for the `profiles` source only) `flamegraph`, or (for the `traces`\nsource, irVersion 8+) `graph`.",
             "example": "rows"
+          },
+          "trace_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`graph` only: restrict to the services and calls of one trace."
           }
         }
       },
@@ -7875,7 +7995,7 @@
       },
       "QueryIrResponse": {
         "type": "object",
-        "description": "The single canonical response contract. `result` discriminates which fields\nare populated: `rows`/`table` fill `columns` + `rows`; `series` fills\n`series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills\n`flamegraph`.",
+        "description": "The single canonical response contract. `result` discriminates which fields\nare populated: `rows`/`table` fill `columns` + `rows`; `series` fills\n`series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills\n`flamegraph`; `graph` fills `graph`.",
         "required": [
           "result",
           "window"
@@ -7898,6 +8018,17 @@
               }
             ]
           },
+          "graph": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/ServiceGraph",
+                "description": "Present iff `result == \"graph\"` — the service dependency graph."
+              }
+            ]
+          },
           "heatmap": {
             "$ref": "#/components/schemas/HeatmapResult"
           },
@@ -7914,7 +8045,7 @@
           },
           "result": {
             "type": "string",
-            "description": "The result envelope: `rows`, `series`, `table`, `heatmap`, or `flamegraph`."
+            "description": "The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`, or `graph`."
           },
           "rows": {
             "type": "array",
@@ -8279,6 +8410,33 @@
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/Trace"
+            }
+          }
+        }
+      },
+      "ServiceGraph": {
+        "type": "object",
+        "description": "The assembled graph. `dropped_nodes` counts the nodes removed by the\nserver-side node cap (`[querier].graph_max_nodes`).",
+        "required": [
+          "nodes",
+          "edges"
+        ],
+        "properties": {
+          "dropped_nodes": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "edges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GraphEdge"
+            }
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/GraphNode"
             }
           }
         }

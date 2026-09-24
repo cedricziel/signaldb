@@ -72,8 +72,9 @@ pub struct QueryIrRequest {
     #[schema(example = "logs")]
     pub from: String,
     pub range: QueryRange,
-    /// Declared result envelope: `rows`, `series`, `table`, `heatmap`, or
-    /// (for the `profiles` source only) `flamegraph`.
+    /// Declared result envelope: `rows`, `series`, `table`, `heatmap`,
+    /// (for the `profiles` source only) `flamegraph`, or (for the `traces`
+    /// source, irVersion 8+) `graph`.
     #[schema(example = "rows")]
     pub result: String,
     /// Curated projection (logical field names) for `rows`/`table`.
@@ -83,6 +84,15 @@ pub struct QueryIrRequest {
     #[serde(default)]
     #[schema(value_type = Vec<Object>)]
     pub pipeline: Vec<serde_json::Value>,
+    /// `graph` only: restrict to this service's neighbourhood.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus: Option<String>,
+    /// `graph` only: hops from `focus` (1-3, default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<i64>,
+    /// `graph` only: restrict to the services and calls of one trace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
 }
 
 /// One named formula in a [`MultiQueryIrRequest`] (D5): arithmetic
@@ -142,6 +152,7 @@ impl QueryIrResponse {
             step_ns: None,
             heatmap: HeatmapResult::default(),
             flamegraph: None,
+            graph: None,
             metadata: Some(metadata),
             warnings,
         }
@@ -278,10 +289,10 @@ pub struct QueryWarning {
 /// The single canonical response contract. `result` discriminates which fields
 /// are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
 /// `series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills
-/// `flamegraph`.
+/// `flamegraph`; `graph` fills `graph`.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct QueryIrResponse {
-    /// The result envelope: `rows`, `series`, `table`, `heatmap`, or `flamegraph`.
+    /// The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`, or `graph`.
     pub result: String,
     /// The resolved absolute window the query ran over.
     pub window: ResolvedWindow,
@@ -301,6 +312,9 @@ pub struct QueryIrResponse {
     /// response has no flamegraph at all" (i.e. a different envelope).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flamegraph: Option<FlamegraphResult>,
+    /// Present iff `result == "graph"` — the service dependency graph.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<common::service_graph::ServiceGraph>,
     /// Present iff `result == "metadata"` — what a `describe` document asked
     /// about, with the provenance and cost of the answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -389,7 +403,9 @@ async fn query_ir_single(
 
     let (batches, correlate_truncated) = execute_ticket(&state, ticket).await?;
     let mut response = build_envelope(&req.result, window, &batches, &document)?;
-    response.warnings = unknown_group_by_warnings(&req.from, &document, &batches);
+    response
+        .warnings
+        .extend(unknown_group_by_warnings(&req.from, &document, &batches));
     response
         .warnings
         .extend(correlate_truncation_warning(correlate_truncated));
@@ -471,6 +487,7 @@ async fn query_ir_multi(
         step_ns: None,
         heatmap: HeatmapResult::default(),
         flamegraph: None,
+        graph: None,
         metadata: None,
         warnings: Vec::new(),
     }))
@@ -500,6 +517,7 @@ fn parse_envelope(s: &str) -> Result<common::query_ir::ResultEnvelope, ApiError>
         "heatmap" => Heatmap,
         "flamegraph" => Flamegraph,
         "metadata" => Metadata,
+        "graph" => Graph,
         other => {
             return Err(ApiError::bad_request(format!(
                 "unknown result envelope '{other}'"
@@ -892,6 +910,7 @@ fn build_envelope(
                 step_ns,
                 heatmap: HeatmapResult::default(),
                 flamegraph: None,
+                graph: None,
                 metadata: None,
                 warnings: Vec::new(),
             })
@@ -907,6 +926,7 @@ fn build_envelope(
                 step_ns: None,
                 heatmap: HeatmapResult::default(),
                 flamegraph: None,
+                graph: None,
                 metadata: None,
                 warnings: Vec::new(),
             })
@@ -957,6 +977,7 @@ fn build_envelope(
                     cells: to_heatmap_cells(batches)?,
                 },
                 flamegraph: None,
+                graph: None,
                 metadata: None,
                 warnings: Vec::new(),
             })
@@ -970,13 +991,70 @@ fn build_envelope(
             step_ns: None,
             heatmap: HeatmapResult::default(),
             flamegraph: Some(to_flamegraph_result(batches)?),
+            graph: None,
             metadata: None,
             warnings: Vec::new(),
         }),
+        "graph" => {
+            let graph = to_graph(batches)?;
+            Ok(QueryIrResponse {
+                result: result.to_string(),
+                window,
+                columns: Vec::new(),
+                rows: Vec::new(),
+                series: Vec::new(),
+                step_ns: None,
+                heatmap: HeatmapResult::default(),
+                flamegraph: None,
+                metadata: None,
+                warnings: graph_node_limit_warning(graph.dropped_nodes)
+                    .into_iter()
+                    .collect(),
+                graph: Some(graph),
+            })
+        }
         other => Err(ApiError::bad_request(format!(
             "unsupported result envelope '{other}'"
         ))),
     }
+}
+
+/// Decode the querier's one-row `graph_json` batch (see
+/// `querier::query::graph::encode_graph_batch`).
+fn to_graph(batches: &[RecordBatch]) -> Result<common::service_graph::ServiceGraph, ApiError> {
+    let Some(batch) = batches.iter().find(|b| b.num_rows() > 0) else {
+        return Ok(Default::default());
+    };
+    let json = batch
+        .column_by_name(common::service_graph::GRAPH_JSON_COLUMN)
+        .and_then(|array| array.as_any().downcast_ref::<StringArray>())
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "graph result is missing graph_json",
+            )
+        })?;
+    serde_json::from_str(json.value(0)).map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("invalid graph_json: {e}"),
+        )
+    })
+}
+
+/// The `graph` node cap (`[querier].graph_max_nodes`) dropped nodes.
+const GRAPH_NODE_LIMIT: &str = "graph_node_limit";
+
+fn graph_node_limit_warning(dropped_nodes: u64) -> Option<QueryWarning> {
+    (dropped_nodes > 0).then(|| QueryWarning {
+        code: GRAPH_NODE_LIMIT.to_string(),
+        message: format!(
+            "the graph reached the server node limit ([querier].graph_max_nodes); \
+             {dropped_nodes} lower-traffic nodes were dropped"
+        ),
+        field: None,
+        suggestions: Vec::new(),
+    })
 }
 
 /// Decode the querier's single-row flamegraph batch
@@ -1527,9 +1605,9 @@ mod correlate_warnings {
 #[cfg(test)]
 mod tests {
     use super::{
-        MultiQueryIrRequest, QueryFormula, QueryIrRequest, QueryRange, ResolvedWindow,
-        build_envelope, check_multi_source_scopes, parse_envelope, source_read_scope,
-        to_multi_document,
+        GRAPH_NODE_LIMIT, MultiQueryIrRequest, QueryFormula, QueryIrRequest, QueryRange,
+        ResolvedWindow, build_envelope, check_multi_source_scopes, parse_envelope,
+        source_read_scope, to_multi_document,
     };
     use crate::{RouterAppState, create_router};
     use axum::body::Body;
@@ -1822,6 +1900,71 @@ mod tests {
     }
 
     #[test]
+    fn graph_envelope_decodes_the_querier_batch_and_warns_on_dropped_nodes() {
+        use datafusion::arrow::array::{RecordBatch, StringArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+        let graph_json = serde_json::json!({
+            "nodes": [
+                { "name": "orders", "kind": "service", "request_rate": 1.5,
+                  "error_rate": 0.0, "p95_ns": 100 },
+                { "name": "orders-db", "kind": "external", "dependency_kind": "database" }
+            ],
+            "edges": [{ "source": "orders", "target": "orders-db", "count": 3,
+                        "rate": 0.05, "error_rate": 0.0, "p95_ns": 50 }],
+            "dropped_nodes": 3
+        })
+        .to_string();
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                common::service_graph::GRAPH_JSON_COLUMN,
+                DataType::Utf8,
+                false,
+            )])),
+            vec![Arc::new(StringArray::from(vec![graph_json]))],
+        )
+        .unwrap();
+        let document = serde_json::json!({
+            "irVersion": 8, "from": "traces", "range": { "from": "0", "to": "60" },
+            "result": "graph", "pipeline": []
+        });
+        let response = build_envelope(
+            "graph",
+            ResolvedWindow {
+                start_ns: 0,
+                end_ns: 60,
+            },
+            &[batch],
+            &document,
+        )
+        .unwrap();
+        let graph = response.graph.expect("graph envelope is present");
+        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(graph.edges[0].count, 3);
+        assert_eq!(
+            response
+                .warnings
+                .iter()
+                .map(|w| w.code.as_str())
+                .collect::<Vec<_>>(),
+            vec![GRAPH_NODE_LIMIT]
+        );
+    }
+
+    #[test]
+    fn graph_scoping_fields_reach_the_querier_document() {
+        let req: QueryIrRequest = serde_json::from_value(serde_json::json!({
+            "irVersion": 8, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "graph", "focus": "orders", "depth": 2, "pipeline": []
+        }))
+        .unwrap();
+        let doc = serde_json::to_value(&req).unwrap();
+        assert_eq!(doc["focus"], "orders");
+        assert_eq!(doc["depth"], 2);
+        assert!(doc.get("trace_id").is_none());
+    }
+
+    #[test]
     fn flamegraph_envelope_decodes_the_querier_batch() {
         use datafusion::arrow::array::{BooleanArray, RecordBatch, StringArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -2071,6 +2214,9 @@ mod tests {
                 result: "series".to_string(),
                 fields: None,
                 pipeline: Vec::new(),
+                focus: None,
+                depth: None,
+                trace_id: None,
             },
         );
         queries.insert(
@@ -2085,6 +2231,9 @@ mod tests {
                 result: "series".to_string(),
                 fields: None,
                 pipeline: Vec::new(),
+                focus: None,
+                depth: None,
+                trace_id: None,
             },
         );
         assert!(check_multi_source_scopes(&scoped, &queries).is_err());
@@ -2118,6 +2267,9 @@ mod tests {
                 pipeline: vec![serde_json::json!({
                     "aggregate": { "by": [], "aggs": [{ "fn": "count", "as": "n" }], "step": "1m" }
                 })],
+                focus: None,
+                depth: None,
+                trace_id: None,
             },
         );
         let req = MultiQueryIrRequest {
