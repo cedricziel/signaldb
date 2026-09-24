@@ -477,10 +477,11 @@ The declared `result` selects one canonical response shape:
   "series": [ { "labels": {...}, "points": [[t_ns, value], ...] } ] }
 ```
 
-Two more envelopes are source-scoped rather than available everywhere:
-`heatmap` (traces only, see [below](#heatmap-envelope-ir-v2)) and
-`flamegraph` (profiles only, see [below](#flamegraph-envelope-profiles-only)).
-A fifth, `metadata`, answers a question about the source instead of returning
+A few more envelopes are source-scoped rather than available everywhere:
+`heatmap` (traces only, see [below](#heatmap-envelope-ir-v2)),
+`flamegraph` (profiles only, see [below](#flamegraph-envelope-profiles-only)),
+and `graph` (traces only, IR v8+, see [below](#graph-envelope-traces-only-ir-v8)).
+A sixth, `metadata`, answers a question about the source instead of returning
 its records — see [Discovery](#discovery-what-can-i-query).
 
 Values follow the value type: timestamps/durations are integer nanoseconds,
@@ -513,6 +514,39 @@ row landed in one group labelled `null`. It is a warning rather than a
 rejection because an unpromoted attribute cannot be enumerated while planning:
 grouping by a real attribute that is simply absent from a short window is a
 legitimate query, and would otherwise fail a quiet dashboard panel.
+
+## Graph envelope (`traces` only, IR v8+)
+
+`"result": "graph"` declares a service dependency graph — nodes and edges
+built from the `traces` source — rather than a row-shaped result. It requires
+`irVersion` 8 or later and is only legal for `from: "traces"`; the pipeline
+composes with `where` only, since the graph is assembled from fixed internal
+pipelines server-side rather than a client-composed one.
+
+Three optional top-level fields, siblings of `result`, scope the graph:
+
+```jsonc
+{
+  "irVersion": 8,
+  "from": "traces",
+  "range": { "from": "now-1h", "to": "now" },
+  "result": "graph",
+  "focus": "checkout", // restrict to this service's neighbourhood
+  "depth": 2, // hops from focus, 1-3, default 1; requires focus
+  "pipeline": [],
+}
+```
+
+- `focus` + `depth` restrict the graph to the nodes within `depth` hops of
+  `focus` in either direction; `depth` is only legal alongside `focus`.
+- `trace_id` restricts the graph to the services and calls observed in one
+  trace; it is mutually exclusive with `focus`.
+- With neither, the graph covers every service seen in the window.
+
+This document only defines the request contract; the response shape (nodes,
+edges, call/error rate, p95 latency, external nodes, the node cap and its
+warning) is specified in `openspec/changes/service-map/specs/query-ir-service-graph/spec.md`
+and will be documented here in full once the querier assembles it.
 
 ## Profile summaries
 
