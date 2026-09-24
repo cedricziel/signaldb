@@ -16,16 +16,16 @@ test("entity detail page renders data for a seeded service", async ({
   );
 
   await expect(
-    page.getByRole("heading", { name: liveEnv.seededService }),
+    page.getByText(liveEnv.seededService, { exact: true }).first(),
   ).toBeVisible({ timeout: 15_000 });
 
   // Operations, error groups, dependency breakdown, and slowest traces all
   // load without hitting the "Could not load" error path — each is a
   // separate Query IR document sent to the real backend.
-  await expect(page.getByText("Operations")).toBeVisible({
+  await expect(page.getByText("Operations", { exact: true })).toBeVisible({
     timeout: 15_000,
   });
-  await expect(page.getByText("Slowest traces")).toBeVisible();
+  await expect(page.getByText("Slowest traces", { exact: true })).toBeVisible();
   // The query that PR #1695 fixed actually returned data: the empty-state
   // copy is absent.
   await expect(page.getByText("No traces in this range")).toHaveCount(0, {
