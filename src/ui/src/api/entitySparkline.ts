@@ -19,6 +19,7 @@ import {
   METRIC_SOURCES,
   type IrSeries,
 } from "./entityMetrics";
+import { spanKindWhere } from "./catalog";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 
@@ -118,7 +119,6 @@ export function buildActivityDoc(
   // Traces where the entity has them — that is what the Rate column counts —
   // otherwise whichever signal discovered it.
   const source = sources.includes("traces") ? "traces" : sources[0]!;
-  const scoped = source === "traces" && entity.spanKindScope !== undefined;
 
   return {
     irVersion: 1,
@@ -126,17 +126,7 @@ export function buildActivityDoc(
     range: { from: msToNanos(range.fromMs), to: msToNanos(range.toMs) },
     result: "series",
     pipeline: [
-      ...(scoped
-        ? [
-            {
-              where: {
-                field: "span_kind",
-                op: "eq",
-                value: entity.spanKindScope!,
-              },
-            },
-          ]
-        : []),
+      ...spanKindWhere(source === "traces" ? entity.spanKindScope : undefined),
       {
         aggregate: {
           by: entity.identity,
@@ -175,7 +165,10 @@ export async function fetchEntityActivity(
 }
 
 /** Series keyed the way the table keys its rows, so a cell is one lookup. */
-function indexByRow(series: IrSeries, identity: string[]): Map<string, IrSeries> {
+function indexByRow(
+  series: IrSeries,
+  identity: string[],
+): Map<string, IrSeries> {
   const byRow = new Map<string, IrSeries>();
   for (const s of series) {
     const key = compositeKey(

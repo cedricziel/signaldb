@@ -87,6 +87,14 @@ export function pinsWhere(pinned: EntityPin[]): Record<string, unknown>[] {
   }));
 }
 
+/** A `where` stage scoping to one span kind, or no stage when `kind` is
+ * undefined. */
+export function spanKindWhere(
+  kind: string | undefined,
+): Record<string, unknown>[] {
+  return kind ? [{ where: { field: "span_kind", op: "eq", value: kind } }] : [];
+}
+
 export function buildEntitySourceDoc(
   entityType: EntityTypeDef,
   source: string,
@@ -96,17 +104,7 @@ export function buildEntitySourceDoc(
   const isTraces = source === "traces";
   const identity = sourceIdentity(entityType, source);
   const scope: Record<string, unknown>[] = [
-    ...(isTraces && entityType.spanKindScope
-      ? [
-          {
-            where: {
-              field: "span_kind",
-              op: "eq",
-              value: entityType.spanKindScope,
-            },
-          },
-        ]
-      : []),
+    ...spanKindWhere(isTraces ? entityType.spanKindScope : undefined),
     ...pinsWhere(pinned),
   ];
 

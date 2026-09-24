@@ -13,7 +13,7 @@
  * there is no max-over-buckets stage either.
  */
 import type { QueryIrRequest, QueryIrResponse } from "./gen";
-import { pinsWhere, type EntityPin } from "./catalog";
+import { pinsWhere, spanKindWhere, type EntityPin } from "./catalog";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 import { ERROR_PATTERN } from "./traceGroups";
@@ -34,20 +34,7 @@ function scopeWhere(
   entity: EntityTypeDef,
   pinned: EntityPin[],
 ): Record<string, unknown>[] {
-  return [
-    ...(entity.spanKindScope
-      ? [
-          {
-            where: {
-              field: "span_kind",
-              op: "eq",
-              value: entity.spanKindScope,
-            },
-          },
-        ]
-      : []),
-    ...pinsWhere(pinned),
-  ];
+  return [...spanKindWhere(entity.spanKindScope), ...pinsWhere(pinned)];
 }
 
 function rangeDoc(range: ResolvedRange) {
