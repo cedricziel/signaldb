@@ -35,8 +35,8 @@ use super::relation::{
 use super::resolver::FieldResolver;
 use super::source::{SourceDef, SourceRegistry};
 use super::stage::{
-    Agg, AggFn, Aggregate, Describe, DescribeTarget, Extract, Heatmap, HistogramQuantile, Order,
-    Rank, Stage, is_expression_string,
+    Agg, AggFn, Aggregate, Correlate, CorrelateTarget, Describe, DescribeTarget, Extract, Heatmap,
+    HistogramQuantile, Order, Rank, Stage, is_expression_string,
 };
 use super::value::{ValueType, coerce, parse_duration_ns};
 use super::version::{Feature, OperatorRegistry};
@@ -139,6 +139,17 @@ pub fn validate(
             OperatorRegistry::feature_min_version(Feature::HistogramQuantile)
         )));
     }
+    if !registry.supports_feature(Feature::SpanCorrelate)
+        && doc
+            .pipeline
+            .iter()
+            .any(|stage| matches!(stage, Stage::Correlate(_)))
+    {
+        return Err(IrError::Invalid(format!(
+            "correlate stage requires irVersion {}",
+            OperatorRegistry::feature_min_version(Feature::SpanCorrelate)
+        )));
+    }
     // 1b. Introspection documents (`describe` + `metadata`) never reach a plan:
     // they are answered from declared schema, the schema registries and
     // maintained statistics. Legality is checked here so this validator and the
@@ -164,6 +175,7 @@ pub fn validate(
             grain: source_def.grain,
             aggregated: false,
             open: true,
+            correlated: false,
         }),
         names: Vec::new(),
         declared_result: doc.result,
@@ -230,6 +242,7 @@ impl InferCtx<'_> {
             Stage::Limit(_) => Ok(()),
             Stage::Heatmap(heatmap) => self.apply_heatmap(heatmap),
             Stage::HistogramQuantile(hq) => self.apply_histogram_quantile(hq),
+            Stage::Correlate(correlate) => self.apply_correlate(correlate),
             // Unreachable in practice: an introspection document returns before
             // stage inference. Kept explicit so a future caller that skips
             // `check_describe` fails loudly instead of inferring nonsense.
@@ -278,6 +291,10 @@ impl InferCtx<'_> {
             });
         }
         self.guard_logical_name(name)?;
+        // Under `parent.`, resolution proceeds exactly as it would for the
+        // unprefixed name against the same `traces` source — the scope only
+        // relabels the outcome, it does not change how a field is found.
+        let resolve_name = self.parent_field(name).unwrap_or(name);
         match &self.relation {
             RelationType::Series(_) | RelationType::Heatmap(_) | RelationType::Metadata(_) => {
                 Err(IrError::UnknownReference {
@@ -294,7 +311,7 @@ impl InferCtx<'_> {
                         name: name.to_string(),
                     });
                 }
-                match self.resolver.resolve(self.source, name) {
+                match self.resolver.resolve(self.source, resolve_name) {
                     Some(r) => Ok((r.value_type().clone(), r.is_advisory_type())),
                     // Defined rejection: a field with no canonical type (12.1a).
                     None => Err(IrError::UnknownFieldType {
@@ -375,7 +392,8 @@ impl InferCtx<'_> {
     }
 
     fn require_filterable(&self, field: &str) -> Result<(), IrError> {
-        if !self.resolver.is_filterable(self.source, field) {
+        let effective = self.parent_field(field).unwrap_or(field);
+        if !self.resolver.is_filterable(self.source, effective) {
             return Err(IrError::UnfilterableField {
                 field: field.to_string(),
             });
@@ -430,6 +448,7 @@ impl InferCtx<'_> {
                 reason: "cannot aggregate an already-aggregated relation".to_string(),
             });
         }
+        let was_correlated = rs.correlated;
         if agg.aggs.is_empty() {
             return Err(IrError::Invalid(
                 "aggregate requires at least one aggregate output".to_string(),
@@ -491,6 +510,7 @@ impl InferCtx<'_> {
                     grain: Grain::Group,
                     aggregated: true,
                     open: false,
+                    correlated: was_correlated,
                 });
             }
         }
@@ -653,6 +673,57 @@ impl InferCtx<'_> {
             step_ns,
         });
         Ok(())
+    }
+
+    /// The span-to-parent `correlate` stage (`irVersion` 8): join the current
+    /// `traces` relation to the span in the same trace whose `span_id`
+    /// equals this row's `parent_span_id`. Version gating happens once,
+    /// up front in [`validate`]; here we check placement (source, terminality
+    /// against `aggregate`, at most one per pipeline). Parent-side columns
+    /// are not materialized as explicit relation columns — they resolve
+    /// dynamically through the `parent.` scope in
+    /// [`Self::ref_type_and_advisory`], the same way ordinary fields do on an
+    /// open relation.
+    fn apply_correlate(&mut self, correlate: &Correlate) -> Result<(), IrError> {
+        let CorrelateTarget::Parent = correlate.to;
+        if self.source != "traces" {
+            return Err(IrError::IllegalStage {
+                stage: "correlate".to_string(),
+                reason: "span correlation requires the traces source".to_string(),
+            });
+        }
+        let rs = self.require_rowset("correlate")?;
+        if rs.aggregated {
+            return Err(IrError::IllegalStage {
+                stage: "correlate".to_string(),
+                reason: "correlate must precede aggregate".to_string(),
+            });
+        }
+        if rs.correlated {
+            return Err(IrError::IllegalStage {
+                stage: "correlate".to_string(),
+                reason: "a pipeline may contain at most one correlate stage".to_string(),
+            });
+        }
+        if let RelationType::RowSet(rs) = &mut self.relation {
+            rs.correlated = true;
+        }
+        Ok(())
+    }
+
+    /// Whether the current relation has been joined to its parent span by a
+    /// `correlate` stage — gates the `parent.` field scope.
+    fn is_correlated(&self) -> bool {
+        matches!(&self.relation, RelationType::RowSet(rs) if rs.correlated)
+    }
+
+    /// Strip the `parent.` scope prefix from a reference name, once a
+    /// `correlate` stage has joined the relation to its parent span. Returns
+    /// `None` for an unprefixed name, or before `correlate` has run.
+    fn parent_field<'n>(&self, name: &'n str) -> Option<&'n str> {
+        self.is_correlated()
+            .then(|| name.strip_prefix("parent."))
+            .flatten()
     }
 
     fn check_agg(&self, a: &Agg, group_cols: &[Column]) -> Result<Column, IrError> {
@@ -899,8 +970,9 @@ impl InferCtx<'_> {
     }
 
     fn guard_logical_name(&self, name: &str) -> Result<(), IrError> {
-        if self.resolver.is_physical_name(self.source, name)
-            && !self.resolver.is_known(self.source, name)
+        let effective = self.parent_field(name).unwrap_or(name);
+        if self.resolver.is_physical_name(self.source, effective)
+            && !self.resolver.is_known(self.source, effective)
         {
             return Err(IrError::PhysicalAddressing {
                 field: name.to_string(),
@@ -2168,13 +2240,13 @@ mod tests {
 
     #[test]
     fn an_unsupported_version_still_reports_the_range() {
-        let err = validate_json(describe_doc(8, json!({ "target": "fields" }))).unwrap_err();
+        let err = validate_json(describe_doc(9, json!({ "target": "fields" }))).unwrap_err();
         assert!(
             matches!(
                 err,
                 IrError::UnsupportedVersion {
-                    found: 8,
-                    max: 7,
+                    found: 9,
+                    max: 8,
                     ..
                 }
             ),
@@ -2581,5 +2653,164 @@ mod tests {
         d["pipeline"][0]["aggregate"]["aggs"][0]["window"] = json!("10s");
         let v = validate_json_with(d, &metrics_resolver()).unwrap();
         assert!(matches!(v.terminal, RelationType::Series(_)));
+    }
+
+    // Task 1.1 — span-to-parent `correlate` stage (irVersion 8).
+
+    fn traces_resolver() -> InMemoryResolver {
+        InMemoryResolver::new()
+            .with_column("traces", "trace_id", "trace_id", ValueType::String)
+            .with_column("traces", "span_id", "span_id", ValueType::String)
+            .with_column(
+                "traces",
+                "parent_span_id",
+                "parent_span_id",
+                ValueType::String,
+            )
+            .with_column("traces", "service.name", "service_name", ValueType::String)
+            .with_column(
+                "traces",
+                "duration_nano",
+                "duration_nano",
+                ValueType::DurationNs,
+            )
+            .with_attribute(
+                "traces",
+                "span.http.route",
+                "span_attributes",
+                ValueType::String,
+                None,
+            )
+    }
+
+    fn correlate_doc(
+        version: i64,
+        kind: &str,
+        extra_pipeline: Vec<serde_json::Value>,
+    ) -> serde_json::Value {
+        let mut pipeline = vec![json!({ "correlate": { "to": "parent", "kind": kind } })];
+        pipeline.extend(extra_pipeline);
+        json!({
+            "irVersion": version, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "pipeline": pipeline
+        })
+    }
+
+    #[test]
+    fn correlate_inner_parses_and_infers_rowset() {
+        let v = validate_json_with(correlate_doc(8, "inner", vec![]), &traces_resolver()).unwrap();
+        match v.terminal {
+            RelationType::RowSet(rs) => {
+                assert!(rs.correlated);
+                assert!(!rs.aggregated);
+            }
+            other => panic!("expected rows, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn correlate_below_v8_is_rejected() {
+        let err =
+            validate_json_with(correlate_doc(7, "inner", vec![]), &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 8")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn correlate_on_logs_is_rejected() {
+        let doc = json!({
+            "irVersion": 8, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "pipeline": [{ "correlate": { "to": "parent", "kind": "inner" } }]
+        });
+        let err = validate_json(doc).unwrap_err();
+        assert!(
+            matches!(err, IrError::IllegalStage { ref stage, .. } if stage == "correlate"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_second_correlate_is_rejected() {
+        let doc = correlate_doc(
+            8,
+            "inner",
+            vec![json!({ "correlate": { "to": "parent", "kind": "inner" } })],
+        );
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::IllegalStage { ref stage, .. } if stage == "correlate"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn correlate_after_aggregate_is_rejected() {
+        let doc = json!({
+            "irVersion": 8, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [
+                { "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "count", "as": "n" }] } },
+                { "correlate": { "to": "parent", "kind": "inner" } }
+            ]
+        });
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::IllegalStage { ref stage, .. } if stage == "correlate"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn parent_scope_resolves_columns_and_attributes() {
+        let doc = correlate_doc(
+            8,
+            "inner",
+            vec![
+                json!({ "where": { "field": "parent.service.name", "op": "exists" } }),
+                json!({ "where": { "field": "parent.span.http.route", "op": "exists" } }),
+            ],
+        );
+        assert!(validate_json_with(doc, &traces_resolver()).is_ok());
+    }
+
+    #[test]
+    fn group_by_caller_and_callee_service() {
+        let doc = correlate_doc(
+            8,
+            "inner",
+            vec![json!({ "aggregate": {
+                "by": ["parent.service.name", "service.name"],
+                "aggs": [{ "fn": "count", "as": "n" }]
+            } })],
+        );
+        let mut doc = doc;
+        doc["result"] = json!("table");
+        let v = validate_json_with(doc, &traces_resolver()).unwrap();
+        match v.terminal {
+            RelationType::RowSet(rs) => {
+                assert!(rs.aggregated);
+                assert!(rs.columns.iter().any(|c| c.name == "parent.service.name"));
+                assert!(rs.columns.iter().any(|c| c.name == "service.name"));
+            }
+            other => panic!("expected table, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_parent_field_is_rejected() {
+        let doc = correlate_doc(
+            8,
+            "inner",
+            vec![json!({ "where": { "field": "parent.no_such_field", "op": "exists" } })],
+        );
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::UnknownFieldType { ref field } if field == "parent.no_such_field"),
+            "got {err:?}"
+        );
     }
 }

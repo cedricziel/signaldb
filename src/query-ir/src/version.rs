@@ -20,7 +20,7 @@ use super::stage::{AggFn, Parser};
 /// The lowest IR document version this server understands.
 pub const MIN_IR_VERSION: i64 = 1;
 /// The highest IR document version this server understands.
-pub const MAX_IR_VERSION: i64 = 7;
+pub const MAX_IR_VERSION: i64 = 8;
 
 /// Whether `version` is within the supported range.
 pub fn is_supported(version: i64) -> bool {
@@ -45,6 +45,8 @@ pub enum Feature {
     AggregateAcross,
     /// A range-function aggregate's `window` operand.
     AggregateWindow,
+    /// The span-to-parent `correlate` stage.
+    SpanCorrelate,
 }
 
 /// Comparison operators, keyed by the `irVersion` that introduced them.
@@ -96,6 +98,7 @@ const FEATURES: &[(Feature, i64)] = &[
     (Feature::AggregateDivisor, 5),
     (Feature::AggregateAcross, 7),
     (Feature::AggregateWindow, 7),
+    (Feature::SpanCorrelate, 8),
 ];
 
 fn min_version<T: PartialEq + Copy>(table: &[(T, i64)], member: T) -> Option<i64> {
@@ -165,7 +168,22 @@ mod tests {
         assert!(is_supported(5));
         assert!(is_supported(6));
         assert!(is_supported(7));
-        assert!(!is_supported(8));
+        assert!(is_supported(8));
+        assert!(!is_supported(9));
+    }
+
+    #[test]
+    fn v8_unlocks_span_correlate() {
+        assert!(
+            !OperatorRegistry::for_version(7)
+                .unwrap()
+                .supports_feature(Feature::SpanCorrelate)
+        );
+        assert!(
+            OperatorRegistry::for_version(8)
+                .unwrap()
+                .supports_feature(Feature::SpanCorrelate)
+        );
     }
 
     #[test]
@@ -257,6 +275,7 @@ mod tests {
             Feature::AggregateDivisor,
             Feature::AggregateAcross,
             Feature::AggregateWindow,
+            Feature::SpanCorrelate,
         ];
         for feature in all {
             assert!(

@@ -61,6 +61,10 @@ pub struct RowSet {
     /// in addition to `columns`. An `aggregate` closes the schema so only
     /// `columns` are referenceable thereafter.
     pub open: bool,
+    /// `true` once a `correlate` stage has joined this relation to its parent
+    /// span. Gates the `parent.` field scope and rejects a second `correlate`
+    /// (`irVersion` 8).
+    pub correlated: bool,
 }
 
 /// A time-series relation.

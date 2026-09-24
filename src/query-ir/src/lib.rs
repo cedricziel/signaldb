@@ -47,9 +47,9 @@ pub use relation::{
 pub use resolver::{FieldResolver, InMemoryResolver, Resolved};
 pub use source::{SourceDef, SourceRegistry};
 pub use stage::{
-    Agg, AggFn, Aggregate, DerivedField, Describe, DescribeTarget, Direction, Extract, Heatmap,
-    HeatmapAxisX, HeatmapAxisY, HeatmapValue, HistogramMode, HistogramQuantile, Order, Parser,
-    Rank, Stage,
+    Agg, AggFn, Aggregate, Correlate, CorrelateTarget, DerivedField, Describe, DescribeTarget,
+    Direction, Extract, Heatmap, HeatmapAxisX, HeatmapAxisY, HeatmapValue, HistogramMode,
+    HistogramQuantile, JoinKind, Order, Parser, Rank, Stage,
 };
 pub use validate::{IrError, Validated, validate, validate_describe};
 pub use value::{
