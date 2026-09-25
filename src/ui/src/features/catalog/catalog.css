@@ -22,6 +22,26 @@
   padding: 16px var(--gutter);
 }
 
+/* Wraps the List | Map switch and whichever of EntityTable/CatalogServiceMap
+   is showing — both render their own `.catalog-main`, so this pane only
+   needs to claim the row's remaining width. */
+.catalog-list-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.catalog-view-switch {
+  margin: 16px var(--gutter) 0;
+}
+
+@media (max-width: 600px) {
+  .catalog-view-switch {
+    margin: 12px;
+  }
+}
+
 @media (max-width: 600px) {
   .catalog-main {
     padding: 12px;
@@ -380,4 +400,59 @@
   text-align: left;
   color: var(--dim);
   font-weight: 500;
+}
+
+/* Catalog Map view — the graph and, once a node is selected, its side
+   panel side by side. */
+.catalog-map-layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+.catalog-map-layout.with-panel {
+  grid-template-columns: 1fr 320px;
+}
+
+.catalog-map-hide-external {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--dim);
+}
+
+.catalog-map-warning {
+  margin-bottom: 8px;
+}
+
+.catalog-map-panel {
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 12px;
+  align-self: start;
+}
+
+.catalog-map-panel-stats {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 8px;
+  margin: 8px 0 16px;
+}
+
+.catalog-map-panel-stats dt {
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.catalog-map-panel-stats dd {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+@media (max-width: 900px) {
+  .catalog-map-layout.with-panel {
+    grid-template-columns: 1fr;
+  }
 }

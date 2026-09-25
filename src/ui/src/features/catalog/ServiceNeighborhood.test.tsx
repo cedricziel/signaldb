@@ -4,6 +4,7 @@ import * as serviceGraphApi from "../../api/serviceGraph";
 import { renderWithClient } from "../../test/render";
 import { ServiceNeighborhood } from "./ServiceNeighborhood";
 import type { ServiceGraph } from "../../api/gen";
+import type { ServiceGraphResult } from "../../api/serviceGraph";
 
 vi.mock("../../api/serviceGraph", async (importOriginal) => {
   const actual =
@@ -65,6 +66,11 @@ const graphWithCallers: ServiceGraph = {
   dropped_nodes: 0,
 };
 
+const resultWithCallers: ServiceGraphResult = {
+  graph: graphWithCallers,
+  warnings: [],
+};
+
 function renderNeighborhood(update = vi.fn()) {
   const utils = renderWithClient(
     <ServiceNeighborhood
@@ -79,7 +85,7 @@ function renderNeighborhood(update = vi.fn()) {
 
 describe("ServiceNeighborhood", () => {
   it("scopes the graph query to the service with depth 1", async () => {
-    fetchServiceGraph.mockResolvedValue(graphWithCallers);
+    fetchServiceGraph.mockResolvedValue(resultWithCallers);
     renderNeighborhood();
     await screen.findByText("api-gateway");
     expect(fetchServiceGraph).toHaveBeenCalledWith(range, {
@@ -89,7 +95,7 @@ describe("ServiceNeighborhood", () => {
   });
 
   it("renders the map with the focus node selected", async () => {
-    fetchServiceGraph.mockResolvedValue(graphWithCallers);
+    fetchServiceGraph.mockResolvedValue(resultWithCallers);
     renderNeighborhood();
     const focusNode = await screen.findByRole("button", {
       name: /checkout/,
@@ -99,7 +105,7 @@ describe("ServiceNeighborhood", () => {
   });
 
   it("labels an external node with its dependency kind", async () => {
-    fetchServiceGraph.mockResolvedValue(graphWithCallers);
+    fetchServiceGraph.mockResolvedValue(resultWithCallers);
     renderNeighborhood();
     const externalNode = await screen.findByRole("button", {
       name: /postgres/,
@@ -108,7 +114,7 @@ describe("ServiceNeighborhood", () => {
   });
 
   it("colours a neighbour's status dot by its error rate, not any error at all", async () => {
-    fetchServiceGraph.mockResolvedValue(graphWithCallers);
+    fetchServiceGraph.mockResolvedValue(resultWithCallers);
     renderNeighborhood();
     const checkoutNode = await screen.findByRole("button", {
       name: /checkout/,
@@ -122,7 +128,7 @@ describe("ServiceNeighborhood", () => {
   });
 
   it("navigates to a clicked neighbour's service page", async () => {
-    fetchServiceGraph.mockResolvedValue(graphWithCallers);
+    fetchServiceGraph.mockResolvedValue(resultWithCallers);
     const { update } = renderNeighborhood();
     const callerNode = await screen.findByRole("button", {
       name: /api-gateway/,
@@ -136,32 +142,35 @@ describe("ServiceNeighborhood", () => {
 
   it("shows a no-callers state when the service has no incoming edges", async () => {
     fetchServiceGraph.mockResolvedValue({
-      nodes: [
-        {
-          id: "service:checkout",
-          name: "checkout",
-          kind: "service",
-          request_rate: 4,
-          error_rate: 0,
-          p95_ns: 1_000_000,
-        },
-        {
-          id: "external:database:postgres",
-          name: "postgres",
-          kind: "external",
-        },
-      ],
-      edges: [
-        {
-          source: "service:checkout",
-          target: "external:database:postgres",
-          count: 200,
-          rate: 3,
-          error_rate: 0,
-          p95_ns: 5_000_000,
-        },
-      ],
-      dropped_nodes: 0,
+      graph: {
+        nodes: [
+          {
+            id: "service:checkout",
+            name: "checkout",
+            kind: "service",
+            request_rate: 4,
+            error_rate: 0,
+            p95_ns: 1_000_000,
+          },
+          {
+            id: "external:database:postgres",
+            name: "postgres",
+            kind: "external",
+          },
+        ],
+        edges: [
+          {
+            source: "service:checkout",
+            target: "external:database:postgres",
+            count: 200,
+            rate: 3,
+            error_rate: 0,
+            p95_ns: 5_000_000,
+          },
+        ],
+        dropped_nodes: 0,
+      },
+      warnings: [],
     });
     renderNeighborhood();
     expect(
@@ -170,7 +179,7 @@ describe("ServiceNeighborhood", () => {
   });
 
   it("switches to the table view and lists callers and dependencies as rows", async () => {
-    fetchServiceGraph.mockResolvedValue(graphWithCallers);
+    fetchServiceGraph.mockResolvedValue(resultWithCallers);
     renderNeighborhood();
     await screen.findByText("api-gateway");
     fireEvent.click(screen.getByRole("button", { name: "Table" }));

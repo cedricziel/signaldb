@@ -25,6 +25,7 @@ import {
   type ResolvedRange,
 } from "../../lib/time";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
+import { CatalogServiceMap } from "./CatalogServiceMap";
 import { EntityDetail } from "./EntityDetail";
 import { redDuration, redErrorClass, redErrorRate, redRate } from "./red";
 import {
@@ -140,17 +141,49 @@ export function CatalogView({ state, update }: Props) {
             }}
           />
         </MobileSidebarDrawer>
-        <EntityTable
-          key={selected.id}
-          entity={selected}
-          range={range}
-          rangeKey={rangeKey}
-          rangeSeconds={catalogRangeSeconds(range)}
-          sparkline
-          onRowClick={(values) =>
-            update({ catalogPrimary: compositeKey(values) }, { push: true })
-          }
-        />
+        <div className="catalog-list-pane">
+          {selected.id === "service" && (
+            <div
+              className="trace-volume-mode catalog-view-switch"
+              role="group"
+              aria-label="Catalog view"
+            >
+              <button
+                type="button"
+                aria-pressed={state.catalogView === "list"}
+                onClick={() => update({ catalogView: "list" })}
+              >
+                List
+              </button>
+              <button
+                type="button"
+                aria-pressed={state.catalogView === "map"}
+                onClick={() => update({ catalogView: "map" })}
+              >
+                Map
+              </button>
+            </div>
+          )}
+          {selected.id === "service" && state.catalogView === "map" ? (
+            <CatalogServiceMap
+              range={range}
+              rangeKey={rangeKey}
+              update={update}
+            />
+          ) : (
+            <EntityTable
+              key={selected.id}
+              entity={selected}
+              range={range}
+              rangeKey={rangeKey}
+              rangeSeconds={catalogRangeSeconds(range)}
+              sparkline
+              onRowClick={(values) =>
+                update({ catalogPrimary: compositeKey(values) }, { push: true })
+              }
+            />
+          )}
+        </div>
       </div>
     </>
   );

@@ -1,5 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { fireEvent, within } from "storybook/test";
 import { MemoryRouter } from "react-router";
 import { testQueryClient } from "../../lib/queryClient";
 import { compositeKey } from "../../lib/traceGroups";
@@ -918,25 +919,28 @@ const dependencyTargetsKindRoutes: JsonRoute[] = Object.values(DEP_TARGETS).map(
 );
 
 /**
- * The service page's neighbourhood map (`ServiceNeighborhood`,
- * `api/serviceGraph.ts`) — one `graph`-envelope route per focus service, so
- * a story can pin a distinct shape (callers present, no callers) by which
- * service its `catalogPrimary` names.
+ * The service page's neighbourhood map (`ServiceNeighborhood`) and the
+ * Catalog Map (`CatalogServiceMap`) share one `graph`-envelope route shape
+ * (`api/serviceGraph.ts`) — one route per `focus` value (`undefined` for
+ * the Catalog Map's whole-tenant graph), so a story can pin a distinct
+ * shape (callers present, no callers, a node-cap warning) by which
+ * service, if any, its `catalogPrimary`/view names.
  */
 function graphRoute(
-  focus: string,
+  focus: string | undefined,
   graph: {
     nodes: unknown[];
     edges: unknown[];
     dropped_nodes?: number;
   },
+  warnings: Array<{ code: string; message: string }> = [],
 ): JsonRoute {
   return {
     match: "/api/v1/query",
     bodyMatch: (b) =>
       irBody((body) => body.result === "graph" && body.from === "traces")(b) &&
       (b as { focus?: string }).focus === focus,
-    body: { result: "graph", graph },
+    body: { result: "graph", graph, warnings },
   };
 }
 
@@ -1022,6 +1026,89 @@ const noCallersGraphRoute = graphRoute("checkout", {
   dropped_nodes: 0,
 });
 
+/**
+ * The Catalog Map's whole-tenant graph (`CatalogServiceMap`) — a small call
+ * graph across three services plus one external dependency, matching a
+ * `graph` request with no `focus`.
+ */
+const CATALOG_MAP_NODES = [
+  {
+    id: "service:api-gateway",
+    name: "api-gateway",
+    kind: "service",
+    request_rate: 24,
+    error_rate: 0.001,
+    p95_ns: 30_000_000,
+  },
+  {
+    id: "service:checkout",
+    name: "checkout",
+    kind: "service",
+    request_rate: 20,
+    error_rate: 0.006,
+    p95_ns: 190_000_000,
+  },
+  {
+    id: "service:payments",
+    name: "payments",
+    kind: "service",
+    request_rate: 9,
+    error_rate: 0.034,
+    p95_ns: 240_000_000,
+  },
+  {
+    id: "external:database:orders-db",
+    name: "orders-db",
+    kind: "external",
+    dependency_kind: "database",
+  },
+];
+
+const CATALOG_MAP_EDGES = [
+  {
+    source: "service:api-gateway",
+    target: "service:checkout",
+    count: 6_480,
+    rate: 20,
+    error_rate: 0.006,
+    p95_ns: 190_000_000,
+  },
+  {
+    source: "service:checkout",
+    target: "service:payments",
+    count: 324,
+    rate: 0.9,
+    error_rate: 0.034,
+    p95_ns: 240_000_000,
+  },
+  {
+    source: "service:checkout",
+    target: "external:database:orders-db",
+    count: 9_100,
+    rate: 2.5,
+    error_rate: 0,
+    p95_ns: 25_000_000,
+  },
+];
+
+const catalogMapGraphRoute = graphRoute(undefined, {
+  nodes: CATALOG_MAP_NODES,
+  edges: CATALOG_MAP_EDGES,
+  dropped_nodes: 0,
+});
+
+const catalogMapCappedGraphRoute = graphRoute(
+  undefined,
+  { nodes: CATALOG_MAP_NODES, edges: CATALOG_MAP_EDGES, dropped_nodes: 42 },
+  [
+    {
+      code: "correlate_row_limit",
+      message:
+        "The span join was truncated at its row cap; some calls may be missing.",
+    },
+  ],
+);
+
 const routes: JsonRoute[] = [
   irCatchAll,
   catchAllEntities,
@@ -1045,11 +1132,17 @@ const routes: JsonRoute[] = [
   ...dependencyBreakdownKindRoutes,
   ...dependencyTargetsKindRoutes,
   checkoutGraphRoute,
+  catalogMapGraphRoute,
 ];
 
 const noCallersRoutes: JsonRoute[] = [
   ...routes.filter((r) => r !== checkoutGraphRoute),
   noCallersGraphRoute,
+];
+
+const catalogMapCappedRoutes: JsonRoute[] = [
+  ...routes.filter((r) => r !== catalogMapGraphRoute),
+  catalogMapCappedGraphRoute,
 ];
 
 function CatalogPage({
@@ -1124,5 +1217,39 @@ export const EntityDetailDark: Story = {
 export const EntityDetailNoCallers: Story = {
   render: () => (
     <CatalogPage state={entityDetailState} routes={noCallersRoutes} />
+  ),
+};
+
+const catalogMapState: ExploreState = {
+  ...DEFAULT_STATE,
+  signal: "catalog",
+  catalogView: "map",
+};
+
+export const MapView: Story = {
+  render: () => <CatalogPage state={catalogMapState} />,
+};
+
+export const MapViewDark: Story = {
+  render: () => (
+    <DarkScope>
+      <CatalogPage state={catalogMapState} />
+    </DarkScope>
+  ),
+};
+
+export const MapViewNodeSelected: Story = {
+  render: () => <CatalogPage state={catalogMapState} />,
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    const node = await canvas.findByRole("button", { name: /checkout/ });
+    fireEvent.click(node);
+    await canvas.findByRole("complementary", { name: "checkout details" });
+  },
+};
+
+export const MapViewNodeCap: Story = {
+  render: () => (
+    <CatalogPage state={catalogMapState} routes={catalogMapCappedRoutes} />
   ),
 };
