@@ -9,6 +9,7 @@
 import { useId, useMemo, useRef, useState } from "react";
 import { EmptyState } from "./EmptyState";
 import { useVizPointer, VizTooltip, type VizTooltipRow } from "./VizTooltip";
+import { useContainerWidth } from "../hooks/useContainerWidth";
 import { formatErrorRate } from "../lib/vizFormat";
 import "./ServiceGraph.css";
 
@@ -19,9 +20,15 @@ export interface ServiceGraphNode {
    * broker, external host) rather than a service that reported spans of
    * its own. */
   external?: boolean;
+  /** 0..1 error share, when known (the server `graph` envelope). Drives the
+   * neutral/warn/critical dot coloring, same thresholds as an edge; falls
+   * back to `failed` when absent (the trace-derived graph, which only
+   * knows pass/fail per call, not a rate). */
+  errorRate?: number;
   /** At least one call into this node failed. */
   failed?: boolean;
-  /** Shown under the name, e.g. "420ms in service" or "120 req/s · p95 40ms". */
+  /** Shown under the name, e.g. "420ms in service" or "120 req/s · p95 40ms"
+   * — for an external node, its kind ("database", "http", …). */
   metricLine?: string;
 }
 
@@ -124,15 +131,30 @@ function layoutGraph(
   };
 }
 
-type EdgeSeverity = "neutral" | "warn" | "critical";
+type Severity = "neutral" | "warn" | "critical";
 
-function edgeSeverity(edge: ServiceGraphEdge): EdgeSeverity {
-  if (edge.errorRate !== undefined) {
-    if (edge.errorRate >= 0.02) return "critical";
-    if (edge.errorRate >= 0.005) return "warn";
+/** Shared neutral/warn/critical thresholds (0.5%/2%) for a node or an edge:
+ * a known error-rate fraction wins, an unknown one falls back to a bare
+ * pass/fail flag (the trace-derived graph, which has no rate, only whether
+ * any call failed). */
+function severityFor(
+  errorRate: number | undefined,
+  failed: boolean | undefined,
+): Severity {
+  if (errorRate !== undefined) {
+    if (errorRate >= 0.02) return "critical";
+    if (errorRate >= 0.005) return "warn";
     return "neutral";
   }
-  return edge.failed ? "critical" : "neutral";
+  return failed ? "critical" : "neutral";
+}
+
+function edgeSeverity(edge: ServiceGraphEdge): Severity {
+  return severityFor(edge.errorRate, edge.failed);
+}
+
+function nodeSeverity(node: ServiceGraphNode): Severity {
+  return severityFor(node.errorRate, node.failed);
 }
 
 function edgeWidth(count: number, maxCount: number): number {
@@ -150,10 +172,17 @@ function tooltipRows(hovered: Hovered): VizTooltipRow[] {
     if (hovered.node.metricLine) {
       rows.push({ label: "time", value: hovered.node.metricLine });
     }
-    rows.push({
-      label: "status",
-      value: hovered.node.failed ? "failed calls seen" : "ok",
-    });
+    if (hovered.node.errorRate !== undefined) {
+      rows.push({
+        label: "errors",
+        value: formatErrorRate(hovered.node.errorRate, 1),
+      });
+    } else {
+      rows.push({
+        label: "status",
+        value: hovered.node.failed ? "failed calls seen" : "ok",
+      });
+    }
     if (hovered.node.external) rows.push({ label: "type", value: "external" });
     return rows;
   }
@@ -188,10 +217,12 @@ export function ServiceGraph({
   error,
   emptyMessage = "No services seen in this range",
 }: ServiceGraphProps) {
+  const outerRef = useRef<HTMLDivElement>(null);
   const hostRef = useRef<HTMLDivElement>(null);
   const pointer = useVizPointer(hostRef);
   const [hovered, setHovered] = useState<Hovered | null>(null);
   const tipId = useId();
+  const arrowIdBase = useId();
 
   const visibleNodes = useMemo(
     () => (hideExternal ? nodes.filter((n) => !n.external) : nodes),
@@ -219,6 +250,15 @@ export function ServiceGraph({
     () => visibleEdges.reduce((m, e) => Math.max(m, e.count), 0),
     [visibleEdges],
   );
+
+  // Fit-to-width: never let the laid-out graph overflow its container. Only
+  // scales down (a small graph in a wide panel keeps its natural size) —
+  // see `useContainerWidth`, the same live-width pattern every inline-SVG
+  // chart here uses.
+  const containerWidth = useContainerWidth(outerRef, width);
+  const scale = containerWidth > 0 ? Math.min(1, containerWidth / width) : 1;
+  const scaledWidth = width * scale;
+  const scaledHeight = height * scale;
 
   const clearHover = () => {
     setHovered(null);
@@ -251,80 +291,112 @@ export function ServiceGraph({
   }
 
   return (
-    <div className="service-graph">
+    <div className="service-graph" ref={outerRef}>
       {capped && capped.total > capped.shown && (
-        <div className="view-note service-graph-cap">
+        <div className="warn-callout service-graph-cap">
           Showing the busiest {capped.shown} of {capped.total} services.
         </div>
       )}
       <div
-        className="service-graph-host viz-host"
-        ref={hostRef}
-        style={{ width, height }}
+        className="service-graph-viewport"
+        style={{ width: scaledWidth, height: scaledHeight }}
       >
-        <svg className="service-graph-edges" width={width} height={height}>
-          {visibleEdges.map((e) => {
-            const from = position.get(e.from);
-            const to = position.get(e.to);
-            if (!from || !to) return null;
-            const x1 = from.x + NODE_W;
-            const y1 = from.y + NODE_H / 2;
-            const x2 = to.x;
-            const y2 = to.y + NODE_H / 2;
-            const severity = edgeSeverity(e);
+        <div
+          className="service-graph-host viz-host"
+          ref={hostRef}
+          style={{ width, height, transform: `scale(${scale})` }}
+        >
+          <svg className="service-graph-edges" width={width} height={height}>
+            <defs>
+              {(["neutral", "warn", "critical"] as const).map((sev) => (
+                <marker
+                  key={sev}
+                  id={`${arrowIdBase}-${sev}`}
+                  className={`sg-arrow sg-arrow-${sev}`}
+                  viewBox="0 0 8 8"
+                  markerWidth={7}
+                  markerHeight={7}
+                  markerUnits="userSpaceOnUse"
+                  refX={7}
+                  refY={4}
+                  orient="auto"
+                >
+                  <path d="M0,0 L8,4 L0,8 Z" />
+                </marker>
+              ))}
+            </defs>
+            {visibleEdges.map((e) => {
+              const from = position.get(e.from);
+              const to = position.get(e.to);
+              if (!from || !to) return null;
+              const x1 = from.x + NODE_W;
+              const y1 = from.y + NODE_H / 2;
+              const x2 = to.x;
+              const y2 = to.y + NODE_H / 2;
+              const severity = edgeSeverity(e);
+              return (
+                <line
+                  key={`${e.from}->${e.to}`}
+                  className={`sg-edge sg-edge-${severity}`}
+                  x1={x1}
+                  y1={y1}
+                  x2={x2}
+                  y2={y2}
+                  strokeWidth={edgeWidth(e.count, maxCount)}
+                  markerEnd={`url(#${arrowIdBase}-${severity})`}
+                  onPointerMove={(ev) => {
+                    setHovered({ kind: "edge", edge: e });
+                    pointer.track(ev);
+                  }}
+                  onPointerLeave={clearHover}
+                />
+              );
+            })}
+          </svg>
+          {placed.map(({ node, x, y }) => {
+            const severity = nodeSeverity(node);
             return (
-              <line
-                key={`${e.from}->${e.to}`}
-                className={`sg-edge sg-edge-${severity}`}
-                x1={x1}
-                y1={y1}
-                x2={x2}
-                y2={y2}
-                strokeWidth={edgeWidth(e.count, maxCount)}
-                onPointerMove={(ev) => {
-                  setHovered({ kind: "edge", edge: e });
-                  pointer.track(ev);
+              <button
+                key={node.id}
+                type="button"
+                className={`sg-node${node.external ? " external" : ""}${
+                  node.id === selected ? " selected" : ""
+                }`}
+                style={{ left: x, top: y, width: NODE_W, height: NODE_H }}
+                aria-pressed={node.id === selected}
+                aria-describedby={
+                  hovered?.kind === "node" && hovered.node.id === node.id
+                    ? tipId
+                    : undefined
+                }
+                onClick={() => onNodeClick?.(node.id)}
+                onPointerMove={(e) => {
+                  setHovered({ kind: "node", node });
+                  pointer.track(e);
                 }}
+                onFocus={(e) => {
+                  setHovered({ kind: "node", node });
+                  pointer.anchorTo(e.currentTarget);
+                }}
+                onBlur={clearHover}
                 onPointerLeave={clearHover}
-              />
+              >
+                <span className="sg-node-name">
+                  {severity !== "neutral" && (
+                    <span
+                      className={`sg-node-dot sg-node-dot-${severity}`}
+                      aria-hidden
+                    />
+                  )}
+                  {node.label}
+                </span>
+                {node.metricLine && (
+                  <span className="sg-node-metric">{node.metricLine}</span>
+                )}
+              </button>
             );
           })}
-        </svg>
-        {placed.map(({ node, x, y }) => (
-          <button
-            key={node.id}
-            type="button"
-            className={`sg-node${node.external ? " external" : ""}${
-              node.id === selected ? " selected" : ""
-            }${node.failed ? " failed" : ""}`}
-            style={{ left: x, top: y, width: NODE_W, height: NODE_H }}
-            aria-pressed={node.id === selected}
-            aria-describedby={
-              hovered?.kind === "node" && hovered.node.id === node.id
-                ? tipId
-                : undefined
-            }
-            onClick={() => onNodeClick?.(node.id)}
-            onPointerMove={(e) => {
-              setHovered({ kind: "node", node });
-              pointer.track(e);
-            }}
-            onFocus={(e) => {
-              setHovered({ kind: "node", node });
-              pointer.anchorTo(e.currentTarget);
-            }}
-            onBlur={clearHover}
-            onPointerLeave={clearHover}
-          >
-            <span className="sg-node-name">
-              {node.failed && <span className="sg-node-dot" aria-hidden />}
-              {node.label}
-            </span>
-            {node.metricLine && (
-              <span className="sg-node-metric">{node.metricLine}</span>
-            )}
-          </button>
-        ))}
+        </div>
         {hovered && pointer.anchor && (
           <VizTooltip
             id={tipId}

@@ -917,6 +917,111 @@ const dependencyTargetsKindRoutes: JsonRoute[] = Object.values(DEP_TARGETS).map(
   }),
 );
 
+/**
+ * The service page's neighbourhood map (`ServiceNeighborhood`,
+ * `api/serviceGraph.ts`) — one `graph`-envelope route per focus service, so
+ * a story can pin a distinct shape (callers present, no callers) by which
+ * service its `catalogPrimary` names.
+ */
+function graphRoute(
+  focus: string,
+  graph: {
+    nodes: unknown[];
+    edges: unknown[];
+    dropped_nodes?: number;
+  },
+): JsonRoute {
+  return {
+    match: "/api/v1/query",
+    bodyMatch: (b) =>
+      irBody((body) => body.result === "graph" && body.from === "traces")(b) &&
+      (b as { focus?: string }).focus === focus,
+    body: { result: "graph", graph },
+  };
+}
+
+const checkoutGraphRoute = graphRoute("checkout", {
+  nodes: [
+    {
+      id: "service:api-gateway",
+      name: "api-gateway",
+      kind: "service",
+      request_rate: 24,
+      error_rate: 0.001,
+      p95_ns: 30_000_000,
+    },
+    {
+      id: "service:checkout",
+      name: "checkout",
+      kind: "service",
+      request_rate: 20,
+      error_rate: 0.006,
+      p95_ns: 190_000_000,
+    },
+    {
+      id: "service:payments",
+      name: "payments",
+      kind: "service",
+      request_rate: 9,
+      error_rate: 0.034,
+      p95_ns: 240_000_000,
+    },
+    { id: "external:database:orders-db", name: "orders-db", kind: "external" },
+  ],
+  edges: [
+    {
+      source: "service:api-gateway",
+      target: "service:checkout",
+      count: 6_480,
+      rate: 20,
+      error_rate: 0.006,
+      p95_ns: 190_000_000,
+    },
+    {
+      source: "service:checkout",
+      target: "service:payments",
+      count: 324,
+      rate: 0.9,
+      error_rate: 0.034,
+      p95_ns: 240_000_000,
+    },
+    {
+      source: "service:checkout",
+      target: "external:database:orders-db",
+      count: 9_100,
+      rate: 2.5,
+      error_rate: 0,
+      p95_ns: 25_000_000,
+    },
+  ],
+  dropped_nodes: 0,
+});
+
+const noCallersGraphRoute = graphRoute("checkout", {
+  nodes: [
+    {
+      id: "service:checkout",
+      name: "checkout",
+      kind: "service",
+      request_rate: 20,
+      error_rate: 0,
+      p95_ns: 190_000_000,
+    },
+    { id: "external:database:orders-db", name: "orders-db", kind: "external" },
+  ],
+  edges: [
+    {
+      source: "service:checkout",
+      target: "external:database:orders-db",
+      count: 9_100,
+      rate: 2.5,
+      error_rate: 0,
+      p95_ns: 25_000_000,
+    },
+  ],
+  dropped_nodes: 0,
+});
+
 const routes: JsonRoute[] = [
   irCatchAll,
   catchAllEntities,
@@ -939,11 +1044,23 @@ const routes: JsonRoute[] = [
   dependencyServerTotalRoute,
   ...dependencyBreakdownKindRoutes,
   ...dependencyTargetsKindRoutes,
+  checkoutGraphRoute,
 ];
 
-function CatalogPage({ state }: { state: ExploreState }) {
+const noCallersRoutes: JsonRoute[] = [
+  ...routes.filter((r) => r !== checkoutGraphRoute),
+  noCallersGraphRoute,
+];
+
+function CatalogPage({
+  state,
+  routes: stubRoutes = routes,
+}: {
+  state: ExploreState;
+  routes?: JsonRoute[];
+}) {
   return (
-    <StoryFetchStub routes={routes}>
+    <StoryFetchStub routes={stubRoutes}>
       <QueryClientProvider client={testQueryClient()}>
         <MemoryRouter initialEntries={["/catalog"]}>
           <CatalogView state={state} update={() => {}} />
@@ -1001,5 +1118,11 @@ export const EntityDetailDark: Story = {
     <DarkScope>
       <CatalogPage state={entityDetailState} />
     </DarkScope>
+  ),
+};
+
+export const EntityDetailNoCallers: Story = {
+  render: () => (
+    <CatalogPage state={entityDetailState} routes={noCallersRoutes} />
   ),
 };

@@ -47,7 +47,9 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
 
 - **Catalog** — a service/infrastructure catalog discovered by querying the
   ingested telemetry for OTel semantic-convention resource attributes, not
-  from a fixed inventory. See [The catalog](#the-catalog).
+  from a fixed inventory. A service's own page carries a one-hop
+  neighbourhood map next to its dependency breakdown. See
+  [The catalog](#the-catalog).
 - **Logs** — filter chips compiled to a Query IR `where` predicate tree, a
   per-severity volume histogram (an IR `aggregate` on `severity_text` with
   `step`), a virtualized log list with per-attribute filter/exclude actions,
@@ -352,6 +354,14 @@ Selecting a row opens that entity's own page, top to bottom:
   `rpc.system`, `messaging.system`), and beneath it a per-dependency table
   (target, kind, share of request time, P95, calls/request) with a `(self)`
   row for the time no downstream call accounts for.
+- A **service map**, next to Time by dependency and also service-only: a
+  one-hop neighbourhood — the service centred, its callers on the left, its
+  dependencies on the right — from a `graph` query
+  ([the `graph` envelope](querying-ir.md#graph-envelope-traces-only-ir-v8))
+  scoped to this service (`focus`/`depth=1`). A **Map | Table** switch
+  shows the same edges as a table. Clicking a neighbouring service opens its
+  own page with the same time range; a service with no incoming calls in the
+  window says so rather than showing an empty column.
 - **Slowest traces**: the entity's 8 slowest spans in the current window.
   For a service these are its inbound (server) spans, the requests it
   handled, so a service in the middle of a call chain lists its own slow

@@ -2014,9 +2014,11 @@ describe("TracesView detail", () => {
 
       await userEvent.click(screen.getByRole("button", { name: "Map" }));
       const paymentsNode = screen.getByRole("button", { name: /payments/ });
-      expect(paymentsNode.className).toContain("failed");
+      expect(paymentsNode.querySelector(".sg-node-dot")).toHaveClass(
+        "sg-node-dot-critical",
+      );
       const gatewayNode = screen.getByRole("button", { name: /gateway/ });
-      expect(gatewayNode.className).not.toContain("failed");
+      expect(gatewayNode.querySelector(".sg-node-dot")).toBeNull();
     });
 
     it("filters the waterfall to the clicked service until cleared", async () => {

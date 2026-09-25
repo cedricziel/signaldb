@@ -8,11 +8,23 @@
 }
 
 .service-graph-cap {
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
   margin-bottom: 8px;
+}
+
+/* Unscaled sizing box: shares the scaled host's on-screen top-left corner
+   (both start at the container's origin, no translate), so anything
+   positioned within it — the hover tooltip — lines up without being
+   scaled a second time by the host's own `transform`. */
+.service-graph-viewport {
+  position: relative;
 }
 
 .service-graph-host {
   position: relative;
+  transform-origin: 0 0;
 }
 
 .service-graph-edges {
@@ -37,6 +49,18 @@
 
 .sg-edge-critical {
   stroke: var(--err);
+}
+
+.sg-arrow-neutral {
+  fill: var(--border);
+}
+
+.sg-arrow-warn {
+  fill: var(--warn-bar);
+}
+
+.sg-arrow-critical {
+  fill: var(--err);
 }
 
 .sg-node {
@@ -84,6 +108,13 @@
   width: 7px;
   height: 7px;
   border-radius: 50%;
+}
+
+.sg-node-dot-warn {
+  background: var(--warn-bar);
+}
+
+.sg-node-dot-critical {
   background: var(--err);
 }
 
