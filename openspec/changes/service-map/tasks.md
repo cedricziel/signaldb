@@ -18,7 +18,7 @@
 - [x] 3.3 Trace detail: Waterfall | Map | Both switch and click-to-filter, with tests for the filter and failed-call marking, and a `TracesView` story for the trace map (Both mode, failed call). Verify tests and Storybook build pass.
 - [x] 3.4 Service page: neighbourhood map using the `graph` envelope with `focus` via the generated client, Map | Table switch, empty-callers state, with tests and a `CatalogView` story for the service page with the map (plus the no-callers state). Verify tests and Storybook build pass.
 - [x] 3.5 Catalog: List | Map switch kept in the URL, side panel, hide-external toggle, node-cap warning, with tests and `CatalogView` stories for Map view (default, node selected, node-cap warning). Verify tests and Storybook build pass.
-- [ ] 3.6 Run /design-sync to push `ServiceGraph` and the updated view stories to the "SignalDB UI" Claude Design project (`.design-sync/config.json`; add a `titleMap` entry if the story title differs from the export name). Verify the new cards render there and compare them against the mockups in the "SignalDB Design System" project, `ui_kits/console/service-map/`.
+- [ ] 3.6 Run /design-sync to push `ServiceGraph` and the updated view stories to the "SignalDB UI" Claude Design project (`.design-sync/config.json`; add a `titleMap` entry if the story title differs from the export name). Verify the new cards render there and compare them against the mockups in the "SignalDB Design System" project, `ui_kits/console/service-map/`. **Pending**: runs separately; the change stays open until it is done.
 
 ## 4. MCP
 
@@ -32,5 +32,5 @@
 
 ## 6. Docs and skills
 
-- [ ] 6.1 Via the docs skill, add a "Service graphs (`graph` envelope)" section to `docs/users/querying-ir.md` and a user guide page for the service map covering the UI, MCP and CLI, including the window-start caveat. Verify the docs frontmatter check passes.
-- [ ] 6.2 Update the MCP `query-ir` skill and the `http-api`/`crate-map` skills if their described behavior changed. Verify `openspec validate --all` passes.
+- [x] 6.1 Via the docs skill, add a "Service graphs (`graph` envelope)" section to `docs/users/querying-ir.md` and a user guide page for the service map covering the UI, MCP and CLI, including the window-start caveat. Verify the docs frontmatter check passes. The graph section landed with the querier work; the guide is `docs/users/service-map.md`.
+- [x] 6.2 Update the MCP `query-ir` skill and the `http-api`/`crate-map` skills if their described behavior changed. Verify `openspec validate --all` passes. The MCP `query-ir` skill is `docs/users/querying-ir.md` itself, and the `architecture` skill already describes the graph path; `crate-map` gained `query/graph.rs`; `http-api` holds design rules only and needed no change.
