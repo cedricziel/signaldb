@@ -24,6 +24,8 @@
         --ink: var(--color-text-primary, #0d1b1f);
         --ink-2: var(--color-text-secondary, #3f565c);
         --muted: var(--color-text-tertiary, #6c8188);
+        --ok: var(--color-text-success, #2c7a57);
+        --warn: var(--color-text-warning, #b9843e);
         --danger: var(--color-text-danger, #b93e37);
 
         --mono: var(
@@ -57,6 +59,8 @@
         --ink: var(--color-text-primary, #e6f0f1);
         --ink-2: var(--color-text-secondary, #afc3c7);
         --muted: var(--color-text-tertiary, #7c949a);
+        --ok: var(--color-text-success, #56c08d);
+        --warn: var(--color-text-warning, #d9a15c);
         --danger: var(--color-text-danger, #f0736a);
       }
       @media (prefers-color-scheme: dark) {
@@ -71,6 +75,8 @@
           --ink: var(--color-text-primary, #e6f0f1);
           --ink-2: var(--color-text-secondary, #afc3c7);
           --muted: var(--color-text-tertiary, #7c949a);
+          --ok: var(--color-text-success, #56c08d);
+          --warn: var(--color-text-warning, #d9a15c);
           --danger: var(--color-text-danger, #f0736a);
         }
       }
@@ -164,6 +170,70 @@
         font-size: 11.5px;
       }
 
+      .diagram {
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--surface);
+        overflow: auto;
+        padding: 8px;
+      }
+      svg.sm-diagram {
+        display: block;
+      }
+      .sm-node {
+        cursor: pointer;
+      }
+      .sm-node-rect {
+        fill: var(--ground);
+        stroke: var(--line-2);
+        stroke-width: 1;
+      }
+      .sm-node-external .sm-node-rect {
+        stroke: var(--line);
+      }
+      .sm-node-selected .sm-node-rect {
+        stroke: var(--sig-2);
+        stroke-width: 2;
+      }
+      .sm-node:focus-visible .sm-node-rect {
+        stroke: var(--sig-2);
+        stroke-width: 2;
+      }
+      .sm-node-name {
+        font-family: var(--sans);
+        font-size: 11.5px;
+        font-weight: 600;
+        fill: var(--ink);
+      }
+      .sm-node-external .sm-node-name {
+        font-style: italic;
+        fill: var(--ink-2);
+      }
+      .sm-node-metrics {
+        font-family: var(--mono);
+        font-size: 9.5px;
+        fill: var(--muted);
+      }
+      .sm-edge {
+        opacity: 0.85;
+      }
+
+      .selection {
+        padding: 8px 12px;
+        border: 1px solid var(--line);
+        border-radius: var(--radius);
+        background: var(--surface);
+        color: var(--ink-2);
+        font-family: var(--mono);
+        font-size: 11.5px;
+      }
+      .selection:empty {
+        display: none;
+      }
+      .sm-sel-row {
+        margin-top: 4px;
+      }
+
       table {
         width: 100%;
         border-collapse: collapse;
@@ -197,12 +267,6 @@
       }
       .err {
         color: var(--danger);
-      }
-      .rule {
-        height: 4px;
-        border-radius: 2px;
-        background: var(--sig-2);
-        min-width: 2px;
       }
     </style>
   </head>
@@ -358,8 +422,15 @@
          * Tool payloads
          * ============================================================ */
 
+        // The last `service` argument the host announced, used to focus the
+        // layered layout on that node (see `layerGraph`). `get_service_map`
+        // has no other way for the view to learn which node the caller
+        // scoped the query to.
+        var lastFocusService = null;
+
         function onToolInput(params) {
           var args = params.arguments || {};
+          lastFocusService = args.service || null;
           if (args.service)
             setStatus("Fetching the service map for " + args.service + "…");
           else setStatus("Fetching the service map…");
@@ -426,9 +497,11 @@
          * The tool result is `{ graph: { nodes: [...], edges: [...],
          * dropped_nodes }, summary: "..." }` — the same `ServiceGraph` shape
          * the `graph` Query IR envelope returns (see
-         * docs/users/querying-ir.md). Rendered as a node table plus an edge
-         * table rather than a laid-out diagram: no external layout library
-         * is available inside this self-contained document.
+         * docs/users/querying-ir.md). Rendered as a layered SVG diagram
+         * (callers to the left, callees to the right) built without any
+         * external layout library — self-contained apps get none — plus the
+         * node/edge tables below it as an accessible, always-available
+         * fallback.
          * ============================================================ */
 
         function esc(value) {
@@ -459,33 +532,382 @@
           return node ? node.name : id;
         }
 
-        function render(payload) {
-          var graph = payload.graph || { nodes: [], edges: [] };
-          var nodes = graph.nodes || [];
-          var edges = graph.edges || [];
-          var nodesById = {};
-          for (var i = 0; i < nodes.length; i++)
-            nodesById[nodes[i].id] = nodes[i];
+        // Error-rate thresholds shared by node status dots and edge color:
+        // healthy under 0.5%, warn from 0.5%, critical from 2% — `rate` is
+        // 0..1. `null`/`undefined` (no server/consumer spans to measure)
+        // reads as "no data" rather than "healthy".
+        function statusColorKey(rate) {
+          if (rate === null || rate === undefined) return "muted";
+          if (rate >= 0.02) return "danger";
+          if (rate >= 0.005) return "warn";
+          return "ok";
+        }
 
-          var html = "";
-          if (payload.summary) {
-            html += '<div class="summary">' + esc(payload.summary) + "</div>";
-          }
-          if (graph.dropped_nodes) {
-            html +=
-              '<div class="banner">' +
-              esc(graph.dropped_nodes) +
-              " node(s) dropped by the server-side node cap.</div>";
+        function edgeWidth(rate, maxRate) {
+          if (!maxRate) return 1.5;
+          return Math.max(1.5, Math.min(6, 1.5 + (rate / maxRate) * 4.5));
+        }
+
+        /**
+         * Assigns each node a layer (column index): hop distance from
+         * `focusName`'s node when given (callers get negative distances,
+         * callees positive, then both are shifted to start at 0); otherwise
+         * a longest-path layering via Kahn's algorithm over the whole graph,
+         * with any node a cycle keeps from reaching in-degree zero pushed to
+         * the next free layer once the main pass drains. Returns
+         * `{ layers: [[nodeId, ...], ...], byId }`, each inner array sorted
+         * by id for a stable, deterministic layout.
+         */
+        function layerGraph(nodes, edges, focusName) {
+          var byId = {};
+          nodes.forEach(function (n) {
+            byId[n.id] = n;
+          });
+          var outgoing = {};
+          var incoming = {};
+          nodes.forEach(function (n) {
+            outgoing[n.id] = [];
+            incoming[n.id] = [];
+          });
+          edges.forEach(function (e) {
+            if (outgoing[e.source]) outgoing[e.source].push(e.target);
+            if (incoming[e.target]) incoming[e.target].push(e.source);
+          });
+
+          var layer = {};
+          var focusNode = focusName
+            ? nodes.find(function (n) {
+                return n.kind === "service" && n.name === focusName;
+              })
+            : null;
+
+          if (focusNode) {
+            layer[focusNode.id] = 0;
+            var bfs = function (start, adjacency, step) {
+              var queue = [start];
+              while (queue.length) {
+                var current = queue.shift();
+                (adjacency[current] || []).forEach(function (next) {
+                  if (layer[next] === undefined) {
+                    layer[next] = layer[current] + step;
+                    queue.push(next);
+                  }
+                });
+              }
+            };
+            bfs(focusNode.id, outgoing, 1);
+            bfs(focusNode.id, incoming, -1);
+          } else {
+            var remaining = {};
+            nodes.forEach(function (n) {
+              remaining[n.id] = incoming[n.id].length;
+            });
+            var queue = nodes
+              .filter(function (n) {
+                return remaining[n.id] === 0;
+              })
+              .map(function (n) {
+                return n.id;
+              });
+            queue.forEach(function (id) {
+              layer[id] = 0;
+            });
+            while (queue.length) {
+              var current = queue.shift();
+              (outgoing[current] || []).forEach(function (next) {
+                layer[next] = Math.max(layer[next] || 0, layer[current] + 1);
+                remaining[next] -= 1;
+                if (remaining[next] === 0) queue.push(next);
+              });
+            }
+            // Cycle fallback: nodes a cycle kept out of the queue above
+            // (in-degree never reached zero) get the next free layer.
+            var nextLayer = nodes.reduce(function (m, n) {
+              return layer[n.id] === undefined ? m : Math.max(m, layer[n.id]);
+            }, 0);
+            nodes.forEach(function (n) {
+              if (layer[n.id] === undefined) {
+                nextLayer += 1;
+                layer[n.id] = nextLayer;
+              }
+            });
           }
 
-          if (nodes.length === 0) {
-            html +=
-              '<div class="banner">No service traffic in this window.</div>';
-            document.getElementById("root").innerHTML = html;
+          var minLayer = nodes.reduce(function (m, n) {
+            return Math.min(m, layer[n.id]);
+          }, 0);
+          var layers = [];
+          nodes.forEach(function (n) {
+            var idx = layer[n.id] - minLayer;
+            if (!layers[idx]) layers[idx] = [];
+            layers[idx].push(n.id);
+          });
+          layers.forEach(function (ids) {
+            ids.sort();
+          });
+          return { layers: layers, byId: byId };
+        }
+
+        function svgEl(tag, attrs) {
+          var el = document.createElementNS("http://www.w3.org/2000/svg", tag);
+          for (var key in attrs) el.setAttribute(key, attrs[key]);
+          return el;
+        }
+
+        var NODE_W = 168;
+        var NODE_H = 54;
+        var LAYER_GAP = 88;
+        var ROW_GAP = 16;
+        var MARGIN = 20;
+
+        function buildDiagram(nodes, edges, focusName, onSelectNode) {
+          var layout = layerGraph(nodes, edges, focusName);
+          var layers = layout.layers;
+          var byId = layout.byId;
+
+          var pos = {};
+          var maxRows = 0;
+          layers.forEach(function (layerNodes, layerIdx) {
+            maxRows = Math.max(maxRows, layerNodes.length);
+            layerNodes.forEach(function (id, rowIdx) {
+              pos[id] = {
+                x: MARGIN + layerIdx * (NODE_W + LAYER_GAP),
+                y: MARGIN + rowIdx * (NODE_H + ROW_GAP),
+              };
+            });
+          });
+          var width =
+            MARGIN * 2 +
+            layers.length * NODE_W +
+            Math.max(0, layers.length - 1) * LAYER_GAP;
+          var height =
+            MARGIN * 2 + maxRows * NODE_H + Math.max(0, maxRows - 1) * ROW_GAP;
+
+          var maxRate = edges.reduce(function (m, e) {
+            return Math.max(m, e.rate || 0);
+          }, 0);
+
+          var svg = svgEl("svg", {
+            viewBox:
+              "0 0 " +
+              Math.max(width, NODE_W + MARGIN * 2) +
+              " " +
+              Math.max(height, NODE_H + MARGIN * 2),
+            width: "100%",
+            class: "sm-diagram",
+            role: "img",
+            "aria-label": "Service dependency graph",
+          });
+
+          var defs = svgEl("defs", {});
+          ["ok", "warn", "danger", "muted"].forEach(function (key) {
+            var marker = svgEl("marker", {
+              id: "sm-arrow-" + key,
+              viewBox: "0 0 10 10",
+              refX: "9",
+              refY: "5",
+              markerWidth: "7",
+              markerHeight: "7",
+              orient: "auto-start-reverse",
+            });
+            marker.appendChild(
+              svgEl("path", {
+                d: "M0,0 L10,5 L0,10 z",
+                fill: "var(--" + key + ")",
+              }),
+            );
+            defs.appendChild(marker);
+          });
+          svg.appendChild(defs);
+
+          var edgesGroup = svgEl("g", { class: "sm-edges" });
+          svg.appendChild(edgesGroup);
+          edges.forEach(function (edge) {
+            var from = pos[edge.source];
+            var to = pos[edge.target];
+            if (!from || !to) return;
+            var x1 = from.x + NODE_W;
+            var y1 = from.y + NODE_H / 2;
+            var x2 = to.x;
+            var y2 = to.y + NODE_H / 2;
+            var mx = (x1 + x2) / 2;
+            var colorKey = statusColorKey(edge.error_rate);
+            var path = svgEl("path", {
+              d:
+                "M" +
+                x1 +
+                "," +
+                y1 +
+                " C" +
+                mx +
+                "," +
+                y1 +
+                " " +
+                mx +
+                "," +
+                y2 +
+                " " +
+                x2 +
+                "," +
+                y2,
+              class: "sm-edge",
+              fill: "none",
+              stroke: "var(--" + colorKey + ")",
+              "stroke-width": String(edgeWidth(edge.rate, maxRate)),
+              "marker-end": "url(#sm-arrow-" + colorKey + ")",
+            });
+            var edgeTitle = svgEl("title", {});
+            edgeTitle.textContent =
+              nameOf(byId, edge.source) +
+              " → " +
+              nameOf(byId, edge.target) +
+              ": " +
+              fmtRate(edge.rate) +
+              " req/s, " +
+              fmtPct(edge.error_rate) +
+              " errors, p95 " +
+              fmtMs(edge.p95_ns);
+            path.appendChild(edgeTitle);
+            edgesGroup.appendChild(path);
+          });
+
+          var nodesGroup = svgEl("g", { class: "sm-nodes" });
+          svg.appendChild(nodesGroup);
+          nodes.forEach(function (node) {
+            var p = pos[node.id];
+            if (!p) return;
+            var external = node.kind === "external";
+            var g = svgEl("g", {
+              class: "sm-node" + (external ? " sm-node-external" : ""),
+              "data-node-id": node.id,
+              tabindex: "0",
+              role: "button",
+              "aria-label": node.name,
+              transform: "translate(" + p.x + "," + p.y + ")",
+            });
+
+            var rect = svgEl("rect", {
+              width: String(NODE_W),
+              height: String(NODE_H),
+              rx: "6",
+              class: "sm-node-rect",
+            });
+            if (external) rect.setAttribute("stroke-dasharray", "4 3");
+            g.appendChild(rect);
+
+            var name = svgEl("text", {
+              x: "10",
+              y: "20",
+              class: "sm-node-name",
+            });
+            name.textContent = node.name;
+            g.appendChild(name);
+
+            var metricsText = external
+              ? node.dependency_kind || "external"
+              : fmtRate(node.request_rate) +
+                "/s · " +
+                (node.error_rate === undefined
+                  ? "—"
+                  : fmtPct(node.error_rate)) +
+                " · " +
+                fmtMs(node.p95_ns);
+            var metrics = svgEl("text", {
+              x: "10",
+              y: "38",
+              class: "sm-node-metrics",
+            });
+            metrics.textContent = metricsText;
+            g.appendChild(metrics);
+
+            g.appendChild(
+              svgEl("circle", {
+                cx: String(NODE_W - 12),
+                cy: "12",
+                r: "5",
+                fill: "var(--" + statusColorKey(node.error_rate) + ")",
+                class: "sm-node-dot",
+              }),
+            );
+
+            var nodeTitle = svgEl("title", {});
+            nodeTitle.textContent =
+              node.name +
+              (external
+                ? " (" + (node.dependency_kind || "external") + ")"
+                : "") +
+              ": " +
+              (node.request_rate === undefined
+                ? "no request data"
+                : fmtRate(node.request_rate) +
+                  " req/s, " +
+                  fmtPct(node.error_rate) +
+                  " errors, p95 " +
+                  fmtMs(node.p95_ns));
+            g.appendChild(nodeTitle);
+
+            g.addEventListener("click", function () {
+              onSelectNode(node.id);
+            });
+            g.addEventListener("keydown", function (evt) {
+              if (evt.key === "Enter" || evt.key === " ") {
+                evt.preventDefault();
+                onSelectNode(node.id);
+              }
+            });
+
+            nodesGroup.appendChild(g);
+          });
+
+          return svg;
+        }
+
+        var selectedNodeId = null;
+
+        function updateSelection(svg, nodeId, edges, byId) {
+          selectedNodeId = selectedNodeId === nodeId ? null : nodeId;
+          svg.querySelectorAll(".sm-node").forEach(function (g) {
+            g.classList.toggle(
+              "sm-node-selected",
+              g.getAttribute("data-node-id") === selectedNodeId,
+            );
+          });
+
+          var panel = document.getElementById("sm-selection");
+          if (!panel) return;
+          if (!selectedNodeId) {
+            panel.innerHTML = "";
             return;
           }
+          var callers = edges.filter(function (e) {
+            return e.target === selectedNodeId;
+          });
+          var callees = edges.filter(function (e) {
+            return e.source === selectedNodeId;
+          });
+          var names = function (list, key) {
+            return list.length
+              ? list
+                  .map(function (e) {
+                    return esc(nameOf(byId, e[key]));
+                  })
+                  .join(", ")
+              : "none";
+          };
+          panel.innerHTML =
+            '<div class="lbl">' +
+            esc(nameOf(byId, selectedNodeId)) +
+            "</div>" +
+            '<div class="sm-sel-row"><b>Callers:</b> ' +
+            names(callers, "source") +
+            "</div>" +
+            '<div class="sm-sel-row"><b>Depends on:</b> ' +
+            names(callees, "target") +
+            "</div>";
+        }
 
-          html +=
+        function buildTables(nodes, edges, nodesById) {
+          var html =
             '<table><caption class="lbl">Services and dependencies</caption>' +
             "<thead><tr><th>Node</th><th>Kind</th><th>Req/s</th><th>Error rate</th><th>p95</th></tr></thead><tbody>";
           for (var n = 0; n < nodes.length; n++) {
@@ -538,8 +960,66 @@
             }
             html += "</tbody></table>";
           }
+          return html;
+        }
 
-          document.getElementById("root").innerHTML = html;
+        function render(payload) {
+          var graph = payload.graph || { nodes: [], edges: [] };
+          var nodes = graph.nodes || [];
+          var edges = graph.edges || [];
+          var nodesById = {};
+          for (var i = 0; i < nodes.length; i++)
+            nodesById[nodes[i].id] = nodes[i];
+
+          selectedNodeId = null;
+          var root = document.getElementById("root");
+          root.innerHTML = "";
+
+          if (payload.summary) {
+            var summaryEl = document.createElement("div");
+            summaryEl.className = "summary";
+            summaryEl.textContent = payload.summary;
+            root.appendChild(summaryEl);
+          }
+          if (graph.dropped_nodes) {
+            var banner = document.createElement("div");
+            banner.className = "banner";
+            banner.textContent =
+              graph.dropped_nodes +
+              " node(s) dropped by the server-side node cap.";
+            root.appendChild(banner);
+          }
+
+          if (nodes.length === 0) {
+            var empty = document.createElement("div");
+            empty.className = "banner";
+            empty.textContent = "No service traffic in this window.";
+            root.appendChild(empty);
+            return;
+          }
+
+          var diagramWrap = document.createElement("div");
+          diagramWrap.className = "diagram";
+          var svg = buildDiagram(
+            nodes,
+            edges,
+            lastFocusService,
+            function (nodeId) {
+              updateSelection(svg, nodeId, edges, nodesById);
+            },
+          );
+          diagramWrap.appendChild(svg);
+          root.appendChild(diagramWrap);
+
+          var selection = document.createElement("div");
+          selection.id = "sm-selection";
+          selection.className = "selection";
+          root.appendChild(selection);
+
+          root.insertAdjacentHTML(
+            "beforeend",
+            buildTables(nodes, edges, nodesById),
+          );
         }
       })();
     </script>
