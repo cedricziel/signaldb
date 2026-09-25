@@ -10,7 +10,8 @@
 - SemanticKey story title → export `SemanticKeyLabel` (titleMap).
 - Skipped (render nothing in storybook either): ThrottleBanner Hidden (returns null; its card shows Visible only, since both stories share one throttle state), MobileSidebarDrawer OpenByDefault/RightSide (drawer is mobile-only CSS), SemanticKey Unresolved (renders null without semantics), SourceSnippet Unavailable (gated off with no seeded probe).
 - ConfirmButton/SourceSnippet: owned previews replay the story `play` click after mount (storybook shows post-play state).
-- BrandMark: an unsized svg that fills its container; the owned preview puts it in a 240px box.
+- BrandMark: an unsized svg that fills its container; the owned preview puts it in a 240px box. validate flags it `[RENDER_THIN]` (no text, svg only) - benign, accepted.
+- ServiceGraph uses `cardMode: "column"`: its maps are wider than a grid cell (`[GRID_OVERFLOW]` on NarrowContainer).
 - [FONT_MISSING] JetBrains Mono / Cascadia Code are fallback entries in the `--mono` system stack; the app ships no webfonts, so the system fonts are the real design (accepted).
 - Framing: the storybook canvas paints `--bg` behind stories; the preview pages are white. That's a harness difference, not a component one.
 
@@ -18,10 +19,10 @@
 - CatalogView's card shows EntityDetail at 1280x2000: the service overview page is ~2000px tall. If it grows further, raise the viewport or the card clips (the preview stops mid-page while the storybook side shrinks to fit).
 - Story fixtures that feed time series must derive timestamps from the request's own range (fetchStub `bodyFor`), in nanoseconds like the real IR; Date.now()/ms-scale fixtures render as a spike then flat.
 - Dark mode: every page has a `Dark` story (DarkScope → scoped `data-theme="dark"`), graded like the rest; components are only checked in light on sync (the Storybook toolbar covers them manually).
-- Play-driven stories render their pre-play state in previews (graded close): PasswordForm ErrorState, Processors TestRun. Only ConfirmButton/SourceSnippet have owned previews that replay the click.
+- Play-driven stories render their pre-play state in previews (graded close): PasswordForm ErrorState, Processors TestRun, Catalog Map View Node Selected (side panel opens on click), Traces Trace Map (Map view selected by click). Only ConfirmButton/SourceSnippet have owned previews that replay the click.
 - The Processors pages are only partly styled in the app itself (processors-table/-title/-subtitle/-note/-button/-row-actions are defined in no stylesheet); the previews faithfully copy that.
 - Owned previews (ConfirmButton, SourceSnippet, BrandMark) mirror story exports by name. Renaming or adding stories needs them updated.
 - build.sh's COMPONENTS/PAGES lists and define globals are hand-maintained.
 - TracesView Trace Detail graded close: the preview shows a Details header button the storybook render omits at this width.
-- AttributeTable has 7 stories; the capture cap is 6, so the 7th was never graded.
+- AttributeTable has 7 stories; the capture cap is 6, so the 7th was never graded. ServiceGraph (14) and CatalogView (9) were captured with `--max-stories 14` so the map stories are graded; pass it again when those components change.
 - AttributeKeyInput Prefilled graded close (the capture auto-focuses the input and opens suggestions); SourceSnippet Available close (the focus-ring color differs between userEvent and programmatic focus).
