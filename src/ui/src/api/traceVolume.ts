@@ -51,6 +51,10 @@ export function buildTraceVolumeDoc(
   range: ResolvedRange,
   step: string,
   filters: TraceFilter[] = [],
+  // Drilled-in group pins (see `api/traceGroups`'s `groupPinStages`) — when
+  // a group is selected, the chart must describe that group's spans, the
+  // same ones the member list shows, not the whole traces tab.
+  groupPins: Record<string, unknown>[] = [],
 ): QueryIrRequest {
   // The chart must describe the same traces the list shows, so the active
   // filters narrow it too.
@@ -65,6 +69,7 @@ export function buildTraceVolumeDoc(
     result: "series",
     pipeline: [
       ...where,
+      ...groupPins,
       {
         aggregate: {
           by: ["status.code"],
@@ -85,6 +90,7 @@ export function buildTraceLatencyHeatmapDoc(
   range: ResolvedRange,
   step: string,
   filters: TraceFilter[] = [],
+  groupPins: Record<string, unknown>[] = [],
 ): QueryIrRequest {
   return {
     irVersion: 2,
@@ -96,6 +102,7 @@ export function buildTraceLatencyHeatmapDoc(
     result: "heatmap",
     pipeline: [
       ...traceFilterStages(filters),
+      ...groupPins,
       {
         heatmap: {
           x: { step, align: "epoch" },
@@ -136,9 +143,10 @@ export async function fetchTraceVolume(
   range: ResolvedRange,
   step: string,
   filters: TraceFilter[] = [],
+  groupPins: Record<string, unknown>[] = [],
 ): Promise<VolumeSeries[]> {
   return seriesFromIrResponse(
-    await runIrQuery(buildTraceVolumeDoc(range, step, filters)),
+    await runIrQuery(buildTraceVolumeDoc(range, step, filters, groupPins)),
   );
 }
 
@@ -146,9 +154,10 @@ export async function fetchTraceLatencyHeatmap(
   range: ResolvedRange,
   step: string,
   filters: TraceFilter[] = [],
+  groupPins: Record<string, unknown>[] = [],
 ): Promise<TraceLatencyHeatmap> {
   const response = await runIrQuery(
-    buildTraceLatencyHeatmapDoc(range, step, filters),
+    buildTraceLatencyHeatmapDoc(range, step, filters, groupPins),
   );
   const heatmap = response.heatmap as HeatmapResult | undefined;
   if (!heatmap) throw new Error("IR heatmap response omitted heatmap data");

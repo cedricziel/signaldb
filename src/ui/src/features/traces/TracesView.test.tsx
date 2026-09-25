@@ -2210,6 +2210,27 @@ describe("TracesView span-volume chart", () => {
     });
   });
 
+  it("scopes the span volume chart to the selected group, not the whole traces tab", async () => {
+    fetchTraceGroupMembers.mockResolvedValue([
+      member("t1cafe", "s1", "GET /device_index", "gateway", "100", 42),
+    ]);
+    const volumeSpy = vi
+      .spyOn(traceVolumeApi, "fetchTraceVolume")
+      .mockResolvedValue([]);
+    renderView({ group: "GET device_index" });
+    await screen.findByText("t1cafe");
+
+    // The chart's filter must apply the same dimension pin the member list
+    // uses (`groupBy` field = the drilled-in group's value), not the
+    // unfiltered volume for the whole traces tab.
+    expect(volumeSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      DEFAULT_KIND_FILTERS,
+      [{ where: { field: "span.name", op: "eq", value: "GET device_index" } }],
+    );
+  });
+
   it("shows a loading indicator while the histogram volume query is pending", () => {
     vi.spyOn(traceVolumeApi, "fetchTraceVolume").mockReturnValue(
       new Promise(() => {}),

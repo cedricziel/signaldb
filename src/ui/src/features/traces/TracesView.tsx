@@ -96,6 +96,7 @@ import {
   DEFAULT_GROUP_SORT,
   GROUP_BUDGET,
   fetchTraceGroups,
+  groupPinStages,
   type GroupGrain,
   type GroupSort,
 } from "../../api/traceGroups";
@@ -234,6 +235,15 @@ function TraceSearch({ state, update }: Props) {
   const filters = withDefaultTraceFilters(state.traceFilters);
   const filterKey = filterCacheKey(filters);
   const dims = parseGroupBy(state.groupBy);
+  // When a group is drilled into, the volume/heatmap charts at the top must
+  // describe that group's spans — the same ones `GroupDetail`'s member list
+  // shows — not the whole traces tab (see `groupPinStages`).
+  const groupPins =
+    state.group === ""
+      ? []
+      : groupPinStages(dims, parseCompositeKey(state.group, dims));
+  const groupPinKey =
+    state.group === "" ? "" : `${dims.join(",")}=${state.group}`;
 
   const resolvedForStep = resolveRange(state.range, Date.now());
   const step = resolveStep(resolvedForStep, state.step);
@@ -242,18 +252,24 @@ function TraceSearch({ state, update }: Props) {
   // does follow the filters, so the chart describes what the table shows.
   const refetchInterval = liveRefetchInterval(state.live);
   const volume = useQuery({
-    queryKey: ["trace-volume", rangeKey, step, filterKey],
+    queryKey: ["trace-volume", rangeKey, step, filterKey, groupPinKey],
     queryFn: () =>
-      fetchTraceVolume(resolveRange(state.range, Date.now()), step, filters),
+      fetchTraceVolume(
+        resolveRange(state.range, Date.now()),
+        step,
+        filters,
+        groupPins,
+      ),
     refetchInterval,
   });
   const latencyHeatmap = useQuery({
-    queryKey: ["trace-latency", rangeKey, step, filterKey],
+    queryKey: ["trace-latency", rangeKey, step, filterKey, groupPinKey],
     queryFn: () =>
       fetchTraceLatencyHeatmap(
         resolveRange(state.range, Date.now()),
         step,
         filters,
+        groupPins,
       ),
     enabled: volumeView === "heatmap",
     refetchInterval,
