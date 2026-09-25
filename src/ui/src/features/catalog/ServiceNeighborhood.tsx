@@ -62,7 +62,7 @@ export function NeighbourList({
             <tr>
               <th>Service</th>
               <th>Rate</th>
-              <th>Errors</th>
+              <th>Err</th>
               <th>p95</th>
             </tr>
           </thead>

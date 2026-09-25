@@ -32,16 +32,6 @@
   flex-direction: column;
 }
 
-.catalog-view-switch {
-  margin: 16px var(--gutter) 0;
-}
-
-@media (max-width: 600px) {
-  .catalog-view-switch {
-    margin: 12px;
-  }
-}
-
 @media (max-width: 600px) {
   .catalog-main {
     padding: 12px;
@@ -65,6 +55,24 @@
 .catalog-sub {
   font-size: 12px;
   color: var(--faint);
+}
+
+/* Pushes a headline's trailing control(s) — the List | Map switch on
+   EntityTable's own headline, or the switch plus the Catalog Map's
+   hide-external toggle — to the row's far end, compact rather than the
+   full-width bar a plain flex child would stretch to (`.catalog-headline`
+   has no `align-items: stretch` of its own to fight, but its parent,
+   `.catalog-list-pane`, does). */
+.catalog-headline-switch,
+.catalog-headline-actions {
+  margin-left: auto;
+  align-self: center;
+}
+
+.catalog-headline-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
 }
 
 .catalog-row-drillable {
@@ -411,7 +419,20 @@
 }
 
 .catalog-map-layout.with-panel {
+  /* A fixed track, not `minmax(0, 320px)`: the panel's own children
+     (`.neighbourhood-table`, the KPI grid) get `min-width: 0` instead, so
+     this stays a real, predictable 320px rather than a size that still
+     depends on what's rendered inside it. */
   grid-template-columns: 1fr 320px;
+}
+
+/* A `1fr` track's item still defaults to its content's min-content width —
+   for the graph that is its unscaled layout width, which can exceed the
+   track and force the whole row wider than the page (`ServiceGraph`'s own
+   `useContainerWidth` fit-to-width never gets a real width to fit without
+   this). */
+.catalog-map-graph-col {
+  min-width: 0;
 }
 
 .catalog-map-hide-external {
@@ -423,19 +444,24 @@
 }
 
 .catalog-map-warning {
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
   margin-bottom: 8px;
 }
 
 .catalog-map-panel {
+  width: 320px;
+  min-width: 0;
   border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 12px;
+  border-radius: 6px;
+  padding: 14px 16px;
   align-self: start;
 }
 
 .catalog-map-panel-stats {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 8px;
   margin: 8px 0 16px;
 }
@@ -449,6 +475,9 @@
   margin: 0;
   font-size: 14px;
   font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 @media (max-width: 900px) {

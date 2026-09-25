@@ -3,7 +3,7 @@
 // warnings above the map, and a side panel on node select showing its RED
 // figures, callers and dependencies with links to the service page, its
 // traces and its errors.
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchServiceGraph } from "../../api/serviceGraph";
 import type { GraphEdge, GraphNode, QueryWarning } from "../../api/gen";
@@ -24,6 +24,9 @@ interface Props {
   range: ResolvedRange;
   rangeKey: string;
   update: UpdateFn;
+  /** The List | Map switch — `CatalogView` builds it, this view just gives
+   * it a slot next to "Services", alongside the hide-external toggle. */
+  viewSwitch?: ReactNode;
 }
 
 /** Diagnostics the Catalog Map surfaces above the graph — the node cap
@@ -39,7 +42,12 @@ function relevantWarnings(warnings: QueryWarning[]): QueryWarning[] {
   return warnings.filter((w) => SURFACED_WARNING_CODES.has(w.code));
 }
 
-export function CatalogServiceMap({ range, rangeKey, update }: Props) {
+export function CatalogServiceMap({
+  range,
+  rangeKey,
+  update,
+  viewSwitch,
+}: Props) {
   const [hideExternal, setHideExternal] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const query = useQuery({
@@ -70,17 +78,20 @@ export function CatalogServiceMap({ range, rangeKey, update }: Props) {
     );
 
   return (
-    <div className="catalog-main">
+    <div className="catalog-main map-card">
       <div className="catalog-headline">
         <span className="catalog-title">Services</span>
-        <label className="catalog-map-hide-external">
-          <input
-            type="checkbox"
-            checked={hideExternal}
-            onChange={(e) => setHideExternal(e.target.checked)}
-          />
-          Hide external
-        </label>
+        <div className="catalog-headline-actions">
+          {viewSwitch}
+          <label className="catalog-map-hide-external">
+            <input
+              type="checkbox"
+              checked={hideExternal}
+              onChange={(e) => setHideExternal(e.target.checked)}
+            />
+            Hide external
+          </label>
+        </div>
       </div>
       {query.isPending ? (
         <SkeletonLines lines={8} />
@@ -133,9 +144,9 @@ function CatalogServiceMapBody({
 
   return (
     <div className={`catalog-map-layout${selected ? " with-panel" : ""}`}>
-      <div>
+      <div className="catalog-map-graph-col">
         {warnings.map((w) => (
-          <div key={w.code} className="view-note catalog-map-warning">
+          <div key={w.code} className="warn-callout catalog-map-warning">
             {w.message}
           </div>
         ))}
