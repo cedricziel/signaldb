@@ -92,6 +92,21 @@
   min-width: 168px;
 }
 
+/* Anchors the metric-name suggestion list (`.chip-suggest`, shared with
+   `AttributeKeyInput`) below the input; grows the same way `.qrow-metric`
+   itself would as a bare child. */
+.qrow-metric-combobox {
+  position: relative;
+  display: inline-flex;
+  flex: 1 1 168px;
+  min-width: 168px;
+}
+
+.qrow-metric-combobox .qrow-metric {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .qrow-filters {
   display: flex;
   flex-wrap: wrap;

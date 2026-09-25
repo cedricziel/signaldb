@@ -2,6 +2,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { fields, metricNames, profileTypes, values } from "./discovery";
 import type { QueryIrResponse } from "../gen";
 import { resetApiClient, stubApiFetch } from "../../test/apiClient";
+import { stubFetchRoutes } from "../../test/render";
 
 const RANGE = { fromMs: 1_000, toMs: 4_600 };
 
@@ -157,7 +158,80 @@ describe("metricNames", () => {
       pipeline: [{ describe: { target: "values", field: "metric.name" } }],
     });
   });
+
+  it("also asks metrics_histogram, since it's a separate IR source", async () => {
+    const calls = stubApiFetch(
+      valuesResponse([{ value: "http.server.duration", origin: "registry" }]),
+    );
+    await metricNames(RANGE);
+    expect(
+      calls.some((c) => (c.body as { from: string }).from === "metrics"),
+    ).toBe(true);
+    expect(
+      calls.some(
+        (c) => (c.body as { from: string }).from === "metrics_histogram",
+      ),
+    ).toBe(true);
+  });
+
+  it("unions scalar and histogram names, deduping and preferring an exact hit", async () => {
+    stubFetchRoutes([
+      {
+        match: "/api/v1/query",
+        bodyMatch: (b) => (b as { from?: string }).from === "metrics",
+        body: valuesResponse(
+          [
+            { value: "shared_metric", origin: "statistics" },
+            { value: "up", origin: "registry" },
+          ],
+          true,
+        ),
+      },
+      {
+        match: "/api/v1/query",
+        bodyMatch: (b) => (b as { from?: string }).from === "metrics_histogram",
+        body: valuesResponse([
+          { value: "shared_metric", origin: "registry" },
+          { value: "http.server.duration", origin: "registry" },
+        ]),
+      },
+    ]);
+
+    const result = await metricNames(RANGE);
+    expect(result.map((v) => v.value).sort()).toEqual([
+      "http.server.duration",
+      "shared_metric",
+      "up",
+    ]);
+    // The exact (registry) hit for the name both sources return wins over
+    // the approximate one.
+    expect(result.find((v) => v.value === "shared_metric")).toEqual({
+      value: "shared_metric",
+      partial: false,
+    });
+  });
 });
+
+function valuesResponse(
+  values: Array<{ value: string; origin: "registry" | "statistics" }>,
+  approximate = false,
+): QueryIrResponse {
+  return {
+    result: "metadata",
+    window: { start_ns: 0, end_ns: 1 },
+    metadata: {
+      kind: "values",
+      truncated: false,
+      cost: {
+        mode: "metadata",
+        window_scoped: false,
+        sampled: false,
+        approximate,
+      },
+      values,
+    },
+  };
+}
 
 describe("profileTypes", () => {
   it("aggregates sample/period type and unit on the profiles source", async () => {

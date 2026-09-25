@@ -4,7 +4,7 @@
 // rather than typed blind. State is a MetricQuery (see buildPromQL); the
 // row is fully controlled via onChange.
 
-import { useId, useMemo } from "react";
+import { useId, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   fields,
@@ -36,8 +36,21 @@ interface Props {
 
 const rangeKey = (range: ResolvedRange) => `${range.fromMs}-${range.toMs}`;
 
+/** Bounded, case-insensitive substring match against the discovered metric
+ * names — shown as-is (unfiltered, capped) on focus with an empty input, so
+ * a new user sees what's available before typing anything. */
+const MAX_METRIC_SUGGESTIONS = 20;
+
+function matchingMetrics(names: string[], typed: string): string[] {
+  const needle = typed.trim().toLowerCase();
+  const matches =
+    needle === ""
+      ? names
+      : names.filter((n) => n.toLowerCase().includes(needle));
+  return matches.slice(0, MAX_METRIC_SUGGESTIONS);
+}
+
 export function QueryRow({ query, range, onChange }: Props) {
-  const metricList = useId();
   const labelList = useId();
 
   const metricNames = useQuery({
@@ -74,11 +87,6 @@ export function QueryRow({ query, range, onChange }: Props) {
 
   return (
     <div className="qrow">
-      <datalist id={metricList}>
-        {(metricNames.data ?? []).map((m) => (
-          <option key={m.value} value={m.value} />
-        ))}
-      </datalist>
       <datalist id={labelList}>
         {(labelFields.data ?? []).map((f) => (
           <option
@@ -93,14 +101,10 @@ export function QueryRow({ query, range, onChange }: Props) {
         {query.ref}
       </span>
 
-      <input
-        className="qrow-metric"
-        aria-label="Metric"
-        list={metricList}
-        placeholder="metric"
+      <MetricNameCombobox
         value={query.metric}
-        title={query.metric}
-        onChange={(e) => patch({ metric: e.target.value })}
+        names={(metricNames.data ?? []).map((m) => m.value)}
+        onChange={(metric) => patch({ metric })}
       />
 
       <span className="qrow-kw">from</span>
@@ -206,6 +210,109 @@ export function QueryRow({ query, range, onChange }: Props) {
         />
       )}
     </div>
+  );
+}
+
+/** The metric-name box: a combobox over the discovered metric names, in the
+ * same open-on-focus/filter-as-you-type/arrow-key-navigable shape as
+ * `AttributeKeyInput`'s label suggestions, but plain strings — there's no
+ * registry metadata to show alongside a metric name. */
+function MetricNameCombobox({
+  value,
+  names,
+  onChange,
+}: {
+  value: string;
+  names: string[];
+  onChange: (value: string) => void;
+}) {
+  const listId = useId();
+  const [focused, setFocused] = useState(false);
+  const [active, setActive] = useState(-1);
+  const suggestions = useMemo(
+    () => matchingMetrics(names, value),
+    [names, value],
+  );
+  const open = focused && suggestions.length > 0;
+  const activeIndex = open && active < suggestions.length ? active : -1;
+  const optionId = (index: number) => `${listId}-option-${index}`;
+
+  const pick = (name: string) => {
+    onChange(name);
+    setActive(-1);
+    setFocused(false);
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!open) return;
+    const count = suggestions.length;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActive((activeIndex + 1) % count);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive((activeIndex - 1 + count) % count);
+    } else if (e.key === "Enter" && activeIndex >= 0) {
+      e.preventDefault();
+      pick(suggestions[activeIndex]!);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setActive(-1);
+      setFocused(false);
+    }
+  };
+
+  return (
+    <span className="qrow-metric-combobox">
+      <input
+        className="qrow-metric"
+        role="combobox"
+        aria-label="Metric"
+        aria-autocomplete="list"
+        aria-expanded={open}
+        aria-controls={open ? listId : undefined}
+        aria-activedescendant={
+          activeIndex >= 0 ? optionId(activeIndex) : undefined
+        }
+        placeholder="metric"
+        value={value}
+        title={value}
+        onChange={(e) => {
+          setActive(-1);
+          onChange(e.target.value);
+        }}
+        onFocus={() => setFocused(true)}
+        onKeyDown={onKeyDown}
+        // Clicking a suggestion's `onMouseDown` below prevents this blur
+        // from racing the click.
+        onBlur={() => {
+          setFocused(false);
+          setActive(-1);
+        }}
+      />
+      {open && (
+        <ul
+          id={listId}
+          role="listbox"
+          aria-label="Metric name suggestions"
+          className="chip-suggest"
+        >
+          {suggestions.map((name, index) => (
+            <li
+              key={name}
+              id={optionId(index)}
+              role="option"
+              aria-selected={index === activeIndex}
+              className="chip-suggest-item"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => pick(name)}
+            >
+              <span className="chip-suggest-key">{name}</span>
+            </li>
+          ))}
+        </ul>
+      )}
+    </span>
   );
 }
 

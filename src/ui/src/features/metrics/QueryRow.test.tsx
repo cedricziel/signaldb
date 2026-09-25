@@ -211,15 +211,65 @@ describe("QueryRow", () => {
     expect(query().filters).toEqual([]);
   });
 
-  it("populates the metric picker from discovery.metricNames", async () => {
+  it("shows metric suggestions on focus, before typing anything", async () => {
     stubMetadata();
     renderWithClient(<Harness />);
-    // Datalist <option>s aren't exposed as ARIA options; assert via the DOM.
+    const user = userEvent.setup();
+
+    await user.click(screen.getByLabelText("Metric"));
+    expect(
+      await screen.findByRole("option", { name: "http_reqs" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "up" })).toBeInTheDocument();
+  });
+
+  it("filters metric suggestions as the user types", async () => {
+    stubMetadata();
+    renderWithClient(<Harness />);
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText("Metric"), "http");
     await waitFor(() =>
       expect(
-        document.querySelector('datalist option[value="http_reqs"]'),
-      ).not.toBeNull(),
+        screen.getByRole("option", { name: "http_reqs" }),
+      ).toBeInTheDocument(),
     );
+    expect(
+      screen.queryByRole("option", { name: "up" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("selecting a metric suggestion fills the input and closes the list", async () => {
+    stubMetadata();
+    renderWithClient(<Harness />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByLabelText("Metric"));
+    const option = await screen.findByRole("option", { name: "http_reqs" });
+    await user.click(option);
+
+    expect(screen.getByLabelText("Metric")).toHaveValue("http_reqs");
+    expect(query().metric).toBe("http_reqs");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+
+  it("navigates metric suggestions with arrow keys and Enter", async () => {
+    stubMetadata();
+    renderWithClient(<Harness />);
+    const user = userEvent.setup();
+
+    const input = screen.getByLabelText("Metric");
+    await user.click(input);
+    await screen.findByRole("option", { name: "http_reqs" });
+
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("option", { name: "http_reqs" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await user.keyboard("{ArrowDown}{Enter}");
+
+    expect(query().metric).toBe("up");
   });
 
   it("warns when grouping by a high-cardinality label", async () => {

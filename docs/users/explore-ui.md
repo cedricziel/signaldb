@@ -711,9 +711,14 @@ to right as a sentence:
 [ a ]  metric ▾   from ⟨ filters ⟩   avg by ⟨ group ⟩   function ▾   window   across ▾
 ```
 
-- **Metric** — type or pick a metric name; suggestions come from the Query
-  IR's discovery stage (`describe: metricNames` on `metrics`) for the
-  current time range.
+- **Metric** — type or pick a metric name. Focusing the box opens a
+  suggestion list (typing narrows it, arrow keys move the highlight, Enter
+  or a click picks it); the names come from the Query IR's discovery stage
+  (`describe: values` on `metric.name`) for the current time range, run
+  against both `metrics` (gauges and sums) and `metrics_histogram` — the two
+  scalar and bucketed shapes are separate IR sources, so histogram-only
+  metric names are included as suggestions even though they can't be
+  queried through this builder yet.
 - **from** — add tag filters (`+ filter`). Label names and their values are
   suggested from the same Query IR discovery stage (`describe:
 fields`/`values`), so you filter on what exists rather than guessing. Each

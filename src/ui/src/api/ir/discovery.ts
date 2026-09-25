@@ -69,11 +69,26 @@ export async function values(
   }));
 }
 
-/** Distinct metric names in the window (`metric.name` on `metrics`). */
+/** Distinct metric names in the window: `metric.name` on `metrics` (gauges
+ * and sums) unioned with `metrics_histogram`, which is a separate IR source
+ * (its bucketed row shape has no place in `metrics`'s scalar-value schema —
+ * see `SourcePlan::for_source` in the querier) and so needs its own
+ * discovery call to be part of name suggestions at all. */
 export async function metricNames(
   range: ResolvedRange,
 ): Promise<DiscoveredValueView[]> {
-  return values("metrics", "metric.name", range);
+  const [scalar, histogram] = await Promise.all([
+    values("metrics", "metric.name", range),
+    values("metrics_histogram", "metric.name", range),
+  ]);
+  const byValue = new Map<string, DiscoveredValueView>();
+  for (const v of [...scalar, ...histogram]) {
+    const existing = byValue.get(v.value);
+    if (!existing || (existing.partial && !v.partial)) {
+      byValue.set(v.value, v);
+    }
+  }
+  return [...byValue.values()];
 }
 
 /**
