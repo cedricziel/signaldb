@@ -66,7 +66,8 @@ async fn prompts_are_listed_with_cache_hints() {
         [
             "investigate_trace",
             "find_recent_errors",
-            "build_promql_query"
+            "build_promql_query",
+            "investigate_failing_dependency",
         ],
         "the prompt catalog must be advertised in order"
     );
