@@ -27,8 +27,8 @@
 
 ## 5. CLI
 
-- [ ] 5.1 Write failing tests for `signaldb-cli services map` in each format (`table`, `json`, `dot`, `mermaid`) and the empty-graph exit path. Verify `cargo test -p signaldb-cli` fails.
-- [ ] 5.2 Implement the `services` command group with `map` through the SDK. Verify `cargo test -p signaldb-cli` passes and `dot -Tsvg` renders the `dot` output.
+- [x] 5.1 Write failing tests for `signaldb-cli services map` in each format (`table`, `json`, `dot`, `mermaid`) and the empty-graph exit path. Verify `cargo test -p signaldb-cli` fails.
+- [x] 5.2 Implement the `services` command group with `map` through the SDK. Verify `cargo test -p signaldb-cli` passes and `dot -Tsvg` renders the `dot` output.
 
 ## 6. Docs and skills
 

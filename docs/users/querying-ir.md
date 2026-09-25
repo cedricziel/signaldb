@@ -9,6 +9,7 @@ sources:
   - src/querier/src/query/graph.rs
   - src/common/src/profile/aggregation.rs
   - src/signaldb-cli/src/commands/query.rs
+  - src/signaldb-cli/src/commands/services.rs
 ---
 
 # Query with the native Query IR
@@ -653,6 +654,28 @@ effects at the edges:
   external node rather than to the callee service.
 
 A wider window reduces both effects.
+
+### CLI
+
+`signaldb-cli services map` renders the graph envelope directly, without
+composing an IR document by hand:
+
+```bash
+signaldb-cli services map --service checkout --depth 2 --format table
+signaldb-cli services map --trace-id abc123 --format dot | dot -Tsvg > map.svg
+signaldb-cli services map --format mermaid
+signaldb-cli services map --format json   # the graph envelope unchanged
+```
+
+`--service` restricts to a neighbourhood (`--depth`, 1-3, only applies
+alongside it) and `--trace-id` restricts to one trace; the two are mutually
+exclusive. `--from`/`--to` set the window (`now-1h`/`now` by default). The
+default `table` format lists one row per edge — source, target, calls/s,
+error %, p95 — sorted by call rate, with external targets marked `(external)`.
+`dot` and `mermaid` render the same graph as a Graphviz digraph or a Mermaid
+`flowchart LR` for pasting elsewhere. Warnings (the node cap, a truncated
+join) print to stderr; an empty graph prints nothing to stdout, a note to
+stderr, and exits `0`.
 
 ## Profile summaries
 
