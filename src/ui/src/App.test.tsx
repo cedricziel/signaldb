@@ -534,6 +534,23 @@ describe("App", () => {
       );
     });
 
+    it("stays put when only the cookie-session probe is a 401 (API-key auth)", async () => {
+      stubFetchRoutes([
+        { match: "query_range", body: emptyStreams },
+        { match: "/api/v1/query", body: emptyIrLogs },
+        {
+          match: SESSION,
+          method: "GET",
+          body: { error: "unauthenticated" },
+          status: 401,
+        },
+      ]);
+      renderApp("/logs?tenant=acme&dataset=production");
+      await screen.findByText(/No log lines in this range/);
+      await act(() => new Promise((r) => setTimeout(r, 50)));
+      expect(window.location.pathname).toBe("/logs");
+    });
+
     it("does not navigate to /login on a non-auth query failure", async () => {
       stubFetchRoutes([
         { match: "/api/v1/query", body: { error: "boom" }, status: 500 },
