@@ -158,6 +158,9 @@
     },
     "ServiceGraph": {
       "cardMode": "column"
+    },
+    "TopBar": {
+      "cardMode": "column"
     }
   },
   "storyImports": {
