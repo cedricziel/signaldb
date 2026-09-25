@@ -336,11 +336,11 @@ pub struct QueryIrResponse {
     request_body = QueryIrRequestBody,
     responses(
         (status = 200, description = "The enveloped query result", body = QueryIrResponse),
-        (status = 400, description = "Invalid IR document"),
-        (status = 401, description = "Missing or invalid credentials"),
-        (status = 403, description = "Missing read scope for a queried source"),
+        (status = 400, description = "Invalid IR document", body = crate::endpoints::api_error::ApiErrorBody),
+        (status = 401, description = "Missing or invalid credentials", body = crate::endpoints::api_error::ApiErrorBody),
+        (status = 403, description = "Missing read scope for a queried source", body = crate::endpoints::api_error::ApiErrorBody),
         (status = 429, response = crate::endpoints::api_error::RateLimited),
-        (status = 503, description = "No querier service available"),
+        (status = 503, description = "No querier service available", body = crate::endpoints::api_error::ApiErrorBody),
     )
 )]
 pub async fn query_ir(

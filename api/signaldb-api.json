@@ -665,19 +665,47 @@
             }
           },
           "400": {
-            "description": "Invalid IR document"
+            "description": "Invalid IR document",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
           },
           "401": {
-            "description": "Missing or invalid credentials"
+            "description": "Missing or invalid credentials",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
           },
           "403": {
-            "description": "Missing read scope for a queried source"
+            "description": "Missing read scope for a queried source",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
           },
           "429": {
             "$ref": "#/components/responses/RateLimited"
           },
           "503": {
-            "description": "No querier service available"
+            "description": "No querier service available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [

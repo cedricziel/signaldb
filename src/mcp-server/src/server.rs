@@ -2098,7 +2098,7 @@ impl McpServer {
             .body(request)
             .send()
             .await
-            .map_err(|e| map_sdk_err(e, "get_service_map"))?;
+            .map_err(|e| map_query_err(e, "get_service_map"))?;
         let graph = resp
             .into_inner()
             .graph
@@ -2143,7 +2143,7 @@ impl McpServer {
             .body(request)
             .send()
             .await
-            .map_err(|e| map_sdk_err(e, "search_trace_groups"))?;
+            .map_err(|e| map_query_err(e, "search_trace_groups"))?;
         let groups =
             trace_groups_from_response(resp.into_inner(), p.group_by.len(), limit as usize);
         json_result_ext(&groups, false, links)
@@ -2171,7 +2171,7 @@ impl McpServer {
             .body(request)
             .send()
             .await
-            .map_err(|e| map_sdk_err(e, "get_profile"))?;
+            .map_err(|e| map_query_err(e, "get_profile"))?;
         let flamegraph = flamegraph_or_not_found(resp.into_inner())?;
         // The flamegraph app renders from `structuredContent`, mirroring
         // `get_trace`'s waterfall.
@@ -2549,7 +2549,7 @@ impl McpServer {
             .body(request)
             .send()
             .await
-            .map_err(|e| map_sdk_err(e, "discover_fields"))?;
+            .map_err(|e| map_query_err(e, "discover_fields"))?;
         json_result(&resp.into_inner())
     }
 
@@ -2585,7 +2585,7 @@ impl McpServer {
             .body(request)
             .send()
             .await
-            .map_err(|e| map_sdk_err(e, "discover_field_values"))?;
+            .map_err(|e| map_query_err(e, "discover_field_values"))?;
         json_result(&resp.into_inner())
     }
 
@@ -2726,7 +2726,7 @@ impl McpServer {
             .body(request)
             .send()
             .await
-            .map_err(|e| map_sdk_err(e, "query_ir"))?;
+            .map_err(|e| map_query_err(e, "query_ir"))?;
         json_result(&resp.into_inner())
     }
 
@@ -4818,6 +4818,42 @@ fn map_manage_err(
         }
         other => map_sdk_err(other, what),
     }
+}
+
+/// Map a `/api/v1/query` error to an MCP error, keeping the router's typed
+/// `error`/`errorType` body in the message — otherwise a `400` (e.g. an
+/// invalid IR document) reaches the client as an opaque `Error Response:
+/// status: 400 ...; value: ()`, with the actual reason dropped. Other
+/// statuses fall back to [`map_sdk_err`].
+fn map_query_err(
+    err: signaldb_sdk::Error<signaldb_sdk::types::ApiErrorBody>,
+    what: &str,
+) -> ErrorData {
+    let signaldb_sdk::Error::ErrorResponse(response) = err else {
+        return map_sdk_err(err.into_untyped(), what);
+    };
+    let status = response.status().as_u16();
+    if status == 429 {
+        let retry_after = response
+            .into_inner()
+            .retry_after_ms
+            .and_then(|ms| u64::try_from(ms).ok())
+            .map(std::time::Duration::from_millis);
+        return throttled_error(what, retry_after);
+    }
+    let body = response.into_inner();
+    let message = format!("{what}: {}", body.error);
+    let mapped = match status {
+        400 | 422 => ErrorData::invalid_params(message, None),
+        401 => ErrorData::invalid_request(
+            format!("{what}: credential expired or was revoked; re-authenticate the session"),
+            None,
+        ),
+        403 => ErrorData::invalid_request(message, None),
+        404 => ErrorData::resource_not_found(message, None),
+        _ => ErrorData::internal_error(message, None),
+    };
+    with_http_status(mapped, status)
 }
 
 /// Map a schema-API error to an MCP error, keeping the router's typed body
@@ -7335,6 +7371,30 @@ mod tests {
         assert!(
             mapped.message.contains("groups[0].attributes[1].type"),
             "{}",
+            mapped.message
+        );
+    }
+
+    #[test]
+    fn query_ir_400_surfaces_the_router_error_message() {
+        let body = signaldb_sdk::types::ApiErrorBody {
+            status: "error".to_string(),
+            error_type: "bad_data".to_string(),
+            error: "invalid IR document: unknown field `all`, expected one of `traces`, `logs`, \
+                     `metrics`, `metrics_histogram`, `profiles`"
+                .to_string(),
+            retry_after_ms: None,
+        };
+        let err = signaldb_sdk::Error::ErrorResponse(signaldb_sdk::ResponseValue::new(
+            body,
+            reqwest::StatusCode::BAD_REQUEST,
+            reqwest::header::HeaderMap::new(),
+        ));
+        let mapped = map_query_err(err, "query_ir");
+        assert_eq!(mapped.code, ErrorData::invalid_params("", None).code);
+        assert!(
+            mapped.message.contains("unknown field `all`"),
+            "router error text should reach the MCP client: {}",
             mapped.message
         );
     }
