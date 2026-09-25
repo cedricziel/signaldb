@@ -146,7 +146,12 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   dimmed dependency noise. The selected group (`?group=`) and the facet
   selection (`?f=`) live in the URL, so following a trace link and pressing
   Back lands on the same group; the occurrences panel scrolls into view on
-  selection and carries an "← all groups" control.
+  selection and carries an "← all groups" control. Grouping still needs an
+  `exception.type` attribute, so a note below the table counts any ERROR-or-worse
+  log records in range that carry none and links to Logs (filtered to that
+  severity) to see them, rather than silently omitting them with no trace of
+  the gap. At phone widths the table drops the Service/Source/Handled/First
+  seen columns, keeping Type, a two-line-wrapped Message, and Count.
 - **Query** — a native [Query IR](querying-ir.md) builder for `logs`, `traces`,
   and profile summaries:
   pick a source and result envelope, add filter chips, and the tab emits a
