@@ -9,6 +9,13 @@
   background: var(--surface);
 }
 
+/* One row while the tenant chip is showing: the chip shrinks instead of
+   pushing Manage and the user menu onto a second line. The edit form still
+   wraps, since its inputs need the room. */
+.topbar:has(.tenant-chip) {
+  flex-wrap: nowrap;
+}
+
 .topbar-mark {
   display: flex;
   align-items: center;
@@ -56,6 +63,7 @@
 }
 
 .tenant-chip {
+  min-width: 0;
   gap: 6px;
   background: var(--surface2);
   max-width: 40vw;
