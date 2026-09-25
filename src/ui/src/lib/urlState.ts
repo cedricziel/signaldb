@@ -120,6 +120,10 @@ export interface ExploreState {
    * type has a `breakdown`; encodes that single dimension's value.
    */
   catalogSecondary: string;
+  /** List | Map switch on the catalog's service list ("Catalog Map view" —
+   * only the service entity type offers Map). Kept in the URL so a link
+   * reopens the map. */
+  catalogView: "list" | "map";
 }
 
 export const DEFAULT_STATE: ExploreState = {
@@ -155,6 +159,7 @@ export const DEFAULT_STATE: ExploreState = {
   catalogEntity: DEFAULT_ENTITY_TYPE,
   catalogPrimary: "",
   catalogSecondary: "",
+  catalogView: "list",
 };
 
 export const SIGNALS: Signal[] = [
@@ -326,7 +331,15 @@ export function parseExploreState(search: string): ExploreState {
     catalogEntity: DEFAULT_ENTITY_TYPE,
     catalogPrimary: "",
     catalogSecondary: "",
+    catalogView: catalogViewFromParam(p.get("cview")),
   };
+}
+
+/** An unknown value degrades to the list view rather than rejecting the URL. */
+function catalogViewFromParam(
+  value: string | null,
+): ExploreState["catalogView"] {
+  return value === "map" ? "map" : "list";
 }
 
 /** An unknown grain degrades to the default rather than rejecting the URL. */
@@ -402,6 +415,7 @@ export function buildSearch(state: ExploreState): string {
   if (state.profileUnit) p.set("punit", state.profileUnit);
   if (state.tenant) p.set("tenant", state.tenant);
   if (state.dataset) p.set("dataset", state.dataset);
+  if (state.catalogView !== "list") p.set("cview", state.catalogView);
   const s = p.toString();
   return s === "" ? "" : `?${s}`;
 }

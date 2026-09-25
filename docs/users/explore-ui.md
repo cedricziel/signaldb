@@ -47,9 +47,10 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
 
 - **Catalog** — a service/infrastructure catalog discovered by querying the
   ingested telemetry for OTel semantic-convention resource attributes, not
-  from a fixed inventory. A service's own page carries a one-hop
-  neighbourhood map next to its dependency breakdown. See
-  [The catalog](#the-catalog).
+  from a fixed inventory. The service entity type offers a **List | Map**
+  switch, the Map drawing the tenant's whole service graph; a service's own
+  page carries a one-hop neighbourhood map next to its dependency breakdown.
+  See [The catalog](#the-catalog).
 - **Logs** — filter chips compiled to a Query IR `where` predicate tree, a
   per-severity volume histogram (an IR `aggregate` on `severity_text` with
   `step`), a virtualized log list with per-attribute filter/exclude actions,
@@ -273,6 +274,21 @@ tell you values exist, never that they are current. When no statistics cover
 the attribute, the empty state stays quiet instead of claiming nothing has
 ever been seen.
 
+The service entity type's list offers a **List | Map** switch, kept in the
+URL (`?cview=map`) so a link reopens the map. The Map draws the tenant's
+whole service graph for the current window and filters — one server-side
+`graph` query (see [the `graph` envelope](querying-ir.md#graph-envelope-traces-only-ir-v8))
+the UI, MCP, and CLI all share — with each service node showing request rate, error
+rate, and p95, edge thickness scaled by call rate, and edges colored by
+error rate (neutral below 0.5%, warning from 0.5%, critical from 2%).
+External dependencies (a database, a message broker, any callee that never
+reported spans of its own) are drawn distinct from instrumented services and
+can be hidden with the **Hide external** toggle. Clicking a node opens a side
+panel with its rate, error rate, p95, callers, and dependencies, plus links
+to that service's own page, its traces, and its errors. If the graph exceeds
+`[querier].graph_max_nodes` or a window's span-join hits its row cap, a
+notice above the map says so rather than silently dropping nodes or edges.
+
 Catalog selection is part of the URL path: `/catalog/<entity>` lists an
 entity type (`service`, `database`, `messaging_destination`, `host`,
 `k8s_pod`, …), `/catalog/<entity>/<identity>` opens one entity's detail
@@ -356,8 +372,8 @@ Selecting a row opens that entity's own page, top to bottom:
   row for the time no downstream call accounts for.
 - A **service map**, next to Time by dependency and also service-only: a
   one-hop neighbourhood — the service centred, its callers on the left, its
-  dependencies on the right — from a `graph` query
-  ([the `graph` envelope](querying-ir.md#graph-envelope-traces-only-ir-v8))
+  dependencies on the right — from the same `graph` query as the Catalog Map
+  ([the `graph` envelope](querying-ir.md#graph-envelope-traces-only-ir-v8)),
   scoped to this service (`focus`/`depth=1`). A **Map | Table** switch
   shows the same edges as a table. Clicking a neighbouring service opens its
   own page with the same time range; a service with no incoming calls in the

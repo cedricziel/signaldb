@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
   fetchCatalogEntities,
@@ -25,6 +25,7 @@ import {
   type ResolvedRange,
 } from "../../lib/time";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
+import { CatalogServiceMap } from "./CatalogServiceMap";
 import { EntityDetail } from "./EntityDetail";
 import { redDuration, redErrorClass, redErrorRate, redRate } from "./red";
 import {
@@ -140,19 +141,68 @@ export function CatalogView({ state, update }: Props) {
             }}
           />
         </MobileSidebarDrawer>
-        <EntityTable
-          key={selected.id}
-          entity={selected}
-          range={range}
-          rangeKey={rangeKey}
-          rangeSeconds={catalogRangeSeconds(range)}
-          sparkline
-          onRowClick={(values) =>
-            update({ catalogPrimary: compositeKey(values) }, { push: true })
-          }
-        />
+        <div className="catalog-list-pane">
+          {selected.id === "service" && state.catalogView === "map" ? (
+            <CatalogServiceMap
+              range={range}
+              rangeKey={rangeKey}
+              update={update}
+              viewSwitch={
+                <CatalogViewSwitch view={state.catalogView} update={update} />
+              }
+            />
+          ) : (
+            <EntityTable
+              key={selected.id}
+              entity={selected}
+              range={range}
+              rangeKey={rangeKey}
+              rangeSeconds={catalogRangeSeconds(range)}
+              sparkline
+              onRowClick={(values) =>
+                update({ catalogPrimary: compositeKey(values) }, { push: true })
+              }
+              viewSwitch={
+                selected.id === "service" && (
+                  <CatalogViewSwitch view={state.catalogView} update={update} />
+                )
+              }
+            />
+          )}
+        </div>
       </div>
     </>
+  );
+}
+
+/** The service entity type's List | Map switch — compact, sitting inline
+ * next to whichever view's own title ("Services", either from `EntityTable`
+ * or `CatalogServiceMap`), same as the service map's own Map | Table
+ * switch. Never a full-width row of its own. */
+function CatalogViewSwitch({
+  view,
+  update,
+}: {
+  view: ExploreState["catalogView"];
+  update: UpdateFn;
+}) {
+  return (
+    <div className="trace-volume-mode" role="group" aria-label="Catalog view">
+      <button
+        type="button"
+        aria-pressed={view === "list"}
+        onClick={() => update({ catalogView: "list" })}
+      >
+        List
+      </button>
+      <button
+        type="button"
+        aria-pressed={view === "map"}
+        onClick={() => update({ catalogView: "map" })}
+      >
+        Map
+      </button>
+    </div>
   );
 }
 
@@ -364,6 +414,7 @@ export function EntityTable({
   pinned,
   sparkline = false,
   onRowClick,
+  viewSwitch,
 }: {
   entity: EntityTypeDef;
   range: ResolvedRange;
@@ -381,6 +432,10 @@ export function EntityTable({
   /** Omit for a read-only table (e.g. a `topValues` ranking with nothing
    * to drill into) — rows render without a click affordance. */
   onRowClick?: (values: (string | null)[]) => void;
+  /** The service entity type's List | Map switch, rendered inline in the
+   * headline next to the title — `CatalogView`'s to build, this table just
+   * gives it a slot. */
+  viewSwitch?: ReactNode;
 }) {
   const [sort, toggle] = useSort("n", "desc");
   const result = useQuery({
@@ -426,6 +481,9 @@ export function EntityTable({
             ? ` across ${entity.sources.join(", ")}`
             : ""}
         </span>
+        {viewSwitch && (
+          <div className="catalog-headline-switch">{viewSwitch}</div>
+        )}
       </div>
       {result.isError && <QueryError what="entities" error={result.error} />}
       <table className="trace-table" aria-busy={pending}>

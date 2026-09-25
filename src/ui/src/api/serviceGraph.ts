@@ -2,7 +2,7 @@
 // section) over `POST /api/v1/query`: one server-side graph definition the
 // Catalog Map and service page neighbourhood map both render through the
 // shared `ServiceGraph` component.
-import type { ServiceGraph } from "./gen";
+import type { QueryWarning, ServiceGraph } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 
@@ -16,10 +16,18 @@ export interface FetchServiceGraphOptions {
   depth?: number;
 }
 
+export interface ServiceGraphResult {
+  graph: ServiceGraph;
+  /** Non-fatal diagnostics — the Catalog Map surfaces `correlate_row_limit`
+   * (span-join truncation) above the map, next to the node-cap notice
+   * `ServiceGraph.dropped_nodes` already covers. */
+  warnings: QueryWarning[];
+}
+
 export async function fetchServiceGraph(
   range: ResolvedRange,
   options: FetchServiceGraphOptions = {},
-): Promise<ServiceGraph> {
+): Promise<ServiceGraphResult> {
   const res = await runIrQuery({
     from: "traces",
     irVersion: GRAPH_IR_VERSION,
@@ -28,5 +36,8 @@ export async function fetchServiceGraph(
     ...(options.focus !== undefined ? { focus: options.focus } : {}),
     ...(options.depth !== undefined ? { depth: options.depth } : {}),
   });
-  return res.graph ?? { nodes: [], edges: [] };
+  return {
+    graph: res.graph ?? { nodes: [], edges: [] },
+    warnings: res.warnings ?? [],
+  };
 }

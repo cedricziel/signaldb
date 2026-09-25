@@ -91,7 +91,7 @@ describe("fetchServiceGraph", () => {
     );
 
     const result = await fetchServiceGraph(range);
-    expect(result).toEqual(graph);
+    expect(result).toEqual({ graph, warnings: [] });
   });
 
   it("falls back to an empty graph when the envelope has none", async () => {
@@ -101,6 +101,28 @@ describe("fetchServiceGraph", () => {
     );
 
     const result = await fetchServiceGraph(range);
-    expect(result).toEqual({ nodes: [], edges: [] });
+    expect(result).toEqual({ graph: { nodes: [], edges: [] }, warnings: [] });
+  });
+
+  it("surfaces non-fatal warnings, e.g. correlate row-limit truncation", async () => {
+    const warnings = [
+      {
+        code: "correlate_row_limit",
+        message: "The span join was truncated at its row cap.",
+      },
+    ];
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          result: "graph",
+          graph: { nodes: [], edges: [] },
+          warnings,
+        }),
+      ),
+    );
+
+    const result = await fetchServiceGraph(range);
+    expect(result.warnings).toEqual(warnings);
   });
 });

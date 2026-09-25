@@ -18,6 +18,7 @@ import * as membersApi from "../../api/traceGroupMembers";
 import * as entityTypesHook from "./useEntityTypes";
 import * as sparklineApi from "../../api/entitySparkline";
 import * as entityMetricsApi from "../../api/entityMetrics";
+import * as serviceGraphApi from "../../api/serviceGraph";
 import type { CatalogEntity, EntityObservation } from "../../api/catalog";
 
 // The entity table is a server-side aggregate (see api/catalog) — mocked at
@@ -60,6 +61,11 @@ vi.mock("../../api/entityMetrics", async (importOriginal) => {
     fetchMetricDefinitions: vi.fn(),
   };
 });
+vi.mock("../../api/serviceGraph", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../api/serviceGraph")>();
+  return { ...actual, fetchServiceGraph: vi.fn() };
+});
 vi.mock("./useEntityTypes", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./useEntityTypes")>();
   return { ...actual, useCatalogEntityTypes: vi.fn() };
@@ -80,6 +86,7 @@ const fetchEntityMetricNames = vi.mocked(
 const fetchMetricDefinitions = vi.mocked(
   entityMetricsApi.fetchMetricDefinitions,
 );
+const fetchServiceGraph = vi.mocked(serviceGraphApi.fetchServiceGraph);
 
 /** A registry metric definition, as the association lookup returns it. */
 function metricDef(name: string) {
@@ -118,6 +125,11 @@ beforeEach(() => {
   discoverObservedMetricNames.mockResolvedValue([]);
   fetchEntityMetricNames.mockResolvedValue([]);
   fetchMetricDefinitions.mockResolvedValue([]);
+  fetchServiceGraph.mockReset();
+  fetchServiceGraph.mockResolvedValue({
+    graph: { nodes: [], edges: [], dropped_nodes: 0 },
+    warnings: [],
+  });
   useCatalogEntityTypes.mockReset();
   // The curated list, unanalyzed: what a deployment reports before any field
   // metadata has landed.
@@ -365,6 +377,56 @@ describe("CatalogView", () => {
     expect(within(row).getByText("batch-worker")).toBeInTheDocument();
     expect(within(row).queryByText("0%")).not.toBeInTheDocument();
     expect(within(row).queryByText("0 ms")).not.toBeInTheDocument();
+  });
+});
+
+describe("the Catalog Map view", () => {
+  it("offers the List | Map switch for the service entity type", async () => {
+    renderView();
+    const nav = screen.getByRole("complementary", { name: "Entity types" });
+    await within(nav).findByText("Databases");
+    expect(
+      screen.getByRole("group", { name: "Catalog view" }),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the switch for a non-service entity type", async () => {
+    renderView({ catalogEntity: "database" });
+    await screen.findByRole("complementary", { name: "Entity types" });
+    expect(
+      screen.queryByRole("group", { name: "Catalog view" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("switches to the map, recording it in the URL, and back to the list", async () => {
+    const update = renderView();
+    await screen.findByRole("complementary", { name: "Entity types" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Map" }));
+    expect(update).toHaveBeenCalledWith({ catalogView: "map" });
+  });
+
+  it("renders the service graph when the URL already names the map view", async () => {
+    fetchServiceGraph.mockResolvedValue({
+      graph: {
+        nodes: [
+          {
+            id: "service:checkout",
+            name: "checkout",
+            kind: "service",
+            request_rate: 4,
+            error_rate: 0,
+            p95_ns: 1_000_000,
+          },
+        ],
+        edges: [],
+        dropped_nodes: 0,
+      },
+      warnings: [],
+    });
+    renderView({ catalogView: "map" });
+    expect(await screen.findByText("checkout")).toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
   });
 });
 

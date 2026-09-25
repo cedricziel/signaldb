@@ -8,16 +8,13 @@ import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchServiceGraph } from "../../api/serviceGraph";
 import type { GraphEdge, GraphNode } from "../../api/gen";
-import {
-  ServiceGraph,
-  type ServiceGraphEdge,
-  type ServiceGraphNode,
-} from "../../components/ServiceGraph";
+import { ServiceGraph } from "../../components/ServiceGraph";
 import { QueryError } from "../../components/QueryError";
 import { SkeletonLines } from "../explore/Skeleton";
 import { formatRatePerSec } from "../../lib/traceGroups";
 import { formatDurationMs } from "../../lib/waterfall";
 import { errorRatePercent } from "./entityKpiFormat";
+import { neighbourRows, toGraphView, type NeighbourRow } from "./graphView";
 import type { ResolvedRange } from "../../lib/time";
 import type { UpdateFn } from "../../lib/urlState";
 import { compositeKey } from "../../lib/traceGroups";
@@ -35,100 +32,9 @@ interface Props {
 
 type ViewMode = "map" | "table";
 
-/** The line shown under a node's name: a service's own RED figures, or —
- * for an external node, which has none of its own — its dependency kind
- * (database, http, …), so an uninstrumented callee still says what it is. */
-function nodeMetricLine(node: GraphNode): string | undefined {
-  if (node.kind !== "service") return node.dependency_kind ?? undefined;
-  const parts: string[] = [];
-  if (node.request_rate != null) {
-    parts.push(formatRatePerSec(node.request_rate));
-  }
-  if (node.error_rate != null) {
-    parts.push(`${errorRatePercent(node.error_rate)} err`);
-  }
-  if (node.p95_ns != null) {
-    parts.push(`p95 ${formatDurationMs(node.p95_ns / 1e6)}`);
-  }
-  return parts.length > 0 ? parts.join(" · ") : undefined;
-}
-
-function toGraphView(nodes: GraphNode[], edges: GraphEdge[]) {
-  return {
-    nodes: nodes.map((n): ServiceGraphNode => ({
-      id: n.id,
-      label: n.name,
-      external: n.kind === "external",
-      errorRate: n.error_rate ?? undefined,
-      metricLine: nodeMetricLine(n),
-    })),
-    edges: edges.map((e): ServiceGraphEdge => ({
-      from: e.source,
-      to: e.target,
-      count: e.count,
-      errorRate: e.error_rate,
-      metricLine:
-        e.p95_ns != null
-          ? `p95 ${formatDurationMs(e.p95_ns / 1e6)}`
-          : undefined,
-    })),
-  };
-}
-
-/** Navigable, non-focus edge partners for a table row: the other node's
- * name plus its own RED figures, keyed off the edge's own call rate. */
-interface NeighbourRow {
-  id: string;
-  name: string;
-  external: boolean;
-  rate: number;
-  errorRate: number;
-  p95Ns: number | null;
-}
-
-function callerRows(
-  edges: GraphEdge[],
-  focusId: string,
-  byId: Map<string, GraphNode>,
-): NeighbourRow[] {
-  return edges
-    .filter((e) => e.target === focusId)
-    .map((e) => {
-      const node = byId.get(e.source);
-      return {
-        id: e.source,
-        name: node?.name ?? e.source,
-        external: node?.kind === "external",
-        rate: e.rate,
-        errorRate: e.error_rate,
-        p95Ns: e.p95_ns ?? null,
-      };
-    })
-    .sort((a, b) => b.rate - a.rate);
-}
-
-function dependencyRows(
-  edges: GraphEdge[],
-  focusId: string,
-  byId: Map<string, GraphNode>,
-): NeighbourRow[] {
-  return edges
-    .filter((e) => e.source === focusId)
-    .map((e) => {
-      const node = byId.get(e.target);
-      return {
-        id: e.target,
-        name: node?.name ?? e.target,
-        external: node?.kind === "external",
-        rate: e.rate,
-        errorRate: e.error_rate,
-        p95Ns: e.p95_ns ?? null,
-      };
-    })
-    .sort((a, b) => b.rate - a.rate);
-}
-
-function NeighbourList({
+/** A caller/dependency table, one row per edge partner — shared by this
+ * page's Table view and the Catalog Map's side panel. */
+export function NeighbourList({
   title,
   rows,
   emptyMessage,
@@ -156,7 +62,7 @@ function NeighbourList({
             <tr>
               <th>Service</th>
               <th>Rate</th>
-              <th>Errors</th>
+              <th>Err</th>
               <th>p95</th>
             </tr>
           </thead>
@@ -240,9 +146,9 @@ export function ServiceNeighborhood({
       ) : (
         <ServiceNeighborhoodBody
           serviceName={serviceName}
-          nodes={query.data.nodes}
-          edges={query.data.edges}
-          droppedNodes={query.data.dropped_nodes ?? 0}
+          nodes={query.data.graph.nodes}
+          edges={query.data.graph.edges}
+          droppedNodes={query.data.graph.dropped_nodes ?? 0}
           view={view}
           onOpen={openService}
         />
@@ -270,8 +176,8 @@ function ServiceNeighborhoodBody({
     nodes.find((n) => n.kind === "service" && n.name === serviceName)?.id ??
     `service:${serviceName}`;
   const byId = new Map(nodes.map((n) => [n.id, n]));
-  const callers = callerRows(edges, focusId, byId);
-  const dependencies = dependencyRows(edges, focusId, byId);
+  const callers = neighbourRows(edges, focusId, byId, "target");
+  const dependencies = neighbourRows(edges, focusId, byId, "source");
 
   if (view === "table") {
     return (
