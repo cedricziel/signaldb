@@ -18198,7 +18198,9 @@ pub mod builder {
             self
         }
         ///Sends a `POST` request to `/api/v1/query`
-        pub async fn send(self) -> Result<ResponseValue<types::QueryIrResponse>, Error<()>> {
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::QueryIrResponse>, Error<types::ApiErrorBody>> {
             let Self { client, body } = self;
             let body = body.map_err(Error::InvalidRequest)?;
             let url = format!("{}/api/v1/query", client.baseurl,);
@@ -18227,11 +18229,21 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
-                400u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
-                401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
-                403u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
-                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
-                503u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                401u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                503u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }

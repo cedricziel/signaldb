@@ -2739,15 +2739,15 @@ export type QueryIrErrors = {
     /**
      * Invalid IR document
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Missing or invalid credentials
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
      * Missing read scope for a queried source
      */
-    403: unknown;
+    403: ApiErrorBody;
     /**
      * The JSON envelope every query-surface error responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
@@ -2772,7 +2772,7 @@ export type QueryIrErrors = {
     /**
      * No querier service available
      */
-    503: unknown;
+    503: ApiErrorBody;
 };
 
 export type QueryIrError = QueryIrErrors[keyof QueryIrErrors];
