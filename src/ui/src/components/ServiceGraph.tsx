@@ -382,9 +382,11 @@ export function ServiceGraph({
                 onPointerLeave={clearHover}
               >
                 <span className="sg-node-name">
-                  {severity !== "neutral" && (
+                  {!node.external && (
                     <span
-                      className={`sg-node-dot sg-node-dot-${severity}`}
+                      className={`sg-node-dot sg-node-dot-${
+                        severity === "neutral" ? "healthy" : severity
+                      }`}
                       aria-hidden
                     />
                   )}

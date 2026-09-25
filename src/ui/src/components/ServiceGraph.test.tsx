@@ -51,9 +51,18 @@ describe("ServiceGraph", () => {
       screen
         .getByRole("button", { name: new RegExp(name) })
         .querySelector(".sg-node-dot");
-    expect(dot("api-gateway")).toBeNull();
+    expect(dot("api-gateway")).toHaveClass("sg-node-dot-healthy");
     expect(dot("checkout")).toHaveClass("sg-node-dot-warn");
     expect(dot("payments")).toHaveClass("sg-node-dot-critical");
+  });
+
+  it("shows no status dot for an external node", () => {
+    render(<ServiceGraph nodes={NODES} edges={EDGES} />);
+    expect(
+      screen
+        .getByRole("button", { name: /postgres/ })
+        .querySelector(".sg-node-dot"),
+    ).toBeNull();
   });
 
   it("falls back to a critical dot for a bare failed flag (no rate known)", () => {
