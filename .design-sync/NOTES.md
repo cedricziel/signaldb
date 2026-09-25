@@ -12,6 +12,7 @@
 - ConfirmButton/SourceSnippet: owned previews replay the story `play` click after mount (storybook shows post-play state).
 - BrandMark: an unsized svg that fills its container; the owned preview puts it in a 240px box. validate flags it `[RENDER_THIN]` (no text, svg only) - benign, accepted.
 - ServiceGraph uses `cardMode: "column"`: its maps are wider than a grid cell (`[GRID_OVERFLOW]` on NarrowContainer).
+- TopBar uses `cardMode: "column"`: since the header stays on one row (#1725) and the demo strip spans the full width, both stories overflow a grid cell (`[GRID_OVERFLOW]`).
 - [FONT_MISSING] JetBrains Mono / Cascadia Code are fallback entries in the `--mono` system stack; the app ships no webfonts, so the system fonts are the real design (accepted).
 - Framing: the storybook canvas paints `--bg` behind stories; the preview pages are white. That's a harness difference, not a component one.
 
