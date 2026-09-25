@@ -80,7 +80,12 @@ describe("ServiceGraph", () => {
     const markerEnd = line.getAttribute("marker-end")!;
     expect(markerEnd).toMatch(/^url\(#.+-critical\)$/);
     const markerId = markerEnd.slice(4, -1);
-    expect(container.querySelector(markerId)?.tagName).toBe("marker");
+    const marker = container.querySelector(markerId);
+    expect(marker?.tagName).toBe("marker");
+    expect(marker?.getAttribute("markerUnits")).toBe("userSpaceOnUse");
+    expect(Number(marker?.getAttribute("markerWidth"))).toBeGreaterThanOrEqual(
+      10,
+    );
   });
 
   it("scales the graph down to fit a container narrower than its layout", () => {
