@@ -45,10 +45,6 @@
   .signal-tabs {
     flex: 1 1 100%;
     order: -1;
-    /* Seven tabs still don't fit one 390px row: wrap onto a second row so
-       every signal stays visible instead of hiding behind a scroll edge. */
-    flex-wrap: wrap;
-    overflow-x: visible;
   }
 }
 
@@ -436,8 +432,14 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    align-self: flex-start;
     margin: 10px 14px 0;
     color: var(--dim);
+  }
+
+  /* Inside the query bar it's one more control in the row, not a strip. */
+  .querybar .mobile-filters-toggle {
+    margin: 0;
   }
 
   .mobile-filters-toggle[aria-expanded="true"] {
@@ -800,6 +802,25 @@ span.level-debug {
 .logrow-trace {
   color: var(--faint);
   font-size: 10px;
+}
+
+@media (max-width: 600px) {
+  /* Timestamp, level and service leave the message a few characters on a
+     phone; drop the message onto its own line under them instead. */
+  .logrow {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+
+  .logrow-msg {
+    order: 1;
+    flex-basis: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+  }
 }
 
 .logdetail {

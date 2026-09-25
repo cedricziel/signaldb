@@ -1,5 +1,11 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
@@ -116,7 +122,11 @@ describe("LogsView", () => {
         body: { error: "parse error: unexpected token" },
         status: 400,
       },
-      { match: "/api/v1/query", bodyMatch: isFieldsQuery, body: emptyDescribeFields },
+      {
+        match: "/api/v1/query",
+        bodyMatch: isFieldsQuery,
+        body: emptyDescribeFields,
+      },
     ]);
     renderView();
     expect(await screen.findByRole("alert")).toHaveTextContent(
@@ -124,10 +134,12 @@ describe("LogsView", () => {
     );
   });
 
-  it("opens and closes the mobile filters drawer", async () => {
+  it("opens and closes the mobile fields drawer from the query bar", async () => {
     routes();
     renderView();
-    const toggleBtn = screen.getByRole("button", { name: "Filters" });
+    const toggleBtn = within(
+      document.querySelector(".querybar") as HTMLElement,
+    ).getByRole("button", { name: "Fields" });
     expect(toggleBtn).toHaveAttribute("aria-expanded", "false");
 
     await userEvent.click(toggleBtn);
@@ -156,7 +168,11 @@ describe("LogsView", () => {
         ]),
       },
       { match: "/api/v1/query", bodyMatch: isSeriesQuery, body: emptyIrSeries },
-      { match: "/api/v1/query", bodyMatch: isFieldsQuery, body: emptyDescribeFields },
+      {
+        match: "/api/v1/query",
+        bodyMatch: isFieldsQuery,
+        body: emptyDescribeFields,
+      },
     ]);
     const { update } = renderView();
     await userEvent.click(await screen.findByText("traced line"));

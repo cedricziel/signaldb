@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { Link } from "react-router";
 import { RefreshButton } from "../../components/RefreshButton";
 import { TimeRangePicker } from "../../components/TimeRangePicker";
@@ -51,6 +52,16 @@ export function ExploreView({ state, update }: Props) {
   const viewState: ExploreState = liveDisabled
     ? { ...state, live: false }
     : state;
+  // On a phone the tab strip scrolls sideways; keep the active tab in view
+  // when landing directly on one past the edge (e.g. /query).
+  const activeTabRef = useRef<HTMLAnchorElement>(null);
+  useEffect(() => {
+    activeTabRef.current?.scrollIntoView?.({
+      block: "nearest",
+      inline: "nearest",
+    });
+  }, [state.signal]);
+
   return (
     <div className="explore">
       <div className="explore-controls">
@@ -61,6 +72,7 @@ export function ExploreView({ state, update }: Props) {
               role="tab"
               className="sigtab"
               aria-selected={state.signal === tab.id}
+              ref={state.signal === tab.id ? activeTabRef : undefined}
               // Every click — including re-clicking the tab you're already
               // on — targets that signal's bare main view: crossSignalSearch
               // drops filters/search/drill-down state, and (for the traces

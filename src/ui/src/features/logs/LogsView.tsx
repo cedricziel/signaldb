@@ -85,6 +85,11 @@ export function LogsView({ state, update }: Props) {
   return (
     <div className="logsview">
       <div className="querybar">
+        <MobileFiltersToggle
+          open={mobileSidebar.open}
+          onToggle={mobileSidebar.toggle}
+          label="Fields"
+        />
         <FilterChips
           filters={state.filters}
           labels={labelNames}
@@ -117,11 +122,6 @@ export function LogsView({ state, update }: Props) {
           />
         </form>
       </div>
-
-      <MobileFiltersToggle
-        open={mobileSidebar.open}
-        onToggle={mobileSidebar.toggle}
-      />
 
       <div className="logs-body">
         <MobileSidebarDrawer
