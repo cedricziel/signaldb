@@ -405,6 +405,30 @@
     gap: 8px;
     padding: 10px 12px 8px;
   }
+
+  /* The group table's Rate/P50/Last-seen columns are the least actionable
+     of the seven — Errors and P95 (the "is something wrong, how bad")
+     matter more for a phone-width glance, so those two stay and the rest
+     scroll off with the row instead of pushing them out of view. */
+  .trace-table .col-secondary {
+    display: none;
+  }
+
+  /* Long span names (`opentelemetry.proto…/Export`) would otherwise size the
+     first column past the viewport and push Errors/P95 back off-screen. */
+  .trace-table td:first-child {
+    max-width: none;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .trace-table td:first-child button {
+    text-align: left;
+  }
+
+  .trace-table td {
+    padding: 6px 8px;
+  }
 }
 
 .waterfall {

@@ -14,8 +14,11 @@ export function useMobileSidebar() {
   const [open, setOpen] = useState(false);
   const close = useCallback(() => setOpen(false), []);
   const toggle = useCallback(() => setOpen((prev) => !prev), []);
+  // Unconditional open, for callers (e.g. a waterfall span click) that must
+  // reveal the drawer regardless of its current state, unlike `toggle`.
+  const show = useCallback(() => setOpen(true), []);
 
   useEscapeKey(open, close);
 
-  return { open, toggle, close };
+  return { open, toggle, close, show };
 }

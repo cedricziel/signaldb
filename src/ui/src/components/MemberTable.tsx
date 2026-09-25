@@ -69,6 +69,21 @@ export interface MemberTableProps {
   onOpenTrace: (traceId: string) => void;
 }
 
+/**
+ * Drop repeat trace ids, keeping the first occurrence. A backend data issue
+ * (duplicated spans) can return the same trace twice; with React keying rows
+ * by trace id, a duplicate scrambles row order and makes sorting (e.g. by
+ * duration) look broken rather than just showing a redundant row.
+ */
+function dedupeByTraceId(members: TraceGroupMember[]): TraceGroupMember[] {
+  const seen = new Set<string>();
+  return members.filter((m) => {
+    if (seen.has(m.traceId)) return false;
+    seen.add(m.traceId);
+    return true;
+  });
+}
+
 export function MemberTable({
   members,
   error,
@@ -80,7 +95,8 @@ export function MemberTable({
   onOpenTrace,
 }: MemberTableProps) {
   const [sort, toggle] = useSort(initialSort.key, initialSort.dir);
-  const rows = members ? sortRows(members, sort, memberSortValue) : [];
+  const deduped = members ? dedupeByTraceId(members) : undefined;
+  const rows = deduped ? sortRows(deduped, sort, memberSortValue) : [];
   const isError = error != null;
   const pending = members === undefined && !isError;
 
@@ -140,10 +156,7 @@ export function MemberTable({
           <thead>{header}</thead>
           <tbody>
             {rows.map((m) => (
-              <tr
-                key={`${m.traceId}-${m.spanId}`}
-                onClick={() => onOpenTrace(m.traceId)}
-              >
+              <tr key={m.traceId} onClick={() => onOpenTrace(m.traceId)}>
                 <td>
                   <button className="trace-open">{m.spanName}</button>
                 </td>

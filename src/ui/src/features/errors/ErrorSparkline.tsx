@@ -33,6 +33,16 @@ export function ErrorSparkline({ series, rangeMs, stepMs }: Props) {
       </div>
     );
   }
+  // A single bucket has no shape to show — the bar variant draws it at full
+  // width and full height, an undifferentiated block that reads as a stray
+  // rendering artifact rather than a trend. Say so instead of drawing it.
+  if (buckets.length === 1) {
+    return (
+      <div className="errors-sparkline-empty">
+        Not enough data in this window to show a trend
+      </div>
+    );
+  }
 
   return (
     <div className="errors-sparkline-host">

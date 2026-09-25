@@ -53,13 +53,36 @@
 }
 
 .manage-trigger {
-  display: inline-block;
+  display: inline-flex;
+  align-items: center;
   padding: 4px 10px;
   color: var(--dim);
   font-size: 12px;
   text-decoration: none;
   border: 1px solid var(--border);
   border-radius: 5px;
+}
+
+.manage-icon {
+  display: none;
+}
+
+@media (max-width: 600px) {
+  /* Same treatment as UserMenu's .user-name at this breakpoint: the tenant
+     pill needs the room the label would take, so collapse to the glyph
+     alone (aria-label on the link still names it for assistive tech). */
+  .manage-label {
+    display: none;
+  }
+
+  .manage-icon {
+    display: inline;
+    font-size: 13px;
+  }
+
+  .manage-trigger {
+    padding: 4px 8px;
+  }
 }
 
 .tenant-chip {
@@ -70,6 +93,16 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+@media (max-width: 600px) {
+  /* Logo, pill, Manage and the avatar share one row; freeing Manage's label
+     (above) still leaves the pill the tightest fit on a phone, so it gets
+     the wider share of the row instead of the desktop-tuned 40vw. Ellipsis
+     stays as the last-resort truncation for names that still don't fit. */
+  .tenant-chip {
+    max-width: 55vw;
+  }
 }
 
 .tenant-chip:hover {

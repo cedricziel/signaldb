@@ -72,7 +72,9 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   all sortable. An **Errors only** checkbox at the top of the facet sidebar
   narrows groups, list, volume chart, and facet counts to traces whose root
   span has an error status (it is the `status = Error` facet filter as a
-  one-click toggle). The **span.kind** facet always lists all five kinds as
+  one-click toggle). Drilling into a group applies the same dimension-value
+  filter to the span-volume chart as to its member list, so the chart above
+  the list describes that group's spans, not the whole tab. The **span.kind** facet always lists all five kinds as
   checkboxes with their counts, several can be on at once (one `in` filter),
   and Server, Client, Producer, and Consumer are selected by default —
   Internal spans are opted into; unchecking the last kind selects them all.
@@ -80,12 +82,14 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   with a selection sit at the top of the sidebar and start expanded (collapse
   them by hand); the rest follow, collapsed, in their curated order. Selecting a group lists just its traces — each with its
   status as a coloured chip (error / ok / unset), sortable with errors
-  first; selecting a trace
+  first; duplicate trace ids in the response (a backend data issue) are
+  deduped to the first occurrence, so a repeat doesn't scramble the sort; selecting a trace
   opens a waterfall with span details and error highlighting. A parent span
   that recorded no duration (an un-ended root, for instance) is drawn as a
   dashed outline over its child spans instead of a sliver; its own duration
-  still reads as recorded. Hovering a
-  span in the waterfall shows a tooltip with the span name, its service,
+  still reads as recorded. Clicking a span row or bar selects it and opens
+  its details in the span panel; hovering a
+  span in the waterfall (without clicking) shows a tooltip with the span name, its service,
   namespace, and version, its kind (coloured like the bar), duration, and
   status, without changing the selection. The span
   panel lists that span's events, giving exceptions an error treatment that
@@ -146,7 +150,12 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   dimmed dependency noise. The selected group (`?group=`) and the facet
   selection (`?f=`) live in the URL, so following a trace link and pressing
   Back lands on the same group; the occurrences panel scrolls into view on
-  selection and carries an "← all groups" control.
+  selection and carries an "← all groups" control. Grouping still needs an
+  `exception.type` attribute, so a note below the table counts any ERROR-or-worse
+  log records in range that carry none and links to Logs (filtered to that
+  severity) to see them, rather than silently omitting them with no trace of
+  the gap. At phone widths the table drops the Service/Source/Handled/First
+  seen columns, keeping Type, a two-line-wrapped Message, and Count.
 - **Query** — a native [Query IR](querying-ir.md) builder for `logs`, `traces`,
   and profile summaries:
   pick a source and result envelope, add filter chips, and the tab emits a
@@ -584,8 +593,12 @@ span-detail panel does the same below that width: selecting a span shows a
 **Details** button in the trace header that opens the panel as a drawer from
 the right. The signal tabs at the top stay on one horizontally scrollable row
 instead of compressing or wrapping, and scroll to keep the active tab in
-view. Below 600px, each log row puts its message on its own line under the
-timestamp, level, and service, clamped to three lines.
+view; an edge of the row fades out while tabs are hidden past it. Below
+600px, each log row puts its message on its own line under the timestamp,
+level, and service, clamped to three lines, and the top bar's **Manage** link
+shrinks to a ⚙ icon so the tenant/dataset selector keeps its room. At the
+same width the trace group table drops its Rate, P50, and Last seen columns
+rather than pushing them into a horizontal scroll; Errors and P95 stay.
 
 ### The group table
 
@@ -704,9 +717,17 @@ to right as a sentence:
 [ a ]  metric ▾   from ⟨ filters ⟩   avg by ⟨ group ⟩   function ▾   window   across ▾
 ```
 
-- **Metric** — type or pick a metric name; suggestions come from the Query
-  IR's discovery stage (`describe: metricNames` on `metrics`) for the
-  current time range.
+- **Metric** — type or pick a metric name. Focusing the box opens a
+  suggestion list (typing narrows it, arrow keys move the highlight, Enter
+  or a click picks it); the names come from the Query IR's discovery stage
+  (`describe: values` on `metric.name`) for the current time range, run
+  against both `metrics` (gauges and sums) and `metrics_histogram` — the two
+  scalar and bucketed shapes are separate IR sources. A name that exists
+  only in `metrics_histogram` still shows up (so searching for it isn't a
+  dead end) but renders greyed out and labelled "histogram · not chartable
+  yet": this builder always queries `metrics`, so picking one would run and
+  return nothing. When a time range has no metrics at all, the list shows a
+  single muted "No metrics in this range" row instead.
 - **from** — add tag filters (`+ filter`). Label names and their values are
   suggested from the same Query IR discovery stage (`describe:
 fields`/`values`), so you filter on what exists rather than guessing. Each

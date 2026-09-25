@@ -264,6 +264,32 @@ describe("MemberTable", () => {
     ).toBeInTheDocument();
   });
 
+  it("dedupes rows by trace id, keeping the first occurrence", () => {
+    // A backend data issue can return the same trace twice (duplicated
+    // spans); keying rows by trace id then means React sees a duplicate key,
+    // which scrambles row order and makes duration sort look broken.
+    render(
+      <MemberTable
+        members={[
+          member("t1", "s1", "GET /slow", "gateway", "3000", 500),
+          member("t2", "s2", "GET /fast", "gateway", "2000", 5),
+          member("t1", "s1-dup", "GET /slow", "gateway", "3000", 500),
+        ]}
+        error={null}
+        what="traces"
+        identityLabel="Root"
+        emptyMessage="No traces."
+        initialSort={{ key: "duration", dir: "desc" }}
+        onOpenTrace={vi.fn()}
+      />,
+    );
+    const names = screen
+      .getAllByRole("row")
+      .slice(1)
+      .map((r) => r.querySelector(".trace-open")?.textContent);
+    expect(names).toEqual(["GET /slow", "GET /fast"]);
+  });
+
   it("opens the row's trace on click", () => {
     const onOpenTrace = vi.fn();
     render(

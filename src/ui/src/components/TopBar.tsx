@@ -50,8 +50,15 @@ export function TopBar({ state, update, who, canManage, isDemo }: Props) {
         <TenantSelector state={state} update={update} who={who} />
         <span style={{ flex: 1 }} />
         {canManage && (
-          <Link className="manage-trigger" to="/manage">
-            Manage
+          <Link className="manage-trigger" to="/manage" aria-label="Manage">
+            {/* On a phone the label competes with the tenant pill for room;
+                the glyph alone still reads as a settings/admin entry point,
+                matching UserMenu's user-name treatment at the same
+                breakpoint. */}
+            <span className="manage-icon" aria-hidden="true">
+              ⚙
+            </span>
+            <span className="manage-label">Manage</span>
           </Link>
         )}
         <UserMenu state={state} />

@@ -282,3 +282,46 @@ export async function fetchErrorGroupVolume(
   const res = await runIrQuery(buildErrorGroupVolumeDoc(group, range, step));
   return volumeFromResponse(res);
 }
+
+/** `severity_number` at and above this threshold is `ERROR` per OTel's
+ * severity number ranges (17 = ERROR2, but the whole ERROR..FATAL band
+ * starts at 17) — the same cutoff `docs/users/querying-ir.md` uses. */
+const ERROR_SEVERITY_NUMBER = 17;
+
+/**
+ * The IR document counting error-or-worse log records that carry no
+ * `exception.type` attribute — the coverage gap this tab can't group,
+ * since grouping is keyed on `exception.type` (see `buildErrorGroupDoc`).
+ */
+export function buildUncoveredErrorLogCountDoc(
+  range: ResolvedRange,
+): QueryIrRequest {
+  return {
+    irVersion: 1,
+    from: "logs",
+    range: rangeDoc(range),
+    result: "table",
+    pipeline: [
+      {
+        where: {
+          field: "severity_number",
+          op: "gte",
+          value: ERROR_SEVERITY_NUMBER,
+        },
+      },
+      { where: { not: { field: "exception.type", op: "exists" } } },
+      { aggregate: { by: [], aggs: [{ fn: "count", as: "n" }] } },
+    ],
+  };
+}
+
+/** How many ERROR-or-worse log records in range aren't represented by any
+ * group on this page (see {@link buildUncoveredErrorLogCountDoc}). */
+export async function fetchUncoveredErrorLogCount(
+  range: ResolvedRange,
+): Promise<number> {
+  const res = await runIrQuery(buildUncoveredErrorLogCountDoc(range));
+  const row = res.rows?.[0] as unknown[] | undefined;
+  const n = row?.[0];
+  return typeof n === "number" ? n : 0;
+}

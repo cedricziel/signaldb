@@ -96,6 +96,7 @@ import {
   DEFAULT_GROUP_SORT,
   GROUP_BUDGET,
   fetchTraceGroups,
+  groupPinStages,
   type GroupGrain,
   type GroupSort,
 } from "../../api/traceGroups";
@@ -234,6 +235,15 @@ function TraceSearch({ state, update }: Props) {
   const filters = withDefaultTraceFilters(state.traceFilters);
   const filterKey = filterCacheKey(filters);
   const dims = parseGroupBy(state.groupBy);
+  // When a group is drilled into, the volume/heatmap charts at the top must
+  // describe that group's spans — the same ones `GroupDetail`'s member list
+  // shows — not the whole traces tab (see `groupPinStages`).
+  const groupPins =
+    state.group === ""
+      ? []
+      : groupPinStages(dims, parseCompositeKey(state.group, dims));
+  const groupPinKey =
+    state.group === "" ? "" : `${dims.join(",")}=${state.group}`;
 
   const resolvedForStep = resolveRange(state.range, Date.now());
   const step = resolveStep(resolvedForStep, state.step);
@@ -242,18 +252,24 @@ function TraceSearch({ state, update }: Props) {
   // does follow the filters, so the chart describes what the table shows.
   const refetchInterval = liveRefetchInterval(state.live);
   const volume = useQuery({
-    queryKey: ["trace-volume", rangeKey, step, filterKey],
+    queryKey: ["trace-volume", rangeKey, step, filterKey, groupPinKey],
     queryFn: () =>
-      fetchTraceVolume(resolveRange(state.range, Date.now()), step, filters),
+      fetchTraceVolume(
+        resolveRange(state.range, Date.now()),
+        step,
+        filters,
+        groupPins,
+      ),
     refetchInterval,
   });
   const latencyHeatmap = useQuery({
-    queryKey: ["trace-latency", rangeKey, step, filterKey],
+    queryKey: ["trace-latency", rangeKey, step, filterKey, groupPinKey],
     queryFn: () =>
       fetchTraceLatencyHeatmap(
         resolveRange(state.range, Date.now()),
         step,
         filters,
+        groupPins,
       ),
     enabled: volumeView === "heatmap",
     refetchInterval,
@@ -732,6 +748,7 @@ function GroupList({
                 sort={sort}
                 toggle={toggle}
                 numeric
+                className="col-secondary"
               />
               <SortTh
                 label="Errors"
@@ -746,6 +763,7 @@ function GroupList({
                 sort={sort}
                 toggle={toggle}
                 numeric
+                className="col-secondary"
               />
               <SortTh
                 label="P95"
@@ -760,6 +778,7 @@ function GroupList({
                 sort={sort}
                 toggle={toggle}
                 firstDir="desc"
+                className="col-secondary"
               />
             </tr>
           </thead>
@@ -787,13 +806,19 @@ function GroupList({
                       <td key={dims[i + 1]}>{v ?? NOT_SET}</td>
                     ))}
                     <td className="num">{g.count}</td>
-                    <td className="num">{formatRate(g.count, rangeSeconds)}</td>
+                    <td className="num col-secondary">
+                      {formatRate(g.count, rangeSeconds)}
+                    </td>
                     <td className={`num${g.errors > 0 ? " err-rate" : ""}`}>
                       {formatErrorRate(g.errors, g.count)}
                     </td>
-                    <td className="num">{formatDurationMs(g.p50Ms)}</td>
+                    <td className="num col-secondary">
+                      {formatDurationMs(g.p50Ms)}
+                    </td>
                     <td className="num">{formatDurationMs(g.p95Ms)}</td>
-                    <td>{formatTimestamp(nanosToMs(g.lastNs))}</td>
+                    <td className="col-secondary">
+                      {formatTimestamp(nanosToMs(g.lastNs))}
+                    </td>
                   </tr>
                 );
               })
@@ -1138,7 +1163,10 @@ function TraceDetail({ state, update }: Props) {
                 aria-describedby={
                   hoveredSpanId === row.span.spanId ? tipId : undefined
                 }
-                onClick={() => setSelected(row.span.spanId)}
+                onClick={() => {
+                  setSelected(row.span.spanId);
+                  mobileDetail.show();
+                }}
                 onPointerMove={(e) => {
                   setHoveredSpanId(row.span.spanId);
                   pointer.track(e);

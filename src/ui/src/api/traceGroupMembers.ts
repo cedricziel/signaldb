@@ -10,7 +10,11 @@
  */
 import type { QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
-import { ROOT_SPAN_SENTINEL, type GroupGrain } from "./traceGroups";
+import {
+  ROOT_SPAN_SENTINEL,
+  groupPinStages,
+  type GroupGrain,
+} from "./traceGroups";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 import { filterStages, type TraceFilter } from "../lib/traceFilters";
 import { spanKindWhere } from "./catalog";
@@ -71,12 +75,7 @@ export function buildMembersDoc(
 
   const active = filterStages(filters);
 
-  const pinned = dims.map((dim, i) => ({
-    where:
-      values[i] == null
-        ? { not: { field: dim, op: "exists" } }
-        : { field: dim, op: "eq", value: values[i] },
-  }));
+  const pinned = groupPinStages(dims, values);
 
   return {
     irVersion: 1,

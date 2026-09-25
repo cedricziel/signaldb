@@ -4,12 +4,13 @@
 // rather than typed blind. State is a MetricQuery (see buildPromQL); the
 // row is fully controlled via onChange.
 
-import { useId, useMemo } from "react";
+import { useId, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   fields,
   metricNames as discoverMetricNames,
   values as discoverValues,
+  type DiscoveredMetricName,
 } from "../../api/ir/discovery";
 import { FILTER_OPS, type LabelFilter } from "../../lib/filters";
 import type { ResolvedRange } from "../../lib/time";
@@ -36,8 +37,24 @@ interface Props {
 
 const rangeKey = (range: ResolvedRange) => `${range.fromMs}-${range.toMs}`;
 
+/** Bounded, case-insensitive substring match against the discovered metric
+ * names — shown as-is (unfiltered, capped) on focus with an empty input, so
+ * a new user sees what's available before typing anything. */
+const MAX_METRIC_SUGGESTIONS = 20;
+
+function matchingMetrics(
+  names: DiscoveredMetricName[],
+  typed: string,
+): DiscoveredMetricName[] {
+  const needle = typed.trim().toLowerCase();
+  const matches =
+    needle === ""
+      ? names
+      : names.filter((n) => n.value.toLowerCase().includes(needle));
+  return matches.slice(0, MAX_METRIC_SUGGESTIONS);
+}
+
 export function QueryRow({ query, range, onChange }: Props) {
-  const metricList = useId();
   const labelList = useId();
 
   const metricNames = useQuery({
@@ -74,11 +91,6 @@ export function QueryRow({ query, range, onChange }: Props) {
 
   return (
     <div className="qrow">
-      <datalist id={metricList}>
-        {(metricNames.data ?? []).map((m) => (
-          <option key={m.value} value={m.value} />
-        ))}
-      </datalist>
       <datalist id={labelList}>
         {(labelFields.data ?? []).map((f) => (
           <option
@@ -93,14 +105,10 @@ export function QueryRow({ query, range, onChange }: Props) {
         {query.ref}
       </span>
 
-      <input
-        className="qrow-metric"
-        aria-label="Metric"
-        list={metricList}
-        placeholder="metric"
+      <MetricNameCombobox
         value={query.metric}
-        title={query.metric}
-        onChange={(e) => patch({ metric: e.target.value })}
+        names={metricNames.data ?? []}
+        onChange={(metric) => patch({ metric })}
       />
 
       <span className="qrow-kw">from</span>
@@ -206,6 +214,137 @@ export function QueryRow({ query, range, onChange }: Props) {
         />
       )}
     </div>
+  );
+}
+
+/** The metric-name box: a combobox over the discovered metric names, in the
+ * same open-on-focus/filter-as-you-type/arrow-key-navigable shape as
+ * `AttributeKeyInput`'s label suggestions, but plain strings — there's no
+ * registry metadata to show alongside a metric name. A name that only
+ * exists in `metrics_histogram` (`chartable: false`) renders disabled: it's
+ * worth surfacing so a search for it doesn't come up empty, but picking it
+ * would compile a query against `metrics` that silently returns nothing, so
+ * it's skipped by keyboard nav and does nothing on click. */
+function MetricNameCombobox({
+  value,
+  names,
+  onChange,
+}: {
+  value: string;
+  names: DiscoveredMetricName[];
+  onChange: (value: string) => void;
+}) {
+  const listId = useId();
+  const [focused, setFocused] = useState(false);
+  const [active, setActive] = useState(-1);
+  const suggestions = useMemo(
+    () => matchingMetrics(names, value),
+    [names, value],
+  );
+  const selectableIndices = useMemo(
+    () =>
+      suggestions.reduce<number[]>((acc, s, i) => {
+        if (s.chartable) acc.push(i);
+        return acc;
+      }, []),
+    [suggestions],
+  );
+  const open = focused;
+  const activeSelectable = active >= 0 && active < selectableIndices.length;
+  const activeIndex = activeSelectable ? selectableIndices[active]! : -1;
+  const optionId = (index: number) => `${listId}-option-${index}`;
+
+  const pick = (name: string) => {
+    onChange(name);
+    setActive(-1);
+    setFocused(false);
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!open || selectableIndices.length === 0) return;
+    const count = selectableIndices.length;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActive((active + 1) % count);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive((active - 1 + count) % count);
+    } else if (e.key === "Enter" && activeIndex >= 0) {
+      e.preventDefault();
+      pick(suggestions[activeIndex]!.value);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setActive(-1);
+      setFocused(false);
+    }
+  };
+
+  return (
+    <span className="qrow-metric-combobox">
+      <input
+        className="qrow-metric"
+        role="combobox"
+        aria-label="Metric"
+        aria-autocomplete="list"
+        aria-expanded={open}
+        aria-controls={open ? listId : undefined}
+        aria-activedescendant={
+          activeIndex >= 0 ? optionId(activeIndex) : undefined
+        }
+        placeholder="metric"
+        value={value}
+        title={value}
+        onChange={(e) => {
+          setActive(-1);
+          onChange(e.target.value);
+        }}
+        onFocus={() => setFocused(true)}
+        onKeyDown={onKeyDown}
+        // Clicking a suggestion's `onMouseDown` below prevents this blur
+        // from racing the click.
+        onBlur={() => {
+          setFocused(false);
+          setActive(-1);
+        }}
+      />
+      {open && (
+        <ul
+          id={listId}
+          role="listbox"
+          aria-label="Metric name suggestions"
+          className="chip-suggest"
+        >
+          {suggestions.length === 0 && (
+            <li className="chip-suggest-item chip-suggest-empty" aria-disabled>
+              No metrics in this range
+            </li>
+          )}
+          {suggestions.map((s, index) => (
+            <li
+              key={s.value}
+              id={optionId(index)}
+              role="option"
+              aria-selected={index === activeIndex}
+              aria-disabled={!s.chartable}
+              className={
+                s.chartable
+                  ? "chip-suggest-item"
+                  : "chip-suggest-item chip-suggest-item-disabled"
+              }
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={s.chartable ? () => pick(s.value) : undefined}
+            >
+              <span className="chip-suggest-key">{s.value}</span>
+              {!s.chartable && (
+                <span className="chip-suggest-ns chip-suggest-histogram">
+                  histogram · not chartable yet
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </span>
   );
 }
 

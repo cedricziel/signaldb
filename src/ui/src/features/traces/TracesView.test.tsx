@@ -1049,6 +1049,31 @@ describe("TracesView detail", () => {
     expect(screen.getByText(/1 error/)).toBeInTheDocument();
   });
 
+  it("clicking a span row selects it and opens its details, not just a hover card", async () => {
+    stubFetchRoutes(traceRoutes(TRACE_BODY));
+    renderView({ trace: "t1cafe" });
+    const spans = await within(
+      await screen.findByRole("group", { name: "Spans" }),
+    ).findAllByRole("button");
+
+    // The error span ("charge") is preselected, so its attribute shows.
+    expect(screen.getByText("payment.provider")).toBeInTheDocument();
+    const toggleBtn = screen.getByRole("button", { name: "Details" });
+    expect(toggleBtn).toHaveAttribute("aria-expanded", "false");
+
+    // Clicking the other row ("root") must select it — opening the details
+    // drawer for that span — not merely show a hover card.
+    await userEvent.click(spans[0]!);
+
+    expect(toggleBtn).toHaveAttribute("aria-expanded", "true");
+    expect(
+      within(screen.getByLabelText("Span details")).getByText(
+        "POST /api/checkout",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("payment.provider")).not.toBeInTheDocument();
+  });
+
   it("opens and closes the mobile span-detail drawer", async () => {
     stubFetchRoutes(traceRoutes(TRACE_BODY));
     renderView({ trace: "t1cafe" });
@@ -2183,6 +2208,27 @@ describe("TracesView span-volume chart", () => {
         value: { fn: "count", as: "count" },
       }),
     });
+  });
+
+  it("scopes the span volume chart to the selected group, not the whole traces tab", async () => {
+    fetchTraceGroupMembers.mockResolvedValue([
+      member("t1cafe", "s1", "GET /device_index", "gateway", "100", 42),
+    ]);
+    const volumeSpy = vi
+      .spyOn(traceVolumeApi, "fetchTraceVolume")
+      .mockResolvedValue([]);
+    renderView({ group: "GET device_index" });
+    await screen.findByText("t1cafe");
+
+    // The chart's filter must apply the same dimension pin the member list
+    // uses (`groupBy` field = the drilled-in group's value), not the
+    // unfiltered volume for the whole traces tab.
+    expect(volumeSpy).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      DEFAULT_KIND_FILTERS,
+      [{ where: { field: "span.name", op: "eq", value: "GET device_index" } }],
+    );
   });
 
   it("shows a loading indicator while the histogram volume query is pending", () => {

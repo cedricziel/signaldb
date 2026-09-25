@@ -30,6 +30,26 @@
   white-space: nowrap;
 }
 
+/* Phones (see catalog.css/schema.css breakpoint convention: tablet <=900px,
+   mobile <=600px): Service/Source/Handled/First-seen lose to Type + Message
+   + Count for ~375px of width, so they're hidden rather than truncated to
+   nothing. Message switches from a single ellipsised line to a wrapped
+   2-line clamp so it stays readable without the hidden columns' room. */
+@media (max-width: 600px) {
+  .errors-table .errors-col-secondary {
+    display: none;
+  }
+
+  .errors-table .errors-message {
+    max-width: none;
+    white-space: normal;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+}
+
 .errors-row {
   cursor: pointer;
 }
