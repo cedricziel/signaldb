@@ -125,7 +125,10 @@ flowchart LR
   them, so there's normally nothing to strip).
 - **Query stages**: `signaldb.query.plan` / `signaldb.query.execute`
   INTERNAL spans with `signaldb.query.rows`/`batches`; recorded query text
-  is always literal-sanitized (`… WHERE name = ?`).
+  is always literal-sanitized (`… WHERE name = ?`). A `graph` result runs
+  under a `signaldb.query.graph` INTERNAL span. It logs a warning with
+  `signaldb.graph.dropped_nodes`/`max_nodes` when the node cap drops nodes,
+  and with `signaldb.graph.max_rows` when a sub-query reaches the row cap.
 - **Discovery reads**: `discovery {kind}` INTERNAL span around
   `describe: fields` / `describe: values` and `GET /api/v1/query/sources`,
   with `signaldb.discovery.kind` (`fields`/`values`/`sources`),
