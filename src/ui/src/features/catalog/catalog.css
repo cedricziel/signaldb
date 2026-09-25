@@ -299,3 +299,51 @@
   padding-top: 2px;
   padding-bottom: 2px;
 }
+
+/* "Time by dependency" and the service map sit side by side on a wide
+   detail page, stacking on tablet/mobile same as the rest of the page. */
+.entity-service-maps {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+@media (max-width: 900px) {
+  .entity-service-maps {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* Service page neighbourhood map's Table view — callers and dependencies
+   side by side, same left/right sense as the Map view they switch with. */
+.neighbourhood-table-view {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  margin-top: 8px;
+}
+
+.neighbourhood-col-head {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+.neighbourhood-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.neighbourhood-table th {
+  text-align: left;
+  color: var(--dim);
+  font-weight: 500;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}
+
+.neighbourhood-table td {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--border);
+}

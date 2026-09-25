@@ -18,6 +18,7 @@ import { QueryError } from "../../components/QueryError";
 import { KpiCard, KpiStrip } from "../../components/KpiCard";
 import { Sparkline } from "../../components/Sparkline";
 import { DependencyBreakdown } from "./DependencyBreakdown";
+import { ServiceNeighborhood } from "./ServiceNeighborhood";
 import { EntityErrorGroups } from "./EntityErrorGroups";
 import { EntityMetricsPanel } from "./EntityMetricsPanel";
 import { useEntityKpis } from "./useEntityKpis";
@@ -424,18 +425,26 @@ export function EntityDetail({ entity, range, state, update }: Props) {
       )}
 
       {entity.id === "service" && !atSecondary && primaryValues[0] && (
-        <div className="catalog-main">
-          <div className="catalog-headline">
-            <span className="catalog-title">Time by dependency</span>
-            <span className="catalog-sub">
-              discovered from db.system.name, http.request.method, rpc.system,
-              messaging.system
-            </span>
+        <div className="entity-service-maps">
+          <div className="catalog-main">
+            <div className="catalog-headline">
+              <span className="catalog-title">Time by dependency</span>
+              <span className="catalog-sub">
+                discovered from db.system.name, http.request.method, rpc.system,
+                messaging.system
+              </span>
+            </div>
+            <DependencyBreakdown
+              serviceName={primaryValues[0]}
+              range={range}
+              rangeKey={rangeKey}
+            />
           </div>
-          <DependencyBreakdown
+          <ServiceNeighborhood
             serviceName={primaryValues[0]}
             range={range}
             rangeKey={rangeKey}
+            update={update}
           />
         </div>
       )}
