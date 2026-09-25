@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
@@ -79,14 +79,16 @@ function isDescribeFields(body: unknown): boolean {
   const b = body as { pipeline?: Array<{ describe?: { target?: string } }> };
   return b.pipeline?.[0]?.describe?.target === "fields";
 }
-function isDescribeValues(field: string) {
+function isDescribeValues(field: string, from?: string) {
   return (body: unknown): boolean => {
     const b = body as {
+      from?: string;
       pipeline?: Array<{ describe?: { target?: string; field?: string } }>;
     };
     return (
       b.pipeline?.[0]?.describe?.target === "values" &&
-      b.pipeline[0]?.describe?.field === field
+      b.pipeline[0]?.describe?.field === field &&
+      (from === undefined || b.from === from)
     );
   };
 }
@@ -114,6 +116,44 @@ function stubMetadata() {
       match: "/api/v1/query",
       bodyMatch: isDescribeValues("service"),
       body: valuesBody(["checkout"]),
+    },
+  ]);
+}
+
+/** Like `stubMetadata`, but `metrics_histogram` reports a name `metrics`
+ * doesn't — the disabled-suggestion case. */
+function stubMetadataWithHistogramOnlyMetric() {
+  stubFetchRoutes([
+    {
+      match: "/api/v1/query",
+      bodyMatch: isDescribeValues("metric.name", "metrics"),
+      body: valuesBody(["http_reqs", "up"]),
+    },
+    {
+      match: "/api/v1/query",
+      bodyMatch: isDescribeValues("metric.name", "metrics_histogram"),
+      body: valuesBody(["http.server.duration"]),
+    },
+    {
+      match: "/api/v1/query",
+      bodyMatch: isDescribeFields,
+      body: fieldsBody([]),
+    },
+  ]);
+}
+
+/** Every name reported has no matches at all — the empty-state case. */
+function stubMetadataWithNoMetrics() {
+  stubFetchRoutes([
+    {
+      match: "/api/v1/query",
+      bodyMatch: isDescribeValues("metric.name"),
+      body: valuesBody([]),
+    },
+    {
+      match: "/api/v1/query",
+      bodyMatch: isDescribeFields,
+      body: fieldsBody([]),
     },
   ]);
 }
@@ -270,6 +310,47 @@ describe("QueryRow", () => {
     await user.keyboard("{ArrowDown}{Enter}");
 
     expect(query().metric).toBe("up");
+  });
+
+  it("renders a histogram-only metric name as a disabled, non-pickable option", async () => {
+    stubMetadataWithHistogramOnlyMetric();
+    renderWithClient(<Harness />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByLabelText("Metric"));
+    const disabled = await screen.findByRole("option", {
+      name: /http\.server\.duration/,
+    });
+    expect(disabled).toHaveAttribute("aria-disabled", "true");
+    expect(disabled).toHaveTextContent("histogram · not chartable yet");
+
+    // Clicking it does nothing.
+    await user.click(disabled);
+    expect(query().metric).toBe("");
+    expect(screen.getByLabelText("Metric")).toHaveFocus();
+
+    // Arrow-key nav skips it entirely, landing on the one selectable option.
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("option", { name: "http_reqs" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(disabled).toHaveAttribute("aria-selected", "false");
+    await user.keyboard("{Enter}");
+    expect(query().metric).toBe("http_reqs");
+  });
+
+  it("shows a muted empty-state row when there are no metrics in range", async () => {
+    stubMetadataWithNoMetrics();
+    renderWithClient(<Harness />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByLabelText("Metric"));
+    const empty = await screen.findByText("No metrics in this range");
+    expect(empty).toHaveAttribute("aria-disabled");
+    expect(
+      within(screen.getByRole("listbox")).queryByRole("option"),
+    ).not.toBeInTheDocument();
   });
 
   it("warns when grouping by a high-cardinality label", async () => {

@@ -107,6 +107,32 @@
   min-width: 0;
 }
 
+/* A histogram-only metric name: suggested (so a search for it isn't a dead
+   end) but not selectable, since the builder always queries `metrics`. */
+.chip-suggest-item-disabled {
+  cursor: default;
+  color: var(--faint);
+}
+
+.chip-suggest-item-disabled:hover {
+  background: none;
+}
+
+.chip-suggest-histogram {
+  font-size: 10px;
+  color: var(--faint);
+}
+
+.chip-suggest-empty {
+  cursor: default;
+  color: var(--faint);
+  font-style: italic;
+}
+
+.chip-suggest-empty:hover {
+  background: none;
+}
+
 .qrow-filters {
   display: flex;
   flex-wrap: wrap;

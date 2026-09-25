@@ -151,7 +151,7 @@ describe("metricNames", () => {
     } satisfies QueryIrResponse);
 
     expect(await metricNames(RANGE)).toEqual([
-      { value: "http.server.duration", partial: true },
+      { value: "http.server.duration", partial: true, chartable: true },
     ]);
     expect(calls[0]?.body).toMatchObject({
       from: "metrics",
@@ -204,10 +204,23 @@ describe("metricNames", () => {
       "up",
     ]);
     // The exact (registry) hit for the name both sources return wins over
-    // the approximate one.
+    // the approximate one, and a name present in `metrics` is chartable
+    // even though `metrics_histogram` also reports it.
     expect(result.find((v) => v.value === "shared_metric")).toEqual({
       value: "shared_metric",
       partial: false,
+      chartable: true,
+    });
+    // Histogram-only: discoverable, but the builder can't chart it.
+    expect(result.find((v) => v.value === "http.server.duration")).toEqual({
+      value: "http.server.duration",
+      partial: false,
+      chartable: false,
+    });
+    expect(result.find((v) => v.value === "up")).toEqual({
+      value: "up",
+      partial: true,
+      chartable: true,
     });
   });
 });

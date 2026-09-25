@@ -10,6 +10,7 @@ import {
   fields,
   metricNames as discoverMetricNames,
   values as discoverValues,
+  type DiscoveredMetricName,
 } from "../../api/ir/discovery";
 import { FILTER_OPS, type LabelFilter } from "../../lib/filters";
 import type { ResolvedRange } from "../../lib/time";
@@ -41,12 +42,15 @@ const rangeKey = (range: ResolvedRange) => `${range.fromMs}-${range.toMs}`;
  * a new user sees what's available before typing anything. */
 const MAX_METRIC_SUGGESTIONS = 20;
 
-function matchingMetrics(names: string[], typed: string): string[] {
+function matchingMetrics(
+  names: DiscoveredMetricName[],
+  typed: string,
+): DiscoveredMetricName[] {
   const needle = typed.trim().toLowerCase();
   const matches =
     needle === ""
       ? names
-      : names.filter((n) => n.toLowerCase().includes(needle));
+      : names.filter((n) => n.value.toLowerCase().includes(needle));
   return matches.slice(0, MAX_METRIC_SUGGESTIONS);
 }
 
@@ -103,7 +107,7 @@ export function QueryRow({ query, range, onChange }: Props) {
 
       <MetricNameCombobox
         value={query.metric}
-        names={(metricNames.data ?? []).map((m) => m.value)}
+        names={metricNames.data ?? []}
         onChange={(metric) => patch({ metric })}
       />
 
@@ -216,14 +220,18 @@ export function QueryRow({ query, range, onChange }: Props) {
 /** The metric-name box: a combobox over the discovered metric names, in the
  * same open-on-focus/filter-as-you-type/arrow-key-navigable shape as
  * `AttributeKeyInput`'s label suggestions, but plain strings — there's no
- * registry metadata to show alongside a metric name. */
+ * registry metadata to show alongside a metric name. A name that only
+ * exists in `metrics_histogram` (`chartable: false`) renders disabled: it's
+ * worth surfacing so a search for it doesn't come up empty, but picking it
+ * would compile a query against `metrics` that silently returns nothing, so
+ * it's skipped by keyboard nav and does nothing on click. */
 function MetricNameCombobox({
   value,
   names,
   onChange,
 }: {
   value: string;
-  names: string[];
+  names: DiscoveredMetricName[];
   onChange: (value: string) => void;
 }) {
   const listId = useId();
@@ -233,8 +241,17 @@ function MetricNameCombobox({
     () => matchingMetrics(names, value),
     [names, value],
   );
-  const open = focused && suggestions.length > 0;
-  const activeIndex = open && active < suggestions.length ? active : -1;
+  const selectableIndices = useMemo(
+    () =>
+      suggestions.reduce<number[]>((acc, s, i) => {
+        if (s.chartable) acc.push(i);
+        return acc;
+      }, []),
+    [suggestions],
+  );
+  const open = focused;
+  const activeSelectable = active >= 0 && active < selectableIndices.length;
+  const activeIndex = activeSelectable ? selectableIndices[active]! : -1;
   const optionId = (index: number) => `${listId}-option-${index}`;
 
   const pick = (name: string) => {
@@ -244,17 +261,17 @@ function MetricNameCombobox({
   };
 
   const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
-    if (!open) return;
-    const count = suggestions.length;
+    if (!open || selectableIndices.length === 0) return;
+    const count = selectableIndices.length;
     if (e.key === "ArrowDown") {
       e.preventDefault();
-      setActive((activeIndex + 1) % count);
+      setActive((active + 1) % count);
     } else if (e.key === "ArrowUp") {
       e.preventDefault();
-      setActive((activeIndex - 1 + count) % count);
+      setActive((active - 1 + count) % count);
     } else if (e.key === "Enter" && activeIndex >= 0) {
       e.preventDefault();
-      pick(suggestions[activeIndex]!);
+      pick(suggestions[activeIndex]!.value);
     } else if (e.key === "Escape") {
       e.preventDefault();
       setActive(-1);
@@ -297,17 +314,32 @@ function MetricNameCombobox({
           aria-label="Metric name suggestions"
           className="chip-suggest"
         >
-          {suggestions.map((name, index) => (
+          {suggestions.length === 0 && (
+            <li className="chip-suggest-item chip-suggest-empty" aria-disabled>
+              No metrics in this range
+            </li>
+          )}
+          {suggestions.map((s, index) => (
             <li
-              key={name}
+              key={s.value}
               id={optionId(index)}
               role="option"
               aria-selected={index === activeIndex}
-              className="chip-suggest-item"
+              aria-disabled={!s.chartable}
+              className={
+                s.chartable
+                  ? "chip-suggest-item"
+                  : "chip-suggest-item chip-suggest-item-disabled"
+              }
               onMouseDown={(e) => e.preventDefault()}
-              onClick={() => pick(name)}
+              onClick={s.chartable ? () => pick(s.value) : undefined}
             >
-              <span className="chip-suggest-key">{name}</span>
+              <span className="chip-suggest-key">{s.value}</span>
+              {!s.chartable && (
+                <span className="chip-suggest-ns chip-suggest-histogram">
+                  histogram · not chartable yet
+                </span>
+              )}
             </li>
           ))}
         </ul>
