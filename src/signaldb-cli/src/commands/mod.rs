@@ -7,6 +7,7 @@ pub mod processors;
 pub mod profiles;
 pub mod query;
 pub mod schema;
+pub mod services;
 pub mod tenant;
 pub mod tenant_self;
 pub mod user;
@@ -128,6 +129,11 @@ enum Commands {
     Schema {
         #[command(subcommand)]
         action: schema::SchemaAction,
+    },
+    /// Service dependency graph (`map`)
+    Services {
+        #[command(subcommand)]
+        action: services::ServicesAction,
     },
     /// Pyroscope-compatible profile query surface (types, labels,
     /// label-values, render, diff, by-trace)
@@ -283,6 +289,10 @@ impl Cli {
             return action.run().await;
         }
 
+        if let Commands::Services { action } = self.command {
+            return action.run().await;
+        }
+
         if let Commands::Profiles { action } = self.command {
             return action.run().await;
         }
@@ -388,6 +398,7 @@ impl Cli {
             Commands::Query(_) => unreachable!(),
             Commands::Discover { .. } => unreachable!(),
             Commands::Schema { .. } => unreachable!(),
+            Commands::Services { .. } => unreachable!(),
             Commands::Profiles { .. } => unreachable!(),
             Commands::Processors { .. } => unreachable!(),
             Commands::Completions { .. } => unreachable!(),
