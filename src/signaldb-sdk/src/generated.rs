@@ -1133,6 +1133,110 @@ pub mod types {
             Default::default()
         }
     }
+    ///Calls from `source` to `target` in the window.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct GraphEdge {
+        pub count: i64,
+        ///Share (0..1) of the calls with error status.
+        pub error_rate: f64,
+        ///p95 call duration in nanoseconds.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub p95_ns: ::std::option::Option<i64>,
+        ///Calls per second: `count` over the window length in seconds.
+        pub rate: f64,
+        ///The calling node's `id`.
+        pub source: ::std::string::String,
+        ///The called node's `id`.
+        pub target: ::std::string::String,
+    }
+    impl GraphEdge {
+        pub fn builder() -> builder::GraphEdge {
+            Default::default()
+        }
+    }
+    ///A service or an uninstrumented dependency.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct GraphNode {
+        ///External nodes only: `database`, `messaging`, `rpc`, `http` or `other`.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub dependency_kind: ::std::option::Option<::std::string::String>,
+        ///Share (0..1) of the node's server/consumer spans with error status.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub error_rate: ::std::option::Option<f64>,
+        /**Stable identity, distinct from `name`: `service:<name>` for a
+        service, `external:<kind>:<name>` for an external dependency, and
+        `external:<kind>:unnamed:<caller>` for an external with no naming
+        attribute. Edges reference nodes by this id.*/
+        pub id: ::std::string::String,
+        pub kind: GraphNodeKind,
+        /**Display name: the service name, or for an external node the first present of
+        `db.namespace`, `messaging.destination.name`, `rpc.service`,
+        `server.address`, `peer.service` (`unnamed <kind>` if none is set).*/
+        pub name: ::std::string::String,
+        ///p95 duration of the node's server/consumer spans, in nanoseconds.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub p95_ns: ::std::option::Option<i64>,
+        ///Service nodes with server/consumer spans only: requests per second.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub request_rate: ::std::option::Option<f64>,
+    }
+    impl GraphNode {
+        pub fn builder() -> builder::GraphNode {
+            Default::default()
+        }
+    }
+    /**Whether a node reported spans of its own or was inferred from a client
+    or producer span with no instrumented callee.*/
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum GraphNodeKind {
+        #[serde(rename = "service")]
+        Service,
+        #[serde(rename = "external")]
+        External,
+    }
+    impl ::std::fmt::Display for GraphNodeKind {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Service => f.write_str("service"),
+                Self::External => f.write_str("external"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for GraphNodeKind {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "service" => Ok(Self::Service),
+                "external" => Ok(Self::External),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for GraphNodeKind {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for GraphNodeKind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
     ///Epoch-aligned time axis with a fixed nanosecond step.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct HeatmapAxisX {
@@ -2102,9 +2206,15 @@ pub mod types {
     `query-ir-core` capability for the full stage/predicate grammar.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct QueryIrRequest {
+        ///`graph` only: hops from `focus` (1-3, default 1).
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub depth: ::std::option::Option<i64>,
         ///Curated projection (logical field names) for `rows`/`table`.
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub fields: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+        ///`graph` only: restrict to this service's neighbourhood.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub focus: ::std::option::Option<::std::string::String>,
         ///The registered signal source: `logs`, `traces`, or profile-summary `profiles`.
         pub from: ::std::string::String,
         ///IR document version (the server accepts a bounded range).
@@ -2115,9 +2225,13 @@ pub mod types {
         pub pipeline:
             ::std::vec::Vec<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
         pub range: QueryRange,
-        /**Declared result envelope: `rows`, `series`, `table`, `heatmap`, or
-        (for the `profiles` source only) `flamegraph`.*/
+        /**Declared result envelope: `rows`, `series`, `table`, `heatmap`,
+        (for the `profiles` source only) `flamegraph`, or (for the `traces`
+        source, irVersion 8+) `graph`.*/
         pub result: ::std::string::String,
+        ///`graph` only: restrict to the services and calls of one trace.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub trace_id: ::std::option::Option<::std::string::String>,
     }
     impl QueryIrRequest {
         pub fn builder() -> builder::QueryIrRequest {
@@ -2147,7 +2261,7 @@ pub mod types {
     /**The single canonical response contract. `result` discriminates which fields
     are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
     `series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills
-    `flamegraph`.*/
+    `flamegraph`; `graph` fills `graph`.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct QueryIrResponse {
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -2157,13 +2271,16 @@ pub mod types {
         response has no flamegraph at all" (i.e. a different envelope).*/
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub flamegraph: ::std::option::Option<FlamegraphResult>,
+        ///Present iff `result == "graph"` — the service dependency graph.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub graph: ::std::option::Option<ServiceGraph>,
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub heatmap: ::std::option::Option<HeatmapResult>,
         /**Present iff `result == "metadata"` — what a `describe` document asked
         about, with the provenance and cost of the answer.*/
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub metadata: ::std::option::Option<MetadataResult>,
-        ///The result envelope: `rows`, `series`, `table`, `heatmap`, or `flamegraph`.
+        ///The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`, or `graph`.
         pub result: ::std::string::String,
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub rows: ::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>,
@@ -2477,6 +2594,20 @@ pub mod types {
     }
     impl SearchResult {
         pub fn builder() -> builder::SearchResult {
+            Default::default()
+        }
+    }
+    /**The assembled graph. `dropped_nodes` counts the nodes removed by the
+    server-side node cap (`[querier].graph_max_nodes`).*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ServiceGraph {
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub dropped_nodes: ::std::option::Option<i64>,
+        pub edges: ::std::vec::Vec<GraphEdge>,
+        pub nodes: ::std::vec::Vec<GraphNode>,
+    }
+    impl ServiceGraph {
+        pub fn builder() -> builder::ServiceGraph {
             Default::default()
         }
     }
@@ -7665,6 +7796,243 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct GraphEdge {
+            count: ::std::result::Result<i64, ::std::string::String>,
+            error_rate: ::std::result::Result<f64, ::std::string::String>,
+            p95_ns: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
+            rate: ::std::result::Result<f64, ::std::string::String>,
+            source: ::std::result::Result<::std::string::String, ::std::string::String>,
+            target: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for GraphEdge {
+            fn default() -> Self {
+                Self {
+                    count: Err("no value supplied for count".to_string()),
+                    error_rate: Err("no value supplied for error_rate".to_string()),
+                    p95_ns: Ok(Default::default()),
+                    rate: Err("no value supplied for rate".to_string()),
+                    source: Err("no value supplied for source".to_string()),
+                    target: Err("no value supplied for target".to_string()),
+                }
+            }
+        }
+        impl GraphEdge {
+            pub fn count<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.count = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for count: {e}"));
+                self
+            }
+            pub fn error_rate<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<f64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.error_rate = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for error_rate: {e}"));
+                self
+            }
+            pub fn p95_ns<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<i64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.p95_ns = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for p95_ns: {e}"));
+                self
+            }
+            pub fn rate<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<f64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.rate = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for rate: {e}"));
+                self
+            }
+            pub fn source<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.source = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for source: {e}"));
+                self
+            }
+            pub fn target<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.target = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for target: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<GraphEdge> for super::GraphEdge {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: GraphEdge,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    count: value.count?,
+                    error_rate: value.error_rate?,
+                    p95_ns: value.p95_ns?,
+                    rate: value.rate?,
+                    source: value.source?,
+                    target: value.target?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::GraphEdge> for GraphEdge {
+            fn from(value: super::GraphEdge) -> Self {
+                Self {
+                    count: Ok(value.count),
+                    error_rate: Ok(value.error_rate),
+                    p95_ns: Ok(value.p95_ns),
+                    rate: Ok(value.rate),
+                    source: Ok(value.source),
+                    target: Ok(value.target),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct GraphNode {
+            dependency_kind: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            error_rate: ::std::result::Result<::std::option::Option<f64>, ::std::string::String>,
+            id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            kind: ::std::result::Result<super::GraphNodeKind, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            p95_ns: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
+            request_rate: ::std::result::Result<::std::option::Option<f64>, ::std::string::String>,
+        }
+        impl ::std::default::Default for GraphNode {
+            fn default() -> Self {
+                Self {
+                    dependency_kind: Ok(Default::default()),
+                    error_rate: Ok(Default::default()),
+                    id: Err("no value supplied for id".to_string()),
+                    kind: Err("no value supplied for kind".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                    p95_ns: Ok(Default::default()),
+                    request_rate: Ok(Default::default()),
+                }
+            }
+        }
+        impl GraphNode {
+            pub fn dependency_kind<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dependency_kind = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for dependency_kind: {e}")
+                });
+                self
+            }
+            pub fn error_rate<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<f64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.error_rate = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for error_rate: {e}"));
+                self
+            }
+            pub fn id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
+                self
+            }
+            pub fn kind<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::GraphNodeKind>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.kind = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for kind: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn p95_ns<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<i64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.p95_ns = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for p95_ns: {e}"));
+                self
+            }
+            pub fn request_rate<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<f64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.request_rate = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for request_rate: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<GraphNode> for super::GraphNode {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: GraphNode,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    dependency_kind: value.dependency_kind?,
+                    error_rate: value.error_rate?,
+                    id: value.id?,
+                    kind: value.kind?,
+                    name: value.name?,
+                    p95_ns: value.p95_ns?,
+                    request_rate: value.request_rate?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::GraphNode> for GraphNode {
+            fn from(value: super::GraphNode) -> Self {
+                Self {
+                    dependency_kind: Ok(value.dependency_kind),
+                    error_rate: Ok(value.error_rate),
+                    id: Ok(value.id),
+                    kind: Ok(value.kind),
+                    name: Ok(value.name),
+                    p95_ns: Ok(value.p95_ns),
+                    request_rate: Ok(value.request_rate),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct HeatmapAxisX {
             align: ::std::result::Result<::std::string::String, ::std::string::String>,
             step_ns: ::std::result::Result<i64, ::std::string::String>,
@@ -11589,8 +11957,13 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct QueryIrRequest {
+            depth: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
             fields: ::std::result::Result<
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
+            focus: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
                 ::std::string::String,
             >,
             from: ::std::result::Result<::std::string::String, ::std::string::String>,
@@ -11601,20 +11974,37 @@ pub mod types {
             >,
             range: ::std::result::Result<super::QueryRange, ::std::string::String>,
             result: ::std::result::Result<::std::string::String, ::std::string::String>,
+            trace_id: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
         }
         impl ::std::default::Default for QueryIrRequest {
             fn default() -> Self {
                 Self {
+                    depth: Ok(Default::default()),
                     fields: Ok(Default::default()),
+                    focus: Ok(Default::default()),
                     from: Err("no value supplied for from".to_string()),
                     ir_version: Err("no value supplied for ir_version".to_string()),
                     pipeline: Ok(Default::default()),
                     range: Err("no value supplied for range".to_string()),
                     result: Err("no value supplied for result".to_string()),
+                    trace_id: Ok(Default::default()),
                 }
             }
         }
         impl QueryIrRequest {
+            pub fn depth<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<i64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.depth = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for depth: {e}"));
+                self
+            }
             pub fn fields<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<
@@ -11625,6 +12015,16 @@ pub mod types {
                 self.fields = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for fields: {e}"));
+                self
+            }
+            pub fn focus<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.focus = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for focus: {e}"));
                 self
             }
             pub fn from<T>(mut self, value: T) -> Self
@@ -11681,6 +12081,16 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for result: {e}"));
                 self
             }
+            pub fn trace_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.trace_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for trace_id: {e}"));
+                self
+            }
         }
         impl ::std::convert::TryFrom<QueryIrRequest> for super::QueryIrRequest {
             type Error = super::error::ConversionError;
@@ -11688,24 +12098,30 @@ pub mod types {
                 value: QueryIrRequest,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    depth: value.depth?,
                     fields: value.fields?,
+                    focus: value.focus?,
                     from: value.from?,
                     ir_version: value.ir_version?,
                     pipeline: value.pipeline?,
                     range: value.range?,
                     result: value.result?,
+                    trace_id: value.trace_id?,
                 })
             }
         }
         impl ::std::convert::From<super::QueryIrRequest> for QueryIrRequest {
             fn from(value: super::QueryIrRequest) -> Self {
                 Self {
+                    depth: Ok(value.depth),
                     fields: Ok(value.fields),
+                    focus: Ok(value.focus),
                     from: Ok(value.from),
                     ir_version: Ok(value.ir_version),
                     pipeline: Ok(value.pipeline),
                     range: Ok(value.range),
                     result: Ok(value.result),
+                    trace_id: Ok(value.trace_id),
                 }
             }
         }
@@ -11715,6 +12131,10 @@ pub mod types {
                 ::std::result::Result<::std::vec::Vec<super::ResultColumn>, ::std::string::String>,
             flamegraph: ::std::result::Result<
                 ::std::option::Option<super::FlamegraphResult>,
+                ::std::string::String,
+            >,
+            graph: ::std::result::Result<
+                ::std::option::Option<super::ServiceGraph>,
                 ::std::string::String,
             >,
             heatmap: ::std::result::Result<
@@ -11742,6 +12162,7 @@ pub mod types {
                 Self {
                     columns: Ok(Default::default()),
                     flamegraph: Ok(Default::default()),
+                    graph: Ok(Default::default()),
                     heatmap: Ok(Default::default()),
                     metadata: Ok(Default::default()),
                     result: Err("no value supplied for result".to_string()),
@@ -11772,6 +12193,16 @@ pub mod types {
                 self.flamegraph = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for flamegraph: {e}"));
+                self
+            }
+            pub fn graph<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::ServiceGraph>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.graph = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for graph: {e}"));
                 self
             }
             pub fn heatmap<T>(mut self, value: T) -> Self
@@ -11863,6 +12294,7 @@ pub mod types {
                 Ok(Self {
                     columns: value.columns?,
                     flamegraph: value.flamegraph?,
+                    graph: value.graph?,
                     heatmap: value.heatmap?,
                     metadata: value.metadata?,
                     result: value.result?,
@@ -11879,6 +12311,7 @@ pub mod types {
                 Self {
                     columns: Ok(value.columns),
                     flamegraph: Ok(value.flamegraph),
+                    graph: Ok(value.graph),
                     heatmap: Ok(value.heatmap),
                     metadata: Ok(value.metadata),
                     result: Ok(value.result),
@@ -12899,6 +13332,74 @@ pub mod types {
                 Self {
                     metrics: Ok(value.metrics),
                     traces: Ok(value.traces),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ServiceGraph {
+            dropped_nodes: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
+            edges: ::std::result::Result<::std::vec::Vec<super::GraphEdge>, ::std::string::String>,
+            nodes: ::std::result::Result<::std::vec::Vec<super::GraphNode>, ::std::string::String>,
+        }
+        impl ::std::default::Default for ServiceGraph {
+            fn default() -> Self {
+                Self {
+                    dropped_nodes: Ok(Default::default()),
+                    edges: Err("no value supplied for edges".to_string()),
+                    nodes: Err("no value supplied for nodes".to_string()),
+                }
+            }
+        }
+        impl ServiceGraph {
+            pub fn dropped_nodes<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<i64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dropped_nodes = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dropped_nodes: {e}"));
+                self
+            }
+            pub fn edges<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::GraphEdge>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.edges = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for edges: {e}"));
+                self
+            }
+            pub fn nodes<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::GraphNode>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.nodes = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for nodes: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ServiceGraph> for super::ServiceGraph {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ServiceGraph,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    dropped_nodes: value.dropped_nodes?,
+                    edges: value.edges?,
+                    nodes: value.nodes?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ServiceGraph> for ServiceGraph {
+            fn from(value: super::ServiceGraph) -> Self {
+                Self {
+                    dropped_nodes: Ok(value.dropped_nodes),
+                    edges: Ok(value.edges),
+                    nodes: Ok(value.nodes),
                 }
             }
         }

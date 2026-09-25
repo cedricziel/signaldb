@@ -847,6 +847,75 @@ export type GrantedTenant = {
 };
 
 /**
+ * Calls from `source` to `target` in the window.
+ */
+export type GraphEdge = {
+    count: number;
+    /**
+     * Share (0..1) of the calls with error status.
+     */
+    error_rate: number;
+    /**
+     * p95 call duration in nanoseconds.
+     */
+    p95_ns?: number | null;
+    /**
+     * Calls per second: `count` over the window length in seconds.
+     */
+    rate: number;
+    /**
+     * The calling node's `id`.
+     */
+    source: string;
+    /**
+     * The called node's `id`.
+     */
+    target: string;
+};
+
+/**
+ * A service or an uninstrumented dependency.
+ */
+export type GraphNode = {
+    /**
+     * External nodes only: `database`, `messaging`, `rpc`, `http` or `other`.
+     */
+    dependency_kind?: string | null;
+    /**
+     * Share (0..1) of the node's server/consumer spans with error status.
+     */
+    error_rate?: number | null;
+    /**
+     * Stable identity, distinct from `name`: `service:<name>` for a
+     * service, `external:<kind>:<name>` for an external dependency, and
+     * `external:<kind>:unnamed:<caller>` for an external with no naming
+     * attribute. Edges reference nodes by this id.
+     */
+    id: string;
+    kind: GraphNodeKind;
+    /**
+     * Display name: the service name, or for an external node the first present of
+     * `db.namespace`, `messaging.destination.name`, `rpc.service`,
+     * `server.address`, `peer.service` (`unnamed <kind>` if none is set).
+     */
+    name: string;
+    /**
+     * p95 duration of the node's server/consumer spans, in nanoseconds.
+     */
+    p95_ns?: number | null;
+    /**
+     * Service nodes with server/consumer spans only: requests per second.
+     */
+    request_rate?: number | null;
+};
+
+/**
+ * Whether a node reported spans of its own or was inferred from a client
+ * or producer span with no instrumented callee.
+ */
+export type GraphNodeKind = 'service' | 'external';
+
+/**
  * Epoch-aligned time axis with a fixed nanosecond step.
  */
 export type HeatmapAxisX = {
@@ -1372,9 +1441,17 @@ export type QueryFormula = {
  */
 export type QueryIrRequest = {
     /**
+     * `graph` only: hops from `focus` (1-3, default 1).
+     */
+    depth?: number | null;
+    /**
      * Curated projection (logical field names) for `rows`/`table`.
      */
     fields?: Array<string> | null;
+    /**
+     * `graph` only: restrict to this service's neighbourhood.
+     */
+    focus?: string | null;
     /**
      * The registered signal source: `logs`, `traces`, or profile-summary `profiles`.
      */
@@ -1391,10 +1468,15 @@ export type QueryIrRequest = {
     }>;
     range: QueryRange;
     /**
-     * Declared result envelope: `rows`, `series`, `table`, `heatmap`, or
-     * (for the `profiles` source only) `flamegraph`.
+     * Declared result envelope: `rows`, `series`, `table`, `heatmap`,
+     * (for the `profiles` source only) `flamegraph`, or (for the `traces`
+     * source, irVersion 8+) `graph`.
      */
     result: string;
+    /**
+     * `graph` only: restrict to the services and calls of one trace.
+     */
+    trace_id?: string | null;
 };
 
 /**
@@ -1409,15 +1491,16 @@ export type QueryIrRequestBody = MultiQueryIrRequest | QueryIrRequest;
  * The single canonical response contract. `result` discriminates which fields
  * are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
  * `series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills
- * `flamegraph`.
+ * `flamegraph`; `graph` fills `graph`.
  */
 export type QueryIrResponse = {
     columns?: Array<ResultColumn>;
     flamegraph?: null | FlamegraphResult;
+    graph?: null | ServiceGraph;
     heatmap?: HeatmapResult;
     metadata?: null | MetadataResult;
     /**
-     * The result envelope: `rows`, `series`, `table`, `heatmap`, or `flamegraph`.
+     * The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`, or `graph`.
      */
     result: string;
     rows?: Array<Array<unknown>>;
@@ -1589,6 +1672,16 @@ export type SearchResult = {
         [key: string]: number;
     };
     traces: Array<Trace>;
+};
+
+/**
+ * The assembled graph. `dropped_nodes` counts the nodes removed by the
+ * server-side node cap (`[querier].graph_max_nodes`).
+ */
+export type ServiceGraph = {
+    dropped_nodes?: number;
+    edges: Array<GraphEdge>;
+    nodes: Array<GraphNode>;
 };
 
 /**
