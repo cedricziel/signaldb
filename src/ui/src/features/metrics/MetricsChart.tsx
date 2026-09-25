@@ -5,7 +5,11 @@ import { seriesName, type PromSeries } from "../../api/ir/metrics";
 import { VizTooltip, type VizTooltipRow } from "../../components/VizTooltip";
 import { alignSeries, seriesColorVar, seriesDash } from "../../lib/promSeries";
 import { subscribeTheme } from "../../lib/theme";
-import { compactCount, formatTimestamp, formatValue } from "../../lib/vizFormat";
+import {
+  compactCount,
+  formatTimestamp,
+  formatValue,
+} from "../../lib/vizFormat";
 
 interface Props {
   series: PromSeries[];
@@ -175,8 +179,19 @@ export function MetricsChart({
       (hasNegativeValue ? "-" : "") + compactCount(maxAbsValue, unit);
     const yAxis: uPlot.Axis = {
       ...axis,
-      values: (_u, splits) =>
-        splits.map((v) => (v === null ? null : compactCount(v, unit))),
+      values: (_u, splits) => {
+        // Ticks are evenly spaced; the gap between the first two non-null
+        // values is this axis's step, used to size decimals for sub-1 series
+        // (e.g. `0, 0.2, 0.4, …`) so ticks don't all round to the same label.
+        const numericSplits = splits.filter((v): v is number => v !== null);
+        const step =
+          numericSplits.length > 1
+            ? numericSplits[1]! - numericSplits[0]!
+            : undefined;
+        return splits.map((v) =>
+          v === null ? null : compactCount(v, unit, step),
+        );
+      },
       size: Math.max(AXIS_MIN_SIZE, widestLabel.length * AXIS_CHAR_WIDTH + 18),
     };
     const make = () =>

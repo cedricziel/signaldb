@@ -40,6 +40,22 @@ function compactBytes(n: number): string {
 }
 
 /**
+ * How many decimal places a tick step needs to keep consecutive ticks
+ * distinct, e.g. a step of `0.2` needs 1, a step of `1` needs 0. Capped so a
+ * near-integer step (floating-point noise from a subtraction) doesn't chase
+ * six decimals of nothing.
+ */
+function decimalsForStep(step: number): number {
+  if (!Number.isFinite(step) || step <= 0) return 0;
+  const abs = Math.abs(step);
+  for (let decimals = 0; decimals <= 6; decimals++) {
+    const scaled = abs * 10 ** decimals;
+    if (Math.abs(scaled - Math.round(scaled)) < 1e-9) return decimals;
+  }
+  return 6;
+}
+
+/**
  * Abbreviate a count for an axis gridline, where width is scarce.
  *
  * Deliberately not `Intl`'s `notation: "compact"`: that is locale-dependent
@@ -48,8 +64,13 @@ function compactBytes(n: number): string {
  * a unit (`1.5K`), none above it (`373K`) — except a byte unit (`unit`, an
  * OTel/UCUM code such as `"By"`), which binary-scales via {@link compactBytes}
  * instead.
+ *
+ * `step` is the spacing between adjacent ticks on the same axis (unscaled,
+ * pre-K/M/B). Below the smallest scale it sets how many decimals the label
+ * carries, so a sub-1 series (say `http.server.active_requests`, ticks
+ * `0, 0.2, 0.4, …`) doesn't round every tick to the same integer.
  */
-export function compactCount(n: number, unit = ""): string {
+export function compactCount(n: number, unit = "", step?: number): string {
   if (BYTE_UNIT_ALIASES.has(unit.toLowerCase())) return compactBytes(n);
   const sign = n < 0 ? "-" : "";
   const abs = Math.abs(n);
@@ -63,7 +84,10 @@ export function compactCount(n: number, unit = ""): string {
       return `${sign}${roundToOneDecimalBelowTen(abs / scale)}${suffix}`;
     }
   }
-  return String(Math.round(n));
+  const decimals = step === undefined ? 0 : decimalsForStep(step);
+  return decimals > 0 && !Number.isInteger(n)
+    ? n.toFixed(decimals)
+    : String(Math.round(n));
 }
 
 const pad = (n: number, w = 2) => String(n).padStart(w, "0");

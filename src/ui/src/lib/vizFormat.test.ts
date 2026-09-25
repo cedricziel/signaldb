@@ -25,6 +25,30 @@ describe("compactCount", () => {
     expect(compactCount(2_400_000_000)).toBe("2.4B");
   });
 
+  // A sub-1 series (e.g. `http.server.active_requests`) previously rounded
+  // every tick to an integer, so `0, 0.2, 0.4, 0.6, 0.8, 1` all read as
+  // "0, 0, 0, 1, 1, 1". The step between ticks now sets enough decimals to
+  // keep them distinct.
+  it("derives decimals from the tick step for sub-1 ticks", () => {
+    const ticks = [0, 0.2, 0.4, 0.6, 0.8, 1];
+    const step = ticks[1]! - ticks[0]!;
+    const labels = ticks.map((t) => compactCount(t, "", step));
+    expect(labels).toEqual(["0", "0.2", "0.4", "0.6", "0.8", "1"]);
+    expect(new Set(labels).size).toBe(ticks.length);
+  });
+
+  // Integer-stepped ticks keep their existing whole-number rendering.
+  it("stays integral when the step is a whole number", () => {
+    const ticks = [0, 500, 1000, 1500];
+    const step = ticks[1]! - ticks[0]!;
+    expect(ticks.map((t) => compactCount(t, "", step))).toEqual([
+      "0",
+      "500",
+      "1K",
+      "1.5K",
+    ]);
+  });
+
   // A negative axis value (a delta, a diverging metric) scaled by magnitude
   // and kept its sign, rather than falling through to an unscaled `"-1500"`
   // because `n >= scale` never matched a negative number.
