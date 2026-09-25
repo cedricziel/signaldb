@@ -578,12 +578,14 @@ shared between the logs and traces tabs and persists across sessions.
 
 Below a 900px-wide viewport the facet/field sidebar (Logs, Traces, and
 Errors alike) is hidden by default rather than shown at a squeezed width; a
-**Filters** button reveals it as a dismissible drawer (close button,
-backdrop click, or Escape). The traces' span-detail panel does the same
-below that width: selecting a span shows a **Details** button in the trace
-header that opens the panel as a drawer from the right. The signal tabs at
-the top also switch to a horizontally scrollable strip at that width instead
-of compressing.
+**Filters** button (**Fields** in the Logs query bar) reveals it as a
+dismissible drawer (close button, backdrop click, or Escape). The traces'
+span-detail panel does the same below that width: selecting a span shows a
+**Details** button in the trace header that opens the panel as a drawer from
+the right. The signal tabs at the top stay on one horizontally scrollable row
+instead of compressing or wrapping, and scroll to keep the active tab in
+view. Below 600px, each log row puts its message on its own line under the
+timestamp, level, and service, clamped to three lines.
 
 ### The group table
 
