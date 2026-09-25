@@ -25,7 +25,8 @@ export function MobileFiltersToggle({
 }: {
   open: boolean;
   onToggle: () => void;
-  /** Button text; "Filters" for the facet/field drawers, "Details" for the
+  /** Button text; "Filters" for the facet drawers, "Fields" for the logs
+   * field list (the query bar already has a "+ filter" chip), "Details" for the
    * trace waterfall's span-detail drawer. */
   label?: string;
 }) {

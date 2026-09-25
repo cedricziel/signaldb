@@ -432,8 +432,14 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    align-self: flex-start;
     margin: 10px 14px 0;
     color: var(--dim);
+  }
+
+  /* Inside the query bar it's one more control in the row, not a strip. */
+  .querybar .mobile-filters-toggle {
+    margin: 0;
   }
 
   .mobile-filters-toggle[aria-expanded="true"] {
