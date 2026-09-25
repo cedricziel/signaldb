@@ -5,17 +5,17 @@ the ingest door and — via `query-ir-core` — at the query door. The **storage
 door is not native**, and the type loss happens at two hops, not one:
 `conversion_common.rs` `extract_value` already destroys `BytesValue` (→ UTF-8 or
 empty) and `StringValueStrindex` (→ null) and collapses duplicate/ordered keys
-(serde_json `Map`) at the OTLP→internal boundary; the writer's
+(serde*json `Map`) at the OTLP→internal boundary; the writer's
 `json_strings_to_map_array` then stringifies the surviving scalars into
 `Map<String,String>` (`http.response.status_code=200` → `"200"`). (Int/double/bool
 do survive the JSON-in-Utf8 carrier — `serde_json` has native i64/f64, so the
 carrier is not the culprit for scalars; the losses are in `extract_value` and the
 final map coercion.) Because the physical substrate is untyped, the attribute
-registry that `query-ir-core` specifies can only resolve a logical field to _"a
+registry that `query-ir-core` specifies can only resolve a logical field to *"a
 promoted column or an attribute-JSON extraction"_ — i.e. it **reconstructs the
 declared type by casting a stringified value at read time** rather than retrieving
 a stored type. And ingest never passes through the logical schema at all, so the
-registry's canonical type is asserted at plan time but never _enforced at write_.
+registry's canonical type is asserted at plan time but never \_enforced at write_.
 
 The result is that a single idea — an OTel-native logical schema, backed by a
 typed physical substrate, mediated by one registry — is scattered across five
