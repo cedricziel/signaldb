@@ -198,6 +198,13 @@ server asked to retry in 30s`), and the error `data` carries `retryAfterMs`
 (milliseconds; `null` when no wait was stated) plus `http_status: 429`. An
 agent should wait that long or narrow the query.
 
+When the router rejects a query-backed tool's request outright (`query_ir`,
+`search_trace_groups`, `get_service_map`, `get_profile`, `discover_fields`,
+`discover_field_values`), the tool error carries the router's own message —
+e.g. `invalid IR document: unknown field 'all', expected one of …` — instead
+of a bare status code, so an agent can correct its request rather than
+guessing what was wrong.
+
 ## Prompts
 
 `prompts/list` offers ready-made investigation templates a client can surface
