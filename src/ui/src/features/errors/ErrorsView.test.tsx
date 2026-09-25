@@ -15,12 +15,16 @@ vi.mock("../../api/errors", async (importOriginal) => {
     fetchErrorGroups: vi.fn(),
     fetchErrorOccurrences: vi.fn(),
     fetchErrorGroupVolume: vi.fn(),
+    fetchUncoveredErrorLogCount: vi.fn(),
   };
 });
 
 const fetchErrorGroups = vi.mocked(errorsApi.fetchErrorGroups);
 const fetchErrorOccurrences = vi.mocked(errorsApi.fetchErrorOccurrences);
 const fetchErrorGroupVolume = vi.mocked(errorsApi.fetchErrorGroupVolume);
+const fetchUncoveredErrorLogCount = vi.mocked(
+  errorsApi.fetchUncoveredErrorLogCount,
+);
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -30,9 +34,11 @@ beforeEach(() => {
   fetchErrorGroups.mockReset();
   fetchErrorOccurrences.mockReset();
   fetchErrorGroupVolume.mockReset();
+  fetchUncoveredErrorLogCount.mockReset();
   fetchErrorGroups.mockResolvedValue({ groups: [], truncated: false });
   fetchErrorOccurrences.mockResolvedValue([]);
   fetchErrorGroupVolume.mockResolvedValue([]);
+  fetchUncoveredErrorLogCount.mockResolvedValue(0);
 });
 
 function group(overrides: Partial<ErrorGroup> = {}): ErrorGroup {
@@ -484,6 +490,40 @@ describe("ErrorsView", () => {
       /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/,
     );
     expect(matches.length).toBeGreaterThan(0);
+  });
+
+  it("shows a note linking to Logs when ERROR+ logs have no exception.type", async () => {
+    fetchErrorGroups.mockResolvedValue({ groups: [group()], truncated: false });
+    fetchUncoveredErrorLogCount.mockResolvedValue(52);
+    const patches: [unknown, unknown][] = [];
+    renderView({}, (p, opts) => patches.push([p, opts]));
+    await screen.findByText("std::io::Error");
+
+    const note = await screen.findByText(/52 error logs have no/);
+    expect(note).toBeInTheDocument();
+    const link = screen.getByRole("button", { name: /view them in Logs/ });
+    await userEvent.setup().click(link);
+    expect(patches).toContainEqual([
+      {
+        signal: "logs",
+        filters: [
+          {
+            label: "severity_text",
+            op: "=~",
+            value: "(?i)error|fatal|critical",
+          },
+        ],
+      },
+      { push: true },
+    ]);
+  });
+
+  it("hides the uncovered-error-logs note when the count is zero", async () => {
+    fetchErrorGroups.mockResolvedValue({ groups: [group()], truncated: false });
+    fetchUncoveredErrorLogCount.mockResolvedValue(0);
+    renderView();
+    await screen.findByText("std::io::Error");
+    expect(screen.queryByText(/have no/)).not.toBeInTheDocument();
   });
 
   it("wraps the groups and occurrences tables in a scrollable container", async () => {
