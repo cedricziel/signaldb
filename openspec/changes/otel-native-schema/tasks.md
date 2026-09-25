@@ -20,11 +20,14 @@ no coexistence read-path, no legacy safe-cast, no compactor rewrite of old files
 
 ## 2. Logical schema + reconciliation of the two schema systems
 
-- [ ] 2.1 Write failing tests: physical column names rejected on every query surface; computed/promoted/partition columns carry no logical meaning; `dropped_*` counts + log severity/flags first-class; arrays/kvlists retrievable-not-filterable; namespace shadowing rule (spec `otel-native-logical-schema`)
-- [ ] 2.2 Define the canonical logical schema (resource→scope→signal, dotted OTel names, typed scalar `AnyValue`, `body` as `AnyValue`, record metadata, join keys; SignalDB-defined resource identity flagged non-native) in `common`
-- [ ] 2.3 Refactor `schema_parser`/`schemas.toml` so the physical Iceberg schema is the declared realization of the logical schema; mark `computed`/promoted/partition as physical-only
-- [ ] 2.4 Split the version clocks: logical (semconv snapshot) vs physical (storage migration); replace the conflated v1/v2 axis
-- [ ] 2.5 `cargo test -p common` green; lint/format/machete
+Most of this landed alongside layer 1: `common::schema::logical` declares the logical schema (record metadata, `body` as `AnyValue`, join keys, resource identity, level shadowing); `schemas.toml` already names storage versions `physical-vN`, carries a separate `logical_schema_version`, and marks computed/partition columns `physical_only`; the IR planner rejects physical names using the scanned table's columns. The remaining work pins these with tests. The one-metric-model requirement moves to layer 7 (7.5), where the per-type metric tables are replaced anyway.
+
+- [ ] 2.1 Write tests for the spec scenarios: physical column names rejected via the IR, TraceQL and LogQL; `trace_id`/`span_id` one join key across traces and logs; `dropped_*` counts + log severity/flags present; arrays/kvlists retrievable-not-filterable; namespace shadowing rule (spec `otel-native-logical-schema`)
+- [x] 2.2 Define the canonical logical schema (resource→scope→signal, dotted OTel names, typed scalar `AnyValue`, `body` as `AnyValue`, record metadata, join keys; SignalDB-defined resource identity flagged non-native) in `common` — metric model excepted, see 7.5
+- [ ] 2.3 Test that each signal's current physical schema realizes the logical schema: every column is a logical field (directly or by alias), an attribute container, or `physical_only`
+- [ ] 2.4 Give `LogicalSchema` its own version constant, matched to `schemas.toml`'s `logical_schema_version`, with a fingerprint test that fails when the field set changes without a bump
+- [x] 2.5 Document the three version axes (Flight wire vs storage, `physical-vN`, logical) in the `flight-schemas` skill
+- [ ] 2.6 `cargo test -p common -p querier` green; lint/format/machete
 
 ## 3. Type authority (one canonical type per tenant+dataset+field)
 
@@ -62,6 +65,7 @@ no coexistence read-path, no legacy safe-cast, no compactor rewrite of old files
 - [ ] 7.1 Failing tests: metric points/temporality/monotonicity/start_time typed (no blob parse); explicit + exponential histogram buckets typed; exemplar `trace_id`/`span_id` retrievable+joinable; Summary stored+returned as precomputed, `histogram_quantile` over Summary rejected (spec `typed-metric-storage`)
 - [ ] 7.2 Add typed metric schemas (one metric model surface; bucket-native histogram/exp-histogram columns; exemplar keys) replacing `data_json`
 - [ ] 7.3 Ingest cutover for metrics, parallel to attributes (one-shot replacement of `data_json`; no blob read path)
+- [ ] 7.5 One metric model in the logical schema (moved from layer 2): metric type, temporality and monotonicity as fields of one `metrics` source over the typed substrate; no per-type surface visible to queries
 - [ ] 7.4 `cargo test -p common -p writer -p tests-integration` green; lint/format/machete
 
 ## 8. Metric-native query operators

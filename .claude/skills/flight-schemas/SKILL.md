@@ -1,6 +1,6 @@
 ---
 name: flight-schemas
-description: SignalDB Flight schemas and schema versioning - v1 wire format vs v2 storage format, schema inheritance, write-time transformations, traces/logs/metrics table schemas, and Flight RPC methods per service. Use when working with Arrow schemas, OTLP conversion, schema transforms, or Iceberg table schemas.
+description: SignalDB Flight schemas and schema versioning - Flight wire format vs physical-vN storage format vs the logical schema version, schema inheritance, write-time transformations, traces/logs/metrics table schemas, and Flight RPC methods per service. Use when working with Arrow schemas, OTLP conversion, schema transforms, or Iceberg table schemas.
 user-invocable: false
 sources:
   - schemas.toml
@@ -17,6 +17,7 @@ sources:
 Schemas are defined in `schemas.toml` (compiled into binary via `include_str!`) and support:
 
 - **Versioning**: Each signal type tracks a current physical version (traces=physical-v4, logs=physical-v2, metrics=physical-v2, profiles=physical-v2). A separate `logical_schema_version` (`otel-2026-08`) tracks the client-visible OTel logical schema, independent of the physical Iceberg realization.
+- **Three version axes, not one**: (1) the Flight **wire** format vs Iceberg storage — the `*_v1_to_*` transforms in `src/writer/src/schema_transform.rs`; "v1"/"v2" in those names is historical and means wire→storage, nothing else; (2) the **physical** chain `physical-v1..vN` in `schemas.toml`, one per signal; (3) the **logical** schema version (`logical_schema_version`), which describes `common::schema::logical`. A storage migration moves (2) only; a logical field change moves (3) only.
 - **Inheritance**: `inherits = "physical-v1"` pulls all parent fields
 - **Field renames**: `{ from = "name", to = "span_name" }`
 - **Field removals**: `{ name = "deprecated_field" }` drops a field inherited from a parent version
