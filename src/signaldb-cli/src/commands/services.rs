@@ -42,7 +42,12 @@ pub struct MapArgs {
     #[arg(long, conflicts_with = "trace_id")]
     service: Option<String>,
     /// Hops from `--service` (1-3, default 1). Requires `--service`.
-    #[arg(long, value_parser = clap::value_parser!(u8).range(1..=3))]
+    #[arg(
+        long,
+        value_parser = clap::value_parser!(u8).range(1..=3),
+        requires = "service",
+        conflicts_with = "trace_id"
+    )]
     depth: Option<u8>,
     /// Restrict to the services and calls of one trace
     #[arg(long, value_name = "TRACE_ID")]
@@ -62,12 +67,9 @@ pub struct MapArgs {
 
 impl MapArgs {
     pub async fn run(self) -> anyhow::Result<()> {
-        if self.depth.is_some() && self.service.is_none() {
-            anyhow::bail!("--depth requires --service");
-        }
-
-        // The `depth`-requires-`service` check above means `self.depth` is
-        // only `Some` here when `self.service` is too.
+        // clap's `requires = "service"` on `--depth` guarantees `self.depth`
+        // is only `Some` when `self.service` is too, so no runtime check
+        // (and no network round trip for a usage error) is needed here.
         let request = QueryIrRequest {
             depth: self.depth.map(i64::from),
             fields: None,
@@ -192,9 +194,15 @@ fn render_table(graph: &ServiceGraph) -> String {
     )
 }
 
-/// Escape a string for a Graphviz double-quoted id or label.
+/// Escape a string for a Graphviz double-quoted id or label. Backslashes and
+/// quotes must be escaped first so the literal `\n`/`\r` two-character
+/// sequences added for real newlines/carriage returns aren't themselves
+/// doubled by the backslash step.
 fn escape_dot(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    s.replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r")
 }
 
 fn render_dot(graph: &ServiceGraph) -> String {
@@ -224,28 +232,57 @@ fn render_dot(graph: &ServiceGraph) -> String {
     out
 }
 
-/// A Mermaid-safe node identifier: non-alphanumeric characters become `_`.
-fn mermaid_id(id: &str) -> String {
+/// A best-effort Mermaid-safe id for a node id not found in [`mermaid_ids`]
+/// (defensive fallback only — every id a well-formed graph response uses is
+/// covered by that map). Not injective on its own; see `mermaid_ids`.
+fn sanitize_ascii_id(id: &str) -> String {
     id.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect()
 }
 
-/// Escape a string for a Mermaid double-quoted label.
+/// Injective Mermaid-safe ids, `n<index>` keyed by each node's stable graph
+/// id (`n.id`), in `graph.nodes` order. Folding characters to `_` (as a
+/// naive sanitizer would) can collide two distinct ids — e.g.
+/// `service:orders_db` and `service-orders-db` both fold to
+/// `service_orders_db` — so identity comes from position instead.
+fn mermaid_ids(graph: &ServiceGraph) -> std::collections::HashMap<&str, String> {
+    graph
+        .nodes
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.id.as_str(), format!("n{i}")))
+        .collect()
+}
+
+/// Escape a string for a Mermaid double-quoted label: `"` so it doesn't
+/// close the label early, and line breaks (Mermaid labels are one line) as
+/// `<br/>`, which Mermaid renders as a line break rather than swallowing it.
 fn escape_mermaid_label(s: &str) -> String {
     s.replace('"', "&quot;")
+        .replace("\r\n", "<br/>")
+        .replace(['\n', '\r'], "<br/>")
+}
+
+/// The Mermaid-safe id for `node_id`, from `ids` when it's a known graph
+/// node, else the best-effort fallback (see `sanitize_ascii_id`).
+fn mermaid_id_for(ids: &std::collections::HashMap<&str, String>, node_id: &str) -> String {
+    ids.get(node_id)
+        .cloned()
+        .unwrap_or_else(|| sanitize_ascii_id(node_id))
 }
 
 fn render_mermaid(graph: &ServiceGraph) -> String {
+    let ids = mermaid_ids(graph);
     let mut out = String::from("flowchart LR\n");
     for node in &graph.nodes {
-        let id = mermaid_id(&node.id);
+        let id = mermaid_id_for(&ids, &node.id);
         let label = escape_mermaid_label(&node.name);
         out.push_str(&format!("  {id}[\"{label}\"]\n"));
     }
     for edge in &graph.edges {
-        let source = mermaid_id(&edge.source);
-        let target = mermaid_id(&edge.target);
+        let source = mermaid_id_for(&ids, &edge.source);
+        let target = mermaid_id_for(&ids, &edge.target);
         let label = escape_mermaid_label(&format!(
             "{}/s, {}",
             format_rate(edge.rate),
@@ -405,17 +442,122 @@ mod tests {
 
     #[test]
     fn mermaid_output_uses_flowchart_lr_and_sanitized_ids() {
+        // sample_graph node order: checkout (n0), frontend (n1), the
+        // external orders-db (n2).
         let mermaid = render_mermaid(&sample_graph());
         assert!(mermaid.starts_with("flowchart LR\n"));
-        assert!(mermaid.contains("service_checkout[\"checkout\"]"));
-        assert!(mermaid.contains("external_database_orders_db[\"orders-db\"]"));
-        assert!(mermaid.contains("service_frontend -->|\"0.40/s, 25.0%\"| service_checkout"));
+        assert!(mermaid.contains("n0[\"checkout\"]"));
+        assert!(mermaid.contains("n1[\"frontend\"]"));
+        assert!(mermaid.contains("n2[\"orders-db\"]"));
+        assert!(mermaid.contains("n1 -->|\"0.40/s, 25.0%\"| n0"));
     }
 
     #[test]
     fn mermaid_escapes_quotes_in_labels() {
         let mermaid = render_mermaid(&odd_name_graph());
         assert!(mermaid.contains("&quot;weird&quot; name\\here"));
+    }
+
+    #[test]
+    fn mermaid_node_ids_stay_distinct_when_sanitized_forms_would_collide() {
+        // `service:orders_db` and `service-orders-db` both fold to
+        // `service_orders_db` under a naive "replace non-alphanumeric with
+        // `_`" sanitizer; the index-based ids must not collide.
+        let graph = ServiceGraph {
+            dropped_nodes: None,
+            nodes: vec![
+                GraphNode {
+                    dependency_kind: None,
+                    error_rate: None,
+                    id: "service:orders_db".to_string(),
+                    kind: GraphNodeKind::Service,
+                    name: "orders (colon)".to_string(),
+                    p95_ns: None,
+                    request_rate: None,
+                },
+                GraphNode {
+                    dependency_kind: None,
+                    error_rate: None,
+                    id: "service-orders-db".to_string(),
+                    kind: GraphNodeKind::Service,
+                    name: "orders (dash)".to_string(),
+                    p95_ns: None,
+                    request_rate: None,
+                },
+            ],
+            edges: vec![GraphEdge {
+                count: 1,
+                error_rate: 0.0,
+                p95_ns: None,
+                rate: 1.0,
+                source: "service:orders_db".to_string(),
+                target: "service-orders-db".to_string(),
+            }],
+        };
+
+        let mermaid = render_mermaid(&graph);
+        let node_lines: Vec<&str> = mermaid
+            .lines()
+            .filter(|l| l.contains('[') && l.contains(']'))
+            .collect();
+        assert_eq!(node_lines.len(), 2, "got:\n{mermaid}");
+        let ids: std::collections::HashSet<&str> = node_lines
+            .iter()
+            .map(|l| l.trim().split('[').next().unwrap())
+            .collect();
+        assert_eq!(
+            ids.len(),
+            2,
+            "node ids collided under sanitization: {mermaid}"
+        );
+        let edge_line = mermaid
+            .lines()
+            .find(|l| l.contains("-->"))
+            .expect("edge line");
+        for id in &ids {
+            assert!(
+                edge_line.contains(id),
+                "edge line {edge_line} missing id {id}"
+            );
+        }
+    }
+
+    fn newline_name_graph() -> ServiceGraph {
+        ServiceGraph {
+            dropped_nodes: None,
+            nodes: vec![GraphNode {
+                dependency_kind: None,
+                error_rate: None,
+                id: "service:multi\nline\r".to_string(),
+                kind: GraphNodeKind::Service,
+                name: "multi\nline\r".to_string(),
+                p95_ns: None,
+                request_rate: None,
+            }],
+            edges: vec![],
+        }
+    }
+
+    #[test]
+    fn dot_escapes_newlines_and_carriage_returns_without_breaking_line_structure() {
+        let dot = render_dot(&newline_name_graph());
+        assert_eq!(
+            dot.lines().count(),
+            3,
+            "a real newline in the name must not add a dot statement line: {dot}"
+        );
+        assert!(dot.contains(r#""service:multi\nline\r" [label="multi\nline\r"];"#));
+    }
+
+    #[test]
+    fn mermaid_escapes_newlines_and_carriage_returns_as_br() {
+        let mermaid = render_mermaid(&newline_name_graph());
+        assert_eq!(
+            mermaid.lines().count(),
+            2,
+            "a real newline in the name must not add a mermaid statement line: {mermaid}"
+        );
+        assert!(mermaid.contains("multi<br/>line<br/>"));
     }
 
     #[test]
@@ -470,27 +612,18 @@ mod tests {
         assert!(Harness::try_parse_from(["h", "--service", "x", "--depth", "2"]).is_ok());
     }
 
-    #[tokio::test]
-    async fn depth_without_service_is_rejected_at_runtime() {
-        let args = MapArgs {
-            service: None,
-            depth: Some(2),
-            trace_id: None,
-            from: "now-1h".to_string(),
-            to: "now".to_string(),
-            format: GraphFormat::Table,
-            connect: ConnectArgs {
-                url: "http://127.0.0.1:1".to_string(),
-                api_key: None,
-                tenant_id: None,
-                dataset_id: None,
-            },
-        };
-        let err = args
-            .run()
-            .await
-            .expect_err("depth without service must be rejected");
-        assert!(err.to_string().contains("--service"), "got {err}");
+    #[test]
+    fn depth_requires_service_as_a_usage_error() {
+        // Rejected by clap before any request is built, not a runtime bail.
+        #[derive(clap::Parser)]
+        struct Harness {
+            #[command(flatten)]
+            args: MapArgs,
+        }
+        use clap::Parser as _;
+        assert!(Harness::try_parse_from(["h", "--depth", "2"]).is_err());
+        assert!(Harness::try_parse_from(["h", "--trace-id", "abc", "--depth", "2"]).is_err());
+        assert!(Harness::try_parse_from(["h", "--service", "x", "--depth", "2"]).is_ok());
     }
 
     #[tokio::test]
@@ -532,5 +665,99 @@ mod tests {
         };
         args.run().await.expect("services map succeeds");
         mock.assert_async().await;
+    }
+
+    /// The number of `"` characters on a line not preceded by an unescaped
+    /// backslash (i.e. quote *delimiters*, not escaped `\"` inside a value).
+    fn unescaped_quote_count(line: &str) -> usize {
+        let mut count = 0;
+        let mut chars = line.chars();
+        while let Some(c) = chars.next() {
+            if c == '\\' {
+                chars.next(); // skip whatever the backslash escapes
+            } else if c == '"' {
+                count += 1;
+            }
+        }
+        count
+    }
+
+    /// The double-quoted tokens on a line, unescaping `\"` and `\\` (but not
+    /// `\n`/`\r`, which stay as the literal two-character Graphviz escape).
+    fn quoted_tokens(line: &str) -> Vec<String> {
+        let mut tokens = Vec::new();
+        let mut chars = line.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c != '"' {
+                continue;
+            }
+            let mut token = String::new();
+            for c in chars.by_ref() {
+                if c == '"' {
+                    break;
+                }
+                token.push(c);
+            }
+            // Collapse `\"` -> `"` and `\\` -> `\` so a token compares equal
+            // to the original unescaped id/label.
+            let mut unescaped = String::new();
+            let mut token_chars = token.chars();
+            while let Some(c) = token_chars.next() {
+                if c == '\\' {
+                    if let Some(next) = token_chars.next() {
+                        unescaped.push(next);
+                    }
+                } else {
+                    unescaped.push(c);
+                }
+            }
+            tokens.push(unescaped);
+        }
+        tokens
+    }
+
+    /// Structural check standing in for `dot -Tsvg` (not installed in this
+    /// environment): one statement per line, every quoted string properly
+    /// delimited, and every edge endpoint declared as a node.
+    #[test]
+    fn dot_output_parses_structurally() {
+        for dot in [render_dot(&sample_graph()), render_dot(&odd_name_graph())] {
+            let lines: Vec<&str> = dot.lines().collect();
+            assert_eq!(lines.first(), Some(&"digraph service_map {"), "got:\n{dot}");
+            assert_eq!(lines.last(), Some(&"}"), "got:\n{dot}");
+
+            let mut declared_ids = std::collections::HashSet::new();
+            let mut edges = Vec::new();
+            for line in &lines[1..lines.len() - 1] {
+                let trimmed = line.trim();
+                assert_eq!(
+                    unescaped_quote_count(trimmed) % 2,
+                    0,
+                    "unbalanced quotes on line {trimmed:?} of:\n{dot}"
+                );
+                let tokens = quoted_tokens(trimmed);
+                if trimmed.contains("->") {
+                    assert_eq!(
+                        tokens.len(),
+                        3,
+                        "edge line should quote source, target, label: {trimmed:?}"
+                    );
+                    edges.push((tokens[0].clone(), tokens[1].clone()));
+                } else {
+                    assert!(!tokens.is_empty(), "node line has no id: {trimmed:?}");
+                    declared_ids.insert(tokens[0].clone());
+                }
+            }
+            for (source, target) in edges {
+                assert!(
+                    declared_ids.contains(&source),
+                    "edge source {source:?} not declared as a node in:\n{dot}"
+                );
+                assert!(
+                    declared_ids.contains(&target),
+                    "edge target {target:?} not declared as a node in:\n{dot}"
+                );
+            }
+        }
     }
 }
