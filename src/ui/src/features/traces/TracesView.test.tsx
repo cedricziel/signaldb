@@ -1049,6 +1049,31 @@ describe("TracesView detail", () => {
     expect(screen.getByText(/1 error/)).toBeInTheDocument();
   });
 
+  it("clicking a span row selects it and opens its details, not just a hover card", async () => {
+    stubFetchRoutes(traceRoutes(TRACE_BODY));
+    renderView({ trace: "t1cafe" });
+    const spans = await within(
+      await screen.findByRole("group", { name: "Spans" }),
+    ).findAllByRole("button");
+
+    // The error span ("charge") is preselected, so its attribute shows.
+    expect(screen.getByText("payment.provider")).toBeInTheDocument();
+    const toggleBtn = screen.getByRole("button", { name: "Details" });
+    expect(toggleBtn).toHaveAttribute("aria-expanded", "false");
+
+    // Clicking the other row ("root") must select it — opening the details
+    // drawer for that span — not merely show a hover card.
+    await userEvent.click(spans[0]!);
+
+    expect(toggleBtn).toHaveAttribute("aria-expanded", "true");
+    expect(
+      within(screen.getByLabelText("Span details")).getByText(
+        "POST /api/checkout",
+      ),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("payment.provider")).not.toBeInTheDocument();
+  });
+
   it("opens and closes the mobile span-detail drawer", async () => {
     stubFetchRoutes(traceRoutes(TRACE_BODY));
     renderView({ trace: "t1cafe" });

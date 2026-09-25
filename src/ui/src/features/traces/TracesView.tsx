@@ -1138,7 +1138,10 @@ function TraceDetail({ state, update }: Props) {
                 aria-describedby={
                   hoveredSpanId === row.span.spanId ? tipId : undefined
                 }
-                onClick={() => setSelected(row.span.spanId)}
+                onClick={() => {
+                  setSelected(row.span.spanId);
+                  mobileDetail.show();
+                }}
                 onPointerMove={(e) => {
                   setHoveredSpanId(row.span.spanId);
                   pointer.track(e);
