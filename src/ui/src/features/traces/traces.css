@@ -413,6 +413,22 @@
   .trace-table .col-secondary {
     display: none;
   }
+
+  /* Long span names (`opentelemetry.proto…/Export`) would otherwise size the
+     first column past the viewport and push Errors/P95 back off-screen. */
+  .trace-table td:first-child {
+    max-width: none;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .trace-table td:first-child button {
+    text-align: left;
+  }
+
+  .trace-table td {
+    padding: 6px 8px;
+  }
 }
 
 .waterfall {
