@@ -155,6 +155,9 @@
       "skip": [
         "components-throttlebanner--hidden"
       ]
+    },
+    "ServiceGraph": {
+      "cardMode": "column"
     }
   },
   "storyImports": {

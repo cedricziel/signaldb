@@ -18,7 +18,7 @@
 - [x] 3.3 Trace detail: Waterfall | Map | Both switch and click-to-filter, with tests for the filter and failed-call marking, and a `TracesView` story for the trace map (Both mode, failed call). Verify tests and Storybook build pass.
 - [x] 3.4 Service page: neighbourhood map using the `graph` envelope with `focus` via the generated client, Map | Table switch, empty-callers state, with tests and a `CatalogView` story for the service page with the map (plus the no-callers state). Verify tests and Storybook build pass.
 - [x] 3.5 Catalog: List | Map switch kept in the URL, side panel, hide-external toggle, node-cap warning, with tests and `CatalogView` stories for Map view (default, node selected, node-cap warning). Verify tests and Storybook build pass.
-- [ ] 3.6 Run /design-sync to push `ServiceGraph` and the updated view stories to the "SignalDB UI" Claude Design project (`.design-sync/config.json`; add a `titleMap` entry if the story title differs from the export name). Verify the new cards render there and compare them against the mockups in the "SignalDB Design System" project, `ui_kits/console/service-map/`. **Pending**: runs separately; the change stays open until it is done.
+- [x] 3.6 Run /design-sync to push `ServiceGraph` and the updated view stories to the "SignalDB UI" Claude Design project (`.design-sync/config.json`; add a `titleMap` entry if the story title differs from the export name). Verify the new cards render there and compare them against the mockups in the "SignalDB Design System" project, `ui_kits/console/service-map/`. Done 2026-09-25: ServiceGraph (14 stories) and the Catalog/Traces map stories synced and graded; two play-driven stories are close (recorded in `.design-sync/NOTES.md`).
 
 ## 4. MCP
 
