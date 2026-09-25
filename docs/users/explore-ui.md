@@ -584,8 +584,10 @@ span-detail panel does the same below that width: selecting a span shows a
 **Details** button in the trace header that opens the panel as a drawer from
 the right. The signal tabs at the top stay on one horizontally scrollable row
 instead of compressing or wrapping, and scroll to keep the active tab in
-view. Below 600px, each log row puts its message on its own line under the
-timestamp, level, and service, clamped to three lines.
+view; an edge of the row fades out while tabs are hidden past it. Below
+600px, each log row puts its message on its own line under the timestamp,
+level, and service, clamped to three lines, and the top bar's **Manage** link
+shrinks to a ⚙ icon so the tenant/dataset selector keeps its room.
 
 ### The group table
 
