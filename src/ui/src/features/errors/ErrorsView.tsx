@@ -7,6 +7,7 @@ import {
   fetchErrorGroupVolume,
   fetchErrorGroups,
   fetchErrorOccurrences,
+  fetchUncoveredErrorLogCount,
   type ErrorGroup,
   type ErrorSource,
 } from "../../api/errors";
@@ -140,6 +141,16 @@ function selectedFromState(
 
 const ERROR_FACET_FIELD_SET = new Set<string>(ERROR_FACET_FIELDS);
 
+/** Matches Logs' own severity levels at ERROR and worse (ERROR/FATAL, plus
+ * the non-OTel "critical" spelling some log producers use) — the same band
+ * `fetchUncoveredErrorLogCount` counts server-side via `severity_number`,
+ * expressed here as the regex filter Logs' `=~` op understands. */
+const ERROR_SEVERITY_FILTER: LabelFilter = {
+  label: "severity_text",
+  op: "=~",
+  value: "(?i)error|fatal|critical",
+};
+
 /** The facet filters as `state.filters` (the shared `f`-style `LabelFilter`
  * URL encoding — see lib/urlState.ts) carry them: `label` is the facet
  * field, `op` is always `=` since a facet filter is always an equality
@@ -170,6 +181,15 @@ export function ErrorsView({ state, update }: Props) {
     queryKey: ["error-groups", rangeKey],
     queryFn: () => fetchErrorGroups(range),
   });
+
+  // The count backing the "N error logs aren't grouped here" note below the
+  // table — see fetchUncoveredErrorLogCount's own doc comment for why
+  // exception-attribute-less ERROR+ logs can't join a group at all.
+  const uncoveredQuery = useQuery({
+    queryKey: ["error-uncovered-log-count", rangeKey],
+    queryFn: () => fetchUncoveredErrorLogCount(range),
+  });
+  const uncoveredCount = uncoveredQuery.data ?? 0;
 
   const allGroups = groupsQuery.data?.groups ?? [];
   // The selected group and active facet filters live in the URL (`group`
@@ -309,9 +329,9 @@ export function ErrorsView({ state, update }: Props) {
                   <tr>
                     <th>Type</th>
                     <th>Message</th>
-                    <th>Service</th>
-                    <th>Source</th>
-                    <th>Handled</th>
+                    <th className="errors-col-secondary">Service</th>
+                    <th className="errors-col-secondary">Source</th>
+                    <th className="errors-col-secondary">Handled</th>
                     <SortTh
                       label="Count"
                       sortKey="count"
@@ -319,7 +339,7 @@ export function ErrorsView({ state, update }: Props) {
                       toggle={toggle}
                       numeric
                     />
-                    <th>First seen</th>
+                    <th className="errors-col-secondary">First seen</th>
                     <SortTh
                       label="Last seen"
                       sortKey="last"
@@ -360,21 +380,23 @@ export function ErrorsView({ state, update }: Props) {
                           >
                             {g.exceptionMessage ?? "—"}
                           </td>
-                          <td>{g.serviceName ?? "—"}</td>
-                          <td>
+                          <td className="errors-col-secondary">
+                            {g.serviceName ?? "—"}
+                          </td>
+                          <td className="errors-col-secondary">
                             <span
                               className={`errors-source errors-source-${g.source}`}
                             >
                               {g.source}
                             </span>
                           </td>
-                          <td>
+                          <td className="errors-col-secondary">
                             {g.escaped != null
                               ? errorFacetValueLabel("escaped", g.escaped)
                               : "—"}
                           </td>
                           <td className="num">{formatValue(g.count)}</td>
-                          <td>
+                          <td className="errors-col-secondary">
                             {formatTimestampForRange(
                               nanosToMs(g.firstNs),
                               range,
@@ -398,6 +420,27 @@ export function ErrorsView({ state, update }: Props) {
             <div className="view-note">
               More exception groups exist than shown; narrow the time range to
               see the rest.
+            </div>
+          )}
+          {uncoveredCount > 0 && (
+            <div className="view-note">
+              {formatValue(uncoveredCount)} error{" "}
+              {uncoveredCount === 1 ? "log has" : "logs have"} no{" "}
+              <code>exception.type</code> attribute and{" "}
+              {uncoveredCount === 1 ? "isn't" : "aren't"} grouped here —{" "}
+              <button
+                type="button"
+                className="trace-open"
+                onClick={() =>
+                  update(
+                    { signal: "logs", filters: [ERROR_SEVERITY_FILTER] },
+                    { push: true },
+                  )
+                }
+              >
+                view {uncoveredCount === 1 ? "it" : "them"} in Logs
+              </button>
+              .
             </div>
           )}
 
