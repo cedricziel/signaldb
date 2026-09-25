@@ -33,6 +33,37 @@
   display: none;
 }
 
+/* Edge fade signaling hidden overflow (see ExploreView's scroll listener,
+   which toggles these classes). Masking the tabs' own alpha rather than
+   overlaying a gradient div works against any background/theme without
+   having to match a color. */
+.signal-tabs.fade-left {
+  mask-image: linear-gradient(to right, transparent, black 24px);
+  -webkit-mask-image: linear-gradient(to right, transparent, black 24px);
+}
+
+.signal-tabs.fade-right {
+  mask-image: linear-gradient(to left, transparent, black 24px);
+  -webkit-mask-image: linear-gradient(to left, transparent, black 24px);
+}
+
+.signal-tabs.fade-left.fade-right {
+  mask-image: linear-gradient(
+    to right,
+    transparent,
+    black 24px,
+    black calc(100% - 24px),
+    transparent
+  );
+  -webkit-mask-image: linear-gradient(
+    to right,
+    transparent,
+    black 24px,
+    black calc(100% - 24px),
+    transparent
+  );
+}
+
 @media (max-width: 600px) {
   /* Below mobile width the tabs and the range/Live controls no longer fit on
      one row even with the tab strip scrolling — give the tabs their own row
