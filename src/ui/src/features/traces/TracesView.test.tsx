@@ -2018,7 +2018,9 @@ describe("TracesView detail", () => {
         "sg-node-dot-critical",
       );
       const gatewayNode = screen.getByRole("button", { name: /gateway/ });
-      expect(gatewayNode.querySelector(".sg-node-dot")).toBeNull();
+      expect(gatewayNode.querySelector(".sg-node-dot")).toHaveClass(
+        "sg-node-dot-healthy",
+      );
     });
 
     it("filters the waterfall to the clicked service until cleared", async () => {

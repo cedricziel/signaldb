@@ -110,6 +110,10 @@
   border-radius: 50%;
 }
 
+.sg-node-dot-healthy {
+  background: var(--ok);
+}
+
 .sg-node-dot-warn {
   background: var(--warn-bar);
 }

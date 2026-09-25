@@ -51,9 +51,18 @@ describe("ServiceGraph", () => {
       screen
         .getByRole("button", { name: new RegExp(name) })
         .querySelector(".sg-node-dot");
-    expect(dot("api-gateway")).toBeNull();
+    expect(dot("api-gateway")).toHaveClass("sg-node-dot-healthy");
     expect(dot("checkout")).toHaveClass("sg-node-dot-warn");
     expect(dot("payments")).toHaveClass("sg-node-dot-critical");
+  });
+
+  it("shows no status dot for an external node", () => {
+    render(<ServiceGraph nodes={NODES} edges={EDGES} />);
+    expect(
+      screen
+        .getByRole("button", { name: /postgres/ })
+        .querySelector(".sg-node-dot"),
+    ).toBeNull();
   });
 
   it("falls back to a critical dot for a bare failed flag (no rate known)", () => {
@@ -71,7 +80,12 @@ describe("ServiceGraph", () => {
     const markerEnd = line.getAttribute("marker-end")!;
     expect(markerEnd).toMatch(/^url\(#.+-critical\)$/);
     const markerId = markerEnd.slice(4, -1);
-    expect(container.querySelector(markerId)?.tagName).toBe("marker");
+    const marker = container.querySelector(markerId);
+    expect(marker?.tagName).toBe("marker");
+    expect(marker?.getAttribute("markerUnits")).toBe("userSpaceOnUse");
+    expect(Number(marker?.getAttribute("markerWidth"))).toBeGreaterThanOrEqual(
+      10,
+    );
   });
 
   it("scales the graph down to fit a container narrower than its layout", () => {

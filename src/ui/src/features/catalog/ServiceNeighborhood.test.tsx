@@ -124,7 +124,9 @@ describe("ServiceNeighborhood", () => {
       "sg-node-dot-warn",
     );
     const gatewayNode = screen.getByRole("button", { name: /api-gateway/ });
-    expect(gatewayNode.querySelector(".sg-node-dot")).toBeNull();
+    expect(gatewayNode.querySelector(".sg-node-dot")).toHaveClass(
+      "sg-node-dot-healthy",
+    );
   });
 
   it("navigates to a clicked neighbour's service page", async () => {

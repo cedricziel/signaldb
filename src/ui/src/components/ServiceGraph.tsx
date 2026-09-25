@@ -313,15 +313,15 @@ export function ServiceGraph({
                   key={sev}
                   id={`${arrowIdBase}-${sev}`}
                   className={`sg-arrow sg-arrow-${sev}`}
-                  viewBox="0 0 8 8"
-                  markerWidth={7}
-                  markerHeight={7}
+                  viewBox="0 0 11 11"
+                  markerWidth={11}
+                  markerHeight={11}
                   markerUnits="userSpaceOnUse"
-                  refX={7}
-                  refY={4}
+                  refX={11}
+                  refY={5.5}
                   orient="auto"
                 >
-                  <path d="M0,0 L8,4 L0,8 Z" />
+                  <path d="M0,0 L11,5.5 L0,11 Z" />
                 </marker>
               ))}
             </defs>
@@ -382,9 +382,11 @@ export function ServiceGraph({
                 onPointerLeave={clearHover}
               >
                 <span className="sg-node-name">
-                  {severity !== "neutral" && (
+                  {!node.external && (
                     <span
-                      className={`sg-node-dot sg-node-dot-${severity}`}
+                      className={`sg-node-dot sg-node-dot-${
+                        severity === "neutral" ? "healthy" : severity
+                      }`}
                       aria-hidden
                     />
                   )}
