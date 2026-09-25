@@ -96,6 +96,36 @@ const SPECS: &[PromptSpec] = &[
             ))
         },
     },
+    PromptSpec {
+        name: "investigate_failing_dependency",
+        title: "Investigate a failing dependency",
+        description: "Find the service map's worst edge and trace its failures back to a cause.",
+        arguments: &[(
+            "service",
+            "The service to center the map on (optional; omit for the whole system).",
+            false,
+        )],
+        render: |args| {
+            let service_line = match optional_str(args, "service") {
+                Some(service) => format!(" for `{service}`'s neighbourhood"),
+                None => String::new(),
+            };
+            let service_arg = match optional_str(args, "service") {
+                Some(service) => format!(" with `service: \"{service}\"`"),
+                None => String::new(),
+            };
+            Ok(format!(
+                "Investigate a failing dependency{service_line} in SignalDB. Call \
+                 `get_service_map`{service_arg} and find the edge with the highest error rate \
+                 from its summary. Then call `search_traces` scoped to that edge's caller and \
+                 callee (e.g. `{{ .service.name = \"<caller>\" && status = error }}`) to find \
+                 failing traces that cross it, and `get_trace` on one of them to see exactly \
+                 where the call fails. Finally call `search_logs` for the callee service around \
+                 the same time window to find the underlying error. Summarize the likely root \
+                 cause."
+            ))
+        },
+    },
 ];
 
 fn find(name: &str) -> Option<&'static PromptSpec> {
@@ -175,7 +205,7 @@ mod tests {
     }
 
     #[test]
-    fn lists_three_prompts_with_required_arguments_marked() {
+    fn lists_four_prompts_with_required_arguments_marked() {
         let prompts = list();
         let names: Vec<_> = prompts.iter().map(|p| p.name.as_str()).collect();
         assert_eq!(
@@ -183,7 +213,8 @@ mod tests {
             [
                 "investigate_trace",
                 "find_recent_errors",
-                "build_promql_query"
+                "build_promql_query",
+                "investigate_failing_dependency",
             ]
         );
 
@@ -246,6 +277,47 @@ mod tests {
         let text = text_of(&result);
         assert!(text.contains("http_requests_total"));
         assert!(text.contains("p99 latency"));
+    }
+
+    #[test]
+    fn investigate_failing_dependency_has_no_required_arguments() {
+        let prompts = list();
+        let prompt = prompts
+            .iter()
+            .find(|p| p.name == "investigate_failing_dependency")
+            .expect("investigate_failing_dependency is listed");
+        let service_arg = prompt
+            .arguments
+            .as_ref()
+            .expect("has arguments")
+            .iter()
+            .find(|a| a.name == "service")
+            .expect("service argument is declared");
+        assert_eq!(service_arg.required, Some(false));
+    }
+
+    #[test]
+    fn investigate_failing_dependency_mentions_the_investigation_tools_in_order() {
+        let result = get("investigate_failing_dependency", None).expect("renders with no args");
+        let text = text_of(&result);
+        let service_map_pos = text
+            .find("get_service_map")
+            .expect("mentions get_service_map");
+        let search_traces_pos = text.find("search_traces").expect("mentions search_traces");
+        let search_logs_pos = text.find("search_logs").expect("mentions search_logs");
+        assert!(service_map_pos < search_traces_pos);
+        assert!(search_traces_pos < search_logs_pos);
+    }
+
+    #[test]
+    fn investigate_failing_dependency_includes_the_service_when_given() {
+        let result = get(
+            "investigate_failing_dependency",
+            Some(args(&[("service", "payments")])),
+        )
+        .expect("renders");
+        let text = text_of(&result);
+        assert!(text.contains("payments"));
     }
 
     #[test]

@@ -110,6 +110,37 @@ pub fn trace_group_url(
     Some(url.to_string())
 }
 
+/// Deep link into the UI's service map.
+///
+/// With no `focus`: the Catalog map view,
+/// `{base}/catalog/service?tenant={tenant}&dataset={dataset}&cview=map`
+/// (`cview` is the UI's catalog-view URL param —
+/// `src/ui/src/lib/urlState.ts`'s `catalogViewFromParam`/`buildPath`). With
+/// `focus`: that service's own catalog page,
+/// `{base}/catalog/service/{focus}?tenant={tenant}&dataset={dataset}`.
+pub fn service_map_url(
+    base: Option<&str>,
+    tenant: &str,
+    dataset: &str,
+    focus: Option<&str>,
+) -> Option<String> {
+    let mut url = Url::parse(base?).ok()?;
+    {
+        let mut segments = url.path_segments_mut().ok()?;
+        segments.push("catalog").push("service");
+        if let Some(service) = focus {
+            segments.push(service);
+        }
+    }
+    url.query_pairs_mut()
+        .append_pair("tenant", tenant)
+        .append_pair("dataset", dataset);
+    if focus.is_none() {
+        url.query_pairs_mut().append_pair("cview", "map");
+    }
+    Some(url.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,6 +310,41 @@ mod tests {
         assert_eq!(
             url,
             "https://ui.example.com/traces?tenant=acme&dataset=prod&groupBy=span.name%2Cservice.name"
+        );
+    }
+
+    #[test]
+    fn service_map_url_without_focus_is_the_catalog_map_view() {
+        let url = service_map_url(Some("https://ui.example.com"), "acme", "prod", None)
+            .expect("base is set");
+        assert_eq!(
+            url,
+            "https://ui.example.com/catalog/service?tenant=acme&dataset=prod&cview=map"
+        );
+        assert!(url.contains("cview=map"));
+    }
+
+    #[test]
+    fn service_map_url_with_focus_is_the_service_page_without_view_param() {
+        let url = service_map_url(
+            Some("https://ui.example.com"),
+            "acme",
+            "prod",
+            Some("checkout"),
+        )
+        .expect("base is set");
+        assert_eq!(
+            url,
+            "https://ui.example.com/catalog/service/checkout?tenant=acme&dataset=prod"
+        );
+    }
+
+    #[test]
+    fn service_map_url_returns_none_when_base_is_unset_or_malformed() {
+        assert_eq!(service_map_url(None, "acme", "prod", None), None);
+        assert_eq!(
+            service_map_url(Some("not a url"), "acme", "prod", None),
+            None
         );
     }
 

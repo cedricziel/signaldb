@@ -21,6 +21,9 @@
 //!   answer, not an error
 //! - `search_trace_groups` — grouped RED-metrics (rate/errors/duration) view,
 //!   the same aggregate the UI's traces-tab group table builds
+//! - `get_service_map` — service dependency graph (nodes per service/external
+//!   dependency, edges for the calls between them), optionally scoped to one
+//!   service's neighbourhood, wraps the native Query IR `graph` envelope
 //! - `discover_attributes` — queryable attribute/label names or values,
 //!   signal-aware (`traces` via Tempo tags, `logs` via Loki labels,
 //!   `metrics` via Prometheus labels)
@@ -101,9 +104,9 @@
 //! this server is an HTTP forwarder and holds no Flight client, so SQL stays a
 //! CLI-only capability (see the `client-surface-parity` spec).
 //!
-//! `get_trace` additionally ships an interactive waterfall view, and
-//! `get_profile` an interactive flamegraph view, via the MCP Apps extension;
-//! see [`crate::apps`].
+//! `get_trace` additionally ships an interactive waterfall view, `get_profile`
+//! an interactive flamegraph view, and `get_service_map` an interactive graph
+//! view, via the MCP Apps extension; see [`crate::apps`].
 //!
 //! Skill resources (`skill://<name>/SKILL.md`, `resources/read`, see
 //! [`crate::docs`]) are longer-form guidance a client fetches on demand
@@ -227,6 +230,35 @@ struct GetTraceParams {
     #[serde(default)]
     start: Option<i64>,
     /// Optional end-of-range hint, unix seconds, to prune the scan.
+    #[serde(default)]
+    end: Option<i64>,
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset to query. Required: one MCP session may span several
+    /// datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
+}
+
+/// Parameters for `get_service_map`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct GetServiceMapParams {
+    /// Restrict the graph to this service's neighbourhood. Omit for the
+    /// whole-system graph.
+    #[serde(default)]
+    service: Option<String>,
+    /// Hops from `service` (1-3, default 1). Only legal alongside `service`.
+    #[serde(default)]
+    depth: Option<i64>,
+    /// Start of the window, unix seconds. Defaults to one hour before now.
+    #[serde(default)]
+    start: Option<i64>,
+    /// End of the window, unix seconds. Defaults to now.
     #[serde(default)]
     end: Option<i64>,
     /// Tenant to query — must match the credential's authenticated tenant
@@ -2010,11 +2042,74 @@ impl McpServer {
             req = req.end(v);
         }
         let resp = req.send().await.map_err(|e| map_sdk_err(e, "get_trace"))?;
-        // The waterfall app renders from `structuredContent`, which the host
-        // forwards to the iframe without adding it to the model's context. It
-        // is attached only for UI-capable clients so a plain client is not sent
-        // the same trace twice.
-        json_result_ext(&resp.into_inner(), client_supports_ui(&context), links)
+        let trace = resp.into_inner();
+        // Adds a `services` summary (nodes with time-in-service, edges with
+        // call counts, failures marked) alongside the trace's own fields —
+        // see `trace_services_summary`. The waterfall app renders from
+        // `structuredContent`, which the host forwards to the iframe without
+        // adding it to the model's context; it is attached only for
+        // UI-capable clients so a plain client is not sent the same trace
+        // twice.
+        let mut payload = serde_json::to_value(&trace).map_err(|e| {
+            ErrorData::internal_error(format!("failed to serialize trace: {e}"), None)
+        })?;
+        if let Some(object) = payload.as_object_mut() {
+            object.insert("services".to_string(), trace_services_summary(&trace));
+        }
+        json_result_ext(&payload, client_supports_ui(&context), links)
+    }
+
+    #[tool(
+        description = "Return the service dependency graph — nodes for each service (request rate, error rate, p95 duration) and external dependency, edges for the calls between them — built from the Query IR `graph` envelope. Optional `service` restricts to that service's neighbourhood, `depth` (1-3, default 1, requires `service`) how many hops out. `start`/`end` (unix seconds) default to the last hour. Returns the graph plus a short summary naming the busiest edges and the edges with the highest error rate; clients with the MCP Apps extension additionally get an interactive map, and the result carries a web UI link to the same map."
+    )]
+    async fn get_service_map(
+        &self,
+        Parameters(p): Parameters<GetServiceMapParams>,
+        Extension(parts): Extension<Parts>,
+        context: RequestContext<RoleServer>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        if p.depth.is_some() && p.service.is_none() {
+            return Err(ErrorData::invalid_params(
+                "`depth` requires `service`".to_string(),
+                None,
+            ));
+        }
+        if let Some(depth) = p.depth
+            && !(1..=3).contains(&depth)
+        {
+            return Err(ErrorData::invalid_params(
+                format!("`depth` must be between 1 and 3, got {depth}"),
+                None,
+            ));
+        }
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let links = ui_links::as_link(ui_links::service_map_url(
+            self.ui_base_url.as_deref(),
+            &p.tenant,
+            &p.dataset,
+            p.service.as_deref(),
+        ));
+        let document = service_map_document(p.service.as_deref(), p.depth, p.start, p.end);
+        let request: signaldb_sdk::types::QueryIrRequest = serde_json::from_value(document)
+            .map_err(|e| ErrorData::internal_error(format!("failed to build query: {e}"), None))?;
+        let resp = client
+            .query_ir()
+            .body(request)
+            .send()
+            .await
+            .map_err(|e| map_sdk_err(e, "get_service_map"))?;
+        let graph = resp
+            .into_inner()
+            .graph
+            .unwrap_or_else(|| signaldb_sdk::types::ServiceGraph {
+                dropped_nodes: None,
+                edges: Vec::new(),
+                nodes: Vec::new(),
+            });
+        let summary = service_map_summary(&graph);
+        let payload = serde_json::json!({ "graph": graph, "summary": summary });
+        json_result_ext(&payload, client_supports_ui(&context), links)
     }
 
     #[tool(
@@ -4359,6 +4454,189 @@ fn flamegraph_or_not_found(
     }
 }
 
+/// Build the Query IR document `get_service_map` submits: a `graph`-enveloped
+/// `traces` query (IR v8+), defaulting to the last hour. `service`/`depth`
+/// set the top-level `focus`/`depth` scoping fields the `graph` envelope
+/// reads (see `docs/users/querying-ir.md`'s graph section); `depth` is
+/// included only alongside `service`, matching the envelope's own rule that
+/// it is illegal without `focus`. Pure and synchronous, so it's directly
+/// unit-testable without a router/session.
+fn service_map_document(
+    service: Option<&str>,
+    depth: Option<i64>,
+    start: Option<i64>,
+    end: Option<i64>,
+) -> serde_json::Value {
+    let (range_from, range_to) = range_bounds_ns(start, end, "now-1h");
+    let mut document = serde_json::json!({
+        "irVersion": 8,
+        "from": "traces",
+        "range": { "from": range_from, "to": range_to },
+        "result": "graph",
+        "pipeline": [],
+    });
+    if let Some(service) = service {
+        document["focus"] = serde_json::json!(service);
+        document["depth"] = serde_json::json!(depth.unwrap_or(1));
+    }
+    document
+}
+
+/// Build `get_service_map`'s text summary: the busiest edges by call rate,
+/// then the edges with the highest error rate (omitted when none error),
+/// naming both endpoints by their display `name` — external dependencies by
+/// the same name the graph gives them, never their internal node `id`.
+fn service_map_summary(graph: &signaldb_sdk::types::ServiceGraph) -> String {
+    if graph.nodes.is_empty() {
+        return "No service traffic in this window.".to_string();
+    }
+    if graph.edges.is_empty() {
+        return "No service-to-service calls in this window.".to_string();
+    }
+
+    let name_of = |id: &str| -> String {
+        graph
+            .nodes
+            .iter()
+            .find(|node| node.id == id)
+            .map(|node| node.name.clone())
+            .unwrap_or_else(|| id.to_string())
+    };
+
+    let mut lines = vec!["Busiest edges:".to_string()];
+    let mut busiest: Vec<&signaldb_sdk::types::GraphEdge> = graph.edges.iter().collect();
+    busiest.sort_by(|a, b| b.rate.total_cmp(&a.rate));
+    for edge in busiest.iter().take(3) {
+        lines.push(format!(
+            "- {} → {}: {:.2} req/s",
+            name_of(&edge.source),
+            name_of(&edge.target),
+            edge.rate
+        ));
+    }
+
+    let mut by_error: Vec<&signaldb_sdk::types::GraphEdge> = graph
+        .edges
+        .iter()
+        .filter(|edge| edge.error_rate > 0.0)
+        .collect();
+    if !by_error.is_empty() {
+        by_error.sort_by(|a, b| b.error_rate.total_cmp(&a.error_rate));
+        lines.push("Highest-error edges:".to_string());
+        for edge in by_error.iter().take(3) {
+            lines.push(format!(
+                "- {} → {}: {:.0}% errors",
+                name_of(&edge.source),
+                name_of(&edge.target),
+                edge.error_rate * 100.0
+            ));
+        }
+    }
+
+    if let Some(dropped) = graph.dropped_nodes.filter(|count| *count > 0) {
+        lines.push(format!(
+            "{dropped} node(s) dropped by the server-side node cap."
+        ));
+    }
+
+    lines.join("\n")
+}
+
+/// Derive `get_trace`'s `services` summary from the trace's own spans:
+/// nodes are services with total span duration and call count in this
+/// trace, edges are calls between *different* services found by walking to
+/// each span's direct parent (a span nested under its own service's parent
+/// extends the caller rather than drawing a self-edge), failed when any
+/// call or span reached error status. Mirrors
+/// `src/ui/src/lib/traceToGraph.ts`'s `traceToGraph`. Pure and synchronous.
+fn trace_services_summary(trace: &signaldb_sdk::types::Trace) -> serde_json::Value {
+    use std::collections::HashMap;
+
+    let spans: Vec<&signaldb_sdk::types::Span> = trace
+        .span_sets
+        .iter()
+        .flat_map(|span_set| span_set.spans.iter())
+        .collect();
+    if spans.is_empty() {
+        return serde_json::json!({ "nodes": [], "edges": [] });
+    }
+    let by_id: HashMap<&str, &signaldb_sdk::types::Span> = spans
+        .iter()
+        .map(|span| (span.span_id.as_str(), *span))
+        .collect();
+
+    struct NodeAcc {
+        duration_ms: f64,
+        span_count: i64,
+        failed: bool,
+    }
+    let mut nodes: HashMap<String, NodeAcc> = HashMap::new();
+    for span in &spans {
+        let service = span.service_name.clone().unwrap_or_default();
+        let duration_ns: f64 = span.duration_nanos.parse().unwrap_or(0.0);
+        let acc = nodes.entry(service).or_insert(NodeAcc {
+            duration_ms: 0.0,
+            span_count: 0,
+            failed: false,
+        });
+        acc.duration_ms += duration_ns / 1_000_000.0;
+        acc.span_count += 1;
+        if span.status.as_deref() == Some("error") {
+            acc.failed = true;
+        }
+    }
+
+    struct EdgeAcc {
+        count: i64,
+        failed: bool,
+    }
+    let mut edges: HashMap<(String, String), EdgeAcc> = HashMap::new();
+    for span in &spans {
+        let Some(parent) = span.parent_span_id.as_deref().and_then(|id| by_id.get(id)) else {
+            continue;
+        };
+        let Some(from) = parent.service_name.clone() else {
+            continue;
+        };
+        let to = span.service_name.clone().unwrap_or_default();
+        if from == to {
+            continue;
+        }
+        let acc = edges.entry((from, to)).or_insert(EdgeAcc {
+            count: 0,
+            failed: false,
+        });
+        acc.count += 1;
+        if span.status.as_deref() == Some("error") {
+            acc.failed = true;
+        }
+    }
+
+    let node_list: Vec<serde_json::Value> = nodes
+        .into_iter()
+        .map(|(service, acc)| {
+            serde_json::json!({
+                "service": service,
+                "durationMs": acc.duration_ms,
+                "spanCount": acc.span_count,
+                "failed": acc.failed,
+            })
+        })
+        .collect();
+    let edge_list: Vec<serde_json::Value> = edges
+        .into_iter()
+        .map(|((from, to), acc)| {
+            serde_json::json!({
+                "from": from,
+                "to": to,
+                "count": acc.count,
+                "failed": acc.failed,
+            })
+        })
+        .collect();
+    serde_json::json!({ "nodes": node_list, "edges": edge_list })
+}
+
 /// Build the Query IR document `search_trace_groups` submits: the same
 /// grouped RED-metrics aggregate the UI's traces-tab group table builds
 /// (`src/ui/src/api/traceGroups.ts`'s `buildGroupDoc`), always sorted by
@@ -4813,6 +5091,255 @@ mod tests {
         );
         assert_eq!(doc["range"]["from"], "10000000000");
         assert_eq!(doc["range"]["to"], "20000000000");
+    }
+
+    #[test]
+    fn service_map_document_defaults_to_the_last_hour_with_no_focus() {
+        let doc = service_map_document(None, None, None, None);
+        assert_eq!(doc["irVersion"], 8);
+        assert_eq!(doc["from"], "traces");
+        assert_eq!(doc["result"], "graph");
+        assert_eq!(doc["range"]["from"], "now-1h");
+        assert_eq!(doc["range"]["to"], "now");
+        assert!(doc.get("focus").is_none());
+        assert!(doc.get("depth").is_none());
+    }
+
+    #[test]
+    fn service_map_document_sets_focus_and_depth() {
+        let doc = service_map_document(Some("checkout"), Some(2), None, None);
+        assert_eq!(doc["focus"], "checkout");
+        assert_eq!(doc["depth"], 2);
+    }
+
+    #[test]
+    fn service_map_document_defaults_depth_to_one_with_focus() {
+        let doc = service_map_document(Some("checkout"), None, None, None);
+        assert_eq!(doc["depth"], 1);
+    }
+
+    #[test]
+    fn service_map_document_converts_start_end_hints_to_nanoseconds() {
+        let doc = service_map_document(None, None, Some(10), Some(20));
+        assert_eq!(doc["range"]["from"], "10000000000");
+        assert_eq!(doc["range"]["to"], "20000000000");
+    }
+
+    fn graph_node(
+        id: &str,
+        name: &str,
+        kind: signaldb_sdk::types::GraphNodeKind,
+    ) -> signaldb_sdk::types::GraphNode {
+        signaldb_sdk::types::GraphNode {
+            dependency_kind: None,
+            error_rate: None,
+            id: id.to_string(),
+            kind,
+            name: name.to_string(),
+            p95_ns: None,
+            request_rate: None,
+        }
+    }
+
+    fn graph_edge(
+        source: &str,
+        target: &str,
+        rate: f64,
+        error_rate: f64,
+    ) -> signaldb_sdk::types::GraphEdge {
+        signaldb_sdk::types::GraphEdge {
+            count: (rate * 60.0) as i64,
+            error_rate,
+            p95_ns: None,
+            rate,
+            source: source.to_string(),
+            target: target.to_string(),
+        }
+    }
+
+    #[test]
+    fn service_map_summary_reports_no_traffic_for_an_empty_graph() {
+        let graph = signaldb_sdk::types::ServiceGraph {
+            dropped_nodes: None,
+            edges: vec![],
+            nodes: vec![],
+        };
+        assert_eq!(
+            service_map_summary(&graph),
+            "No service traffic in this window."
+        );
+    }
+
+    #[test]
+    fn service_map_summary_reports_no_calls_when_nodes_have_no_edges() {
+        let graph = signaldb_sdk::types::ServiceGraph {
+            dropped_nodes: None,
+            edges: vec![],
+            nodes: vec![graph_node(
+                "service:checkout",
+                "checkout",
+                signaldb_sdk::types::GraphNodeKind::Service,
+            )],
+        };
+        assert_eq!(
+            service_map_summary(&graph),
+            "No service-to-service calls in this window."
+        );
+    }
+
+    #[test]
+    fn service_map_summary_names_busiest_and_highest_error_edges_by_display_name() {
+        let graph = signaldb_sdk::types::ServiceGraph {
+            dropped_nodes: Some(3),
+            edges: vec![
+                graph_edge("service:frontend", "service:checkout", 5.0, 0.0),
+                graph_edge("service:checkout", "external:database:orders-db", 1.0, 0.5),
+            ],
+            nodes: vec![
+                graph_node(
+                    "service:frontend",
+                    "frontend",
+                    signaldb_sdk::types::GraphNodeKind::Service,
+                ),
+                graph_node(
+                    "service:checkout",
+                    "checkout",
+                    signaldb_sdk::types::GraphNodeKind::Service,
+                ),
+                graph_node(
+                    "external:database:orders-db",
+                    "orders-db",
+                    signaldb_sdk::types::GraphNodeKind::External,
+                ),
+            ],
+        };
+        let summary = service_map_summary(&graph);
+        assert!(summary.contains("frontend → checkout"), "{summary}");
+        assert!(
+            summary.contains("checkout → orders-db"),
+            "external node is named by its display name, not its id: {summary}"
+        );
+        assert!(summary.contains("Highest-error edges"), "{summary}");
+        assert!(summary.contains("3 node(s) dropped"), "{summary}");
+    }
+
+    #[test]
+    fn service_map_summary_omits_error_section_when_no_edge_errors() {
+        let graph = signaldb_sdk::types::ServiceGraph {
+            dropped_nodes: None,
+            edges: vec![graph_edge("service:a", "service:b", 1.0, 0.0)],
+            nodes: vec![
+                graph_node(
+                    "service:a",
+                    "a",
+                    signaldb_sdk::types::GraphNodeKind::Service,
+                ),
+                graph_node(
+                    "service:b",
+                    "b",
+                    signaldb_sdk::types::GraphNodeKind::Service,
+                ),
+            ],
+        };
+        assert!(!service_map_summary(&graph).contains("Highest-error edges"));
+    }
+
+    fn tempo_span(
+        span_id: &str,
+        parent_span_id: Option<&str>,
+        service_name: &str,
+        duration_nanos: &str,
+        status: Option<&str>,
+    ) -> serde_json::Value {
+        let mut span = serde_json::json!({
+            "spanID": span_id,
+            "serviceName": service_name,
+            "durationNanos": duration_nanos,
+            "startTimeUnixNano": "0",
+            "attributes": {},
+        });
+        if let Some(parent) = parent_span_id {
+            span["parentSpanID"] = serde_json::json!(parent);
+        }
+        if let Some(status) = status {
+            span["status"] = serde_json::json!(status);
+        }
+        span
+    }
+
+    fn trace_with_spans(spans: Vec<serde_json::Value>) -> signaldb_sdk::types::Trace {
+        serde_json::from_value(serde_json::json!({
+            "traceID": "abc",
+            "rootServiceName": "frontend",
+            "rootTraceName": "GET /",
+            "durationMs": 1,
+            "startTimeUnixNano": "0",
+            "spanSets": [{ "matched": spans.len(), "spans": spans }],
+        }))
+        .expect("trace fixture parses")
+    }
+
+    #[test]
+    fn trace_services_summary_is_empty_for_a_trace_with_no_spans() {
+        let trace = trace_with_spans(vec![]);
+        assert_eq!(
+            trace_services_summary(&trace),
+            serde_json::json!({ "nodes": [], "edges": [] })
+        );
+    }
+
+    #[test]
+    fn trace_services_summary_sums_duration_per_service_and_marks_failed_nodes() {
+        let trace = trace_with_spans(vec![
+            tempo_span("1", None, "frontend", "1000000", None),
+            tempo_span("2", Some("1"), "checkout", "2000000", Some("error")),
+        ]);
+        let summary = trace_services_summary(&trace);
+        let nodes = summary["nodes"].as_array().expect("nodes array");
+        let checkout = nodes
+            .iter()
+            .find(|n| n["service"] == "checkout")
+            .expect("checkout node present");
+        assert_eq!(checkout["durationMs"], 2.0);
+        assert_eq!(checkout["spanCount"], 1);
+        assert_eq!(checkout["failed"], true);
+        let frontend = nodes
+            .iter()
+            .find(|n| n["service"] == "frontend")
+            .expect("frontend node present");
+        assert_eq!(frontend["failed"], false);
+    }
+
+    #[test]
+    fn trace_services_summary_edges_use_the_direct_parents_service_and_mark_failed_calls() {
+        let trace = trace_with_spans(vec![
+            tempo_span("1", None, "frontend", "1000000", None),
+            tempo_span("2", Some("1"), "checkout", "1000000", Some("error")),
+        ]);
+        let summary = trace_services_summary(&trace);
+        let edges = summary["edges"].as_array().expect("edges array");
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0]["from"], "frontend");
+        assert_eq!(edges[0]["to"], "checkout");
+        assert_eq!(edges[0]["count"], 1);
+        assert_eq!(edges[0]["failed"], true);
+    }
+
+    /// A span nested under a same-service parent extends the caller rather
+    /// than drawing a self-edge — mirrors `traceToGraph.ts`'s
+    /// `callerService`.
+    #[test]
+    fn trace_services_summary_skips_same_service_parent_child_edges() {
+        let trace = trace_with_spans(vec![
+            tempo_span("1", None, "checkout", "1000000", None),
+            tempo_span("2", Some("1"), "checkout", "500000", None),
+            tempo_span("3", Some("2"), "payments", "200000", None),
+        ]);
+        let summary = trace_services_summary(&trace);
+        let edges = summary["edges"].as_array().expect("edges array");
+        assert_eq!(edges.len(), 1);
+        assert_eq!(edges[0]["from"], "checkout");
+        assert_eq!(edges[0]["to"], "payments");
     }
 
     #[test]
@@ -6590,6 +7117,7 @@ mod tests {
             "get_trace",
             "get_source_context",
             "search_trace_groups",
+            "get_service_map",
             "discover_attributes",
             "discover_metrics",
             "discover_fields",
