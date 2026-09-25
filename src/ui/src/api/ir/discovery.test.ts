@@ -62,6 +62,50 @@ describe("fields", () => {
 });
 
 describe("values", () => {
+  it("reads the top values from data when no statistics cover the field", async () => {
+    // One stub answers both calls: the describe (empty, mode "none") and the
+    // aggregate fallback (rows).
+    const calls = stubApiFetch({
+      result: "metadata",
+      window: { start_ns: 0, end_ns: 1 },
+      metadata: {
+        kind: "values",
+        truncated: false,
+        cost: {
+          mode: "none",
+          window_scoped: false,
+          sampled: false,
+          approximate: false,
+        },
+      },
+      rows: [
+        ["http.server.request.duration", 295],
+        ["", 3],
+      ],
+    } as QueryIrResponse);
+
+    const result = await values("metrics_histogram", "metric.name", RANGE);
+
+    expect(result).toEqual([
+      { value: "http.server.request.duration", partial: false },
+    ]);
+    expect(calls[1]?.body).toEqual({
+      irVersion: 4,
+      from: "metrics_histogram",
+      range: { from: "1000000000", to: "4600000000" },
+      result: "table",
+      pipeline: [
+        {
+          aggregate: {
+            by: ["metric.name"],
+            aggs: [{ fn: "count", as: "n" }],
+          },
+        },
+        { topk: { of: "n", n: 200 } },
+      ],
+    });
+  });
+
   it("marks a declared, exact answer as not partial", async () => {
     stubApiFetch({
       result: "metadata",

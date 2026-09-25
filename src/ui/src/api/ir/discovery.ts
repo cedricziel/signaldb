@@ -45,6 +45,28 @@ export async function fields(
   return res.metadata?.fields ?? [];
 }
 
+async function topValuesFromData(
+  source: string,
+  field: string,
+  range: ResolvedRange,
+  n: number,
+): Promise<DiscoveredValueView[]> {
+  const res = await runIrQuery({
+    irVersion: IR_VERSION,
+    from: source,
+    range: { from: msToNanos(range.fromMs), to: msToNanos(range.toMs) },
+    result: "table",
+    pipeline: [
+      { aggregate: { by: [field], aggs: [{ fn: "count", as: "n" }] } },
+      { topk: { of: "n", n } },
+    ],
+  });
+  return (res.rows ?? [])
+    .map((row) => row[0])
+    .filter((v): v is string => typeof v === "string" && v !== "")
+    .map((value) => ({ value, partial: false }));
+}
+
 /** Suggested values for `field` on `source`. `partial: true` covers every
  * tier short of a free, exact, declared value set (statistics sketches and
  * sampled scans alike) — the picker hint is the same either way. */
@@ -63,6 +85,11 @@ export async function values(
   );
   const meta = res.metadata;
   if (!meta) return [];
+  // No declared value set or statistics cover the field (cost mode "none"):
+  // the server answers empty and says to read the data, so do that — bounded.
+  if (meta.cost.mode === "none" && !meta.values?.length) {
+    return topValuesFromData(source, field, range, limit ?? 200);
+  }
   return (meta.values ?? []).map((v) => ({
     value: v.value,
     partial: meta.cost.approximate,
