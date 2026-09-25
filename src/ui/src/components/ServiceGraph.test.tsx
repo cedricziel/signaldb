@@ -40,11 +40,62 @@ describe("ServiceGraph", () => {
     );
   });
 
-  it("marks a failed node with the failed indicator", () => {
+  it("colours a node's status dot by its error rate, not any error at all", () => {
+    const nodes: ServiceGraphNode[] = [
+      { id: "healthy", label: "api-gateway", errorRate: 0.001 },
+      { id: "warn", label: "checkout", errorRate: 0.01 },
+      { id: "critical", label: "payments", errorRate: 0.05 },
+    ];
+    render(<ServiceGraph nodes={nodes} edges={[]} />);
+    const dot = (name: string) =>
+      screen
+        .getByRole("button", { name: new RegExp(name) })
+        .querySelector(".sg-node-dot");
+    expect(dot("api-gateway")).toBeNull();
+    expect(dot("checkout")).toHaveClass("sg-node-dot-warn");
+    expect(dot("payments")).toHaveClass("sg-node-dot-critical");
+  });
+
+  it("falls back to a critical dot for a bare failed flag (no rate known)", () => {
     render(<ServiceGraph nodes={NODES} edges={EDGES} />);
     expect(
-      screen.getByRole("button", { name: /payments/ }).className,
-    ).toContain("failed");
+      screen
+        .getByRole("button", { name: /payments/ })
+        .querySelector(".sg-node-dot"),
+    ).toHaveClass("sg-node-dot-critical");
+  });
+
+  it("draws each edge with a direction arrow coloured to match its severity", () => {
+    const { container } = render(<ServiceGraph nodes={NODES} edges={EDGES} />);
+    const line = container.querySelector(".sg-edge-critical")!;
+    const markerEnd = line.getAttribute("marker-end")!;
+    expect(markerEnd).toMatch(/^url\(#.+-critical\)$/);
+    const markerId = markerEnd.slice(4, -1);
+    expect(container.querySelector(markerId)?.tagName).toBe("marker");
+  });
+
+  it("scales the graph down to fit a container narrower than its layout", () => {
+    // Six layers (a chain of six services) lays out wider than the 1200px
+    // container width/setup.ts stubs every element to — this must shrink to
+    // fit rather than overflow it.
+    const nodes: ServiceGraphNode[] = "abcdef".split("").map((id) => ({
+      id,
+      label: id,
+    }));
+    const edges: ServiceGraphEdge[] = [
+      { from: "a", to: "b", count: 1 },
+      { from: "b", to: "c", count: 1 },
+      { from: "c", to: "d", count: 1 },
+      { from: "d", to: "e", count: 1 },
+      { from: "e", to: "f", count: 1 },
+    ];
+    const { container } = render(<ServiceGraph nodes={nodes} edges={edges} />);
+    const host = container.querySelector(".service-graph-host") as HTMLElement;
+    const scale = Number(
+      /scale\(([\d.]+)\)/.exec(host.style.transform)?.[1] ?? "1",
+    );
+    expect(scale).toBeGreaterThan(0);
+    expect(scale).toBeLessThan(1);
   });
 
   it("marks external nodes distinctly and can hide them", () => {

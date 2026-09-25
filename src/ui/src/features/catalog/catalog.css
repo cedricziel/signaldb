@@ -309,10 +309,28 @@
   align-items: start;
 }
 
+/* A grid item's automatic minimum size is its content's min-content width
+   by default — for the service map that is its unscaled layout width, wide
+   enough to defeat the column's own `1fr` and force the row wider than the
+   page. Without this the graph never gets a real container width to fit
+   itself to (see ServiceGraph's `useContainerWidth`), so it renders at full
+   size and clips instead of scaling down. */
+.entity-service-maps > * {
+  min-width: 0;
+}
+
 @media (max-width: 900px) {
   .entity-service-maps {
     grid-template-columns: 1fr;
   }
+}
+
+/* A bordered card with a header — the frame both service maps (this one,
+   and the Catalog Map) render inside, matching the side panel's own frame. */
+.catalog-main.map-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 16px;
 }
 
 /* Service page neighbourhood map's Table view — callers and dependencies
@@ -329,21 +347,37 @@
   margin-bottom: 6px;
 }
 
+/* `table-layout: fixed` with explicit column widths, not `auto`: a narrow
+   host (the Catalog Map's 320px side panel) otherwise lets each column
+   claim whatever its widest unbreakable value needs (a service name, "190
+   ms"), summing past the table's own 100% and clipping at the panel's
+   edge instead of fitting it. */
 .neighbourhood-table {
   width: 100%;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: 12.5px;
+}
+
+.neighbourhood-table col.nt-service {
+  width: 40%;
+}
+
+.neighbourhood-table col.nt-figure {
+  width: 20%;
+}
+
+.neighbourhood-table th,
+.neighbourhood-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .neighbourhood-table th {
   text-align: left;
   color: var(--dim);
   font-weight: 500;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--border);
-}
-
-.neighbourhood-table td {
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--border);
 }

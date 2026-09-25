@@ -41,6 +41,7 @@ const graphWithCallers: ServiceGraph = {
       id: "external:database:postgres",
       name: "postgres",
       kind: "external",
+      dependency_kind: "database",
     },
   ],
   edges: [
@@ -95,6 +96,29 @@ describe("ServiceNeighborhood", () => {
       pressed: true,
     });
     expect(focusNode).toBeInTheDocument();
+  });
+
+  it("labels an external node with its dependency kind", async () => {
+    fetchServiceGraph.mockResolvedValue(graphWithCallers);
+    renderNeighborhood();
+    const externalNode = await screen.findByRole("button", {
+      name: /postgres/,
+    });
+    expect(externalNode).toHaveTextContent("database");
+  });
+
+  it("colours a neighbour's status dot by its error rate, not any error at all", async () => {
+    fetchServiceGraph.mockResolvedValue(graphWithCallers);
+    renderNeighborhood();
+    const checkoutNode = await screen.findByRole("button", {
+      name: /checkout/,
+    });
+    // 1% error rate on `checkout` — warn, not critical.
+    expect(checkoutNode.querySelector(".sg-node-dot")).toHaveClass(
+      "sg-node-dot-warn",
+    );
+    const gatewayNode = screen.getByRole("button", { name: /api-gateway/ });
+    expect(gatewayNode.querySelector(".sg-node-dot")).toBeNull();
   });
 
   it("navigates to a clicked neighbour's service page", async () => {

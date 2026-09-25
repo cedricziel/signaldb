@@ -114,6 +114,34 @@ export const ErrorEdgeThresholds: Story = {
   },
 };
 
+export const NodeStatusDots: Story = {
+  args: {
+    nodes: [
+      { id: "a", label: "healthy (<0.5%)", errorRate: 0.001 },
+      { id: "b", label: "warn (>=0.5%)", errorRate: 0.01 },
+      { id: "c", label: "critical (>=2%)", errorRate: 0.05 },
+    ],
+    edges: [
+      { from: "a", to: "b", count: 100 },
+      { from: "b", to: "c", count: 100 },
+    ],
+  },
+};
+
+/** A graph wider than its host must scale down to fit rather than clip —
+ * `WholeSystem`'s eight nodes laid out over several layers, forced into a
+ * panel far narrower than their natural width. */
+export const NarrowContainer: Story = {
+  args: { nodes: SYSTEM_NODES, edges: SYSTEM_EDGES },
+  decorators: [
+    (Story) => (
+      <div style={{ width: 360, border: "1px dashed #999" }}>
+        <Story />
+      </div>
+    ),
+  ],
+};
+
 export const ExternalNodesShown: Story = {
   args: { nodes: SYSTEM_NODES, edges: SYSTEM_EDGES, hideExternal: false },
 };

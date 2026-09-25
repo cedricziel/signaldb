@@ -35,8 +35,11 @@ interface Props {
 
 type ViewMode = "map" | "table";
 
+/** The line shown under a node's name: a service's own RED figures, or —
+ * for an external node, which has none of its own — its dependency kind
+ * (database, http, …), so an uninstrumented callee still says what it is. */
 function nodeMetricLine(node: GraphNode): string | undefined {
-  if (node.kind !== "service") return undefined;
+  if (node.kind !== "service") return node.dependency_kind ?? undefined;
   const parts: string[] = [];
   if (node.request_rate != null) {
     parts.push(formatRatePerSec(node.request_rate));
@@ -56,7 +59,7 @@ function toGraphView(nodes: GraphNode[], edges: GraphEdge[]) {
       id: n.id,
       label: n.name,
       external: n.kind === "external",
-      failed: (n.error_rate ?? 0) > 0,
+      errorRate: n.error_rate ?? undefined,
       metricLine: nodeMetricLine(n),
     })),
     edges: edges.map((e): ServiceGraphEdge => ({
@@ -143,6 +146,12 @@ function NeighbourList({
         <div className="view-note">{emptyMessage}</div>
       ) : (
         <table className="neighbourhood-table">
+          <colgroup>
+            <col className="nt-service" />
+            <col className="nt-figure" />
+            <col className="nt-figure" />
+            <col className="nt-figure" />
+          </colgroup>
           <thead>
             <tr>
               <th>Service</th>
@@ -200,7 +209,7 @@ export function ServiceNeighborhood({
     );
 
   return (
-    <div className="catalog-main">
+    <div className="catalog-main map-card">
       <div className="catalog-headline">
         <span className="catalog-title">Service map</span>
         <div
