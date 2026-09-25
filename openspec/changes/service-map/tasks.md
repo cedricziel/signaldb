@@ -22,8 +22,8 @@
 
 ## 4. MCP
 
-- [ ] 4.1 Write failing tests for `get_service_map` (graph plus summary, `ui://` metadata only for capable clients, web UI link) and for the services summary in `get_trace`. Verify `cargo test -p mcp-server` fails.
-- [ ] 4.2 Implement the tool, register `ui://signaldb/service-map` in `apps.rs`, add `service_map_url` to `ui_links.rs`, add the summary to `get_trace`, and add the "investigate a failing dependency" prompt in `prompts.rs`. Verify `cargo test -p mcp-server` passes.
+- [x] 4.1 Write failing tests for `get_service_map` (graph plus summary, `ui://` metadata only for capable clients, web UI link) and for the services summary in `get_trace`. Verify `cargo test -p mcp-server` fails.
+- [x] 4.2 Implement the tool, register `ui://signaldb/service-map` in `apps.rs`, add `service_map_url` to `ui_links.rs`, add the summary to `get_trace`, and add the "investigate a failing dependency" prompt in `prompts.rs`. Verify `cargo test -p mcp-server` passes.
 
 ## 5. CLI
 
