@@ -105,14 +105,17 @@ export function App() {
   // A 401 anywhere in the app (session expiry, a request that outran the
   // cookie) sends the visitor to the dedicated login page rather than
   // popping a dialog over the current one — `LoginRoute` lands them back
-  // here via `?redirect=` once signed in.
+  // here via `?redirect=` once signed in. The cookie-session probe is
+  // exempt: its 401 only means "no cookie", and API-key auth (the Vite dev
+  // proxy) has none while every data request still succeeds.
   useEffect(
     () =>
       queryClient.getQueryCache().subscribe((event) => {
         if (
           event.type === "updated" &&
           event.action.type === "error" &&
-          isAuthError(event.action.error)
+          isAuthError(event.action.error) &&
+          event.query.queryKey[0] !== "current-session"
         ) {
           navigate(
             loginRedirectPath(
