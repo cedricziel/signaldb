@@ -591,4 +591,59 @@ mod tests {
         assert!(schema.is_physical_name("log_attributes"));
         assert!(schema.is_physical_name("label_service_name"));
     }
+
+    /// The logical schema carries no physical encoding, so one join key means
+    /// the same kind, type and filterability on both sources.
+    #[test]
+    fn trace_id_and_span_id_are_the_same_join_key_across_traces_and_logs() {
+        let schema = LogicalSchema::core();
+
+        for name in ["trace_id", "span_id"] {
+            let traces_field = schema
+                .resolve("traces", name)
+                .unwrap_or_else(|| panic!("traces.{name} should resolve"));
+            let logs_field = schema
+                .resolve("logs", name)
+                .unwrap_or_else(|| panic!("logs.{name} should resolve"));
+            assert_eq!(
+                traces_field.kind,
+                LogicalFieldKind::JoinKey,
+                "traces.{name}"
+            );
+            assert_eq!(logs_field.kind, LogicalFieldKind::JoinKey, "logs.{name}");
+            assert_eq!(
+                traces_field.value_type, logs_field.value_type,
+                "{name} must carry the same logical type on both sources"
+            );
+            assert_eq!(
+                traces_field.filterability, logs_field.filterability,
+                "{name} must be equally filterable on both sources"
+            );
+        }
+    }
+
+    #[test]
+    fn otlp_record_metadata_is_registered_with_its_declared_type() {
+        let schema = LogicalSchema::core();
+
+        for (source, name, expected_type) in [
+            ("logs", "dropped_attributes_count", LogicalType::Int64),
+            ("traces", "dropped_attributes_count", LogicalType::Int64),
+            ("logs", "severity_number", LogicalType::Int64),
+            ("logs", "observed_timestamp", LogicalType::TimestampNs),
+            ("logs", "trace_flags", LogicalType::Int64),
+            ("logs", "event_name", LogicalType::String),
+            ("logs", "body", LogicalType::AnyValue),
+        ] {
+            let field = schema
+                .resolve(source, name)
+                .unwrap_or_else(|| panic!("{source}.{name} should be registered"));
+            assert_eq!(field.value_type, expected_type, "{source}.{name}");
+            assert_eq!(
+                field.kind,
+                LogicalFieldKind::RecordMetadata,
+                "{source}.{name}"
+            );
+        }
+    }
 }
