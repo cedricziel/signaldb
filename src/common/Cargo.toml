@@ -154,6 +154,15 @@ required-features = ["testing"]
 name = "wal_manager_active_cardinality_not_evicted"
 required-features = ["testing"]
 
+# Same reasoning: both reach `Wal::reset_pending_seed_claims_for_test`.
+[[test]]
+name = "wal_pending_gauge_seed_attribution"
+required-features = ["testing"]
+
+[[test]]
+name = "wal_pending_gauge_reconciliation"
+required-features = ["testing"]
+
 # Same reasoning again: `catalog_integration` starts Postgres through
 # `testing::start_container_with_retry`, gated on `testing-containers`.
 [[test]]
