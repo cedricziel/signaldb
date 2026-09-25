@@ -45,10 +45,6 @@
   .signal-tabs {
     flex: 1 1 100%;
     order: -1;
-    /* Seven tabs still don't fit one 390px row: wrap onto a second row so
-       every signal stays visible instead of hiding behind a scroll edge. */
-    flex-wrap: wrap;
-    overflow-x: visible;
   }
 }
 
