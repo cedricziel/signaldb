@@ -560,6 +560,9 @@ async fn new_tags_plan(
         result: ResultEnvelope::Rows,
         fields: Some(fields.iter().map(|s| s.to_string()).collect()),
         pipeline: vec![Stage::Where(predicate)],
+        focus: None,
+        depth: None,
+        trace_id: None,
     };
     let (df, _, _) = plan_document(
         ctx,
@@ -1400,6 +1403,9 @@ async fn tags_escaping_values_match_the_fixture_row() {
             result: ResultEnvelope::Rows,
             fields: Some(fields.iter().map(|s| s.to_string()).collect()),
             pipeline: vec![Stage::Where(predicate)],
+            focus: None,
+            depth: None,
+            trace_id: None,
         };
         let (df, _, _) = plan_document(
             &ctx,

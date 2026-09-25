@@ -91,7 +91,7 @@ pub enum IrError {
     InvalidRankSize { n: i64 },
 
     #[error(
-        "`fields` projection is only valid for rows/table results, not series, heatmap, flamegraph, or metadata"
+        "`fields` projection is only valid for rows/table results, not series, heatmap, flamegraph, graph, or metadata"
     )]
     FieldsOnSeries,
 
@@ -150,6 +150,13 @@ pub fn validate(
             OperatorRegistry::feature_min_version(Feature::SpanCorrelate)
         )));
     }
+    if doc.result == ResultEnvelope::Graph && !registry.supports_feature(Feature::ServiceGraph) {
+        return Err(IrError::Invalid(format!(
+            "graph result envelope requires irVersion {}",
+            OperatorRegistry::feature_min_version(Feature::ServiceGraph)
+        )));
+    }
+    check_graph_scoping(doc)?;
     // 1b. Introspection documents (`describe` + `metadata`) never reach a plan:
     // they are answered from declared schema, the schema registries and
     // maintained statistics. Legality is checked here so this validator and the
@@ -228,6 +235,14 @@ impl InferCtx<'_> {
             return Err(IrError::IllegalStage {
                 stage: stage.name().to_string(),
                 reason: "the flamegraph envelope's aggregation is itself the terminal stage \
+                         and only composes with `from`/`where`"
+                    .to_string(),
+            });
+        }
+        if self.declared_result == ResultEnvelope::Graph && !matches!(stage, Stage::Where(_)) {
+            return Err(IrError::IllegalStage {
+                stage: stage.name().to_string(),
+                reason: "the graph envelope is assembled from fixed internal pipelines \
                          and only composes with `from`/`where`"
                     .to_string(),
             });
@@ -1054,6 +1069,36 @@ fn check_version(version: i64) -> Result<OperatorRegistry, IrError> {
     })
 }
 
+/// The `graph` envelope's scoping fields (`focus`/`depth`/`trace_id`) are
+/// siblings of `result`, so they parse regardless of the declared envelope;
+/// this checks the rules that make them legal.
+fn check_graph_scoping(doc: &Document) -> Result<(), IrError> {
+    if doc.result != ResultEnvelope::Graph {
+        if doc.focus.is_some() || doc.depth.is_some() || doc.trace_id.is_some() {
+            return Err(IrError::Invalid(
+                "focus/depth/trace_id are only valid with the graph result envelope".to_string(),
+            ));
+        }
+        return Ok(());
+    }
+    if doc.focus.is_some() && doc.trace_id.is_some() {
+        return Err(IrError::Invalid(
+            "focus and trace_id are mutually exclusive".to_string(),
+        ));
+    }
+    if let Some(depth) = doc.depth {
+        if doc.focus.is_none() {
+            return Err(IrError::Invalid("depth requires focus".to_string()));
+        }
+        if !(1..=3).contains(&depth) {
+            return Err(IrError::Invalid(
+                "depth must be between 1 and 3".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Resolve the document's source against the registry.
 fn resolve_source<'a>(
     doc: &Document,
@@ -1075,6 +1120,7 @@ fn envelope_rejects_projection(result: ResultEnvelope) -> bool {
             | ResultEnvelope::Heatmap
             | ResultEnvelope::Flamegraph
             | ResultEnvelope::Metadata
+            | ResultEnvelope::Graph
     )
 }
 
@@ -1166,6 +1212,7 @@ fn validate_envelope(
         (ResultEnvelope::Flamegraph, RelationType::RowSet(rs)) => {
             source == "profiles" && !rs.aggregated
         }
+        (ResultEnvelope::Graph, RelationType::RowSet(rs)) => source == "traces" && !rs.aggregated,
         (ResultEnvelope::Metadata, RelationType::Metadata(_)) => true,
         _ => false,
     };
@@ -1174,6 +1221,8 @@ fn validate_envelope(
     } else {
         let terminal = if declared == ResultEnvelope::Flamegraph && source != "profiles" {
             format!("source '{source}' does not support the flamegraph envelope")
+        } else if declared == ResultEnvelope::Graph && source != "traces" {
+            format!("source '{source}' does not support the graph envelope")
         } else {
             terminal.describe()
         };
@@ -2745,6 +2794,145 @@ mod tests {
             matches!(err, IrError::IllegalStage { ref stage, .. } if stage == "correlate"),
             "got {err:?}"
         );
+    }
+
+    // service-map task 1.1 — `graph` result envelope (irVersion 8).
+
+    fn graph_doc(version: i64, extra: serde_json::Value) -> serde_json::Value {
+        let mut doc = json!({
+            "irVersion": version, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "graph", "pipeline": []
+        });
+        for (key, value) in extra.as_object().into_iter().flatten() {
+            doc.as_object_mut()
+                .expect("object")
+                .insert(key.clone(), value.clone());
+        }
+        doc
+    }
+
+    #[test]
+    fn graph_over_traces_validates() {
+        let v = validate_json_with(graph_doc(8, json!({})), &traces_resolver())
+            .expect("graph over traces at v8 validates");
+        match v.terminal {
+            RelationType::RowSet(rs) => assert_eq!(rs.source, "traces"),
+            other => panic!("expected rows, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn graph_below_v8_is_rejected() {
+        let err = validate_json_with(graph_doc(7, json!({})), &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 8")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn graph_rejected_for_non_traces_source() {
+        let doc = json!({
+            "irVersion": 8, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "graph", "pipeline": []
+        });
+        let err = validate_json(doc).unwrap_err();
+        assert!(
+            matches!(err, IrError::EnvelopeMismatch { ref terminal, .. } if terminal.contains("graph")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn graph_rejects_non_where_pipeline_stages() {
+        let doc = json!({
+            "irVersion": 8, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "graph",
+            "pipeline": [{ "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "count", "as": "n" }] } }]
+        });
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::IllegalStage { ref stage, .. } if stage == "aggregate"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn graph_focus_and_trace_id_are_mutually_exclusive() {
+        let doc = graph_doc(8, json!({ "focus": "orders", "trace_id": "abc123" }));
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("mutually exclusive")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn graph_depth_out_of_range_is_rejected() {
+        let doc = graph_doc(8, json!({ "focus": "orders", "depth": 4 }));
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("depth must be between 1 and 3")),
+            "got {err:?}"
+        );
+
+        let doc = graph_doc(8, json!({ "focus": "orders", "depth": 0 }));
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("depth must be between 1 and 3")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn graph_depth_without_focus_is_rejected() {
+        let doc = graph_doc(8, json!({ "depth": 2 }));
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("depth requires focus")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn graph_focus_with_default_depth_validates() {
+        validate_json_with(
+            graph_doc(8, json!({ "focus": "orders" })),
+            &traces_resolver(),
+        )
+        .expect("focus without depth validates");
+    }
+
+    #[test]
+    fn graph_trace_id_validates() {
+        validate_json_with(
+            graph_doc(8, json!({ "trace_id": "abc123" })),
+            &traces_resolver(),
+        )
+        .expect("trace_id scoping validates");
+    }
+
+    #[test]
+    fn graph_scoping_fields_rejected_outside_graph_envelope() {
+        let doc = json!({
+            "irVersion": 8, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows", "pipeline": [], "focus": "orders"
+        });
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("graph result envelope")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn graph_rejects_fields_projection() {
+        let mut doc = graph_doc(8, json!({}));
+        doc.as_object_mut()
+            .expect("object")
+            .insert("fields".to_string(), json!(["service.name"]));
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(matches!(err, IrError::FieldsOnSeries), "got {err:?}");
     }
 
     #[test]

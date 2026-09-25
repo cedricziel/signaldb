@@ -47,6 +47,8 @@ pub enum Feature {
     AggregateWindow,
     /// The span-to-parent `correlate` stage.
     SpanCorrelate,
+    /// The `graph` result envelope over `traces`.
+    ServiceGraph,
 }
 
 /// Comparison operators, keyed by the `irVersion` that introduced them.
@@ -99,6 +101,7 @@ const FEATURES: &[(Feature, i64)] = &[
     (Feature::AggregateAcross, 7),
     (Feature::AggregateWindow, 7),
     (Feature::SpanCorrelate, 8),
+    (Feature::ServiceGraph, 8),
 ];
 
 fn min_version<T: PartialEq + Copy>(table: &[(T, i64)], member: T) -> Option<i64> {
@@ -183,6 +186,20 @@ mod tests {
             OperatorRegistry::for_version(8)
                 .unwrap()
                 .supports_feature(Feature::SpanCorrelate)
+        );
+    }
+
+    #[test]
+    fn v8_unlocks_service_graph() {
+        assert!(
+            !OperatorRegistry::for_version(7)
+                .unwrap()
+                .supports_feature(Feature::ServiceGraph)
+        );
+        assert!(
+            OperatorRegistry::for_version(8)
+                .unwrap()
+                .supports_feature(Feature::ServiceGraph)
         );
     }
 
@@ -276,6 +293,7 @@ mod tests {
             Feature::AggregateAcross,
             Feature::AggregateWindow,
             Feature::SpanCorrelate,
+            Feature::ServiceGraph,
         ];
         for feature in all {
             assert!(

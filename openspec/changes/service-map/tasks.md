@@ -1,7 +1,7 @@
 ## 1. Graph envelope (query-ir, querier)
 
-- [ ] 1.1 Write failing `query-ir` tests: `"result": "graph"` accepted only for `traces` at IR version 8; `focus`/`depth`/`trace_id` validation (depth 1-3, `focus` and `trace_id` mutually exclusive). Verify `cargo test -p query-ir` fails.
-- [ ] 1.2 Add the `graph` envelope and scoping options. Verify `cargo test -p query-ir` passes.
+- [x] 1.1 Write failing `query-ir` tests: `"result": "graph"` accepted only for `traces` at IR version 8; `focus`/`depth`/`trace_id` validation (depth 1-3, `focus` and `trace_id` mutually exclusive). Verify `cargo test -p query-ir` fails.
+- [x] 1.2 Add the `graph` envelope and scoping options. Verify `cargo test -p query-ir` passes.
 - [ ] 1.3 Write failing `querier` tests over an in-memory traces table: service edges and metrics, error rate on an edge, external nodes named and typed per the attribute order, instrumented callee yields no external node, one-hop and depth-2 focus, single-trace scope, empty graph for unknown service, node cap with warning. Verify `cargo test -p querier` fails.
 - [ ] 1.4 Implement graph assembly (edge, node, external-edge queries; merge; depth walk; `[querier].graph_max_nodes`). Verify `cargo test -p querier` passes.
 - [ ] 1.5 Add a `tests-integration` test that ingests OTLP traces for three services plus a database client span across two tenants and checks the graph and tenant isolation via `POST /api/v1/query`. Verify it passes.
