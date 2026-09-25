@@ -21,40 +21,42 @@ interface Props {
 
 export function TopBar({ state, update, who, canManage, isDemo }: Props) {
   return (
-    <header className="topbar">
-      <Link className="topbar-mark" to={`/logs${crossSignalSearch(state)}`}>
-        <svg
-          width="18"
-          height="14"
-          viewBox="0 0 18 14"
-          fill="none"
-          aria-hidden="true"
-        >
-          <path
-            d="M1 7 L4 7 L6 2 L9 12 L12 4 L13.5 7 L17 7"
-            stroke="var(--accent)"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-        signal<b>db</b>
-      </Link>
-      <span className="topbar-sep">/</span>
-      <TenantSelector state={state} update={update} who={who} />
+    <>
       {isDemo && (
-        <span className="demo-badge" title="Read-only public demo account">
+        <div className="demo-banner" title="Read-only public demo account">
           Demo · read-only
-        </span>
+        </div>
       )}
-      <span style={{ flex: 1 }} />
-      {canManage && (
-        <Link className="manage-trigger" to="/manage">
-          Manage
+      <header className="topbar">
+        <Link className="topbar-mark" to={`/logs${crossSignalSearch(state)}`}>
+          <svg
+            width="18"
+            height="14"
+            viewBox="0 0 18 14"
+            fill="none"
+            aria-hidden="true"
+          >
+            <path
+              d="M1 7 L4 7 L6 2 L9 12 L12 4 L13.5 7 L17 7"
+              stroke="var(--accent)"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+          signal<b>db</b>
         </Link>
-      )}
-      <UserMenu state={state} />
-    </header>
+        <span className="topbar-sep">/</span>
+        <TenantSelector state={state} update={update} who={who} />
+        <span style={{ flex: 1 }} />
+        {canManage && (
+          <Link className="manage-trigger" to="/manage">
+            Manage
+          </Link>
+        )}
+        <UserMenu state={state} />
+      </header>
+    </>
   );
 }
 
