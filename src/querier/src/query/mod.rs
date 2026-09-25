@@ -2,6 +2,7 @@ mod correlate_cap;
 #[cfg(test)]
 mod differential;
 pub mod error;
+mod graph;
 pub mod histogram;
 pub mod ir_planner;
 pub mod logql;

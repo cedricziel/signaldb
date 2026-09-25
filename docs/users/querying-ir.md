@@ -6,6 +6,7 @@ sources:
   - src/router/src/endpoints/query.rs
   - src/query-ir/src/**
   - src/querier/src/query/ir_planner.rs
+  - src/querier/src/query/graph.rs
   - src/common/src/profile/aggregation.rs
   - src/signaldb-cli/src/commands/query.rs
 ---
@@ -543,10 +544,115 @@ Three optional top-level fields, siblings of `result`, scope the graph:
   trace; it is mutually exclusive with `focus`.
 - With neither, the graph covers every service seen in the window.
 
-This document only defines the request contract; the response shape (nodes,
-edges, call/error rate, p95 latency, external nodes, the node cap and its
-warning) is specified in `openspec/changes/service-map/specs/query-ir-service-graph/spec.md`
-and will be documented here in full once the querier assembles it.
+`where` stages filter the spans that count as callers and callees. A
+dependency whose spans are filtered out still counts as instrumented, so a
+call into it never turns into an external node.
+
+### Response
+
+The response carries a `graph` field:
+
+```jsonc
+{
+  "result": "graph",
+  "window": { "start_ns": 1700000000000000000, "end_ns": 1700003600000000000 },
+  "graph": {
+    "nodes": [
+      {
+        "id": "service:checkout",
+        "name": "checkout",
+        "kind": "service",
+        "request_rate": 0.4,
+        "error_rate": 0.25,
+        "p95_ns": 20000000,
+      },
+      {
+        "id": "service:frontend",
+        "name": "frontend",
+        "kind": "service",
+        "request_rate": 0.4,
+        "error_rate": 0.0,
+        "p95_ns": 12000000,
+      },
+      {
+        "id": "external:database:orders-db",
+        "name": "orders-db",
+        "kind": "external",
+        "dependency_kind": "database",
+      },
+    ],
+    "edges": [
+      {
+        "source": "service:frontend",
+        "target": "service:checkout",
+        "count": 4,
+        "rate": 0.4,
+        "error_rate": 0.25,
+        "p95_ns": 20000000,
+      },
+      {
+        "source": "service:checkout",
+        "target": "external:database:orders-db",
+        "count": 4,
+        "rate": 0.4,
+        "error_rate": 0.0,
+        "p95_ns": 3000000,
+      },
+    ],
+    "dropped_nodes": 0,
+  },
+}
+```
+
+- **Node ids.** Every node has an `id` separate from its display `name`:
+  `service:<name>` for a service and `external:<kind>:<name>` for an
+  external dependency. Edge `source` and `target` are node ids, so a
+  database called `orders` and a service called `orders` stay two nodes.
+- **Edges between services.** An edge `A → B` counts the server and consumer
+  spans of `B` whose parent span belongs to `A`. `count` is the number of such
+  calls. `rate` is `count` divided by the window length in seconds.
+  `error_rate` is the share of calls with error status, from 0 to 1. `p95_ns`
+  is the 95th-percentile call duration.
+- **Service nodes.** `request_rate`, `error_rate` and `p95_ns` come from the
+  service's own server and consumer spans. A service that only makes calls
+  (for example a frontend with no server spans) has a node without metrics.
+- **External nodes.** A client or producer span with no server or consumer
+  child in the window becomes an edge to an `external` node. The node is named
+  after the first attribute present out of `db.namespace`,
+  `messaging.destination.name`, `rpc.service`, `server.address` and
+  `peer.service`. If none is present, the dependency is scoped to its
+  caller: id `external:<kind>:unnamed:<caller>`, name `unnamed <kind>`. Two
+  services with unnamed HTTP calls therefore get two separate nodes, not one
+  shared `http` node.
+  `dependency_kind` is `database`, `messaging`, `rpc`, `http` or `other`,
+  taken from `db.system.name`, `messaging.system`, `rpc.system` or
+  `http.request.method`.
+- **Node cap.** The graph holds at most `[querier].graph_max_nodes` nodes
+  (default 200). Past the cap it keeps the `focus` node, then the nodes with
+  the most traffic, where traffic is the sum of call counts on a node's edges.
+  Edges to dropped nodes are removed as well. `dropped_nodes` gives the count,
+  and the response carries a `graph_node_limit` warning.
+- An unknown `focus` returns an empty graph, not an error.
+- **Row bound.** The service-edge query uses a `correlate` join, and the
+  external-edge query is an anti-join whose two inputs (client/producer spans
+  and server/consumer spans) are capped the same way. Both are bounded by
+  `[querier].correlate_max_rows`. If any of them reaches the cap, the graph
+  is built from the truncated rows and the response carries a
+  `correlate_row_limit` warning. When the callee side is truncated, some
+  instrumented calls can show up as external edges.
+
+### Window edges
+
+The graph is built from spans that start inside the window, which has two
+effects at the edges:
+
+- **Window start.** A call whose caller span started before the window has no
+  parent to join, so the call is missing from its edge.
+- **Window end.** If a call is still in flight when the window ends, its callee
+  span starts after the window. The call then shows up as an edge to an
+  external node rather than to the callee service.
+
+A wider window reduces both effects.
 
 ## Profile summaries
 

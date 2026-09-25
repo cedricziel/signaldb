@@ -237,6 +237,24 @@ groups:
           (see common::self_monitoring::sanitize) — never raw user SQL.
         examples: ["SELECT * FROM t WHERE name = ?"]
 
+  - id: registry.signaldb.graph
+    type: attribute_group
+    display_name: SignalDB Service Graph Attributes
+    brief: Bounds hit while assembling a Query IR graph result.
+    attributes:
+      - id: signaldb.graph.dropped_nodes
+        type: int
+        stability: development
+        brief: Nodes the graph node cap dropped.
+      - id: signaldb.graph.max_nodes
+        type: int
+        stability: development
+        brief: The configured graph node cap ([querier].graph_max_nodes).
+      - id: signaldb.graph.max_rows
+        type: int
+        stability: development
+        brief: The row cap a graph sub-query reached ([querier].correlate_max_rows).
+
   - id: registry.signaldb.discovery
     type: attribute_group
     display_name: SignalDB Discovery Attributes

@@ -323,6 +323,11 @@ max_search_limit = 1000
 # duplicate span_ids; this bounds that pathological case. Reaching the
 # cap truncates the result rather than failing the query.
 correlate_max_rows = 5000000
+#
+# Node cap on a Query IR `graph` result (the service map). Past it the
+# graph keeps the focus node, then the nodes with the most call traffic,
+# and warns how many nodes it dropped.
+graph_max_nodes = 200
 
 [querier.datafusion]
 # DataFusion scan/pushdown tuning. All three default to true (DataFusion's

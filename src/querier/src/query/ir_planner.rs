@@ -1109,6 +1109,8 @@ pub struct IrService {
     /// tests) keeps the default — none of those can ever reach a `correlate`
     /// stage, so the value is moot for them.
     correlate_max_rows: usize,
+    /// Node cap on a `graph` result (`[querier].graph_max_nodes`).
+    graph_max_nodes: usize,
 }
 
 /// The resolved absolute time window `[t0, t1]` (unix epoch nanoseconds),
@@ -1124,7 +1126,14 @@ impl IrService {
         Self {
             session_context: Arc::new(session_context),
             correlate_max_rows: DEFAULT_CORRELATE_MAX_ROWS,
+            graph_max_nodes: common::config::QuerierConfig::default().graph_max_nodes,
         }
+    }
+
+    /// Override the `graph` node cap, from `[querier].graph_max_nodes`.
+    pub fn with_graph_max_nodes(mut self, graph_max_nodes: usize) -> Self {
+        self.graph_max_nodes = graph_max_nodes;
+        self
     }
 
     /// Override the `correlate` row cap (default [`DEFAULT_CORRELATE_MAX_ROWS`]),
@@ -1150,6 +1159,11 @@ impl IrService {
 
         let doc: Document = serde_json::from_value(params.document.clone())
             .map_err(|e| QuerierError::InvalidInput(format!("invalid IR document: {e}")))?;
+        if doc.result == ResultEnvelope::Graph {
+            return self
+                .query_graph(&doc, params.now_ns, tenant_slug, dataset_slug)
+                .await;
+        }
         // Stage spans (INTERNAL) under the Flight SERVER span, so a slow
         // query is attributable to planning vs execution.
         let Some((mut df, window, correlate_truncated)) = self
@@ -1191,6 +1205,46 @@ impl IrService {
             ));
         }
         Ok((batches, window, truncated))
+    }
+
+    /// A `graph` document: assembled from fixed internal pipelines (see
+    /// `super::graph`) and shipped as one `graph_json` cell.
+    async fn query_graph(
+        &self,
+        doc: &Document,
+        now_ns: i64,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<(Vec<RecordBatch>, ResolvedWindow, bool), QuerierError> {
+        use tracing::Instrument;
+
+        let limits = super::graph::GraphLimits {
+            correlate_max_rows: self.correlate_max_rows,
+            max_nodes: self.graph_max_nodes,
+        };
+        let built = super::graph::build_graph(
+            &self.session_context,
+            doc,
+            tenant_slug,
+            dataset_slug,
+            now_ns,
+            limits,
+        )
+        .instrument(tracing::info_span!("signaldb.query.graph"))
+        .await?;
+        let (graph, window, truncated) = match built {
+            Some(built) => built,
+            None => (
+                common::service_graph::ServiceGraph::default(),
+                resolve_window(doc, now_ns)?,
+                false,
+            ),
+        };
+        Ok((
+            vec![super::graph::encode_graph_batch(&graph)?],
+            window,
+            truncated,
+        ))
     }
 
     /// Build the `DataFrame` for a document (split out for planner tests).

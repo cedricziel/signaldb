@@ -569,7 +569,8 @@ impl QuerierFlightService {
         let logs_service = LogsService::new(session_ctx.as_ref().clone());
         let metrics_service = MetricsService::new(session_ctx.as_ref().clone());
         let ir_service = IrService::new(session_ctx.as_ref().clone())
-            .with_correlate_max_rows(limits.correlate_max_rows);
+            .with_correlate_max_rows(limits.correlate_max_rows)
+            .with_graph_max_nodes(limits.graph_max_nodes);
 
         Self {
             _flight_transport: flight_transport,
@@ -653,7 +654,8 @@ impl QuerierFlightService {
         let logs_service = LogsService::new(session_ctx.as_ref().clone());
         let metrics_service = MetricsService::new(session_ctx.as_ref().clone());
         let ir_service = IrService::new(session_ctx.as_ref().clone())
-            .with_correlate_max_rows(limits.correlate_max_rows);
+            .with_correlate_max_rows(limits.correlate_max_rows)
+            .with_graph_max_nodes(limits.graph_max_nodes);
 
         Ok(Self {
             _flight_transport: flight_transport,

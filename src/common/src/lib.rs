@@ -25,6 +25,7 @@ pub mod schema;
 pub mod schema_registry;
 pub mod self_monitoring;
 pub mod service_bootstrap;
+pub mod service_graph;
 pub mod storage;
 pub mod storage_usage;
 pub mod tenant_api;
