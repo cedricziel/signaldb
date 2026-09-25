@@ -83,14 +83,14 @@ write-path regression for V1/V2; V3 is opt-in by design.**
 
 ## Product bugs found incidentally (file as issues, independent of this change)
 
-1. **`attr_tokens` never row-group-prunes today.** The querier's
+1. **`attr_tokens` never row-group-prunes today** (#1728). The querier's
    `array_has(attr_tokens, …)` conjunct only row-filters after IO; the bloom
    written via `bloom_filter_property_for_attr_tokens()` is never probed on the
    row-group path (same DataFusion limitation the warm index hits).
-2. **`MetricsSet::sum_by_name` silently zeroes `PruningMetrics`** in DataFusion
+2. **`MetricsSet::sum_by_name` silently zeroes `PruningMetrics`** (#1729) in DataFusion
    54.1 — any SignalDB code reading pruning counters that way reports 0
    unconditionally. (Bit spike 0.1's own demo; corrected in `bench.md`.)
-3. **Iceberg metadata backlog on hive**: 54,531 metadata files / 20 GB against
+3. **Iceberg metadata backlog on hive** (#1730): 54,531 metadata files / 20 GB against
    210 MB of data on jobradar traces — #895 is deployed but the pre-existing
    backlog needs cleanup.
 
@@ -102,6 +102,5 @@ write-path regression for V1/V2; V3 is opt-in by design.**
   fix `warm_index_demo`'s metric reading if the demo is kept.
 - Layer 6: promotion machinery validated end-to-end (field-id evolution,
   null-fill, demotion) — no unknowns left in the provider for this.
-- Compaction sequencing becomes an explicit dependency of the cutover layer —
-  reflect in `design.md` Migration Plan when layer 4 is planned in detail.
+- Compaction sequencing is now an explicit dependency of the cutover layer (task 4.0, design Migration Plan layer 4).
 - Variant confirmed out of scope (unchanged from design).

@@ -35,9 +35,10 @@ no coexistence read-path, no legacy safe-cast, no compactor rewrite of old files
 
 ## 4. Tiered substrate: cold one-home + binary residue + warm index (one-shot cutover)
 
+- [ ] 4.0 Gate: compaction keeps per-table file counts low on the tables being cut over (spike 0.3 — small flush files make the typed layout slower and larger than legacy); the cutover (4.5) does not ship before this holds
 - [ ] 4.1 Write failing tests: canonical-typed value stored+retrieved typed (no cast); off-type/array/kvlist/bytes round-trip via binary residue; warm-index prunes unpromoted equality; unpromoted range = correct unpruned scan (spec `typed-attribute-storage`, `query-ir-core` MODIFIED)
-- [ ] 4.2 Add the cold substrate (one canonical typed home per field: per-type maps `attributes_str/_int/_double/_bool`) + self-describing binary residue in `common/iceberg/schemas.rs`, behind the logical→physical realization
-- [ ] 4.3 Build the warm derived containment index (per-type tokens + list-leaf bloom); wire pruning into the scan
+- [ ] 4.2 Add the cold substrate (one canonical typed home per field: per-type maps `attributes_str/_int/_double/_bool`) + binary residue (top-level `Binary` column, one CBOR document per row — spike 0.2) in `common/iceberg/schemas.rs`, behind the logical→physical realization
+- [ ] 4.3 Build the warm derived containment index (per-type tokens + list-leaf bloom) as an opt-in, budgeted per-table tier (not default-on); wire pruning via a custom footer+bloom pre-filter `TableProvider` hook, set bloom NDV explicitly to rows-per-row-group × attrs-per-row, and skip the pre-filter for non-selective predicates
 - [ ] 4.4 Implement registry typed resolution (promoted col | one typed home | residue) returning canonical-typed values by retrieval — no coalesce across homes, de-conflate cast-free from pruned
 - [ ] 4.5 One-shot layout cutover: tables created/recreated in the typed layout; no coexistence read-path or legacy safe-cast (breaking-changes policy); pre-cutover data not migrated
 - [ ] 4.6 `cargo test -p common -p querier` green; lint/format/machete

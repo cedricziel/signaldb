@@ -129,10 +129,17 @@ operator repins the type; that is the honest cost of never corrupting the value.
 - **Cold (lossless).** One canonical typed home per field — a per-type map
   (`attributes_str/_int/_double/_bool`) or a promoted column — plus the binary
   residue for off-type/array/kvlist/bytes.
-- **Warm (the only pre-promotion pruning).** A derived typed containment index —
-  a typed generalization of `attr_tokens` (per-type `key→value` tokens with a
-  bloom on the list leaf). This is what prunes unpromoted equality predicates;
-  the typed map itself does not prune (no per-key Parquet stats).
+- **Warm (the only pre-promotion pruning; opt-in per table).** A derived typed
+  containment index — a typed generalization of `attr_tokens` (per-type
+  `key→value` tokens with a bloom on the list leaf). This is what prunes
+  unpromoted equality predicates; the typed map itself does not prune (no
+  per-key Parquet stats). The spike measured the token columns at 24–36% of
+  storage and +100–266% write cost, so the index ships behind a per-table
+  budget/policy, not default-on. Its implementation needs (a) a custom
+  footer+bloom pre-filter as a `TableProvider` hook (DataFusion never exploits
+  list-leaf blooms for `array_has`), (b) the bloom NDV set explicitly to
+  rows-per-row-group × attrs-per-row, and (c) a selectivity gate that skips the
+  pre-filter for non-selective predicates.
 - **Hot (fast).** Demand-driven promotion (`attr_demand`) to typed columns with
   stats + bloom, via **Iceberg field-id evolution**, bounded by a **per-table
   budget with LRU demotion** (a cold column folds back into the typed map on
@@ -153,27 +160,6 @@ change results or types. The **testable invariant**: identical result set AND ty
 with all promotion off vs. on — scoped to canonical-typed fields (residue values
 are retrievable, a separate axis). This is strictly stronger than `query-ir-core`'s
 original "same-result" (value equality over a cast) because there is no cast.
-
-### D9 — Registry consistency: monotonic, per tenant+dataset, cache-invalidated on version bump
-
-The registry's canonical type per (tenant, dataset, field) — `field` being the full
-signal+level+name identity from D2 — is monotonic (D2) — so
-already-written data never disagrees with a later type; new conflicting values go
-to the residue rather than flipping the type. Write-path and plan-path read the
-same versioned resolution; a config/schema-version bump is the only mutation and it
-invalidates cached resolutions. This closes the "mutable derived source of truth
-with no invalidation" hole and prevents cross-tenant type contamination.
-
-**Migration rule for a canonical-type change.** When a config/version bump changes a
-field's canonical type, existing rows in the old typed home are **not** retyped in
-place (monotonicity). They remain readable through a version-aware read-path
-within the typed substrate: an old-home value that safe-casts to the new
-canonical type reads as the new type, one that does not reads via the
-residue. The compactor migrates old-home values forward on its next pass (to the new
-home where lossless, else the residue). The one-home invariant is preserved because
-the _registry_ names exactly one canonical home at any version; "old home" rows are
-a migration artifact the read-path unifies, not a second live home. A type change is
-therefore a forward-only, version-gated event, not a free toggle.
 
 ### D6 — Ingest enforces at write; wire stays JSON in phase 1
 
@@ -221,12 +207,38 @@ version clocks instead of today's conflated v1/v2 axis.
 - #811 registry epic → its "registry as key→physical source of truth" is
   `attribute-type-authority` + the typed resolution target in `query-ir-core`.
 
+### D9 — Registry consistency: monotonic, per tenant+dataset, cache-invalidated on version bump
+
+The registry's canonical type per (tenant, dataset, field) — `field` being the full
+signal+level+name identity from D2 — is monotonic (D2) — so
+already-written data never disagrees with a later type; new conflicting values go
+to the residue rather than flipping the type. Write-path and plan-path read the
+same versioned resolution; a config/schema-version bump is the only mutation and it
+invalidates cached resolutions. This closes the "mutable derived source of truth
+with no invalidation" hole and prevents cross-tenant type contamination.
+
+**Migration rule for a canonical-type change.** When a config/version bump changes a
+field's canonical type, existing rows in the old typed home are **not** retyped in
+place (monotonicity). They remain readable through a version-aware read-path
+within the typed substrate: an old-home value that safe-casts to the new
+canonical type reads as the new type, one that does not reads via the
+residue. The compactor migrates old-home values forward on its next pass (to the new
+home where lossless, else the residue). The one-home invariant is preserved because
+the _registry_ names exactly one canonical home at any version; "old home" rows are
+a migration artifact the read-path unifies, not a second live home. A type change is
+therefore a forward-only, version-gated event, not a free toggle.
+
 ## Risks / Trade-offs
 
 - **Warm tier is unpruned without the derived index** → the typed map is cast-free
   but does not prune (no per-key Parquet stats). Mitigation: the warm containment
-  index (D4) is in-scope, not optional; the perf story is index-or-promotion, and
-  the specs de-conflate "cast-free" from "pruned".
+  index (D4) is in scope as an opt-in, budgeted per-table tier; the perf story is
+  index-or-promotion, and the specs de-conflate "cast-free" from "pruned".
+- **Small files dominate every layout** → on hive's small flush files every
+  layout lands at 140–360 ms/query at 2,000 files, and the typed layout's larger
+  footer (+2.0 KB/file) makes it worse than legacy until compacted; compacted it
+  is 31.6% smaller and 7–9× faster on map scans. Mitigation: compaction lands
+  before, or with, the cutover (Migration Plan layer 4).
 - **One-shot cutover abandons pre-cutover data** → the typed layout replaces the
   legacy `Map<String,String>` layout with no coexistence read-path and no
   compactor rewrite (user decision; post-1.0 breaking-changes policy). Tables are
@@ -256,41 +268,42 @@ version clocks instead of today's conflated v1/v2 axis.
 
 ## Migration Plan
 
-Implemented as a dependent PR stack (charter now, stack later):
+Implemented as a dependent PR stack (charter now, stack later). Layer numbers
+match `tasks.md`; results of layer 0 are in `spike/results.md`.
 
-1. **Spike (blocking) — feasibility, not Variant.** Prototype the warm containment
-   index and prove the datafusion-iceberg provider handles the typed layout
-   (per-type maps + binary residue) under one scan, including **field-id promotion
-   evolution** across file generations (pre-promotion files null-fill, no error).
-   Benchmark on real hive data: typed map vs. string-map vs. promoted column vs.
-   warm-index, across query classes including a **conflicted/off-type key**,
-   **files-pruned %** (predicted ~0 for the bare typed map), footer/metadata % on
-   realistic **small flush files**, residue parse cost, and **per-attribute
-   registry lookup cost**. (Variant is out of scope — see Context.)
-2. **`extract_value` fidelity fix:** preserve bytes and interned strings at the
+0. **Spike (blocking, done).** Proved the warm containment index, the typed
+   layout + field-id promotion evolution through the pinned provider, and
+   benchmarked all layouts on real hive data. Verdict: commit the typed layout,
+   with the compaction and warm-index conditions below.
+1. **`extract_value` fidelity fix:** preserve bytes and interned strings at the
    OTLP boundary (prereq for any losslessness claim). Duplicate-key/order fidelity
-   is deferred to acceptor-side binary residue or the typed-wire phase (layer 13),
-   since `serde_json::Map` on the phase-1 wire collapses it.
-3. **Logical schema + reconciliation:** declare the canonical logical schema and
+   is deferred to acceptor-side binary residue or the typed-wire phase (layer
+   12.2), since `serde_json::Map` on the phase-1 wire collapses it.
+2. **Logical schema + reconciliation:** declare the canonical logical schema and
    refactor `schema_parser`/`schemas.toml` so physical is its realization (D1, D7).
-4. **Type authority + registry consistency:** one canonical type per (tenant,
+3. **Type authority + registry consistency:** one canonical type per (tenant,
    dataset, field) via config→semconv-hint→observed, monotonic, cache-invalidated
    (D2, D9).
-5. **Tiered substrate + one-shot cutover:** land cold one-home store + binary
-   residue + warm index; tables are created/recreated in the typed layout — no
-   coexistence read-path, no legacy safe-cast (D3, D4; breaking-changes policy).
-6. **Ingest enforcement:** route ingest through the registry to the canonical home
+4. **Tiered substrate + one-shot cutover:** land cold one-home store + CBOR
+   residue + opt-in warm index; tables are created/recreated in the typed layout —
+   no coexistence read-path, no legacy safe-cast (D3, D4; breaking-changes
+   policy). **Depends on compaction** keeping per-table file counts low: on
+   uncompacted small flush files the typed layout is slower and larger than
+   legacy, so the cutover must not ship ahead of it. Split into several PRs.
+5. **Ingest enforcement:** route ingest through the registry to the canonical home
    or residue, replace `json_strings_to_map_array` (D6).
-7. **Promotion as pure-perf + invariant test:** typed promotion via
+6. **Promotion as pure-perf + invariant test:** typed promotion via
    `attr_demand`/compactor, Iceberg field-id evolution, per-table budget + LRU
    demotion; assert the demote-and-still-correct invariant (D5).
-8. **Typed metric substrate** (`typed-metric-storage`): bucket-native histograms,
+7. **Typed metric substrate** (`typed-metric-storage`): bucket-native histograms,
    typed temporality, exemplar join keys, Summary passthrough — replacing
    `data_json` in the same one-shot cutover. **BREAKING** metric layout.
-9. **Metric-native operators** (`metric-native-query`): rate/increase, histogram
+8. **Metric-native operators** (`metric-native-query`): rate/increase, histogram
    quantiles, vector matching as custom operators over the typed substrate.
-10. **Correlate** and **structural `match`** (per-trace evaluator baseline).
-11. **Later stack layers** (own changes, out of this charter's specs):
+9. **Correlate.**
+10. **Structural `match`** (per-trace evaluator baseline).
+11. **Surface parity, subsumption, docs.**
+12. **Later stack layers** (own changes, out of this charter's specs):
     delivery-side tail/pagination; typed wire + WAL.
 
 Rollback is simple under the one-shot cutover: the layout change is
@@ -307,8 +320,9 @@ flags.
 
 ## Open Questions
 
-- Exact binary residue encoding (CBOR vs msgpack vs a self-describing internal
-  form) — deferrable to the spike; does not change the logical contract or the
-  registry's typed-resolution shape.
+- ~~Binary residue encoding~~ — resolved by spike 0.2: a top-level `Binary`
+  column holding one CBOR document per row (`Map<String,Binary>` is not
+  supported by the pinned provider).
+
 - The promoted-column budget size and LRU-demotion trigger thresholds — tunable,
   resolvable in the promotion layer without changing the specs.
