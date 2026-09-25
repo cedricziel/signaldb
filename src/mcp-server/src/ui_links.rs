@@ -113,8 +113,10 @@ pub fn trace_group_url(
 /// Deep link into the UI's service map.
 ///
 /// With no `focus`: the Catalog map view,
-/// `{base}/catalog/service?tenant={tenant}&dataset={dataset}&view=map`.
-/// With `focus`: that service's own catalog page,
+/// `{base}/catalog/service?tenant={tenant}&dataset={dataset}&cview=map`
+/// (`cview` is the UI's catalog-view URL param —
+/// `src/ui/src/lib/urlState.ts`'s `catalogViewFromParam`/`buildPath`). With
+/// `focus`: that service's own catalog page,
 /// `{base}/catalog/service/{focus}?tenant={tenant}&dataset={dataset}`.
 pub fn service_map_url(
     base: Option<&str>,
@@ -134,7 +136,7 @@ pub fn service_map_url(
         .append_pair("tenant", tenant)
         .append_pair("dataset", dataset);
     if focus.is_none() {
-        url.query_pairs_mut().append_pair("view", "map");
+        url.query_pairs_mut().append_pair("cview", "map");
     }
     Some(url.to_string())
 }
@@ -317,8 +319,9 @@ mod tests {
             .expect("base is set");
         assert_eq!(
             url,
-            "https://ui.example.com/catalog/service?tenant=acme&dataset=prod&view=map"
+            "https://ui.example.com/catalog/service?tenant=acme&dataset=prod&cview=map"
         );
+        assert!(url.contains("cview=map"));
     }
 
     #[test]
