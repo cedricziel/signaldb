@@ -18,6 +18,24 @@ describe("ErrorSparkline", () => {
     expect(screen.getAllByTestId("sparkline-bar")).toHaveLength(4);
   });
 
+  it("shows a 'not enough data' message instead of a single full-width bar", () => {
+    // The whole range collapses into one bucket (step >= range span) — the
+    // bar variant would otherwise draw a single full-width, full-height
+    // rect with no axis or legend, indistinguishable from a rendering bug.
+    const series: VolumeSeries[] = [{ key: "s0", points: [[0, 3]] }];
+    render(
+      <ErrorSparkline
+        series={series}
+        rangeMs={{ fromMs: 0, toMs: 30_000 }}
+        stepMs={60_000}
+      />,
+    );
+    expect(
+      screen.getByText(/Not enough data in this window to show a trend/),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("sparkline-bar")).not.toBeInTheDocument();
+  });
+
   it("shows an empty state when there is no data in range", () => {
     render(
       <ErrorSparkline
