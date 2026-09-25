@@ -405,6 +405,14 @@
     gap: 8px;
     padding: 10px 12px 8px;
   }
+
+  /* The group table's Rate/P50/Last-seen columns are the least actionable
+     of the seven — Errors and P95 (the "is something wrong, how bad")
+     matter more for a phone-width glance, so those two stay and the rest
+     scroll off with the row instead of pushing them out of view. */
+  .trace-table .col-secondary {
+    display: none;
+  }
 }
 
 .waterfall {

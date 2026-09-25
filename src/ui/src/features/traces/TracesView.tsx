@@ -748,6 +748,7 @@ function GroupList({
                 sort={sort}
                 toggle={toggle}
                 numeric
+                className="col-secondary"
               />
               <SortTh
                 label="Errors"
@@ -762,6 +763,7 @@ function GroupList({
                 sort={sort}
                 toggle={toggle}
                 numeric
+                className="col-secondary"
               />
               <SortTh
                 label="P95"
@@ -776,6 +778,7 @@ function GroupList({
                 sort={sort}
                 toggle={toggle}
                 firstDir="desc"
+                className="col-secondary"
               />
             </tr>
           </thead>
@@ -803,13 +806,19 @@ function GroupList({
                       <td key={dims[i + 1]}>{v ?? NOT_SET}</td>
                     ))}
                     <td className="num">{g.count}</td>
-                    <td className="num">{formatRate(g.count, rangeSeconds)}</td>
+                    <td className="num col-secondary">
+                      {formatRate(g.count, rangeSeconds)}
+                    </td>
                     <td className={`num${g.errors > 0 ? " err-rate" : ""}`}>
                       {formatErrorRate(g.errors, g.count)}
                     </td>
-                    <td className="num">{formatDurationMs(g.p50Ms)}</td>
+                    <td className="num col-secondary">
+                      {formatDurationMs(g.p50Ms)}
+                    </td>
                     <td className="num">{formatDurationMs(g.p95Ms)}</td>
-                    <td>{formatTimestamp(nanosToMs(g.lastNs))}</td>
+                    <td className="col-secondary">
+                      {formatTimestamp(nanosToMs(g.lastNs))}
+                    </td>
                   </tr>
                 );
               })
