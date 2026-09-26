@@ -95,7 +95,7 @@ per-key `scopes` + `dataset_ids`/`allowed_origins` (set restrictions), patched b
 (change: oidc-login); `user_sessions`; users-tenant-membership ADR),
 `compactor_leases`, and the advisory `attribute_stats` table
 (epic #737: per-attribute-key presence/cardinality from the compactor's
-analyzer plus query-demand counters flushed by the querier, and a promote_streak hysteresis column for the auto-promotion decision pass), `attribute_value_stats` (bounded per-key sketch of the most frequent values, replaced wholesale per pass; what lets query discovery suggest values without reading signal data), and `schema_registries` (tenant custom semantic-convention registries: the uploaded Weaver-model document plus its cached resolution; change `schema-registry`).
+analyzer plus query-demand counters flushed by the querier, and a promote_streak hysteresis column for the auto-promotion decision pass), `attribute_value_stats` (bounded per-key sketch of the most frequent values, replaced wholesale per pass; what lets query discovery suggest values without reading signal data), `attribute_types` (the one canonical type per tenant, dataset, signal, attribute level and key; the first write wins atomically, later data never retypes it, and off-type occurrences are only counted; change `otel-native-schema`), and `schema_registries` (tenant custom semantic-convention registries: the uploaded Weaver-model document plus its cached resolution; change `schema-registry`).
 
 ## Discovery Mechanism
 

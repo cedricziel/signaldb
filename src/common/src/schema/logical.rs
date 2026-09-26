@@ -11,6 +11,16 @@ pub enum AttributeLevel {
     Record,
 }
 
+impl AttributeLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AttributeLevel::Resource => "resource",
+            AttributeLevel::Scope => "scope",
+            AttributeLevel::Record => "record",
+        }
+    }
+}
+
 /// The client-visible type of a logical field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -578,12 +588,7 @@ mod tests {
             let Some(level) = field.id.level else {
                 continue;
             };
-            let prefix = match level {
-                AttributeLevel::Resource => "resource",
-                AttributeLevel::Scope => "scope",
-                AttributeLevel::Record => "record",
-            };
-            let name = format!("{prefix}.{}", field.id.name);
+            let name = format!("{}.{}", level.as_str(), field.id.name);
             assert_eq!(schema.resolve(&field.id.source, &name), Some(field));
         }
     }
