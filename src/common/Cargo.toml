@@ -60,6 +60,7 @@ humantime-serde.workspace = true
 
 sqlx.workspace = true
 uuid.workspace = true
+twox-hash.workspace = true
 dashmap.workspace = true
 rustc-hash.workspace = true
 futures.workspace = true

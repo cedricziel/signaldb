@@ -241,12 +241,21 @@ its span is first entered; span links, by contrast, may be added at any time.
 Four carriers move the context, matching how each path already exchanges
 metadata:
 
-| Carrier                                               | Path                                    | Direction             |
-| ----------------------------------------------------- | --------------------------------------- | --------------------- |
-| JSON `app_metadata` on the first `FlightData` message | Acceptor → Writer `do_put`              | inject / extract      |
-| gRPC request metadata headers                         | Router → Querier `do_get`               | inject / extract      |
-| HTTP request headers                                  | external caller → Router query APIs     | extract (server side) |
-| Span links                                            | WAL batch fan-in (background processor) | link                  |
+| Carrier                                               | Path                       | Direction        |
+| ----------------------------------------------------- | -------------------------- | ---------------- |
+| JSON `app_metadata` on the first `FlightData` message | Acceptor → Writer `do_put` | inject / extract |
+
+The same `app_metadata` JSON also carries `ingest_id`: the acceptor's WAL
+entry id for the batch, stamped on every `do_put` (hot path and WAL retry
+consumer alike) so the writer can recognize a resend of the same entry and
+dedup it. The acceptor picks the destination writer for a `do_put` by
+rendezvous (highest random weight) hashing on `ingest_id` instead of
+round-robin, so every resend of a given entry reaches the same writer as
+long as the writer set is unchanged; see
+`InMemoryFlightTransport::get_client_for_capability_keyed`.
+| gRPC request metadata headers | Router → Querier `do_get` | inject / extract |
+| HTTP request headers | external caller → Router query APIs | extract (server side) |
+| Span links | WAL batch fan-in (background processor) | link |
 
 **Write path.** At `do_put` the Writer records the active span's context into
 the WAL entry metadata alongside the routing fields. Because the background
