@@ -78,11 +78,26 @@ pub fn typed_attribute_columns_from(
     container: &str,
     rows: &[Option<Map<String, JsonValue>>],
 ) -> ([Field; 5], [ArrayRef; 5]) {
+    typed_attribute_columns_from_with_placement(table, version, container, rows, default_placement)
+}
+
+/// [`typed_attribute_columns_from`], but with an explicit placement decision
+/// instead of [`default_placement`] — lets a test force a key to residue
+/// even when its value's JSON shape would otherwise match a canonical type
+/// (an off-type placement), the same way the type authority does for a
+/// genuinely off-type value.
+pub fn typed_attribute_columns_from_with_placement(
+    table: &str,
+    version: &str,
+    container: &str,
+    rows: &[Option<Map<String, JsonValue>>],
+    mut place: impl FnMut(&str, ObservedKind) -> Placement,
+) -> ([Field; 5], [ArrayRef; 5]) {
     let fields = typed_attribute_fields_from(table, version, container);
     let mut builder = TypedAttrBuilder::new(&fields).expect("typed attribute builder");
     for row in rows {
         builder
-            .append_row(row.as_ref(), default_placement)
+            .append_row(row.as_ref(), &mut place)
             .expect("append typed attribute row");
     }
     let arrays = builder.finish().expect("finish typed attribute builder");

@@ -396,6 +396,50 @@ fn merge_typed_row<V: Array + 'static>(
     Ok(true)
 }
 
+/// Decodes a container's five already-split typed-attribute arrays (e.g. a
+/// batch's named columns, or a `named_struct` bag expression's child arrays,
+/// which carry no column name to look up) back into per-row carrier
+/// documents. A row where all five arrays are null decodes to `None`. Shared
+/// by [`decode_container`] and the IR planner's `{scope}.attributes`
+/// raw-accessor struct (decoded on the router side, since a struct has no
+/// column name for the router to look up either).
+pub fn decode_typed_arrays(
+    str_map: &MapArray,
+    int_map: &MapArray,
+    double_map: &MapArray,
+    bool_map: &MapArray,
+    residue_col: &BinaryArray,
+) -> Result<Vec<Option<Map<String, JsonValue>>>, TypedAttrError> {
+    let mut out = Vec::with_capacity(str_map.len());
+    for row in 0..str_map.len() {
+        let mut doc = Map::new();
+        let mut present = merge_typed_row(str_map, "str", row, &mut doc, |v: &StringArray, j| {
+            JsonValue::String(v.value(j).to_string())
+        })?;
+        present |= merge_typed_row(int_map, "int", row, &mut doc, |v: &Int64Array, j| {
+            JsonValue::from(v.value(j))
+        })?;
+        present |= merge_typed_row(
+            double_map,
+            "double",
+            row,
+            &mut doc,
+            |v: &Float64Array, j| {
+                serde_json::Number::from_f64(v.value(j)).map_or(JsonValue::Null, JsonValue::Number)
+            },
+        )?;
+        present |= merge_typed_row(bool_map, "bool", row, &mut doc, |v: &BooleanArray, j| {
+            JsonValue::Bool(v.value(j))
+        })?;
+        if !residue_col.is_null(row) {
+            doc.extend(decode_residue(residue_col.value(row))?);
+            present = true;
+        }
+        out.push(present.then_some(doc));
+    }
+    Ok(out)
+}
+
 /// Decodes a container's five typed-attribute columns back into per-row
 /// carrier documents. A row where all five columns are null decodes to `None`.
 pub fn decode_container(
@@ -409,40 +453,7 @@ pub fn decode_container(
     let double_map = typed_column::<MapArray>(batch, &double_name)?;
     let bool_map = typed_column::<MapArray>(batch, &bool_name)?;
     let residue_col = typed_column::<BinaryArray>(batch, &residue_name)?;
-
-    let mut out = Vec::with_capacity(batch.num_rows());
-    for row in 0..batch.num_rows() {
-        let mut doc = Map::new();
-        let mut present =
-            merge_typed_row(str_map, &str_name, row, &mut doc, |v: &StringArray, j| {
-                JsonValue::String(v.value(j).to_string())
-            })?;
-        present |= merge_typed_row(int_map, &int_name, row, &mut doc, |v: &Int64Array, j| {
-            JsonValue::from(v.value(j))
-        })?;
-        present |= merge_typed_row(
-            double_map,
-            &double_name,
-            row,
-            &mut doc,
-            |v: &Float64Array, j| {
-                serde_json::Number::from_f64(v.value(j)).map_or(JsonValue::Null, JsonValue::Number)
-            },
-        )?;
-        present |= merge_typed_row(
-            bool_map,
-            &bool_name,
-            row,
-            &mut doc,
-            |v: &BooleanArray, j| JsonValue::Bool(v.value(j)),
-        )?;
-        if !residue_col.is_null(row) {
-            doc.extend(decode_residue(residue_col.value(row))?);
-            present = true;
-        }
-        out.push(present.then_some(doc));
-    }
-    Ok(out)
+    decode_typed_arrays(str_map, int_map, double_map, bool_map, residue_col)
 }
 
 #[cfg(test)]

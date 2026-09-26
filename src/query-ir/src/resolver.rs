@@ -62,10 +62,20 @@ pub enum Resolved {
         value_type: ValueType,
         key: String,
     },
+    /// A whole attribute container on the typed storage layout
+    /// (`common::schema::typed_attributes`), addressed by its container name
+    /// — the `{scope}.attributes` raw accessor. Retrieval-only, like the
+    /// legacy layout's `Column` resolution of the same field: a container
+    /// has no scalar value, so it never appears in a predicate, ordering, or
+    /// aggregate-operand position.
+    AttributeBag { container: String },
 }
 
 impl Resolved {
-    /// The canonical [`ValueType`] of the resolved field.
+    /// The canonical [`ValueType`] of the resolved field. `AttributeBag`
+    /// has no scalar `ValueType` of its own (it's a JSON object, like
+    /// `SpanEvents`); `String` is a placeholder never actually consulted,
+    /// since both are retrieval-only.
     pub fn value_type(&self) -> &ValueType {
         match self {
             Resolved::Column { value_type, .. } => value_type,
@@ -73,6 +83,7 @@ impl Resolved {
             Resolved::EventAttribute { value_type, .. } => value_type,
             Resolved::SpanEvents { .. } => &ValueType::String,
             Resolved::PromotedColumn { value_type, .. } => value_type,
+            Resolved::AttributeBag { .. } => &ValueType::String,
         }
     }
 
