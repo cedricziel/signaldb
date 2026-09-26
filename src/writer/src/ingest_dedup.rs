@@ -13,7 +13,8 @@
 //! ids still present in this writer's own WAL entries within the window (see
 //! [`crate::flight_iceberg::IcebergWriterFlightService::rebuild_ingest_dedup_from_wal`]).
 
-use std::collections::HashMap;
+use std::collections::VecDeque;
+use std::collections::hash_map::{Entry, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use uuid::Uuid;
@@ -34,11 +35,20 @@ impl Clock for SystemClock {
     }
 }
 
+/// The map (for O(1) lookup) plus its own entries in ascending-timestamp
+/// order (for O(1)-amortized eviction of the ones that aged out) -- see
+/// [`IngestDedup::evict_expired`].
+#[derive(Default)]
+struct Inner {
+    map: HashMap<Uuid, SystemTime>,
+    order: VecDeque<(SystemTime, Uuid)>,
+}
+
 /// Windowed ingest-id dedup cache. See module docs.
 pub struct IngestDedup {
     window: Duration,
     clock: Arc<dyn Clock>,
-    seen: Mutex<HashMap<Uuid, SystemTime>>,
+    inner: Mutex<Inner>,
 }
 
 impl IngestDedup {
@@ -53,7 +63,7 @@ impl IngestDedup {
         Self {
             window,
             clock,
-            seen: Mutex::new(HashMap::new()),
+            inner: Mutex::new(Inner::default()),
         }
     }
 
@@ -62,19 +72,19 @@ impl IngestDedup {
     ///
     /// Returns whether `id` was already present and within the window (a
     /// duplicate). Eviction of ids that have aged out is amortized into
-    /// every call rather than run on a separate timer, so the cache never
-    /// grows past the ids seen within one window plus this call's cost.
+    /// every call (`O(1)` per expired id, via [`Self::evict_expired`])
+    /// rather than run on a separate timer or by scanning the whole cache,
+    /// so the cost of one call never grows with how many ids are currently
+    /// cached (#1748 review: a `HashMap::retain` here was `O(n)` per put).
     pub fn check_and_record(&self, id: Uuid) -> bool {
         let now = self.clock.now();
-        let mut seen = self
-            .seen
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        seen.retain(|_, seen_at| Self::within_window(now, *seen_at, self.window));
-        match seen.entry(id) {
-            std::collections::hash_map::Entry::Occupied(_) => true,
-            std::collections::hash_map::Entry::Vacant(entry) => {
+        let mut inner = self.lock();
+        Self::evict_expired(&mut inner, now, self.window);
+        match inner.map.entry(id) {
+            Entry::Occupied(_) => true,
+            Entry::Vacant(entry) => {
                 entry.insert(now);
+                inner.order.push_back((now, id));
                 false
             }
         }
@@ -84,20 +94,69 @@ impl IngestDedup {
     /// window relative to the current clock -- used to rebuild the cache
     /// from on-disk WAL entry timestamps at startup. A later seed for an id
     /// already present never overwrites the earlier one, and seeding never
-    /// evicts other entries.
+    /// evicts other entries by itself (only piggybacks on the same
+    /// amortized eviction `check_and_record` uses).
+    ///
+    /// Seeds may arrive out of timestamp order (the startup scan walks WALs,
+    /// not a global time order), so this inserts into the ascending-order
+    /// eviction queue at its sorted position rather than always at the back
+    /// -- an `O(n)` insert, acceptable for a startup-only, bounded-size
+    /// rebuild.
     ///
     /// Returns whether `id` was inserted (`false` if it was already outside
     /// the window, or already present).
     pub fn seed(&self, id: Uuid, seen_at: SystemTime) -> bool {
-        if !Self::within_window(self.clock.now(), seen_at, self.window) {
+        let now = self.clock.now();
+        if !Self::within_window(now, seen_at, self.window) {
             return false;
         }
-        let mut seen = self
-            .seen
+        let mut inner = self.lock();
+        match inner.map.entry(id) {
+            Entry::Occupied(_) => false,
+            Entry::Vacant(entry) => {
+                entry.insert(seen_at);
+                let pos = inner.order.partition_point(|&(t, _)| t <= seen_at);
+                inner.order.insert(pos, (seen_at, id));
+                true
+            }
+        }
+    }
+
+    /// Number of ids currently cached (including any not yet evicted by a
+    /// call to [`Self::check_and_record`] or [`Self::seed`]). Test-only
+    /// introspection.
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.lock().map.len()
+    }
+
+    fn lock(&self) -> std::sync::MutexGuard<'_, Inner> {
+        self.inner
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        seen.entry(id).or_insert(seen_at);
-        true
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Pops every entry whose timestamp has aged out of `window` from the
+    /// front of `inner.order` (ascending, so the first in-window entry ends
+    /// the scan) and removes it from `inner.map` -- `O(1)` per expired
+    /// entry, never a full scan of the map. The map removal is guarded by a
+    /// timestamp match so a stale `order` entry can never evict a fresher
+    /// map entry for the same id (not reachable today -- neither
+    /// `check_and_record` nor `seed` ever overwrites an existing map entry
+    /// -- but the check is what makes that invariant load-bearing rather
+    /// than assumed).
+    fn evict_expired(inner: &mut Inner, now: SystemTime, window: Duration) {
+        while let Some(&(seen_at, id)) = inner.order.front() {
+            if Self::within_window(now, seen_at, window) {
+                break;
+            }
+            inner.order.pop_front();
+            if let Entry::Occupied(entry) = inner.map.entry(id)
+                && *entry.get() == seen_at
+            {
+                entry.remove();
+            }
+        }
     }
 
     /// Whether `seen_at` is still within `window` of `now`. A `seen_at` in
@@ -182,5 +241,72 @@ mod tests {
         let seen_at = clock.now() - Duration::from_secs(10);
         assert!(dedup.seed(id, seen_at));
         assert!(dedup.check_and_record(id));
+    }
+
+    /// #1748 review: eviction must be amortized, not an `O(n)` scan of the
+    /// whole cache on every call. Inserting many ids spread across time and
+    /// then advancing the clock past the window for the earliest ones must
+    /// shrink the cache down to just the ones still in-window, and an
+    /// expired id must be accepted again (not remembered as a duplicate).
+    #[test]
+    fn eviction_shrinks_the_cache_to_ids_still_within_the_window() {
+        let clock = FakeClock::at(SystemTime::now());
+        let dedup = IngestDedup::with_clock(Duration::from_secs(100), clock.clone());
+
+        let old_ids: Vec<Uuid> = (0..500).map(|_| Uuid::new_v4()).collect();
+        for id in &old_ids {
+            assert!(!dedup.check_and_record(*id));
+        }
+        assert_eq!(dedup.len(), 500);
+
+        // Well past the window for everything inserted above.
+        clock.advance(Duration::from_secs(200));
+
+        let fresh_ids: Vec<Uuid> = (0..10).map(|_| Uuid::new_v4()).collect();
+        for id in &fresh_ids {
+            assert!(!dedup.check_and_record(*id));
+        }
+
+        assert_eq!(
+            dedup.len(),
+            fresh_ids.len(),
+            "ids older than the window must be evicted, not accumulate unbounded"
+        );
+        assert!(
+            !dedup.check_and_record(old_ids[0]),
+            "an id older than the window must be accepted again, not treated as a duplicate"
+        );
+    }
+
+    /// #1748 review: the startup rebuild walks WALs, not a global time
+    /// order, so seeds can arrive with decreasing timestamps. The eviction
+    /// queue must still expire each one at its own time, not at the time it
+    /// happened to be seeded.
+    #[test]
+    fn seeds_out_of_order_still_expire_at_their_own_time() {
+        let clock = FakeClock::at(SystemTime::now());
+        let dedup = IngestDedup::with_clock(Duration::from_secs(100), clock.clone());
+
+        let newer_at = clock.now() - Duration::from_secs(10);
+        let older_at = clock.now() - Duration::from_secs(90);
+        let newer_id = Uuid::new_v4();
+        let older_id = Uuid::new_v4();
+
+        // Seed the newer one first -- out of timestamp order.
+        assert!(dedup.seed(newer_id, newer_at));
+        assert!(dedup.seed(older_id, older_at));
+        assert_eq!(dedup.len(), 2);
+
+        // 15s on: `older_id` (seeded 90s + 15s = 105s ago) is now past the
+        // 100s window; `newer_id` (10s + 15s = 25s ago) is not.
+        clock.advance(Duration::from_secs(15));
+        assert!(
+            !dedup.check_and_record(older_id),
+            "the older seed must expire on its own timestamp despite being seeded second"
+        );
+        assert!(
+            dedup.check_and_record(newer_id),
+            "the newer seed must still be a duplicate"
+        );
     }
 }
