@@ -34,12 +34,30 @@ function navLink(page: import("@playwright/test").Page, name: string) {
     .getByRole("link", { name, exact: true });
 }
 
-test("/ redirects to /logs with Logs current in the sidebar", async ({
+test("/ lands on the Overview, current in the sidebar", async ({ page }) => {
+  await page.goto("/");
+  await expect(page).toHaveURL(/\/overview$/);
+  await expect(navLink(page, "Overview")).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await expect(
+    page.getByRole("button", { name: /Setup checklist/ }),
+  ).toBeVisible();
+});
+
+test("the palette's setup action opens the checklist on the Overview", async ({
   page,
 }) => {
-  await page.goto("/");
-  await expect(page).toHaveURL(/\/logs$/);
-  await expect(navLink(page, "Logs")).toHaveAttribute("aria-current", "page");
+  await page.goto("/logs");
+  await expect(navLink(page, "Logs")).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+k");
+  await page.keyboard.type("setup checklist");
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/overview$/);
+  await expect(
+    page.getByRole("dialog", { name: "Setup checklist" }),
+  ).toBeVisible();
 });
 
 test("switching pages in the sidebar updates the path", async ({ page }) => {
@@ -89,9 +107,11 @@ test("an unknown path redirects to /logs, preserving the query string", async ({
   await expect(page).toHaveURL(/\/logs\?range=15m$/);
 });
 
-test("/ redirects to /logs, preserving the query string", async ({ page }) => {
+test("/ redirects to /overview, preserving the query string", async ({
+  page,
+}) => {
   await page.goto("/?tenant=homelab&dataset=default");
-  await expect(page).toHaveURL(/\/logs\?tenant=homelab&dataset=default$/);
+  await expect(page).toHaveURL(/\/overview\?tenant=homelab&dataset=default$/);
 });
 
 test("/manage redirects unauthenticated visitors to /logs", async ({

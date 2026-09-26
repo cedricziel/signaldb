@@ -26,8 +26,19 @@ export interface SparklineHoverPoint extends SparklinePoint {
   max: number;
 }
 
+/** A dashed vertical rule at an instant — a deploy, say. Drawn at the
+ * bucket the instant falls in, and named in that bucket's tooltip. */
+export interface SparklineMarker {
+  x: number;
+  label: string;
+}
+
 export interface SparklineProps {
   points: SparklinePoint[];
+  /** Dashed rules at these instants (epoch ms, like `points[].x`). */
+  markers?: SparklineMarker[];
+  /** Line width in px, kept constant however far the chart stretches. */
+  strokeWidth?: number;
   variant?: "line" | "bar";
   /** Maps to a token: neutral → `--dim`, error → `--err`, accent → `--accent`. */
   tone?: "neutral" | "error" | "accent";
@@ -61,6 +72,8 @@ const TONE_CLASS: Record<NonNullable<SparklineProps["tone"]>, string> = {
 
 export function Sparkline({
   points,
+  markers = [],
+  strokeWidth = 1,
   variant = "line",
   tone = "neutral",
   width = DEFAULT_WIDTH,
@@ -98,6 +111,20 @@ export function Sparkline({
   const cell =
     numericWidth / (variant === "line" ? points.length - 1 : points.length);
 
+  // Each marker lands on the bucket nearest its instant.
+  const markerAt = new Map<number, string[]>();
+  for (const m of markers) {
+    let best = 0;
+    for (let i = 1; i < points.length; i++) {
+      if (Math.abs(points[i]!.x - m.x) < Math.abs(points[best]!.x - m.x)) {
+        best = i;
+      }
+    }
+    markerAt.set(best, [...(markerAt.get(best) ?? []), m.label]);
+  }
+  const xAt = (i: number) =>
+    variant === "line" ? i * cell : i * cell + cell / 2;
+
   const toHover = (p: SparklinePoint): SparklineHoverPoint => ({
     ...p,
     stepMs,
@@ -132,11 +159,31 @@ export function Sparkline({
         aria-label={ariaLabel}
         preserveAspectRatio="none"
       >
+        {[...markerAt.keys()].map((i) => (
+          <line
+            key={`m${i}`}
+            className="sparkline-marker"
+            data-testid="sparkline-marker"
+            x1={xAt(i)}
+            x2={xAt(i)}
+            y1={0}
+            y2={height}
+          />
+        ))}
+        {showTooltip && active !== null && activePoint && (
+          <line
+            className="sparkline-crosshair"
+            x1={xAt(active)}
+            x2={xAt(active)}
+            y1={0}
+            y2={height}
+          />
+        )}
         {variant === "line" ? (
           <polyline
             className={`sparkline-line ${TONE_CLASS[tone]}`}
             fill="none"
-            strokeWidth="1"
+            strokeWidth={strokeWidth}
             points={points
               .map(
                 (p, i) =>
@@ -222,6 +269,11 @@ export function Sparkline({
               label: valueLabel,
               value: formatValue(activePoint.v),
             },
+            ...(markerAt.get(active!) ?? []).map((label) => ({
+              label: "deploy",
+              value: label,
+              muted: true,
+            })),
           ]}
           valueWidthCh={formatValue(max).length}
         />

@@ -45,6 +45,10 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
 
 ## What it does
 
+- **Overview** — the landing page (`/`, `/overview`): system-wide KPIs,
+  deploys, the service map, every service's health, ingest per signal, the
+  top error groups and the slowest endpoints, scoped to one environment and
+  the selected window. See [The overview](#the-overview).
 - **Catalog** — a service/infrastructure catalog discovered by querying the
   ingested telemetry for OTel semantic-convention resource attributes, not
   from a fixed inventory. The service entity type offers a **List | Map**
@@ -220,6 +224,50 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   size, page and dialog titles share one size, and toolbars and panes share
   one gutter, so the Logs search box lines up with the histogram axis and
   no page is padded differently from its neighbours.
+
+### The overview
+
+`/overview` (the root `/` redirects here, as does the sidebar's wordmark)
+answers three questions at a glance: is anything broken right now, what is in
+the system, and how much is it ingesting. Every figure covers the selected
+window, 30 buckets wide, and every row links into the view that explains it
+— nothing filters in place.
+
+- **Environment.** The `env` picker lists the `deployment.environment.name`
+  values seen on spans in the window and scopes every query to one of them
+  (`?env=` in the URL); **all** leaves it unscoped.
+- **KPI strip.** Requests, error rate and p95 latency over **root spans**
+  (end-to-end), each with the change against the equal-length window just
+  before (rising errors and latency read red, rising traffic green) and a
+  sparkline; the error rate turns red at 0.5%. **Ingest** is the number of
+  records accepted across signals — spans, log records, metric points and
+  profiles; the UI has no per-tenant byte counts to show. The **Services**
+  card counts the services reporting and their health split.
+- **Deploys.** There is no deploy event stream, so deploys are read off
+  spans: a service's `service.version` whose first span in the window comes
+  after another version of the same service was already reporting. The lane
+  under the KPI strip places each one on the window's time axis; the same
+  instants are dashed markers in the KPI sparklines (named in their
+  tooltips) and in that service's row.
+- **Service map.** The tenant's service graph (the catalog Map's query)
+  with zoom buttons, ⌘/Ctrl + scroll to zoom at the pointer, and drag to
+  pan. Edges flow and critical services pulse unless the system asks for
+  reduced motion. A node opens its catalog entry.
+- **Services.** Worst health first, then busiest: **critical** at ≥ 2%
+  errors, **degraded** at ≥ 0.5% errors or a p95 above 500 ms — the same
+  error thresholds the map colours by. Rate, errors and p95 cover Server
+  spans, as in the catalog; **Last deploy** shows an in-window deploy's
+  version and age, otherwise the running version.
+- **Ingest volume.** Records per signal per bucket, stacked, with totals and
+  shares linking to each signal's view.
+- **Top error groups** and **Slowest endpoints** (Server spans by p95, with
+  p99) link into Errors and Traces with the group or endpoint selected.
+- **Setup checklist.** The **Setup** button opens the steps that add
+  coverage to the page: traces, every service traced, logs and profiles
+  from every traced service, GitHub source links, and (for admins) a second
+  member. Coverage is read off the window shown. The button hides once every
+  step is done; the palette's **Open setup checklist** opens it directly
+  (`/overview?setup`).
 
 ### The catalog
 
@@ -861,9 +909,9 @@ Every page sits in one shell: a navigation sidebar on the left, and a page
 header across the top of the main column.
 
 - **Sidebar.** The signaldb wordmark, the tenant/dataset switcher, then the
-  pages in three groups — **Monitor** (Errors, Catalog), **Investigate**
-  (Logs, Traces, Metrics, Profiles, Query) and **Configure** (Schema,
-  Processors, Instrumentation). At the bottom are **Manage** (tenant and
+  pages in three groups — **Monitor** (Overview, Errors, Catalog),
+  **Investigate** (Logs, Traces, Metrics, Profiles, Query) and **Configure**
+  (Schema, Processors, Instrumentation). At the bottom are **Manage** (tenant and
   instance admins only), your account (which opens the
   [user menu](#user-menu)) and **Collapse**. Links to explore pages carry
   the current time range and tenant/dataset; filters and search stay with
@@ -890,7 +938,7 @@ search button opens a palette centered over the page. With nothing typed it
 lists your recent queries, pages and a few actions. Typing filters pages,
 the catalog's services (jumping to their catalog entry), recent queries and
 actions (Invite members, Create API key, Instrument a service, Connect
-GitHub, Switch tenant). Pasting a 32- or 16-digit hex trace id offers a
+GitHub, Switch tenant, Open setup checklist). Pasting a 32- or 16-digit hex trace id offers a
 direct jump to that trace. **↑**/**↓** move the selection, **Enter** opens
 it, **Escape** closes the palette.
 
@@ -922,8 +970,9 @@ phone top bar) opens a user menu:
 
 The menu closes on Escape or backdrop click.
 
-The **signaldb** wordmark at the top of the sidebar is a link back to the
-Logs view, carrying the current tenant/dataset and time range.
+The **signaldb** wordmark at the top of the sidebar is a link to the
+[Overview](#the-overview), carrying the current tenant/dataset and time
+range.
 
 ### Management panel (`/manage`)
 

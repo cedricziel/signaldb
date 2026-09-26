@@ -38,6 +38,24 @@ function tableResponse(rows: unknown[][]) {
 }
 
 describe("buildErrorGroupDoc", () => {
+  it("appends extra scope stages after the service pin", () => {
+    const scope = [
+      {
+        where: {
+          field: "deployment.environment.name",
+          op: "eq",
+          value: "prod",
+        },
+      },
+    ];
+    const doc = buildErrorGroupDoc("logs", range, "cart", scope);
+    expect(doc.pipeline?.slice(0, 3)).toEqual([
+      { where: { field: "exception.type", op: "exists" } },
+      { where: { field: "service.name", op: "eq", value: "cart" } },
+      ...scope,
+    ]);
+  });
+
   it("groups spans with a captured exception by type/message/service/escaped", () => {
     const doc = buildErrorGroupDoc("traces", range);
     expect(doc.from).toBe("traces");

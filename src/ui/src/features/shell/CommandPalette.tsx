@@ -88,6 +88,11 @@ export function CommandPalette({ state, canManage, onClose }: Props) {
           ]
         : []),
       { label: "Switch tenant", meta: "action", href: "/select-tenant" },
+      {
+        label: "Open setup checklist",
+        meta: "action",
+        href: withParam(`/overview${crossSignalSearch(state)}`, "setup"),
+      },
     ];
     return { pages, services, recent, actions };
   }, [state, canManage, services, recent]);
@@ -217,6 +222,11 @@ export function CommandPalette({ state, canManage, onClose }: Props) {
       </div>
     </>
   );
+}
+
+/** `href` with a bare `name` flag appended to its query string. */
+function withParam(href: string, name: string): string {
+  return `${href}${href.includes("?") ? "&" : "?"}${name}`;
 }
 
 /** The catalog's service list as palette rows — the same query (and cache

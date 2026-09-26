@@ -78,6 +78,8 @@ export function buildErrorGroupDoc(
    * "Error groups" section (`EntityErrorGroups`), unlike the standalone
    * Errors tab which shows every service at once. */
   serviceName?: string,
+  /** Extra `where` stages — the Overview's environment scope. */
+  scope: Record<string, unknown>[] = [],
 ): QueryIrRequest {
   return {
     irVersion: 1,
@@ -89,6 +91,7 @@ export function buildErrorGroupDoc(
       ...(serviceName != null
         ? [{ where: { field: "service.name", op: "eq", value: serviceName } }]
         : []),
+      ...scope,
       {
         aggregate: {
           by: GROUP_DIMENSIONS,
@@ -137,10 +140,11 @@ function groupsFromResponse(
 export async function fetchErrorGroups(
   range: ResolvedRange,
   serviceName?: string,
+  scope: Record<string, unknown>[] = [],
 ): Promise<ErrorGroupResult> {
   const [tracesRes, logsRes] = await Promise.all([
-    runIrQuery(buildErrorGroupDoc("traces", range, serviceName)),
-    runIrQuery(buildErrorGroupDoc("logs", range, serviceName)),
+    runIrQuery(buildErrorGroupDoc("traces", range, serviceName, scope)),
+    runIrQuery(buildErrorGroupDoc("logs", range, serviceName, scope)),
   ]);
   const groups = [
     ...groupsFromResponse(tracesRes, "traces"),

@@ -38,6 +38,34 @@ describe("Sparkline", () => {
     expect(within(tip).getByTestId("viz-tip-row")).toHaveTextContent("5 ms");
   });
 
+  it("marks an instant at its nearest bucket and names it in that bucket's tooltip", () => {
+    render(
+      <Sparkline
+        points={points}
+        markers={[{ x: 70_000, label: "cart v2" }]}
+        formatLabel={(x) => `t=${x}`}
+      />,
+    );
+    const marker = screen.getByTestId("sparkline-marker");
+    expect(marker.getAttribute("x1")).toBe("44");
+    const hit = document.querySelectorAll("[data-testid='sparkline-hit']")[1]!;
+    fireEvent.pointerMove(hit, { clientX: 10, clientY: 5 });
+    const rows = within(screen.getByRole("tooltip")).getAllByTestId(
+      "viz-tip-row",
+    );
+    expect(rows[1]).toHaveTextContent("deploy");
+    expect(rows[1]).toHaveTextContent("cart v2");
+    // Another bucket's tooltip has no deploy row.
+    fireEvent.pointerLeave(hit);
+    fireEvent.pointerMove(
+      document.querySelectorAll("[data-testid='sparkline-hit']")[0]!,
+      { clientX: 1, clientY: 5 },
+    );
+    expect(
+      within(screen.getByRole("tooltip")).getAllByTestId("viz-tip-row"),
+    ).toHaveLength(1);
+  });
+
   it("hides the tooltip when the pointer leaves", () => {
     render(<Sparkline points={points} />);
     const hit = document.querySelectorAll("[data-testid='sparkline-hit']")[0]!;
