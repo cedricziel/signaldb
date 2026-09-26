@@ -108,6 +108,13 @@ impl CatalogManager {
         self
     }
 
+    /// The attached database tenant source, if any — e.g. so a caller can
+    /// query catalog tables (like `attribute_types`) scoped to the same
+    /// database the tenant registry itself reads.
+    pub fn tenant_source(&self) -> Option<&Arc<Catalog>> {
+        self.tenant_source.as_ref()
+    }
+
     /// Create an in-memory catalog manager for fast tests.
     ///
     /// This uses `Configuration::default()` which provides:
