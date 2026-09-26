@@ -26,6 +26,7 @@ use axum::{
 use common::auth::{TenantContext, TenantContextExtractor};
 use common::flight::transport::ServiceCapability;
 use common::query_ir::{Literal, ValueType, coerce};
+use common::schema::typed_attributes::{IR_TYPE_METADATA_KEY, RAW_ATTRIBUTE_BAG_IR_TYPE};
 use datafusion::arrow::array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, MapArray, RecordBatch,
     StringArray, TimestampNanosecondArray,
@@ -1140,8 +1141,17 @@ fn to_heatmap_cells(batches: &[RecordBatch]) -> Result<Vec<HeatmapCell>, ApiErro
     Ok(cells)
 }
 
-/// Column name + IR value type for a batch field.
+/// Column name + IR value type for a batch field. A field's own metadata
+/// (set by the querier for a type Arrow can't express on its own, e.g.
+/// [`RAW_ATTRIBUTE_BAG_IR_TYPE`]) takes precedence over the Arrow-type
+/// inference below.
 fn column_meta(field: &datafusion::arrow::datatypes::Field) -> ResultColumn {
+    if let Some(ir_type) = field.metadata().get(IR_TYPE_METADATA_KEY) {
+        return ResultColumn {
+            name: field.name().clone(),
+            value_type: ir_type.clone(),
+        };
+    }
     let value_type = match field.data_type() {
         DataType::Boolean => "bool",
         DataType::Int8
@@ -1186,9 +1196,50 @@ fn canonical_arrow_type(ir_type: &str) -> Option<DataType> {
         "bool" => DataType::Boolean,
         "timestamp_ns" => DataType::Timestamp(TimeUnit::Nanosecond, None),
         "bytes" => DataType::Binary,
-        MAP_TYPE => return None,
+        MAP_TYPE | RAW_ATTRIBUTE_BAG_IR_TYPE => return None,
         _ => DataType::Utf8,
     })
+}
+
+/// Decodes an attribute-bag struct column (the querier's `attribute_bag_expr`
+/// — five typed-layout columns as a struct's children, in that fixed order)
+/// into one JSON object per row, via `common::attrs::typed::decode_typed_arrays`
+/// — once per column, not once per cell. A malformed struct (never produced
+/// by the querier, but not a `panic!`) decodes every row as `null`.
+fn attribute_bag_cells(array: &dyn Array) -> Vec<serde_json::Value> {
+    use common::attrs::typed::decode_typed_arrays;
+    use datafusion::arrow::array::{BinaryArray, MapArray, StructArray};
+
+    fn typed_children(
+        cols: &[ArrayRef],
+    ) -> Option<(&MapArray, &MapArray, &MapArray, &MapArray, &BinaryArray)> {
+        Some((
+            cols.first()?.as_any().downcast_ref()?,
+            cols.get(1)?.as_any().downcast_ref()?,
+            cols.get(2)?.as_any().downcast_ref()?,
+            cols.get(3)?.as_any().downcast_ref()?,
+            cols.get(4)?.as_any().downcast_ref()?,
+        ))
+    }
+
+    let len = array.len();
+    let decoded = array
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .and_then(|s| typed_children(s.columns()))
+        .and_then(|(str_map, int_map, double_map, bool_map, residue)| {
+            decode_typed_arrays(str_map, int_map, double_map, bool_map, residue).ok()
+        });
+    match decoded {
+        Some(rows) => rows
+            .into_iter()
+            .map(|row| {
+                row.map(serde_json::Value::Object)
+                    .unwrap_or(serde_json::Value::Null)
+            })
+            .collect(),
+        None => vec![serde_json::Value::Null; len],
+    }
 }
 
 /// Extract one cell of an already-canonicalized array as JSON, following the IR
@@ -1288,8 +1339,25 @@ pub(super) fn ir_table(
                 None => batch.column(c).clone(),
             })
             .collect();
+        // An attribute-bag column decodes once per column here, not once per
+        // cell (see `attribute_bag_cells`).
+        let bag_cells: Vec<Option<Vec<serde_json::Value>>> = columns
+            .iter()
+            .zip(&casted)
+            .map(|(meta, array)| {
+                (meta.value_type == RAW_ATTRIBUTE_BAG_IR_TYPE)
+                    .then(|| attribute_bag_cells(array.as_ref()))
+            })
+            .collect();
         for r in 0..batch.num_rows() {
-            let row = casted.iter().map(|a| cell(a.as_ref(), r)).collect();
+            let row = casted
+                .iter()
+                .enumerate()
+                .map(|(c, a)| match &bag_cells[c] {
+                    Some(decoded) => decoded[r].clone(),
+                    None => cell(a.as_ref(), r),
+                })
+                .collect();
             rows.push(row);
         }
     }
@@ -1434,6 +1502,78 @@ mod row_encoding {
         let meta = column_meta(field.field(0));
         assert_eq!(meta.name, "resource_attributes");
         assert_eq!(meta.value_type, "map<string,string>");
+    }
+
+    /// A struct column tagged with
+    /// `common::schema::typed_attributes::IR_TYPE_METADATA_KEY` — the shape
+    /// the querier's `attribute_bag_expr` produces for a typed-layout
+    /// container's raw accessor — declares `map<string,any>` and decodes as
+    /// the JSON object its typed children encode, not the legacy layout's
+    /// flat string map.
+    #[test]
+    fn metadata_tagged_struct_column_decodes_as_a_json_object() {
+        use common::schema::typed_attributes::{IR_TYPE_METADATA_KEY, RAW_ATTRIBUTE_BAG_IR_TYPE};
+        use datafusion::arrow::array::{
+            BinaryArray, BooleanBuilder, Float64Builder, Int64Builder, StructArray,
+        };
+        use std::collections::HashMap;
+
+        // Row 0: `http.method` in its `str` home. Row 1: no attributes at
+        // all (every typed column null) — the container-absent case.
+        macro_rules! empty_map {
+            ($value_builder:expr) => {{
+                let mut b = MapBuilder::new(None, StringBuilder::new(), $value_builder);
+                b.append(false).unwrap();
+                b.append(false).unwrap();
+                Arc::new(b.finish()) as ArrayRef
+            }};
+        }
+        let mut str_builder = MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
+        str_builder.keys().append_value("http.method");
+        str_builder.values().append_value("GET");
+        str_builder.append(true).unwrap();
+        str_builder.append(false).unwrap();
+        let children: Vec<(&str, ArrayRef)> = vec![
+            ("str", Arc::new(str_builder.finish())),
+            ("int", empty_map!(Int64Builder::new())),
+            ("double", empty_map!(Float64Builder::new())),
+            ("bool", empty_map!(BooleanBuilder::new())),
+            ("residue", Arc::new(BinaryArray::from(vec![None, None]))),
+        ];
+        let children: Vec<(Arc<Field>, ArrayRef)> = children
+            .into_iter()
+            .map(|(name, arr)| {
+                (
+                    Arc::new(Field::new(name, arr.data_type().clone(), true)),
+                    arr,
+                )
+            })
+            .collect();
+        let array: ArrayRef = Arc::new(StructArray::from(children));
+        let field = Field::new("log_attributes", array.data_type().clone(), true).with_metadata(
+            HashMap::from([(
+                IR_TYPE_METADATA_KEY.to_string(),
+                RAW_ATTRIBUTE_BAG_IR_TYPE.to_string(),
+            )]),
+        );
+        let schema = Arc::new(Schema::new(vec![field]));
+        let batch = RecordBatch::try_new(schema, vec![array]).unwrap();
+
+        let meta = column_meta(batch.schema().field(0));
+        assert_eq!(meta.value_type, RAW_ATTRIBUTE_BAG_IR_TYPE);
+
+        let (columns, rows) = ir_table(&[batch]);
+        assert_eq!(columns[0].value_type, RAW_ATTRIBUTE_BAG_IR_TYPE);
+        assert_eq!(
+            rows[0][0],
+            serde_json::json!({ "http.method": "GET" }),
+            "a map<string,any> cell must decode the struct into a JSON object"
+        );
+        assert_eq!(
+            rows[1][0],
+            serde_json::Value::Null,
+            "a row with no attributes in any typed column stays null"
+        );
     }
 }
 
