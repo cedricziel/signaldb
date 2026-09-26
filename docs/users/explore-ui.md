@@ -1267,6 +1267,12 @@ See [src/ui/README.md](https://github.com/cedricziel/signaldb/blob/main/src/ui/R
 dev server with hot reload that proxies API calls to any live SignalDB
 instance (local or remote) with credentials injected from `.env.local`.
 
+Components and pages have Storybook stories (`pnpm --filter signaldb-ui
+storybook`), which also feed the Claude Design design system via
+design-sync. A new page ships with a `Pages/<Name>` story (light and dark,
+fixtures derived from each request's own time range) and an entry in
+`.design-sync/pkg/build.sh` and `.design-sync/config.json`.
+
 The UI talks to the API only through the generated TypeScript client in
 `src/ui/src/api/gen/` (regenerated with `cargo xtask generate` whenever the
 OpenAPI document changes); it covers every router endpoint, including the
