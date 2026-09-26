@@ -39,8 +39,9 @@ use common::query_ir::{
     ResultEnvelope, SourceRegistry, Stage, TimestampLiteral, ValueType, coerce, safe_ident,
     validate,
 };
-use common::schema::logical::{Filterability, LogicalSchema, LogicalType};
-use common::schema::typed_attributes::{self, has_typed_container, typed_columns};
+use common::schema::logical::{AttributeLevel, Filterability, LogicalSchema, LogicalType};
+use common::schema::type_authority::CanonicalType;
+use common::schema::typed_attributes::{self, has_typed_container, home_column, typed_columns};
 use datafusion::arrow::array::{
     Array, BooleanArray, Float64Array, LargeStringArray, StringArray, StringBuilder,
     StringViewArray, TimestampNanosecondArray,
@@ -977,6 +978,10 @@ pub(crate) struct SchemaResolver {
     columns: HashMap<String, ValueType>,
     physical_names: std::collections::HashSet<String>,
     container: String,
+    /// Every attribute container this source coalesces over, in resolution
+    /// order — see `typed_attribute`'s unqualified branch, which walks these
+    /// to pick the first-recorded canonical type.
+    containers: &'static [&'static str],
     aliases: &'static [(&'static str, &'static str)],
     /// Logical scope qualifiers (`span.`, `resource.`, ...) this source
     /// recognizes — see `column_for`'s use, which strips one before
@@ -984,6 +989,12 @@ pub(crate) struct SchemaResolver {
     attr_prefixes: &'static [(&'static str, &'static str)],
     source: String,
     logical_schema: LogicalSchema,
+    /// The committed canonical attribute types for this scan, when
+    /// `plan_document` resolved them (`otel-native-schema` task 4.4) — set
+    /// via [`Self::with_typed`]. `None` for every compat lowering and most
+    /// tests, which read a typed-layout table (if any) through the legacy
+    /// coalesce instead (see [`AttributeTypeRequest`]).
+    typed: Option<CanonicalTypes>,
 }
 
 impl SchemaResolver {
@@ -1000,11 +1011,23 @@ impl SchemaResolver {
             columns,
             physical_names,
             container: source.containers[0].to_string(),
+            containers: source.containers,
             aliases: source.aliases,
             attr_prefixes: source.attr_prefixes,
             source: source.name.to_string(),
             logical_schema: LogicalSchema::core(),
+            typed: None,
         }
+    }
+
+    /// Resolve unpromoted attributes against `types`'s committed canonical
+    /// homes instead of the legacy JSON-path coalesce (task 4.4). Only ever
+    /// set by [`plan_document`] for `IrService::query`'s typed-resolve path,
+    /// and only over a table `is_typed_layout` reports as typed — see
+    /// [`Self::typed_attribute`].
+    pub(crate) fn with_typed(mut self, types: CanonicalTypes) -> Self {
+        self.typed = Some(types);
+        self
     }
 
     /// Resolve a declared logical field to its current physical realization:
@@ -1072,6 +1095,78 @@ impl SchemaResolver {
     fn has_declared_type(&self, field: &str) -> bool {
         self.logical_schema.resolve(&self.source, field).is_some()
     }
+
+    /// Resolve an unpromoted attribute against the typed layout's committed
+    /// canonical homes (task 4.4), or `None` when there's nothing typed to
+    /// resolve against — no `with_typed` types, or `field`'s container isn't
+    /// itself on the typed layout — so the caller falls back to the legacy
+    /// `JsonPath` coalesce.
+    fn typed_attribute(&self, field: &str) -> Option<Resolved> {
+        let types = self.typed.as_ref()?;
+        let promoted_label = |canonical: CanonicalType, key: &str| -> Option<String> {
+            if canonical != CanonicalType::String {
+                return None;
+            }
+            let materialized = common::schema::materialized_column_name(key);
+            self.columns
+                .contains_key(&materialized)
+                .then_some(materialized)
+        };
+
+        if let Some((container, bare)) = strip_scope_qualifier(self.attr_prefixes, field) {
+            if !has_typed_container(self.physical_names.iter().map(String::as_str), container) {
+                return None;
+            }
+            let level = typed_attributes::container_level(container);
+            return Some(match types.get(level, bare) {
+                Some(canonical) => Resolved::TypedAttribute {
+                    homes: vec![home_column(container, canonical)],
+                    promoted: promoted_label(canonical, bare),
+                    key: bare.to_string(),
+                    value_type: logical_to_value_type(canonical.into()),
+                },
+                None => Resolved::TypedAttribute {
+                    homes: Vec::new(),
+                    promoted: None,
+                    key: bare.to_string(),
+                    value_type: ValueType::String,
+                },
+            });
+        }
+
+        // Unqualified: T is the canonical type of the first container (in
+        // resolution order) with a recorded type; every other container
+        // whose recorded type is also T joins the coalesce, in order — a
+        // differently-typed container is excluded (reachable via a qualified
+        // name or the raw bag), matching the legacy coalesce's own scoping.
+        let by_level: Vec<(&'static str, AttributeLevel)> = self
+            .containers
+            .iter()
+            .map(|c| (*c, typed_attributes::container_level(c)))
+            .collect();
+        let Some(canonical) = by_level
+            .iter()
+            .find_map(|(_, level)| types.get(*level, field))
+        else {
+            return Some(Resolved::TypedAttribute {
+                homes: Vec::new(),
+                promoted: None,
+                key: field.to_string(),
+                value_type: ValueType::String,
+            });
+        };
+        let homes = by_level
+            .iter()
+            .filter(|(_, level)| types.get(*level, field) == Some(canonical))
+            .map(|(container, _)| home_column(container, canonical))
+            .collect();
+        Some(Resolved::TypedAttribute {
+            homes,
+            promoted: promoted_label(canonical, field),
+            key: field.to_string(),
+            value_type: logical_to_value_type(canonical.into()),
+        })
+    }
 }
 
 /// Exception attributes per the OTel exception semantic conventions
@@ -1112,11 +1207,11 @@ impl FieldResolver for SchemaResolver {
             let value_type = logical_to_value_type(logical.value_type);
             return match self.column_for(field, value_type.clone()) {
                 Some(resolved) => Some(resolved),
-                None => Some(Resolved::JsonPath {
+                None => self.typed_attribute(field).or(Some(Resolved::JsonPath {
                     container: self.container.clone(),
                     key: field.to_string(),
                     value_type,
-                }),
+                })),
             };
         }
         if self.physical_names.contains(field) {
@@ -1124,12 +1219,13 @@ impl FieldResolver for SchemaResolver {
         }
         match self.column_for(field, ValueType::String) {
             Some(resolved) => Some(resolved),
-            // An unpromoted attribute: a String extraction from the container.
-            None => Some(Resolved::JsonPath {
+            // An unpromoted attribute: a typed-home read when this table's
+            // types are known, else a String extraction from the container.
+            None => self.typed_attribute(field).or(Some(Resolved::JsonPath {
                 container: self.container.clone(),
                 key: field.to_string(),
                 value_type: ValueType::String,
-            }),
+            })),
         }
     }
 
@@ -1432,11 +1528,8 @@ pub(crate) async fn plan_document(
         return Ok(None);
     };
 
-    // Resolved from the scanned table's own schema — never a second scan —
-    // and not yet read by field resolution (the typed resolver lands with
-    // `otel-native-schema` task 4.4); `_attribute_reads` is carried so the
-    // fetch below isn't wasted once that resolver exists.
-    let _attribute_reads = match attribute_type_request {
+    // Resolved from the scanned table's own schema — never a second scan.
+    let attribute_reads = match attribute_type_request {
         AttributeTypeRequest::CompatOnly => AttributeReads::CompatString,
         AttributeTypeRequest::Resolve(lookup) => {
             if common::schema::typed_attributes::is_typed_layout(
@@ -1463,7 +1556,12 @@ pub(crate) async fn plan_document(
 
     // Build the resolver from the actual scanned schema and validate the
     // document against it (envelope, coercibility, references, guards).
-    let resolver = SchemaResolver::new(base.schema(), &source);
+    let resolver = match attribute_reads {
+        AttributeReads::Typed(types) => {
+            SchemaResolver::new(base.schema(), &source).with_typed(types)
+        }
+        AttributeReads::CompatString => SchemaResolver::new(base.schema(), &source),
+    };
     validate(doc, &SourceRegistry::core(), &resolver)
         .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
 
@@ -1652,8 +1750,6 @@ pub(crate) const DEFAULT_CORRELATE_MAX_ROWS: usize = 5_000_000;
 pub(crate) enum AttributeReads {
     #[default]
     CompatString,
-    // consumed by typed attribute resolution (4.4)
-    #[allow(dead_code)]
     Typed(CanonicalTypes),
 }
 
@@ -2004,6 +2100,16 @@ impl Lowering<'_> {
                     true,
                 ))
             }
+            Some(Resolved::TypedAttribute {
+                homes,
+                promoted,
+                key,
+                value_type,
+            }) => Ok((
+                self.typed_attribute_expr(&homes, promoted.as_deref(), &key, PARENT_COLUMN_PREFIX),
+                value_type,
+                false,
+            )),
             _ => Err(QuerierError::InvalidInput(format!(
                 "field 'parent.{stripped}' is not yet supported by correlate"
             ))),
@@ -2074,7 +2180,8 @@ impl Lowering<'_> {
                     Resolved::JsonPath { .. }
                     | Resolved::EventAttribute { .. }
                     | Resolved::SpanEvents { .. }
-                    | Resolved::AttributeBag { .. },
+                    | Resolved::AttributeBag { .. }
+                    | Resolved::TypedAttribute { .. },
                 )
                 | None => safe_ident(logical),
             }
@@ -2870,6 +2977,12 @@ impl Lowering<'_> {
             Some(Resolved::PromotedColumn { name, key, .. }) => {
                 Ok(self.promoted_column_expr(&name, &key))
             }
+            Some(Resolved::TypedAttribute {
+                homes,
+                promoted,
+                key,
+                ..
+            }) => Ok(self.typed_attribute_expr(&homes, promoted.as_deref(), &key, "")),
             // Retrieval-only, like `SpanEvents`; `is_filterable` rejects it
             // as a value position at validation time, so unreachable here.
             Some(Resolved::AttributeBag { container }) => Err(QuerierError::InvalidInput(format!(
@@ -2962,6 +3075,42 @@ impl Lowering<'_> {
         coalesce(vec![ident(name), self.attr_expr(key)])
     }
 
+    /// Read a [`Resolved::TypedAttribute`]: `get_field(key)` on each home
+    /// column, coalesced same-typed (no cast — every home in `homes` was
+    /// chosen for sharing `value_type`'s canonical type), with `promoted`
+    /// (a `label_<key>` column, only ever set when `value_type` is `String`)
+    /// checked first when present. `homes` empty (no committed type for
+    /// `key` anywhere) reads as a typed NULL rather than an error. `prefix`
+    /// is `""` for the child side and [`PARENT_COLUMN_PREFIX`] for a
+    /// `parent.`-scoped reference, addressing `<prefix><home>` either way —
+    /// built with `ident()`, never `col()`, for the same reason as
+    /// [`Self::attr_expr_with_prefix`].
+    fn typed_attribute_expr(
+        &self,
+        homes: &[String],
+        promoted: Option<&str>,
+        key: &str,
+        prefix: &str,
+    ) -> Expr {
+        if homes.is_empty() {
+            return lit(ScalarValue::Utf8(None));
+        }
+        let mut parts: Vec<Expr> = Vec::with_capacity(homes.len() + 1);
+        if let Some(label) = promoted {
+            parts.push(ident(format!("{prefix}{label}")));
+        }
+        parts.extend(
+            homes
+                .iter()
+                .map(|home| get_field(ident(format!("{prefix}{home}")), key)),
+        );
+        if parts.len() == 1 {
+            parts.remove(0)
+        } else {
+            coalesce(parts)
+        }
+    }
+
     /// Extract one attribute from a named span event (see
     /// `Resolved::EventAttribute`), via the `ir_event_attr` UDF.
     fn event_attr_expr(&self, events_column: &str, event_name: &str, key: &str) -> Expr {
@@ -3033,8 +3182,12 @@ impl Lowering<'_> {
             // column as "known"). No declared type means its `String` type
             // is a hardcoded default, not a declared one. That is the
             // "untyped" case `ordered` needs, distinct from a field the
-            // schema registry explicitly declares as `String`.
-            let untyped = !self.resolver.has_declared_type(&leaf.field);
+            // schema registry explicitly declares as `String`. A
+            // `TypedAttribute` is never "untyped" this way even when the
+            // logical schema doesn't declare it — its type is the writer's
+            // committed canonical type, not a permissive-fallback default.
+            let untyped = !self.resolver.has_declared_type(&leaf.field)
+                && !matches!(&resolved, Resolved::TypedAttribute { .. });
             // The physical `body` column is JSON-encoded at ingest (issue
             // #1410): a plain-string body is stored quoted. `eq`/`ne`/`in`
             // stay pushdown-friendly by JSON-encoding the *literal* instead
@@ -3056,6 +3209,12 @@ impl Lowering<'_> {
                 } => self.event_attr_expr(events_column, event_name, key),
                 Resolved::SpanEvents { events_column } => span_events_expr(events_column),
                 Resolved::PromotedColumn { name, key, .. } => self.promoted_column_expr(name, key),
+                Resolved::TypedAttribute {
+                    homes,
+                    promoted,
+                    key,
+                    ..
+                } => self.typed_attribute_expr(homes, promoted.as_deref(), key, ""),
                 // Retrieval-only, unreachable for a validated document (see
                 // the `value_expr` arm above); a NULL literal, not a panic.
                 Resolved::AttributeBag { .. } => lit(ScalarValue::Utf8(None)),
@@ -3304,6 +3463,14 @@ impl Lowering<'_> {
                             Some(Resolved::AttributeBag { container }) => {
                                 attribute_bag_expr(&container).alias(safe_ident(f))
                             }
+                            Some(Resolved::TypedAttribute {
+                                homes,
+                                promoted,
+                                key,
+                                ..
+                            }) => self
+                                .typed_attribute_expr(&homes, promoted.as_deref(), &key, "")
+                                .alias(safe_ident(f)),
                             None => ident(safe_ident(f)),
                         }
                     }
@@ -6390,6 +6557,241 @@ mod tests {
             typed, legacy,
             "typed vs legacy scope-attribute groups differ"
         );
+    }
+
+    // --- IR-4: typed attribute resolution and retrieval (`otel-native-schema`
+    // task 4.4) -----------------------------------------------------------
+
+    fn canonical_types(entries: &[(&str, AttributeLevel, CanonicalType)]) -> CanonicalTypes {
+        entries
+            .iter()
+            .map(
+                |(key, level, canonical)| common::schema::type_authority::AttributeKeyType {
+                    attr_key: (*key).to_string(),
+                    level: *level,
+                    canonical_type: *canonical,
+                },
+            )
+            .collect()
+    }
+
+    /// A [`CanonicalTypeLookup`] that always returns the same fixed map,
+    /// standing in for a fetched catalog result in a test.
+    struct StaticLookup(CanonicalTypes);
+
+    #[async_trait::async_trait]
+    impl CanonicalTypeLookup for StaticLookup {
+        async fn canonical_types(
+            &self,
+            _tenant_slug: &str,
+            _dataset_slug: &str,
+            _signal: &str,
+        ) -> Result<CanonicalTypes, QuerierError> {
+            Ok(self.0.clone())
+        }
+    }
+
+    /// Plans `d` over `ctx` with `types` resolved as `IrService::query`'s
+    /// typed-resolve path would (`AttributeTypeRequest::Resolve`), unlike
+    /// every `svc.plan(...)` call elsewhere in this module, which stays on
+    /// `AttributeTypeRequest::CompatOnly`.
+    async fn plan_typed(ctx: &SessionContext, d: &Document, types: CanonicalTypes) -> DataFrame {
+        let lookup: Arc<dyn CanonicalTypeLookup> = Arc::new(StaticLookup(types));
+        plan_document(
+            ctx,
+            d,
+            PlanRequest::new("t", "d", 0)
+                .with_attribute_type_request(AttributeTypeRequest::Resolve(Some(lookup))),
+        )
+        .await
+        .unwrap()
+        .expect("typed table scans")
+        .0
+    }
+
+    /// A `SchemaResolver` for `logs` over an all-typed, empty (no rows)
+    /// schema: task 4.4's homes/promotion/exclusion rules are schema and
+    /// type-map facts, so asserting `resolve()` directly is cheaper and more
+    /// precise than round-tripping through a full plan and its data.
+    fn typed_logs_resolver(types: CanonicalTypes) -> SchemaResolver {
+        let mut fields = vec![Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        )];
+        for container in ["log_attributes", "scope_attributes", "resource_attributes"] {
+            let (typed_fields, _) = common::testing::typed_attribute_columns_from(
+                "logs",
+                "physical-v4",
+                container,
+                &[],
+            );
+            fields.extend(typed_fields);
+        }
+        let df_schema =
+            datafusion::common::DFSchema::try_from(Schema::new(fields)).expect("valid schema");
+        let source = SourcePlan::for_source("logs").expect("logs source");
+        SchemaResolver::new(&df_schema, &source).with_typed(types)
+    }
+
+    /// Unqualified resolution coalesces only the levels whose committed
+    /// canonical type agrees with the first-recorded one, in container
+    /// order; a differently-typed level is excluded from the coalesce but
+    /// still reachable qualified.
+    #[test]
+    fn typed_attribute_unqualified_coalesces_same_typed_levels_and_excludes_others() {
+        let types = canonical_types(&[
+            ("priority", AttributeLevel::Record, CanonicalType::Int64),
+            ("priority", AttributeLevel::Scope, CanonicalType::Int64),
+            ("priority", AttributeLevel::Resource, CanonicalType::String),
+        ]);
+        let resolver = typed_logs_resolver(types);
+
+        match resolver.resolve("", "priority") {
+            Some(Resolved::TypedAttribute {
+                homes,
+                promoted,
+                key,
+                value_type,
+            }) => {
+                assert_eq!(
+                    homes,
+                    vec![
+                        "log_attributes_int".to_string(),
+                        "scope_attributes_int".to_string(),
+                    ],
+                    "same-typed levels coalesce in container order, the \
+                     differently-typed resource level is excluded"
+                );
+                assert_eq!(promoted, None);
+                assert_eq!(key, "priority");
+                assert_eq!(value_type, ValueType::Int64);
+            }
+            other => panic!("expected a TypedAttribute, got {other:?}"),
+        }
+
+        match resolver.resolve("", "resource.priority") {
+            Some(Resolved::TypedAttribute {
+                homes, value_type, ..
+            }) => {
+                assert_eq!(homes, vec!["resource_attributes_str".to_string()]);
+                assert_eq!(value_type, ValueType::String);
+            }
+            other => panic!("expected a qualified TypedAttribute, got {other:?}"),
+        }
+    }
+
+    /// A key with no committed canonical type at any level resolves as a
+    /// typed NULL rather than an error or a JSON-path fallback.
+    #[test]
+    fn typed_attribute_with_no_recorded_type_is_a_typed_null() {
+        let resolver = typed_logs_resolver(CanonicalTypes::default());
+        match resolver.resolve("", "unknown.attr") {
+            Some(Resolved::TypedAttribute {
+                homes,
+                promoted,
+                value_type,
+                ..
+            }) => {
+                assert!(homes.is_empty());
+                assert_eq!(promoted, None);
+                assert_eq!(value_type, ValueType::String);
+            }
+            other => panic!("expected a typed null, got {other:?}"),
+        }
+    }
+
+    /// A `logs` table on the typed layout with `http.status_code` recorded
+    /// as `Int64` — row 0 holds a genuine int, row 1 an off-type string
+    /// (forced to residue, mimicking what the writer's type authority does
+    /// for a value that doesn't match the committed type).
+    fn typed_attribute_logs_ctx() -> SessionContext {
+        use common::schema::type_authority::{ObservedKind, Placement};
+
+        let mut fields = vec![Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        )];
+        let mut columns: Vec<ArrayRef> =
+            vec![Arc::new(TimestampNanosecondArray::from(vec![10_i64, 20]))];
+
+        let log_rows = vec![
+            Some(serde_json::Map::from_iter([(
+                "http.status_code".to_string(),
+                serde_json::json!(200),
+            )])),
+            Some(serde_json::Map::from_iter([(
+                "http.status_code".to_string(),
+                serde_json::json!("pending"),
+            )])),
+        ];
+        let place = |key: &str, observed: ObservedKind| {
+            if key == "http.status_code" && observed == ObservedKind::String {
+                Placement::Residue { off_type: true }
+            } else {
+                match observed {
+                    ObservedKind::String => Placement::Home(CanonicalType::String),
+                    ObservedKind::Int64 => Placement::Home(CanonicalType::Int64),
+                    ObservedKind::Float64 => Placement::Home(CanonicalType::Float64),
+                    ObservedKind::Bool => Placement::Home(CanonicalType::Bool),
+                    _ => Placement::Residue { off_type: false },
+                }
+            }
+        };
+        let (log_fields, log_arrays) = common::testing::typed_attribute_columns_from_with_placement(
+            "logs",
+            "physical-v4",
+            "log_attributes",
+            &log_rows,
+            place,
+        );
+        fields.extend(log_fields);
+        columns.extend(log_arrays);
+
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+        single_table_ctx("logs", schema, batch)
+    }
+
+    /// An `Int64`-canonical attribute reads as a real `Int64` column, with no
+    /// `CAST` in the lowered plan — same-typed homes need no coercion.
+    #[tokio::test]
+    async fn typed_int64_attribute_reads_with_no_cast() {
+        let ctx = typed_attribute_logs_ctx();
+        let types = canonical_types(&[(
+            "http.status_code",
+            AttributeLevel::Record,
+            CanonicalType::Int64,
+        )]);
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows", "fields": ["http.status_code"],
+            "pipeline": [{ "where": { "field": "http.status_code", "op": "eq", "value": 200 } }]
+        }));
+        let df = plan_typed(&ctx, &d, types).await;
+        let plan_text = df.logical_plan().to_string();
+        assert!(
+            !plan_text.contains("CAST"),
+            "a same-typed int64 read must not cast: {plan_text}"
+        );
+        let field_name = safe_ident("http.status_code");
+        assert_eq!(
+            df.schema()
+                .field_with_unqualified_name(&field_name)
+                .unwrap()
+                .data_type(),
+            &DataType::Int64
+        );
+        let batches = df.collect().await.unwrap();
+        let values = batches[0]
+            .column_by_name(&field_name)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(values.len(), 1, "only the int64-typed row matches eq 200");
+        assert_eq!(values.value(0), 200);
     }
 
     /// A `logs` table with `log_attributes` on the typed layout, holding one
