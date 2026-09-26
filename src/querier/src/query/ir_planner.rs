@@ -1063,7 +1063,13 @@ impl SchemaResolver {
         // promoted column (D10 of `ir-single-lowering`).
         let bare = strip_scope_qualifier(self.attr_prefixes, field).map_or(field, |(_, bare)| bare);
         let materialized = common::schema::materialized_column_name(bare);
-        if let Some(vt) = self.columns.get(&materialized)
+        // In typed mode, a `label_<key>` column only ever shadows a
+        // `String`-canonical attribute — `typed_attribute` makes that call
+        // itself, having checked the committed type first; this legacy,
+        // type-blind lookup would otherwise promote a non-`String` key too
+        // (task 4.4's "a stray legacy label is ignored" rule).
+        if self.typed.is_none()
+            && let Some(vt) = self.columns.get(&materialized)
             && !common::schema::has_colliding_materialized_variant(
                 &materialized,
                 self.columns.keys().map(String::as_str),
@@ -6914,6 +6920,111 @@ mod tests {
         assert_eq!(
             decoded.get("http.status_code"),
             Some(&serde_json::json!("pending"))
+        );
+    }
+
+    /// A `logs` table with `service.tier` (`String`-canonical) and
+    /// `retry.count` (`Int64`-canonical), plus a `label_<key>` column for
+    /// each — `label_service_tier` (relevant, since its type is `String`)
+    /// and `label_retry_count` (a stray legacy label on a non-`String` key,
+    /// which must be ignored). `labels` sets both label columns' values.
+    fn typed_promotion_logs_ctx(labels: [Vec<Option<&str>>; 2]) -> SessionContext {
+        let [label_service_tier, label_retry_count] = labels;
+        let mut fields = vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("label_service_tier", DataType::Utf8, true),
+            Field::new("label_retry_count", DataType::Utf8, true),
+        ];
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![10_i64, 20])),
+            Arc::new(StringArray::from(label_service_tier)),
+            Arc::new(StringArray::from(label_retry_count)),
+        ];
+        extend_typed_container(
+            &mut fields,
+            &mut columns,
+            "logs",
+            "physical-v4",
+            "log_attributes",
+            &[
+                row(&[
+                    ("service.tier", serde_json::json!("gold")),
+                    ("retry.count", serde_json::json!(3)),
+                ]),
+                row(&[
+                    ("service.tier", serde_json::json!("silver")),
+                    ("retry.count", serde_json::json!(5)),
+                ]),
+            ],
+            |_, observed| standard_placement(observed),
+        );
+
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+        single_table_ctx("logs", schema, batch)
+    }
+
+    /// Promotion invariance on the typed layout: a `String` field reads
+    /// identically whether its `label_<key>` column is all-NULL (not yet
+    /// backfilled) or fully backfilled, and an `Int64` field's read ignores
+    /// a stray `label_<key>` column entirely, since promotion only ever
+    /// shadows a `String`-canonical home.
+    #[tokio::test]
+    async fn typed_attribute_promotion_is_invariant_and_ignored_off_type() {
+        async fn tier_and_retry(
+            ctx: &SessionContext,
+            types: CanonicalTypes,
+        ) -> (Vec<Option<String>>, Vec<Option<i64>>) {
+            let d = doc(serde_json::json!({
+                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "rows", "fields": ["service.tier", "retry.count"],
+                "pipeline": []
+            }));
+            let tiers = column_values(
+                plan_typed(ctx, &d, types.clone()).await,
+                &safe_ident("service.tier"),
+            )
+            .await;
+            let retries =
+                column_values_i64(plan_typed(ctx, &d, types).await, &safe_ident("retry.count"))
+                    .await;
+            (tiers, retries)
+        }
+
+        let types = canonical_types(&[
+            (
+                "service.tier",
+                AttributeLevel::Record,
+                CanonicalType::String,
+            ),
+            ("retry.count", AttributeLevel::Record, CanonicalType::Int64),
+        ]);
+        let not_backfilled = typed_promotion_logs_ctx([vec![None, None], vec![None, None]]);
+        let backfilled = typed_promotion_logs_ctx([
+            vec![Some("gold"), Some("silver")],
+            vec![Some("legacy"), Some("legacy")],
+        ]);
+
+        let (tiers_not_backfilled, retries_not_backfilled) =
+            tier_and_retry(&not_backfilled, types.clone()).await;
+        let (tiers_backfilled, retries_backfilled) = tier_and_retry(&backfilled, types).await;
+
+        assert_eq!(
+            tiers_not_backfilled,
+            vec![Some("gold".to_string()), Some("silver".to_string())]
+        );
+        assert_eq!(
+            tiers_not_backfilled, tiers_backfilled,
+            "a String field reads identically whether or not label_service_tier is backfilled"
+        );
+        assert_eq!(retries_not_backfilled, vec![Some(3), Some(5)]);
+        assert_eq!(
+            retries_not_backfilled, retries_backfilled,
+            "an Int64 field must ignore a stray label_retry_count column entirely"
         );
     }
 
