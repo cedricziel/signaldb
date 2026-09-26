@@ -69,6 +69,25 @@ pub enum Resolved {
     /// has no scalar value, so it never appears in a predicate, ordering, or
     /// aggregate-operand position.
     AttributeBag { container: String },
+    /// An unpromoted attribute on the typed storage layout
+    /// (`common::schema::typed_attributes`), read from one or more typed
+    /// "home" columns (each `map<key, T>` for the field's canonical type `T`,
+    /// e.g. `span_attributes_int`) rather than a single JSON/string map —
+    /// `otel-native-schema` task 4.4. `homes` lists every home column to
+    /// coalesce, in resolution order (more than one when the same key is
+    /// recorded with the same canonical type at more than one attribute
+    /// level); `promoted` is the `label_<key>` column that shadows them when
+    /// `value_type` is `String` and the column exists. Unlike `JsonPath`,
+    /// this carries the registry's *committed* canonical type — authoritative,
+    /// not advisory (see [`Self::is_advisory_type`]): the writer's type
+    /// authority already settled `key`'s type before this row was written, so
+    /// there is no untyped fallback left to hedge against.
+    TypedAttribute {
+        homes: Vec<String>,
+        promoted: Option<String>,
+        key: String,
+        value_type: ValueType,
+    },
 }
 
 impl Resolved {
@@ -84,6 +103,7 @@ impl Resolved {
             Resolved::SpanEvents { .. } => &ValueType::String,
             Resolved::PromotedColumn { value_type, .. } => value_type,
             Resolved::AttributeBag { .. } => &ValueType::String,
+            Resolved::TypedAttribute { value_type, .. } => value_type,
         }
     }
 
@@ -110,6 +130,9 @@ impl Resolved {
     /// `evolution.rs`'s `add_label_columns`), and until the row's file is
     /// backfilled its value can still come from the untyped JSON fallback —
     /// no more of a canonical-type guarantee than `JsonPath` has.
+    /// [`Resolved::TypedAttribute`] is deliberately *not* in this set: its
+    /// type comes from the writer's type authority, committed before the row
+    /// was written, not inferred at query time.
     pub fn is_advisory_type(&self) -> bool {
         matches!(
             self,

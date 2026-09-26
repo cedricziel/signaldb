@@ -29,9 +29,6 @@ pub(crate) struct CanonicalTypes(HashMap<(AttributeLevel, String), CanonicalType
 
 impl CanonicalTypes {
     /// The canonical type committed for `key` at `level`, if any.
-    // Consumed by the typed attribute resolver (otel-native-schema task 4.4,
-    // not yet added).
-    #[allow(dead_code)]
     pub(crate) fn get(&self, level: AttributeLevel, key: &str) -> Option<CanonicalType> {
         self.0.get(&(level, key.to_string())).copied()
     }
