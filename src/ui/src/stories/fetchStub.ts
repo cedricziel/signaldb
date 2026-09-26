@@ -263,7 +263,7 @@ export function describeFieldsResponse(names: string[]) {
 
 /** A `GET /api/v1/whoami` response for "alice@example.com" in "acme" —
  * shared by every story that stubs the top bar's tenant/user context
- * (`TopBar`, `Pages/App Shell`). */
+ * (`Pages/App Shell`, `Pages/Overview`). */
 export function sampleWhoami(
   overrides: Partial<WhoamiResponse> = {},
 ): WhoamiResponse {

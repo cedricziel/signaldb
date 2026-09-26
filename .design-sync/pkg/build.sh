@@ -20,6 +20,7 @@ Instrumentation:features/management/Instrumentation
 ManagementPanel:features/management/ManagementPanel
 SelectTenant:features/management/SelectTenant
 MetricsView:features/metrics/MetricsView
+OverviewView:features/overview/OverviewView
 ProcessorList:features/processors/ProcessorList
 ProfilesView:features/profiles/ProfilesView
 QueryView:features/query/QueryView

@@ -7,7 +7,7 @@ import { useWhoami } from "../../lib/useWhoami";
 import { ManagementPanel } from "./ManagementPanel";
 
 /**
- * `/manage` — a real, deep-linkable URL for the panel TopBar used to render
+ * `/manage` — a real, deep-linkable URL for the panel the old top bar used to render
  * as ad hoc component state (which couldn't be bookmarked and didn't close
  * on browser back). Redirects non-admins back to the logs view; a 401 is
  * handled globally (the app shell sends it to `/login`); any other failure

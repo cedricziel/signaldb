@@ -31,7 +31,7 @@ export function DeploysLane({
 
   return (
     <div className="overview-lane">
-      <span className="nav-section-label">{title}</span>
+      <span className="overview-label">{title}</span>
       <div className="overview-lane-chart" role="img" aria-label={label}>
         <div className="overview-lane-axis" />
         {TICKS.map((f) => (

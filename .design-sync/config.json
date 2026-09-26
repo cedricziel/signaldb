@@ -27,7 +27,8 @@
     "AppShell": "ExploreView",
     "APIKeys": "ApiKeys",
     "GitHubIntegration": "GitHubIntegration",
-    "SelectTenant": "SelectTenant"
+    "SelectTenant": "SelectTenant",
+    "Overview": "OverviewView"
   },
   "provider": {
     "component": "QueryClientProvider",
@@ -159,8 +160,10 @@
     "ServiceGraph": {
       "cardMode": "column"
     },
-    "TopBar": {
-      "cardMode": "column"
+    "OverviewView": {
+      "cardMode": "single",
+      "viewport": "1280x1500",
+      "primaryStory": "Default"
     }
   },
   "storyImports": {
