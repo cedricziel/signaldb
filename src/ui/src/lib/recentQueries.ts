@@ -53,8 +53,14 @@ function isRecentQuery(value: unknown): value is RecentQuery {
     typeof v.text === "string" &&
     (v.signal === "logs" || v.signal === "traces") &&
     typeof v.href === "string" &&
-    v.href.startsWith("/")
+    isInAppPath(v.href)
   );
+}
+
+/** A same-origin path: leading `/`, but not `//host` or `/\host`, which a
+ * browser (and React Router's `<Link>`) resolves to another origin. */
+function isInAppPath(href: string): boolean {
+  return href.startsWith("/") && href[1] !== "/" && href[1] !== "\\";
 }
 
 /** The logs or traces query `state` describes, as one line of text — the

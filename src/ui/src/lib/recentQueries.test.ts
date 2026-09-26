@@ -37,6 +37,8 @@ describe("recent queries", () => {
       JSON.stringify([
         { text: "ok", signal: "logs", href: "/logs" },
         { text: "evil", signal: "logs", href: "https://example.com" },
+        { text: "evil2", signal: "logs", href: "//example.com/logs" },
+        { text: "evil3", signal: "logs", href: "/\\example.com" },
         { text: 1, signal: "logs", href: "/logs" },
       ]),
     );
