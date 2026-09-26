@@ -1058,6 +1058,15 @@ impl Catalog {
                     PRIMARY KEY (tenant_id, dataset_id, signal, level, attr_key)
                 )"#;
                 query(create_attribute_types).execute(pool).await?;
+                // The primary key ends in attr_key, so a lookup across every
+                // dataset/signal/level for one key (list_attribute_types)
+                // can't seek on it without this index.
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_attribute_types_tenant_key \
+                     ON attribute_types (tenant_id, attr_key)",
+                )
+                .execute(pool)
+                .await?;
 
                 // Value sketches (change: query-field-discovery): the bounded
                 // top values per key the analyzer observed, so discovery can
@@ -1542,6 +1551,13 @@ impl Catalog {
                     PRIMARY KEY (tenant_id, dataset_id, signal, level, attr_key)
                 )"#;
                 query(create_attribute_types).execute(pool).await?;
+                // See the SQLite branch.
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_attribute_types_tenant_key \
+                     ON attribute_types (tenant_id, attr_key)",
+                )
+                .execute(pool)
+                .await?;
 
                 // Value sketches (change: query-field-discovery): see the
                 // SQLite branch.

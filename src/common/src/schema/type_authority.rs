@@ -2,11 +2,13 @@ mod authority;
 mod store;
 
 pub use authority::{AuthorityError, SignalScope, TypeAuthority};
-pub use store::{StoreError, StoredType};
+pub use store::{AttributeTypeRecord, StoreError, StoredType};
 
 use crate::schema::logical::{AttributeLevel, LogicalType};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum CanonicalType {
     String,
@@ -53,7 +55,8 @@ impl ObservedKind {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+#[serde(rename_all = "snake_case")]
 pub enum TypeSource {
     Config,
     Semconv,

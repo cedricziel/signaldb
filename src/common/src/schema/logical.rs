@@ -21,6 +21,18 @@ impl AttributeLevel {
             AttributeLevel::Record => "record",
         }
     }
+
+    /// The inverse of [`as_str`](Self::as_str), for decoding a stored level
+    /// column. `None` for anything else (callers map that to their own
+    /// corruption error).
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "resource" => Some(AttributeLevel::Resource),
+            "scope" => Some(AttributeLevel::Scope),
+            "record" => Some(AttributeLevel::Record),
+            _ => None,
+        }
+    }
 }
 
 /// The client-visible type of a logical field.
