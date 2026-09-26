@@ -437,6 +437,14 @@ max_drain_bytes_per_cycle = 268435456 # 256 MiB
 # treated as a transient commit failure: the group's entries stay pending
 # and retry next cycle, never dead-lettered.
 group_commit_timeout = "120s"
+#
+# How long an ingest id (the acceptor WAL entry uuid carried in do_put's
+# app_metadata) is remembered, so a resend that reaches this writer again is
+# deduped instead of re-inserted. In-memory only: rebuilt at startup from
+# ingest ids still present in this writer's own WAL entries within the
+# window. Size for roughly one writer restart plus the acceptor's retry
+# horizon, not long-term storage.
+ingest_dedup_window = "1h"
 
 [processors]
 # Tenant OTTL processors (change: tenant-ottl-processors) — per-tenant

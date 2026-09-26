@@ -106,6 +106,14 @@ pub struct AppMetrics {
     pub writer_tables_provisioned: Counter<u64>,
     pub writer_table_provisioning_failures: Counter<u64>,
 
+    // Ingest ids (from `do_put`'s `app_metadata`, #1734) recognized as a
+    // repeat within the writer's dedup window, by tenant and signal. Its
+    // freshly appended WAL entries are marked processed immediately instead
+    // of committed again; a rising rate that isn't explained by a known
+    // acceptor retry storm means the acceptor's writer pinning (rendezvous
+    // hashing on ingest id) is unstable.
+    pub ingest_duplicates_dropped: Counter<u64>,
+
     // MCP server audit: one count per tool call by tool and outcome
     // (`ok | truncated | denied | throttled | error`), and the call duration
     // by tool. Prometheus renders them as `signaldb_mcp_tool_calls_total`
@@ -384,6 +392,13 @@ impl AppMetrics {
                 .u64_counter("signaldb.writer.table_provisioning_failures")
                 .with_description("Signal tables the reconciler could not create")
                 .with_unit("{table}")
+                .build(),
+            ingest_duplicates_dropped: meter
+                .u64_counter("signaldb.writer.ingest_duplicates_dropped")
+                .with_description(
+                    "do_put ingest ids recognized as a repeat within the writer's dedup window",
+                )
+                .with_unit("{entry}")
                 .build(),
             mcp_tool_calls: meter
                 .u64_counter("signaldb.mcp.tool_calls")
