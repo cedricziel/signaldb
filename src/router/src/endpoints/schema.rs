@@ -16,7 +16,8 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use common::auth::TenantContext;
+use common::auth::{TenantContext, dataset_allowed};
+use common::schema::type_authority::AttributeTypeRecord;
 use common::schema_registry::{
     AttributeHit, EntityHit, MetricHit, RegistrySummary, Resolution, StoreError, ValidationReport,
 };
@@ -103,6 +104,12 @@ pub struct AttributeResolution {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary: Option<AttributeHit>,
     pub hits: Vec<AttributeHit>,
+    /// The canonical type the type authority committed for this key, per
+    /// dataset/signal/level it has been observed in, and how many values
+    /// arrived with a different type (kept, but not typed-queryable). Absent
+    /// when no type has been established yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub canonical_types: Vec<AttributeTypeRecord>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -127,6 +134,7 @@ impl From<Resolution<AttributeHit>> for AttributeResolution {
             key: r.key,
             primary: r.primary,
             hits: r.hits,
+            canonical_types: Vec::new(),
         }
     }
 }
@@ -499,6 +507,35 @@ pub async fn delete_registry(
     }
 }
 
+// ---- type authority ---------------------------------------------------------
+
+/// The canonical types the type authority has committed for `key`, filtered
+/// to the datasets `ctx`'s credential may see. `Err` is a ready-to-return
+/// error response (a store failure, mapped to `500`).
+async fn canonical_types(
+    state: &RouterAppState,
+    ctx: &TenantContext,
+    key: &str,
+) -> Result<Vec<AttributeTypeRecord>, Box<Response>> {
+    match state
+        .catalog()
+        .list_attribute_types(&ctx.tenant_id, key)
+        .await
+    {
+        Ok(records) => Ok(records
+            .into_iter()
+            .filter(|r| dataset_allowed(ctx.api_key_dataset_ids.as_deref(), &r.dataset))
+            .collect()),
+        Err(e) => {
+            tracing::error!(error = %e, "attribute type authority lookup failed");
+            Err(Box::new(error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "attribute type authority lookup failed",
+            )))
+        }
+    }
+}
+
 // ---- resolution / search ---------------------------------------------------
 
 #[utoipa::path(
@@ -526,10 +563,19 @@ pub async fn search_attributes(
     if let Some(keys) = split_keys(&params.keys) {
         let mut resolutions = Vec::new();
         for key in keys {
-            match resolver.resolve_attribute(&ctx.tenant_id, key).await {
-                Ok(r) => resolutions.push(r.into()),
+            let (resolved, types) = tokio::join!(
+                resolver.resolve_attribute(&ctx.tenant_id, key),
+                canonical_types(&state, &ctx, key)
+            );
+            let mut resolution: AttributeResolution = match resolved {
+                Ok(r) => r.into(),
                 Err(e) => return store_error(e),
-            }
+            };
+            resolution.canonical_types = match types {
+                Ok(records) => records,
+                Err(resp) => return *resp,
+            };
+            resolutions.push(resolution);
         }
         return Json(AttributeSearchResponse {
             hits: Vec::new(),
@@ -571,14 +617,20 @@ pub async fn resolve_attribute(
     if let Err(r) = require_read(&ctx) {
         return *r;
     }
-    match state
-        .schema_resolver()
-        .resolve_attribute(&ctx.tenant_id, &key)
-        .await
-    {
-        Ok(r) => Json(AttributeResolution::from(r)).into_response(),
-        Err(e) => store_error(e),
-    }
+    let resolver = state.schema_resolver();
+    let (resolved, types) = tokio::join!(
+        resolver.resolve_attribute(&ctx.tenant_id, &key),
+        canonical_types(&state, &ctx, &key)
+    );
+    let mut resolution = match resolved {
+        Ok(r) => AttributeResolution::from(r),
+        Err(e) => return store_error(e),
+    };
+    resolution.canonical_types = match types {
+        Ok(records) => records,
+        Err(resp) => return *resp,
+    };
+    Json(resolution).into_response()
 }
 
 #[utoipa::path(
@@ -730,12 +782,34 @@ mod tests {
     use common::auth::Authenticator;
     use common::catalog::{Catalog, MembershipRole};
     use common::config::{ApiKeyConfig, AuthConfig, Configuration, DatasetConfig, TenantConfig};
+    use common::schema::logical::{AttributeLevel, LogicalFieldId};
+    use common::schema::type_authority::{CanonicalType, Resolution, TypeSource};
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
     use crate::{RouterAppState, create_router};
 
     const ACME: &str = include_str!("../../../schema-model/tests/fixtures/acme.yaml");
+
+    /// The record-level attribute field the canonical-types tests establish
+    /// a type for.
+    fn order_id_field() -> LogicalFieldId {
+        LogicalFieldId {
+            source: "traces".to_string(),
+            level: Some(AttributeLevel::Record),
+            name: "acme.order.id".to_string(),
+        }
+    }
+
+    /// An `Observed`-sourced resolution, the type authority's default
+    /// outcome when neither config nor a semconv hint decided the type.
+    fn observed(canonical: CanonicalType) -> Resolution<'static> {
+        Resolution {
+            canonical,
+            source: TypeSource::Observed,
+            hint_schema_url: None,
+        }
+    }
 
     fn tenant(id: &str, key: &str) -> TenantConfig {
         TenantConfig {
@@ -1400,6 +1474,153 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), 401);
+    }
+
+    // ---- canonical types (type authority discoverability) ----------------
+
+    #[tokio::test]
+    async fn resolve_attribute_includes_canonical_types_when_established() {
+        let (app, catalog) = app().await;
+        // an unestablished key omits the field entirely
+        let (status, body) = call(
+            &app,
+            Auth::Key("sk-read", "acme"),
+            "GET",
+            "/api/v1/schema/attributes/no.type.established",
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert!(
+            body.get("canonical_types").is_none(),
+            "no canonical_types field when nothing established: {body}"
+        );
+
+        let field = order_id_field();
+        catalog
+            .establish_attribute_type(
+                "acme",
+                "production",
+                &field,
+                observed(CanonicalType::String),
+            )
+            .await
+            .unwrap();
+        catalog
+            .record_off_type("acme", "production", &field, 4)
+            .await
+            .unwrap();
+
+        let (status, body) = call(
+            &app,
+            Auth::Key("sk-read", "acme"),
+            "GET",
+            "/api/v1/schema/attributes/acme.order.id",
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let types = body["canonical_types"].as_array().unwrap();
+        assert_eq!(types.len(), 1);
+        assert_eq!(types[0]["dataset"], "production");
+        assert_eq!(types[0]["signal"], "traces");
+        assert_eq!(types[0]["level"], "record");
+        assert_eq!(types[0]["canonical_type"], "string");
+        assert_eq!(types[0]["source"], "observed");
+        assert_eq!(types[0]["off_type_count"], 4);
+    }
+
+    #[tokio::test]
+    async fn resolve_attribute_canonical_types_respects_dataset_restriction() {
+        let (app, catalog) = app().await;
+
+        let field = order_id_field();
+        catalog
+            .establish_attribute_type(
+                "acme",
+                "production",
+                &field,
+                observed(CanonicalType::String),
+            )
+            .await
+            .unwrap();
+        catalog
+            .establish_attribute_type("acme", "staging", &field, observed(CanonicalType::Int64))
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "staging").await.unwrap();
+
+        catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &Authenticator::hash_api_key("sk-staging-only"),
+                Some("staging-only"),
+                Some(&["staging".to_string()]),
+                None,
+                Some(&["schema:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let (status, body) = call(
+            &app,
+            Auth::Key("sk-staging-only", "acme"),
+            "GET",
+            "/api/v1/schema/attributes/acme.order.id",
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let types = body["canonical_types"].as_array().unwrap();
+        assert_eq!(types.len(), 1);
+        assert_eq!(types[0]["dataset"], "staging");
+
+        // the unrestricted key still sees both datasets
+        let (status, body) = call(
+            &app,
+            Auth::Key("sk-read", "acme"),
+            "GET",
+            "/api/v1/schema/attributes/acme.order.id",
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["canonical_types"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn search_attributes_batch_keys_includes_canonical_types() {
+        let (app, catalog) = app().await;
+        let field = order_id_field();
+        catalog
+            .establish_attribute_type(
+                "acme",
+                "production",
+                &field,
+                observed(CanonicalType::String),
+            )
+            .await
+            .unwrap();
+
+        let (status, body) = call(
+            &app,
+            Auth::Key("sk-read", "acme"),
+            "GET",
+            "/api/v1/schema/attributes?keys=acme.order.id,no.such",
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let res = body["resolutions"].as_array().unwrap();
+        assert_eq!(res[0]["key"], "acme.order.id");
+        let types = res[0]["canonical_types"].as_array().unwrap();
+        assert_eq!(types.len(), 1);
+        assert_eq!(types[0]["dataset"], "production");
+        assert!(
+            res[1].get("canonical_types").is_none(),
+            "no canonical_types field for an unestablished key: {res:?}"
+        );
     }
 }
 

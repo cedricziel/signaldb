@@ -5325,6 +5325,13 @@
           "hits"
         ],
         "properties": {
+          "canonical_types": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AttributeTypeRecord"
+            },
+            "description": "The canonical type the type authority committed for this key, per\ndataset/signal/level it has been observed in, and how many values\narrived with a different type (kept, but not typed-queryable). Absent\nwhen no type has been established yet."
+          },
           "hits": {
             "type": "array",
             "items": {
@@ -5367,6 +5374,45 @@
           }
         }
       },
+      "AttributeTypeRecord": {
+        "type": "object",
+        "description": "One stored row for an attribute key, scoped to a single dataset, signal,\nand attribute level within a tenant.",
+        "required": [
+          "dataset",
+          "signal",
+          "level",
+          "canonical_type",
+          "source",
+          "off_type_count"
+        ],
+        "properties": {
+          "canonical_type": {
+            "$ref": "#/components/schemas/CanonicalType"
+          },
+          "dataset": {
+            "type": "string"
+          },
+          "hint_schema_url": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "level": {
+            "$ref": "#/components/schemas/AttributeLevel"
+          },
+          "off_type_count": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "signal": {
+            "type": "string"
+          },
+          "source": {
+            "$ref": "#/components/schemas/TypeSource"
+          }
+        }
+      },
       "AvailableSchemasResponse": {
         "type": "object",
         "description": "Response body for `GET /schemas/available`.",
@@ -5382,6 +5428,15 @@
             "description": "All table schema types SignalDB knows how to provision."
           }
         }
+      },
+      "CanonicalType": {
+        "type": "string",
+        "enum": [
+          "string",
+          "int64",
+          "float64",
+          "bool"
+        ]
       },
       "CardinalityEstimate": {
         "type": "object",
@@ -9072,6 +9127,14 @@
             "type": "string"
           }
         }
+      },
+      "TypeSource": {
+        "type": "string",
+        "enum": [
+          "config",
+          "semconv",
+          "observed"
+        ]
       },
       "UnavailableReason": {
         "type": "string",
