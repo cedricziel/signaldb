@@ -33,6 +33,7 @@ mod otel_capture;
 mod otlp_fixtures;
 mod temp_catalog;
 mod tracing_fallback;
+mod typed_attrs;
 
 pub use config_builder::TestConfigBuilder;
 #[cfg(any(test, feature = "testing-containers"))]
@@ -46,3 +47,4 @@ pub use otlp_fixtures::{
 };
 pub use temp_catalog::TempCatalog;
 pub use tracing_fallback::install_global_tracing_fallback;
+pub use typed_attrs::typed_attribute_columns;
