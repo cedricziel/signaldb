@@ -1976,3 +1976,36 @@ async fn query_metric_via_ir_value_column_is_float64() {
         "the value column must be Float64, matching what the router requires"
     );
 }
+
+// ---------------------------------------------------------------------------
+// `otel-native-schema` task 2.1: a raw physical column name is rejected as a
+// field through every dialect that can express it.
+// ---------------------------------------------------------------------------
+
+/// An unscoped selector lowers to the bare name, so TraceQL can reach a
+/// physical column; `plan_document` must still reject it.
+#[tokio::test]
+async fn traceql_rejects_a_raw_physical_column_name() {
+    let ctx = traces_fixture();
+    let err = new_traceql_plan(&ctx, "{ .duration_nanos > 100 }", &["trace_id"])
+        .await
+        .expect_err("a raw physical column name must stay rejected through TraceQL lowering");
+    assert!(
+        format!("{err}").contains("duration_nanos"),
+        "unexpected error: {err}"
+    );
+}
+
+/// An unknown stream label passes through bare, so LogQL can reach a
+/// physical column; `plan_document` must still reject it.
+#[tokio::test]
+async fn logql_rejects_a_raw_physical_column_name() {
+    let ctx = logs_fixture();
+    let err = new_logql_log_plan(&ctx, r#"{log_attributes="x"}"#, &["timestamp"])
+        .await
+        .expect_err("a raw physical column name must stay rejected through LogQL lowering");
+    assert!(
+        format!("{err}").contains("log_attributes"),
+        "unexpected error: {err}"
+    );
+}

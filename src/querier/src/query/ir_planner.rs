@@ -6081,6 +6081,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_where_clause_cannot_address_a_container_by_storage_name() {
+        let svc = IrService::new(logs_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["trace_id"],
+            "pipeline": [{ "where": { "field": "log_attributes", "op": "exists" } }]
+        }));
+        let err = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .expect_err("physical addressing must stay rejected in a where clause");
+        assert!(
+            format!("{err}").contains("log_attributes"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[tokio::test]
     async fn a_client_cannot_address_a_builtin_physical_alias() {
         let svc = IrService::new(logs_ctx());
         let d = doc(serde_json::json!({
