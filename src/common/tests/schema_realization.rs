@@ -15,7 +15,9 @@
 
 use common::schema::SCHEMA_DEFINITIONS;
 use common::schema::logical::LogicalSchema;
-use common::schema::schema_parser::ResolvedField;
+use common::schema::schema_parser::{ResolvedField, TableSchemaDefinition};
+use common::schema::typed_attributes;
+use std::collections::HashMap;
 
 /// Physical column name -> logical field name(s), mirroring
 /// `SourcePlan::aliases` in `src/querier/src/query/ir_planner.rs`. Kept as an
@@ -93,7 +95,11 @@ fn realizes(source: &str, physical: &str, logical_name: &str) -> bool {
             .any(|(p, l)| *p == physical && *l == logical_name)
 }
 
-/// Attribute-container columns per source, mirroring `SourcePlan::containers`.
+/// Attribute-container base names per source, mirroring
+/// `SourcePlan::containers`. A container is realized either as the legacy
+/// single `map<string,string>` column named exactly this, or -- in the
+/// typed-attribute layout (otel-native-schema layer 4) -- as the five
+/// columns `typed_attributes::typed_columns` names for it.
 fn containers(source: &str) -> &'static [&'static str] {
     match source {
         "logs" => &["log_attributes", "scope_attributes", "resource_attributes"],
@@ -108,6 +114,17 @@ fn containers(source: &str) -> &'static [&'static str] {
         }
         _ => &[],
     }
+}
+
+/// Whether `physical` is an attribute-container column for `source` -- the
+/// legacy map column itself, or one of its five typed-layout columns.
+fn is_attribute_container_column(source: &str, physical: &str) -> bool {
+    containers(source).iter().any(|base| {
+        physical == *base
+            || typed_attributes::typed_columns(base)
+                .iter()
+                .any(|c| c == physical)
+    })
 }
 
 /// Physical columns that carry no logical meaning today and aren't
@@ -194,58 +211,46 @@ fn known_gap(source: &str, physical: &str) -> bool {
     names.contains(&physical)
 }
 
-fn resolved_fields_for(source: &str) -> Vec<ResolvedField> {
+fn schemas_for(
+    source: &str,
+) -> (
+    &'static HashMap<String, TableSchemaDefinition>,
+    &'static str,
+) {
+    let d = &*SCHEMA_DEFINITIONS;
+    let m = &d.metadata;
     match source {
-        "logs" => {
-            SCHEMA_DEFINITIONS
-                .resolve_log_schema(&SCHEMA_DEFINITIONS.metadata.current_log_version)
-                .unwrap()
-                .fields
-        }
-        "traces" => {
-            SCHEMA_DEFINITIONS
-                .resolve_trace_schema(&SCHEMA_DEFINITIONS.metadata.current_trace_version)
-                .unwrap()
-                .fields
-        }
-        "profiles" => {
-            SCHEMA_DEFINITIONS
-                .resolve_table_schema(
-                    &SCHEMA_DEFINITIONS.profiles,
-                    &SCHEMA_DEFINITIONS.metadata.current_profile_version,
-                )
-                .unwrap()
-                .fields
-        }
-        "metrics_gauge" => {
-            SCHEMA_DEFINITIONS
-                .resolve_table_schema(
-                    &SCHEMA_DEFINITIONS.metrics_gauge,
-                    &SCHEMA_DEFINITIONS.metadata.current_metric_version,
-                )
-                .unwrap()
-                .fields
-        }
-        "metrics_sum" => {
-            SCHEMA_DEFINITIONS
-                .resolve_table_schema(
-                    &SCHEMA_DEFINITIONS.metrics_sum,
-                    &SCHEMA_DEFINITIONS.metadata.current_metric_version,
-                )
-                .unwrap()
-                .fields
-        }
-        "metrics_histogram" => {
-            SCHEMA_DEFINITIONS
-                .resolve_table_schema(
-                    &SCHEMA_DEFINITIONS.metrics_histogram,
-                    &SCHEMA_DEFINITIONS.metadata.current_metric_version,
-                )
-                .unwrap()
-                .fields
-        }
+        "logs" => (&d.logs, &m.current_log_version),
+        "traces" => (&d.traces, &m.current_trace_version),
+        "profiles" => (&d.profiles, &m.current_profile_version),
+        "metrics_gauge" => (&d.metrics_gauge, &m.current_metric_version),
+        "metrics_sum" => (&d.metrics_sum, &m.current_metric_version),
+        "metrics_histogram" => (&d.metrics_histogram, &m.current_metric_version),
         other => panic!("unhandled source {other}"),
     }
+}
+
+/// The typed attribute layout's version per source; declared but not yet
+/// current until the one-shot cutover makes it so.
+fn typed_layout_version(source: &str) -> &'static str {
+    match source {
+        "traces" => "physical-v5",
+        "logs" => "physical-v4",
+        _ => "physical-v3",
+    }
+}
+
+/// The resolved fields of `source`'s current version and of its typed
+/// attribute layout version.
+fn layouts_of(source: &str) -> [(&'static str, Vec<ResolvedField>); 2] {
+    let (schemas, current) = schemas_for(source);
+    [current, typed_layout_version(source)].map(|version| {
+        let fields = SCHEMA_DEFINITIONS
+            .resolve_table_schema(schemas, version)
+            .unwrap_or_else(|e| panic!("{source}.{version}: {e}"))
+            .fields;
+        (version, fields)
+    })
 }
 
 /// Every physical table whose current version this test checks.
@@ -279,25 +284,45 @@ fn every_physical_column_realizes_a_logical_field_container_or_is_physical_only(
 
     for physical_source in PHYSICAL_SOURCES {
         let logical_source = logical_source_for(physical_source);
-        for field in resolved_fields_for(physical_source) {
-            if field.physical_only {
-                continue;
+        for (version, fields) in layouts_of(physical_source) {
+            for field in fields {
+                if field.physical_only
+                    || is_attribute_container_column(physical_source, &field.name)
+                    || known_gap(physical_source, &field.name)
+                {
+                    continue;
+                }
+                let logical_name =
+                    expected_alias(physical_source, &field.name).unwrap_or(&field.name);
+                assert!(
+                    logical.resolve(logical_source, logical_name).is_some(),
+                    "{physical_source}.{version}.{}: not a physical_only/computed column, not \
+                     an attribute container, and no logical field {logical_source}.{logical_name} \
+                     exists -- declare it in LogicalSchema::core() (src/common/src/schema/logical.rs) \
+                     or mark it physical_only in schemas.toml",
+                    field.name
+                );
             }
-            if containers(physical_source).contains(&field.name.as_str()) {
-                continue;
-            }
-            if known_gap(physical_source, &field.name) {
-                continue;
-            }
-            let logical_name = expected_alias(physical_source, &field.name).unwrap_or(&field.name);
+        }
+    }
+}
+
+#[test]
+fn typed_layout_replaces_each_container_with_its_five_typed_columns() {
+    for physical_source in PHYSICAL_SOURCES {
+        let [_, (version, fields)] = layouts_of(physical_source);
+        let names: Vec<String> = fields.into_iter().map(|f| f.name).collect();
+        for container in containers(physical_source) {
             assert!(
-                logical.resolve(logical_source, logical_name).is_some(),
-                "{physical_source}.{}: not a physical_only/computed column, not an \
-                 attribute container, and no logical field {logical_source}.{logical_name} \
-                 exists -- declare it in LogicalSchema::core() (src/common/src/schema/logical.rs) \
-                 or mark it physical_only in schemas.toml",
-                field.name
+                !names.iter().any(|n| n == container),
+                "{physical_source}.{version}: legacy container {container} must be removed"
             );
+            for column in typed_attributes::typed_columns(container) {
+                assert!(
+                    names.contains(&column),
+                    "{physical_source}.{version}: missing {column}"
+                );
+            }
         }
     }
 }
@@ -310,32 +335,31 @@ fn every_filterable_non_attribute_logical_field_has_a_physical_realization() {
 
     for physical_source in PHYSICAL_SOURCES {
         let logical_source = logical_source_for(physical_source);
-        let physical_names: Vec<String> = resolved_fields_for(physical_source)
-            .into_iter()
-            .map(|f| f.name)
-            .collect();
+        for (version, fields) in layouts_of(physical_source) {
+            let physical_names: Vec<String> = fields.into_iter().map(|f| f.name).collect();
 
-        for field in logical.fields() {
-            if field.id.source != logical_source {
-                continue;
-            }
-            if field.kind == LogicalFieldKind::Attribute
-                || field.kind == LogicalFieldKind::SignalDbDefined
-                || field.filterability == Filterability::RetrievalOnly
-            {
-                continue;
-            }
-            let realized = physical_names
-                .iter()
-                .any(|physical| realizes(physical_source, physical, &field.id.name));
-            assert!(
-                realized,
-                "{logical_source}.{}: declared in LogicalSchema::core() but no physical \
-                 column on {physical_source} (current version) realizes it -- add the column \
+            for field in logical.fields() {
+                if field.id.source != logical_source {
+                    continue;
+                }
+                if field.kind == LogicalFieldKind::Attribute
+                    || field.kind == LogicalFieldKind::SignalDbDefined
+                    || field.filterability == Filterability::RetrievalOnly
+                {
+                    continue;
+                }
+                let realized = physical_names
+                    .iter()
+                    .any(|physical| realizes(physical_source, physical, &field.id.name));
+                assert!(
+                    realized,
+                    "{logical_source}.{}: declared in LogicalSchema::core() but no physical \
+                 column on {physical_source}.{version} realizes it -- add the column \
                  to schemas.toml or mark the logical field non-native/retrieval-only if it \
                  was never meant to be stored",
-                field.id.name
-            );
+                    field.id.name
+                );
+            }
         }
     }
 }

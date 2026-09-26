@@ -11,6 +11,7 @@ pub mod logical;
 pub mod resource_identity;
 pub mod schema_parser;
 pub mod type_authority;
+pub mod typed_attributes;
 
 // Re-export iceberg modules for backward compatibility
 pub use crate::iceberg::schemas as iceberg_schemas;

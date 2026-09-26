@@ -74,6 +74,20 @@ field_additions = [
     { name = "resource_identity", type = "string", required = false },
 ]
 
+[traces.physical-v5]
+description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (span/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>. Not current: tables move to this layout by recreation (one-shot cutover), never by evolving a live table."
+inherits = "physical-v4"
+field_removals = [
+    { name = "span_attributes" },
+    { name = "resource_attributes" },
+    { name = "scope_attributes" },
+]
+field_additions = [
+    { name = "span_attributes", type = "typed_attributes", required = false },
+    { name = "resource_attributes", type = "typed_attributes", required = false },
+    { name = "scope_attributes", type = "typed_attributes", required = false },
+]
+
 # ==============================================================================
 # LOGS TABLE SCHEMAS
 # ==============================================================================
@@ -117,6 +131,20 @@ field_additions = [
     { name = "dropped_attributes_count", type = "int64", required = false },
 ]
 
+[logs.physical-v4]
+description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (log/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>. Not current: tables move to this layout by recreation (one-shot cutover), never by evolving a live table."
+inherits = "physical-v3"
+field_removals = [
+    { name = "log_attributes" },
+    { name = "resource_attributes" },
+    { name = "scope_attributes" },
+]
+field_additions = [
+    { name = "log_attributes", type = "typed_attributes", required = false },
+    { name = "resource_attributes", type = "typed_attributes", required = false },
+    { name = "scope_attributes", type = "typed_attributes", required = false },
+]
+
 # ==============================================================================
 # METRICS TABLE SCHEMAS
 # ==============================================================================
@@ -153,6 +181,20 @@ field_additions = [
     { name = "resource_identity", type = "string", required = false },
 ]
 
+[metrics_gauge.physical-v3]
+description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (record/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>. Not current: tables move to this layout by recreation (one-shot cutover), never by evolving a live table."
+inherits = "physical-v2"
+field_removals = [
+    { name = "attributes" },
+    { name = "resource_attributes" },
+    { name = "scope_attributes" },
+]
+field_additions = [
+    { name = "attributes", type = "typed_attributes", required = false },
+    { name = "resource_attributes", type = "typed_attributes", required = false },
+    { name = "scope_attributes", type = "typed_attributes", required = false },
+]
+
 [metrics_sum.physical-v1]
 description = "Sum metrics schema"
 fields = [
@@ -185,6 +227,20 @@ description = "resource.identity digest column, stable per distinct resource att
 inherits = "physical-v1"
 field_additions = [
     { name = "resource_identity", type = "string", required = false },
+]
+
+[metrics_sum.physical-v3]
+description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (record/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>. Not current: tables move to this layout by recreation (one-shot cutover), never by evolving a live table."
+inherits = "physical-v2"
+field_removals = [
+    { name = "attributes" },
+    { name = "resource_attributes" },
+    { name = "scope_attributes" },
+]
+field_additions = [
+    { name = "attributes", type = "typed_attributes", required = false },
+    { name = "resource_attributes", type = "typed_attributes", required = false },
+    { name = "scope_attributes", type = "typed_attributes", required = false },
 ]
 
 [metrics_histogram.physical-v1]
@@ -223,6 +279,20 @@ description = "resource.identity digest column, stable per distinct resource att
 inherits = "physical-v1"
 field_additions = [
     { name = "resource_identity", type = "string", required = false },
+]
+
+[metrics_histogram.physical-v3]
+description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (record/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>. Not current: tables move to this layout by recreation (one-shot cutover), never by evolving a live table."
+inherits = "physical-v2"
+field_removals = [
+    { name = "attributes" },
+    { name = "resource_attributes" },
+    { name = "scope_attributes" },
+]
+field_additions = [
+    { name = "attributes", type = "typed_attributes", required = false },
+    { name = "resource_attributes", type = "typed_attributes", required = false },
+    { name = "scope_attributes", type = "typed_attributes", required = false },
 ]
 
 [metrics_exponential_histogram.physical-v1]
@@ -268,6 +338,20 @@ field_additions = [
     { name = "resource_identity", type = "string", required = false },
 ]
 
+[metrics_exponential_histogram.physical-v3]
+description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (record/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>. Not current: tables move to this layout by recreation (one-shot cutover), never by evolving a live table."
+inherits = "physical-v2"
+field_removals = [
+    { name = "attributes" },
+    { name = "resource_attributes" },
+    { name = "scope_attributes" },
+]
+field_additions = [
+    { name = "attributes", type = "typed_attributes", required = false },
+    { name = "resource_attributes", type = "typed_attributes", required = false },
+    { name = "scope_attributes", type = "typed_attributes", required = false },
+]
+
 [metrics_summary.physical-v1]
 description = "Summary metrics schema"
 fields = [
@@ -300,6 +384,20 @@ description = "resource.identity digest column, stable per distinct resource att
 inherits = "physical-v1"
 field_additions = [
     { name = "resource_identity", type = "string", required = false },
+]
+
+[metrics_summary.physical-v3]
+description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (record/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>. Not current: tables move to this layout by recreation (one-shot cutover), never by evolving a live table."
+inherits = "physical-v2"
+field_removals = [
+    { name = "attributes" },
+    { name = "resource_attributes" },
+    { name = "scope_attributes" },
+]
+field_additions = [
+    { name = "attributes", type = "typed_attributes", required = false },
+    { name = "resource_attributes", type = "typed_attributes", required = false },
+    { name = "scope_attributes", type = "typed_attributes", required = false },
 ]
 
 # ==============================================================================
@@ -335,4 +433,18 @@ description = "resource.identity digest column, stable per distinct resource att
 inherits = "physical-v1"
 field_additions = [
     { name = "resource_identity", type = "string", required = false },
+]
+
+[profiles.physical-v3]
+description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (profile/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>. Not current: tables move to this layout by recreation (one-shot cutover), never by evolving a live table."
+inherits = "physical-v2"
+field_removals = [
+    { name = "profile_attributes" },
+    { name = "resource_attributes" },
+    { name = "scope_attributes" },
+]
+field_additions = [
+    { name = "profile_attributes", type = "typed_attributes", required = false },
+    { name = "resource_attributes", type = "typed_attributes", required = false },
+    { name = "scope_attributes", type = "typed_attributes", required = false },
 ]
