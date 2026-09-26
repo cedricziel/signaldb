@@ -316,6 +316,23 @@ impl TypedAttrBuilder {
     }
 }
 
+/// Parses each row of a JSON-in-Utf8 attribute column (the Flight/WAL wire
+/// carrier) into its object form. A null, unparseable, or non-object row
+/// becomes `None` — the convention every typed-attribute consumer shares.
+pub fn parse_json_object_rows(strings: &StringArray) -> Vec<Option<Map<String, JsonValue>>> {
+    (0..strings.len())
+        .map(|i| {
+            if strings.is_null(i) {
+                return None;
+            }
+            match serde_json::from_str::<JsonValue>(strings.value(i)) {
+                Ok(JsonValue::Object(map)) => Some(map),
+                _ => None,
+            }
+        })
+        .collect()
+}
+
 /// Splits a JSON-in-Utf8 attribute column (the Flight/WAL wire carrier)
 /// into the five typed-attribute columns. A null, unparseable, or non-object
 /// row becomes a null row.
@@ -329,15 +346,7 @@ pub fn split_json_column(
         .downcast_ref::<StringArray>()
         .ok_or(TypedAttrError::NotAStringColumn)?;
     let mut builder = TypedAttrBuilder::new(fields)?;
-    for i in 0..strings.len() {
-        let row = if strings.is_null(i) {
-            None
-        } else {
-            match serde_json::from_str::<JsonValue>(strings.value(i)) {
-                Ok(JsonValue::Object(map)) => Some(map),
-                _ => None,
-            }
-        };
+    for row in parse_json_object_rows(strings) {
         builder.append_row(row.as_ref(), &mut place)?;
     }
     builder.finish()

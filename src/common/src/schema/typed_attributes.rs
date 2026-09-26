@@ -3,7 +3,19 @@
 //! per [`CanonicalType`] plus a binary residue for values that have no typed
 //! home (off-type, array, kvlist, bytes).
 
+use crate::schema::logical::AttributeLevel;
 use crate::schema::type_authority::CanonicalType;
+
+/// The [`AttributeLevel`] a container name implies: `resource_attributes`
+/// and `scope_attributes` are resource/scope-scoped; every other container
+/// (e.g. `span_attributes`, `log_attributes`, `attributes`) is record-scoped.
+pub fn container_level(container: &str) -> AttributeLevel {
+    match container {
+        "resource_attributes" => AttributeLevel::Resource,
+        "scope_attributes" => AttributeLevel::Scope,
+        _ => AttributeLevel::Record,
+    }
+}
 
 /// The typed-home column of `container` that stores values of `canonical`,
 /// e.g. `span_attributes_int`.
@@ -71,5 +83,17 @@ mod tests {
                 "span_attributes_residue",
             ]
         );
+    }
+
+    #[test]
+    fn container_level_scopes_resource_and_scope_containers_and_defaults_to_record() {
+        assert_eq!(
+            container_level("resource_attributes"),
+            AttributeLevel::Resource
+        );
+        assert_eq!(container_level("scope_attributes"), AttributeLevel::Scope);
+        for container in ["span_attributes", "log_attributes", "attributes"] {
+            assert_eq!(container_level(container), AttributeLevel::Record);
+        }
     }
 }
