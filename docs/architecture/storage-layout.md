@@ -445,7 +445,7 @@ All v3/v4 additions are nullable; null on any row written before its column exis
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
-#### Logs Table (v2 -- current)
+#### Logs Table (v3 -- current)
 
 Defined in `schemas.toml`.
 
@@ -470,6 +470,8 @@ Defined in `schemas.toml`.
 | 17  | `resource_identity`   | String             | No       | v2: digest of the record's resource attribute set (#1340). Null on any row written before the column existed. |
 | 18  | `date_day`            | Date               | Yes      | Computed from timestamp                                                                                       |
 | 19  | `hour`                | Int                | Yes      | Computed from timestamp                                                                                       |
+| 20  | `event_name`          | String              | No       | v3: preserved verbatim from the OTel log record (#1743)                                                       |
+| 21  | `dropped_attributes_count` | Long           | No       | v3: preserved verbatim from the OTel log record (#1743)                                                       |
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
