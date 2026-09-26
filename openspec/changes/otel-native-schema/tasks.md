@@ -22,10 +22,10 @@ no coexistence read-path, no legacy safe-cast, no compactor rewrite of old files
 
 Most of this landed alongside layer 1: `common::schema::logical` declares the logical schema (record metadata, `body` as `AnyValue`, join keys, resource identity, level shadowing); `schemas.toml` already names storage versions `physical-vN`, carries a separate `logical_schema_version`, and marks computed/partition columns `physical_only`; the IR planner rejects physical names using the scanned table's columns. The remaining work pins these with tests. The one-metric-model requirement moves to layer 7 (7.5), where the per-type metric tables are replaced anyway.
 
-- [ ] 2.1 Write tests for the spec scenarios: physical column names rejected via the IR, TraceQL and LogQL; `trace_id`/`span_id` one join key across traces and logs; `dropped_*` counts + log severity/flags present; arrays/kvlists retrievable-not-filterable; namespace shadowing rule (spec `otel-native-logical-schema`)
+- [x] 2.1 Write tests for the spec scenarios: physical column names rejected via the IR, TraceQL and LogQL; `trace_id`/`span_id` one join key across traces and logs; `dropped_*` counts + log severity/flags present; arrays/kvlists retrievable-not-filterable; namespace shadowing rule (spec `otel-native-logical-schema`)
 - [x] 2.2 Define the canonical logical schema (resource→scope→signal, dotted OTel names, typed scalar `AnyValue`, `body` as `AnyValue`, record metadata, join keys; SignalDB-defined resource identity flagged non-native) in `common` — metric model excepted, see 7.5
-- [ ] 2.3 Test that each signal's current physical schema realizes the logical schema: every column is a logical field (directly or by alias), an attribute container, or `physical_only`
-- [ ] 2.4 Give `LogicalSchema` its own version constant, matched to `schemas.toml`'s `logical_schema_version`, with a fingerprint test that fails when the field set changes without a bump
+- [x] 2.3 Test that each signal's current physical schema realizes the logical schema: every column is a logical field (directly or by alias), an attribute container, or `physical_only`
+- [x] 2.4 Give `LogicalSchema` its own version constant, matched to `schemas.toml`'s `logical_schema_version`, with a fingerprint test that fails when the field set changes without a bump
 - [x] 2.5 Document the three version axes (Flight wire vs storage, `physical-vN`, logical) in the `flight-schemas` skill
 - [ ] 2.6 `cargo test -p common -p querier` green; lint/format/machete
 
