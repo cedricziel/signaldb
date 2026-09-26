@@ -23,6 +23,7 @@ use crate::schema::typed_attributes::residue_column;
 
 pub mod expr;
 pub mod typed;
+pub mod warm_index;
 
 /// One row's attributes, decoded but not yet rendered to strings.
 pub type JsonDocument = JsonMap<String, JsonValue>;
