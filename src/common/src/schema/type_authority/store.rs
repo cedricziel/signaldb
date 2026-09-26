@@ -5,7 +5,7 @@
 use sqlx::{Row, query};
 
 use crate::catalog::Catalog;
-use crate::schema::logical::{LogicalFieldId, LogicalSchema};
+use crate::schema::logical::{AttributeLevel, LogicalFieldId, LogicalSchema};
 use crate::schema::type_authority::{CanonicalType, Resolution, TypeSource};
 
 /// Errors from attribute-type-authority storage.
@@ -26,6 +26,19 @@ pub struct StoredType {
     pub source: TypeSource,
     pub hint_schema_url: Option<String>,
     pub schema_version: String,
+    pub off_type_count: i64,
+}
+
+/// One stored row for an attribute key, scoped to a single dataset, signal,
+/// and attribute level within a tenant.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
+pub struct AttributeTypeRecord {
+    pub dataset: String,
+    pub signal: String,
+    pub level: AttributeLevel,
+    pub canonical_type: CanonicalType,
+    pub source: TypeSource,
+    pub hint_schema_url: Option<String>,
     pub off_type_count: i64,
 }
 
@@ -336,4 +349,67 @@ impl Catalog {
 
         Ok(())
     }
+
+    /// Every stored row for `attr_key` across the tenant's datasets, signals,
+    /// and attribute levels, ordered by (dataset, signal, level).
+    pub async fn list_attribute_types(
+        &self,
+        tenant_id: &str,
+        attr_key: &str,
+    ) -> Result<Vec<AttributeTypeRecord>, StoreError> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let rows = query(
+                    "SELECT dataset_id, signal, level, canonical_type, source, \
+                     hint_schema_url, schema_version, off_type_count \
+                     FROM attribute_types \
+                     WHERE tenant_id = ? AND attr_key = ? \
+                     ORDER BY dataset_id, signal, level",
+                )
+                .bind(tenant_id)
+                .bind(attr_key)
+                .fetch_all(pool)
+                .await?;
+                rows.iter().map(row_to_record).collect()
+            }
+            Catalog::Postgres(pool) => {
+                let rows = query(
+                    "SELECT dataset_id, signal, level, canonical_type, source, \
+                     hint_schema_url, schema_version, off_type_count \
+                     FROM attribute_types \
+                     WHERE tenant_id = $1 AND attr_key = $2 \
+                     ORDER BY dataset_id, signal, level",
+                )
+                .bind(tenant_id)
+                .bind(attr_key)
+                .fetch_all(pool)
+                .await?;
+                rows.iter().map(row_to_record).collect()
+            }
+        }
+    }
+}
+
+/// Decodes the same `canonical_type`/`source`/`hint_schema_url`/
+/// `off_type_count` columns as [`row_to_stored`], plus the `dataset_id`,
+/// `signal`, and `level` a per-key listing also needs.
+fn row_to_record<R: Row>(row: &R) -> Result<AttributeTypeRecord, StoreError>
+where
+    for<'a> &'a str: sqlx::ColumnIndex<R>,
+    for<'a> String: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+    for<'a> Option<String>: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+    for<'a> i64: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+{
+    let stored = row_to_stored(row)?;
+    let level: String = row.get("level");
+    Ok(AttributeTypeRecord {
+        dataset: row.get("dataset_id"),
+        signal: row.get("signal"),
+        level: AttributeLevel::parse(&level)
+            .ok_or_else(|| StoreError::Corrupt(format!("unknown level `{level}`")))?,
+        canonical_type: stored.canonical,
+        source: stored.source,
+        hint_schema_url: stored.hint_schema_url,
+        off_type_count: stored.off_type_count,
+    })
 }

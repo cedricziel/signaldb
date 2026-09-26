@@ -104,6 +104,13 @@ export type AttributeLevel = 'resource' | 'scope' | 'record';
  * precedence order; `primary` is the first.
  */
 export type AttributeResolution = {
+    /**
+     * The canonical type the type authority committed for this key, per
+     * dataset/signal/level it has been observed in, and how many values
+     * arrived with a different type (kept, but not typed-queryable). Absent
+     * when no type has been established yet.
+     */
+    canonical_types?: Array<AttributeTypeRecord>;
     hits: Array<AttributeHit>;
     key: string;
     primary?: null | AttributeHit;
@@ -118,6 +125,20 @@ export type AttributeSearchResponse = {
 };
 
 /**
+ * One stored row for an attribute key, scoped to a single dataset, signal,
+ * and attribute level within a tenant.
+ */
+export type AttributeTypeRecord = {
+    canonical_type: CanonicalType;
+    dataset: string;
+    hint_schema_url?: string | null;
+    level: AttributeLevel;
+    off_type_count: number;
+    signal: string;
+    source: TypeSource;
+};
+
+/**
  * Response body for `GET /schemas/available`.
  */
 export type AvailableSchemasResponse = {
@@ -126,6 +147,8 @@ export type AvailableSchemasResponse = {
      */
     schemas: Array<TableInfo>;
 };
+
+export type CanonicalType = 'string' | 'int64' | 'float64' | 'bool';
 
 /**
  * An approximate distinct-value count.
@@ -2023,6 +2046,8 @@ export type Trace = {
     startTimeUnixNano: string;
     traceID: string;
 };
+
+export type TypeSource = 'config' | 'semconv' | 'observed';
 
 /**
  * Why a lookup could not serve a snippet.

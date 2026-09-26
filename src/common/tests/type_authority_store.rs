@@ -233,3 +233,87 @@ async fn override_on_a_missing_row_creates_it() {
     assert_eq!(stored.canonical, CanonicalType::Bool);
     assert_eq!(stored.source, TypeSource::Config);
 }
+
+/// `list_attribute_types` surfaces every stored row for a key across a
+/// tenant's datasets and levels, ordered by (dataset, signal, level), and
+/// never leaks another tenant's rows.
+#[tokio::test]
+async fn list_attribute_types_spans_datasets_and_levels_scoped_to_tenant() {
+    let catalog = catalog().await;
+
+    let resource_field = field("traces", Some(AttributeLevel::Resource), "shared.key");
+    let record_field = field("traces", Some(AttributeLevel::Record), "shared.key");
+
+    catalog
+        .establish_attribute_type(
+            "acme",
+            "default",
+            &resource_field,
+            observed(CanonicalType::String),
+        )
+        .await
+        .expect("establish default/resource");
+    catalog
+        .establish_attribute_type(
+            "acme",
+            "default",
+            &record_field,
+            observed(CanonicalType::Int64),
+        )
+        .await
+        .expect("establish default/record");
+    catalog
+        .establish_attribute_type(
+            "acme",
+            "other",
+            &resource_field,
+            observed(CanonicalType::Bool),
+        )
+        .await
+        .expect("establish other/resource");
+    catalog
+        .record_off_type("acme", "default", &record_field, 3)
+        .await
+        .expect("record off-type");
+
+    // Another tenant's row for the same key must never leak into acme's list.
+    catalog
+        .establish_attribute_type(
+            "globex",
+            "default",
+            &resource_field,
+            observed(CanonicalType::Float64),
+        )
+        .await
+        .expect("establish globex row");
+
+    let records = catalog
+        .list_attribute_types("acme", "shared.key")
+        .await
+        .expect("list_attribute_types");
+
+    assert_eq!(records.len(), 3);
+    assert_eq!(records[0].dataset, "default");
+    assert_eq!(records[0].signal, "traces");
+    assert_eq!(records[0].level, AttributeLevel::Record);
+    assert_eq!(records[0].canonical_type, CanonicalType::Int64);
+    assert_eq!(records[0].source, TypeSource::Observed);
+    assert_eq!(records[0].off_type_count, 3);
+
+    assert_eq!(records[1].dataset, "default");
+    assert_eq!(records[1].level, AttributeLevel::Resource);
+    assert_eq!(records[1].canonical_type, CanonicalType::String);
+    assert_eq!(records[1].off_type_count, 0);
+
+    assert_eq!(records[2].dataset, "other");
+    assert_eq!(records[2].level, AttributeLevel::Resource);
+    assert_eq!(records[2].canonical_type, CanonicalType::Bool);
+
+    assert!(records.iter().all(|r| r.dataset != "globex"));
+
+    let none = catalog
+        .list_attribute_types("acme", "no.such.key")
+        .await
+        .expect("list_attribute_types empty");
+    assert!(none.is_empty());
+}

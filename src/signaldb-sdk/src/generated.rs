@@ -201,6 +201,12 @@ pub mod types {
     precedence order; `primary` is the first.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct AttributeResolution {
+        /**The canonical type the type authority committed for this key, per
+        dataset/signal/level it has been observed in, and how many values
+        arrived with a different type (kept, but not typed-queryable). Absent
+        when no type has been established yet.*/
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub canonical_types: ::std::vec::Vec<AttributeTypeRecord>,
         pub hits: ::std::vec::Vec<AttributeHit>,
         pub key: ::std::string::String,
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
@@ -224,6 +230,24 @@ pub mod types {
             Default::default()
         }
     }
+    /**One stored row for an attribute key, scoped to a single dataset, signal,
+    and attribute level within a tenant.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct AttributeTypeRecord {
+        pub canonical_type: CanonicalType,
+        pub dataset: ::std::string::String,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub hint_schema_url: ::std::option::Option<::std::string::String>,
+        pub level: AttributeLevel,
+        pub off_type_count: i64,
+        pub signal: ::std::string::String,
+        pub source: TypeSource,
+    }
+    impl AttributeTypeRecord {
+        pub fn builder() -> builder::AttributeTypeRecord {
+            Default::default()
+        }
+    }
     ///Response body for `GET /schemas/available`.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct AvailableSchemasResponse {
@@ -233,6 +257,65 @@ pub mod types {
     impl AvailableSchemasResponse {
         pub fn builder() -> builder::AvailableSchemasResponse {
             Default::default()
+        }
+    }
+    ///`CanonicalType`
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum CanonicalType {
+        #[serde(rename = "string")]
+        String,
+        #[serde(rename = "int64")]
+        Int64,
+        #[serde(rename = "float64")]
+        Float64,
+        #[serde(rename = "bool")]
+        Bool,
+    }
+    impl ::std::fmt::Display for CanonicalType {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::String => f.write_str("string"),
+                Self::Int64 => f.write_str("int64"),
+                Self::Float64 => f.write_str("float64"),
+                Self::Bool => f.write_str("bool"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for CanonicalType {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "string" => Ok(Self::String),
+                "int64" => Ok(Self::Int64),
+                "float64" => Ok(Self::Float64),
+                "bool" => Ok(Self::Bool),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for CanonicalType {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for CanonicalType {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
         }
     }
     ///An approximate distinct-value count.
@@ -3148,6 +3231,61 @@ pub mod types {
             Default::default()
         }
     }
+    ///`TypeSource`
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum TypeSource {
+        #[serde(rename = "config")]
+        Config,
+        #[serde(rename = "semconv")]
+        Semconv,
+        #[serde(rename = "observed")]
+        Observed,
+    }
+    impl ::std::fmt::Display for TypeSource {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Config => f.write_str("config"),
+                Self::Semconv => f.write_str("semconv"),
+                Self::Observed => f.write_str("observed"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for TypeSource {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "config" => Ok(Self::Config),
+                "semconv" => Ok(Self::Semconv),
+                "observed" => Ok(Self::Observed),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for TypeSource {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for TypeSource {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
     ///Why a lookup could not serve a snippet.
     #[derive(
         ::serde::Deserialize,
@@ -4100,6 +4238,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct AttributeResolution {
+            canonical_types: ::std::result::Result<
+                ::std::vec::Vec<super::AttributeTypeRecord>,
+                ::std::string::String,
+            >,
             hits:
                 ::std::result::Result<::std::vec::Vec<super::AttributeHit>, ::std::string::String>,
             key: ::std::result::Result<::std::string::String, ::std::string::String>,
@@ -4111,6 +4253,7 @@ pub mod types {
         impl ::std::default::Default for AttributeResolution {
             fn default() -> Self {
                 Self {
+                    canonical_types: Ok(Default::default()),
                     hits: Err("no value supplied for hits".to_string()),
                     key: Err("no value supplied for key".to_string()),
                     primary: Ok(Default::default()),
@@ -4118,6 +4261,16 @@ pub mod types {
             }
         }
         impl AttributeResolution {
+            pub fn canonical_types<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::AttributeTypeRecord>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.canonical_types = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for canonical_types: {e}")
+                });
+                self
+            }
             pub fn hits<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::vec::Vec<super::AttributeHit>>,
@@ -4155,6 +4308,7 @@ pub mod types {
                 value: AttributeResolution,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    canonical_types: value.canonical_types?,
                     hits: value.hits?,
                     key: value.key?,
                     primary: value.primary?,
@@ -4164,6 +4318,7 @@ pub mod types {
         impl ::std::convert::From<super::AttributeResolution> for AttributeResolution {
             fn from(value: super::AttributeResolution) -> Self {
                 Self {
+                    canonical_types: Ok(value.canonical_types),
                     hits: Ok(value.hits),
                     key: Ok(value.key),
                     primary: Ok(value.primary),
@@ -4225,6 +4380,133 @@ pub mod types {
                 Self {
                     hits: Ok(value.hits),
                     resolutions: Ok(value.resolutions),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct AttributeTypeRecord {
+            canonical_type: ::std::result::Result<super::CanonicalType, ::std::string::String>,
+            dataset: ::std::result::Result<::std::string::String, ::std::string::String>,
+            hint_schema_url: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            level: ::std::result::Result<super::AttributeLevel, ::std::string::String>,
+            off_type_count: ::std::result::Result<i64, ::std::string::String>,
+            signal: ::std::result::Result<::std::string::String, ::std::string::String>,
+            source: ::std::result::Result<super::TypeSource, ::std::string::String>,
+        }
+        impl ::std::default::Default for AttributeTypeRecord {
+            fn default() -> Self {
+                Self {
+                    canonical_type: Err("no value supplied for canonical_type".to_string()),
+                    dataset: Err("no value supplied for dataset".to_string()),
+                    hint_schema_url: Ok(Default::default()),
+                    level: Err("no value supplied for level".to_string()),
+                    off_type_count: Err("no value supplied for off_type_count".to_string()),
+                    signal: Err("no value supplied for signal".to_string()),
+                    source: Err("no value supplied for source".to_string()),
+                }
+            }
+        }
+        impl AttributeTypeRecord {
+            pub fn canonical_type<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::CanonicalType>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.canonical_type = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for canonical_type: {e}")
+                });
+                self
+            }
+            pub fn dataset<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset: {e}"));
+                self
+            }
+            pub fn hint_schema_url<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.hint_schema_url = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for hint_schema_url: {e}")
+                });
+                self
+            }
+            pub fn level<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::AttributeLevel>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.level = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for level: {e}"));
+                self
+            }
+            pub fn off_type_count<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.off_type_count = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for off_type_count: {e}")
+                });
+                self
+            }
+            pub fn signal<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.signal = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for signal: {e}"));
+                self
+            }
+            pub fn source<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::TypeSource>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.source = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for source: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<AttributeTypeRecord> for super::AttributeTypeRecord {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: AttributeTypeRecord,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    canonical_type: value.canonical_type?,
+                    dataset: value.dataset?,
+                    hint_schema_url: value.hint_schema_url?,
+                    level: value.level?,
+                    off_type_count: value.off_type_count?,
+                    signal: value.signal?,
+                    source: value.source?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::AttributeTypeRecord> for AttributeTypeRecord {
+            fn from(value: super::AttributeTypeRecord) -> Self {
+                Self {
+                    canonical_type: Ok(value.canonical_type),
+                    dataset: Ok(value.dataset),
+                    hint_schema_url: Ok(value.hint_schema_url),
+                    level: Ok(value.level),
+                    off_type_count: Ok(value.off_type_count),
+                    signal: Ok(value.signal),
+                    source: Ok(value.source),
                 }
             }
         }
