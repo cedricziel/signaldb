@@ -590,6 +590,7 @@ async fn old_logql_log_plan(
         materialized: materialized_columns_of(&df),
         map_attrs: is_map_column(&df, "log_attributes"),
         attr_tokens: false,
+        ..Default::default()
     };
     df = super::table_lookup::time_window(df, FROM, TO)?;
     if let Some(filter) = log_query_filter_with_columns(&parsed, &attr_ctx)? {
@@ -1718,6 +1719,7 @@ async fn old_logql_log_query_df(ctx: &SessionContext, q: &str, fields: &[&str]) 
         materialized: materialized_columns_of(&df),
         map_attrs: is_map_column(&df, "log_attributes"),
         attr_tokens: false,
+        ..Default::default()
     };
     df = super::table_lookup::time_window(df, FROM, TO).unwrap();
     if let Some(filter) = log_query_filter_with_columns(&parsed, &attr_ctx).unwrap() {

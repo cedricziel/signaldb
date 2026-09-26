@@ -35,8 +35,9 @@
 
 use std::collections::HashSet;
 
+use common::attrs::expr::compat_attr_expr;
 use common::schema::materialized_column_name;
-use datafusion::arrow::datatypes::DataType;
+use datafusion::arrow::datatypes::{DataType, SchemaRef};
 use datafusion::functions::regex::expr_fn::regexp_like;
 use datafusion::functions::string::expr_fn::contains;
 use datafusion::logical_expr::{Expr, cast, col, lit, not};
@@ -71,13 +72,17 @@ pub type MaterializedColumns = HashSet<String>;
 
 /// What the target table offers for attribute matching: which materialized
 /// `label_<key>` columns exist, whether the attribute columns are typed
-/// maps (new tables) or JSON strings (legacy tables), and whether the
-/// derived `attr_tokens` column exists for bloom-backed containment checks.
+/// maps (new tables) or JSON strings (legacy tables), whether the derived
+/// `attr_tokens` column exists for bloom-backed containment checks, and the
+/// scanned schema (for `map_attrs` tables only) so a key's extraction can
+/// route through the typed-attribute layout's `coalesce` when the table has
+/// been rewritten onto it (see `common::attrs::expr::compat_attr_expr`).
 #[derive(Debug, Default, Clone)]
 pub struct AttrContext {
     pub materialized: MaterializedColumns,
     pub map_attrs: bool,
     pub attr_tokens: bool,
+    pub schema: Option<SchemaRef>,
 }
 
 /// Attribute columns searched for a label that is not a dedicated column.
@@ -208,7 +213,7 @@ fn label_expr(
         return materialized_label_expr(&materialized, op, value);
     }
     let base = if ctx.map_attrs {
-        map_attribute_expr(name, op, value)?
+        map_attribute_expr(name, op, value, ctx.schema.as_deref())?
     } else {
         attribute_expr(name, op, value)?
     };
@@ -226,16 +231,21 @@ fn label_expr(
     Ok(base)
 }
 
-/// Predicate against typed `Map<Utf8, Utf8>` attribute columns: the value
-/// is extracted per key with `get_field` and compared exactly — no
-/// substring approximation. Regex and ordered comparisons work on any
-/// attribute (ordered casts the value to `Float64`); negations also match
-/// rows where the key is absent (NULL), mirroring the JSON path.
-fn map_attribute_expr(key: &str, op: FilterOp, value: &FilterValue) -> Result<Expr, QuerierError> {
-    use datafusion::functions::core::expr_fn::get_field;
-
-    let in_log = get_field(col(LOG_ATTRIBUTES), key);
-    let in_resource = get_field(col(RESOURCE_ATTRIBUTES), key);
+/// Predicate against typed attribute columns: the value is extracted per
+/// key — via `get_field` on the legacy `Map<Utf8, Utf8>` column, or via
+/// `compat_attr_expr`'s coalesce over the typed-attribute layout's homes
+/// when `schema` shows the table has been rewritten onto it — and compared
+/// exactly, no substring approximation. Regex and ordered comparisons work
+/// on any attribute (ordered casts the value to `Float64`); negations also
+/// match rows where the key is absent (NULL), mirroring the JSON path.
+fn map_attribute_expr(
+    key: &str,
+    op: FilterOp,
+    value: &FilterValue,
+    schema: Option<&datafusion::arrow::datatypes::Schema>,
+) -> Result<Expr, QuerierError> {
+    let in_log = compat_attr_expr(schema, LOG_ATTRIBUTES, key);
+    let in_resource = compat_attr_expr(schema, RESOURCE_ATTRIBUTES, key);
     let both = |f: &dyn Fn(Expr) -> Expr| f(in_log.clone()).or(f(in_resource.clone()));
     let both_and = |f: &dyn Fn(Expr) -> Expr| f(in_log.clone()).and(f(in_resource.clone()));
 
@@ -467,6 +477,7 @@ mod tests {
             materialized: MaterializedColumns::new(),
             map_attrs,
             attr_tokens: true,
+            ..Default::default()
         };
         let expr = log_query_filter_with_columns(&q, &ctx)
             .expect("lower")
@@ -549,6 +560,7 @@ mod tests {
             materialized: ["label_namespace".to_string()].into_iter().collect(),
             map_attrs: true,
             attr_tokens: true,
+            ..Default::default()
         };
         let expr = format!(
             "{}",
@@ -817,5 +829,76 @@ mod tests {
             lower(r#"{a="b"} | logfmt | foo=~"bar.*""#),
             Err(QuerierError::Unsupported(_))
         ));
+    }
+
+    /// A LogQL label filter on a typed-layout logs table (`log_attributes`/
+    /// `resource_attributes` rewritten onto their five typed columns each,
+    /// `logs` `physical-v4`) matches through `map_attribute_expr` →
+    /// `compat_attr_expr`'s typed-home coalesce, the same as it would
+    /// against a legacy `Map<Utf8,Utf8>` table — exercising the real
+    /// `log_query_filter_with_columns` lowering end to end, not just the
+    /// expression builder.
+    #[tokio::test]
+    async fn label_filter_matches_a_typed_layout_logs_table() {
+        use common::testing::typed_attribute_columns_from;
+        use datafusion::arrow::array::RecordBatch;
+        use datafusion::arrow::datatypes::{Field, Schema};
+        use datafusion::prelude::SessionContext;
+        use serde_json::{Map as JsonMap, json};
+        use std::sync::Arc;
+
+        // Two rows of `log_attributes`: one with `namespace = "prod"`, one
+        // with a different value. `resource_attributes` stays empty on both
+        // — an empty typed map, not absent — so the query's `OR` across
+        // both containers still evaluates, matching how a real typed table
+        // always carries both.
+        let log_rows = [
+            Some(JsonMap::from_iter([(
+                "namespace".to_string(),
+                json!("prod"),
+            )])),
+            Some(JsonMap::from_iter([(
+                "namespace".to_string(),
+                json!("staging"),
+            )])),
+        ];
+        let resource_rows = [Some(JsonMap::new()), Some(JsonMap::new())];
+        let (log_fields, log_arrays) =
+            typed_attribute_columns_from("logs", "physical-v4", LOG_ATTRIBUTES, &log_rows);
+        let (resource_fields, resource_arrays) = typed_attribute_columns_from(
+            "logs",
+            "physical-v4",
+            RESOURCE_ATTRIBUTES,
+            &resource_rows,
+        );
+
+        let fields: Vec<Field> = log_fields.iter().chain(&resource_fields).cloned().collect();
+        let schema = Arc::new(Schema::new(fields));
+        let arrays: Vec<_> = log_arrays.into_iter().chain(resource_arrays).collect();
+        let batch =
+            RecordBatch::try_new(schema.clone(), arrays).expect("build two-row typed logs batch");
+
+        let ctx = SessionContext::new();
+        ctx.register_batch("logs", batch)
+            .expect("register batch as a table");
+        let df = ctx.table("logs").await.expect("scan the registered table");
+
+        let query = parse_query(r#"{namespace="prod"}"#).expect("parse");
+        let attr_ctx = AttrContext {
+            map_attrs: true,
+            schema: Some(schema),
+            ..Default::default()
+        };
+        let filter = log_query_filter_with_columns(&query, &attr_ctx)
+            .expect("lower")
+            .expect("some filter");
+        let matches = df
+            .filter(filter)
+            .expect("apply filter")
+            .collect()
+            .await
+            .expect("collect");
+        let total_rows: usize = matches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 1, "exactly the namespace=prod row should match");
     }
 }

@@ -78,6 +78,10 @@ const LOG_FIELD_PAIRS: &[(&str, &str)] = &[
     ("resource.attributes", "resource_attributes"),
 ];
 
+/// The two attribute containers a log record carries — legacy label
+/// discovery/filter fallback scans both.
+const ATTR_CONTAINERS: &[&str] = &["log_attributes", "resource_attributes"];
+
 /// LogQL label names backed by dedicated columns, in Loki label form.
 const KNOWN_LABELS: &[&str] = &[
     "detected_level",
@@ -627,8 +631,12 @@ impl LogsService {
         };
         let map_attrs = attr_context_of(&df).map_attrs;
         let df = time_window(df, start, end)?;
+        let attr_columns = common::attrs::expr::select_columns_for_containers(
+            Some(df.schema().as_arrow()),
+            ATTR_CONTAINERS,
+        );
         let df = df
-            .select_columns(&["log_attributes", "resource_attributes"])
+            .select_columns(&attr_columns.iter().map(String::as_str).collect::<Vec<_>>())
             .map_err(QuerierError::QueryFailed)?;
         // Arrow's row format cannot sort Map columns, so the JSON-era
         // `distinct()` dedup is skipped for map-typed attribute tables.
@@ -645,7 +653,7 @@ impl LogsService {
             .map_err(QuerierError::QueryFailed)?;
 
         for batch in &batches {
-            for column in ["log_attributes", "resource_attributes"] {
+            for column in ATTR_CONTAINERS {
                 for doc in attr_documents(batch, column)?.into_iter().flatten() {
                     labels.extend(doc.into_keys());
                 }
@@ -690,8 +698,12 @@ impl LogsService {
         }
 
         // Otherwise pull the value out of the attribute documents.
+        let attr_columns = common::attrs::expr::select_columns_for_containers(
+            Some(df.schema().as_arrow()),
+            ATTR_CONTAINERS,
+        );
         let df = df
-            .select_columns(&["log_attributes", "resource_attributes"])
+            .select_columns(&attr_columns.iter().map(String::as_str).collect::<Vec<_>>())
             .map_err(QuerierError::QueryFailed)?;
         let df = if map_attrs {
             df
@@ -707,7 +719,7 @@ impl LogsService {
 
         let mut values = BTreeSet::new();
         for batch in &batches {
-            for column in ["log_attributes", "resource_attributes"] {
+            for column in ATTR_CONTAINERS {
                 for mut doc in attr_documents(batch, column)?.into_iter().flatten() {
                     if let Some(value) = doc.remove(label) {
                         values.insert(value);
@@ -751,8 +763,12 @@ impl LogsService {
             }
         }
         let df = time_window(df, params.start, params.end)?;
+        let attr_columns = common::attrs::expr::select_columns_for_containers(
+            Some(df.schema().as_arrow()),
+            ATTR_CONTAINERS,
+        );
         let batches = df
-            .select_columns(&["log_attributes", "resource_attributes"])
+            .select_columns(&attr_columns.iter().map(String::as_str).collect::<Vec<_>>())
             .map_err(QuerierError::QueryFailed)?
             .limit(0, Some(LABEL_SCAN_LIMIT))
             .map_err(QuerierError::QueryFailed)?
@@ -775,7 +791,7 @@ impl LogsService {
         let mut agg: BTreeMap<String, FieldAgg> = BTreeMap::new();
 
         for batch in &batches {
-            for column in ["log_attributes", "resource_attributes"] {
+            for column in ATTR_CONTAINERS {
                 for doc in attr_documents(batch, column)?.into_iter().flatten() {
                     for (key, rendered) in doc {
                         let entry = agg.entry(key).or_default();
@@ -955,6 +971,7 @@ fn attr_context_of(df: &DataFrame) -> AttrContext {
         materialized: materialized_columns_of(df),
         map_attrs,
         attr_tokens,
+        schema: Some(df.schema().inner().clone()),
     }
 }
 

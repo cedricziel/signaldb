@@ -1606,8 +1606,12 @@ impl MetricsService {
             return Ok(Vec::new());
         };
         let df = time_window(df, start, end)?;
+        let attr_columns = common::attrs::expr::select_columns_for_containers(
+            Some(df.schema().as_arrow()),
+            &[LOG_ATTRIBUTES, RESOURCE_ATTRIBUTES],
+        );
         let df = df
-            .select_columns(&[LOG_ATTRIBUTES, RESOURCE_ATTRIBUTES])
+            .select_columns(&attr_columns.iter().map(String::as_str).collect::<Vec<_>>())
             .map_err(QuerierError::QueryFailed)?;
         // Arrow's row format cannot sort Map columns; skip the dedup there.
         let attrs_are_map = df.schema().fields().iter().any(|f| {
@@ -1672,8 +1676,12 @@ impl MetricsService {
         }
 
         // Otherwise pull the value out of the attribute documents.
+        let attr_columns = common::attrs::expr::select_columns_for_containers(
+            Some(df.schema().as_arrow()),
+            &[LOG_ATTRIBUTES, RESOURCE_ATTRIBUTES],
+        );
         let df = df
-            .select_columns(&[LOG_ATTRIBUTES, RESOURCE_ATTRIBUTES])
+            .select_columns(&attr_columns.iter().map(String::as_str).collect::<Vec<_>>())
             .map_err(QuerierError::QueryFailed)?;
         // Arrow's row format cannot sort Map columns; skip the dedup there.
         let attrs_are_map = df.schema().fields().iter().any(|f| {
@@ -2214,6 +2222,7 @@ fn apply_filters(
         }),
         // Metrics tables carry no derived token column (logs only).
         attr_tokens: false,
+        schema: Some(df.schema().inner().clone()),
     };
     let mut predicate = metric_name_expr(plan);
     for m in &plan.matchers {
@@ -2299,9 +2308,9 @@ fn matcher_expr(m: &LabelMatch, ctx: &super::logql::AttrContext) -> Result<Expr,
         // Map-typed attribute tables: per-key extraction, all four
         // operators, on both attribute columns.
         None if ctx.map_attrs => {
-            use datafusion::functions::core::expr_fn::get_field;
             let per = |column: &str| {
-                let e = get_field(col(column), m.name.as_str());
+                let e =
+                    common::attrs::expr::compat_attr_expr(ctx.schema.as_deref(), column, &m.name);
                 match m.op {
                     MatchKind::Eq => e.eq(lit(m.value.clone())),
                     MatchKind::Neq => e.clone().is_null().or(e.not_eq(lit(m.value.clone()))),
