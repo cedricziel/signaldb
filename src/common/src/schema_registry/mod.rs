@@ -14,6 +14,7 @@
 //!   and alternatives are never dropped.
 
 mod store;
+mod type_hints;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -27,6 +28,7 @@ use schema_model::{
 use serde::{Deserialize, Serialize};
 
 pub use store::{StoreError, StoredRegistry};
+pub use type_hints::SemconvTypeHints;
 
 use crate::catalog::Catalog;
 
@@ -82,6 +84,9 @@ static BUNDLED: Lazy<Vec<BundledRegistry>> = Lazy::new(|| {
         })
         .collect()
 });
+
+/// Namespace of the bundled OpenTelemetry semconv snapshot.
+const OTEL_NAMESPACE: &str = "otel";
 
 /// The bundled registries, in precedence order (`signaldb` before `otel`).
 pub fn bundled_registries() -> &'static [BundledRegistry] {
@@ -321,7 +326,7 @@ impl SchemaResolver {
             deps.extend(
                 visible
                     .iter()
-                    .filter(|v| v.resolved.namespace == "otel")
+                    .filter(|v| v.resolved.namespace == OTEL_NAMESPACE)
                     .map(|v| v.resolved.clone()),
             );
         } else {
