@@ -47,4 +47,4 @@ pub use otlp_fixtures::{
 };
 pub use temp_catalog::TempCatalog;
 pub use tracing_fallback::install_global_tracing_fallback;
-pub use typed_attrs::{typed_attribute_columns, typed_attribute_columns_from};
+pub use typed_attrs::{to_typed_layout, typed_attribute_columns, typed_attribute_columns_from};
