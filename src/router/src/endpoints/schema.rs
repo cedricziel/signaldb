@@ -1807,13 +1807,19 @@ mod core_schema_tests {
         );
 
         // schemas.toml registers physical-v1, physical-v2, physical-v3
-        // (#1208: span_kind_number/status_code_number/dropped counts), and
-        // physical-v4 (#1340: resource_identity) for traces.
-        assert_eq!(schemas.len(), 4);
+        // (#1208: span_kind_number/status_code_number/dropped counts),
+        // physical-v4 (#1340: resource_identity), and the not-yet-current
+        // physical-v5 (typed attribute layout) for traces.
         let versions: Vec<&str> = schemas.iter().map(|s| s.version.as_str()).collect();
         assert_eq!(
             versions,
-            vec!["physical-v1", "physical-v2", "physical-v3", "physical-v4"],
+            vec![
+                "physical-v1",
+                "physical-v2",
+                "physical-v3",
+                "physical-v4",
+                "physical-v5"
+            ],
             "sorted by version name"
         );
 
