@@ -728,7 +728,7 @@ fn extend_schema_with_labels(
 }
 
 pub fn transform_logs_v1_to_iceberg(batch: RecordBatch, labels: &[String]) -> Result<RecordBatch> {
-    let v1_schema = SCHEMA_DEFINITIONS.resolve_log_schema("physical-v2")?;
+    let v1_schema = SCHEMA_DEFINITIONS.resolve_log_schema("physical-v3")?;
     let arrow_schema = create_arrow_schema_from_resolved(&v1_schema)?;
 
     let num_rows = batch.num_rows();
@@ -985,6 +985,24 @@ pub fn transform_logs_v1_to_iceberg(batch: RecordBatch, labels: &[String]) -> Re
             }
             "log_attributes" => get_column_by_name(&batch, "attributes_json")?,
             "resource_identity" => resource_identity_from_resource_json_column(&batch)?,
+            "event_name" => get_column_by_name_or_null(&batch, "event_name", &DataType::Utf8)?,
+            "dropped_attributes_count" => {
+                let col = get_column_by_name_or_null(
+                    &batch,
+                    "dropped_attributes_count",
+                    &DataType::UInt32,
+                )?;
+                let uint_array = col
+                    .as_any()
+                    .downcast_ref::<UInt32Array>()
+                    .ok_or_else(|| anyhow!("dropped_attributes_count is not UInt32Array"))?;
+                Arc::new(
+                    uint_array
+                        .iter()
+                        .map(|v| v.map(i64::from))
+                        .collect::<Int64Array>(),
+                )
+            }
             "date_day" => {
                 let dates: Vec<Option<i32>> = effective_nanos
                     .iter()
@@ -3803,6 +3821,52 @@ mod tests {
         );
         assert_eq!(ts_col.value(2), real_ts as i64, "row 2: use time_unix_nano");
     }
+
+    #[test]
+    fn log_transform_preserves_event_name_and_dropped_attributes_count() {
+        use common::flight::conversion::otlp_logs_to_arrow;
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+
+        let record = LogRecord {
+            time_unix_nano: 1_700_000_000_000_000_000,
+            event_name: "x".to_string(),
+            dropped_attributes_count: 3,
+            ..Default::default()
+        };
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource::default()),
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![record],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let wire_batch = otlp_logs_to_arrow(&request).expect("conversion should succeed");
+        let result =
+            transform_logs_v1_to_iceberg(wire_batch, &[]).expect("transform should succeed");
+
+        let event_name = result
+            .column_by_name("event_name")
+            .expect("event_name column should be present")
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(event_name.value(0), "x");
+
+        let dropped_attributes_count = result
+            .column_by_name("dropped_attributes_count")
+            .expect("dropped_attributes_count column should be present")
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(dropped_attributes_count.value(0), 3);
+    }
 }
 
 /// Every non-computed field `schemas.toml` declares for a table must have a
@@ -3905,7 +3969,7 @@ mod schema_consistency {
     }
 
     #[test]
-    fn logs_transform_covers_every_non_computed_physical_v2_field() {
+    fn logs_transform_covers_every_non_computed_physical_v3_field() {
         let resolved = SCHEMA_DEFINITIONS
             .resolve_log_schema(&SCHEMA_DEFINITIONS.metadata.current_log_version)
             .unwrap();
@@ -3930,6 +3994,8 @@ mod schema_consistency {
                 "scope_version",
                 "scope_attributes",
                 "log_attributes",
+                "event_name",
+                "dropped_attributes_count",
             ],
         );
     }

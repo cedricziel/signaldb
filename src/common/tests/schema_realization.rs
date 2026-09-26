@@ -194,18 +194,6 @@ fn known_gap(source: &str, physical: &str) -> bool {
     names.contains(&physical)
 }
 
-/// Logical fields declared for a source that have no physical realization
-/// yet -- pre-existing gaps in the *other* direction. `logs.event_name` and
-/// `logs.dropped_attributes_count` are registered in `LogicalSchema::core()`
-/// (mirroring `traces.dropped_attributes_count`, which *is* realized as of
-/// physical-v3) but `logs.physical-v2` never grew the matching columns.
-fn known_missing_realization(source: &str, logical_name: &str) -> bool {
-    matches!(
-        (source, logical_name),
-        ("logs", "event_name") | ("logs", "dropped_attributes_count")
-    )
-}
-
 fn resolved_fields_for(source: &str) -> Vec<ResolvedField> {
     match source {
         "logs" => {
@@ -337,10 +325,6 @@ fn every_filterable_non_attribute_logical_field_has_a_physical_realization() {
             {
                 continue;
             }
-            if known_missing_realization(logical_source, &field.id.name) {
-                continue;
-            }
-
             let realized = physical_names
                 .iter()
                 .any(|physical| realizes(physical_source, physical, &field.id.name));

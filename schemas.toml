@@ -4,7 +4,7 @@
 [metadata]
 description = "SignalDB built-in table schemas"
 current_trace_version = "physical-v4"
-current_log_version = "physical-v2"
+current_log_version = "physical-v3"
 current_metric_version = "physical-v2"
 current_profile_version = "physical-v2"
 logical_schema_version = "otel-2026-08"
@@ -107,6 +107,14 @@ description = "resource.identity digest column, stable per distinct resource att
 inherits = "physical-v1"
 field_additions = [
     { name = "resource_identity", type = "string", required = false },
+]
+
+[logs.physical-v3]
+description = "event_name and dropped_attributes_count preservation, mirroring traces.physical-v3 (#1743)"
+inherits = "physical-v2"
+field_additions = [
+    { name = "event_name", type = "string", required = false },
+    { name = "dropped_attributes_count", type = "int64", required = false },
 ]
 
 # ==============================================================================
