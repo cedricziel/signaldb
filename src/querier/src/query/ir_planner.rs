@@ -4049,6 +4049,7 @@ fn compile_regex_guard(pattern: &str) -> Result<(), QuerierError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use common::schema::type_authority::{ObservedKind, Placement};
     use datafusion::arrow::array::{
         ArrayRef, Float64Array, Int64Array, MapBuilder, MapFieldNames, StringArray, StringBuilder,
         TimestampNanosecondArray,
@@ -6324,6 +6325,24 @@ mod tests {
         out
     }
 
+    /// [`column_values`]'s `Int64` twin.
+    async fn column_values_i64(df: DataFrame, column: &str) -> Vec<Option<i64>> {
+        let batches = df.collect().await.unwrap();
+        let mut out = Vec::new();
+        for batch in &batches {
+            let idx = batch.schema().index_of(column).unwrap();
+            let col = batch
+                .column(idx)
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap_or_else(|| panic!("column '{column}' is not an int64 column"));
+            for i in 0..batch.num_rows() {
+                out.push((!col.is_null(i)).then(|| col.value(i)));
+            }
+        }
+        out
+    }
+
     /// A scope attribute is only reachable if `scope_attributes` is one of the
     /// source's containers. It was omitted, so grouping by an instrumentation
     /// scope attribute silently produced nothing.
@@ -6609,6 +6628,65 @@ mod tests {
         .0
     }
 
+    /// [`plan_typed`], collected — the plan-then-execute boilerplate every
+    /// test that only needs the final rows (not the pre-collect plan text or
+    /// schema) shares.
+    async fn plan_typed_rows(
+        ctx: &SessionContext,
+        d: &Document,
+        types: CanonicalTypes,
+    ) -> Vec<RecordBatch> {
+        plan_typed(ctx, d, types).await.collect().await.unwrap()
+    }
+
+    /// A typed-attribute-row builder: `row(&[("k", json!(1))])` is
+    /// `Some({"k": 1})` — the shape every typed fixture's rows are built
+    /// from.
+    fn row(
+        pairs: &[(&str, serde_json::Value)],
+    ) -> Option<serde_json::Map<String, serde_json::Value>> {
+        Some(
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.clone()))
+                .collect(),
+        )
+    }
+
+    /// The default typed-attribute placement every fixture in this module
+    /// shares unless it overrides a specific key: a scalar goes to its
+    /// canonical-type home, everything else (arrays, objects, nulls) falls
+    /// to residue.
+    fn standard_placement(observed: ObservedKind) -> Placement {
+        match observed {
+            ObservedKind::String => Placement::Home(CanonicalType::String),
+            ObservedKind::Int64 => Placement::Home(CanonicalType::Int64),
+            ObservedKind::Float64 => Placement::Home(CanonicalType::Float64),
+            ObservedKind::Bool => Placement::Home(CanonicalType::Bool),
+            _ => Placement::Residue { off_type: false },
+        }
+    }
+
+    /// Appends `container`'s five typed columns (from `table`'s `version`
+    /// schema), built from `rows` with `place`, onto `fields`/`columns` — the
+    /// field/array assembly every typed fixture in this module repeats.
+    fn extend_typed_container(
+        fields: &mut Vec<Field>,
+        columns: &mut Vec<ArrayRef>,
+        table: &str,
+        version: &str,
+        container: &str,
+        rows: &[Option<serde_json::Map<String, serde_json::Value>>],
+        place: impl FnMut(&str, ObservedKind) -> Placement,
+    ) {
+        let (typed_fields, typed_arrays) =
+            common::testing::typed_attribute_columns_from_with_placement(
+                table, version, container, rows, place,
+            );
+        fields.extend(typed_fields);
+        columns.extend(typed_arrays);
+    }
+
     /// A `SchemaResolver` for `logs` over an all-typed, empty (no rows)
     /// schema: task 4.4's homes/promotion/exclusion rules are schema and
     /// type-map facts, so asserting `resolve()` directly is cheaper and more
@@ -6706,8 +6784,6 @@ mod tests {
     /// (forced to residue, mimicking what the writer's type authority does
     /// for a value that doesn't match the committed type).
     fn typed_attribute_logs_ctx() -> SessionContext {
-        use common::schema::type_authority::{ObservedKind, Placement};
-
         let mut fields = vec![Field::new(
             "timestamp",
             DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -6716,38 +6792,27 @@ mod tests {
         let mut columns: Vec<ArrayRef> =
             vec![Arc::new(TimestampNanosecondArray::from(vec![10_i64, 20]))];
 
-        let log_rows = vec![
-            Some(serde_json::Map::from_iter([(
-                "http.status_code".to_string(),
-                serde_json::json!(200),
-            )])),
-            Some(serde_json::Map::from_iter([(
-                "http.status_code".to_string(),
-                serde_json::json!("pending"),
-            )])),
-        ];
-        let place = |key: &str, observed: ObservedKind| {
-            if key == "http.status_code" && observed == ObservedKind::String {
-                Placement::Residue { off_type: true }
-            } else {
-                match observed {
-                    ObservedKind::String => Placement::Home(CanonicalType::String),
-                    ObservedKind::Int64 => Placement::Home(CanonicalType::Int64),
-                    ObservedKind::Float64 => Placement::Home(CanonicalType::Float64),
-                    ObservedKind::Bool => Placement::Home(CanonicalType::Bool),
-                    _ => Placement::Residue { off_type: false },
-                }
-            }
-        };
-        let (log_fields, log_arrays) = common::testing::typed_attribute_columns_from_with_placement(
+        extend_typed_container(
+            &mut fields,
+            &mut columns,
             "logs",
             "physical-v4",
             "log_attributes",
-            &log_rows,
-            place,
+            &[
+                row(&[
+                    ("http.status_code", serde_json::json!(200)),
+                    ("priority", serde_json::json!(7)),
+                ]),
+                row(&[("http.status_code", serde_json::json!("pending"))]),
+            ],
+            |key, observed| {
+                if key == "http.status_code" && observed == ObservedKind::String {
+                    Placement::Residue { off_type: true }
+                } else {
+                    standard_placement(observed)
+                }
+            },
         );
-        fields.extend(log_fields);
-        columns.extend(log_arrays);
 
         let schema = Arc::new(Schema::new(fields));
         let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
@@ -6783,15 +6848,100 @@ mod tests {
                 .data_type(),
             &DataType::Int64
         );
-        let batches = df.collect().await.unwrap();
-        let values = batches[0]
-            .column_by_name(&field_name)
+        let values = column_values_i64(df, &field_name).await;
+        assert_eq!(
+            values,
+            vec![Some(200)],
+            "only the int64-typed row matches eq 200"
+        );
+    }
+
+    /// An off-type value (a string on an `Int64`-declared key) reads as NULL
+    /// through the typed home — `exists` is false for that row — but the
+    /// value itself is never lost: the raw `log.attributes` bag still shows
+    /// it, in the residue.
+    #[tokio::test]
+    async fn typed_attribute_off_type_value_reads_null_but_survives_in_the_raw_bag() {
+        use datafusion::arrow::array::{BinaryArray, StructArray};
+
+        let ctx = typed_attribute_logs_ctx();
+        let types = canonical_types(&[(
+            "http.status_code",
+            AttributeLevel::Record,
+            CanonicalType::Int64,
+        )]);
+
+        let exists_doc = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows", "fields": ["http.status_code"],
+            "pipeline": [{ "where": { "field": "http.status_code", "op": "exists" } }]
+        }));
+        let batches = plan_typed_rows(&ctx, &exists_doc, types.clone()).await;
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            total, 1,
+            "the off-type row must not satisfy `exists` on the typed read"
+        );
+
+        let bag_doc = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows", "fields": ["log.attributes"],
+            "pipeline": []
+        }));
+        let batches = plan_typed_rows(&ctx, &bag_doc, types).await;
+        let batch = &batches[0];
+        let bag = batch
+            .column_by_name(&safe_ident("log.attributes"))
             .unwrap()
             .as_any()
-            .downcast_ref::<Int64Array>()
+            .downcast_ref::<StructArray>()
             .unwrap();
-        assert_eq!(values.len(), 1, "only the int64-typed row matches eq 200");
-        assert_eq!(values.value(0), 200);
+        let residue = bag
+            .column_by_name("residue")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .unwrap();
+        assert!(
+            residue.is_null(0),
+            "row 0's value went to its typed home, not residue"
+        );
+        assert!(
+            !residue.is_null(1),
+            "row 1's off-type value must survive in the residue"
+        );
+        let decoded = common::attrs::typed::decode_residue(residue.value(1)).unwrap();
+        assert_eq!(
+            decoded.get("http.status_code"),
+            Some(&serde_json::json!("pending"))
+        );
+    }
+
+    /// A `parent.`-scoped typed attribute reads through `correlate` the same
+    /// way the child side does, against the `parent.<home>` columns the join
+    /// produced — reuses [`correlate_attrs_batch`]'s root/child trace pair
+    /// rewritten onto the typed layout, rather than a dedicated fixture.
+    #[tokio::test]
+    async fn typed_attribute_reads_through_a_parent_correlate_reference() {
+        let (_, batch) = correlate_attrs_batch();
+        let batch =
+            common::testing::to_typed_layout("traces", "physical-v5", &batch, &["span_attributes"]);
+        let ctx = single_table_ctx("traces", batch.schema(), batch.clone());
+        let types =
+            canonical_types(&[("http.route", AttributeLevel::Record, CanonicalType::String)]);
+        let d = doc(serde_json::json!({
+            "irVersion": 8, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "rows", "fields": ["span_id", "parent.http.route"],
+            "pipeline": [{ "correlate": { "to": "parent", "kind": "inner" } }]
+        }));
+        let span_ids = column_values(plan_typed(&ctx, &d, types.clone()).await, "span_id").await;
+        let parent_routes = column_values(
+            plan_typed(&ctx, &d, types).await,
+            &safe_ident("parent.http.route"),
+        )
+        .await;
+        assert_eq!(span_ids, vec![Some("c0".to_string())]);
+        assert_eq!(parent_routes, vec![Some("/checkout".to_string())]);
     }
 
     /// A `logs` table with `log_attributes` on the typed layout, holding one
@@ -6801,60 +6951,43 @@ mod tests {
     /// its `String` observed kind, `off_type: true`), an array (`tags`), and
     /// a bytes carrier (`payload`) — the last three all land in the residue.
     fn logs_ctx_typed_residue() -> SessionContext {
-        use common::schema::type_authority::{CanonicalType, ObservedKind, Placement};
-        use serde_json::{Map, json};
-
-        let base_schema = Schema::new(vec![
+        let mut fields = vec![
             Field::new(
                 "timestamp",
                 DataType::Timestamp(TimeUnit::Nanosecond, None),
                 false,
             ),
             Field::new("trace_id", DataType::Utf8, true),
-        ]);
-        let rows = vec![Some(Map::from_iter([
-            ("http.method".to_string(), json!("GET")),
-            ("retries".to_string(), json!("three")),
-            ("tags".to_string(), json!(["a", "b"])),
-            (
-                "payload".to_string(),
-                json!({"$otlp_type": "bytes", "base64": "AP9h"}),
-            ),
-        ]))];
-        let place = |key: &str, observed: ObservedKind| {
-            if key == "retries" {
-                Placement::Residue { off_type: true }
-            } else {
-                match observed {
-                    ObservedKind::String => Placement::Home(CanonicalType::String),
-                    ObservedKind::Int64 => Placement::Home(CanonicalType::Int64),
-                    ObservedKind::Float64 => Placement::Home(CanonicalType::Float64),
-                    ObservedKind::Bool => Placement::Home(CanonicalType::Bool),
-                    _ => Placement::Residue { off_type: false },
-                }
-            }
-        };
-        let (typed_fields, typed_arrays) =
-            common::testing::typed_attribute_columns_from_with_placement(
-                "logs",
-                "physical-v4",
-                "log_attributes",
-                &rows,
-                place,
-            );
-
-        let mut fields: Vec<Field> = base_schema
-            .fields()
-            .iter()
-            .map(|f| f.as_ref().clone())
-            .collect();
-        fields.extend(typed_fields);
-        let schema = Arc::new(Schema::new(fields));
+        ];
         let mut columns: Vec<ArrayRef> = vec![
             Arc::new(TimestampNanosecondArray::from(vec![10_i64])),
             Arc::new(StringArray::from(vec![Some("t1")])),
         ];
-        columns.extend(typed_arrays);
+        extend_typed_container(
+            &mut fields,
+            &mut columns,
+            "logs",
+            "physical-v4",
+            "log_attributes",
+            &[row(&[
+                ("http.method", serde_json::json!("GET")),
+                ("retries", serde_json::json!("three")),
+                ("tags", serde_json::json!(["a", "b"])),
+                (
+                    "payload",
+                    serde_json::json!({"$otlp_type": "bytes", "base64": "AP9h"}),
+                ),
+            ])],
+            |key, observed| {
+                if key == "retries" {
+                    Placement::Residue { off_type: true }
+                } else {
+                    standard_placement(observed)
+                }
+            },
+        );
+
+        let schema = Arc::new(Schema::new(fields));
         let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
         single_table_ctx("logs", schema, batch)
     }
