@@ -183,6 +183,37 @@ fn map_field_names(field: &Field) -> Result<MapFieldNames, TypedAttrError> {
     })
 }
 
+/// A value placed in its canonical-type home, borrowed from the source JSON
+/// value. Mirrors the `(CanonicalType, JsonValue)` pairs [`TypedAttrBuilder`]
+/// recognizes as a match, without the residue-vs-home decision itself.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum HomeValue<'a> {
+    Str(&'a str),
+    Int(i64),
+    Double(f64),
+    Bool(bool),
+}
+
+/// Resolves a `(home, value)` pair to the value actually written to that
+/// home, or `None` when the value's JSON shape doesn't match the home's
+/// [`CanonicalType`] (that pair goes to residue instead, never coerced).
+pub fn home_value<'a>(placement: Placement, value: &'a JsonValue) -> Option<HomeValue<'a>> {
+    let Placement::Home(home) = placement else {
+        return None;
+    };
+    match (home, value) {
+        (CanonicalType::String, JsonValue::String(s)) => Some(HomeValue::Str(s)),
+        (CanonicalType::Int64, JsonValue::Number(n)) if n.is_i64() => {
+            n.as_i64().map(HomeValue::Int)
+        }
+        (CanonicalType::Float64, JsonValue::Number(n)) if !n.is_i64() => {
+            n.as_f64().map(HomeValue::Double)
+        }
+        (CanonicalType::Bool, JsonValue::Bool(b)) => Some(HomeValue::Bool(*b)),
+        _ => None,
+    }
+}
+
 /// Splits attribute rows into the five typed-attribute columns, one row at a time.
 pub struct TypedAttrBuilder {
     str_builder: MapBuilder<StringBuilder, StringBuilder>,
@@ -252,7 +283,20 @@ impl TypedAttrBuilder {
     pub fn append_row(
         &mut self,
         row: Option<&Map<String, JsonValue>>,
+        place: impl FnMut(&str, ObservedKind) -> Placement,
+    ) -> Result<(), TypedAttrError> {
+        self.append_row_with(row, place, |_, _| {})
+    }
+
+    /// Like [`Self::append_row`], but also invokes `on_home` for every value
+    /// actually written to a typed home (never for residue), so a caller can
+    /// derive per-row artifacts — e.g. the warm-index tokens — from exactly
+    /// the values that land in their canonical home.
+    pub fn append_row_with(
+        &mut self,
+        row: Option<&Map<String, JsonValue>>,
         mut place: impl FnMut(&str, ObservedKind) -> Placement,
+        mut on_home: impl FnMut(&str, HomeValue<'_>),
     ) -> Result<(), TypedAttrError> {
         let Some(row) = row else {
             self.append_map_validity(false)?;
@@ -262,29 +306,30 @@ impl TypedAttrBuilder {
 
         let mut residue = Vec::new();
         for (key, value) in row {
-            let Placement::Home(home) = place(key, observed_kind(value)) else {
+            let placement = place(key, observed_kind(value));
+            let Some(home) = home_value(placement, value) else {
                 residue.push((key.as_str(), value));
                 continue;
             };
-            match (home, value) {
-                (CanonicalType::String, JsonValue::String(s)) => {
+            match home {
+                HomeValue::Str(s) => {
                     self.str_builder.keys().append_value(key);
                     self.str_builder.values().append_value(s);
                 }
-                (CanonicalType::Int64, JsonValue::Number(n)) if n.is_i64() => {
+                HomeValue::Int(i) => {
                     self.int_builder.keys().append_value(key);
-                    self.int_builder.values().append_option(n.as_i64());
+                    self.int_builder.values().append_value(i);
                 }
-                (CanonicalType::Float64, JsonValue::Number(n)) if !n.is_i64() => {
+                HomeValue::Double(d) => {
                     self.double_builder.keys().append_value(key);
-                    self.double_builder.values().append_option(n.as_f64());
+                    self.double_builder.values().append_value(d);
                 }
-                (CanonicalType::Bool, JsonValue::Bool(b)) => {
+                HomeValue::Bool(b) => {
                     self.bool_builder.keys().append_value(key);
-                    self.bool_builder.values().append_value(*b);
+                    self.bool_builder.values().append_value(b);
                 }
-                _ => residue.push((key.as_str(), value)),
             }
+            on_home(key, home);
         }
         self.append_map_validity(true)?;
         if residue.is_empty() {
@@ -618,6 +663,41 @@ mod tests {
 
         let decoded = decode_container(&batch, "span_attributes").unwrap();
         assert_eq!(decoded, vec![None, rows[1].clone()]);
+    }
+
+    #[test]
+    fn append_row_with_reports_exactly_what_encode_token_would_derive_from_each_home() {
+        use crate::attrs::warm_index::encode_token;
+
+        let fields = span_attribute_fields();
+        let row = Map::from_iter([
+            ("i".to_string(), json!(42)),
+            ("d".to_string(), json!(1.5)),
+            ("b".to_string(), json!(true)),
+            ("s".to_string(), json!("hello")),
+            ("off_type".to_string(), json!("residue-bound")),
+        ]);
+        let place = |key: &str, observed: ObservedKind| match key {
+            "i" if observed == ObservedKind::Int64 => Placement::Home(CanonicalType::Int64),
+            "d" if observed == ObservedKind::Float64 => Placement::Home(CanonicalType::Float64),
+            "b" if observed == ObservedKind::Bool => Placement::Home(CanonicalType::Bool),
+            "s" if observed == ObservedKind::String => Placement::Home(CanonicalType::String),
+            _ => Placement::Residue { off_type: false },
+        };
+
+        let mut builder = TypedAttrBuilder::new(&fields).unwrap();
+        let mut observed_tokens = Vec::new();
+        builder
+            .append_row_with(Some(&row), place, |key, home| {
+                observed_tokens.push(encode_token(key, home));
+            })
+            .unwrap();
+        builder.finish().unwrap();
+
+        assert_eq!(observed_tokens.len(), 4, "residue keys are never reported");
+        for token in observed_tokens {
+            assert!(token.is_some(), "every home value has an encodable token");
+        }
     }
 
     #[test]
