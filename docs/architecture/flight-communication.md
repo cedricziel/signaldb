@@ -248,6 +248,13 @@ metadata:
 | HTTP request headers                                  | external caller → Router query APIs     | extract (server side) |
 | Span links                                            | WAL batch fan-in (background processor) | link                  |
 
+The same `do_put` `app_metadata` JSON also carries an `ingest_id` (the
+acceptor WAL entry uuid, one per `do_put`) so the writer can dedup a resend
+that lands on it again -- see `[writer].ingest_dedup_window` in the
+configuration reference. It is absent for acceptors that predate this field,
+which fall back to today's non-deduped behavior; a present-but-unparseable id
+is rejected with `invalid_argument`.
+
 **Write path.** At `do_put` the Writer records the active span's context into
 the WAL entry metadata alongside the routing fields. Because the background
 `WalProcessor` commits a batch that fans in entries from many independent
