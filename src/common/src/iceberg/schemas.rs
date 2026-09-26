@@ -51,25 +51,22 @@ fn create_hour_partition_spec(
 /// Create Iceberg schema for traces table using TOML definitions, plus any
 /// configured materialized-label columns.
 pub fn create_traces_schema_with(labels: &[String]) -> Result<Schema> {
-    // Get the current trace schema version from TOML
-    let current_version = SCHEMA_DEFINITIONS.current_trace_version();
-    let resolved_schema = SCHEMA_DEFINITIONS.resolve_trace_schema(current_version)?;
-
-    resolved_schema.to_iceberg_schema_with_labels(labels)
+    TableSchema::Traces
+        .resolved_schema()?
+        .to_iceberg_schema_with_labels(labels)
 }
 
 /// Create Iceberg schema for logs table using TOML definitions, plus any
 /// configured materialized-label columns and the derived `attr_tokens`
 /// column (see [`crate::schema::ATTR_TOKENS_COLUMN`]).
+///
+/// Promotes configured attribute keys to dedicated columns. The schema is
+/// materialized once at table-creation time; the global config is the
+/// source of truth for which labels are promoted (empty when unset).
 pub fn create_logs_schema_with(labels: &[String]) -> Result<Schema> {
-    // Get the current log schema version from TOML
-    let current_version = SCHEMA_DEFINITIONS.metadata.current_log_version.as_str();
-    let resolved_schema = SCHEMA_DEFINITIONS.resolve_log_schema(current_version)?;
-
-    // Promote configured attribute keys to dedicated columns. The schema is
-    // materialized once at table-creation time; the global config is the
-    // source of truth for which labels are promoted (empty when unset).
-    resolved_schema.to_iceberg_schema_with_labels_and_attr_tokens(labels)
+    TableSchema::Logs
+        .resolved_schema()?
+        .to_iceberg_schema_with_labels_and_attr_tokens(labels)
 }
 
 /// Global-config variant of [`create_traces_schema_with`].
@@ -133,55 +130,40 @@ fn materialized_labels_for(signal: &str) -> Vec<String> {
 /// Create Iceberg schema for metrics gauge table
 /// Based on ClickHouse metrics_gauge_table.sql schema but adapted for Iceberg
 pub fn create_metrics_gauge_schema_with(labels: &[String]) -> Result<Schema> {
-    SCHEMA_DEFINITIONS
-        .resolve_table_schema(
-            &SCHEMA_DEFINITIONS.metrics_gauge,
-            &SCHEMA_DEFINITIONS.metadata.current_metric_version,
-        )?
+    TableSchema::MetricsGauge
+        .resolved_schema()?
         .to_iceberg_schema_with_labels(labels)
 }
 
 /// Create Iceberg schema for metrics sum table
 /// Based on ClickHouse metrics_sum_table.sql schema but adapted for Iceberg
 pub fn create_metrics_sum_schema_with(labels: &[String]) -> Result<Schema> {
-    SCHEMA_DEFINITIONS
-        .resolve_table_schema(
-            &SCHEMA_DEFINITIONS.metrics_sum,
-            &SCHEMA_DEFINITIONS.metadata.current_metric_version,
-        )?
+    TableSchema::MetricsSum
+        .resolved_schema()?
         .to_iceberg_schema_with_labels(labels)
 }
 
 /// Create Iceberg schema for metrics histogram table
 /// Based on ClickHouse metrics_histogram_table.sql schema but adapted for Iceberg
 pub fn create_metrics_histogram_schema_with(labels: &[String]) -> Result<Schema> {
-    SCHEMA_DEFINITIONS
-        .resolve_table_schema(
-            &SCHEMA_DEFINITIONS.metrics_histogram,
-            &SCHEMA_DEFINITIONS.metadata.current_metric_version,
-        )?
+    TableSchema::MetricsHistogram
+        .resolved_schema()?
         .to_iceberg_schema_with_labels(labels)
 }
 
 /// Create Iceberg schema for metrics exponential histogram table
 /// Similar to histogram but with exponential bucketing for better precision
 pub fn create_metrics_exponential_histogram_schema_with(labels: &[String]) -> Result<Schema> {
-    SCHEMA_DEFINITIONS
-        .resolve_table_schema(
-            &SCHEMA_DEFINITIONS.metrics_exponential_histogram,
-            &SCHEMA_DEFINITIONS.metadata.current_metric_version,
-        )?
+    TableSchema::MetricsExponentialHistogram
+        .resolved_schema()?
         .to_iceberg_schema_with_labels(labels)
 }
 
 /// Create Iceberg schema for metrics summary table
 /// Stores quantile values for summary metrics
 pub fn create_metrics_summary_schema_with(labels: &[String]) -> Result<Schema> {
-    SCHEMA_DEFINITIONS
-        .resolve_table_schema(
-            &SCHEMA_DEFINITIONS.metrics_summary,
-            &SCHEMA_DEFINITIONS.metadata.current_metric_version,
-        )?
+    TableSchema::MetricsSummary
+        .resolved_schema()?
         .to_iceberg_schema_with_labels(labels)
 }
 
@@ -191,11 +173,8 @@ pub fn create_metrics_summary_schema_with(labels: &[String]) -> Result<Schema> {
 /// resolved at ingest. Identifiers (profile_id, trace_id, span_id) are
 /// stored as hex strings to stay joinable with the traces and logs tables.
 pub fn create_profiles_schema_with(labels: &[String]) -> Result<Schema> {
-    SCHEMA_DEFINITIONS
-        .resolve_table_schema(
-            &SCHEMA_DEFINITIONS.profiles,
-            &SCHEMA_DEFINITIONS.metadata.current_profile_version,
-        )?
+    TableSchema::Profiles
+        .resolved_schema()?
         .to_iceberg_schema_with_labels(labels)
 }
 
@@ -262,6 +241,46 @@ impl TableSchema {
             }
             TableSchema::MetricsSummary => create_metrics_summary_schema_with(&m.metrics),
             TableSchema::Profiles => create_profiles_schema_with(&m.profiles),
+            TableSchema::Custom(_) => Err(anyhow::anyhow!(
+                "Custom schemas must be loaded from configuration"
+            )),
+        }
+    }
+
+    /// The [`crate::schema::schema_parser::ResolvedSchema`] backing this
+    /// table, before materialized labels or derived columns -- the same
+    /// per-variant TOML resolution the `create_*_schema_with` functions use.
+    fn resolved_schema(&self) -> Result<crate::schema::schema_parser::ResolvedSchema> {
+        match self {
+            TableSchema::Traces => {
+                SCHEMA_DEFINITIONS.resolve_trace_schema(SCHEMA_DEFINITIONS.current_trace_version())
+            }
+            TableSchema::Logs => SCHEMA_DEFINITIONS
+                .resolve_log_schema(&SCHEMA_DEFINITIONS.metadata.current_log_version),
+            TableSchema::MetricsGauge => SCHEMA_DEFINITIONS.resolve_table_schema(
+                &SCHEMA_DEFINITIONS.metrics_gauge,
+                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
+            ),
+            TableSchema::MetricsSum => SCHEMA_DEFINITIONS.resolve_table_schema(
+                &SCHEMA_DEFINITIONS.metrics_sum,
+                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
+            ),
+            TableSchema::MetricsHistogram => SCHEMA_DEFINITIONS.resolve_table_schema(
+                &SCHEMA_DEFINITIONS.metrics_histogram,
+                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
+            ),
+            TableSchema::MetricsExponentialHistogram => SCHEMA_DEFINITIONS.resolve_table_schema(
+                &SCHEMA_DEFINITIONS.metrics_exponential_histogram,
+                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
+            ),
+            TableSchema::MetricsSummary => SCHEMA_DEFINITIONS.resolve_table_schema(
+                &SCHEMA_DEFINITIONS.metrics_summary,
+                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
+            ),
+            TableSchema::Profiles => SCHEMA_DEFINITIONS.resolve_table_schema(
+                &SCHEMA_DEFINITIONS.profiles,
+                &SCHEMA_DEFINITIONS.metadata.current_profile_version,
+            ),
             TableSchema::Custom(_) => Err(anyhow::anyhow!(
                 "Custom schemas must be loaded from configuration"
             )),
