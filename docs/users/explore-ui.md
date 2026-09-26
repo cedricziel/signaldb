@@ -591,12 +591,10 @@ Errors alike) is hidden by default rather than shown at a squeezed width; a
 dismissible drawer (close button, backdrop click, or Escape). The traces'
 span-detail panel does the same below that width: selecting a span shows a
 **Details** button in the trace header that opens the panel as a drawer from
-the right. The signal tabs at the top stay on one horizontally scrollable row
-instead of compressing or wrapping, and scroll to keep the active tab in
-view; an edge of the row fades out while tabs are hidden past it. Below
-600px, each log row puts its message on its own line under the timestamp,
-level, and service, clamped to three lines, and the top bar's **Manage** link
-shrinks to a ⚙ icon so the tenant/dataset selector keeps its room. At the
+the right. Below 720px the navigation sidebar becomes a top bar with a
+drawer (see [Navigation](#navigation)). Below 600px, each log row puts its
+message on its own line under the timestamp, level, and service, clamped to
+three lines. At the
 same width the trace group table drops its Rate, P50, and Last seen columns
 rather than pushing them into a horizontal scroll; Errors and P95 stay.
 
@@ -781,8 +779,8 @@ first row is charted on its own.
 
 ## Signing in
 
-Sign-in lives at `/login`, a standalone page (brand, one card, no top bar
-or signal tabs) served with the rest of the UI. It is the destination for
+Sign-in lives at `/login`, a standalone page (brand, one card, no navigation
+sidebar) served with the rest of the UI. It is the destination for
 sign-out, for bookmarks, and for every redirect-based login, and it accepts
 two query parameters:
 
@@ -857,10 +855,53 @@ On a demo instance the login page also shows an **Explore the demo** button
 that signs in with the shared read-only account; the header then carries a
 "Demo · read-only" badge and settings and admin actions are hidden.
 
+## Navigation
+
+Every page sits in one shell: a navigation sidebar on the left, and a page
+header across the top of the main column.
+
+- **Sidebar.** The signaldb wordmark, the tenant/dataset switcher, then the
+  pages in three groups — **Monitor** (Errors, Catalog), **Investigate**
+  (Logs, Traces, Metrics, Profiles, Query) and **Configure** (Schema,
+  Processors, Instrumentation). At the bottom are **Manage** (tenant and
+  instance admins only), your account (which opens the
+  [user menu](#user-menu)) and **Collapse**. Links to explore pages carry
+  the current time range and tenant/dataset; filters and search stay with
+  the page you left.
+- **Collapsing.** **Collapse** (or the `[` key, outside text fields) shrinks
+  the sidebar to icons. It starts collapsed below 1024px and expanded above;
+  once you toggle it, your choice is remembered in this browser at every
+  width.
+- **Tenant/dataset switcher.** Lists your tenant memberships and the current
+  tenant's datasets. Picking a tenant resets the dataset to that tenant's
+  default and keeps the list open; picking a dataset applies it and closes
+  it. The choice goes into the URL (`?tenant=&dataset=`) and becomes the
+  sticky context described above.
+- **Page header.** A "Group / Page" breadcrumb, and a search field that
+  opens the command palette.
+- **Phones.** Below 720px the sidebar gives way to a 48px top bar (menu,
+  wordmark, current page, search, account); the menu button opens the
+  pages in a drawer, which closes on navigation, backdrop tap or Escape.
+
+### Command palette
+
+**⌘K** (**Ctrl+K**), the header's search field, or the phone top bar's
+search button opens a palette centered over the page. With nothing typed it
+lists your recent queries, pages and a few actions. Typing filters pages,
+the catalog's services (jumping to their catalog entry), recent queries and
+actions (Invite members, Create API key, Instrument a service, Connect
+GitHub, Switch tenant). Pasting a 32- or 16-digit hex trace id offers a
+direct jump to that trace. **↑**/**↓** move the selection, **Enter** opens
+it, **Escape** closes the palette.
+
+Recent queries are the last ten logs searches and trace filter sets you
+ran, kept in this browser's `localStorage` (`sdb.recentQueries`); they
+aren't stored on the server or shared between browsers.
+
 ## User menu
 
-Once signed in, a user menu appears in the top bar showing an avatar
-(initials from the display name), the user's name, and a dropdown with:
+Once signed in, your account at the bottom of the sidebar (the avatar in the
+phone top bar) opens a user menu:
 
 - **Appearance** — toggle between light and dark theme; the choice is
   persisted in `localStorage` and restored on reload.
@@ -880,11 +921,8 @@ Once signed in, a user menu appears in the top bar showing an avatar
 
 The menu closes on Escape or backdrop click.
 
-The **signaldb** wordmark in the top bar (present on every page, including
-those opened from this menu) is a link back to the Logs view, carrying the
-current tenant/dataset and time range — the way back from a page that
-doesn't keep the signal tab bar itself visible (Instrumentation, API keys,
-Schema, Manage).
+The **signaldb** wordmark at the top of the sidebar is a link back to the
+Logs view, carrying the current tenant/dataset and time range.
 
 ### Management panel (`/manage`)
 
@@ -1065,8 +1103,8 @@ until validation passes), **Save as new version**, a summary of added,
 changed, and removed definitions against the stored document, and
 **Delete** with confirmation. Bundled registries never expose these
 actions. Unsaved edits are guarded everywhere: any in-app navigation away
-from a dirty form (the editor's crumb links, the top bar, the signal tabs,
-the user menu, browser Back or Forward) opens an "Unsaved changes" dialog
+from a dirty form (the editor's crumb links, the sidebar, the command
+palette, the user menu, browser Back or Forward) opens an "Unsaved changes" dialog
 with **Stay** and **Leave**, and reload or tab close still gets the
 browser's own warning. The same guard covers the API-key form, the consent
 dialog and the allowed-origins picker, since they register as dirty forms
@@ -1083,7 +1121,7 @@ when the response carries one, or a jittered backoff otherwise (idempotent
 transient failures too): retries absorb a brief burst while the bounded
 retry budget lasts, so it usually doesn't flash an error. While a retry
 is pending the panel keeps loading and a thin banner under the
-top bar reads "Some requests are being retried after throttling…"; leaving the
+page header reads "Some requests are being retried after throttling…"; leaving the
 page or superseding the query cancels the wait. Once the retry budget is
 spent, the panel's error reads `Rate limited — server asked to retry in N s`
 rather than a generic failure. A request that hangs rather than failing

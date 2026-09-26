@@ -4,6 +4,7 @@ import { DEFAULT_DATASET, DEFAULT_TENANT } from "../api/http";
 import type { WhoamiResponse } from "../api/session";
 import { UserMenu } from "../features/shell/UserMenu";
 import { crossSignalSearch, type ExploreState } from "../lib/urlState";
+import "../features/shell/AppNav.css";
 import "../features/shell/TopBar.css";
 
 interface Props {

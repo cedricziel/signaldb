@@ -27,23 +27,59 @@ async function json(route: import("@playwright/test").Route, body: unknown) {
   });
 }
 
-test("/ redirects to /logs with the Logs tab selected", async ({ page }) => {
+/** A page link in the sidebar's page list. */
+function navLink(page: import("@playwright/test").Page, name: string) {
+  return page
+    .getByRole("navigation", { name: "Pages" })
+    .getByRole("link", { name, exact: true });
+}
+
+test("/ redirects to /logs with Logs current in the sidebar", async ({
+  page,
+}) => {
   await page.goto("/");
   await expect(page).toHaveURL(/\/logs$/);
-  await expect(page.getByRole("tab", { name: "Logs" })).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
+  await expect(navLink(page, "Logs")).toHaveAttribute("aria-current", "page");
 });
 
-test("switching signal tabs updates the path", async ({ page }) => {
+test("switching pages in the sidebar updates the path", async ({ page }) => {
   await page.goto("/logs");
-  await page.getByRole("tab", { name: "Traces" }).click();
+  await navLink(page, "Traces").click();
   await expect(page).toHaveURL(/\/traces$/);
-  await expect(page.getByRole("tab", { name: "Traces" })).toHaveAttribute(
-    "aria-selected",
-    "true",
-  );
+  await expect(navLink(page, "Traces")).toHaveAttribute("aria-current", "page");
+});
+
+test("⌘K opens the command palette and Enter navigates", async ({ page }) => {
+  await page.goto("/logs");
+  await expect(navLink(page, "Logs")).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+k");
+  const palette = page.getByRole("dialog", { name: "Command palette" });
+  await expect(
+    palette.getByRole("searchbox", { name: "Search" }),
+  ).toBeFocused();
+  await page.keyboard.type("metr");
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/metrics$/);
+  await expect(palette).toHaveCount(0);
+});
+
+test("the sidebar gives way to a top bar and drawer on a phone", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await page.goto("/logs");
+  await expect(
+    page.getByRole("complementary", { name: "Main navigation" }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Open navigation" }).click();
+  await page
+    .getByRole("navigation", { name: "Main navigation" })
+    .getByRole("link", { name: "Traces", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/traces$/);
+  await expect(
+    page.getByRole("navigation", { name: "Main navigation" }),
+  ).toHaveCount(0);
 });
 
 test("an unknown path redirects to /logs, preserving the query string", async ({
@@ -71,9 +107,7 @@ test("an admin can open /manage and the back button returns them", async ({
   page,
 }) => {
   await page.route("**/api/v1/whoami", (route) => json(route, ADMIN_WHOAMI));
-  await page.route("**/api/v1/tenants/*/api-keys*", (route) =>
-    json(route, []),
-  );
+  await page.route("**/api/v1/tenants/*/api-keys*", (route) => json(route, []));
   await page.route("**/api/v1/tenants/*/memberships*", (route) =>
     json(route, []),
   );
@@ -101,8 +135,10 @@ test("/oauth/consent renders standalone, without the explore shell", async ({
 }) => {
   await page.goto("/oauth/consent");
   await expect(page).toHaveURL(/\/oauth\/consent$/);
-  // No signal tabs, no top bar — this route bypasses the shell entirely.
-  await expect(page.getByRole("tablist", { name: "Signal" })).toHaveCount(0);
+  // No app navigation — this route bypasses the shell entirely.
+  await expect(
+    page.getByRole("complementary", { name: "Main navigation" }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole("heading", { name: "Invalid authorization request" }),
   ).toBeVisible();
@@ -115,8 +151,10 @@ test("/login renders standalone, without the explore shell", async ({
   // sign-in form renders.
   await page.goto("/login");
   await expect(page).toHaveURL(/\/login$/);
-  // No signal tabs, no top bar — this route bypasses the shell entirely.
-  await expect(page.getByRole("tablist", { name: "Signal" })).toHaveCount(0);
+  // No app navigation — this route bypasses the shell entirely.
+  await expect(
+    page.getByRole("complementary", { name: "Main navigation" }),
+  ).toHaveCount(0);
   // The page is a standalone destination, not a modal dialog (design
   // decision 1): a level-one "Sign in" heading, no role="dialog".
   await expect(

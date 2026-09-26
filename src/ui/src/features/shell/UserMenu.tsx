@@ -14,9 +14,22 @@ import "./UserMenu.css";
 
 interface Props {
   state: ExploreState;
+  /**
+   * `topbar` (the default): avatar + name + caret, the popover dropping
+   * below. `sidebar`: the nav sidebar's footer row — avatar, then name over
+   * role when `expanded`, the popover opening beside the sidebar.
+   * `compact`: the mobile top bar's bare 32px avatar.
+   */
+  variant?: "topbar" | "sidebar" | "compact";
+  /** Sidebar variant only: whether the name/role text shows. */
+  expanded?: boolean;
 }
 
-export function UserMenu({ state }: Props) {
+export function UserMenu({
+  state,
+  variant = "topbar",
+  expanded = true,
+}: Props) {
   const [open, setOpen] = useState(false);
   const { data: who, canManage } = useWhoami(state);
   const isDemo = useIsDemo();
@@ -29,18 +42,40 @@ export function UserMenu({ state }: Props) {
   const initials = initialsFor(user.display_name || user.email);
   const role = who.memberships.find((m) => m.tenant_id === who.tenant.id)?.role;
 
+  const name = user.display_name || user.email;
+
   return (
-    <span className="user-menu">
-      <button
-        className="user-menu-toggle"
-        onClick={toggle}
-        aria-expanded={open}
-        aria-haspopup="true"
-      >
-        <span className="user-avatar">{initials}</span>
-        <span className="user-name">{user.display_name || user.email}</span>
-        <span className="user-caret">▾</span>
-      </button>
+    <span className={`user-menu user-menu--${variant}`}>
+      {variant === "topbar" ? (
+        <button
+          className="user-menu-toggle"
+          onClick={toggle}
+          aria-expanded={open}
+          aria-haspopup="true"
+        >
+          <span className="user-avatar">{initials}</span>
+          <span className="user-name">{name}</span>
+          <span className="user-caret">▾</span>
+        </button>
+      ) : (
+        <button
+          type="button"
+          className={`nav-account nav-account--${variant}`}
+          onClick={toggle}
+          aria-expanded={open}
+          aria-haspopup="true"
+          aria-label="Account"
+          title={name}
+        >
+          <span className="nav-avatar">{initials}</span>
+          {variant === "sidebar" && expanded && (
+            <span className="nav-account-text">
+              <span className="nav-account-name">{name}</span>
+              {role && <span className="nav-account-role">{role}</span>}
+            </span>
+          )}
+        </button>
+      )}
       {open && (
         <UserMenuPopover
           who={who}
