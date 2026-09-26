@@ -4,6 +4,8 @@ use clap::Subcommand;
 use common::CatalogManager;
 use common::cli::{CommonArgs, CommonCommands, utils};
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
+use common::schema::type_authority::TypeAuthority;
+use common::schema_registry::SchemaResolver;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::WalConfig;
 use common::wal::manager::WalManager;
@@ -132,7 +134,7 @@ pub async fn run(common: &CommonArgs, args: Args) -> anyhow::Result<()> {
         CatalogManager::new(config.clone())
             .await
             .context("Failed to create catalog manager")?
-            .with_tenant_source(sql_catalog),
+            .with_tenant_source(sql_catalog.clone()),
     );
 
     // Initialize WAL for durability. The --wal-dir / WRITER_WAL_DIR override
@@ -158,9 +160,22 @@ pub async fn run(common: &CommonArgs, args: Args) -> anyhow::Result<()> {
     open_existing_writer_wals(&wal_manager).await;
     wal_manager.warn_if_fd_headroom_thin("writer").await;
 
+    // Canonical-type resolver for the typed attribute layout (otel-native-schema
+    // layer 4.2a): shared across every table writer the WAL processor creates,
+    // so a key resolved for one commit group is cached for the next.
+    let type_authority = Arc::new(TypeAuthority::new(
+        sql_catalog.as_ref().clone(),
+        SchemaResolver::new(sql_catalog.as_ref().clone()),
+        Arc::new(config.clone()),
+    ));
+
     // Create Iceberg-based Flight ingestion service with CatalogManager
-    let flight_service =
-        IcebergWriterFlightService::new(catalog_manager, wal_manager.clone(), &config.writer);
+    let flight_service = IcebergWriterFlightService::with_type_authority(
+        catalog_manager,
+        wal_manager.clone(),
+        &config.writer,
+        type_authority,
+    );
 
     // Seed the ingest-id dedup cache from WAL entries a previous run left on
     // disk, so a restart does not reopen a window an acceptor resend could

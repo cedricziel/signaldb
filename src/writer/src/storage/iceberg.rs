@@ -2012,6 +2012,67 @@ mod tests {
         }
     }
 
+    /// One wire-format (OTLP) trace batch: one span carrying `attributes`,
+    /// converted the same way the acceptor does.
+    fn wire_trace_batch(
+        span_id_byte: u8,
+        attributes: Vec<(
+            &str,
+            opentelemetry_proto::tonic::common::v1::any_value::Value,
+        )>,
+    ) -> RecordBatch {
+        use common::flight::conversion::otlp_traces_to_arrow;
+        use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+        use opentelemetry_proto::tonic::trace::v1::{
+            ResourceSpans, ScopeSpans, Span as OtelSpan, Status,
+        };
+
+        let span = OtelSpan {
+            trace_id: vec![0xab; 16],
+            span_id: vec![span_id_byte; 8],
+            name: "checkout".to_string(),
+            kind: 2,
+            start_time_unix_nano: 1_700_000_000_000_000_000,
+            end_time_unix_nano: 1_700_000_000_100_000_000,
+            attributes: attributes
+                .into_iter()
+                .map(|(key, value)| KeyValue {
+                    key: key.to_string(),
+                    value: Some(AnyValue { value: Some(value) }),
+                    ..Default::default()
+                })
+                .collect(),
+            status: Some(Status {
+                code: 1,
+                message: String::new(),
+            }),
+            ..Default::default()
+        };
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("checkout-svc".to_string())),
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                scope_spans: vec![ScopeSpans {
+                    scope: None,
+                    spans: vec![span],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        otlp_traces_to_arrow(&request).expect("conversion should succeed")
+    }
+
     #[tokio::test]
     async fn typed_layout_writer_without_a_type_authority_errors_clearly() {
         let catalog_manager = create_test_catalog_manager().await;
@@ -2028,6 +2089,180 @@ mod tests {
         assert!(
             err.to_string().contains("TypeAuthority"),
             "unexpected error: {err}"
+        );
+    }
+
+    use common::attrs::typed::decode_container;
+
+    /// A `TypeAuthority` backed by a fresh in-memory SQL catalog, plus that
+    /// catalog so a test can inspect what got committed to `attribute_types`.
+    async fn test_type_authority() -> (Arc<TypeAuthority>, common::catalog::Catalog) {
+        let sql_catalog = common::catalog::Catalog::new_in_memory().await.unwrap();
+        let resolver = common::schema_registry::SchemaResolver::new(sql_catalog.clone());
+        let authority = TypeAuthority::new(
+            sql_catalog.clone(),
+            resolver,
+            Arc::new(Configuration::default()),
+        );
+        (Arc::new(authority), sql_catalog)
+    }
+
+    /// Reads every committed row for `table` back as decoded Arrow batches,
+    /// the way a query engine would scan it.
+    async fn scan_batches(table: &Table) -> Vec<RecordBatch> {
+        use futures::StreamExt;
+        let manifests = table.manifests(None, None).await.unwrap();
+        let datafiles = table
+            .datafiles(&manifests, None, (None, None))
+            .await
+            .unwrap();
+        let entries: Vec<_> = datafiles.map(|r| r.unwrap().1).collect().await;
+        let stream =
+            iceberg_rust::arrow::read::read(entries.into_iter(), table.object_store()).await;
+        stream.map(|r| r.unwrap()).collect().await
+    }
+
+    /// The scanned batch and row index carrying `span_id_hex`, across
+    /// however many data files the table's commits produced.
+    fn find_row_by_span_id(batches: &[RecordBatch], span_id_hex: &str) -> (RecordBatch, usize) {
+        for batch in batches {
+            let span_ids = batch
+                .column_by_name("span_id")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            for row in 0..span_ids.len() {
+                if span_ids.value(row) == span_id_hex {
+                    return (batch.clone(), row);
+                }
+            }
+        }
+        panic!("span_id {span_id_hex} not found in scanned batches");
+    }
+
+    #[tokio::test]
+    async fn typed_layout_places_values_through_the_type_authority() {
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, ArrayValue, any_value::Value};
+
+        let catalog_manager = create_test_catalog_manager().await;
+        let table = create_typed_traces_table(&catalog_manager, "typed-tenant", "local").await;
+        let (type_authority, sql_catalog) = test_type_authority().await;
+        let mut writer = writer_for(&catalog_manager, table, "typed-tenant", "local")
+            .with_type_authority(type_authority);
+
+        // First occurrence of `http.status_code` is an int -> establishes
+        // Int64 as its canonical type and lands in `span_attributes_int`.
+        let batch = wire_trace_batch(0x01, vec![("http.status_code", Value::IntValue(200))]);
+        let outcome = writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), batch)])
+            .await
+            .unwrap();
+        assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+        assert_eq!(outcome.committed.len(), 1);
+
+        let batches = scan_batches(&writer.table).await;
+        let (batch, row) = find_row_by_span_id(&batches, "0101010101010101");
+        let int_map = batch
+            .column_by_name("span_attributes_int")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::MapArray>()
+            .unwrap();
+        assert!(!int_map.is_null(row), "the int home must carry the value");
+        let decoded = decode_container(&batch, "span_attributes").unwrap();
+        assert_eq!(
+            decoded[row],
+            Some(serde_json::Map::from_iter([(
+                "http.status_code".to_string(),
+                serde_json::json!(200)
+            )]))
+        );
+
+        // Second batch sends the same key as a string: the canonical home
+        // stays Int64 (monotonic), so the off-type value lands in the
+        // residue rather than `_str` or coercing into `_int`.
+        let batch2 = wire_trace_batch(
+            0x02,
+            vec![("http.status_code", Value::StringValue("200".to_string()))],
+        );
+        let outcome2 = writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), batch2)])
+            .await
+            .unwrap();
+        assert!(outcome2.rejected.is_empty(), "{:?}", outcome2.rejected);
+
+        let batches = scan_batches(&writer.table).await;
+        let (batch, row) = find_row_by_span_id(&batches, "0202020202020202");
+        let str_map = batch
+            .column_by_name("span_attributes_str")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::MapArray>()
+            .unwrap();
+        assert!(
+            str_map.is_null(row) || str_map.value_length(row) == 0,
+            "an off-type string must not land in span_attributes_str"
+        );
+        let decoded = decode_container(&batch, "span_attributes").unwrap();
+        assert_eq!(
+            decoded[row],
+            Some(serde_json::Map::from_iter([(
+                "http.status_code".to_string(),
+                serde_json::json!("200")
+            )])),
+            "the off-type value must still round-trip, via the residue"
+        );
+
+        // The catalog recorded the canonical type established by the first
+        // (int) occurrence.
+        let field = common::schema::logical::LogicalFieldId {
+            source: "traces".to_string(),
+            level: Some(AttributeLevel::Record),
+            name: "http.status_code".to_string(),
+        };
+        let stored = sql_catalog
+            .get_attribute_type("typed-tenant", "local", &field)
+            .await
+            .unwrap()
+            .expect("http.status_code's canonical type must be committed");
+        assert_eq!(stored.canonical, CanonicalType::Int64);
+
+        // Third batch: an array and a bytes value, neither with a typed
+        // home, round-trip through the residue untouched.
+        let batch3 = wire_trace_batch(
+            0x03,
+            vec![
+                (
+                    "tags",
+                    Value::ArrayValue(ArrayValue {
+                        values: vec![
+                            AnyValue {
+                                value: Some(Value::IntValue(1)),
+                            },
+                            AnyValue {
+                                value: Some(Value::IntValue(2)),
+                            },
+                        ],
+                    }),
+                ),
+                ("payload", Value::BytesValue(vec![0, 159, 146, 150])),
+            ],
+        );
+        let outcome3 = writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), batch3)])
+            .await
+            .unwrap();
+        assert!(outcome3.rejected.is_empty(), "{:?}", outcome3.rejected);
+
+        let batches = scan_batches(&writer.table).await;
+        let (batch, row) = find_row_by_span_id(&batches, "0303030303030303");
+        let decoded = decode_container(&batch, "span_attributes").unwrap();
+        let row_doc = decoded[row].as_ref().expect("row must have attributes");
+        assert_eq!(row_doc["tags"], serde_json::json!([1, 2]));
+        assert!(
+            row_doc.get("payload").is_some(),
+            "bytes must round-trip via the residue"
         );
     }
 }
