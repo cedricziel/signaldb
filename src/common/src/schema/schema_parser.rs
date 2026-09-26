@@ -303,6 +303,19 @@ pub fn version_chain(
     }
 }
 
+/// Which derived (non-`schemas.toml`) columns [`ResolvedSchema::build_iceberg_schema`]
+/// appends after the base fields and materialized labels.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DerivedColumns {
+    /// Append the `attr_tokens` column (see [`crate::schema::ATTR_TOKENS_COLUMN`]).
+    pub attr_tokens: bool,
+    /// Append the warm containment index column (see
+    /// [`crate::attrs::warm_index::WARM_INDEX_COLUMN`]) -- only takes effect when the
+    /// resolved schema is the typed attribute layout; a legacy version
+    /// silently gets no column even when requested.
+    pub warm_index: bool,
+}
+
 impl ResolvedSchema {
     /// Convert to Iceberg Schema.
     pub fn to_iceberg_schema(&self) -> Result<Schema> {
@@ -318,7 +331,7 @@ impl ResolvedSchema {
     /// exact-duplicate label still collapses to its first assignment.
     /// Field IDs continue after the base columns.
     pub fn to_iceberg_schema_with_labels(&self, labels: &[String]) -> Result<Schema> {
-        self.build_iceberg_schema(labels, false)
+        self.build_iceberg_schema(labels, DerivedColumns::default())
     }
 
     /// Like [`Self::to_iceberg_schema_with_labels`], but also appends the
@@ -330,7 +343,25 @@ impl ResolvedSchema {
         &self,
         labels: &[String],
     ) -> Result<Schema> {
-        self.build_iceberg_schema(labels, true)
+        self.build_iceberg_schema(
+            labels,
+            DerivedColumns {
+                attr_tokens: true,
+                warm_index: false,
+            },
+        )
+    }
+
+    /// Like [`Self::to_iceberg_schema_with_labels`], with full control over
+    /// which derived columns [`build_iceberg_schema`] appends. Used where a
+    /// caller (table creation) decides per table whether the warm
+    /// containment index applies -- see [`DerivedColumns::warm_index`].
+    pub fn to_iceberg_schema_with(
+        &self,
+        labels: &[String],
+        derived: DerivedColumns,
+    ) -> Result<Schema> {
+        self.build_iceberg_schema(labels, derived)
     }
 
     /// Field IDs here are assigned positionally (`idx as i32 + 1`), recomputed
@@ -346,7 +377,7 @@ impl ResolvedSchema {
     /// its existing IDs untouched and minting new ones only for genuine
     /// additions — never regenerate a live table's target schema from this
     /// function.
-    fn build_iceberg_schema(&self, labels: &[String], attr_tokens: bool) -> Result<Schema> {
+    fn build_iceberg_schema(&self, labels: &[String], derived: DerivedColumns) -> Result<Schema> {
         let mut fields = Vec::new();
 
         // Nested (map key/value) field IDs must be unique across the whole
@@ -454,7 +485,7 @@ impl ResolvedSchema {
 
         // Derived `key=value` token column: an optional List<String> whose
         // element ID follows every other ID in the schema.
-        if attr_tokens
+        if derived.attr_tokens
             && !fields
                 .iter()
                 .any(|f| f.name == crate::schema::ATTR_TOKENS_COLUMN)
@@ -471,6 +502,36 @@ impl ResolvedSchema {
                 doc: Some(
                     "Derived `key=value` tokens over resource, scope, and record attributes"
                         .to_string(),
+                ),
+                initial_default: None,
+                write_default: None,
+            });
+            next_id += 2;
+        }
+
+        // Derived warm containment index: an optional List<Binary> whose
+        // element ID follows every other ID in the schema. Only meaningful
+        // over the typed attribute layout (a legacy container has no per-type
+        // home columns to index), so a request against a legacy version is
+        // silently dropped rather than erroring -- the caller opted a
+        // signal/dataset in, not a specific schema version.
+        if derived.warm_index
+            && typed_attributes::is_typed_layout(fields.iter().map(|f| f.name.as_str()))
+            && !fields
+                .iter()
+                .any(|f| f.name == crate::attrs::warm_index::WARM_INDEX_COLUMN)
+        {
+            fields.push(StructField {
+                id: next_id,
+                name: crate::attrs::warm_index::WARM_INDEX_COLUMN.to_string(),
+                required: false,
+                field_type: Type::List(ListType {
+                    element_id: next_id + 1,
+                    element_required: false,
+                    element: Box::new(Type::Primitive(PrimitiveType::Binary)),
+                }),
+                doc: Some(
+                    "Derived warm containment index over typed attribute columns".to_string(),
                 ),
                 initial_default: None,
                 write_default: None,
@@ -1027,6 +1088,107 @@ fields = [
         );
         let unique: std::collections::HashSet<_> = ids.iter().collect();
         assert_eq!(unique.len(), ids.len(), "duplicate field ids: {ids:?}");
+    }
+
+    fn field(name: &str, field_type: &str) -> ResolvedField {
+        ResolvedField {
+            name: name.to_string(),
+            field_type: field_type.to_string(),
+            required: false,
+            computed: None,
+            physical_only: false,
+            field_id: 0,
+        }
+    }
+
+    fn typed_layout_resolved_schema() -> ResolvedSchema {
+        ResolvedSchema {
+            version: "v1".to_string(),
+            description: "test".to_string(),
+            fields: vec![
+                field("a_str", "map<string,string>"),
+                field("a_int", "map<string,long>"),
+                field("a_double", "map<string,double>"),
+                field("a_bool", "map<string,boolean>"),
+                field("a_residue", "binary"),
+            ],
+            partition_by: vec![],
+        }
+    }
+
+    fn legacy_layout_resolved_schema() -> ResolvedSchema {
+        ResolvedSchema {
+            version: "v1".to_string(),
+            description: "test".to_string(),
+            fields: vec![field("a", "map<string,string>")],
+            partition_by: vec![],
+        }
+    }
+
+    #[test]
+    fn warm_index_appends_a_list_binary_column_on_a_typed_layout() {
+        let schema = typed_layout_resolved_schema()
+            .to_iceberg_schema_with(
+                &[],
+                DerivedColumns {
+                    attr_tokens: false,
+                    warm_index: true,
+                },
+            )
+            .unwrap();
+
+        let column = schema
+            .fields()
+            .iter()
+            .find(|f| f.name == crate::attrs::warm_index::WARM_INDEX_COLUMN)
+            .expect("attr_index column present");
+        let Type::List(list) = &column.field_type else {
+            panic!("attr_index should be a List, got {:?}", column.field_type);
+        };
+        assert_eq!(*list.element, Type::Primitive(PrimitiveType::Binary));
+        assert!(!column.required);
+
+        let ids: Vec<i32> = schema.fields().iter().map(|f| f.id).collect();
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len(), "duplicate field ids: {ids:?}");
+        assert_ne!(
+            column.id, list.element_id,
+            "the list column and its element must get distinct ids"
+        );
+    }
+
+    #[test]
+    fn warm_index_is_dropped_on_a_legacy_layout_even_when_requested() {
+        let schema = legacy_layout_resolved_schema()
+            .to_iceberg_schema_with(
+                &[],
+                DerivedColumns {
+                    attr_tokens: false,
+                    warm_index: true,
+                },
+            )
+            .unwrap();
+
+        assert!(
+            !schema
+                .fields()
+                .iter()
+                .any(|f| f.name == crate::attrs::warm_index::WARM_INDEX_COLUMN)
+        );
+    }
+
+    #[test]
+    fn warm_index_absent_when_not_requested() {
+        let schema = typed_layout_resolved_schema()
+            .to_iceberg_schema_with_labels(&[])
+            .unwrap();
+
+        assert!(
+            !schema
+                .fields()
+                .iter()
+                .any(|f| f.name == crate::attrs::warm_index::WARM_INDEX_COLUMN)
+        );
     }
 
     #[test]

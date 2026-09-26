@@ -790,6 +790,82 @@ pub struct AttributeTypeOverride {
     pub dataset: Option<String>,
 }
 
+/// Opt-in per-table warm derived containment index config (epic task 4.3,
+/// `spike/warm-index.md`): a bloom-filtered `List<Binary>` column over the
+/// typed attribute layout's home columns, for "does this file contain
+/// `key=value`" checks without one bloom filter per key. Off by default
+/// (`signals` empty) -- a table only gets the column when its signal is
+/// listed here, its dataset (if `datasets` is set) matches, and its
+/// resolved schema version is the typed attribute layout. Per-tenant
+/// override replaces this wholesale, same as [`MaterializedLabels`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WarmIndexConfig {
+    /// Signals to build the warm index for. Empty disables it everywhere.
+    #[serde(default)]
+    pub signals: Vec<AttributeTypeSignal>,
+    /// Restricts the index to these datasets; `None` applies it to every
+    /// dataset of an opted-in signal.
+    #[serde(default)]
+    pub datasets: Option<Vec<String>>,
+    /// False-positive probability for the index's bloom filter.
+    #[serde(default = "default_warm_index_fpp")]
+    pub fpp: f64,
+    /// Rows written per Parquet row group -- one factor (with
+    /// `attrs_per_row`) in the bloom filter's expected distinct-value count.
+    /// `spike/results.md`: NDV must be set explicitly, never inferred from
+    /// row count alone.
+    #[serde(default = "default_warm_index_rows_per_row_group")]
+    pub rows_per_row_group: u64,
+    /// Typed attributes carried per row, the other NDV factor.
+    #[serde(default = "default_warm_index_attrs_per_row")]
+    pub attrs_per_row: u64,
+    /// Upper bound on the computed NDV, so a misconfigured row-group size
+    /// cannot blow the filter past a sane byte budget.
+    #[serde(default = "default_warm_index_max_bloom_ndv")]
+    pub max_bloom_ndv: u64,
+}
+
+fn default_warm_index_fpp() -> f64 {
+    0.01
+}
+
+fn default_warm_index_rows_per_row_group() -> u64 {
+    10_000
+}
+
+fn default_warm_index_attrs_per_row() -> u64 {
+    16
+}
+
+fn default_warm_index_max_bloom_ndv() -> u64 {
+    2_000_000
+}
+
+impl Default for WarmIndexConfig {
+    fn default() -> Self {
+        Self {
+            signals: Vec::new(),
+            datasets: None,
+            fpp: default_warm_index_fpp(),
+            rows_per_row_group: default_warm_index_rows_per_row_group(),
+            attrs_per_row: default_warm_index_attrs_per_row(),
+            max_bloom_ndv: default_warm_index_max_bloom_ndv(),
+        }
+    }
+}
+
+impl WarmIndexConfig {
+    /// Whether `signal`'s tables in `dataset_id` should carry the warm
+    /// index, per this (already tenant-resolved) config.
+    pub fn applies_to(&self, signal: AttributeTypeSignal, dataset_id: &str) -> bool {
+        self.signals.contains(&signal)
+            && self
+                .datasets
+                .as_ref()
+                .is_none_or(|datasets| datasets.iter().any(|d| d == dataset_id))
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SchemaConfig {
     /// Type of catalog backend (sql, memory)
@@ -806,6 +882,9 @@ pub struct SchemaConfig {
     /// `[[schema.attribute_types]]` in `signaldb.dist.toml`.
     #[serde(default)]
     pub attribute_types: Vec<AttributeTypeOverride>,
+    /// Opt-in warm derived containment index. See [`WarmIndexConfig`].
+    #[serde(default)]
+    pub warm_index: WarmIndexConfig,
 }
 
 impl Default for SchemaConfig {
@@ -816,6 +895,7 @@ impl Default for SchemaConfig {
             default_schemas: DefaultSchemas::default(),
             materialized_labels: MaterializedLabels::default(),
             attribute_types: Vec::new(),
+            warm_index: WarmIndexConfig::default(),
         }
     }
 }
@@ -3765,6 +3845,60 @@ mod tests {
         assert_eq!(
             custom_schemas.unwrap().get("traces"),
             Some(&"custom_traces_schema".to_string())
+        );
+    }
+
+    #[test]
+    fn warm_index_applies_to_checks_signal_and_optional_dataset_allowlist() {
+        let unrestricted = WarmIndexConfig {
+            signals: vec![AttributeTypeSignal::Logs],
+            datasets: None,
+            ..WarmIndexConfig::default()
+        };
+        assert!(unrestricted.applies_to(AttributeTypeSignal::Logs, "any-dataset"));
+        assert!(!unrestricted.applies_to(AttributeTypeSignal::Traces, "any-dataset"));
+
+        let dataset_scoped = WarmIndexConfig {
+            signals: vec![AttributeTypeSignal::Logs],
+            datasets: Some(vec!["prod".to_string()]),
+            ..WarmIndexConfig::default()
+        };
+        assert!(dataset_scoped.applies_to(AttributeTypeSignal::Logs, "prod"));
+        assert!(!dataset_scoped.applies_to(AttributeTypeSignal::Logs, "staging"));
+    }
+
+    #[test]
+    fn tenant_schema_override_replaces_warm_index_config_wholesale() {
+        // A tenant schema block replaces the *entire* SchemaConfig, same as
+        // materialized_labels -- warm_index rides along with it rather than
+        // merging with the global default.
+        let tenant_config = TenantSchemaConfig {
+            schema: Some(SchemaConfig {
+                warm_index: WarmIndexConfig {
+                    signals: vec![AttributeTypeSignal::Traces],
+                    ..WarmIndexConfig::default()
+                },
+                ..SchemaConfig::default()
+            }),
+            ..TenantSchemaConfig::default()
+        };
+        let mut tenants = HashMap::new();
+        tenants.insert("tenant1".to_string(), tenant_config);
+        let config = Configuration {
+            tenants: TenantsConfig {
+                default_tenant: "tenant1".to_string(),
+                tenants,
+            },
+            ..Configuration::default()
+        };
+
+        assert!(config.schema.warm_index.signals.is_empty());
+        assert_eq!(
+            config
+                .get_tenant_schema_config("tenant1")
+                .warm_index
+                .signals,
+            vec![AttributeTypeSignal::Traces]
         );
     }
 
