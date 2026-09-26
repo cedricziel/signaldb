@@ -31,10 +31,10 @@ Most of this landed alongside layer 1: `common::schema::logical` declares the lo
 
 ## 3. Type authority (one canonical type per tenant+dataset+field)
 
-- [ ] 3.1 Write failing tests: precedence config→semconv-hint→observed-`AnyValue`; canonical type per (tenant,dataset), monotonic (later conflict does not retype); `schema_url` resource/scope-only hint, missing → observed without error; off-type value retained in residue not dropped/multi-homed (spec `attribute-type-authority`)
-- [ ] 3.2 Implement the resolver: config override, pinned-semconv-snapshot hint keyed off resource/scope `schema_url`, observed-`AnyValue` default; record resolved type + source; per-(tenant,dataset) scope with cache invalidation on version bump (D9)
-- [ ] 3.3 Expose off-type/conflict occurrences as discoverable metadata; wire the config override
-- [ ] 3.4 `cargo test -p common` green; lint/format/machete
+- [x] 3.1 Write failing tests: precedence config→semconv-hint→observed-`AnyValue`; canonical type per (tenant,dataset), monotonic (later conflict does not retype); `schema_url` resource/scope-only hint, missing → observed without error; off-type value retained in residue not dropped/multi-homed (spec `attribute-type-authority`). The residue case is tested as the resolver's placement verdict (`Residue { off_type }`, never a second typed home); storing the value in the residue needs layer 4's layout and is tested in 4.1/5.1
+- [x] 3.2 Implement the resolver: config override, pinned-semconv-snapshot hint keyed off resource/scope `schema_url`, observed-`AnyValue` default; record resolved type + source; per-(tenant,dataset) scope with cache invalidation on version bump (D9). Lives in `common::schema::type_authority` (resolver, `attribute_types` catalog store with an atomic first-seen upsert, `TypeAuthority`/`SignalScope` cache); semconv hints reuse `SchemaResolver` (any `opentelemetry.io/schemas/*` URL selects the pinned otel snapshot, other URLs match a registry's exact `schema_url`)
+- [x] 3.3 Expose off-type/conflict occurrences as discoverable metadata; wire the config override. `[[schema.attribute_types]]` config pins; `canonical_types` (with `off_type_count`) on attribute resolution (`GET /api/v1/schema/attributes/{key}` and `?keys=`, MCP `resolve_attribute`). Recording off-type counts at ingest and the user-guide section land with layer 5, when ingest routes through the authority
+- [x] 3.4 `cargo test -p common` green; lint/format/machete
 
 ## 4. Tiered substrate: cold one-home + binary residue + warm index (one-shot cutover)
 
