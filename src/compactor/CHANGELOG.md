@@ -5,6 +5,13 @@ All notable changes to the SignalDB Compactor Service will be documented in this
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0](https://github.com/cedricziel/signaldb/compare/compactor-v0.4.1...compactor-v0.5.0) (2026-09-26)
+
+
+### Features
+
+* **compactor:** read the typed attribute layout for stats and label promotion ([#1769](https://github.com/cedricziel/signaldb/issues/1769)) ([1ecce83](https://github.com/cedricziel/signaldb/commit/1ecce832285fa5e62f690ac0dd8eac9719d93b48))
+
 ## [0.4.1](https://github.com/cedricziel/signaldb/compare/compactor-v0.4.0...compactor-v0.4.1) (2026-09-23)
 
 

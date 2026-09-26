@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.3.0](https://github.com/cedricziel/signaldb/compare/signaldb-sdk-v0.2.2...signaldb-sdk-v0.3.0) (2026-09-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **router:** /api/v1/admin/* is removed; use /api/v1/manage/admin and /api/v1/manage/tenants/{id}/api-keys|datasets (both also accept the break-glass admin_api_key with no X-Tenant-ID).
+
+### Features
+
+* **router:** expose committed attribute types in resolution ([#1757](https://github.com/cedricziel/signaldb/issues/1757)) ([f2f85fa](https://github.com/cedricziel/signaldb/commit/f2f85fa1ec702efb59dea0f0aef874ebbb347e16))
+* **router:** move tenant management onto plain resource paths ([#1685](https://github.com/cedricziel/signaldb/issues/1685)) ([004f17a](https://github.com/cedricziel/signaldb/commit/004f17ac3c9b4186cf0bb41412fcaa28aa8e94af))
+* **router:** return the graph envelope from POST /api/v1/query ([#1716](https://github.com/cedricziel/signaldb/issues/1716)) ([047b8a9](https://github.com/cedricziel/signaldb/commit/047b8a9db762ac2348c8868802d6be2d0c74e3e3))
+
+
+### Bug Fixes
+
+* **mcp:** surface router error text on query_ir 4xx failures ([#1737](https://github.com/cedricziel/signaldb/issues/1737)) ([72fe829](https://github.com/cedricziel/signaldb/commit/72fe829d35552a02a0abc21bd4822d14ffde8cec))
+
 ## [0.2.2](https://github.com/cedricziel/signaldb/compare/signaldb-sdk-v0.2.1...signaldb-sdk-v0.2.2) (2026-09-23)
 
 

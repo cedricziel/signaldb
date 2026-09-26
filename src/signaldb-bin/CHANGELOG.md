@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0](https://github.com/cedricziel/signaldb/compare/signaldb-bin-v0.4.1...signaldb-bin-v0.5.0) (2026-09-26)
+
+
+### Features
+
+* **writer:** dedup do_put ingest by ingest_id ([#1748](https://github.com/cedricziel/signaldb/issues/1748)) ([d685a0a](https://github.com/cedricziel/signaldb/commit/d685a0a2f52758f844f93707d190793e17ca018c))
+
 ## [0.4.1](https://github.com/cedricziel/signaldb/compare/signaldb-bin-v0.4.0...signaldb-bin-v0.4.1) (2026-09-23)
 
 

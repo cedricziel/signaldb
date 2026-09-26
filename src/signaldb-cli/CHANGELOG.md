@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.5.0](https://github.com/cedricziel/signaldb/compare/signaldb-cli-v0.4.1...signaldb-cli-v0.5.0) (2026-09-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **router:** /api/v1/admin/* is removed; use /api/v1/manage/admin and /api/v1/manage/tenants/{id}/api-keys|datasets (both also accept the break-glass admin_api_key with no X-Tenant-ID).
+
+### Features
+
+* **cli:** add signaldb-cli services map ([#1719](https://github.com/cedricziel/signaldb/issues/1719)) ([00ff18a](https://github.com/cedricziel/signaldb/commit/00ff18a8106fb4c25f258afd8a0113b9638d4b26))
+* **router:** move tenant management onto plain resource paths ([#1685](https://github.com/cedricziel/signaldb/issues/1685)) ([004f17a](https://github.com/cedricziel/signaldb/commit/004f17ac3c9b4186cf0bb41412fcaa28aa8e94af))
+
+
+### Tests
+
+* **query-ir-span-join:** CLI/MCP coverage and docs for the v8 correlate stage ([#1704](https://github.com/cedricziel/signaldb/issues/1704)) ([f78b7fe](https://github.com/cedricziel/signaldb/commit/f78b7fee1f296e688e39662dbb846105b9770021))
+
 ## [0.4.1](https://github.com/cedricziel/signaldb/compare/signaldb-cli-v0.4.0...signaldb-cli-v0.4.1) (2026-09-23)
 
 

@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.0](https://github.com/cedricziel/signaldb/compare/mcp-server-v0.2.2...mcp-server-v0.3.0) (2026-09-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **router:** /api/v1/admin/* is removed; use /api/v1/manage/admin and /api/v1/manage/tenants/{id}/api-keys|datasets (both also accept the break-glass admin_api_key with no X-Tenant-ID).
+
+### Features
+
+* **mcp-server:** add service map to the MCP server ([#1720](https://github.com/cedricziel/signaldb/issues/1720)) ([9d9ac71](https://github.com/cedricziel/signaldb/commit/9d9ac71af90e1c0e9c0fa63ffa92030827e98c1c))
+* **router:** move tenant management onto plain resource paths ([#1685](https://github.com/cedricziel/signaldb/issues/1685)) ([004f17a](https://github.com/cedricziel/signaldb/commit/004f17ac3c9b4186cf0bb41412fcaa28aa8e94af))
+
+
+### Bug Fixes
+
+* **mcp:** surface router error text on query_ir 4xx failures ([#1737](https://github.com/cedricziel/signaldb/issues/1737)) ([72fe829](https://github.com/cedricziel/signaldb/commit/72fe829d35552a02a0abc21bd4822d14ffde8cec))
+
+
+### Tests
+
+* **query-ir-span-join:** CLI/MCP coverage and docs for the v8 correlate stage ([#1704](https://github.com/cedricziel/signaldb/issues/1704)) ([f78b7fe](https://github.com/cedricziel/signaldb/commit/f78b7fee1f296e688e39662dbb846105b9770021))
+
 ## [0.2.2](https://github.com/cedricziel/signaldb/compare/mcp-server-v0.2.1...mcp-server-v0.2.2) (2026-09-23)
 
 

@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "acceptor"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "arrow-flight",
@@ -1288,7 +1288,7 @@ dependencies = [
 
 [[package]]
 name = "common"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "argon2",
@@ -1369,7 +1369,7 @@ dependencies = [
 
 [[package]]
 name = "compactor"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "arrow-flight",
@@ -4489,7 +4489,7 @@ checksum = "47e1ffaa40ddd1f3ed91f717a33c8c0ee23fff369e3aa8772b9605cc1d22f4c3"
 
 [[package]]
 name = "mcp-server"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "axum",
@@ -6016,7 +6016,7 @@ checksum = "5a651516ddc9168ebd67b24afd085a718be02f8858fe406591b013d101ce2f40"
 
 [[package]]
 name = "querier"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "arrow-flight",
@@ -6679,7 +6679,7 @@ dependencies = [
 
 [[package]]
 name = "router"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "arrow-flight",
@@ -7362,7 +7362,7 @@ dependencies = [
 
 [[package]]
 name = "signaldb-bin"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "acceptor",
  "anyhow",
@@ -7386,7 +7386,7 @@ dependencies = [
 
 [[package]]
 name = "signaldb-cli"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "arrow",
@@ -7411,7 +7411,7 @@ dependencies = [
 
 [[package]]
 name = "signaldb-sdk"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "arrow",
  "arrow-flight",
@@ -8166,7 +8166,7 @@ dependencies = [
 
 [[package]]
 name = "tests-integration"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "acceptor",
  "anyhow",
@@ -9853,7 +9853,7 @@ checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
 
 [[package]]
 name = "writer"
-version = "0.4.1"
+version = "0.5.0"
 dependencies = [
  "anyhow",
  "arrow-flight",

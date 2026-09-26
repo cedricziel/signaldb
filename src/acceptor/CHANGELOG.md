@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.5.0](https://github.com/cedricziel/signaldb/compare/acceptor-v0.4.1...acceptor-v0.5.0) (2026-09-26)
+
+
+### Features
+
+* **acceptor:** pin DoPut to a writer by ingest_id (issue [#1734](https://github.com/cedricziel/signaldb/issues/1734) step 2, acceptor half) ([#1749](https://github.com/cedricziel/signaldb/issues/1749)) ([0acec69](https://github.com/cedricziel/signaldb/commit/0acec69bcc51f1b0a902b805f8596a565cb74480))
+* **common:** pin attribute canonical types from config ([#1754](https://github.com/cedricziel/signaldb/issues/1754)) ([a409fdc](https://github.com/cedricziel/signaldb/commit/a409fdc71f74ee2d89ef84fc9be456ec86393a78))
+
+
+### Bug Fixes
+
+* **acceptor:** detach OTLP forward-and-mark from the request future ([#1739](https://github.com/cedricziel/signaldb/issues/1739)) ([bb13237](https://github.com/cedricziel/signaldb/commit/bb13237ffa590abaf4bd30c47c75fcfcb13946d0))
+
 ## [0.4.1](https://github.com/cedricziel/signaldb/compare/acceptor-v0.4.0...acceptor-v0.4.1) (2026-09-23)
 
 
