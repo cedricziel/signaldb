@@ -1,5 +1,46 @@
 # Changelog
 
+## [0.5.0](https://github.com/cedricziel/signaldb/compare/common-v0.4.1...common-v0.5.0) (2026-09-26)
+
+
+### Features
+
+* **acceptor:** pin DoPut to a writer by ingest_id (issue [#1734](https://github.com/cedricziel/signaldb/issues/1734) step 2, acceptor half) ([#1749](https://github.com/cedricziel/signaldb/issues/1749)) ([0acec69](https://github.com/cedricziel/signaldb/commit/0acec69bcc51f1b0a902b805f8596a565cb74480))
+* **common:** add a CBOR residue codec for typed attributes ([#1762](https://github.com/cedricziel/signaldb/issues/1762)) ([f23a854](https://github.com/cedricziel/signaldb/commit/f23a85431b3b1e4d4f5dac514882c4c44213e957))
+* **common:** cache canonical attribute types per signal scope ([#1756](https://github.com/cedricziel/signaldb/issues/1756)) ([0a1a02b](https://github.com/cedricziel/signaldb/commit/0a1a02b9438cf82f8a85383db20045e8f4426fab))
+* **common:** declare the typed attribute layout as non-current schema versions ([#1761](https://github.com/cedricziel/signaldb/issues/1761)) ([1afe6b8](https://github.com/cedricziel/signaldb/commit/1afe6b81e87fd13419310b833ebc7a805f7ec40c))
+* **common:** decode attribute containers from either storage layout ([#1766](https://github.com/cedricziel/signaldb/issues/1766)) ([32f92a1](https://github.com/cedricziel/signaldb/commit/32f92a10db6c03812ddf650c7682b297e0473423))
+* **common:** hint canonical attribute types from semconv registries ([#1752](https://github.com/cedricziel/signaldb/issues/1752)) ([d35df31](https://github.com/cedricziel/signaldb/commit/d35df31696bd4d1eecd7ba017e2ef7cd6ddc7840))
+* **common:** persist canonical attribute types atomically ([#1751](https://github.com/cedricziel/signaldb/issues/1751)) ([30b27a3](https://github.com/cedricziel/signaldb/commit/30b27a30eb3c9c15127ae3d03ff228e58193a2a5))
+* **common:** pin attribute canonical types from config ([#1754](https://github.com/cedricziel/signaldb/issues/1754)) ([a409fdc](https://github.com/cedricziel/signaldb/commit/a409fdc71f74ee2d89ef84fc9be456ec86393a78))
+* **common:** pin the logical schema version to its field set ([#1742](https://github.com/cedricziel/signaldb/issues/1742)) ([18f35ea](https://github.com/cedricziel/signaldb/commit/18f35eae26346a6e109f119e556d74b1964c120b))
+* **common:** resolve an attribute's canonical type by precedence ([#1750](https://github.com/cedricziel/signaldb/issues/1750)) ([ae46642](https://github.com/cedricziel/signaldb/commit/ae466421dc2e6503c28bc4d5562db9a5e3ccbad1))
+* **common:** split attribute rows into typed maps and a residue ([#1763](https://github.com/cedricziel/signaldb/issues/1763)) ([714757b](https://github.com/cedricziel/signaldb/commit/714757ba81b133c6da32181796d4d1df390bc343))
+* **compactor:** read the typed attribute layout for stats and label promotion ([#1769](https://github.com/cedricziel/signaldb/issues/1769)) ([1ecce83](https://github.com/cedricziel/signaldb/commit/1ecce832285fa5e62f690ac0dd8eac9719d93b48))
+* **querier:** assemble the Query IR graph envelope ([#1715](https://github.com/cedricziel/signaldb/issues/1715)) ([8ea9a50](https://github.com/cedricziel/signaldb/commit/8ea9a507159c0195947f69e786e5566e4b44c0c8))
+* **querier:** fetch canonical attribute types for typed IR queries ([#1772](https://github.com/cedricziel/signaldb/issues/1772)) ([fac3e18](https://github.com/cedricziel/signaldb/commit/fac3e18ccad4014f839ee4f27316c2bc0fa1d126))
+* **querier:** read the typed attribute layout in compatibility dialects ([#1768](https://github.com/cedricziel/signaldb/issues/1768)) ([d3203db](https://github.com/cedricziel/signaldb/commit/d3203db45b1de7b8bc6165aeaad2785176e86596))
+* **querier:** read the typed attribute layout in the IR planner's compat reads ([#1770](https://github.com/cedricziel/signaldb/issues/1770)) ([76ecc1b](https://github.com/cedricziel/signaldb/commit/76ecc1b6eb914aefbbe636459fef7b0aff6a43a0))
+* **querier:** return raw attribute values for typed containers in the IR ([#1773](https://github.com/cedricziel/signaldb/issues/1773)) ([71e5841](https://github.com/cedricziel/signaldb/commit/71e5841719ed9eeec979febf3ea6141cb006249c))
+* **querier:** union typed metric tables in the IR planner ([#1771](https://github.com/cedricziel/signaldb/issues/1771)) ([b661d5f](https://github.com/cedricziel/signaldb/commit/b661d5f2d31c07d521b1b421b2aac2e88d5473a3))
+* **query-ir, querier:** span-to-parent correlate stage (IR v8) and its lowering ([#1703](https://github.com/cedricziel/signaldb/issues/1703)) ([861bc04](https://github.com/cedricziel/signaldb/commit/861bc0400fd85de2f0e89eb8601c89f051a81484))
+* **router:** expose committed attribute types in resolution ([#1757](https://github.com/cedricziel/signaldb/issues/1757)) ([f2f85fa](https://github.com/cedricziel/signaldb/commit/f2f85fa1ec702efb59dea0f0aef874ebbb347e16))
+* **writer:** dedup do_put ingest by ingest_id ([#1748](https://github.com/cedricziel/signaldb/issues/1748)) ([d685a0a](https://github.com/cedricziel/signaldb/commit/d685a0a2f52758f844f93707d190793e17ca018c))
+* **writer:** place typed attributes through the type authority ([#1764](https://github.com/cedricziel/signaldb/issues/1764)) ([afd07b6](https://github.com/cedricziel/signaldb/commit/afd07b6241cfd2d33054aec7dfde2ed9b9ee7c04))
+* **writer:** store log event_name and dropped_attributes_count ([#1747](https://github.com/cedricziel/signaldb/issues/1747)) ([99bb67e](https://github.com/cedricziel/signaldb/commit/99bb67e47ab02bfe72855ce41fd13aadfebd3dc8))
+
+
+### Bug Fixes
+
+* **common:** gate WAL pending-gauge tests on the testing feature ([#1736](https://github.com/cedricziel/signaldb/issues/1736)) ([845e350](https://github.com/cedricziel/signaldb/commit/845e350a7dc1370cd402bef5811b59d0aee79d36))
+* **query-ir-span-join:** ground-truth truncation, config threading, parent attribute scopes, e2e coverage ([#1705](https://github.com/cedricziel/signaldb/issues/1705)) ([d7ee85a](https://github.com/cedricziel/signaldb/commit/d7ee85ad14179e9d02a64406a1aa8051ad8ff94a))
+
+
+### Tests
+
+* **common:** check the physical schema realizes the logical schema ([#1744](https://github.com/cedricziel/signaldb/issues/1744)) ([e0e6809](https://github.com/cedricziel/signaldb/commit/e0e680948bb2ea24b4a207fb7d76899af2a6d597))
+* pin the logical schema's OTel-native guarantees ([#1741](https://github.com/cedricziel/signaldb/issues/1741)) ([a55f889](https://github.com/cedricziel/signaldb/commit/a55f889b5e8609ce48a5f9f9a2704d17fbea1b9c))
+
 ## [0.4.1](https://github.com/cedricziel/signaldb/compare/common-v0.4.0...common-v0.4.1) (2026-09-23)
 
 

@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.5.0](https://github.com/cedricziel/signaldb/compare/querier-v0.4.1...querier-v0.5.0) (2026-09-26)
+
+
+### Features
+
+* **querier:** assemble the Query IR graph envelope ([#1715](https://github.com/cedricziel/signaldb/issues/1715)) ([8ea9a50](https://github.com/cedricziel/signaldb/commit/8ea9a507159c0195947f69e786e5566e4b44c0c8))
+* **querier:** fetch canonical attribute types for typed IR queries ([#1772](https://github.com/cedricziel/signaldb/issues/1772)) ([fac3e18](https://github.com/cedricziel/signaldb/commit/fac3e18ccad4014f839ee4f27316c2bc0fa1d126))
+* **querier:** read the typed attribute layout in compatibility dialects ([#1768](https://github.com/cedricziel/signaldb/issues/1768)) ([d3203db](https://github.com/cedricziel/signaldb/commit/d3203db45b1de7b8bc6165aeaad2785176e86596))
+* **querier:** read the typed attribute layout in row-level readers ([#1767](https://github.com/cedricziel/signaldb/issues/1767)) ([0ed2954](https://github.com/cedricziel/signaldb/commit/0ed29540b27d478f27f8c6c8abc9ec683d54b00a))
+* **querier:** read the typed attribute layout in the IR planner's compat reads ([#1770](https://github.com/cedricziel/signaldb/issues/1770)) ([76ecc1b](https://github.com/cedricziel/signaldb/commit/76ecc1b6eb914aefbbe636459fef7b0aff6a43a0))
+* **querier:** return raw attribute values for typed containers in the IR ([#1773](https://github.com/cedricziel/signaldb/issues/1773)) ([71e5841](https://github.com/cedricziel/signaldb/commit/71e5841719ed9eeec979febf3ea6141cb006249c))
+* **querier:** union typed metric tables in the IR planner ([#1771](https://github.com/cedricziel/signaldb/issues/1771)) ([b661d5f](https://github.com/cedricziel/signaldb/commit/b661d5f2d31c07d521b1b421b2aac2e88d5473a3))
+* **query-ir, querier:** span-to-parent correlate stage (IR v8) and its lowering ([#1703](https://github.com/cedricziel/signaldb/issues/1703)) ([861bc04](https://github.com/cedricziel/signaldb/commit/861bc0400fd85de2f0e89eb8601c89f051a81484))
+* **query-ir:** add the graph result envelope (IR v8) ([#1714](https://github.com/cedricziel/signaldb/issues/1714)) ([d0660c8](https://github.com/cedricziel/signaldb/commit/d0660c830441a20fe98a2f04f2c40bb7ee0eb2a8))
+
+
+### Bug Fixes
+
+* **querier:** compare untyped attributes numerically against numeric literals ([#1672](https://github.com/cedricziel/signaldb/issues/1672)) ([1bd201c](https://github.com/cedricziel/signaldb/commit/1bd201cf2bbf0e30ce71c89f9881d9793f10bbe5))
+* **query-ir-span-join:** ground-truth truncation, config threading, parent attribute scopes, e2e coverage ([#1705](https://github.com/cedricziel/signaldb/issues/1705)) ([d7ee85a](https://github.com/cedricziel/signaldb/commit/d7ee85ad14179e9d02a64406a1aa8051ad8ff94a))
+
+
+### Tests
+
+* pin the logical schema's OTel-native guarantees ([#1741](https://github.com/cedricziel/signaldb/issues/1741)) ([a55f889](https://github.com/cedricziel/signaldb/commit/a55f889b5e8609ce48a5f9f9a2704d17fbea1b9c))
+
 ## [0.4.1](https://github.com/cedricziel/signaldb/compare/querier-v0.4.0...querier-v0.4.1) (2026-09-23)
 
 

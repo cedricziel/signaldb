@@ -1,5 +1,56 @@
 # Changelog
 
+## [0.3.0](https://github.com/cedricziel/signaldb/compare/signaldb-ui-v0.2.2...signaldb-ui-v0.3.0) (2026-09-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **router:** /api/v1/admin/* is removed; use /api/v1/manage/admin and /api/v1/manage/tenants/{id}/api-keys|datasets (both also accept the break-glass admin_api_key with no X-Tenant-ID).
+
+### Features
+
+* **router:** expose committed attribute types in resolution ([#1757](https://github.com/cedricziel/signaldb/issues/1757)) ([f2f85fa](https://github.com/cedricziel/signaldb/commit/f2f85fa1ec702efb59dea0f0aef874ebbb347e16))
+* **router:** move tenant management onto plain resource paths ([#1685](https://github.com/cedricziel/signaldb/issues/1685)) ([004f17a](https://github.com/cedricziel/signaldb/commit/004f17ac3c9b4186cf0bb41412fcaa28aa8e94af))
+* **router:** return the graph envelope from POST /api/v1/query ([#1716](https://github.com/cedricziel/signaldb/issues/1716)) ([047b8a9](https://github.com/cedricziel/signaldb/commit/047b8a9db762ac2348c8868802d6be2d0c74e3e3))
+* **ui:** add a Waterfall | Map | Both switch to the trace detail ([#1701](https://github.com/cedricziel/signaldb/issues/1701)) ([6dfe7d5](https://github.com/cedricziel/signaldb/commit/6dfe7d55b2a945393dfc885cefbc3a93728108bf))
+* **ui:** capture React render errors as OTel exception logs ([#1673](https://github.com/cedricziel/signaldb/issues/1673)) ([37aeed3](https://github.com/cedricziel/signaldb/commit/37aeed38415b442a453f19efe29f1037669c68e2))
+* **ui:** Catalog Map view for services ([#1721](https://github.com/cedricziel/signaldb/issues/1721)) ([2f43a57](https://github.com/cedricziel/signaldb/commit/2f43a57d47e12f06fe880b94d2ad4429553076a0))
+* **ui:** dark mode in Storybook, scoped themes, and dark-mode fixes ([#1675](https://github.com/cedricziel/signaldb/issues/1675)) ([710332a](https://github.com/cedricziel/signaldb/commit/710332a01c9acd6092bd3a0b62e4c2b4d1575078))
+* **ui:** data for the entity detail KPIs and operation sparklines ([#1687](https://github.com/cedricziel/signaldb/issues/1687)) ([d637cd5](https://github.com/cedricziel/signaldb/commit/d637cd58ddb2da31015eb4c990b81f53fa242001))
+* **ui:** derive a client-side trace service graph and ServiceGraph component ([#1700](https://github.com/cedricziel/signaldb/issues/1700)) ([4e1b1d0](https://github.com/cedricziel/signaldb/commit/4e1b1d0692dde06cd6cfdcb1b0561e35cb35758b))
+* **ui:** error groups section on the service detail page ([#1690](https://github.com/cedricziel/signaldb/issues/1690)) ([276218d](https://github.com/cedricziel/signaldb/commit/276218db907a8f0457726117abda4c146a31bcfa))
+* **ui:** KPI cards and Logs/Traces jumps on the entity detail page ([#1689](https://github.com/cedricziel/signaldb/issues/1689)) ([b47a709](https://github.com/cedricziel/signaldb/commit/b47a70925e8fffcf6144878baf7215849924597b))
+* **ui:** list a service's slowest inbound requests on its detail page ([#1698](https://github.com/cedricziel/signaldb/issues/1698)) ([5309fcc](https://github.com/cedricziel/signaldb/commit/5309fcc34596c645eb430a486b12da774539cc09))
+* **ui:** operations table with search and sparklines on entity detail ([#1691](https://github.com/cedricziel/signaldb/issues/1691)) ([f9dbb7e](https://github.com/cedricziel/signaldb/commit/f9dbb7e7e87e7cb761109d6b82ec83191717e1e9))
+* **ui:** per-dependency breakdown on the service detail page ([#1692](https://github.com/cedricziel/signaldb/issues/1692)) ([1a1310c](https://github.com/cedricziel/signaldb/commit/1a1310c201d9f2290f80218f64afb707616ca5d0))
+* **ui:** service page neighbourhood map ([#1718](https://github.com/cedricziel/signaldb/issues/1718)) ([55e0b34](https://github.com/cedricziel/signaldb/commit/55e0b348429e139657b610c0a2a59d0e76c0c059))
+* **ui:** sidebar navigation, page header and ⌘K command palette ([#1753](https://github.com/cedricziel/signaldb/issues/1753)) ([c371e6f](https://github.com/cedricziel/signaldb/commit/c371e6fc82f9a63b17fd393dc91a21ff4e38f9a0))
+* **ui:** slowest traces and finishing touches on the entity detail page ([#1693](https://github.com/cedricziel/signaldb/issues/1693)) ([af574cb](https://github.com/cedricziel/signaldb/commit/af574cb5ab52f12f9ceefa27f72ed35cfee277ce))
+* **ui:** Sparkline, KpiCard and ShareBar shared components ([#1688](https://github.com/cedricziel/signaldb/issues/1688)) ([02a0568](https://github.com/cedricziel/signaldb/commit/02a056808eb4eae9908fc8a8062e89a16f3fe02f))
+* **ui:** System Overview landing page ([#1755](https://github.com/cedricziel/signaldb/issues/1755)) ([bc06bbc](https://github.com/cedricziel/signaldb/commit/bc06bbc6d6eadbd7c386e70d13f3989da6d8d5b5))
+
+
+### Bug Fixes
+
+* **mcp:** surface router error text on query_ir 4xx failures ([#1737](https://github.com/cedricziel/signaldb/issues/1737)) ([72fe829](https://github.com/cedricziel/signaldb/commit/72fe829d35552a02a0abc21bd4822d14ffde8cec))
+* **ui:** finish styling the Processors pages ([#1696](https://github.com/cedricziel/signaldb/issues/1696)) ([75aa56a](https://github.com/cedricziel/signaldb/commit/75aa56af63ca4b8c8d9f2e3e8310afe92b459ea2))
+* **ui:** keep API-key sessions out of the login redirect ([#1727](https://github.com/cedricziel/signaldb/issues/1727)) ([657dbae](https://github.com/cedricziel/signaldb/commit/657dbaeb8bb82378127e8245d6e27aadcecbbd96))
+* **ui:** keep metrics y-axis tick labels distinct for sub-1 series ([#1733](https://github.com/cedricziel/signaldb/issues/1733)) ([40e1497](https://github.com/cedricziel/signaldb/commit/40e149777659475d0461900d5b6037adec41d182))
+* **ui:** make the explore views usable on phones ([#1725](https://github.com/cedricziel/signaldb/issues/1725)) ([f7ccd37](https://github.com/cedricziel/signaldb/commit/f7ccd3733e13f39cd8e1c2979c73171391aaf33f))
+* **ui:** phone layout, trace, error and metric UX fixes from a live assessment ([#1732](https://github.com/cedricziel/signaldb/issues/1732)) ([e83d4cb](https://github.com/cedricziel/signaldb/commit/e83d4cb9b4d4ad4a587a8ce5c3c87f837bb08a48))
+* **ui:** polish service-map status dots and arrowheads ([#1723](https://github.com/cedricziel/signaldb/issues/1723)) ([66aab33](https://github.com/cedricziel/signaldb/commit/66aab33fd4d467d31708e3f9afb57fd5322d17c5))
+* **ui:** sort slowest traces by the logical duration field ([#1695](https://github.com/cedricziel/signaldb/issues/1695)) ([c7274a9](https://github.com/cedricziel/signaldb/commit/c7274a9209e32e25c4f5da0ce24ab461b6734efa))
+
+
+### Tests
+
+* **ui:** Playwright suite against a live, seeded backend ([#1697](https://github.com/cedricziel/signaldb/issues/1697)) ([e460fa7](https://github.com/cedricziel/signaldb/commit/e460fa7a413462112733fcd7feb3e996a9247795))
+
+
+### Build System
+
+* **ui:** ship source maps with release builds ([#1678](https://github.com/cedricziel/signaldb/issues/1678)) ([e1dd727](https://github.com/cedricziel/signaldb/commit/e1dd727009f4813719ac29c74c44ad0d4aac73d3))
+
 ## [0.2.2](https://github.com/cedricziel/signaldb/compare/signaldb-ui-v0.2.1...signaldb-ui-v0.2.2) (2026-09-23)
 
 

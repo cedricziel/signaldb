@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.5.0](https://github.com/cedricziel/signaldb/compare/writer-v0.4.1...writer-v0.5.0) (2026-09-26)
+
+
+### Features
+
+* **common:** pin attribute canonical types from config ([#1754](https://github.com/cedricziel/signaldb/issues/1754)) ([a409fdc](https://github.com/cedricziel/signaldb/commit/a409fdc71f74ee2d89ef84fc9be456ec86393a78))
+* **writer:** dedup do_put ingest by ingest_id ([#1748](https://github.com/cedricziel/signaldb/issues/1748)) ([d685a0a](https://github.com/cedricziel/signaldb/commit/d685a0a2f52758f844f93707d190793e17ca018c))
+* **writer:** place typed attributes through the type authority ([#1764](https://github.com/cedricziel/signaldb/issues/1764)) ([afd07b6](https://github.com/cedricziel/signaldb/commit/afd07b6241cfd2d33054aec7dfde2ed9b9ee7c04))
+* **writer:** store log event_name and dropped_attributes_count ([#1747](https://github.com/cedricziel/signaldb/issues/1747)) ([99bb67e](https://github.com/cedricziel/signaldb/commit/99bb67e47ab02bfe72855ce41fd13aadfebd3dc8))
+* **writer:** wire the type authority into the writer service ([#1765](https://github.com/cedricziel/signaldb/issues/1765)) ([3f6c1cf](https://github.com/cedricziel/signaldb/commit/3f6c1cfcfdb7f977465806cd95f09750b4ef1c50))
+
 ## [0.4.1](https://github.com/cedricziel/signaldb/compare/writer-v0.4.0...writer-v0.4.1) (2026-09-23)
 
 

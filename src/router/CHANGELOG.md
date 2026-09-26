@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.5.0](https://github.com/cedricziel/signaldb/compare/router-v0.4.1...router-v0.5.0) (2026-09-26)
+
+
+### ⚠ BREAKING CHANGES
+
+* **router:** /api/v1/admin/* is removed; use /api/v1/manage/admin and /api/v1/manage/tenants/{id}/api-keys|datasets (both also accept the break-glass admin_api_key with no X-Tenant-ID).
+
+### Features
+
+* **common:** declare the typed attribute layout as non-current schema versions ([#1761](https://github.com/cedricziel/signaldb/issues/1761)) ([1afe6b8](https://github.com/cedricziel/signaldb/commit/1afe6b81e87fd13419310b833ebc7a805f7ec40c))
+* **common:** pin attribute canonical types from config ([#1754](https://github.com/cedricziel/signaldb/issues/1754)) ([a409fdc](https://github.com/cedricziel/signaldb/commit/a409fdc71f74ee2d89ef84fc9be456ec86393a78))
+* **querier:** read the typed attribute layout in row-level readers ([#1767](https://github.com/cedricziel/signaldb/issues/1767)) ([0ed2954](https://github.com/cedricziel/signaldb/commit/0ed29540b27d478f27f8c6c8abc9ec683d54b00a))
+* **router:** expose committed attribute types in resolution ([#1757](https://github.com/cedricziel/signaldb/issues/1757)) ([f2f85fa](https://github.com/cedricziel/signaldb/commit/f2f85fa1ec702efb59dea0f0aef874ebbb347e16))
+* **router:** move tenant management onto plain resource paths ([#1685](https://github.com/cedricziel/signaldb/issues/1685)) ([004f17a](https://github.com/cedricziel/signaldb/commit/004f17ac3c9b4186cf0bb41412fcaa28aa8e94af))
+* **router:** return the graph envelope from POST /api/v1/query ([#1716](https://github.com/cedricziel/signaldb/issues/1716)) ([047b8a9](https://github.com/cedricziel/signaldb/commit/047b8a9db762ac2348c8868802d6be2d0c74e3e3))
+
+
+### Bug Fixes
+
+* **mcp:** surface router error text on query_ir 4xx failures ([#1737](https://github.com/cedricziel/signaldb/issues/1737)) ([72fe829](https://github.com/cedricziel/signaldb/commit/72fe829d35552a02a0abc21bd4822d14ffde8cec))
+* **query-ir-span-join:** ground-truth truncation, config threading, parent attribute scopes, e2e coverage ([#1705](https://github.com/cedricziel/signaldb/issues/1705)) ([d7ee85a](https://github.com/cedricziel/signaldb/commit/d7ee85ad14179e9d02a64406a1aa8051ad8ff94a))
+* **router:** use a non-colliding alias in the discovery value-query hint ([#1738](https://github.com/cedricziel/signaldb/issues/1738)) ([e5ae336](https://github.com/cedricziel/signaldb/commit/e5ae336ed9bdb03c6b37cb5702acdcbec21ae06c))
+
 ## [0.4.1](https://github.com/cedricziel/signaldb/compare/router-v0.4.0...router-v0.4.1) (2026-09-23)
 
 
