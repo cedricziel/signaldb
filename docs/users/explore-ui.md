@@ -896,7 +896,8 @@ it, **Escape** closes the palette.
 
 Recent queries are the last ten logs searches and trace filter sets you
 ran, kept in this browser's `localStorage` (`sdb.recentQueries`); they
-aren't stored on the server or shared between browsers.
+aren't stored on the server or shared between browsers, and **Sign out**
+clears them.
 
 ## User menu
 

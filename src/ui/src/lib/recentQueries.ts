@@ -46,6 +46,16 @@ export function recordRecentQuery(entry: RecentQuery): void {
   }
 }
 
+/** Forget the history — on sign-out, so the next person on a shared browser
+ * doesn't inherit the previous user's query text and tenant links. */
+export function clearRecentQueries(): void {
+  try {
+    localStorage.removeItem(STORAGE_KEY);
+  } catch {
+    // localStorage unavailable — nothing was stored either.
+  }
+}
+
 function isRecentQuery(value: unknown): value is RecentQuery {
   if (typeof value !== "object" || value === null) return false;
   const v = value as Record<string, unknown>;

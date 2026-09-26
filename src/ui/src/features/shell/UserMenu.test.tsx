@@ -171,6 +171,60 @@ describe("UserMenu", () => {
     ).toBe(false);
   });
 
+  it("forgets the recent-query history on sign-out", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI },
+      { match: "/ui/session", method: "DELETE", body: {} },
+    ]);
+    localStorage.setItem(
+      "sdb.recentQueries",
+      JSON.stringify([
+        { text: "user.email=a@b", signal: "logs", href: "/logs" },
+      ]),
+    );
+    const originalLocation = window.location;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: { ...originalLocation, reload: vi.fn() },
+    });
+    try {
+      renderUserMenu({ state: STATE });
+      await userEvent.click(
+        await screen.findByRole("button", { name: /jane doe/i }),
+      );
+      await userEvent.click(screen.getByText("Sign out"));
+      await waitFor(() =>
+        expect(localStorage.getItem("sdb.recentQueries")).toBeNull(),
+      );
+    } finally {
+      Object.defineProperty(window, "location", {
+        configurable: true,
+        value: originalLocation,
+      });
+    }
+  });
+
+  it("keeps the history when sign-out fails", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI },
+      {
+        match: "/ui/session",
+        method: "DELETE",
+        body: { error: "boom" },
+        status: 500,
+      },
+    ]);
+    localStorage.setItem("sdb.recentQueries", "[]");
+    renderUserMenu({ state: STATE });
+    await userEvent.click(
+      await screen.findByRole("button", { name: /jane doe/i }),
+    );
+    await userEvent.click(screen.getByText("Sign out"));
+    await screen.findByRole("alert");
+    expect(localStorage.getItem("sdb.recentQueries")).toBe("[]");
+    localStorage.clear();
+  });
+
   it("shows an inline alert and keeps the menu open, without reloading, when sign-out fails", async () => {
     stubFetchRoutes([
       { match: "/api/v1/whoami", body: WHOAMI },
@@ -208,7 +262,10 @@ describe("UserMenu", () => {
     stubFetchRoutes([
       {
         match: "/api/v1/whoami",
-        body: { ...WHOAMI, memberships: [{ tenant_id: "acme", role: "viewer" }] },
+        body: {
+          ...WHOAMI,
+          memberships: [{ tenant_id: "acme", role: "viewer" }],
+        },
       },
     ]);
     renderUserMenu({ state: STATE });

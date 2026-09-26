@@ -7,6 +7,7 @@ import { Link, useNavigate } from "react-router";
 import { clearPersistedTenantContext, toErrorMessage } from "../../api/http";
 import { deleteSession, type WhoamiResponse } from "../../api/session";
 import type { ExploreState } from "../../lib/urlState";
+import { clearRecentQueries } from "../../lib/recentQueries";
 import { useIsDemo, useWhoami } from "../../lib/useWhoami";
 import { isDarkTheme, toggleTheme } from "../../lib/theme";
 import { useEscapeKey } from "../../hooks/useEscapeKey";
@@ -125,6 +126,7 @@ function UserMenuPopover({
     try {
       await deleteSession();
       clearPersistedTenantContext();
+      clearRecentQueries();
       client.clear();
       navigate("/login");
       window.location.reload();
