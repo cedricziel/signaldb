@@ -505,6 +505,16 @@ impl ProfileService {
     }
 }
 
+/// Read an attribute container column's per-row documents as
+/// [`serde_json::Value`] objects; see [`common::attrs::json_documents`] for
+/// the storage-form detection.
+fn attribute_json_rows(batch: &RecordBatch, name: &str) -> Vec<Option<serde_json::Value>> {
+    common::attrs::json_documents(batch, name)
+        .into_iter()
+        .map(|row| row.map(serde_json::Value::Object))
+        .collect()
+}
+
 /// Decode storage-format profile rows into model profiles. Rows with
 /// unparseable payload columns are skipped with a warning rather than
 /// failing the whole aggregation.
@@ -543,9 +553,9 @@ pub(crate) fn batch_to_models(batch: &RecordBatch) -> Vec<Profile> {
     let samples_col = get_string("samples_json");
     let trace_ids = get_string("trace_id");
     let span_ids = get_string("span_id");
-    let profile_attrs = get_string("profile_attributes");
-    let resource_attrs = get_string("resource_attributes");
-    let scope_attrs = get_string("scope_attributes");
+    let mut profile_attrs = attribute_json_rows(batch, "profile_attributes");
+    let mut resource_attrs = attribute_json_rows(batch, "resource_attributes");
+    let mut scope_attrs = attribute_json_rows(batch, "scope_attributes");
 
     let opt_str = |col: Option<&StringArray>, i: usize| -> Option<String> {
         col.and_then(|c| {
@@ -622,10 +632,9 @@ pub(crate) fn batch_to_models(batch: &RecordBatch) -> Vec<Profile> {
             stacktraces,
             samples,
             links,
-            resource_attributes: opt_str(resource_attrs, i)
-                .and_then(|s| serde_json::from_str(&s).ok()),
-            scope_attributes: opt_str(scope_attrs, i).and_then(|s| serde_json::from_str(&s).ok()),
-            attributes: opt_str(profile_attrs, i).and_then(|s| serde_json::from_str(&s).ok()),
+            resource_attributes: resource_attrs.get_mut(i).and_then(std::mem::take),
+            scope_attributes: scope_attrs.get_mut(i).and_then(std::mem::take),
+            attributes: profile_attrs.get_mut(i).and_then(std::mem::take),
             dropped_attributes_count: 0,
         });
     }

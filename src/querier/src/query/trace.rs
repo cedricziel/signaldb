@@ -11,7 +11,7 @@ use common::model::{
 };
 use datafusion::{
     arrow::{
-        array::{Array, BooleanArray, Int64Array, MapArray, RecordBatch, StringArray},
+        array::{Array, BooleanArray, Int64Array, RecordBatch, StringArray},
         datatypes::{DataType, TimeUnit},
     },
     logical_expr::{Expr, col, lit},
@@ -253,8 +253,8 @@ impl TraceService {
             let span_kinds = string_column(&batch, "span_kind")?;
             let start_times = required_i64_column(&batch, "start_time_unix_nano")?;
             let durations = required_i64_column(&batch, "duration_nanos")?;
-            let span_attrs = resolve_attribute_column(&batch, "span_attributes");
-            let resource_attrs = resolve_attribute_column(&batch, "resource_attributes");
+            let mut span_attrs = resolve_attribute_column(&batch, "span_attributes");
+            let mut resource_attrs = resolve_attribute_column(&batch, "resource_attributes");
             let events_col = resolve_events_column(&batch);
 
             for row_index in 0..batch.num_rows() {
@@ -265,8 +265,8 @@ impl TraceService {
 
                 let span_id = span_ids.value(row_index).to_string();
                 let parent_span_id = parent_span_ids.value(row_index).to_string();
-                let attributes = attribute_map_from(&span_attrs, row_index);
-                let resource = attribute_map_from(&resource_attrs, row_index);
+                let attributes = attribute_map_from(&mut span_attrs, row_index);
+                let resource = attribute_map_from(&mut resource_attrs, row_index);
                 let events = span_events_from(events_col, row_index);
 
                 let span = Span {
@@ -354,15 +354,15 @@ impl TraceService {
             let span_kinds = string_column(&batch, "span_kind")?;
             let start_times = required_i64_column(&batch, "start_time_unix_nano")?;
             let durations = required_i64_column(&batch, "duration_nanos")?;
-            let span_attrs = resolve_attribute_column(&batch, "span_attributes");
-            let resource_attrs = resolve_attribute_column(&batch, "resource_attributes");
+            let mut span_attrs = resolve_attribute_column(&batch, "span_attributes");
+            let mut resource_attrs = resolve_attribute_column(&batch, "resource_attributes");
 
             for row_index in 0..batch.num_rows() {
                 let current_trace_id = trace_ids.value(row_index).to_string();
                 let span_id = span_ids.value(row_index).to_string();
                 let parent_span_id = parent_span_ids.value(row_index).to_string();
-                let attributes = attribute_map_from(&span_attrs, row_index);
-                let resource = attribute_map_from(&resource_attrs, row_index);
+                let attributes = attribute_map_from(&mut span_attrs, row_index);
+                let resource = attribute_map_from(&mut resource_attrs, row_index);
 
                 let span = Span {
                     span_id: span_id.clone(),
@@ -1037,75 +1037,26 @@ fn required_i64_column<'a>(
         .ok_or_else(|| QuerierError::InvalidInput(format!("Column '{name}' has wrong type")))
 }
 
-/// A trace attribute column resolved once per batch (outside the row loop),
-/// mirroring the two storage forms [`attribute_map_from`] reads: a typed
-/// `Map<Utf8, Utf8>` column (current tables, written by the writer's schema
-/// coercion) and a legacy `Utf8` column holding a flat JSON object.
-enum AttributeColumn<'a> {
-    Map(&'a MapArray),
-    Json(&'a StringArray),
-    Absent,
+/// Resolve a trace attribute column once per batch (outside the row loop);
+/// see [`common::attrs::json_documents`] for the storage-form detection.
+fn resolve_attribute_column(
+    batch: &RecordBatch,
+    name: &str,
+) -> Vec<Option<serde_json::Map<String, serde_json::Value>>> {
+    common::attrs::json_documents(batch, name)
 }
 
-/// Resolve the attribute column named `name` for a batch once; see
-/// [`AttributeColumn`].
-fn resolve_attribute_column<'a>(batch: &'a RecordBatch, name: &str) -> AttributeColumn<'a> {
-    let Some(column) = batch.column_by_name(name) else {
-        return AttributeColumn::Absent;
-    };
-    if let Some(map) = column.as_any().downcast_ref::<MapArray>() {
-        return AttributeColumn::Map(map);
-    }
-    if let Some(arr) = column.as_any().downcast_ref::<StringArray>() {
-        return AttributeColumn::Json(arr);
-    }
-    AttributeColumn::Absent
-}
-
-/// Read one row of an [`AttributeColumn`] resolved by
-/// [`resolve_attribute_column`] into a `serde_json` map. An absent column, a
-/// null row, or unparseable content yields an empty map.
-///
-/// The map form stores every value as a string, so its values come back as
-/// `Value::String`; the legacy JSON form preserves the original scalar type.
+/// Take one row's document out of a [`resolve_attribute_column`] result,
+/// leaving `None` behind, and turn it into a `serde_json` map. An absent
+/// column, a null row, or unparseable content yields an empty map.
 fn attribute_map_from(
-    column: &AttributeColumn<'_>,
+    rows: &mut [Option<serde_json::Map<String, serde_json::Value>>],
     row: usize,
 ) -> HashMap<String, serde_json::Value> {
-    match column {
-        AttributeColumn::Map(map) => {
-            if map.is_null(row) {
-                return HashMap::new();
-            }
-            let entries = map.value(row);
-            let (Some(keys), Some(values)) = (
-                entries.column(0).as_any().downcast_ref::<StringArray>(),
-                entries.column(1).as_any().downcast_ref::<StringArray>(),
-            ) else {
-                return HashMap::new();
-            };
-            let mut out = HashMap::with_capacity(entries.len());
-            for j in 0..entries.len() {
-                if !keys.is_null(j) && !values.is_null(j) {
-                    out.insert(
-                        keys.value(j).to_string(),
-                        serde_json::Value::String(values.value(j).to_string()),
-                    );
-                }
-            }
-            out
-        }
-        AttributeColumn::Json(arr) => {
-            if arr.is_null(row) {
-                return HashMap::new();
-            }
-            match serde_json::from_str::<serde_json::Value>(arr.value(row)) {
-                Ok(serde_json::Value::Object(map)) => map.into_iter().collect(),
-                _ => HashMap::new(),
-            }
-        }
-        AttributeColumn::Absent => HashMap::new(),
-    }
+    rows.get_mut(row)
+        .and_then(std::mem::take)
+        .map(|m| m.into_iter().collect())
+        .unwrap_or_default()
 }
 
 /// Resolve the `events` JSON-string column for a batch once; see
@@ -1755,8 +1706,8 @@ mod tests {
         let column: ArrayRef = Arc::new(builder.finish());
         let batch = RecordBatch::try_from_iter([("span_attributes", column)]).unwrap();
 
-        let resolved = resolve_attribute_column(&batch, "span_attributes");
-        let attrs = attribute_map_from(&resolved, 0);
+        let mut resolved = resolve_attribute_column(&batch, "span_attributes");
+        let attrs = attribute_map_from(&mut resolved, 0);
         assert_eq!(
             attrs.get("http.method"),
             Some(&serde_json::Value::String("POST".to_string()))
@@ -1776,8 +1727,30 @@ mod tests {
         )]));
         let batch = RecordBatch::try_from_iter([("span_attributes", column)]).unwrap();
 
-        let resolved = resolve_attribute_column(&batch, "span_attributes");
-        let attrs = attribute_map_from(&resolved, 0);
+        let mut resolved = resolve_attribute_column(&batch, "span_attributes");
+        let attrs = attribute_map_from(&mut resolved, 0);
+        assert_eq!(
+            attrs.get("db.system"),
+            Some(&serde_json::Value::String("postgresql".to_string()))
+        );
+    }
+
+    #[test]
+    fn attribute_map_reads_typed_layout_columns_like_the_legacy_layout() {
+        use datafusion::arrow::datatypes::Schema;
+        use datafusion::arrow::record_batch::RecordBatch;
+
+        let row = serde_json::Map::from_iter([(
+            "db.system".to_string(),
+            serde_json::Value::String("postgresql".to_string()),
+        )]);
+        let (fields, arrays) =
+            common::testing::typed_attribute_columns("span_attributes", &[Some(row)]);
+        let schema = Arc::new(Schema::new(fields.to_vec()));
+        let batch = RecordBatch::try_new(schema, arrays.to_vec()).unwrap();
+
+        let mut resolved = resolve_attribute_column(&batch, "span_attributes");
+        let attrs = attribute_map_from(&mut resolved, 0);
         assert_eq!(
             attrs.get("db.system"),
             Some(&serde_json::Value::String("postgresql".to_string()))
@@ -1792,11 +1765,15 @@ mod tests {
         let column: ArrayRef = Arc::new(StringArray::from(vec![Option::<&str>::None]));
         let batch = RecordBatch::try_from_iter([("span_attributes", column)]).unwrap();
         assert!(
-            attribute_map_from(&resolve_attribute_column(&batch, "span_attributes"), 0).is_empty()
+            attribute_map_from(&mut resolve_attribute_column(&batch, "span_attributes"), 0)
+                .is_empty()
         );
         assert!(
-            attribute_map_from(&resolve_attribute_column(&batch, "resource_attributes"), 0)
-                .is_empty()
+            attribute_map_from(
+                &mut resolve_attribute_column(&batch, "resource_attributes"),
+                0
+            )
+            .is_empty()
         );
     }
 

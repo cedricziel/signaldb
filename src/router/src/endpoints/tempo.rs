@@ -167,13 +167,11 @@ fn record_batches_to_trace(
             .as_any()
             .downcast_ref::<BooleanArray>()
             .ok_or("Invalid is_root column type")?;
-        // Optional attribute columns (may not exist in older data)
-        let span_attrs_col = batch
-            .column_by_name("span_attributes")
-            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-        let resource_attrs_col = batch
-            .column_by_name("resource_attributes")
-            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        // Optional attribute columns (may not exist in older data), read as
+        // native-typed per-row documents from whichever storage form the
+        // batch carries (legacy JSON string or the typed layout).
+        let mut span_attrs = common::attrs::json_documents(&batch, "span_attributes");
+        let mut resource_attrs = common::attrs::json_documents(&batch, "resource_attributes");
         let events_col = batch
             .column_by_name("events")
             .and_then(|c| c.as_any().downcast_ref::<StringArray>());
@@ -188,24 +186,16 @@ fn record_batches_to_trace(
 
             let span_id = span_id_col.value(row_index).to_string();
 
-            let attributes = span_attrs_col
-                .and_then(|arr| {
-                    if arr.is_null(row_index) {
-                        None
-                    } else {
-                        serde_json::from_str(arr.value(row_index)).ok()
-                    }
-                })
+            let attributes = span_attrs
+                .get_mut(row_index)
+                .and_then(std::mem::take)
+                .map(|m| m.into_iter().collect())
                 .unwrap_or_default();
 
-            let resource = resource_attrs_col
-                .and_then(|arr| {
-                    if arr.is_null(row_index) {
-                        None
-                    } else {
-                        serde_json::from_str(arr.value(row_index)).ok()
-                    }
-                })
+            let resource = resource_attrs
+                .get_mut(row_index)
+                .and_then(std::mem::take)
+                .map(|m| m.into_iter().collect())
                 .unwrap_or_default();
 
             let span = common::model::span::Span {
@@ -502,36 +492,26 @@ async fn flight_data_to_search_results(
             .as_any()
             .downcast_ref::<BooleanArray>()
             .ok_or("Invalid is_root column type")?;
-        // Optional attribute columns (may not exist in older data)
-        let span_attrs_col = batch
-            .column_by_name("span_attributes")
-            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-        let resource_attrs_col = batch
-            .column_by_name("resource_attributes")
-            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        // Optional attribute columns (may not exist in older data), read as
+        // native-typed per-row documents from whichever storage form the
+        // batch carries (legacy JSON string or the typed layout).
+        let mut span_attrs = common::attrs::json_documents(&batch, "span_attributes");
+        let mut resource_attrs = common::attrs::json_documents(&batch, "resource_attributes");
 
         for row_index in 0..batch.num_rows() {
             let trace_id = trace_id_col.value(row_index).to_string();
             let span_id = span_id_col.value(row_index).to_string();
 
-            let attributes = span_attrs_col
-                .and_then(|arr| {
-                    if arr.is_null(row_index) {
-                        None
-                    } else {
-                        serde_json::from_str(arr.value(row_index)).ok()
-                    }
-                })
+            let attributes = span_attrs
+                .get_mut(row_index)
+                .and_then(std::mem::take)
+                .map(|m| m.into_iter().collect())
                 .unwrap_or_default();
 
-            let resource = resource_attrs_col
-                .and_then(|arr| {
-                    if arr.is_null(row_index) {
-                        None
-                    } else {
-                        serde_json::from_str(arr.value(row_index)).ok()
-                    }
-                })
+            let resource = resource_attrs
+                .get_mut(row_index)
+                .and_then(std::mem::take)
+                .map(|m| m.into_iter().collect())
                 .unwrap_or_default();
 
             let span = common::model::span::Span {
@@ -1679,6 +1659,58 @@ mod tests {
         );
         let names: Vec<_> = timings.entries().iter().map(|(name, _)| *name).collect();
         assert_eq!(names, ["querier", "convert"]);
+    }
+
+    #[test]
+    fn record_batches_to_trace_reads_typed_layout_span_attributes() {
+        use datafusion::arrow::array::{BooleanArray, RecordBatch, StringArray, UInt64Array};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        let row = serde_json::Map::from_iter([(
+            "http.method".to_string(),
+            serde_json::Value::String("GET".to_string()),
+        )]);
+        let (attr_fields, attr_arrays) =
+            common::testing::typed_attribute_columns("span_attributes", &[Some(row)]);
+
+        let mut fields = vec![
+            Field::new("trace_id", DataType::Utf8, false),
+            Field::new("span_id", DataType::Utf8, false),
+            Field::new("parent_span_id", DataType::Utf8, true),
+            Field::new("status_code", DataType::Utf8, false),
+            Field::new("is_root", DataType::Boolean, false),
+            Field::new("span_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("span_kind", DataType::Utf8, false),
+            Field::new("start_time_unix_nano", DataType::UInt64, false),
+            Field::new("duration_nano", DataType::UInt64, false),
+        ];
+        fields.extend(attr_fields.clone());
+        let schema = Arc::new(Schema::new(fields));
+
+        let mut columns: Vec<datafusion::arrow::array::ArrayRef> = vec![
+            Arc::new(StringArray::from(vec!["trace-1"])),
+            Arc::new(StringArray::from(vec!["root"])),
+            Arc::new(StringArray::from(vec![""])),
+            Arc::new(StringArray::from(vec!["Ok"])),
+            Arc::new(BooleanArray::from(vec![true])),
+            Arc::new(StringArray::from(vec!["op"])),
+            Arc::new(StringArray::from(vec!["svc"])),
+            Arc::new(StringArray::from(vec!["Server"])),
+            Arc::new(UInt64Array::from(vec![1_000u64])),
+            Arc::new(UInt64Array::from(vec![10u64])),
+        ];
+        columns.extend(attr_arrays);
+        let batch = RecordBatch::try_new(schema, columns).unwrap();
+
+        let trace = record_batches_to_trace(vec![batch], "trace-1").unwrap();
+        let tempo = internal_trace_to_tempo(&trace, None);
+        let span = &tempo.span_sets[0].spans[0];
+        assert_eq!(
+            span.attributes.get("http.method").map(|a| &a.value),
+            Some(&tempo_api::Value::StringValue("GET".to_string()))
+        );
     }
 
     #[test]
