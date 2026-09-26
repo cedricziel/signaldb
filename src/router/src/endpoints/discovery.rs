@@ -437,7 +437,13 @@ async fn sampled_values(
 }
 
 /// The aggregate output name the value query declares.
-const COUNT_OUTPUT: &str = "count";
+///
+/// Not `"count"`: several sources (`metrics`, `metrics_histogram`) have a
+/// physical `count` column, so that alias trips the physical-addressing
+/// guard (`field 'count' names a physical column or storage detail`) instead
+/// of naming a derived output. `value_count` collides with no schema's
+/// physical or logical field names.
+const COUNT_OUTPUT: &str = "value_count";
 
 /// The IR document that computes a field's top values by reading data.
 fn value_query_document(
@@ -912,6 +918,32 @@ mod tests {
             ),
         )
         .expect("the sampled value query validates");
+    }
+
+    #[test]
+    fn the_hints_suggested_query_validates_against_a_source_with_a_physical_count_column() {
+        // metrics/metrics_histogram have a physical `count` column (the OTel
+        // sum-of-observations field), which collided with the aggregate
+        // output alias the hint told clients to run.
+        let window = ResolvedWindow {
+            start_ns: 1,
+            end_ns: 2,
+        };
+        let doc = value_query_document("metrics", "metric.name", window, 200);
+        let parsed: Document =
+            serde_json::from_value(doc).expect("the hint's document parses as valid IR JSON");
+        let resolver = common::query_ir::InMemoryResolver::new()
+            .with_attribute(
+                "metrics",
+                "metric.name",
+                "resource_attributes",
+                common::query_ir::ValueType::String,
+                None,
+            )
+            .with_physical_name("metrics", "count");
+        common::query_ir::validate(&parsed, &SourceRegistry::core(), &resolver).expect(
+            "the hint must suggest a query that validates on a source with a physical 'count' column",
+        );
     }
 
     /// Run `f` under a scoped tracing→OTel bridge and return the finished
