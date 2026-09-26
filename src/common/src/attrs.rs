@@ -21,6 +21,7 @@ use tracing::warn;
 
 use crate::schema::typed_attributes::residue_column;
 
+pub mod expr;
 pub mod typed;
 
 /// One row's attributes, decoded but not yet rendered to strings.
