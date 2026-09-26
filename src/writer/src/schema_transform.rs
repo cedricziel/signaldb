@@ -38,6 +38,11 @@ pub struct FlightMetadata {
     /// W3C trace context of the sending service, for distributed tracing
     pub traceparent: Option<String>,
     pub tracestate: Option<String>,
+    /// The acceptor WAL entry uuid this `do_put` carries data for, one id per
+    /// `do_put` (issue #1734). Used to dedup a resend that reaches this
+    /// writer again; absent for acceptors that predate this field, which get
+    /// today's non-deduped behavior.
+    pub ingest_id: Option<uuid::Uuid>,
 }
 
 /// Extract all metadata from Flight metadata bytes
@@ -85,6 +90,23 @@ pub fn extract_flight_metadata(metadata: &[u8]) -> Result<FlightMetadata> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    // A present-but-unparseable ingest_id is the sender's fault and recurs
+    // identically on every retry (same rationale as the other metadata
+    // fields here) -- reject rather than silently treat it as absent, which
+    // would revert to non-deduped behavior without telling anyone.
+    let ingest_id = match metadata_json.get("ingest_id") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => {
+            let s = v
+                .as_str()
+                .ok_or_else(|| anyhow!("ingest_id must be a string"))?;
+            Some(
+                uuid::Uuid::parse_str(s)
+                    .map_err(|e| anyhow!("Invalid ingest_id in metadata: {}", e))?,
+            )
+        }
+    };
+
     Ok(FlightMetadata {
         schema_version,
         signal_type,
@@ -93,6 +115,7 @@ pub fn extract_flight_metadata(metadata: &[u8]) -> Result<FlightMetadata> {
         dataset_id,
         traceparent,
         tracestate,
+        ingest_id,
     })
 }
 

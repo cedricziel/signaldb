@@ -2143,6 +2143,15 @@ pub struct WriterConfig {
     /// pending and are retried next cycle, never dead-lettered.
     #[serde(with = "humantime_serde")]
     pub group_commit_timeout: Duration,
+    /// How long an ingest id (the acceptor WAL entry uuid carried in
+    /// `do_put`'s `app_metadata`) is remembered so a resend that reaches
+    /// this writer again is deduped instead of re-inserted (issue #1734
+    /// step 2). Sized for roughly one writer restart plus the acceptor's
+    /// retry horizon, not for long-term storage: the cache is in-memory
+    /// only, rebuilt at startup from ingest ids still present in this
+    /// writer's own WAL entries within the window.
+    #[serde(with = "humantime_serde")]
+    pub ingest_dedup_window: Duration,
 }
 
 impl WriterConfig {
@@ -2173,6 +2182,9 @@ impl Default for WriterConfig {
             // under normal contention, short enough that a genuinely stalled
             // dependency does not hold up a whole drain cycle indefinitely.
             group_commit_timeout: Duration::from_secs(120),
+            // 1h: roughly 43k ids / a few MB at hive's rate (see #1734's
+            // design comment), comfortably longer than a writer restart.
+            ingest_dedup_window: Duration::from_secs(3600),
         }
     }
 }

@@ -338,6 +338,7 @@ table_reconcile_interval = "5m"      # How often to re-run the signal-table reco
 wal_marker_retention = "30d"         # How long ANOTHER writer id's WAL idempotency marker is kept on a table; "0s" disables retirement
 max_drain_bytes_per_cycle = 268435456 # 256 MiB. Byte budget per WAL per drain cycle, oldest entries first; 0 disables it
 group_commit_timeout = "120s"        # Wall-clock budget for one group's commit attempt; expiry is a transient failure, never dead-lettered
+ingest_dedup_window = "1h"           # How long an ingest id from do_put's app_metadata is deduped against; in-memory, rebuilt from WAL at startup
 ```
 
 The writer commits ingested data to Iceberg asynchronously via its background
@@ -383,6 +384,17 @@ commit forever, stalling the whole drain cycle and every `do_action("flush")`
 call. Expiry is a transient commit failure like any other catalog/object-store
 outage: the group's entries stay pending and retry next cycle, never
 dead-lettered.
+
+`do_put`'s `app_metadata` carries an `ingest_id` (the acceptor WAL entry uuid;
+absent for pre-#1734 acceptors, which get today's non-deduped behavior). The
+writer keeps an in-memory cache of ingest ids seen within `ingest_dedup_window`
+and, on a repeat, marks that put's freshly appended WAL entries processed
+immediately instead of letting the background loop commit them again —
+counted in `signaldb.writer.ingest_duplicates_dropped`. The cache is rebuilt
+at startup from ingest ids still present in this writer's own WAL entries
+within the window, so a restart does not reopen a window an acceptor retry
+could exploit; an entry pruned from the WAL before the window elapses is a
+known gap in that rebuild.
 
 ### MCP (Model Context Protocol server)
 
