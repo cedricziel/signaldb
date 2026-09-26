@@ -1634,9 +1634,7 @@ impl From<IcebergConfig> for SchemaConfig {
         Self {
             catalog_type: iceberg_config.catalog_type, // Preserve original catalog_type
             catalog_uri: iceberg_config.catalog_uri,
-            default_schemas: DefaultSchemas::default(),
-            materialized_labels: MaterializedLabels::default(),
-            attribute_types: Vec::new(),
+            ..Default::default()
         }
     }
 }
@@ -3724,9 +3722,7 @@ mod tests {
             schema: Some(SchemaConfig {
                 catalog_type: "memory".to_string(),
                 catalog_uri: "memory://tenant".to_string(),
-                default_schemas: DefaultSchemas::default(),
-                materialized_labels: Default::default(),
-                attribute_types: Default::default(),
+                ..Default::default()
             }),
             custom_schemas: Some({
                 let mut schemas = HashMap::new();

@@ -194,9 +194,7 @@ async fn test_iceberg_namespace_slug_based() -> Result<()> {
         schema: SchemaConfig {
             catalog_type: "sql".to_string(),
             catalog_uri: "sqlite::memory:".to_string(),
-            default_schemas: Default::default(),
-            materialized_labels: Default::default(),
-            attribute_types: Default::default(),
+            ..Default::default()
         },
         storage: StorageConfig {
             dsn: "memory://".to_string(),
@@ -263,9 +261,7 @@ async fn test_created_tables_enable_metadata_pruning() -> Result<()> {
         schema: SchemaConfig {
             catalog_type: "sql".to_string(),
             catalog_uri: "sqlite::memory:".to_string(),
-            default_schemas: Default::default(),
-            materialized_labels: Default::default(),
-            attribute_types: Default::default(),
+            ..Default::default()
         },
         storage: StorageConfig {
             dsn: "memory://".to_string(),
@@ -337,9 +333,7 @@ async fn test_metadata_pruning_reclaims_old_metadata_files() -> Result<()> {
         schema: SchemaConfig {
             catalog_type: "sql".to_string(),
             catalog_uri: "sqlite::memory:".to_string(),
-            default_schemas: Default::default(),
-            materialized_labels: Default::default(),
-            attribute_types: Default::default(),
+            ..Default::default()
         },
         storage: StorageConfig {
             dsn: format!("file://{}", storage_dir.display()),
@@ -423,9 +417,7 @@ async fn test_partition_spec_roundtrip() -> Result<()> {
         schema: SchemaConfig {
             catalog_type: "sql".to_string(),
             catalog_uri: "sqlite::memory:".to_string(),
-            default_schemas: Default::default(),
-            materialized_labels: Default::default(),
-            attribute_types: Default::default(),
+            ..Default::default()
         },
         storage: StorageConfig {
             dsn: "memory://".to_string(),
@@ -513,9 +505,7 @@ async fn test_write_and_query_with_slugs() -> Result<()> {
         schema: SchemaConfig {
             catalog_type: "sql".to_string(),
             catalog_uri: format!("sqlite://{}", catalog_path.display()),
-            default_schemas: Default::default(),
-            materialized_labels: Default::default(),
-            attribute_types: Default::default(),
+            ..Default::default()
         },
         storage: StorageConfig {
             dsn: format!("file://{}", storage_path.display()),
