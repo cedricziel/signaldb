@@ -77,6 +77,7 @@ compat endpoint.
 
 - Test Driven Development: write tests before implementing features; all tests pass before committing
 - Use testcontainers for integration tests involving external services
+- UI pages: every new page (a routed view) ships with a Storybook page story — `Pages/<Name>`, with at least a light `Default` and a `Dark` story, fixtures derived from each request's own range — and is registered for design-sync: a `PAGES` line in `.design-sync/pkg/build.sh` plus `titleMap`/`overrides` entries in `.design-sync/config.json` (see `.design-sync/NOTES.md`)
 - Rust coding standards: `docs/contributing/rust.md` (read it when writing or reviewing Rust)
 - Delegate implementation to the `coder` subagent (`.claude/agents/coder.md`, model sonnet): any scoped "write/change code and make it pass" task — feature, fix, refactor, test. The orchestrating session plans, reviews the result (`rust-code-reviewer` for Rust), and integrates. Keep investigation, architecture, and gnarly debugging out of it (route those to `model: fable`). The task prompt must state the acceptance test, files in scope, and whether to push — a prompt checklist overrides inherited rules, so keep it complete or omit it.
 

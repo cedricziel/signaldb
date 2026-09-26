@@ -115,6 +115,21 @@ pnpm run grafana:build           # Production build
 pnpm -C src/grafana-plugin run build:backend   # Rust backend
 ```
 
+## Explore UI
+
+```bash
+pnpm ui:dev                                   # Vite dev server (see src/ui/README.md)
+pnpm ui:test                                  # vitest
+pnpm --filter signaldb-ui lint
+pnpm --filter signaldb-ui build-storybook     # page/component stories
+```
+
+Every new page (a routed view) ships with a `Pages/<Name>` Storybook story —
+a light `Default` and a `Dark` story, fixtures derived from each request's own
+range — and a design-sync entry: a `PAGES` line in `.design-sync/pkg/build.sh`
+plus `titleMap`/`overrides` in `.design-sync/config.json`
+(`.design-sync/NOTES.md` has the details).
+
 ## Health Checks
 
 ```bash

@@ -343,7 +343,7 @@ function KpiSparkCard({
   return (
     <div className="overview-kpi">
       <div className="overview-kpi-top">
-        <span className="nav-section-label overview-kpi-label">
+        <span className="overview-label overview-kpi-label">
           {figure.label}
         </span>
         {figure.change && (
@@ -401,7 +401,7 @@ function ServicesCard({
   return (
     <div className="overview-kpi">
       <div className="overview-kpi-top">
-        <span className="nav-section-label">Services</span>
+        <span className="overview-label">Services</span>
         <Link className="overview-kpi-link" to={viewHref("/catalog", state)}>
           Catalog
         </Link>
@@ -748,13 +748,13 @@ function SlowestCard({
           aria-label="Slowest endpoints"
         >
           <div className="overview-slowest-head" role="row">
-            <span role="columnheader" className="nav-section-label">
+            <span role="columnheader" className="overview-label">
               Endpoint
             </span>
-            <span role="columnheader" className="nav-section-label num">
+            <span role="columnheader" className="overview-label num">
               P95 ↓
             </span>
-            <span role="columnheader" className="nav-section-label num">
+            <span role="columnheader" className="overview-label num">
               P99
             </span>
           </div>

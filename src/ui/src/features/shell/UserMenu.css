@@ -3,7 +3,7 @@
 .user-menu {
   position: relative;
   display: inline-block;
-  /* TopBar.tsx already renders a `flex: 1` spacer before Manage/UserMenu;
+  /* The `topbar` variant sat after a `flex: 1` spacer in the old top bar;
      this pins the pair to the right edge even when `.topbar` wraps to a
      second row at narrow widths, so the popover below has a stable right
      edge to anchor from. */

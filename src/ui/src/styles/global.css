@@ -50,8 +50,8 @@
   --bg-inset: rgba(127, 127, 127, 0.08);
   --mono:
     ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas,
-    monospace;
-  --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    monospace; /* @kind font */
+  --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; /* @kind font */
   /* Shared horizontal inset for every view-level toolbar and pane. Use
      --gutter-sm only for a bar that's genuinely compact (e.g. the app's own
      single-row top bar), not as a per-feature alternative to --gutter. */
