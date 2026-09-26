@@ -259,6 +259,23 @@ impl IcebergTableManager {
         table_name: &str,
         labels: &crate::config::MaterializedLabels,
     ) -> Result<Table> {
+        self.ensure_table_with_warm_index(tenant_slug, dataset_slug, table_name, labels, None)
+            .await
+    }
+
+    /// Like [`Self::ensure_table`], additionally opting a brand-new table
+    /// into the warm containment index when `warm_index` is `Some`. Only
+    /// affects table *creation*: an already-existing table is loaded and
+    /// reconciled exactly as [`Self::ensure_table`] does, since evolving a
+    /// live table's derived columns is out of scope (task 4.3).
+    pub async fn ensure_table_with_warm_index(
+        &self,
+        tenant_slug: &str,
+        dataset_slug: &str,
+        table_name: &str,
+        labels: &crate::config::MaterializedLabels,
+        warm_index: Option<crate::config::WarmIndexConfig>,
+    ) -> Result<Table> {
         let ident = names::build_table_identifier(tenant_slug, dataset_slug, table_name);
         if let Ok(tabular) = self.catalog.clone().load_tabular(&ident).await {
             let table = match tabular {
@@ -310,7 +327,8 @@ impl IcebergTableManager {
         // in every data file's manifest entry, and no query compares these
         // columns by range, so they are permanent cost for no pruning. Every
         // other column keeps iceberg-rust's default `truncate(16)`.
-        let schema = table_schema.schema_with_labels(labels)?;
+        let schema =
+            table_schema.schema_with_labels_and_warm_index(labels, warm_index.is_some())?;
         let column_names: Vec<String> = schema
             .fields()
             .iter()
@@ -358,6 +376,15 @@ impl IcebergTableManager {
             bloom_properties.into_iter().collect();
         properties.extend(metrics_properties);
         properties.extend(crate::schema::compression_properties());
+        // Only set when the schema actually gained the column: a legacy
+        // version silently drops the request (see `DerivedColumns::warm_index`).
+        if let Some(cfg) = &warm_index
+            && column_names
+                .iter()
+                .any(|name| name == crate::attrs::warm_index::WARM_INDEX_COLUMN)
+        {
+            properties.extend(crate::schema::warm_index_properties(cfg));
+        }
         properties.insert(DELETE_AFTER_COMMIT_KEY.to_string(), "true".to_string());
         properties.insert(
             PREVIOUS_VERSIONS_MAX_KEY.to_string(),

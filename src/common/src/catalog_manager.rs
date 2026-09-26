@@ -223,14 +223,21 @@ impl CatalogManager {
         table_name: &str,
     ) -> Result<iceberg_rust::table::Table> {
         let (tenant_slug, dataset_slug) = self.slugs(tenant_id, dataset_id);
-        // Per-tenant materialized-label allowlists: a tenant schema
-        // override replaces the global set wholesale.
-        let labels = self
-            .config
-            .get_tenant_schema_config(tenant_id)
-            .materialized_labels;
+        // Per-tenant materialized-label allowlists (and warm-index config): a
+        // tenant schema override replaces the global set wholesale.
+        let schema_config = self.config.get_tenant_schema_config(tenant_id);
+        let warm_index = crate::iceberg::schemas::TableSchema::from_table_name(table_name)
+            .and_then(|table| table.attribute_type_signal())
+            .filter(|signal| schema_config.warm_index.applies_to(*signal, dataset_id))
+            .map(|_| schema_config.warm_index.clone());
         self.table_manager
-            .ensure_table(&tenant_slug, &dataset_slug, table_name, &labels)
+            .ensure_table_with_warm_index(
+                &tenant_slug,
+                &dataset_slug,
+                table_name,
+                &schema_config.materialized_labels,
+                warm_index,
+            )
             .await
     }
 
