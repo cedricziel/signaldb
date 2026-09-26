@@ -43,6 +43,19 @@ pub fn is_typed_layout<'a>(field_names: impl IntoIterator<Item = &'a str>) -> bo
     field_names.into_iter().any(|name| name.ends_with(&suffix))
 }
 
+/// Whether `container` is stored in the typed layout among `field_names` —
+/// its residue column is present, rather than `container` itself being a
+/// single legacy map column. `field_names` is generic over whatever a
+/// caller already has on hand: an Arrow `Schema`'s field names, or a plain
+/// list of scanned column names.
+pub fn has_typed_container<'a>(
+    field_names: impl IntoIterator<Item = &'a str>,
+    container: &str,
+) -> bool {
+    let residue = residue_column(container);
+    field_names.into_iter().any(|name| name == residue)
+}
+
 /// The `schemas.toml` field type that declares a container in the typed
 /// layout; the parser expands it into [`typed_fields`].
 pub const TYPED_ATTRIBUTES_TYPE: &str = "typed_attributes";
@@ -99,6 +112,18 @@ mod tests {
         assert!(!is_typed_layout(["log_attributes", "label_http_method"]));
         assert!(is_typed_layout(
             typed_columns("span_attributes").iter().map(String::as_str)
+        ));
+    }
+
+    #[test]
+    fn has_typed_container_checks_for_the_residue_column() {
+        assert!(has_typed_container(
+            ["trace_id", "span_attributes_residue"],
+            "span_attributes"
+        ));
+        assert!(!has_typed_container(
+            ["trace_id", "span_attributes"],
+            "span_attributes"
         ));
     }
 

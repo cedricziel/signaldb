@@ -30,6 +30,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
+use common::attrs::expr::typed_compat_attr_expr;
 use common::profile::aggregate_profiles_to_flamegraph;
 use common::query_ir::{
     Aggregate, ComparisonOp, Correlate, CorrelateTarget, Document, Extract, FieldResolver, Heatmap,
@@ -38,6 +39,7 @@ use common::query_ir::{
     validate,
 };
 use common::schema::logical::{Filterability, LogicalSchema, LogicalType};
+use common::schema::typed_attributes::has_typed_container;
 use datafusion::arrow::array::{
     Array, BooleanArray, Float64Array, LargeStringArray, StringArray, StringBuilder,
     StringViewArray, TimestampNanosecondArray,
@@ -2723,25 +2725,44 @@ impl Lowering<'_> {
         // when the same key exists at both scopes.
         if let Some((container, bare)) = self.qualified_attr(key) {
             let container = format!("{prefix}{container}");
-            return if self.schema_cols.iter().any(|s| s == &container) {
-                get_field(ident(container), bare)
-            } else {
-                lit(ScalarValue::Utf8(None))
-            };
+            return self.attr_expr_for_container(&container, bare);
         }
         let mut parts: Vec<Expr> = self
             .source
             .containers
             .iter()
             .map(|c| format!("{prefix}{c}"))
-            .filter(|c| self.schema_cols.iter().any(|s| s == c))
-            .map(|c| get_field(ident(c), key))
+            .filter(|c| self.schema_cols.iter().any(|s| s == c) || self.is_typed_container(c))
+            .map(|c| self.attr_expr_for_container(&c, key))
             .collect();
         match parts.len() {
             0 => lit(ScalarValue::Utf8(None)),
             1 => parts.remove(0),
             _ => coalesce(parts),
         }
+    }
+
+    /// Read `key` from `container_col` (already prefixed for the parent
+    /// side, if applicable): the legacy `get_field` extraction when the
+    /// scanned schema still has `container_col` as a single map column, the
+    /// typed-layout coalesce (`typed_compat_attr_expr`) when it's been
+    /// rewritten onto the typed layout instead, or a NULL literal when
+    /// neither is present (a qualifier for a container this source/schema
+    /// doesn't have).
+    fn attr_expr_for_container(&self, container_col: &str, key: &str) -> Expr {
+        if self.schema_cols.iter().any(|s| s == container_col) {
+            get_field(ident(container_col), key)
+        } else if self.is_typed_container(container_col) {
+            typed_compat_attr_expr(container_col, key)
+        } else {
+            lit(ScalarValue::Utf8(None))
+        }
+    }
+
+    /// Whether `container_col` is on the typed layout in the scanned
+    /// schema — its residue column is present among `schema_cols`.
+    fn is_typed_container(&self, container_col: &str) -> bool {
+        has_typed_container(self.schema_cols.iter().map(String::as_str), container_col)
     }
 
     /// Read a [`Resolved::PromotedColumn`]: `name` may still be NULL in a
@@ -3687,9 +3708,27 @@ mod tests {
         Arc::new(b.finish())
     }
 
+    /// Registers one `(schema, batch)` as `table_name` under catalog `t`,
+    /// schema `d` — the common tail of every single-table fixture below.
+    fn single_table_ctx(
+        table_name: &str,
+        schema: Arc<Schema>,
+        batch: RecordBatch,
+    ) -> SessionContext {
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table(table_name.to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
     /// A logs table with a promoted `severity_number` column, a `label_env`
     /// materialized column, and a `log_attributes` map.
-    fn logs_ctx() -> SessionContext {
+    fn logs_batch() -> (Arc<Schema>, RecordBatch) {
         let schema = Arc::new(Schema::new(vec![
             Field::new(
                 "timestamp",
@@ -3787,15 +3826,28 @@ mod tests {
         )
         .unwrap();
 
-        let ctx = SessionContext::new();
-        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
-        let sp = Arc::new(MemorySchemaProvider::new());
-        sp.register_table("logs".to_string(), Arc::new(table))
-            .unwrap();
-        let cat = Arc::new(MemoryCatalogProvider::new());
-        cat.register_schema("d", sp).unwrap();
-        ctx.register_catalog("t", cat);
-        ctx
+        (schema, batch)
+    }
+
+    fn logs_ctx() -> SessionContext {
+        let (schema, batch) = logs_batch();
+        single_table_ctx("logs", schema, batch)
+    }
+
+    /// The typed-layout counterpart of [`logs_ctx`]: the identical rows,
+    /// but `log_attributes`/`resource_attributes`/`scope_attributes` are
+    /// rewritten onto their five typed columns each (`logs` `physical-v4`)
+    /// via [`common::testing::to_typed_layout`] instead of duplicating the
+    /// row data.
+    fn logs_ctx_typed() -> SessionContext {
+        let (_, batch) = logs_batch();
+        let batch = common::testing::to_typed_layout(
+            "logs",
+            "physical-v4",
+            &batch,
+            &["log_attributes", "resource_attributes", "scope_attributes"],
+        );
+        single_table_ctx("logs", batch.schema(), batch.clone())
     }
 
     fn profiles_ctx() -> SessionContext {
@@ -5880,6 +5932,113 @@ mod tests {
         }
     }
 
+    /// IR-1: `plan_document`'s compat attribute reads return identical rows
+    /// whether a source's attribute containers are the legacy
+    /// `Map<Utf8,Utf8>` layout ([`logs_ctx`]) or the typed layout
+    /// ([`logs_ctx_typed`]) — `eq`, `regex`, `exists`, and a
+    /// container-qualified field.
+    #[tokio::test]
+    async fn typed_layout_logs_attribute_reads_match_legacy_layout() {
+        async fn trace_ids(ctx: SessionContext, d: &Document) -> Vec<Option<String>> {
+            let svc = IrService::new(ctx);
+            let (df, _) = svc
+                .plan(d, "t", "d", 0)
+                .await
+                .unwrap()
+                .expect("source table is registered");
+            let mut ids = column_values(df, "trace_id").await;
+            ids.sort();
+            ids
+        }
+
+        let docs = [
+            doc(serde_json::json!({
+                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "rows", "fields": ["trace_id"],
+                "pipeline": [{ "where": { "field": "deployment.environment", "op": "eq", "value": "prod" } }]
+            })),
+            doc(serde_json::json!({
+                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "rows", "fields": ["trace_id"],
+                "pipeline": [{ "where": { "field": "deployment.environment", "op": "regex", "value": "^pro" } }]
+            })),
+            doc(serde_json::json!({
+                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "rows", "fields": ["trace_id"],
+                "pipeline": [{ "where": { "field": "deployment.environment", "op": "exists" } }]
+            })),
+            doc(serde_json::json!({
+                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "rows", "fields": ["trace_id"],
+                "pipeline": [{ "where": {
+                    "field": "resource.deployment.environment", "op": "eq", "value": "resource-prod"
+                } }]
+            })),
+        ];
+
+        for (i, d) in docs.iter().enumerate() {
+            let legacy = trace_ids(logs_ctx(), d).await;
+            let typed = trace_ids(logs_ctx_typed(), d).await;
+            assert_eq!(
+                typed, legacy,
+                "case {i}: typed vs legacy trace_id rows differ"
+            );
+        }
+    }
+
+    /// IR-1's unqualified (coalescing) case, over an aggregate rather than a
+    /// `rows` result: grouping by `otel.scope.flavor` groups and counts
+    /// identically on the typed layout.
+    #[tokio::test]
+    async fn typed_layout_logs_group_by_scope_attribute_matches_legacy_layout() {
+        async fn groups(ctx: SessionContext, d: &Document) -> Vec<(Option<String>, i64)> {
+            let svc = IrService::new(ctx);
+            let (df, _) = svc
+                .plan(d, "t", "d", 0)
+                .await
+                .unwrap()
+                .expect("source table is registered");
+            let batches = df.collect().await.unwrap();
+            let mut out = Vec::new();
+            for b in &batches {
+                let keys = b
+                    .column_by_name(&safe_ident("otel.scope.flavor"))
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<StringArray>()
+                    .unwrap();
+                let ns = b
+                    .column_by_name("n")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap();
+                for i in 0..b.num_rows() {
+                    out.push((
+                        (!keys.is_null(i)).then(|| keys.value(i).to_string()),
+                        ns.value(i),
+                    ));
+                }
+            }
+            out.sort();
+            out
+        }
+
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [
+                { "aggregate": { "by": ["otel.scope.flavor"], "aggs": [{ "fn": "count", "as": "n" }] } }
+            ]
+        }));
+        let legacy = groups(logs_ctx(), &d).await;
+        let typed = groups(logs_ctx_typed(), &d).await;
+        assert_eq!(
+            typed, legacy,
+            "typed vs legacy scope-attribute groups differ"
+        );
+    }
+
     /// Widening the row defaults must not open a back door to physical
     /// addressing: the server chooses the default projection, but a client
     /// still cannot name a storage column. Containers reach the client only
@@ -7121,7 +7280,7 @@ mod tests {
 
     /// One trace: root `r0` (`span.http.route = "/checkout"`) calls child
     /// `c0`. For the `parent.span.<key>` attribute-scope test.
-    fn correlate_attrs_ctx() -> SessionContext {
+    fn correlate_attrs_batch() -> (Arc<Schema>, RecordBatch) {
         let schema = Arc::new(Schema::new(vec![
             Field::new("trace_id", DataType::Utf8, false),
             Field::new("span_id", DataType::Utf8, false),
@@ -7146,15 +7305,69 @@ mod tests {
             ],
         )
         .unwrap();
-        let ctx = SessionContext::new();
-        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
-        let sp = Arc::new(MemorySchemaProvider::new());
-        sp.register_table("traces".to_string(), Arc::new(table))
-            .unwrap();
-        let cat = Arc::new(MemoryCatalogProvider::new());
-        cat.register_schema("d", sp).unwrap();
-        ctx.register_catalog("t", cat);
-        ctx
+        (schema, batch)
+    }
+
+    fn correlate_attrs_ctx() -> SessionContext {
+        let (schema, batch) = correlate_attrs_batch();
+        single_table_ctx("traces", schema, batch)
+    }
+
+    /// The typed-layout counterpart of [`correlate_attrs_ctx`]: the
+    /// identical rows, but `span_attributes` is rewritten onto its five
+    /// typed columns (`traces` `physical-v5`) — proves a `parent.`-scoped
+    /// correlate read matches identically over either layout, since the
+    /// join renames the typed home columns exactly as it does a legacy
+    /// container.
+    fn correlate_attrs_ctx_typed() -> SessionContext {
+        let (_, batch) = correlate_attrs_batch();
+        let batch =
+            common::testing::to_typed_layout("traces", "physical-v5", &batch, &["span_attributes"]);
+        single_table_ctx("traces", batch.schema(), batch.clone())
+    }
+
+    /// IR-1: a `parent.span.<key>` correlate read matches identically
+    /// whether `span_attributes` is the legacy layout ([`group_by_parent_attribute_scope`])
+    /// or the typed layout.
+    #[tokio::test]
+    async fn group_by_parent_attribute_scope_matches_over_the_typed_layout() {
+        let svc = IrService::new(correlate_attrs_ctx_typed());
+        let d = doc(serde_json::json!({
+            "irVersion": 8, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [
+                { "correlate": { "to": "parent", "kind": "inner" } },
+                { "aggregate": {
+                    "by": ["parent.span.http.route"],
+                    "aggs": [{ "fn": "count", "as": "n" }]
+                } }
+            ]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let batches = df.collect().await.unwrap();
+        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total, 1, "one distinct parent route");
+        let batch = &batches[0];
+        let route = batch
+            .column_by_name("parent_span_http_route")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0);
+        assert_eq!(route, "/checkout");
+        let n = batch
+            .column_by_name("n")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .unwrap()
+            .value(0);
+        assert_eq!(n, 1);
     }
 
     #[tokio::test]
