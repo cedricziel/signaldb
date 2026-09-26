@@ -230,8 +230,8 @@ mod tests {
     use axum::http::{Request, header};
     use common::catalog::{Catalog, MembershipRole};
     use common::config::{
-        ApiKeyConfig, AuthConfig, Configuration, DefaultSchemas, SchemaConfig, TenantConfig,
-        TenantSchemaConfig, TenantsConfig,
+        ApiKeyConfig, AuthConfig, Configuration, SchemaConfig, TenantConfig, TenantSchemaConfig,
+        TenantsConfig,
     };
     use common::tenant_api::TenantApi;
     use std::collections::HashMap;
@@ -245,9 +245,7 @@ mod tests {
             schema: Some(SchemaConfig {
                 catalog_type: "memory".to_string(),
                 catalog_uri: "memory://test".to_string(),
-                default_schemas: DefaultSchemas::default(),
-                materialized_labels: Default::default(),
-                attribute_types: Default::default(),
+                ..Default::default()
             }),
             ..TenantSchemaConfig::default()
         };

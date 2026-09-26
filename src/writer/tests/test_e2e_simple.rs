@@ -1,6 +1,6 @@
 use anyhow::Result;
 use common::CatalogManager;
-use common::config::{Configuration, DefaultSchemas, SchemaConfig, StorageConfig};
+use common::config::{Configuration, SchemaConfig, StorageConfig};
 use datafusion::arrow::array::{
     Date32Array, Float64Array, Int32Array, RecordBatch, StringArray, TimestampNanosecondArray,
 };
@@ -25,15 +25,7 @@ fn create_simple_test_config() -> Configuration {
         schema: SchemaConfig {
             catalog_type: "sql".to_string(),
             catalog_uri: "sqlite::memory:".to_string(),
-            default_schemas: DefaultSchemas {
-                traces_enabled: true,
-                logs_enabled: true,
-                metrics_enabled: true,
-                profiles_enabled: true,
-                custom_schemas: Default::default(),
-            },
-            materialized_labels: Default::default(),
-            attribute_types: Default::default(),
+            ..Default::default()
         },
         storage: StorageConfig {
             dsn: "memory://".to_string(),

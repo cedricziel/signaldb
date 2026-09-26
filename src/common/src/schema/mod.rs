@@ -608,7 +608,7 @@ impl TenantSchemaRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{DefaultSchemas, SchemaConfig, TenantSchemaConfig, TenantsConfig};
+    use crate::config::{SchemaConfig, TenantSchemaConfig, TenantsConfig};
     use std::collections::HashMap;
 
     /// A point-lookup filter must be sized for point lookups: Parquet's default
@@ -1089,9 +1089,7 @@ type = "int64"
             schema: Some(SchemaConfig {
                 catalog_type: "memory".to_string(),
                 catalog_uri: "memory://".to_string(),
-                default_schemas: DefaultSchemas::default(),
-                materialized_labels: Default::default(),
-                attribute_types: Default::default(),
+                ..Default::default()
             }),
             custom_schemas: Some({
                 let mut schemas = HashMap::new();
@@ -1149,9 +1147,7 @@ type = "int64"
             schema: Some(SchemaConfig {
                 catalog_type: "memory".to_string(),
                 catalog_uri: "memory://".to_string(),
-                default_schemas: DefaultSchemas::default(),
-                materialized_labels: Default::default(),
-                attribute_types: Default::default(),
+                ..Default::default()
             }),
             ..Default::default()
         };

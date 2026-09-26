@@ -26,7 +26,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::CatalogManager;
-use common::config::{Configuration, DefaultSchemas, SchemaConfig, StorageConfig};
+use common::config::{Configuration, SchemaConfig, StorageConfig};
 use common::iceberg::sort::{canonical_sort_columns, sort_batch_by};
 use common::schema::resource_identity::resource_identity_from_json;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
@@ -51,15 +51,7 @@ fn create_benchmark_config() -> Configuration {
         schema: SchemaConfig {
             catalog_type: "memory".to_string(),
             catalog_uri: "memory://".to_string(),
-            default_schemas: DefaultSchemas {
-                traces_enabled: true,
-                logs_enabled: true,
-                metrics_enabled: true,
-                profiles_enabled: true,
-                custom_schemas: Default::default(),
-            },
-            materialized_labels: Default::default(),
-            attribute_types: Default::default(),
+            ..Default::default()
         },
         storage: StorageConfig {
             dsn: "memory://".to_string(),

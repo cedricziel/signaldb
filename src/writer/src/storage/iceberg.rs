@@ -1427,9 +1427,7 @@ mod tests {
             schema: SchemaConfig {
                 catalog_type: "memory".to_string(),
                 catalog_uri: "memory://".to_string(),
-                default_schemas: Default::default(),
-                materialized_labels: Default::default(),
-                attribute_types: Default::default(),
+                ..Default::default()
             },
             storage: StorageConfig {
                 dsn: "memory://".to_string(),
@@ -1572,12 +1570,11 @@ mod tests {
             schema: SchemaConfig {
                 catalog_type: "memory".to_string(),
                 catalog_uri: "memory://".to_string(),
-                default_schemas: Default::default(),
                 materialized_labels: common::config::MaterializedLabels {
                     logs: vec!["http_method".to_string()],
                     ..Default::default()
                 },
-                attribute_types: Default::default(),
+                ..Default::default()
             },
             storage: StorageConfig {
                 dsn: "memory://".to_string(),
@@ -1657,12 +1654,11 @@ mod tests {
             schema: SchemaConfig {
                 catalog_type: "memory".to_string(),
                 catalog_uri: "memory://".to_string(),
-                default_schemas: Default::default(),
                 materialized_labels: common::config::MaterializedLabels {
                     logs: vec!["http_method".to_string()],
                     ..Default::default()
                 },
-                attribute_types: Default::default(),
+                ..Default::default()
             },
             storage: StorageConfig {
                 dsn: "memory://".to_string(),
@@ -1796,12 +1792,11 @@ mod tests {
             schema: SchemaConfig {
                 catalog_type: "memory".to_string(),
                 catalog_uri: "memory://".to_string(),
-                default_schemas: Default::default(),
                 materialized_labels: common::config::MaterializedLabels {
                     logs: vec!["http_method".to_string()],
                     ..Default::default()
                 },
-                attribute_types: Default::default(),
+                ..Default::default()
             },
             storage: StorageConfig {
                 dsn: "memory://".to_string(),

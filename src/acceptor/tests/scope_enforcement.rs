@@ -70,9 +70,7 @@ async fn setup_scoped_app() -> (axum::Router, TempDir) {
     config.schema = common::config::SchemaConfig {
         catalog_type: "sql".to_string(),
         catalog_uri: catalog_dsn,
-        default_schemas: common::config::DefaultSchemas::default(),
-        materialized_labels: Default::default(),
-        attribute_types: Default::default(),
+        ..Default::default()
     };
     // No config.auth.tenants: the scoped key only exists in the catalog
     // (config-based keys have no scopes — see common::config::ApiKeyConfig),

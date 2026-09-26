@@ -24,8 +24,8 @@ use common::CatalogManager;
 use common::auth::{TenantContext, TenantSource};
 use common::catalog::Catalog;
 use common::config::{
-    ApiKeyConfig, AuthConfig, Configuration, DatasetConfig, DefaultSchemas, SchemaConfig,
-    StorageConfig, TenantConfig, WriterConfig,
+    ApiKeyConfig, AuthConfig, Configuration, DatasetConfig, SchemaConfig, StorageConfig,
+    TenantConfig, WriterConfig,
 };
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
@@ -152,9 +152,7 @@ async fn setup_services() -> TestServices {
     config.schema = SchemaConfig {
         catalog_type: "sql".to_string(),
         catalog_uri: format!("sqlite://{}", iceberg_catalog_db_path.display()),
-        default_schemas: DefaultSchemas::default(),
-        materialized_labels: Default::default(),
-        attribute_types: Default::default(),
+        ..Default::default()
     };
     config.storage = StorageConfig {
         dsn: storage_dsn.clone(),

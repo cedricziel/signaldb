@@ -423,9 +423,7 @@ mod tests {
             schema: Some(SchemaConfig {
                 catalog_type: "memory".to_string(),
                 catalog_uri: "memory://".to_string(),
-                default_schemas: crate::config::DefaultSchemas::default(),
-                materialized_labels: Default::default(),
-                attribute_types: Default::default(),
+                ..Default::default()
             }),
             ..Default::default()
         };

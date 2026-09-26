@@ -142,9 +142,7 @@ async fn setup_profiles_test() -> (axum::Router, Arc<WalManager>, TempDir) {
     config.schema = common::config::SchemaConfig {
         catalog_type: "sql".to_string(),
         catalog_uri: catalog_dsn,
-        default_schemas: common::config::DefaultSchemas::default(),
-        materialized_labels: Default::default(),
-        attribute_types: Default::default(),
+        ..Default::default()
     };
 
     config.auth = common::config::AuthConfig {
