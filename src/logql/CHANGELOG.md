@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.4](https://github.com/cedricziel/signaldb/compare/logql-parser-v0.1.3...logql-parser-v0.1.4) (2026-09-26)
+
+
+### Features
+
+* **logs:** filter on an attribute's real dotted key from the explore UI ([#1594](https://github.com/cedricziel/signaldb/issues/1594)) ([523633b](https://github.com/cedricziel/signaldb/commit/523633b43096658ff884886134753e783500e1e6))
+
 ## [0.1.3](https://github.com/cedricziel/signaldb/compare/logql-parser-v0.1.2...logql-parser-v0.1.3) (2026-08-26)
 
 
