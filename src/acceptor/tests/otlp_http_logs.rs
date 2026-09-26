@@ -86,6 +86,7 @@ async fn setup_logs_test() -> (axum::Router, Arc<WalManager>, TempDir) {
         catalog_uri: catalog_dsn,
         default_schemas: common::config::DefaultSchemas::default(),
         materialized_labels: Default::default(),
+        attribute_types: Default::default(),
     };
 
     config.auth = common::config::AuthConfig {

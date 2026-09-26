@@ -168,3 +168,68 @@ async fn establish_rejects_fields_without_a_level() {
         common::schema::type_authority::StoreError::NoLevel
     ));
 }
+
+/// A config override is the one path that may retype an already-established
+/// row, and does so permanently: a later observed establish must not undo it.
+#[tokio::test]
+async fn override_retypes_an_established_row_and_stays_monotonic_afterward() {
+    let catalog = catalog().await;
+    let f = field("logs", Some(AttributeLevel::Record), "retry.count");
+
+    let established = catalog
+        .establish_attribute_type("t", "d", &f, observed(CanonicalType::Int64))
+        .await
+        .expect("establish");
+    assert_eq!(established.canonical, CanonicalType::Int64);
+    catalog.record_off_type("t", "d", &f, 5).await.unwrap();
+
+    let overridden = catalog
+        .override_attribute_type("t", "d", &f, CanonicalType::String)
+        .await
+        .expect("override");
+    assert_eq!(overridden.canonical, CanonicalType::String);
+    assert_eq!(overridden.source, TypeSource::Config);
+    assert_eq!(overridden.hint_schema_url, None);
+    assert_eq!(overridden.schema_version, LogicalSchema::VERSION);
+    assert_eq!(overridden.off_type_count, 5, "off-type count is preserved");
+
+    // A later observed establish must not undo the config override: the
+    // canonical type is monotonic once set, whichever path set it.
+    let after = catalog
+        .establish_attribute_type("t", "d", &f, observed(CanonicalType::Bool))
+        .await
+        .expect("establish after override");
+    assert_eq!(after.canonical, CanonicalType::String);
+    assert_eq!(after.source, TypeSource::Config);
+
+    let stored = catalog
+        .get_attribute_type("t", "d", &f)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.canonical, CanonicalType::String);
+    assert_eq!(stored.source, TypeSource::Config);
+    assert_eq!(stored.off_type_count, 5);
+}
+
+#[tokio::test]
+async fn override_on_a_missing_row_creates_it() {
+    let catalog = catalog().await;
+    let f = field("traces", Some(AttributeLevel::Resource), "service.tier");
+
+    let overridden = catalog
+        .override_attribute_type("t", "d", &f, CanonicalType::Bool)
+        .await
+        .expect("override");
+    assert_eq!(overridden.canonical, CanonicalType::Bool);
+    assert_eq!(overridden.source, TypeSource::Config);
+    assert_eq!(overridden.off_type_count, 0);
+
+    let stored = catalog
+        .get_attribute_type("t", "d", &f)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.canonical, CanonicalType::Bool);
+    assert_eq!(stored.source, TypeSource::Config);
+}

@@ -214,6 +214,18 @@ profiles_enabled = true
 # metrics = []
 # profiles = []
 
+# Pin the canonical type of an attribute key instead of leaving it to the
+# first-observed value or a semantic-convention hint. Values of another type
+# keep arriving losslessly but are not typed-queryable. Per-tenant override:
+# a tenant schema block replaces the global list wholesale, same as
+# [schema.materialized_labels] above.
+# [[schema.attribute_types]]
+# signal = "logs"       # logs | traces | metrics | profiles
+# level = "record"      # resource | scope | record
+# key = "retry.count"
+# type = "int64"        # string | int64 | float64 | bool
+# dataset = "prod"      # optional; omitted applies to every dataset of the tenant
+
 # Custom schema definitions (optional)
 # [schema.default_schemas.custom_schemas]
 # my_custom_table = '''{"fields": [...]}'''

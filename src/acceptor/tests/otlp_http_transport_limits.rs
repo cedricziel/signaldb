@@ -104,6 +104,7 @@ async fn setup_traces_test_with_limit(
         catalog_uri: catalog_dsn,
         default_schemas: common::config::DefaultSchemas::default(),
         materialized_labels: Default::default(),
+        attribute_types: Default::default(),
     };
 
     config.auth = common::config::AuthConfig {

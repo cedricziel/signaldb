@@ -9,6 +9,9 @@ use figment::{
     providers::{Env, Format, Serialized, Toml},
 };
 
+use crate::schema::logical::{AttributeLevel, LogicalFieldId};
+use crate::schema::type_authority::CanonicalType;
+
 use once_cell::sync::OnceCell;
 
 pub static CONFIG: OnceCell<Configuration> = OnceCell::new();
@@ -747,6 +750,46 @@ pub struct MaterializedLabels {
     pub profiles: Vec<String>,
 }
 
+/// A signal type an attribute-type override may target. Kept distinct from
+/// `LogicalFieldId::source` (a free string) so an unknown signal in
+/// `[[schema.attribute_types]]` fails config parsing rather than silently
+/// never matching a field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttributeTypeSignal {
+    Logs,
+    Traces,
+    Metrics,
+    Profiles,
+}
+
+impl AttributeTypeSignal {
+    fn as_str(self) -> &'static str {
+        match self {
+            AttributeTypeSignal::Logs => "logs",
+            AttributeTypeSignal::Traces => "traces",
+            AttributeTypeSignal::Metrics => "metrics",
+            AttributeTypeSignal::Profiles => "profiles",
+        }
+    }
+}
+
+/// An operator-pinned canonical type for one attribute key, optionally
+/// scoped to a single dataset. See `[[schema.attribute_types]]` in
+/// `signaldb.dist.toml`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttributeTypeOverride {
+    pub signal: AttributeTypeSignal,
+    pub level: AttributeLevel,
+    pub key: String,
+    #[serde(rename = "type")]
+    pub canonical_type: CanonicalType,
+    /// Restricts the override to one dataset; omitted applies it to every
+    /// dataset of the tenant.
+    #[serde(default)]
+    pub dataset: Option<String>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SchemaConfig {
     /// Type of catalog backend (sql, memory)
@@ -759,6 +802,10 @@ pub struct SchemaConfig {
     /// Attribute keys promoted to dedicated columns per signal type.
     #[serde(default)]
     pub materialized_labels: MaterializedLabels,
+    /// Operator-pinned canonical types for individual attribute keys. See
+    /// `[[schema.attribute_types]]` in `signaldb.dist.toml`.
+    #[serde(default)]
+    pub attribute_types: Vec<AttributeTypeOverride>,
 }
 
 impl Default for SchemaConfig {
@@ -768,7 +815,34 @@ impl Default for SchemaConfig {
             catalog_uri: "sqlite::memory:".to_string(),
             default_schemas: DefaultSchemas::default(),
             materialized_labels: MaterializedLabels::default(),
+            attribute_types: Vec::new(),
         }
+    }
+}
+
+impl SchemaConfig {
+    /// The config-pinned canonical type for `field` in `dataset_id`, if any.
+    /// A dataset-specific override wins over one with no `dataset` (applies
+    /// tenant-wide); ties keep the first match.
+    pub fn attribute_type_override(
+        &self,
+        dataset_id: &str,
+        field: &LogicalFieldId,
+    ) -> Option<CanonicalType> {
+        let level = field.level?;
+        let matches = |o: &&AttributeTypeOverride| {
+            o.signal.as_str() == field.source && o.level == level && o.key == field.name
+        };
+
+        self.attribute_types
+            .iter()
+            .find(|o| matches(o) && o.dataset.as_deref() == Some(dataset_id))
+            .or_else(|| {
+                self.attribute_types
+                    .iter()
+                    .find(|o| matches(o) && o.dataset.is_none())
+            })
+            .map(|o| o.canonical_type)
     }
 }
 
@@ -1562,6 +1636,7 @@ impl From<IcebergConfig> for SchemaConfig {
             catalog_uri: iceberg_config.catalog_uri,
             default_schemas: DefaultSchemas::default(),
             materialized_labels: MaterializedLabels::default(),
+            attribute_types: Vec::new(),
         }
     }
 }
@@ -3637,6 +3712,7 @@ mod tests {
                 catalog_uri: "memory://tenant".to_string(),
                 default_schemas: DefaultSchemas::default(),
                 materialized_labels: Default::default(),
+                attribute_types: Default::default(),
             }),
             custom_schemas: Some({
                 let mut schemas = HashMap::new();

@@ -997,6 +997,66 @@ traces = ["http.method"]
         assert!(parsed.materialized_labels.metrics.is_empty());
     }
 
+    #[test]
+    fn attribute_type_overrides_default_is_empty_and_parses_from_toml() {
+        use crate::schema::logical::{AttributeLevel, LogicalFieldId};
+        use crate::schema::type_authority::CanonicalType;
+
+        let cfg = SchemaConfig::default();
+        assert!(cfg.attribute_types.is_empty());
+
+        let toml = r#"
+catalog_type = "sql"
+catalog_uri = "sqlite::memory:"
+[[attribute_types]]
+signal = "logs"
+level = "record"
+key = "retry.count"
+type = "int64"
+
+[[attribute_types]]
+signal = "logs"
+level = "record"
+key = "retry.count"
+type = "string"
+dataset = "prod"
+"#;
+        let parsed: SchemaConfig = toml::from_str(toml).expect("parse schema config");
+        assert_eq!(parsed.attribute_types.len(), 2);
+
+        let field = LogicalFieldId {
+            source: "logs".to_string(),
+            level: Some(AttributeLevel::Record),
+            name: "retry.count".to_string(),
+        };
+
+        // No dataset given: falls back to the global (no-dataset) entry.
+        assert_eq!(
+            parsed.attribute_type_override("staging", &field),
+            Some(CanonicalType::Int64)
+        );
+
+        // A dataset-specific entry beats the entry with no dataset.
+        assert_eq!(
+            parsed.attribute_type_override("prod", &field),
+            Some(CanonicalType::String)
+        );
+    }
+
+    #[test]
+    fn attribute_type_override_rejects_unknown_signal() {
+        let toml = r#"
+catalog_type = "sql"
+catalog_uri = "sqlite::memory:"
+[[attribute_types]]
+signal = "spans"
+level = "record"
+key = "retry.count"
+type = "int64"
+"#;
+        assert!(toml::from_str::<SchemaConfig>(toml).is_err());
+    }
+
     #[tokio::test]
     async fn test_tenant_schema_registry_default() {
         let config = Configuration::default();
@@ -1030,6 +1090,7 @@ traces = ["http.method"]
                 catalog_uri: "memory://".to_string(),
                 default_schemas: DefaultSchemas::default(),
                 materialized_labels: Default::default(),
+                attribute_types: Default::default(),
             }),
             custom_schemas: Some({
                 let mut schemas = HashMap::new();
@@ -1089,6 +1150,7 @@ traces = ["http.method"]
                 catalog_uri: "memory://".to_string(),
                 default_schemas: DefaultSchemas::default(),
                 materialized_labels: Default::default(),
+                attribute_types: Default::default(),
             }),
             ..Default::default()
         };
