@@ -40,8 +40,7 @@ use common::query_ir::{
     validate,
 };
 use common::schema::logical::{Filterability, LogicalSchema, LogicalType};
-use common::schema::typed_attributes::has_typed_container;
-use common::schema::typed_attributes::typed_columns;
+use common::schema::typed_attributes::{has_typed_container, typed_columns};
 use datafusion::arrow::array::{
     Array, BooleanArray, Float64Array, LargeStringArray, StringArray, StringBuilder,
     StringViewArray, TimestampNanosecondArray,
@@ -78,6 +77,7 @@ use super::histogram::{
 };
 use super::profile::batch_to_models;
 use super::table_lookup::{optional_table_provider, scan_provider, string_column};
+use super::typed_attrs::{CanonicalTypeLookup, CanonicalTypes};
 use datafusion::common::TableReference;
 
 /// Upper bound on profile rows aggregated into one `flamegraph` result.
@@ -1177,6 +1177,11 @@ pub struct IrService {
     correlate_max_rows: usize,
     /// Node cap on a `graph` result (`[querier].graph_max_nodes`).
     graph_max_nodes: usize,
+    /// Fetches committed canonical attribute types for a typed-layout table
+    /// (`otel-native-schema` task 4.4). Set via [`Self::with_canonical_types`]
+    /// by the production Flight service; `None` in every other caller
+    /// (compat lowerings, most tests), which never reach a typed table.
+    canonical_type_lookup: Option<Arc<dyn CanonicalTypeLookup>>,
 }
 
 /// The resolved absolute time window `[t0, t1]` (unix epoch nanoseconds),
@@ -1193,7 +1198,16 @@ impl IrService {
             session_context: Arc::new(session_context),
             correlate_max_rows: DEFAULT_CORRELATE_MAX_ROWS,
             graph_max_nodes: common::config::QuerierConfig::default().graph_max_nodes,
+            canonical_type_lookup: None,
         }
+    }
+
+    /// Attach the canonical-type-authority lookup used by `query`'s
+    /// `POST /api/v1/query` path to resolve a typed-layout source's
+    /// attribute types before planning.
+    pub fn with_canonical_types(mut self, lookup: Arc<dyn CanonicalTypeLookup>) -> Self {
+        self.canonical_type_lookup = Some(lookup);
+        self
     }
 
     /// Override the `graph` node cap, from `[querier].graph_max_nodes`.
@@ -1233,7 +1247,13 @@ impl IrService {
         // Stage spans (INTERNAL) under the Flight SERVER span, so a slow
         // query is attributable to planning vs execution.
         let Some((mut df, window, correlate_truncated)) = self
-            .plan_with_correlate_truncation(&doc, tenant_slug, dataset_slug, params.now_ns)
+            .plan_with_correlate_truncation(
+                &doc,
+                tenant_slug,
+                dataset_slug,
+                params.now_ns,
+                AttributeTypeRequest::Resolve(self.canonical_type_lookup.clone()),
+            )
             .instrument(tracing::info_span!("signaldb.query.plan"))
             .await?
         else {
@@ -1332,7 +1352,13 @@ impl IrService {
         now_ns: i64,
     ) -> Result<Option<(DataFrame, ResolvedWindow)>, QuerierError> {
         Ok(self
-            .plan_with_correlate_truncation(doc, tenant_slug, dataset_slug, now_ns)
+            .plan_with_correlate_truncation(
+                doc,
+                tenant_slug,
+                dataset_slug,
+                now_ns,
+                AttributeTypeRequest::CompatOnly,
+            )
             .await?
             .map(|(df, window, _truncated)| (df, window)))
     }
@@ -1351,12 +1377,14 @@ impl IrService {
         tenant_slug: &str,
         dataset_slug: &str,
         now_ns: i64,
+        attribute_type_request: AttributeTypeRequest,
     ) -> Result<Option<(DataFrame, ResolvedWindow, Option<Arc<AtomicBool>>)>, QuerierError> {
         plan_document(
             &self.session_context,
             doc,
             PlanRequest::new(tenant_slug, dataset_slug, now_ns)
-                .with_correlate_max_rows(self.correlate_max_rows),
+                .with_correlate_max_rows(self.correlate_max_rows)
+                .with_attribute_type_request(attribute_type_request),
         )
         .await
     }
@@ -1385,6 +1413,7 @@ pub(crate) async fn plan_document(
         dataset_slug,
         now_ns,
         correlate_max_rows,
+        attribute_type_request,
     } = request;
     let source = SourcePlan::for_source(&doc.from)
         .ok_or_else(|| QuerierError::InvalidInput(format!("unknown source '{}'", doc.from)))?;
@@ -1394,6 +1423,35 @@ pub(crate) async fn plan_document(
     // with the scan — there is no schema to validate against.
     let Some(base) = scan_source_tables(ctx, tenant_slug, dataset_slug, &source).await? else {
         return Ok(None);
+    };
+
+    // Resolved from the scanned table's own schema — never a second scan —
+    // and not yet read by field resolution (the typed resolver lands with
+    // `otel-native-schema` task 4.4); `_attribute_reads` is carried so the
+    // fetch below isn't wasted once that resolver exists.
+    let _attribute_reads = match attribute_type_request {
+        AttributeTypeRequest::CompatOnly => AttributeReads::CompatString,
+        AttributeTypeRequest::Resolve(lookup) => {
+            if common::schema::typed_attributes::is_typed_layout(
+                base.schema().fields().iter().map(|f| f.name().as_str()),
+            ) {
+                let Some(lookup) = lookup else {
+                    return Err(QuerierError::QueryFailed(
+                        datafusion::error::DataFusionError::Execution(
+                            "attribute type registry not configured".to_string(),
+                        ),
+                    ));
+                };
+                let signal =
+                    common::discovery::signal_for_source(source.name).unwrap_or(source.name);
+                let types = lookup
+                    .canonical_types(tenant_slug, dataset_slug, signal)
+                    .await?;
+                AttributeReads::Typed(types)
+            } else {
+                AttributeReads::CompatString
+            }
+        }
     };
 
     // Build the resolver from the actual scanned schema and validate the
@@ -1578,16 +1636,48 @@ const PARENT_JOIN_TMP_PREFIX: &str = "__correlate_parent__";
 /// `correlate` stage.
 pub(crate) const DEFAULT_CORRELATE_MAX_ROWS: usize = 5_000_000;
 
+/// Which attribute-storage layout a plan ended up reading columns as: the
+/// legacy single map/JSON container (`CompatString`), or the typed layout
+/// resolved against the scanned table's committed canonical types
+/// (`Typed`). Decided by `plan_document` itself, from the scanned schema —
+/// see [`AttributeTypeRequest`] for who can ever produce `Typed`.
+#[derive(Debug, Clone, Default)]
+pub(crate) enum AttributeReads {
+    #[default]
+    CompatString,
+    // consumed by typed attribute resolution (4.4)
+    #[allow(dead_code)]
+    Typed(CanonicalTypes),
+}
+
+/// Whether a [`PlanRequest`] wants a typed-layout table's committed
+/// attribute types resolved before planning. Every compat lowering
+/// (LogQL/TraceQL) and every differential/planner test — anything built via
+/// [`PlanRequest::new`] — stays `CompatOnly`: they already read a typed
+/// table's columns directly (see `has_typed_container`) without needing the
+/// per-key canonical types. Only [`IrService::query`]'s `POST /api/v1/query`
+/// path opts into `Resolve`, and only it can hit the "typed table, no
+/// lookup attached" error — a compat caller over the same typed table stays
+/// on `CompatString` reads instead.
+#[derive(Clone, Default)]
+pub(crate) enum AttributeTypeRequest {
+    #[default]
+    CompatOnly,
+    Resolve(Option<Arc<dyn CanonicalTypeLookup>>),
+}
+
 /// [`plan_document`]'s request-scoped parameters — tenant/dataset scope, the
-/// query clock, and the `correlate` row cap — bundled so a caller that
-/// never reaches a `correlate` stage (every compat lowering, every
-/// differential/predicate test) can build one with [`PlanRequest::new`] and
-/// not spell out the cap's default at every call site.
+/// query clock, the `correlate` row cap, and the attribute-type request —
+/// bundled so a caller that never reaches a `correlate` stage or a typed
+/// table (every compat lowering, every differential/predicate test) can
+/// build one with [`PlanRequest::new`] and not spell out either default at
+/// every call site.
 pub(crate) struct PlanRequest<'a> {
     pub tenant_slug: &'a str,
     pub dataset_slug: &'a str,
     pub now_ns: i64,
     pub correlate_max_rows: usize,
+    pub attribute_type_request: AttributeTypeRequest,
 }
 
 impl<'a> PlanRequest<'a> {
@@ -1597,11 +1687,20 @@ impl<'a> PlanRequest<'a> {
             dataset_slug,
             now_ns,
             correlate_max_rows: DEFAULT_CORRELATE_MAX_ROWS,
+            attribute_type_request: AttributeTypeRequest::CompatOnly,
         }
     }
 
     pub(crate) fn with_correlate_max_rows(mut self, correlate_max_rows: usize) -> Self {
         self.correlate_max_rows = correlate_max_rows;
+        self
+    }
+
+    pub(crate) fn with_attribute_type_request(
+        mut self,
+        attribute_type_request: AttributeTypeRequest,
+    ) -> Self {
+        self.attribute_type_request = attribute_type_request;
         self
     }
 }
@@ -9841,5 +9940,86 @@ mod tests {
             "num > 10 must keep only svc2 (num=\"50\"), not svc1 (num=\"9\" lexicographically \
              greater than \"10\") or svc3 (num=\"abc\", non-numeric)"
         );
+    }
+
+    /// A [`CanonicalTypeLookup`] that counts its own calls, standing in for
+    /// `CatalogCanonicalTypes` so `plan_document`'s fetch-only-if-typed gate
+    /// can be checked end-to-end (via `IrService::query`) without a real
+    /// catalog.
+    struct CountingLookup {
+        calls: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl CanonicalTypeLookup for CountingLookup {
+        async fn canonical_types(
+            &self,
+            _tenant_slug: &str,
+            _dataset_slug: &str,
+            _signal: &str,
+        ) -> Result<CanonicalTypes, QuerierError> {
+            self.calls.fetch_add(1, AtomicOrdering::Relaxed);
+            Ok(CanonicalTypes::default())
+        }
+    }
+
+    fn residue_only_table_ctx(table_name: &str) -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("log_attributes_residue", DataType::Binary, true),
+        ]));
+        let ts = TimestampNanosecondArray::from(vec![10_i64]);
+        let residue = datafusion::arrow::array::BinaryArray::from(vec![None::<&[u8]>]);
+        let batch =
+            RecordBatch::try_new(schema.clone(), vec![Arc::new(ts), Arc::new(residue)]).unwrap();
+        single_table_ctx(table_name, schema, batch)
+    }
+
+    fn rows_query_params() -> IrQueryParams {
+        IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "rows", "fields": ["timestamp"]
+            }),
+            now_ns: 0,
+        }
+    }
+
+    #[tokio::test]
+    async fn legacy_table_never_fetches_canonical_types() {
+        let (schema, batch) = logs_batch();
+        let ctx = single_table_ctx("logs", schema, batch);
+        let lookup = Arc::new(CountingLookup {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let svc = IrService::new(ctx).with_canonical_types(lookup.clone());
+
+        svc.query(&rows_query_params(), "t", "d").await.unwrap();
+        assert_eq!(lookup.calls.load(AtomicOrdering::Relaxed), 0);
+    }
+
+    #[tokio::test]
+    async fn typed_table_fetches_canonical_types_once() {
+        let ctx = residue_only_table_ctx("logs");
+        let lookup = Arc::new(CountingLookup {
+            calls: std::sync::atomic::AtomicUsize::new(0),
+        });
+        let svc = IrService::new(ctx).with_canonical_types(lookup.clone());
+
+        svc.query(&rows_query_params(), "t", "d").await.unwrap();
+        assert_eq!(lookup.calls.load(AtomicOrdering::Relaxed), 1);
+    }
+
+    #[tokio::test]
+    async fn typed_table_without_lookup_is_an_error() {
+        let ctx = residue_only_table_ctx("logs");
+        let svc = IrService::new(ctx);
+
+        let err = svc.query(&rows_query_params(), "t", "d").await.unwrap_err();
+        assert!(matches!(err, QuerierError::QueryFailed(_)));
     }
 }

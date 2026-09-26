@@ -653,9 +653,20 @@ impl QuerierFlightService {
             .with_max_search_limit(limits.max_search_limit);
         let logs_service = LogsService::new(session_ctx.as_ref().clone());
         let metrics_service = MetricsService::new(session_ctx.as_ref().clone());
-        let ir_service = IrService::new(session_ctx.as_ref().clone())
+        let mut ir_service = IrService::new(session_ctx.as_ref().clone())
             .with_correlate_max_rows(limits.correlate_max_rows)
             .with_graph_max_nodes(limits.graph_max_nodes);
+        // Only meaningful with a database tenant source attached — without
+        // one, a typed-layout table's query fails loudly instead of
+        // silently misreading its columns (see `resolve_attribute_reads`).
+        if let Some(tenant_source) = catalog_manager.tenant_source() {
+            ir_service = ir_service.with_canonical_types(Arc::new(
+                crate::query::typed_attrs::CatalogCanonicalTypes {
+                    catalog_manager: catalog_manager.clone(),
+                    catalog: tenant_source.clone(),
+                },
+            ));
+        }
 
         Ok(Self {
             _flight_transport: flight_transport,
