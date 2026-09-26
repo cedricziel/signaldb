@@ -30,6 +30,7 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
+use common::attrs::expr::is_typed_layout;
 use common::attrs::expr::typed_compat_attr_expr;
 use common::profile::aggregate_profiles_to_flamegraph;
 use common::query_ir::{
@@ -40,6 +41,7 @@ use common::query_ir::{
 };
 use common::schema::logical::{Filterability, LogicalSchema, LogicalType};
 use common::schema::typed_attributes::has_typed_container;
+use common::schema::typed_attributes::typed_columns;
 use datafusion::arrow::array::{
     Array, BooleanArray, Float64Array, LargeStringArray, StringArray, StringBuilder,
     StringViewArray, TimestampNanosecondArray,
@@ -367,17 +369,19 @@ async fn scan_source_tables(
             // not a projection expression: DataFusion 54's
             // `optimize_projections` mis-orders the pushed-down projections
             // of a UNION whose inputs mix columns and expressions) (#1206).
-            let targets = union_target_types(&providers, source.row_defaults);
+            let columns = union_columns(&providers, source)?;
+            let column_refs: Vec<&str> = columns.iter().map(String::as_str).collect();
+            let targets = union_target_types(&providers, &column_refs);
             let mut union: Option<DataFrame> = None;
             for (table_ref, provider) in providers {
-                let provider = CoercedTableProvider::wrap(provider, source.row_defaults, &targets)?;
+                let provider = CoercedTableProvider::wrap(provider, &column_refs, &targets)?;
                 let df = scan_provider(ctx, table_ref, provider)?;
                 // Now an identity projection — the provider above already
-                // presents exactly `row_defaults`, in order. Kept so the two
+                // presents exactly `columns`, in order. Kept so the two
                 // branches carry the same unqualified column names into the
                 // union regardless of their table qualifiers, not because it
                 // selects or reorders anything.
-                let proj: Vec<Expr> = source.row_defaults.iter().map(|c| col(*c)).collect();
+                let proj: Vec<Expr> = column_refs.iter().map(|c| col(*c)).collect();
                 let projected = df.select(proj).map_err(QuerierError::QueryFailed)?;
                 union = Some(match union {
                     None => projected,
@@ -443,6 +447,66 @@ async fn scan_parent_traces(
     // reference silently reads nothing instead of erroring or matching.
     let provider = coerce_legacy_containers(provider, source)?;
     Ok(Some(scan_provider(ctx, parent_ref, provider)?))
+}
+
+/// The columns [`scan_source_tables`]'s union branch scans, in order: plain
+/// `source.row_defaults` on the legacy layout, or `row_defaults` with every
+/// attribute container expanded to its five typed columns on the typed
+/// layout. All of `source.tables` must agree on layout — the typed-layout
+/// cutover flips every table at once (module doc comment), so a union
+/// spanning both is a schema mismatch this planner does not have a rewrite
+/// for, and is rejected up front rather than left for `CoercedTableProvider`
+/// to fail on a missing column.
+fn union_columns(
+    providers: &[(datafusion::common::TableReference, Arc<dyn TableProvider>)],
+    source: &SourcePlan,
+) -> Result<Vec<String>, QuerierError> {
+    let layout_name = |typed: bool| {
+        if typed {
+            "typed layout"
+        } else {
+            "legacy layout"
+        }
+    };
+    let mut layouts = providers.iter().map(|(table_ref, p)| {
+        let schema = p.schema();
+        let typed = source
+            .containers
+            .iter()
+            .any(|c| is_typed_layout(&schema, c));
+        (table_ref.to_string(), typed)
+    });
+    let (first_table, typed) = layouts.next().ok_or_else(|| {
+        QuerierError::QueryFailed(datafusion::error::DataFusionError::Plan(
+            "union has no tables to scan".to_string(),
+        ))
+    })?;
+    for (table, other_typed) in layouts {
+        if other_typed != typed {
+            return Err(QuerierError::QueryFailed(
+                datafusion::error::DataFusionError::Plan(format!(
+                    "source '{}' cannot union table '{first_table}' ({}) with table '{table}' ({}) — a typed-layout cutover flips every table together",
+                    source.name,
+                    layout_name(typed),
+                    layout_name(other_typed),
+                )),
+            ));
+        }
+    }
+    if !typed {
+        return Ok(source.row_defaults.iter().map(|c| c.to_string()).collect());
+    }
+    Ok(source
+        .row_defaults
+        .iter()
+        .flat_map(|&c| {
+            if source.containers.contains(&c) {
+                typed_columns(c).to_vec()
+            } else {
+                vec![c.to_string()]
+            }
+        })
+        .collect())
 }
 
 /// The type each unioned column should have: the first `Map` seen when any
@@ -4888,92 +4952,92 @@ mod tests {
     /// `hour: Int32` partition helpers. That index skew between the union
     /// branches is what #1348's "Utf8 vs Date32" mismatch needs to reproduce;
     /// a fixture whose branches share a column order cannot show the bug.
-    fn realistic_metrics_ctx() -> SessionContext {
-        fn schema(with_sum_columns: bool) -> Arc<Schema> {
-            let mut fields = vec![
-                Field::new(
-                    "timestamp",
-                    DataType::Timestamp(TimeUnit::Nanosecond, None),
-                    false,
-                ),
-                Field::new(
-                    "start_timestamp",
-                    DataType::Timestamp(TimeUnit::Nanosecond, None),
-                    true,
-                ),
-                Field::new("service_name", DataType::Utf8, false),
-                Field::new("metric_name", DataType::Utf8, false),
-                Field::new("metric_description", DataType::Utf8, true),
-                Field::new("metric_unit", DataType::Utf8, true),
-                Field::new("value", DataType::Float64, false),
-                Field::new("flags", DataType::Int32, true),
-            ];
-            if with_sum_columns {
-                fields.push(Field::new(
-                    "aggregation_temporality",
-                    DataType::Int32,
-                    false,
-                ));
-                fields.push(Field::new("is_monotonic", DataType::Boolean, false));
-            }
-            fields.extend([
-                Field::new("resource_schema_url", DataType::Utf8, true),
-                map_field_named("resource_attributes"),
-                Field::new("scope_name", DataType::Utf8, true),
-                Field::new("scope_version", DataType::Utf8, true),
-                Field::new("scope_schema_url", DataType::Utf8, true),
-                map_field_named("scope_attributes"),
-                Field::new("scope_dropped_attr_count", DataType::Int32, true),
-                map_field_named("attributes"),
-                Field::new("exemplars", DataType::Utf8, true),
-                Field::new("date_day", DataType::Date32, false),
-                Field::new("hour", DataType::Int32, false),
-            ]);
-            Arc::new(Schema::new(fields))
+    fn realistic_metrics_schema(with_sum_columns: bool) -> Arc<Schema> {
+        let mut fields = vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(
+                "start_timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("metric_description", DataType::Utf8, true),
+            Field::new("metric_unit", DataType::Utf8, true),
+            Field::new("value", DataType::Float64, false),
+            Field::new("flags", DataType::Int32, true),
+        ];
+        if with_sum_columns {
+            fields.push(Field::new(
+                "aggregation_temporality",
+                DataType::Int32,
+                false,
+            ));
+            fields.push(Field::new("is_monotonic", DataType::Boolean, false));
         }
+        fields.extend([
+            Field::new("resource_schema_url", DataType::Utf8, true),
+            map_field_named("resource_attributes"),
+            Field::new("scope_name", DataType::Utf8, true),
+            Field::new("scope_version", DataType::Utf8, true),
+            Field::new("scope_schema_url", DataType::Utf8, true),
+            map_field_named("scope_attributes"),
+            Field::new("scope_dropped_attr_count", DataType::Int32, true),
+            map_field_named("attributes"),
+            Field::new("exemplars", DataType::Utf8, true),
+            Field::new("date_day", DataType::Date32, false),
+            Field::new("hour", DataType::Int32, false),
+        ]);
+        Arc::new(Schema::new(fields))
+    }
 
-        fn batch(schema: &Arc<Schema>, with_sum_columns: bool, n: usize) -> RecordBatch {
-            use datafusion::arrow::array::{BooleanArray, Date32Array, Int32Array};
-            let containers = vec![&[("container.name", "ix-signaldb-mcp-1")] as &[_]; n];
-            let empty = vec![&[] as &[(&str, &str)]; n];
-            let mut cols: Vec<ArrayRef> = vec![
-                Arc::new(TimestampNanosecondArray::from(vec![10_i64; n])),
-                Arc::new(TimestampNanosecondArray::from(vec![0_i64; n])),
-                Arc::new(StringArray::from(vec!["signaldb"; n])),
-                Arc::new(StringArray::from(vec!["m"; n])),
-                Arc::new(StringArray::from(vec![""; n])),
-                Arc::new(StringArray::from(vec![""; n])),
-                Arc::new(Float64Array::from(vec![5.0; n])),
-                Arc::new(Int32Array::from(vec![0; n])),
-            ];
-            if with_sum_columns {
-                cols.push(Arc::new(Int32Array::from(vec![2; n])));
-                cols.push(Arc::new(BooleanArray::from(vec![true; n])));
-            }
-            cols.extend([
-                Arc::new(StringArray::from(vec![""; n])) as ArrayRef,
-                build_map(&containers),
-                Arc::new(StringArray::from(vec![""; n])),
-                Arc::new(StringArray::from(vec![""; n])),
-                Arc::new(StringArray::from(vec![""; n])),
-                build_map(&empty),
-                Arc::new(Int32Array::from(vec![0; n])),
-                build_map(&empty),
-                Arc::new(StringArray::from(vec![""; n])),
-                Arc::new(Date32Array::from(vec![0; n])),
-                Arc::new(Int32Array::from(vec![0; n])),
-            ]);
-            RecordBatch::try_new(schema.clone(), cols).unwrap()
+    fn realistic_metrics_batch(with_sum_columns: bool, n: usize) -> (Arc<Schema>, RecordBatch) {
+        use datafusion::arrow::array::{BooleanArray, Date32Array, Int32Array};
+        let schema = realistic_metrics_schema(with_sum_columns);
+        let containers = vec![&[("container.name", "ix-signaldb-mcp-1")] as &[_]; n];
+        let empty = vec![&[] as &[(&str, &str)]; n];
+        let mut cols: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![10_i64; n])),
+            Arc::new(TimestampNanosecondArray::from(vec![0_i64; n])),
+            Arc::new(StringArray::from(vec!["signaldb"; n])),
+            Arc::new(StringArray::from(vec!["m"; n])),
+            Arc::new(StringArray::from(vec![""; n])),
+            Arc::new(StringArray::from(vec![""; n])),
+            Arc::new(Float64Array::from(vec![5.0; n])),
+            Arc::new(Int32Array::from(vec![0; n])),
+        ];
+        if with_sum_columns {
+            cols.push(Arc::new(Int32Array::from(vec![2; n])));
+            cols.push(Arc::new(BooleanArray::from(vec![true; n])));
         }
+        cols.extend([
+            Arc::new(StringArray::from(vec![""; n])) as ArrayRef,
+            build_map(&containers),
+            Arc::new(StringArray::from(vec![""; n])),
+            Arc::new(StringArray::from(vec![""; n])),
+            Arc::new(StringArray::from(vec![""; n])),
+            build_map(&empty),
+            Arc::new(Int32Array::from(vec![0; n])),
+            build_map(&empty),
+            Arc::new(StringArray::from(vec![""; n])),
+            Arc::new(Date32Array::from(vec![0; n])),
+            Arc::new(Int32Array::from(vec![0; n])),
+        ]);
+        let batch = RecordBatch::try_new(schema.clone(), cols).unwrap();
+        (schema, batch)
+    }
 
-        let gauge_schema = schema(false);
-        let sum_schema = schema(true);
-        let gauge_batch = batch(&gauge_schema, false, 2);
-        let sum_batch = batch(&sum_schema, true, 1);
-
+    fn gauge_sum_ctx(
+        gauge: (Arc<Schema>, RecordBatch),
+        sum: (Arc<Schema>, RecordBatch),
+    ) -> SessionContext {
         let ctx = SessionContext::new();
-        let gauge = MemTable::try_new(gauge_schema, vec![vec![gauge_batch]]).unwrap();
-        let sum = MemTable::try_new(sum_schema, vec![vec![sum_batch]]).unwrap();
+        let gauge = MemTable::try_new(gauge.0, vec![vec![gauge.1]]).unwrap();
+        let sum = MemTable::try_new(sum.0, vec![vec![sum.1]]).unwrap();
         let sp = Arc::new(MemorySchemaProvider::new());
         sp.register_table("metrics_gauge".to_string(), Arc::new(gauge))
             .unwrap();
@@ -4983,6 +5047,130 @@ mod tests {
         cat.register_schema("d", sp).unwrap();
         ctx.register_catalog("t", cat);
         ctx
+    }
+
+    fn realistic_metrics_ctx() -> SessionContext {
+        gauge_sum_ctx(
+            realistic_metrics_batch(false, 2),
+            realistic_metrics_batch(true, 1),
+        )
+    }
+
+    /// The typed-layout counterpart of [`realistic_metrics_ctx`]: the
+    /// identical gauge/sum rows, but `attributes`/`resource_attributes`/
+    /// `scope_attributes` are rewritten onto their five typed columns each
+    /// (`metrics_gauge`/`metrics_sum` `physical-v3`). Exercises
+    /// `union_columns`' typed-layout expansion.
+    fn typed_metrics_ctx() -> SessionContext {
+        let containers = ["attributes", "resource_attributes", "scope_attributes"];
+        let to_typed = |table: &str,
+                        (_, batch): (Arc<Schema>, RecordBatch)|
+         -> (Arc<Schema>, RecordBatch) {
+            let batch = common::testing::to_typed_layout(table, "physical-v3", &batch, &containers);
+            (batch.schema(), batch)
+        };
+        gauge_sum_ctx(
+            to_typed("metrics_gauge", realistic_metrics_batch(false, 2)),
+            to_typed("metrics_sum", realistic_metrics_batch(true, 1)),
+        )
+    }
+
+    /// IR-1: a gauge+sum union over two typed-layout tables filters by a
+    /// fallback (unpromoted) attribute the same way the legacy-layout union
+    /// does (`metrics_union_filters_by_a_fallback_attribute_with_every_operator`).
+    #[tokio::test]
+    async fn metrics_union_over_typed_gauge_and_sum_tables_filters_by_a_fallback_attribute() {
+        let svc = IrService::new(typed_metrics_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [
+                { "where": { "field": "container.name", "op": "eq",
+                             "value": "ix-signaldb-mcp-1" } },
+                { "aggregate": { "by": ["container.name"],
+                                 "aggs": [{ "fn": "count", "as": "n" }] } }
+            ]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("both typed metrics tables are registered");
+        let batches = df.collect().await.unwrap();
+        let n: i64 = batches
+            .iter()
+            .map(|b| {
+                b.column_by_name("n")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .values()
+                    .iter()
+                    .sum::<i64>()
+            })
+            .sum();
+        // All three rows (2 gauge + 1 sum) carry the matching container.name.
+        assert_eq!(n, 3);
+    }
+
+    /// IR-1: the typed-layout cutover flips every table together, so a
+    /// gauge+sum union spanning both layouts is a schema mismatch this
+    /// planner rejects up front rather than letting `CoercedTableProvider`
+    /// fail with an opaque "missing column" error.
+    #[tokio::test]
+    async fn metrics_union_across_mixed_legacy_and_typed_layout_errors() {
+        let legacy_ctx = realistic_metrics_ctx();
+        let typed_ctx = typed_metrics_ctx();
+        let legacy_sum = legacy_ctx
+            .catalog("t")
+            .unwrap()
+            .schema("d")
+            .unwrap()
+            .table("metrics_sum")
+            .await
+            .unwrap()
+            .unwrap();
+
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table(
+            "metrics_gauge".to_string(),
+            typed_ctx
+                .catalog("t")
+                .unwrap()
+                .schema("d")
+                .unwrap()
+                .table("metrics_gauge")
+                .await
+                .unwrap()
+                .unwrap(),
+        )
+        .unwrap();
+        sp.register_table("metrics_sum".to_string(), legacy_sum)
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        let ctx = SessionContext::new();
+        ctx.register_catalog("t", cat);
+
+        let svc = IrService::new(ctx);
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [
+                { "aggregate": { "by": ["container.name"],
+                                 "aggs": [{ "fn": "count", "as": "n" }] } }
+            ]
+        }));
+        let err = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .expect_err("a union mixing legacy and typed tables must be rejected");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("metrics_gauge") && msg.contains("metrics_sum"),
+            "unexpected error: {msg}"
+        );
     }
 
     /// #1348: a `where` predicate on a resource attribute served from the
