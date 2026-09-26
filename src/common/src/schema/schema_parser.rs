@@ -4,6 +4,8 @@ use iceberg_rust::spec::types::{ListType, MapType, PrimitiveType, StructField, S
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::schema::typed_attributes;
+
 /// Schema definitions loaded from TOML
 #[derive(Debug, Deserialize)]
 pub struct SchemaDefinitions {
@@ -158,7 +160,7 @@ impl SchemaDefinitions {
             }
         } else {
             // Base schema - use fields directly
-            for field in &schema_def.fields {
+            for field in schema_def.fields.iter().flat_map(expand_typed_attributes) {
                 let resolved = ResolvedField {
                     name: field.name.clone(),
                     field_type: field.field_type.clone(),
@@ -183,7 +185,11 @@ impl SchemaDefinitions {
         }
 
         // Add new fields
-        for addition in &schema_def.field_additions {
+        for addition in schema_def
+            .field_additions
+            .iter()
+            .flat_map(expand_typed_attributes)
+        {
             let resolved = ResolvedField {
                 name: addition.name.clone(),
                 field_type: addition.field_type.clone(),
@@ -226,6 +232,22 @@ impl SchemaDefinitions {
             partition_by: schema_def.partition_by.clone(),
         })
     }
+}
+
+/// A `typed_attributes` field stands for its container's five typed-layout
+/// columns; any other field stands for itself.
+fn expand_typed_attributes(field: &FieldDefinition) -> Vec<FieldDefinition> {
+    if field.field_type != typed_attributes::TYPED_ATTRIBUTES_TYPE {
+        return vec![field.clone()];
+    }
+    typed_attributes::typed_fields(&field.name)
+        .into_iter()
+        .map(|(name, field_type)| FieldDefinition {
+            name,
+            field_type: field_type.to_string(),
+            ..field.clone()
+        })
+        .collect()
 }
 
 /// Walks the `inherits` chain backward from `to_version` until it reaches
@@ -331,7 +353,7 @@ impl ResolvedSchema {
         // schema; allocate them after every top-level ID so the top-level
         // numbering stays identical to the historical string-only layout.
         let mut next_nested_id = self.fields.len() as i32 + 1;
-        let mut map_slots: Vec<usize> = Vec::new();
+        let mut map_slots: Vec<(usize, PrimitiveType)> = Vec::new();
 
         for (idx, field) in self.fields.iter().enumerate() {
             let field_type = match field.field_type.as_str() {
@@ -343,10 +365,18 @@ impl ResolvedSchema {
                 "boolean" => Type::Primitive(PrimitiveType::Boolean),
                 "timestamp_ns" => Type::Primitive(PrimitiveType::Timestamp), // No TimestampNs in iceberg-rust
                 "date" => Type::Primitive(PrimitiveType::Date),
-                // Attribute maps: string keys to string values. Key/value
-                // IDs are assigned in a second pass below.
-                "map<string,string>" => {
-                    map_slots.push(idx);
+                "binary" => Type::Primitive(PrimitiveType::Binary),
+                // Attribute maps: string keys, typed values. Key/value IDs
+                // are assigned in a second pass below.
+                map if map.starts_with("map<string,") => {
+                    let value_type = match map {
+                        "map<string,string>" => PrimitiveType::String,
+                        "map<string,long>" => PrimitiveType::Long,
+                        "map<string,double>" => PrimitiveType::Double,
+                        "map<string,boolean>" => PrimitiveType::Boolean,
+                        _ => return Err(anyhow!("Unsupported field type: {map}")),
+                    };
+                    map_slots.push((idx, value_type));
                     Type::Primitive(PrimitiveType::String) // placeholder
                 }
                 "list<struct>" => {
@@ -371,7 +401,7 @@ impl ResolvedSchema {
         }
 
         // Second pass: fill in map types with globally-unique nested IDs.
-        for idx in map_slots {
+        for (idx, value_type) in map_slots {
             let key_id = next_nested_id;
             let value_id = next_nested_id + 1;
             next_nested_id += 2;
@@ -380,7 +410,7 @@ impl ResolvedSchema {
                 key: Box::new(Type::Primitive(PrimitiveType::String)),
                 value_id,
                 value_required: false,
-                value: Box::new(Type::Primitive(PrimitiveType::String)),
+                value: Box::new(Type::Primitive(value_type)),
             });
         }
 
@@ -946,6 +976,57 @@ fields = [
             .unwrap()
             .unwrap();
         assert_eq!(chain, vec!["alpha", "zeta-but-actually-next"]);
+    }
+
+    #[test]
+    fn typed_attribute_field_types_build_typed_maps_and_a_binary_residue() {
+        let field = |name: &str, field_type: &str| ResolvedField {
+            name: name.to_string(),
+            field_type: field_type.to_string(),
+            required: false,
+            computed: None,
+            physical_only: false,
+            field_id: 0,
+        };
+        let resolved = ResolvedSchema {
+            version: "v1".to_string(),
+            description: "test".to_string(),
+            fields: vec![
+                field("a_str", "map<string,string>"),
+                field("a_int", "map<string,long>"),
+                field("a_double", "map<string,double>"),
+                field("a_bool", "map<string,boolean>"),
+                field("a_residue", "binary"),
+            ],
+            partition_by: vec![],
+        };
+        let schema = resolved.to_iceberg_schema().unwrap();
+
+        let mut ids = Vec::new();
+        let mut values = Vec::new();
+        for f in schema.fields().iter() {
+            ids.push(f.id);
+            match &f.field_type {
+                Type::Map(map) => {
+                    assert_eq!(*map.key, Type::Primitive(PrimitiveType::String));
+                    ids.extend([map.key_id, map.value_id]);
+                    values.push((*map.value).clone());
+                }
+                other => assert_eq!(*other, Type::Primitive(PrimitiveType::Binary)),
+            }
+        }
+        assert_eq!(
+            values,
+            [
+                PrimitiveType::String,
+                PrimitiveType::Long,
+                PrimitiveType::Double,
+                PrimitiveType::Boolean
+            ]
+            .map(Type::Primitive)
+        );
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len(), "duplicate field ids: {ids:?}");
     }
 
     #[test]
