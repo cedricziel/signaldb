@@ -375,6 +375,12 @@ impl LogicalSchema {
         }
         Self::new(fields)
     }
+
+    /// Version of the client-visible logical schema. Bump this and
+    /// `logical_schema_version` in `schemas.toml` together whenever
+    /// `core()`'s field set changes; `tests::FIELD_SET_FINGERPRINT` fails
+    /// until you do.
+    pub const VERSION: &'static str = "otel-2026-08";
 }
 
 #[cfg(test)]
@@ -580,6 +586,52 @@ mod tests {
             let name = format!("{prefix}.{}", field.id.name);
             assert_eq!(schema.resolve(&field.id.source, &name), Some(field));
         }
+    }
+
+    const FIELD_SET_FINGERPRINT: &str =
+        "94245d2d1ae753c97c2c94cf692ced9871a87da645a172ff1bc601a3b4052cd7";
+
+    fn fingerprint() -> String {
+        use sha2::{Digest, Sha256};
+
+        let mut rendered: Vec<String> = LogicalSchema::core()
+            .fields
+            .values()
+            .map(|field| {
+                format!(
+                    "{}|{:?}|{}|{:?}|{:?}|{:?}",
+                    field.id.source,
+                    field.id.level,
+                    field.id.name,
+                    field.value_type,
+                    field.filterability,
+                    field.kind
+                )
+            })
+            .collect();
+        rendered.sort();
+        hex::encode(Sha256::digest(rendered.join("\n").as_bytes()))
+    }
+
+    #[test]
+    fn logical_schema_version_matches_schemas_toml() {
+        let defs = crate::schema::schema_parser::SchemaDefinitions::from_toml(
+            crate::schema::SCHEMA_DEFINITIONS_TOML,
+        )
+        .unwrap();
+
+        assert_eq!(LogicalSchema::VERSION, defs.logical_schema_version());
+    }
+
+    #[test]
+    fn logical_schema_fingerprint_is_pinned() {
+        assert_eq!(
+            fingerprint(),
+            FIELD_SET_FINGERPRINT,
+            "LogicalSchema::core()'s field set changed. Bump LogicalSchema::VERSION and \
+             logical_schema_version in schemas.toml, then update \
+             FIELD_SET_FINGERPRINT to the value this assertion reports."
+        );
     }
 
     #[test]
