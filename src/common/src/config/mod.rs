@@ -2734,6 +2734,20 @@ impl Configuration {
             .map(|d| d.slug.clone())
             .unwrap_or_else(|| dataset_id.to_string())
     }
+
+    /// Get the dataset ID for a given tenant and dataset slug.
+    ///
+    /// Returns the dataset's id if a config tenant has that slug, otherwise
+    /// returns the slug as-is (database datasets use their id as their slug).
+    pub fn get_dataset_id_by_slug(&self, tenant_id: &str, dataset_slug: &str) -> String {
+        self.auth
+            .tenants
+            .iter()
+            .find(|t| t.id == tenant_id)
+            .and_then(|t| t.datasets.iter().find(|d| d.slug == dataset_slug))
+            .map(|d| d.id.clone())
+            .unwrap_or_else(|| dataset_slug.to_string())
+    }
 }
 
 #[cfg(test)]
@@ -3910,6 +3924,31 @@ mod tests {
             1
         );
         assert_eq!(config.auth.tenants[0].name, "Existing");
+    }
+
+    #[test]
+    fn get_dataset_id_by_slug_resolves_a_config_datasets_slug_and_falls_back_to_the_slug_as_is() {
+        let mut config = Configuration::default();
+        config.auth.tenants.push(TenantConfig {
+            id: "acme".to_string(),
+            slug: "acme".to_string(),
+            name: "Acme".to_string(),
+            default_dataset: None,
+            datasets: vec![DatasetConfig {
+                id: "production".to_string(),
+                slug: "prod".to_string(),
+                is_default: false,
+                storage: None,
+            }],
+            api_keys: vec![],
+            schema_config: None,
+            limits: None,
+        });
+
+        assert_eq!(config.get_dataset_id_by_slug("acme", "prod"), "production");
+        // A database dataset (or an unmatched slug) uses its slug as its id.
+        assert_eq!(config.get_dataset_id_by_slug("acme", "archive"), "archive");
+        assert_eq!(config.get_dataset_id_by_slug("unknown", "prod"), "prod");
     }
 
     #[test]

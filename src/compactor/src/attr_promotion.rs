@@ -24,11 +24,15 @@
 //!   demoted.
 
 use anyhow::{Context, Result};
+use common::attrs::AttrDocument;
 use common::catalog::AttributeStatsRecord;
 use common::config::AttrPromotionConfig;
 use common::iceberg::evolution;
+use common::schema::type_authority::{AttributeKeyType, CanonicalType};
+use common::schema::typed_attributes::{home_column, is_typed_layout};
 use datafusion::arrow::array::{ArrayRef, RecordBatch, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 /// The outcome of a promotion pass over one table's statistics.
@@ -76,14 +80,20 @@ pub fn looks_generated(key: &str) -> bool {
 ///
 /// `materialized` is the table's current set of materialized label
 /// *attribute keys* (column names minus the `label_` prefix); `pinned` is
-/// the configured allowlist for the signal (never demoted). Returns the
-/// decision and the new streak value per key so the caller can persist the
-/// hysteresis state.
+/// the configured allowlist for the signal (never demoted). `typed_string_keys`
+/// is `Some` on a typed-layout table: only keys in the set (their canonical
+/// type authority home is `String` at every level it's recorded) are
+/// eligible for promotion, since any other key's typed home isn't a string
+/// and a `label_<key>` column can't safely stringify it (see
+/// [`string_only_keys`]). `None` means legacy layout, where every key is
+/// eligible as before. Returns the decision and the new streak value per key
+/// so the caller can persist the hysteresis state.
 pub fn decide(
     stats: &[AttributeStatsRecord],
     materialized: &[String],
     pinned: &[String],
     config: &AttrPromotionConfig,
+    typed_string_keys: Option<&HashSet<String>>,
 ) -> (PromotionDecision, Vec<(String, i64)>) {
     let mut decision = PromotionDecision::default();
     let mut new_streaks: Vec<(String, i64)> = Vec::new();
@@ -98,7 +108,8 @@ pub fn decide(
             && !looks_generated(&record.attr_key)
             && record.total_rows > 0
             && record.query_hits >= config.min_query_hits
-            && (record.present_rows as f64 / record.total_rows as f64) >= config.min_presence;
+            && (record.present_rows as f64 / record.total_rows as f64) >= config.min_presence
+            && typed_string_keys.is_none_or(|allowed| allowed.contains(&record.attr_key));
         let streak = if over_threshold {
             record.promote_streak + 1
         } else {
@@ -148,6 +159,38 @@ pub fn decide(
     }
 
     (decision, new_streaks)
+}
+
+/// Whether `schema` is the typed attribute layout (four typed maps plus a
+/// CBOR residue column per container) rather than the legacy single map/JSON
+/// column.
+pub fn schema_is_typed(schema: &iceberg_rust::spec::schema::Schema) -> bool {
+    is_typed_layout(schema.fields().iter().map(|f| f.name.as_str()))
+}
+
+/// The keys eligible for promotion on a typed-layout table: those whose
+/// canonical type is recorded as [`CanonicalType::String`] at every
+/// attribute level the type authority has seen them at for this table. A key
+/// recorded at more than one level (e.g. both resource- and record-scoped)
+/// with disagreeing types is excluded rather than guessed at — the
+/// per-attribute-stats-key candidacy check has no level of its own to match
+/// against (`attribute_stats` folds every container's keys into one flat
+/// per-key map; see [`crate::attr_stats::push_batch`]).
+pub fn string_only_keys(types: &[AttributeKeyType]) -> HashSet<String> {
+    let mut by_key: HashMap<&str, HashSet<CanonicalType>> = HashMap::new();
+    for row in types {
+        by_key
+            .entry(row.attr_key.as_str())
+            .or_default()
+            .insert(row.canonical_type);
+    }
+    by_key
+        .into_iter()
+        .filter(|(_, canonicals)| {
+            canonicals.len() == 1 && canonicals.contains(&CanonicalType::String)
+        })
+        .map(|(key, _)| key.to_string())
+        .collect()
 }
 
 /// Log the decision for one table (the advisory face of the pass; the
@@ -229,7 +272,20 @@ pub(crate) fn backfill_label_columns(
 }
 
 /// One attribute source column parsed into per-row key/value documents.
-type AttrDocuments = Vec<Option<Vec<(String, String)>>>;
+type AttrDocuments = Vec<Option<AttrDocument>>;
+
+/// One attribute source column's per-row documents. On the typed layout,
+/// only the key's string home backs a label column — coercing the
+/// int/double/bool homes would give the promoted field a type other than
+/// its canonical, typed one.
+fn label_source_documents(batch: &RecordBatch, container: &str) -> AttrDocuments {
+    let source = if batch.column_by_name(container).is_some() {
+        container.to_string()
+    } else {
+        home_column(container, CanonicalType::String)
+    };
+    common::attrs::attr_documents(batch, &source).unwrap_or_default()
+}
 
 fn backfill_batch(batch: RecordBatch, pairs: &[(String, String)]) -> Result<RecordBatch> {
     let num_rows = batch.num_rows();
@@ -238,8 +294,7 @@ fn backfill_batch(batch: RecordBatch, pairs: &[(String, String)]) -> Result<Reco
     // precedence order.
     let sources: Vec<AttrDocuments> = BACKFILL_SOURCE_COLUMNS
         .iter()
-        .filter_map(|column| batch.column_by_name(column))
-        .map(|array| crate::attr_stats::attr_documents(array.as_ref()))
+        .map(|column| label_source_documents(&batch, column))
         .filter(|docs| docs.len() == num_rows)
         .collect();
 
@@ -254,12 +309,9 @@ fn backfill_batch(batch: RecordBatch, pairs: &[(String, String)]) -> Result<Reco
     for (key, column) in pairs {
         let values: StringArray = (0..num_rows)
             .map(|row| {
-                sources.iter().find_map(|docs| {
-                    docs[row]
-                        .as_ref()
-                        .and_then(|doc| doc.iter().find(|(k, _)| k == key))
-                        .map(|(_, v)| v.clone())
-                })
+                sources
+                    .iter()
+                    .find_map(|docs| docs[row].as_ref().and_then(|doc| doc.get(key)).cloned())
             })
             .collect();
         match fields.iter().position(|f| f.name() == column) {
@@ -291,6 +343,7 @@ fn backfill_batch(batch: RecordBatch, pairs: &[(String, String)]) -> Result<Reco
 #[cfg(test)]
 mod tests {
     use super::*;
+    use common::schema::logical::AttributeLevel;
     use datafusion::arrow::array::Array;
     use iceberg_rust::spec::schema::Schema as IcebergSchema;
     use iceberg_rust::spec::types::{PrimitiveType, StructField, StructType, Type};
@@ -330,7 +383,7 @@ mod tests {
         let ready = record("namespace", 90, 100, 50, 2);
         // First over-threshold cycle: streak starts building.
         let fresh = record("pod", 90, 100, 50, 0);
-        let (decision, streaks) = decide(&[ready, fresh], &[], &[], &cfg);
+        let (decision, streaks) = decide(&[ready, fresh], &[], &[], &cfg, None);
         assert_eq!(decision.promote, vec!["namespace".to_string()]);
         assert_eq!(decision.building, vec![("pod".to_string(), 1)]);
         assert!(streaks.contains(&("namespace".to_string(), 3)));
@@ -341,7 +394,7 @@ mod tests {
     fn streak_resets_when_demand_disappears() {
         let cfg = config();
         let cooled = record("namespace", 90, 100, 0, 2);
-        let (decision, streaks) = decide(&[cooled], &[], &[], &cfg);
+        let (decision, streaks) = decide(&[cooled], &[], &[], &cfg, None);
         assert!(decision.promote.is_empty());
         assert_eq!(streaks, vec![("namespace".to_string(), 0)]);
     }
@@ -353,7 +406,7 @@ mod tests {
         capped.capped = true;
         let generated = record("span.0123456789abcdef", 90, 100, 50, 5);
         let sparse = record("rare", 1, 10_000, 50, 5);
-        let (decision, _) = decide(&[capped, generated, sparse], &[], &[], &cfg);
+        let (decision, _) = decide(&[capped, generated, sparse], &[], &[], &cfg, None);
         assert!(decision.promote.is_empty());
         assert!(decision.building.is_empty());
     }
@@ -370,6 +423,7 @@ mod tests {
             &["auto".to_string()],
             &["pinned".to_string()],
             &cfg,
+            None,
         );
         assert_eq!(decision.promote, vec!["b".to_string()]);
     }
@@ -380,8 +434,33 @@ mod tests {
         let stats = vec![record("auto_cold", 90, 100, 0, 0)];
         let materialized = vec!["auto_cold".to_string(), "pinned_cold".to_string()];
         let pinned = vec!["pinned_cold".to_string()];
-        let (decision, _) = decide(&stats, &materialized, &pinned, &cfg);
+        let (decision, _) = decide(&stats, &materialized, &pinned, &cfg, None);
         assert_eq!(decision.demote, vec!["auto_cold".to_string()]);
+    }
+
+    /// On a typed table, a key whose type-authority home is `String` is
+    /// still promotable; a key whose home is `Int64` is not, even though
+    /// both clear every other guardrail -- its typed home isn't a string,
+    /// so a `label_<key>` column can't safely carry it.
+    #[test]
+    fn typed_table_promotes_string_keys_and_rejects_non_string_keys() {
+        let cfg = config();
+        let env = record("env", 90, 100, 50, 2);
+        let retries = record("retries", 90, 100, 50, 2);
+        let allowed = string_only_keys(&[
+            AttributeKeyType {
+                attr_key: "env".to_string(),
+                level: AttributeLevel::Record,
+                canonical_type: CanonicalType::String,
+            },
+            AttributeKeyType {
+                attr_key: "retries".to_string(),
+                level: AttributeLevel::Record,
+                canonical_type: CanonicalType::Int64,
+            },
+        ]);
+        let (decision, _) = decide(&[env, retries], &[], &[], &cfg, Some(&allowed));
+        assert_eq!(decision.promote, vec!["env".to_string()]);
     }
 
     #[test]
@@ -470,6 +549,35 @@ mod tests {
         assert_eq!(out[0], batch);
     }
 
+    /// On a typed-layout batch, backfill fills a label from the key's string
+    /// home but leaves it null for a key whose canonical home is int64 --
+    /// stringifying that value would give the label a type other than its
+    /// typed home's.
+    #[test]
+    fn backfill_over_a_typed_batch_fills_string_keys_and_skips_int_keys() {
+        let row = serde_json::Map::from_iter([
+            ("env".to_string(), serde_json::json!("prod")),
+            ("retries".to_string(), serde_json::json!(3)),
+        ]);
+        let (fields, arrays) =
+            common::testing::typed_attribute_columns("span_attributes", &[Some(row)]);
+        let schema = Arc::new(Schema::new(fields.to_vec()));
+        let batch = RecordBatch::try_new(schema, arrays.to_vec()).unwrap();
+
+        let pairs = vec![
+            ("env".to_string(), "label_env".to_string()),
+            ("retries".to_string(), "label_retries".to_string()),
+        ];
+        let out = backfill_label_columns(vec![batch], &pairs).unwrap();
+        let env = string_column(&out[0], "label_env");
+        assert_eq!(env.value(0), "prod");
+        let retries = string_column(&out[0], "label_retries");
+        assert!(
+            retries.is_null(0),
+            "an int-home key must not be stringified into a label column"
+        );
+    }
+
     /// A single-field schema with one materialized label column,
     /// carrying `origin_key`'s [`evolution::label_doc`].
     fn schema_with_label(origin_key: &str, column: &str) -> IcebergSchema {
@@ -483,6 +591,18 @@ mod tests {
             write_default: None,
         };
         IcebergSchema::from_struct_type(StructType::new(vec![field]), 0, None)
+    }
+
+    #[test]
+    fn schema_is_typed_detects_a_residue_column() {
+        assert!(!schema_is_typed(&schema_with_label(
+            "http.method",
+            "label_http_method"
+        )));
+        assert!(schema_is_typed(&schema_with_label(
+            "http.method",
+            "span_attributes_residue"
+        )));
     }
 
     #[test]

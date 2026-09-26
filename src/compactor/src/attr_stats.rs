@@ -15,7 +15,7 @@
 
 use std::collections::BTreeMap;
 
-use datafusion::arrow::array::{Array, MapArray, RecordBatch, StringArray};
+use datafusion::arrow::array::RecordBatch;
 
 /// Attribute columns recognized across the signal tables.
 const ATTR_COLUMNS: &[&str] = &[
@@ -116,10 +116,10 @@ impl AttrStatsAccumulator {
     pub fn push_batch(&mut self, batch: &RecordBatch) {
         self.total_rows += batch.num_rows() as u64;
         for column in ATTR_COLUMNS {
-            let Some(array) = batch.column_by_name(column) else {
+            let Ok(docs) = common::attrs::attr_documents(batch, column) else {
                 continue;
             };
-            for doc in attr_documents(array.as_ref()) {
+            for doc in docs {
                 let Some(doc) = doc else { continue };
                 for (key, value) in doc {
                     let entry = self.stats.entry(key.clone()).or_default();
@@ -215,56 +215,6 @@ pub fn log_promotion_candidates(
     );
 }
 
-/// Iterate an attribute column's per-row documents as key/value pairs,
-/// handling both storage forms: `Map<Utf8, Utf8>` (new tables) and Utf8
-/// columns holding flat JSON objects (legacy tables). Also used by the
-/// rewrite-coupled promotion backfill in [`crate::attr_promotion`].
-pub(crate) fn attr_documents(array: &dyn Array) -> Vec<Option<Vec<(String, String)>>> {
-    if let Some(map) = array.as_any().downcast_ref::<MapArray>() {
-        return (0..map.len())
-            .map(|i| {
-                if map.is_null(i) {
-                    return None;
-                }
-                let entries = map.value(i);
-                let keys = entries.column(0).as_any().downcast_ref::<StringArray>()?;
-                let vals = entries.column(1).as_any().downcast_ref::<StringArray>()?;
-                let mut doc = Vec::with_capacity(entries.len());
-                for j in 0..entries.len() {
-                    if !keys.is_null(j) && !vals.is_null(j) {
-                        doc.push((keys.value(j).to_string(), vals.value(j).to_string()));
-                    }
-                }
-                Some(doc)
-            })
-            .collect();
-    }
-    if let Some(strings) = array.as_any().downcast_ref::<StringArray>() {
-        return (0..strings.len())
-            .map(|i| {
-                if strings.is_null(i) {
-                    return None;
-                }
-                match serde_json::from_str::<serde_json::Value>(strings.value(i)) {
-                    Ok(serde_json::Value::Object(map)) => Some(
-                        map.into_iter()
-                            .map(|(k, v)| {
-                                let rendered = match v {
-                                    serde_json::Value::String(s) => s,
-                                    other => other.to_string(),
-                                };
-                                (k, rendered)
-                            })
-                            .collect(),
-                    ),
-                    _ => None,
-                }
-            })
-            .collect();
-    }
-    Vec::new()
-}
-
 /// Persist the analyzer's per-key statistics into the service catalog's
 /// `attribute_stats` table (epic #737, #733), keyed by
 /// (tenant, dataset, signal, key). Failures are logged and swallowed —
@@ -314,6 +264,7 @@ pub async fn persist_stats(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::arrow::array::StringArray;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
 
@@ -432,6 +383,49 @@ mod tests {
         assert!(!ns.capped);
         assert_eq!(stats["pod"].present_rows, 2);
         assert_eq!(stats["pod"].distinct, 2);
+    }
+
+    /// A typed-layout container (four typed maps + CBOR residue) must feed
+    /// the same per-key stats as the equivalent legacy JSON container —
+    /// across a string key, an int key, and a residue (array) key.
+    #[test]
+    fn stats_see_the_same_keys_over_a_typed_batch_as_over_the_equivalent_legacy_batch() {
+        let row = serde_json::Map::from_iter([
+            ("namespace".to_string(), serde_json::json!("prod")),
+            ("retries".to_string(), serde_json::json!(3)),
+            ("tags".to_string(), serde_json::json!(["a", "b"])),
+        ]);
+        let legacy_schema = Arc::new(Schema::new(vec![Field::new(
+            "span_attributes",
+            DataType::Utf8,
+            true,
+        )]));
+        let legacy_batch = RecordBatch::try_new(
+            legacy_schema,
+            vec![Arc::new(StringArray::from(vec![Some(
+                serde_json::Value::Object(row.clone()).to_string(),
+            )]))],
+        )
+        .unwrap();
+
+        let (fields, arrays) =
+            common::testing::typed_attribute_columns("span_attributes", &[Some(row)]);
+        let typed_schema = Arc::new(Schema::new(fields.to_vec()));
+        let typed_batch = RecordBatch::try_new(typed_schema, arrays.to_vec()).unwrap();
+
+        let (legacy_stats, legacy_total) = analyze_batches(&[legacy_batch]);
+        let (typed_stats, typed_total) = analyze_batches(&[typed_batch]);
+
+        assert_eq!(typed_total, legacy_total);
+        assert_eq!(
+            typed_stats.keys().collect::<Vec<_>>(),
+            legacy_stats.keys().collect::<Vec<_>>()
+        );
+        for (key, expected) in &legacy_stats {
+            let actual = &typed_stats[key];
+            assert_eq!(actual.present_rows, expected.present_rows, "key {key}");
+            assert_eq!(actual.distinct, expected.distinct, "key {key}");
+        }
     }
 
     /// Folding batch-by-batch must produce exactly what analyzing them all

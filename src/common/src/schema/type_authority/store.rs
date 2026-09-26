@@ -388,6 +388,76 @@ impl Catalog {
             }
         }
     }
+
+    /// Every established canonical type for one (tenant, dataset, signal) —
+    /// one query per table rather than one per candidate key. Used by the
+    /// compactor's typed-table promotion filter (epic #737, change
+    /// otel-native-schema).
+    pub async fn list_attribute_types_for_table(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+    ) -> Result<Vec<AttributeKeyType>, StoreError> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let rows = query(
+                    "SELECT attr_key, level, canonical_type FROM attribute_types \
+                     WHERE tenant_id = ? AND dataset_id = ? AND signal = ?",
+                )
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .fetch_all(pool)
+                .await?;
+                rows.iter().map(row_to_key_type).collect()
+            }
+            Catalog::Postgres(pool) => {
+                let rows = query(
+                    "SELECT attr_key, level, canonical_type FROM attribute_types \
+                     WHERE tenant_id = $1 AND dataset_id = $2 AND signal = $3",
+                )
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .fetch_all(pool)
+                .await?;
+                rows.iter().map(row_to_key_type).collect()
+            }
+        }
+    }
+}
+
+/// One key's committed canonical type at one attribute level, scoped to a
+/// single (tenant, dataset, signal) table — the shape
+/// [`Catalog::list_attribute_types_for_table`] needs and
+/// [`AttributeTypeRecord`] doesn't carry (it already knows its key).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttributeKeyType {
+    pub attr_key: String,
+    pub level: AttributeLevel,
+    pub canonical_type: CanonicalType,
+}
+
+/// Decodes a stored `level` column, shared by every row decoder that reads
+/// one.
+fn parse_level(level: &str) -> Result<AttributeLevel, StoreError> {
+    AttributeLevel::parse(level)
+        .ok_or_else(|| StoreError::Corrupt(format!("unknown level `{level}`")))
+}
+
+fn row_to_key_type<R: Row>(row: &R) -> Result<AttributeKeyType, StoreError>
+where
+    for<'a> &'a str: sqlx::ColumnIndex<R>,
+    for<'a> String: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+{
+    let canonical_type: String = row.get("canonical_type");
+    let level: String = row.get("level");
+    Ok(AttributeKeyType {
+        attr_key: row.get("attr_key"),
+        level: parse_level(&level)?,
+        canonical_type: CanonicalType::parse(&canonical_type)?,
+    })
 }
 
 /// Decodes the same `canonical_type`/`source`/`hint_schema_url`/
@@ -405,8 +475,7 @@ where
     Ok(AttributeTypeRecord {
         dataset: row.get("dataset_id"),
         signal: row.get("signal"),
-        level: AttributeLevel::parse(&level)
-            .ok_or_else(|| StoreError::Corrupt(format!("unknown level `{level}`")))?,
+        level: parse_level(&level)?,
         canonical_type: stored.canonical,
         source: stored.source,
         hint_schema_url: stored.hint_schema_url,
