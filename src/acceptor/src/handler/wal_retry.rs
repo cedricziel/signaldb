@@ -176,6 +176,7 @@ impl WalRetryConsumer {
                     &self.flight_transport,
                     batch,
                     entry.metadata.as_deref(),
+                    entry.id,
                 )
                 .await
                 {
@@ -858,5 +859,159 @@ mod tests {
             }
         }
         assert!(saw_marker, "expected a .rejected.json marker file");
+    }
+
+    /// A `FlightService` that accepts every `do_put` and records the
+    /// `app_metadata` of the first `FlightData` message it received, so a
+    /// test can assert what the retry consumer actually sent.
+    #[derive(Clone)]
+    struct CapturingFlightService {
+        captured_metadata: Arc<std::sync::Mutex<Option<bytes::Bytes>>>,
+    }
+
+    #[tonic::async_trait]
+    impl arrow_flight::flight_service_server::FlightService for CapturingFlightService {
+        type HandshakeStream = futures::stream::BoxStream<
+            'static,
+            Result<arrow_flight::HandshakeResponse, tonic::Status>,
+        >;
+        type ListFlightsStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::FlightInfo, tonic::Status>>;
+        type DoGetStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::FlightData, tonic::Status>>;
+        type DoPutStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::PutResult, tonic::Status>>;
+        type DoExchangeStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::FlightData, tonic::Status>>;
+        type DoActionStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::Result, tonic::Status>>;
+        type ListActionsStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::ActionType, tonic::Status>>;
+
+        async fn handshake(
+            &self,
+            _request: tonic::Request<tonic::Streaming<arrow_flight::HandshakeRequest>>,
+        ) -> Result<tonic::Response<Self::HandshakeStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("handshake"))
+        }
+        async fn list_flights(
+            &self,
+            _request: tonic::Request<arrow_flight::Criteria>,
+        ) -> Result<tonic::Response<Self::ListFlightsStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("list_flights"))
+        }
+        async fn get_flight_info(
+            &self,
+            _request: tonic::Request<arrow_flight::FlightDescriptor>,
+        ) -> Result<tonic::Response<arrow_flight::FlightInfo>, tonic::Status> {
+            Err(tonic::Status::unimplemented("get_flight_info"))
+        }
+        async fn poll_flight_info(
+            &self,
+            _request: tonic::Request<arrow_flight::FlightDescriptor>,
+        ) -> Result<tonic::Response<arrow_flight::PollInfo>, tonic::Status> {
+            Err(tonic::Status::unimplemented("poll_flight_info"))
+        }
+        async fn get_schema(
+            &self,
+            _request: tonic::Request<arrow_flight::FlightDescriptor>,
+        ) -> Result<tonic::Response<arrow_flight::SchemaResult>, tonic::Status> {
+            Err(tonic::Status::unimplemented("get_schema"))
+        }
+        async fn do_get(
+            &self,
+            _request: tonic::Request<arrow_flight::Ticket>,
+        ) -> Result<tonic::Response<Self::DoGetStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("do_get"))
+        }
+        async fn do_put(
+            &self,
+            request: tonic::Request<tonic::Streaming<arrow_flight::FlightData>>,
+        ) -> Result<tonic::Response<Self::DoPutStream>, tonic::Status> {
+            use futures::StreamExt;
+            let mut stream = request.into_inner();
+            if let Some(Ok(first)) = stream.next().await {
+                *self.captured_metadata.lock().unwrap() = Some(first.app_metadata);
+            }
+            Ok(tonic::Response::new(futures::stream::empty().boxed()))
+        }
+        async fn do_exchange(
+            &self,
+            _request: tonic::Request<tonic::Streaming<arrow_flight::FlightData>>,
+        ) -> Result<tonic::Response<Self::DoExchangeStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("do_exchange"))
+        }
+        async fn do_action(
+            &self,
+            _request: tonic::Request<arrow_flight::Action>,
+        ) -> Result<tonic::Response<Self::DoActionStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("do_action"))
+        }
+        async fn list_actions(
+            &self,
+            _request: tonic::Request<arrow_flight::Empty>,
+        ) -> Result<tonic::Response<Self::ListActionsStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("list_actions"))
+        }
+    }
+
+    #[tokio::test]
+    async fn retried_entry_carries_its_own_id_as_ingest_id() {
+        // The retry consumer re-forwards an entry the hot path already wrote
+        // to the WAL; the writer must see the *entry's* id as `ingest_id`
+        // (not a freshly minted one) so dedup recognizes the resend.
+        let catalog = common::catalog::Catalog::new_in_memory().await.unwrap();
+
+        let captured = CapturingFlightService {
+            captured_metadata: Arc::new(std::sync::Mutex::new(None)),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let writer_addr = listener.local_addr().unwrap();
+        let service_for_server = captured.clone();
+        tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(common::flight::flight_service_server(service_for_server))
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                .await
+                .unwrap();
+        });
+        ServiceBootstrap::new_for_test_with_catalog(
+            catalog.clone(),
+            ServiceType::Writer,
+            &writer_addr.to_string(),
+        )
+        .await
+        .unwrap();
+
+        let acceptor_bootstrap = ServiceBootstrap::new_for_test_with_catalog(
+            catalog,
+            ServiceType::Acceptor,
+            "127.0.0.1:0",
+        )
+        .await
+        .unwrap();
+        let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
+
+        let temp_dir = TempDir::new().unwrap();
+        let manager = Arc::new(test_manager(temp_dir.path()));
+        let wal = manager
+            .get_wal("acme", "production", "traces")
+            .await
+            .unwrap();
+        let batch_bytes = common::wal::record_batch_to_bytes(&sample_record_batch()).unwrap();
+        let entry_id = wal
+            .append(WalOperation::WriteTraces, batch_bytes, None)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+
+        let mut consumer = WalRetryConsumer::new(manager.clone(), flight_transport)
+            .with_timing(Duration::from_secs(1), Duration::ZERO);
+        let stats = consumer.run_once().await.unwrap();
+        assert_eq!(stats.retried, 1);
+
+        let metadata = captured.captured_metadata.lock().unwrap().clone().unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&metadata).unwrap();
+        assert_eq!(value["ingest_id"], entry_id.to_string());
     }
 }

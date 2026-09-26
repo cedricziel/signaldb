@@ -335,7 +335,6 @@ impl PrometheusHandler {
                 "target_table": target_table,
                 "tenant_id": tenant_context.tenant_id,
                 "dataset_id": tenant_context.dataset_id,
-                "wal_entry_id": wal_entry_id,
                 "source": "prometheus_remote_write"
             });
             if let Some((traceparent, tracestate)) =
@@ -352,6 +351,7 @@ impl PrometheusHandler {
                 &self.flight_transport,
                 record_batch,
                 Some(&metadata.to_string()),
+                wal_entry_id,
             )
             .await
             {
