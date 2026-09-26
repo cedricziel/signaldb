@@ -27,7 +27,7 @@ Most of this landed alongside layer 1: `common::schema::logical` declares the lo
 - [x] 2.3 Test that each signal's current physical schema realizes the logical schema: every column is a logical field (directly or by alias), an attribute container, or `physical_only`
 - [x] 2.4 Give `LogicalSchema` its own version constant, matched to `schemas.toml`'s `logical_schema_version`, with a fingerprint test that fails when the field set changes without a bump
 - [x] 2.5 Document the three version axes (Flight wire vs storage, `physical-vN`, logical) in the `flight-schemas` skill
-- [ ] 2.6 `cargo test -p common -p querier` green; lint/format/machete
+- [x] 2.6 `cargo test -p common -p querier` green; lint/format/machete
 
 ## 3. Type authority (one canonical type per tenant+dataset+field)
 
