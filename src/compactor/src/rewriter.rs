@@ -558,8 +558,37 @@ impl ParquetRewriter {
             "profiles" => &m.profiles,
             _ => &[],
         };
-        let (decision, new_streaks) =
-            crate::attr_promotion::decide(&stats, &materialized, pinned, promotion);
+        // On the typed layout, only string-home keys are eligible for
+        // promotion (a `label_<key>` column can't safely stringify a
+        // non-string canonical value) -- one type-authority query per table
+        // per cycle, not per candidate key.
+        let typed_string_keys = if crate::attr_promotion::schema_is_typed(&current_schema) {
+            let source_signal = common::discovery::signal_for_source(table_name).unwrap_or(signal);
+            // The writer's TypeAuthority establishes `attribute_types` rows
+            // under the real dataset id (from `tenant_context`), not the
+            // namespace slug `dataset` is here -- resolve it or a
+            // slug-!=-id dataset finds no rows and promotion silently stops.
+            let dataset_id = config.get_dataset_id_by_slug(&tenant_id, dataset);
+            match catalog
+                .list_attribute_types_for_table(&tenant_id, &dataset_id, source_signal)
+                .await
+            {
+                Ok(types) => Some(crate::attr_promotion::string_only_keys(&types)),
+                Err(e) => {
+                    tracing::warn!(error = %e, table = %table_name, "Failed to load attribute types for promotion pass");
+                    Some(std::collections::HashSet::new())
+                }
+            }
+        } else {
+            None
+        };
+        let (decision, new_streaks) = crate::attr_promotion::decide(
+            &stats,
+            &materialized,
+            pinned,
+            promotion,
+            typed_string_keys.as_ref(),
+        );
         crate::attr_promotion::log_decision(table_name, &decision, promotion.dry_run);
         for (key, streak) in new_streaks {
             if let Err(e) = catalog

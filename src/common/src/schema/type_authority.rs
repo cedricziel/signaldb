@@ -2,12 +2,12 @@ mod authority;
 mod store;
 
 pub use authority::{AuthorityError, SignalScope, TypeAuthority};
-pub use store::{AttributeTypeRecord, StoreError, StoredType};
+pub use store::{AttributeKeyType, AttributeTypeRecord, StoreError, StoredType};
 
 use crate::schema::logical::{AttributeLevel, LogicalType};
 
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema,
+    Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize, utoipa::ToSchema,
 )]
 #[serde(rename_all = "snake_case")]
 pub enum CanonicalType {

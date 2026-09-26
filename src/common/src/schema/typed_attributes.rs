@@ -34,6 +34,15 @@ pub fn residue_column(container: &str) -> String {
     format!("{container}_residue")
 }
 
+/// Whether `field_names` (an Arrow or Iceberg schema's field names) include
+/// at least one typed-layout residue column ([`residue_column`]) — i.e.
+/// whether the schema uses the typed attribute layout rather than the
+/// legacy single map/JSON column.
+pub fn is_typed_layout<'a>(field_names: impl IntoIterator<Item = &'a str>) -> bool {
+    let suffix = residue_column("");
+    field_names.into_iter().any(|name| name.ends_with(&suffix))
+}
+
 /// The `schemas.toml` field type that declares a container in the typed
 /// layout; the parser expands it into [`typed_fields`].
 pub const TYPED_ATTRIBUTES_TYPE: &str = "typed_attributes";
@@ -83,6 +92,14 @@ mod tests {
                 "span_attributes_residue",
             ]
         );
+    }
+
+    #[test]
+    fn is_typed_layout_detects_a_residue_column() {
+        assert!(!is_typed_layout(["log_attributes", "label_http_method"]));
+        assert!(is_typed_layout(
+            typed_columns("span_attributes").iter().map(String::as_str)
+        ));
     }
 
     #[test]
