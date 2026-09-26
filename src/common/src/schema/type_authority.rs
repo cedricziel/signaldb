@@ -1,5 +1,7 @@
+mod authority;
 mod store;
 
+pub use authority::{AuthorityError, SignalScope, TypeAuthority};
 pub use store::{StoreError, StoredType};
 
 use crate::schema::logical::{AttributeLevel, LogicalType};
