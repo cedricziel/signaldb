@@ -101,7 +101,7 @@ analyzer plus query-demand counters flushed by the querier, and a promote_streak
 
 - **InMemoryFlightTransport**: Connection pooling (max 50 connections, 30s connect timeout, 5min expiry) + capability-based client lookup. The per-request deadline is separate from the connect timeout and is derived from `querier.query_timeout` plus a grace margin, so the callee's own timeout always fires first.
 - **ServiceRegistry** (Router-specific): Cached HashMap of services, polls catalog at configurable interval
-- **Service selection**: Round-robin across capable services (`AtomicUsize` counter with `fetch_add` in `transport.rs`)
+- **Service selection**: Round-robin across capable services (`AtomicUsize` counter with `fetch_add` in `transport.rs`); the acceptor→writer forward instead uses keyed rendezvous hashing on `ingest_id` (`select_rendezvous`)
 - **TTL-based cleanup**: Stale services auto-removed
 
 ## Configuration

@@ -234,7 +234,6 @@ impl MetricsHandler {
                 "target_table": target_table,
                 "tenant_id": tenant_context.tenant_id,
                 "dataset_id": tenant_context.dataset_id,
-                "wal_entry_id": wal_entry_id
             });
             if let Some((traceparent, tracestate)) =
                 common::flight::trace_context::current_trace_context_fields()
@@ -825,5 +824,265 @@ mod tests {
             "metrics_exponential_histogram"
         );
         assert_eq!(partitions["summary"].0, "metrics_summary");
+    }
+
+    mod ingest_id_tests {
+        //! Each metric-type partition writes its own WAL entry and is
+        //! forwarded independently (issue #1734 step 2), so a request with
+        //! two partitions must stamp two distinct `ingest_id`s, one per
+        //! DoPut.
+
+        use super::*;
+        use arrow_flight::flight_service_server::FlightService;
+        use common::auth::{TenantContext, TenantSource};
+        use common::catalog::Catalog;
+        use common::service_bootstrap::{ServiceBootstrap, ServiceType};
+        use common::wal::WalConfig;
+        use tempfile::TempDir;
+
+        fn test_tenant_context() -> TenantContext {
+            TenantContext {
+                tenant_id: "acme".to_string(),
+                dataset_id: "production".to_string(),
+                tenant_slug: "acme".to_string(),
+                dataset_slug: "production".to_string(),
+                api_key_name: Some("test-key".to_string()),
+                api_key_scopes: None,
+                api_key_dataset_ids: None,
+                oauth_tenant_grants: None,
+                api_key_allowed_origins: None,
+                user_id: None,
+                role: None,
+                is_instance_admin: false,
+                session_id: None,
+                source: TenantSource::Config,
+            }
+        }
+
+        fn test_wal_manager(base_dir: &std::path::Path) -> WalManager {
+            let config = WalConfig::with_defaults(base_dir.to_path_buf());
+            WalManager::new(config.clone(), config.clone(), config.clone(), config)
+        }
+
+        fn two_partition_request() -> ExportMetricsServiceRequest {
+            ExportMetricsServiceRequest {
+                resource_metrics: vec![ResourceMetrics {
+                    resource: Some(Resource {
+                        attributes: vec![],
+                        dropped_attributes_count: 0,
+                        entity_refs: vec![],
+                    }),
+                    scope_metrics: vec![ScopeMetrics {
+                        scope: None,
+                        metrics: vec![
+                            Metric {
+                                name: "gauge_metric".to_string(),
+                                description: String::new(),
+                                unit: "1".to_string(),
+                                data: Some(Data::Gauge(Gauge {
+                                    data_points: vec![NumberDataPoint {
+                                        attributes: vec![],
+                                        start_time_unix_nano: 1000,
+                                        time_unix_nano: 2000,
+                                        value: Some(number_data_point::Value::AsDouble(1.0)),
+                                        exemplars: vec![],
+                                        flags: 0,
+                                    }],
+                                })),
+                                metadata: vec![],
+                            },
+                            Metric {
+                                name: "sum_metric".to_string(),
+                                description: String::new(),
+                                unit: "1".to_string(),
+                                data: Some(Data::Sum(Sum {
+                                    data_points: vec![NumberDataPoint {
+                                        attributes: vec![],
+                                        start_time_unix_nano: 1000,
+                                        time_unix_nano: 2000,
+                                        value: Some(number_data_point::Value::AsInt(1)),
+                                        exemplars: vec![],
+                                        flags: 0,
+                                    }],
+                                    aggregation_temporality: AggregationTemporality::Cumulative
+                                        .into(),
+                                    is_monotonic: true,
+                                })),
+                                metadata: vec![],
+                            },
+                        ],
+                        schema_url: String::new(),
+                    }],
+                    schema_url: String::new(),
+                }],
+            }
+        }
+
+        /// A `FlightService` that accepts every `do_put` and records the
+        /// `app_metadata` of the first `FlightData` message of each call.
+        #[derive(Clone)]
+        struct CapturingFlightService {
+            captured: Arc<tokio::sync::Mutex<Vec<bytes::Bytes>>>,
+        }
+
+        #[tonic::async_trait]
+        impl FlightService for CapturingFlightService {
+            type HandshakeStream = futures::stream::BoxStream<
+                'static,
+                Result<arrow_flight::HandshakeResponse, tonic::Status>,
+            >;
+            type ListFlightsStream = futures::stream::BoxStream<
+                'static,
+                Result<arrow_flight::FlightInfo, tonic::Status>,
+            >;
+            type DoGetStream = futures::stream::BoxStream<
+                'static,
+                Result<arrow_flight::FlightData, tonic::Status>,
+            >;
+            type DoPutStream =
+                futures::stream::BoxStream<'static, Result<arrow_flight::PutResult, tonic::Status>>;
+            type DoExchangeStream = futures::stream::BoxStream<
+                'static,
+                Result<arrow_flight::FlightData, tonic::Status>,
+            >;
+            type DoActionStream =
+                futures::stream::BoxStream<'static, Result<arrow_flight::Result, tonic::Status>>;
+            type ListActionsStream = futures::stream::BoxStream<
+                'static,
+                Result<arrow_flight::ActionType, tonic::Status>,
+            >;
+
+            async fn handshake(
+                &self,
+                _request: tonic::Request<tonic::Streaming<arrow_flight::HandshakeRequest>>,
+            ) -> Result<tonic::Response<Self::HandshakeStream>, tonic::Status> {
+                Err(tonic::Status::unimplemented("handshake"))
+            }
+            async fn list_flights(
+                &self,
+                _request: tonic::Request<arrow_flight::Criteria>,
+            ) -> Result<tonic::Response<Self::ListFlightsStream>, tonic::Status> {
+                Err(tonic::Status::unimplemented("list_flights"))
+            }
+            async fn get_flight_info(
+                &self,
+                _request: tonic::Request<arrow_flight::FlightDescriptor>,
+            ) -> Result<tonic::Response<arrow_flight::FlightInfo>, tonic::Status> {
+                Err(tonic::Status::unimplemented("get_flight_info"))
+            }
+            async fn poll_flight_info(
+                &self,
+                _request: tonic::Request<arrow_flight::FlightDescriptor>,
+            ) -> Result<tonic::Response<arrow_flight::PollInfo>, tonic::Status> {
+                Err(tonic::Status::unimplemented("poll_flight_info"))
+            }
+            async fn get_schema(
+                &self,
+                _request: tonic::Request<arrow_flight::FlightDescriptor>,
+            ) -> Result<tonic::Response<arrow_flight::SchemaResult>, tonic::Status> {
+                Err(tonic::Status::unimplemented("get_schema"))
+            }
+            async fn do_get(
+                &self,
+                _request: tonic::Request<arrow_flight::Ticket>,
+            ) -> Result<tonic::Response<Self::DoGetStream>, tonic::Status> {
+                Err(tonic::Status::unimplemented("do_get"))
+            }
+            async fn do_put(
+                &self,
+                request: tonic::Request<tonic::Streaming<arrow_flight::FlightData>>,
+            ) -> Result<tonic::Response<Self::DoPutStream>, tonic::Status> {
+                use futures::StreamExt;
+                let mut stream = request.into_inner();
+                if let Some(Ok(first)) = stream.next().await {
+                    self.captured.lock().await.push(first.app_metadata);
+                }
+                Ok(tonic::Response::new(futures::stream::empty().boxed()))
+            }
+            async fn do_exchange(
+                &self,
+                _request: tonic::Request<tonic::Streaming<arrow_flight::FlightData>>,
+            ) -> Result<tonic::Response<Self::DoExchangeStream>, tonic::Status> {
+                Err(tonic::Status::unimplemented("do_exchange"))
+            }
+            async fn do_action(
+                &self,
+                _request: tonic::Request<arrow_flight::Action>,
+            ) -> Result<tonic::Response<Self::DoActionStream>, tonic::Status> {
+                Err(tonic::Status::unimplemented("do_action"))
+            }
+            async fn list_actions(
+                &self,
+                _request: tonic::Request<arrow_flight::Empty>,
+            ) -> Result<tonic::Response<Self::ListActionsStream>, tonic::Status> {
+                Err(tonic::Status::unimplemented("list_actions"))
+            }
+        }
+
+        #[tokio::test]
+        async fn two_partitions_forward_with_two_distinct_ingest_ids() {
+            let catalog = Catalog::new_in_memory().await.unwrap();
+
+            let captured: Arc<tokio::sync::Mutex<Vec<bytes::Bytes>>> =
+                Arc::new(tokio::sync::Mutex::new(Vec::new()));
+            let service = CapturingFlightService {
+                captured: captured.clone(),
+            };
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let writer_addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(common::flight::flight_service_server(service))
+                    .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                    .await
+                    .unwrap();
+            });
+            ServiceBootstrap::new_for_test_with_catalog(
+                catalog.clone(),
+                ServiceType::Writer,
+                &writer_addr.to_string(),
+            )
+            .await
+            .unwrap();
+
+            let acceptor_bootstrap = ServiceBootstrap::new_for_test_with_catalog(
+                catalog,
+                ServiceType::Acceptor,
+                "127.0.0.1:0",
+            )
+            .await
+            .unwrap();
+            let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
+
+            let temp_dir = TempDir::new().unwrap();
+            let wal_manager = Arc::new(test_wal_manager(temp_dir.path()));
+            let processor_registry = Arc::new(ProcessorRegistry::new(
+                Arc::new(Catalog::new_in_memory().await.unwrap()),
+                &common::config::ProcessorsConfig::default(),
+            ));
+
+            let handler = MetricsHandler::new(flight_transport, wal_manager, processor_registry);
+            let tenant_context = test_tenant_context();
+
+            handler
+                .handle_grpc_otlp_metrics(&tenant_context, two_partition_request())
+                .await
+                .unwrap();
+
+            let captured = captured.lock().await;
+            assert_eq!(captured.len(), 2, "expected one DoPut per partition");
+
+            let ids: std::collections::HashSet<String> = captured
+                .iter()
+                .map(|metadata| {
+                    let value: serde_json::Value = serde_json::from_slice(metadata).unwrap();
+                    value["ingest_id"]
+                        .as_str()
+                        .expect("ingest_id must be present")
+                        .to_string()
+                })
+                .collect();
+            assert_eq!(ids.len(), 2, "each partition must carry its own ingest_id");
+        }
     }
 }

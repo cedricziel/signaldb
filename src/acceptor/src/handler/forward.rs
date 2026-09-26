@@ -57,15 +57,17 @@ pub fn classify_forward_failure(error: &anyhow::Error) -> ForwardFailureKind {
 }
 
 /// Overwrite the `traceparent`/`tracestate` fields in the metadata JSON with
-/// the current span's context. Returns the input unchanged when it is not a
-/// JSON object or no context is active.
-fn restamp_trace_context(metadata_json: &str) -> String {
-    let Ok(mut value) = serde_json::from_str::<serde_json::Value>(metadata_json) else {
-        return metadata_json.to_owned();
-    };
+/// the current span's context, and stamp `ingest_id` (the WAL entry id this
+/// DoPut carries). Returns the input with only `ingest_id` added when it is
+/// not a JSON object (falls back to a bare object) so every DoPut can be
+/// deduplicated on the writer side.
+fn stamp_ingest_metadata(metadata_json: &str, ingest_id: Uuid) -> String {
+    let mut value = serde_json::from_str::<serde_json::Value>(metadata_json)
+        .unwrap_or_else(|_| serde_json::json!({}));
     let Some(obj) = value.as_object_mut() else {
         return metadata_json.to_owned();
     };
+    obj.insert("ingest_id".to_string(), ingest_id.to_string().into());
     if let Some((traceparent, tracestate)) =
         common::flight::trace_context::current_trace_context_fields()
     {
@@ -74,17 +76,28 @@ fn restamp_trace_context(metadata_json: &str) -> String {
             Some(ts) => obj.insert("tracestate".to_string(), ts.into()),
             None => obj.remove("tracestate"),
         };
-        serde_json::to_string(&value).unwrap_or_else(|_| metadata_json.to_owned())
-    } else {
-        metadata_json.to_owned()
     }
+    serde_json::to_string(&value).unwrap_or_else(|_| metadata_json.to_owned())
+}
+
+/// Build the app_metadata bytes for the first FlightData message of a DoPut:
+/// the caller's metadata JSON (or an empty object when none is given) with
+/// `ingest_id` and the current trace context stamped in. Pure so it can be
+/// unit tested without a Flight transport.
+fn build_first_message_metadata(metadata_json: Option<&str>, ingest_id: Uuid) -> Bytes {
+    let base = metadata_json.unwrap_or("{}");
+    Bytes::from(stamp_ingest_metadata(base, ingest_id).into_bytes())
 }
 
 /// Forward a RecordBatch to a writer service with Storage capability.
 ///
 /// `metadata_json` is attached as `app_metadata` on the first FlightData
 /// message (the schema message) so the writer can route the batch to the
-/// right table.
+/// right table. `ingest_id` is the acceptor WAL entry id for this batch; it
+/// is stamped into that same metadata as `"ingest_id"` so the writer can
+/// deduplicate resends of the same entry, and it also selects which writer
+/// receives the batch (see [`InMemoryFlightTransport::get_client_for_capability_keyed`]),
+/// so every resend of a given entry is pinned to the same writer.
 ///
 /// Returns an error if no storage service is discoverable, the batch cannot
 /// be encoded, or the Flight put fails. The caller decides whether the data
@@ -93,11 +106,12 @@ pub async fn forward_batch_to_writer(
     flight_transport: &InMemoryFlightTransport,
     record_batch: RecordBatch,
     metadata_json: Option<&str>,
+    ingest_id: Uuid,
 ) -> anyhow::Result<()> {
     // Resolve writer address up-front so the CLIENT span carries
     // server.address per gRPC semconv (required on client call sites).
     let server_address = flight_transport
-        .get_client_and_address_for_capability(ServiceCapability::Storage)
+        .get_client_and_address_for_capability_keyed(ServiceCapability::Storage, ingest_id)
         .await
         .ok()
         .map(|(_, addr)| addr);
@@ -110,9 +124,10 @@ pub async fn forward_batch_to_writer(
         server_address.as_deref(),
     );
     let record_span = rpc_span.clone();
-    let result = forward_batch_to_writer_inner(flight_transport, record_batch, metadata_json)
-        .instrument(rpc_span)
-        .await;
+    let result =
+        forward_batch_to_writer_inner(flight_transport, record_batch, metadata_json, ingest_id)
+            .instrument(rpc_span)
+            .await;
     // Best-effort status: the underlying tonic code survives anyhow's
     // context chain via the root cause; anything else is UNKNOWN.
     let code = match &result {
@@ -159,8 +174,13 @@ pub fn spawn_forward_and_mark(
 ) -> tokio::task::JoinHandle<()> {
     tokio::spawn(
         async move {
-            match forward_batch_to_writer(&flight_transport, record_batch, metadata_json.as_deref())
-                .await
+            match forward_batch_to_writer(
+                &flight_transport,
+                record_batch,
+                metadata_json.as_deref(),
+                wal_entry_id,
+            )
+            .await
             {
                 Ok(()) => {
                     tracing::debug!(signal, "Successfully forwarded batch via Flight protocol");
@@ -181,9 +201,10 @@ async fn forward_batch_to_writer_inner(
     flight_transport: &InMemoryFlightTransport,
     record_batch: RecordBatch,
     metadata_json: Option<&str>,
+    ingest_id: Uuid,
 ) -> anyhow::Result<()> {
     let mut client = flight_transport
-        .get_client_for_capability(ServiceCapability::Storage)
+        .get_client_for_capability_keyed(ServiceCapability::Storage, ingest_id)
         .await
         .map_err(|e| anyhow::anyhow!("Failed to get Flight client for storage service: {e}"))?;
 
@@ -203,14 +224,12 @@ async fn forward_batch_to_writer_inner(
         .context("Failed to convert batch to flight data")?;
 
     // Add metadata to the first FlightData message (which contains the
-    // schema), re-stamping the trace context with the CLIENT span's own
-    // (we run instrumented, so the current span is the rpc.client span) —
-    // the handler-captured traceparent would skip this span otherwise.
-    if let Some(metadata_json) = metadata_json
-        && let Some(first) = flight_data.first_mut()
-    {
-        let restamped = restamp_trace_context(metadata_json);
-        first.app_metadata = Bytes::from(restamped.into_bytes());
+    // schema): the ingest id for writer-side dedup, and the trace context
+    // re-stamped with the CLIENT span's own (we run instrumented, so the
+    // current span is the rpc.client span) — the handler-captured
+    // traceparent would skip this span otherwise.
+    if let Some(first) = flight_data.first_mut() {
+        first.app_metadata = build_first_message_metadata(metadata_json, ingest_id);
     }
 
     let mut request = tonic::Request::new(stream::iter(flight_data));
@@ -301,5 +320,27 @@ mod tests {
             classify_forward_failure(&error),
             ForwardFailureKind::Transient
         );
+    }
+
+    #[test]
+    fn first_message_metadata_carries_ingest_id() {
+        let ingest_id = Uuid::new_v4();
+        let metadata = build_first_message_metadata(
+            Some(r#"{"schema_version":"v1","signal_type":"traces"}"#),
+            ingest_id,
+        );
+        let value: serde_json::Value = serde_json::from_slice(&metadata).unwrap();
+
+        assert_eq!(value["ingest_id"], ingest_id.to_string());
+        assert_eq!(value["signal_type"], "traces");
+    }
+
+    #[test]
+    fn first_message_metadata_carries_ingest_id_with_no_caller_metadata() {
+        let ingest_id = Uuid::new_v4();
+        let metadata = build_first_message_metadata(None, ingest_id);
+        let value: serde_json::Value = serde_json::from_slice(&metadata).unwrap();
+
+        assert_eq!(value["ingest_id"], ingest_id.to_string());
     }
 }

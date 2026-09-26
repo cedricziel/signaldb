@@ -227,6 +227,11 @@ bytes = "1"
 
 uuid = { version = "1.21.0", features = ["serde", "v4"] }
 
+# Fixed-key (non-randomized) hashing for rendezvous/HRW writer selection —
+# deliberately not std's RandomState, which reseeds per process and would
+# pin a given key to a different writer on every restart.
+twox-hash = "2.1.4"
+
 humantime-serde = "1.1.1"
 
 hex = "0.4"

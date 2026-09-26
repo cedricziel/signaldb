@@ -350,10 +350,10 @@ whether the answer is window-scoped, and how stale the statistics behind it are.
 `X-Tenant-ID`, or an instance-admin session/tenant-scoped credential where
 noted):
 
-| Endpoint                               | Description                                                   |
-| -------------------------------------- | ------------------------------------------------------------- |
-| `/api/v1/tenants`         | List/get/update/delete any tenant                             |
-| `/api/v1/users`           | Create a user outright                                        |
+| Endpoint                        | Description                                                   |
+| ------------------------------- | ------------------------------------------------------------- |
+| `/api/v1/tenants`               | List/get/update/delete any tenant                             |
+| `/api/v1/users`                 | Create a user outright                                        |
 | `/api/v1/tenants`               | Create a tenant (also reachable by an instance-admin session) |
 | `/api/v1/tenants/{id}/api-keys` | Manage a tenant's API keys                                    |
 | `/api/v1/tenants/{id}/datasets` | Manage a tenant's datasets                                    |
@@ -537,7 +537,7 @@ Each service creates a `ServiceBootstrap` at startup which:
 
 - `InMemoryFlightTransport`: Provides connection pooling (max 50 connections, 30s connect timeout, 5min expiry) and capability-based client lookup. The per-request deadline is a separate setting, derived from `querier.query_timeout` plus a grace margin so a slow query is bounded by the callee rather than aborted by the caller
 - `ServiceRegistry` (Router-specific): Cached HashMap of services, polls catalog at configurable interval
-- Service selection: round-robin across healthy instances (stable rotation order sorted by service id)
+- Service selection: round-robin across healthy instances (stable rotation order sorted by service id), except the acceptor's forward to writers, which pins each `ingest_id` to one writer by rendezvous hashing so resends reach the writer that deduplicates them (see [Flight communication](flight-communication.md))
 - Automatic TTL-based cleanup removes stale services that stop heartbeating
 
 ## Schema Management

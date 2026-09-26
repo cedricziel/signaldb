@@ -476,6 +476,36 @@ impl InMemoryFlightTransport {
         services.swap_remove(index)
     }
 
+    /// Pick a service by rendezvous (highest random weight) hashing of
+    /// `key` against each candidate's service id.
+    ///
+    /// Unlike round-robin, the same key always maps to the same service for
+    /// a given set of candidates, and only the keys owned by a
+    /// removed/added service remap when the candidate set changes — every
+    /// other key's choice is unaffected. Used to pin every DoPut for a given
+    /// `ingest_id` to one writer, so a resend of the same acceptor WAL entry
+    /// (hot path or retry consumer) always reaches the writer that can
+    /// dedup it.
+    ///
+    /// The hash uses a fixed seed (never `std`'s randomized `RandomState`)
+    /// so the mapping is stable across processes and restarts, not just
+    /// within one.
+    fn select_rendezvous(
+        services: Vec<FlightServiceMetadata>,
+        key: Uuid,
+    ) -> Option<FlightServiceMetadata> {
+        /// Arbitrary fixed seed: any constant works, as long as it is the
+        /// same on every acceptor instance so they all pin a given key to
+        /// the same writer.
+        const RENDEZVOUS_SEED: u64 = 0x5647_4442_4852_5730; // "SGDBHRW0"
+        services.into_iter().max_by_key(|service| {
+            let mut input = Vec::with_capacity(32);
+            input.extend_from_slice(key.as_bytes());
+            input.extend_from_slice(service.service_id.as_bytes());
+            twox_hash::XxHash64::oneshot(RENDEZVOUS_SEED, &input)
+        })
+    }
+
     /// Get a Flight client for a service with specific capability (round-robin)
     ///
     /// Uses the memoized discovery result and connects via the discovered
@@ -550,6 +580,69 @@ impl InMemoryFlightTransport {
         // discovery path so a caller can distinguish an unreachable catalog
         // from a capability nobody registered); this just drops the address.
         self.get_client_and_address_for_capability(capability)
+            .await
+            .map(|(client, _address)| client)
+    }
+
+    /// Like [`Self::get_client_and_address_for_capability`], but pins the
+    /// choice among healthy candidates to `key` via rendezvous hashing
+    /// (see [`Self::select_rendezvous`]) instead of round-robin.
+    #[tracing::instrument(level = "debug", skip_all, fields(capability = ?capability))]
+    pub async fn get_client_and_address_for_capability_keyed(
+        &self,
+        capability: ServiceCapability,
+        key: Uuid,
+    ) -> Result<(FlightServiceClient<Channel>, String), Box<dyn std::error::Error + Send + Sync>>
+    {
+        let services = self
+            .discover_services_by_capability_checked(capability.clone())
+            .await?;
+
+        let Some(service) = Self::select_rendezvous(services, key) else {
+            return Err("No services found with required capability".into());
+        };
+        let address = service.address.clone();
+
+        let first_err = match self.get_flight_client_for(&service).await {
+            Ok(client) => return Ok((client, address)),
+            Err(e) => e,
+        };
+
+        // The address may have come from a stale cache entry: drop it,
+        // re-discover once, and retry before giving up.
+        tracing::warn!(
+            "Failed to connect to {} for capability {capability:?}, re-discovering: {first_err}",
+            service.endpoint
+        );
+        self.invalidate_discovery_cache(&capability).await;
+
+        let services = self
+            .discover_services_by_capability(capability.clone())
+            .await;
+        let Some(service) = Self::select_rendezvous(services, key) else {
+            return Err(first_err);
+        };
+        let address = service.address.clone();
+        match self.get_flight_client_for(&service).await {
+            Ok(client) => Ok((client, address)),
+            Err(e) => {
+                // Do not keep a discovery result we could not connect to.
+                self.invalidate_discovery_cache(&capability).await;
+                Err(e)
+            }
+        }
+    }
+
+    /// Like [`Self::get_client_for_capability`], but selects the writer by
+    /// rendezvous hashing on `key` instead of round-robin. Used for DoPut so
+    /// every resend of a given `ingest_id` reaches the same writer.
+    #[tracing::instrument(level = "debug", skip_all, fields(capability = ?capability))]
+    pub async fn get_client_for_capability_keyed(
+        &self,
+        capability: ServiceCapability,
+        key: Uuid,
+    ) -> Result<FlightServiceClient<Channel>, Box<dyn std::error::Error + Send + Sync>> {
+        self.get_client_and_address_for_capability_keyed(capability, key)
             .await
             .map(|(client, _address)| client)
     }
@@ -1136,5 +1229,126 @@ mod tests {
             addr.to_string(),
             "returned address must be the bare host:port, not host:port:port"
         );
+    }
+
+    /// Build `count` fake storage services for `select_rendezvous` tests,
+    /// which only look at `service_id`/capabilities and never dial out.
+    fn fake_services(count: usize) -> Vec<FlightServiceMetadata> {
+        (0..count)
+            .map(|i| {
+                FlightServiceMetadata::new(
+                    Uuid::new_v4(),
+                    ServiceType::Writer,
+                    format!("writer-{i}:50051"),
+                    50051,
+                    vec![ServiceCapability::Storage],
+                )
+            })
+            .collect()
+    }
+
+    #[test]
+    fn rendezvous_selection_is_stable_for_the_same_key_and_candidate_set() {
+        let services = fake_services(5);
+        let key = Uuid::new_v4();
+
+        let first = InMemoryFlightTransport::select_rendezvous(services.clone(), key)
+            .expect("non-empty candidate set");
+        for _ in 0..10 {
+            let picked = InMemoryFlightTransport::select_rendezvous(services.clone(), key)
+                .expect("non-empty candidate set");
+            assert_eq!(picked.service_id, first.service_id);
+        }
+    }
+
+    #[test]
+    fn rendezvous_selection_is_stable_across_independent_calls_regardless_of_input_order() {
+        // Two "transport instances" (no shared state here beyond the pure
+        // function) must agree on the same key even if catalog listing order
+        // differs between them.
+        let mut services = fake_services(6);
+        let key = Uuid::new_v4();
+        let picked_in_order =
+            InMemoryFlightTransport::select_rendezvous(services.clone(), key).unwrap();
+
+        services.reverse();
+        let picked_reversed = InMemoryFlightTransport::select_rendezvous(services, key).unwrap();
+
+        assert_eq!(picked_in_order.service_id, picked_reversed.service_id);
+    }
+
+    #[test]
+    fn removing_a_writer_only_remaps_the_keys_that_were_pinned_to_it() {
+        let services = fake_services(3);
+        let keys: Vec<Uuid> = (0..2000).map(|_| Uuid::new_v4()).collect();
+
+        let before: std::collections::HashMap<Uuid, Uuid> = keys
+            .iter()
+            .map(|&key| {
+                let picked =
+                    InMemoryFlightTransport::select_rendezvous(services.clone(), key).unwrap();
+                (key, picked.service_id)
+            })
+            .collect();
+
+        let removed = services[0].service_id;
+        let remaining: Vec<FlightServiceMetadata> = services
+            .into_iter()
+            .filter(|s| s.service_id != removed)
+            .collect();
+        assert_eq!(remaining.len(), 2);
+
+        let mut remapped = 0usize;
+        for &key in &keys {
+            let after = InMemoryFlightTransport::select_rendezvous(remaining.clone(), key)
+                .unwrap()
+                .service_id;
+            let before_pick = before[&key];
+            if before_pick == removed {
+                remapped += 1;
+                assert!(
+                    remaining.iter().any(|s| s.service_id == after),
+                    "a key that was pinned to the removed writer must land on a survivor"
+                );
+            } else {
+                assert_eq!(
+                    after, before_pick,
+                    "a key that was not pinned to the removed writer must not move"
+                );
+            }
+        }
+        assert!(
+            remapped > 0,
+            "test is meaningless if no key was ever pinned to the removed writer"
+        );
+    }
+
+    #[test]
+    fn rendezvous_selection_distributes_roughly_evenly_over_10k_keys() {
+        let services = fake_services(4);
+        let mut counts: std::collections::HashMap<Uuid, usize> = std::collections::HashMap::new();
+
+        for _ in 0..10_000 {
+            let key = Uuid::new_v4();
+            let picked = InMemoryFlightTransport::select_rendezvous(services.clone(), key)
+                .expect("non-empty candidate set");
+            *counts.entry(picked.service_id).or_insert(0) += 1;
+        }
+
+        assert_eq!(counts.len(), services.len(), "every writer must get keys");
+        // Expected share per writer is 2500; a loose ±25% bound catches a
+        // broken hash (e.g. one that ignores the writer id) without being
+        // sensitive to ordinary statistical noise.
+        for count in counts.values() {
+            assert!(
+                (1875..=3125).contains(count),
+                "distribution too skewed: {count} keys (expected ~2500)"
+            );
+        }
+    }
+
+    #[test]
+    fn rendezvous_selection_on_empty_candidates_returns_none() {
+        assert!(InMemoryFlightTransport::select_rendezvous(Vec::new(), Uuid::new_v4()).is_none());
     }
 }
