@@ -8,10 +8,16 @@
 //! Every reader has to handle both, so the decode lives here rather than in
 //! each service — the querier reads these columns for label discovery, and the
 //! router reads them when shaping rows for the Loki-compatible API.
+//!
+//! This module decodes to strings from the legacy single-map/JSON layout;
+//! see [`typed`] for the codec between the JSON wire carrier and the newer
+//! typed attribute layout (four typed maps plus a CBOR residue column).
 
 use std::collections::BTreeMap;
 
 use datafusion::arrow::array::{Array, MapArray, RecordBatch, StringArray};
+
+pub mod typed;
 
 /// One row's attributes as string key/value pairs.
 pub type AttrDocument = BTreeMap<String, String>;

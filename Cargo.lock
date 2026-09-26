@@ -1299,6 +1299,7 @@ dependencies = [
  "base64 0.23.1",
  "bincode",
  "chrono",
+ "ciborium",
  "clap",
  "crc32fast",
  "criterion",
