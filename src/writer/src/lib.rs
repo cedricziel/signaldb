@@ -8,6 +8,9 @@ pub use processor::{FlushScope, ProcessorStats, WalProcessor};
 pub mod flight_iceberg;
 pub use flight_iceberg::IcebergWriterFlightService;
 
+pub mod ingest_dedup;
+pub use ingest_dedup::IngestDedup;
+
 pub mod reconcile;
 pub use reconcile::{ReconcilePassSummary, TableReconciler};
 

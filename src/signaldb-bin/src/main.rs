@@ -268,6 +268,11 @@ async fn main() -> Result<()> {
         &config.writer,
     );
 
+    // Seed the ingest-id dedup cache from WAL entries a previous run left on
+    // disk, so a restart does not reopen a window an acceptor resend could
+    // exploit (#1734 step 2). Must run after `open_existing_writer_wals`.
+    writer_flight_service.rebuild_ingest_dedup_from_wal().await;
+
     // Start background WAL processing for Iceberg writes
     let writer_bg_handle = writer_flight_service.start_background_processing();
 
