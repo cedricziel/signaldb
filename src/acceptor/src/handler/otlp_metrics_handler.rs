@@ -20,7 +20,7 @@ use common::wal::{WalOperation, record_batch_to_bytes};
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 
 use super::WalManager;
-use super::forward::forward_batch_to_writer;
+use super::forward::spawn_forward_and_mark;
 use super::ingest_error::IngestError;
 use super::metrics_partition;
 use super::processors_apply::apply_metric_processors;
@@ -245,32 +245,25 @@ impl MetricsHandler {
                 }
             }
 
-            // Step 2: Forward from WAL to writer via Flight
-            match forward_batch_to_writer(
-                &self.flight_transport,
+            // Step 2: Forward from WAL to writer via Flight, detached from
+            // this request future so a client disconnect cannot cancel it
+            // after the flush above (issue #1734). Awaiting the handle keeps
+            // behavior for connected clients unchanged.
+            let forward_task = spawn_forward_and_mark(
+                self.flight_transport.clone(),
+                wal.clone(),
+                wal_entry_id,
                 record_batch,
-                Some(&metadata.to_string()),
-            )
-            .await
-            {
-                Ok(()) => {
-                    tracing::debug!(
-                        metric_type = %metric_type,
-                        target_table = %target_table,
-                        "Successfully forwarded metrics via Flight"
-                    );
-                    // Mark WAL entry as processed after successful forwarding
-                    if let Err(e) = wal.mark_processed(wal_entry_id).await {
-                        tracing::warn!(entry_id = %wal_entry_id, error = %e, "Failed to mark WAL entry as processed");
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(
-                        metric_type = %metric_type,
-                        error = %e,
-                        "Failed to forward metrics - data remains in WAL for retry"
-                    );
-                }
+                Some(metadata.to_string()),
+                "metrics",
+            );
+            if let Err(e) = forward_task.await {
+                tracing::error!(
+                    metric_type = %metric_type,
+                    entry_id = %wal_entry_id,
+                    error = %e,
+                    "Forward-and-mark task for metrics did not complete"
+                );
             }
         }
 

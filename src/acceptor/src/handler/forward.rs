@@ -5,13 +5,17 @@
 //! hot path and by the WAL retry consumer when replaying entries whose
 //! initial forward failed.
 
+use std::sync::Arc;
+
 use anyhow::Context;
 use bytes::Bytes;
 use common::flight::batches_to_compressed_flight_data;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
+use common::wal::Wal;
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::{StreamExt, stream};
 use tracing::Instrument;
+use uuid::Uuid;
 
 /// What a failed forward implies about retrying the same batch.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -125,6 +129,52 @@ pub async fn forward_batch_to_writer(
         code,
     );
     result
+}
+
+/// Forward a WAL-durable batch to the writer and mark its WAL entry
+/// processed on success, detached from the caller's future.
+///
+/// The request handlers call this only after `wal.flush()` has already
+/// returned, so the batch is durable no matter what happens next. Running
+/// the forward + mark step inline in the request future meant a client
+/// disconnect (hyper/axum/tonic drop the future) could cancel it *after* the
+/// flush but *before* `mark_processed`, leaving the entry unmarked; the WAL
+/// retry consumer then re-forwarded it later and duplicated the data
+/// (issue #1734). `tokio::spawn` moves the step onto its own task so
+/// dropping the returned `JoinHandle` no longer cancels it — callers that
+/// stay connected simply `.await` the handle and see the same latency as
+/// before, while a disconnected caller's dropped future leaves the task
+/// running to completion.
+///
+/// Error semantics are unchanged: a forward failure is logged and the entry
+/// stays unprocessed for the retry consumer; the caller still acks the
+/// request either way.
+pub fn spawn_forward_and_mark(
+    flight_transport: Arc<InMemoryFlightTransport>,
+    wal: Arc<Wal>,
+    wal_entry_id: Uuid,
+    record_batch: RecordBatch,
+    metadata_json: Option<String>,
+    signal: &'static str,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(
+        async move {
+            match forward_batch_to_writer(&flight_transport, record_batch, metadata_json.as_deref())
+                .await
+            {
+                Ok(()) => {
+                    tracing::debug!(signal, "Successfully forwarded batch via Flight protocol");
+                    if let Err(e) = wal.mark_processed(wal_entry_id).await {
+                        tracing::warn!(entry_id = %wal_entry_id, signal, error = %e, "Failed to mark WAL entry as processed");
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(entry_id = %wal_entry_id, signal, error = %e, "Failed to forward batch - data remains in WAL for retry");
+                }
+            }
+        }
+        .instrument(tracing::Span::current()),
+    )
 }
 
 async fn forward_batch_to_writer_inner(
