@@ -153,6 +153,7 @@ async fn setup_prometheus_test_with_wal() -> (axum::Router, Arc<WalManager>, Tem
         catalog_uri: catalog_dsn,
         default_schemas: common::config::DefaultSchemas::default(),
         materialized_labels: Default::default(),
+        attribute_types: Default::default(),
     };
 
     // Configure test tenant

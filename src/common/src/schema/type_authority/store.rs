@@ -75,6 +75,65 @@ fn level_of(field: &LogicalFieldId) -> Result<&'static str, StoreError> {
     Ok(field.level.ok_or(StoreError::NoLevel)?.as_str())
 }
 
+/// How an upsert resolves a conflict on an already-established row.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Conflict {
+    /// The monotonic first-seen insert: an existing row is left untouched.
+    Keep,
+    /// The config-override path: an existing row is retyped.
+    Override,
+}
+
+const SQLITE_UPSERT_KEEP: &str = r#"
+INSERT INTO attribute_types
+    (tenant_id, dataset_id, signal, level, attr_key,
+     canonical_type, source, hint_schema_url, schema_version)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (tenant_id, dataset_id, signal, level, attr_key)
+    DO UPDATE SET attr_key = attribute_types.attr_key
+RETURNING canonical_type, source, hint_schema_url, schema_version, off_type_count
+"#;
+
+const SQLITE_UPSERT_OVERRIDE: &str = r#"
+INSERT INTO attribute_types
+    (tenant_id, dataset_id, signal, level, attr_key,
+     canonical_type, source, hint_schema_url, schema_version)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT (tenant_id, dataset_id, signal, level, attr_key)
+    DO UPDATE SET
+        canonical_type = excluded.canonical_type,
+        source = excluded.source,
+        hint_schema_url = excluded.hint_schema_url,
+        schema_version = excluded.schema_version,
+        updated_at = datetime('now')
+RETURNING canonical_type, source, hint_schema_url, schema_version, off_type_count
+"#;
+
+const POSTGRES_UPSERT_KEEP: &str = r#"
+INSERT INTO attribute_types
+    (tenant_id, dataset_id, signal, level, attr_key,
+     canonical_type, source, hint_schema_url, schema_version)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT (tenant_id, dataset_id, signal, level, attr_key)
+    DO UPDATE SET attr_key = attribute_types.attr_key
+RETURNING canonical_type, source, hint_schema_url, schema_version, off_type_count
+"#;
+
+const POSTGRES_UPSERT_OVERRIDE: &str = r#"
+INSERT INTO attribute_types
+    (tenant_id, dataset_id, signal, level, attr_key,
+     canonical_type, source, hint_schema_url, schema_version)
+VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+ON CONFLICT (tenant_id, dataset_id, signal, level, attr_key)
+    DO UPDATE SET
+        canonical_type = excluded.canonical_type,
+        source = excluded.source,
+        hint_schema_url = excluded.hint_schema_url,
+        schema_version = excluded.schema_version,
+        updated_at = NOW()
+RETURNING canonical_type, source, hint_schema_url, schema_version, off_type_count
+"#;
+
 fn row_to_stored<R: Row>(row: &R) -> Result<StoredType, StoreError>
 where
     for<'a> &'a str: sqlx::ColumnIndex<R>,
@@ -94,6 +153,64 @@ where
 }
 
 impl Catalog {
+    /// Insert `field`'s canonical type, or apply `conflict`'s resolution if a
+    /// row already exists.
+    async fn upsert_attribute_type(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        field: &LogicalFieldId,
+        resolution: Resolution<'_>,
+        conflict: Conflict,
+    ) -> Result<StoredType, StoreError> {
+        let level = level_of(field)?;
+        let canonical = resolution.canonical.as_str();
+        let source = resolution.source.as_str();
+        let hint_schema_url = resolution.hint_schema_url;
+        let schema_version = LogicalSchema::VERSION;
+
+        match self {
+            Catalog::Sqlite(pool) => {
+                let sql = match conflict {
+                    Conflict::Keep => SQLITE_UPSERT_KEEP,
+                    Conflict::Override => SQLITE_UPSERT_OVERRIDE,
+                };
+                let row = query(sql)
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(&field.source)
+                    .bind(level)
+                    .bind(&field.name)
+                    .bind(canonical)
+                    .bind(source)
+                    .bind(hint_schema_url)
+                    .bind(schema_version)
+                    .fetch_one(pool)
+                    .await?;
+                row_to_stored(&row)
+            }
+            Catalog::Postgres(pool) => {
+                let sql = match conflict {
+                    Conflict::Keep => POSTGRES_UPSERT_KEEP,
+                    Conflict::Override => POSTGRES_UPSERT_OVERRIDE,
+                };
+                let row = query(sql)
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(&field.source)
+                    .bind(level)
+                    .bind(&field.name)
+                    .bind(canonical)
+                    .bind(source)
+                    .bind(hint_schema_url)
+                    .bind(schema_version)
+                    .fetch_one(pool)
+                    .await?;
+                row_to_stored(&row)
+            }
+        }
+    }
+
     /// Commit the canonical type for `field` if none is stored yet, then
     /// return the committed row — the winner of a first-seen race, which may
     /// differ from `resolution` when a concurrent writer won first. Never
@@ -105,64 +222,29 @@ impl Catalog {
         field: &LogicalFieldId,
         resolution: Resolution<'_>,
     ) -> Result<StoredType, StoreError> {
-        let level = level_of(field)?;
-        let canonical = resolution.canonical.as_str();
-        let source = resolution.source.as_str();
-        let hint_schema_url = resolution.hint_schema_url;
-        let schema_version = LogicalSchema::VERSION;
+        self.upsert_attribute_type(tenant_id, dataset_id, field, resolution, Conflict::Keep)
+            .await
+    }
 
-        match self {
-            Catalog::Sqlite(pool) => {
-                let row = query(
-                    r#"
-                INSERT INTO attribute_types
-                    (tenant_id, dataset_id, signal, level, attr_key,
-                     canonical_type, source, hint_schema_url, schema_version)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT (tenant_id, dataset_id, signal, level, attr_key)
-                    DO UPDATE SET attr_key = attribute_types.attr_key
-                RETURNING canonical_type, source, hint_schema_url, schema_version, off_type_count
-                "#,
-                )
-                .bind(tenant_id)
-                .bind(dataset_id)
-                .bind(&field.source)
-                .bind(level)
-                .bind(&field.name)
-                .bind(canonical)
-                .bind(source)
-                .bind(hint_schema_url)
-                .bind(schema_version)
-                .fetch_one(pool)
-                .await?;
-                row_to_stored(&row)
-            }
-            Catalog::Postgres(pool) => {
-                let row = query(
-                    r#"
-                INSERT INTO attribute_types
-                    (tenant_id, dataset_id, signal, level, attr_key,
-                     canonical_type, source, hint_schema_url, schema_version)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-                ON CONFLICT (tenant_id, dataset_id, signal, level, attr_key)
-                    DO UPDATE SET attr_key = attribute_types.attr_key
-                RETURNING canonical_type, source, hint_schema_url, schema_version, off_type_count
-                "#,
-                )
-                .bind(tenant_id)
-                .bind(dataset_id)
-                .bind(&field.source)
-                .bind(level)
-                .bind(&field.name)
-                .bind(canonical)
-                .bind(source)
-                .bind(hint_schema_url)
-                .bind(schema_version)
-                .fetch_one(pool)
-                .await?;
-                row_to_stored(&row)
-            }
-        }
+    /// Pin `field`'s canonical type to `canonical` by operator config,
+    /// creating the row if none exists. The only path that may change an
+    /// already-established row's canonical type: `source` becomes `config`,
+    /// `hint_schema_url` is cleared, and `off_type_count` is preserved (an
+    /// existing row) or starts at zero (a new one).
+    pub async fn override_attribute_type(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        field: &LogicalFieldId,
+        canonical: CanonicalType,
+    ) -> Result<StoredType, StoreError> {
+        let resolution = Resolution {
+            canonical,
+            source: TypeSource::Config,
+            hint_schema_url: None,
+        };
+        self.upsert_attribute_type(tenant_id, dataset_id, field, resolution, Conflict::Override)
+            .await
     }
 
     /// The committed canonical type for `field`, if one has been established.

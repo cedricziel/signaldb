@@ -92,6 +92,19 @@ logs = ["namespace", "pod"]   # also: traces / metrics / profiles
 
 Per-signal allowlists of attribute keys promoted from the `*_attributes` JSON into dedicated `label_<key>` columns at ingest, so they match exactly (and support regex / ordered comparisons) instead of the substring-in-JSON approximation. Default empty. Applies to tables created after the change; older tables fall back to JSON matching. Per-tenant: a tenant schema override (`[auth.tenants.schema.materialized_labels]`) replaces the global set wholesale — resolved at table creation and in the writer's transforms. See `docs/architecture/storage-layout.md#materialized-labels`.
 
+#### Attribute type overrides
+
+```toml
+[[schema.attribute_types]]
+signal = "logs"        # logs | traces | metrics | profiles
+level = "record"       # resource | scope | record
+key = "retry.count"
+type = "int64"          # string | int64 | float64 | bool
+dataset = "prod"        # optional; omitted = every dataset of the tenant
+```
+
+Pins the canonical type of one attribute key instead of leaving it to the first-observed value or a semantic-convention hint. Values of another type still arrive losslessly but aren't typed-queryable. A dataset-specific entry wins over one with no `dataset`. Per-tenant: a tenant schema override replaces the global list wholesale, same as `[schema.materialized_labels]` above.
+
 ### Authentication
 
 Tenant auth is always enforced on the tenant-facing APIs; there is no

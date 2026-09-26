@@ -96,6 +96,7 @@ async fn setup_traces_test_with_limits(
         catalog_uri: catalog_dsn,
         default_schemas: common::config::DefaultSchemas::default(),
         materialized_labels: Default::default(),
+        attribute_types: Default::default(),
     };
 
     config.auth = common::config::AuthConfig {
@@ -193,6 +194,7 @@ async fn setup_traces_test_with_processors(
         catalog_uri: catalog_dsn,
         default_schemas: common::config::DefaultSchemas::default(),
         materialized_labels: Default::default(),
+        attribute_types: Default::default(),
     };
     config.auth = common::config::AuthConfig {
         admin_api_key: None,

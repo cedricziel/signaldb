@@ -33,6 +33,7 @@ fn create_simple_test_config() -> Configuration {
                 custom_schemas: Default::default(),
             },
             materialized_labels: Default::default(),
+            attribute_types: Default::default(),
         },
         storage: StorageConfig {
             dsn: "memory://".to_string(),

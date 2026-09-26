@@ -131,6 +131,7 @@ async fn setup_services() -> TestServices {
         catalog_uri: format!("sqlite://{}", iceberg_catalog_db_path.display()),
         default_schemas: DefaultSchemas::default(),
         materialized_labels: Default::default(),
+        attribute_types: Default::default(),
     };
     config.storage = StorageConfig {
         dsn: storage_dsn.clone(),

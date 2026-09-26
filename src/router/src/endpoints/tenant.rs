@@ -247,6 +247,7 @@ mod tests {
                 catalog_uri: "memory://test".to_string(),
                 default_schemas: DefaultSchemas::default(),
                 materialized_labels: Default::default(),
+                attribute_types: Default::default(),
             }),
             ..TenantSchemaConfig::default()
         };

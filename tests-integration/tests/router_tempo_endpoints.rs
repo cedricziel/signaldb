@@ -78,6 +78,7 @@ async fn setup_test_services() -> TestServices {
         catalog_uri: catalog_dsn,
         default_schemas: common::config::DefaultSchemas::default(),
         materialized_labels: Default::default(),
+        attribute_types: Default::default(),
     };
 
     // Configure storage to use filesystem
@@ -1108,6 +1109,7 @@ async fn setup_multi_tenant_test_services() -> TestServices {
         catalog_uri: catalog_dsn.clone(),
         default_schemas: common::config::DefaultSchemas::default(),
         materialized_labels: Default::default(),
+        attribute_types: Default::default(),
     };
 
     // Configure storage

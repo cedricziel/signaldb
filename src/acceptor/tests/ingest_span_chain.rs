@@ -86,6 +86,7 @@ async fn setup_traces_test() -> (axum::Router, TempDir) {
         catalog_uri: catalog_dsn,
         default_schemas: common::config::DefaultSchemas::default(),
         materialized_labels: Default::default(),
+        attribute_types: Default::default(),
     };
     config.auth = common::config::AuthConfig {
         admin_api_key: None,
