@@ -1,0 +1,170 @@
+use common::catalog::Catalog;
+use common::schema::logical::{AttributeLevel, LogicalFieldId, LogicalSchema};
+use common::schema::type_authority::{CanonicalType, Placement, Resolution, TypeSource, place};
+
+async fn catalog() -> Catalog {
+    Catalog::new_in_memory().await.expect("catalog")
+}
+
+fn field(source: &str, level: Option<AttributeLevel>, name: &str) -> LogicalFieldId {
+    LogicalFieldId {
+        source: source.to_string(),
+        level,
+        name: name.to_string(),
+    }
+}
+
+fn observed(canonical: CanonicalType) -> Resolution<'static> {
+    Resolution {
+        canonical,
+        source: TypeSource::Observed,
+        hint_schema_url: None,
+    }
+}
+
+/// Each row establishes the same wire key `http.status` / `service.name`
+/// independently: distinct (tenant, dataset, level) triples must not share a
+/// canonical type, whether the axis that varies is tenant, dataset, or level.
+#[tokio::test]
+async fn canonical_type_is_scoped_per_tenant_dataset_and_level() {
+    let catalog = catalog().await;
+    use AttributeLevel as L;
+    use CanonicalType as C;
+    let cases = [
+        ("tenant-a", "default", L::Record, C::Int64),
+        ("tenant-b", "default", L::Record, C::String),
+        ("tenant-a", "other", L::Record, C::Bool),
+        // Same tenant+dataset, different level: no shared home.
+        ("t", "d", L::Resource, C::String),
+        ("t", "d", L::Record, C::Int64),
+    ];
+
+    for (tenant, dataset, level, canonical) in cases {
+        let f = field("traces", Some(level), "http.status");
+        let stored = catalog
+            .establish_attribute_type(tenant, dataset, &f, observed(canonical))
+            .await
+            .expect("establish");
+        assert_eq!(stored.canonical, canonical, "{tenant}/{dataset}/{level:?}");
+    }
+}
+
+#[tokio::test]
+async fn establish_is_monotonic_first_seen_wins() {
+    let catalog = catalog().await;
+    let f = field("logs", Some(AttributeLevel::Record), "retry.count");
+
+    let first = catalog
+        .establish_attribute_type("t", "d", &f, observed(CanonicalType::Int64))
+        .await
+        .expect("first establish");
+    assert_eq!(first.canonical, CanonicalType::Int64);
+    assert_eq!(first.source, TypeSource::Observed);
+
+    let second = catalog
+        .establish_attribute_type("t", "d", &f, observed(CanonicalType::String))
+        .await
+        .expect("second establish");
+    assert_eq!(second.canonical, CanonicalType::Int64);
+    assert_eq!(second.source, TypeSource::Observed);
+    assert_eq!(second.hint_schema_url, None);
+
+    let stored = catalog
+        .get_attribute_type("t", "d", &f)
+        .await
+        .expect("get")
+        .expect("row exists");
+    assert_eq!(stored.canonical, CanonicalType::Int64);
+    assert_eq!(stored.schema_version, LogicalSchema::VERSION);
+}
+
+#[tokio::test]
+async fn concurrent_first_writers_converge_on_one_home() {
+    use common::schema::type_authority::ObservedKind;
+
+    let catalog = std::sync::Arc::new(catalog().await);
+    let f = std::sync::Arc::new(field(
+        "metrics",
+        Some(AttributeLevel::Record),
+        "queue.depth",
+    ));
+    let kinds = [ObservedKind::Int64, ObservedKind::String].repeat(8);
+
+    let mut handles = Vec::new();
+    for kind in &kinds {
+        let catalog = catalog.clone();
+        let f = f.clone();
+        let canonical = kind.canonical().expect("scalar kind");
+        handles.push(tokio::spawn(async move {
+            catalog
+                .establish_attribute_type("t", "d", &f, observed(canonical))
+                .await
+                .expect("establish")
+        }));
+    }
+
+    let mut winners = Vec::new();
+    for handle in handles {
+        winners.push(handle.await.expect("task").canonical);
+    }
+
+    let winner = winners[0];
+    assert!(winners.iter().all(|w| *w == winner));
+
+    for kind in kinds {
+        if kind.canonical() != Some(winner) {
+            assert_eq!(
+                place(Some(winner), kind),
+                Placement::Residue { off_type: true }
+            );
+        }
+    }
+}
+
+#[tokio::test]
+async fn record_off_type_accumulates_and_is_noop_when_missing() {
+    let catalog = catalog().await;
+    let f = field("logs", Some(AttributeLevel::Record), "body.size");
+
+    catalog
+        .record_off_type("t", "d", &f, 3)
+        .await
+        .expect("no-op record_off_type");
+    assert!(
+        catalog
+            .get_attribute_type("t", "d", &f)
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    catalog
+        .establish_attribute_type("t", "d", &f, observed(CanonicalType::Int64))
+        .await
+        .expect("establish");
+
+    catalog.record_off_type("t", "d", &f, 3).await.unwrap();
+    catalog.record_off_type("t", "d", &f, 4).await.unwrap();
+
+    let stored = catalog
+        .get_attribute_type("t", "d", &f)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(stored.off_type_count, 7);
+}
+
+#[tokio::test]
+async fn establish_rejects_fields_without_a_level() {
+    let catalog = catalog().await;
+    let f = field("traces", None, "trace.id");
+
+    let err = catalog
+        .establish_attribute_type("t", "d", &f, observed(CanonicalType::String))
+        .await
+        .expect_err("no level should be rejected");
+    assert!(matches!(
+        err,
+        common::schema::type_authority::StoreError::NoLevel
+    ));
+}

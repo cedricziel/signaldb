@@ -91,7 +91,10 @@ the auto-promotion decision pass — see the attribute-explorability ADR), the
 `attribute_value_stats` table (a bounded per-key sketch of the most frequent
 values with their counts, written by the same analyzer pass and replaced
 wholesale each time, which is what lets query discovery suggest values without
-reading signal data), and
+reading signal data), the `attribute_types` table (the one canonical type per
+tenant, dataset, signal, attribute level and key; the first write wins
+atomically and later data never retypes it, while off-type occurrences are
+only counted — change: otel-native-schema), and
 the `schema_registries` table (tenant-scoped custom semantic-convention
 registries — the uploaded Weaver-model document and its cached resolution;
 the bundled `otel`/`signaldb` registries are embedded in the binary, not

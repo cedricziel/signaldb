@@ -1037,6 +1037,28 @@ impl Catalog {
                 )"#;
                 query(create_attribute_stats).execute(pool).await?;
 
+                // Attribute type authority (change: otel-native-schema layer
+                // 3): the one canonical type per (tenant, dataset, signal,
+                // level, key), written once by first-seen/config/semconv and
+                // never retyped by later data.
+                let create_attribute_types = r#"
+                CREATE TABLE IF NOT EXISTS attribute_types (
+                    tenant_id TEXT NOT NULL,
+                    dataset_id TEXT NOT NULL,
+                    signal TEXT NOT NULL,
+                    level TEXT NOT NULL,
+                    attr_key TEXT NOT NULL,
+                    canonical_type TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    hint_schema_url TEXT,
+                    schema_version TEXT NOT NULL,
+                    off_type_count BIGINT NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (tenant_id, dataset_id, signal, level, attr_key)
+                )"#;
+                query(create_attribute_types).execute(pool).await?;
+
                 // Value sketches (change: query-field-discovery): the bounded
                 // top values per key the analyzer observed, so discovery can
                 // suggest values without reading signal data.
@@ -1500,6 +1522,26 @@ impl Catalog {
                     PRIMARY KEY (tenant_id, dataset_id, signal, attr_key)
                 )"#;
                 query(create_attribute_stats).execute(pool).await?;
+
+                // Attribute type authority (change: otel-native-schema layer
+                // 3): see the SQLite branch.
+                let create_attribute_types = r#"
+                CREATE TABLE IF NOT EXISTS attribute_types (
+                    tenant_id TEXT NOT NULL,
+                    dataset_id TEXT NOT NULL,
+                    signal TEXT NOT NULL,
+                    level TEXT NOT NULL,
+                    attr_key TEXT NOT NULL,
+                    canonical_type TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    hint_schema_url TEXT,
+                    schema_version TEXT NOT NULL,
+                    off_type_count BIGINT NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (tenant_id, dataset_id, signal, level, attr_key)
+                )"#;
+                query(create_attribute_types).execute(pool).await?;
 
                 // Value sketches (change: query-field-discovery): see the
                 // SQLite branch.

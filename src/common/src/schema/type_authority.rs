@@ -1,3 +1,7 @@
+mod store;
+
+pub use store::{StoreError, StoredType};
+
 use crate::schema::logical::{AttributeLevel, LogicalType};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
