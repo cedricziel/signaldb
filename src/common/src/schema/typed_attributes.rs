@@ -89,6 +89,21 @@ pub fn typed_columns(container: &str) -> [String; 5] {
     typed_fields(container).map(|(name, _)| name)
 }
 
+/// The Arrow field metadata key an IR-computed result column carries to name
+/// its type in the IR's own vocabulary, for a shape (e.g.
+/// [`RAW_ATTRIBUTE_BAG_IR_TYPE`]) that Arrow's own type system can't express
+/// on its own — a plain `Utf8` field says nothing about the JSON object it
+/// carries. Read by the router's result encoding, set by the querier's IR
+/// planner.
+pub const IR_TYPE_METADATA_KEY: &str = "signaldb.ir.type";
+
+/// The [`IR_TYPE_METADATA_KEY`] value for an attribute container's raw
+/// accessor (`{scope}.attributes`): a per-row JSON object of the container's
+/// original values — native scalars in their typed home, plus residue
+/// content that has no typed home (off-type scalars, arrays, kvlists,
+/// bytes) — as opposed to the legacy layout's `map<string,string>`.
+pub const RAW_ATTRIBUTE_BAG_IR_TYPE: &str = "map<string,any>";
+
 #[cfg(test)]
 mod tests {
     use super::*;

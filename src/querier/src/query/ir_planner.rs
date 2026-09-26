@@ -40,7 +40,7 @@ use common::query_ir::{
     validate,
 };
 use common::schema::logical::{Filterability, LogicalSchema, LogicalType};
-use common::schema::typed_attributes::{has_typed_container, typed_columns};
+use common::schema::typed_attributes::{self, has_typed_container, typed_columns};
 use datafusion::arrow::array::{
     Array, BooleanArray, Float64Array, LargeStringArray, StringArray, StringBuilder,
     StringViewArray, TimestampNanosecondArray,
@@ -48,7 +48,7 @@ use datafusion::arrow::array::{
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::datatypes::{DataType, Field, IntervalMonthDayNano, Schema, TimeUnit};
 use datafusion::datasource::TableProvider;
-use datafusion::functions::core::expr_fn::{coalesce, get_field};
+use datafusion::functions::core::expr_fn::{coalesce, get_field, named_struct, with_metadata};
 use datafusion::functions::datetime::expr_fn::date_bin;
 use datafusion::functions::regex::expr_fn::regexp_like;
 use datafusion::functions::string::expr_fn::contains;
@@ -1014,15 +1014,22 @@ impl SchemaResolver {
     /// still be NULL in files the compactor hasn't backfilled since
     /// promotion, #816) resolves to [`Resolved::PromotedColumn`].
     fn column_for(&self, field: &str, value_type: ValueType) -> Option<Resolved> {
-        // An alias may target a column with no scalar value type (an
-        // attribute-container Map), so check the scanned names, not `columns`.
-        if let Some((_, physical)) = self.aliases.iter().find(|(logical, _)| *logical == field)
-            && self.physical_names.contains(*physical)
-        {
-            return Some(Resolved::Column {
-                name: physical.to_string(),
-                value_type,
-            });
+        // An alias may target a column with no scalar value type: an
+        // attribute-container Map (`Resolved::Column`, same as any other
+        // physical column), or — on the typed layout — a container whose
+        // five typed columns stand in for it (`Resolved::AttributeBag`).
+        if let Some((_, physical)) = self.aliases.iter().find(|(logical, _)| *logical == field) {
+            if self.physical_names.contains(*physical) {
+                return Some(Resolved::Column {
+                    name: physical.to_string(),
+                    value_type,
+                });
+            }
+            if has_typed_container(self.physical_names.iter().map(String::as_str), physical) {
+                return Some(Resolved::AttributeBag {
+                    container: physical.to_string(),
+                });
+            }
         }
         // A promoted attribute column is materialized from the *bare*
         // attribute key (`attr_promotion::materialized_keys_of` keys off the
@@ -2066,7 +2073,8 @@ impl Lowering<'_> {
                 Some(
                     Resolved::JsonPath { .. }
                     | Resolved::EventAttribute { .. }
-                    | Resolved::SpanEvents { .. },
+                    | Resolved::SpanEvents { .. }
+                    | Resolved::AttributeBag { .. },
                 )
                 | None => safe_ident(logical),
             }
@@ -2862,6 +2870,11 @@ impl Lowering<'_> {
             Some(Resolved::PromotedColumn { name, key, .. }) => {
                 Ok(self.promoted_column_expr(&name, &key))
             }
+            // Retrieval-only, like `SpanEvents`; `is_filterable` rejects it
+            // as a value position at validation time, so unreachable here.
+            Some(Resolved::AttributeBag { container }) => Err(QuerierError::InvalidInput(format!(
+                "field '{logical}' (container '{container}') is retrieval-only"
+            ))),
             None => Err(QuerierError::InvalidInput(format!(
                 "field '{logical}' has no canonical type"
             ))),
@@ -2926,6 +2939,19 @@ impl Lowering<'_> {
     /// schema — its residue column is present among `schema_cols`.
     fn is_typed_container(&self, container_col: &str) -> bool {
         has_typed_container(self.schema_cols.iter().map(String::as_str), container_col)
+    }
+
+    /// The projection expression for a resolved physical column: `body` is
+    /// decoded (see [`body_decode_expr`]), everything else projected as-is.
+    /// A typed-layout attribute container never reaches here as a
+    /// `Resolved::Column` — it resolves to `Resolved::AttributeBag` instead
+    /// (see [`attribute_bag_expr`]).
+    fn column_projection_expr(&self, physical: &str) -> Expr {
+        if is_body_column(physical) {
+            body_decode_expr(physical).alias(physical)
+        } else {
+            ident(physical)
+        }
     }
 
     /// Read a [`Resolved::PromotedColumn`]: `name` may still be NULL in a
@@ -3030,6 +3056,9 @@ impl Lowering<'_> {
                 } => self.event_attr_expr(events_column, event_name, key),
                 Resolved::SpanEvents { events_column } => span_events_expr(events_column),
                 Resolved::PromotedColumn { name, key, .. } => self.promoted_column_expr(name, key),
+                // Retrieval-only, unreachable for a validated document (see
+                // the `value_expr` arm above); a NULL literal, not a panic.
+                Resolved::AttributeBag { .. } => lit(ScalarValue::Utf8(None)),
             };
             (is_json, ty, expr, is_body, untyped)
         };
@@ -3250,7 +3279,9 @@ impl Lowering<'_> {
                         expr.alias(safe_ident(f))
                     } else {
                         match self.resolver.resolve("", f) {
-                            Some(Resolved::Column { name, .. }) => body_projection_expr(&name),
+                            Some(Resolved::Column { name, .. }) => {
+                                self.column_projection_expr(&name)
+                            }
                             Some(Resolved::JsonPath { key, .. }) => {
                                 self.attr_expr(&key).alias(safe_ident(f))
                             }
@@ -3270,6 +3301,9 @@ impl Lowering<'_> {
                             Some(Resolved::PromotedColumn { name, key, .. }) => {
                                 self.promoted_column_expr(&name, &key).alias(safe_ident(f))
                             }
+                            Some(Resolved::AttributeBag { container }) => {
+                                attribute_bag_expr(&container).alias(safe_ident(f))
+                            }
                             None => ident(safe_ident(f)),
                         }
                     }
@@ -3280,12 +3314,24 @@ impl Lowering<'_> {
                 return Ok(df);
             }
             None => {
+                // A typed container in `row_defaults` has no scanned column
+                // under its own name (it's five typed columns instead) — the
+                // same `attribute_bag_expr` an explicit `{scope}.attributes`
+                // projection uses, aliased back to the container's usual name.
                 let mut projection: Vec<Expr> = self
                     .source
                     .row_defaults
                     .iter()
-                    .filter(|c| self.schema_cols.iter().any(|s| s == *c))
-                    .map(|c| body_projection_expr(c))
+                    .filter(|c| {
+                        self.schema_cols.iter().any(|s| s == *c) || self.is_typed_container(c)
+                    })
+                    .map(|c| {
+                        if self.is_typed_container(c) {
+                            attribute_bag_expr(c).alias(*c)
+                        } else {
+                            self.column_projection_expr(c)
+                        }
+                    })
                     .collect();
                 // A `correlate` join adds the parent side's columns to the
                 // default `rows` projection too — otherwise a client that
@@ -3350,16 +3396,36 @@ fn body_eq_candidates(text: &str) -> Vec<Expr> {
     candidates
 }
 
-/// The projection expression for a resolved physical column: `body` is
-/// decoded (see [`body_decode_expr`]), everything else projected as-is.
-/// Aliased back to `physical` either way, so the output column name is
-/// unaffected by which branch ran.
-fn body_projection_expr(physical: &str) -> Expr {
-    if is_body_column(physical) {
-        body_decode_expr(physical).alias(physical)
-    } else {
-        ident(physical)
+/// [`attribute_bag_expr`]'s `named_struct` field names, in
+/// [`typed_attributes::typed_fields`] order. Read positionally on the router
+/// side (`common::attrs::typed::decode_typed_arrays`), so the spelling here
+/// is internal — it never reaches a client.
+const ATTRIBUTE_BAG_FIELD_NAMES: [&str; 5] = ["str", "int", "double", "bool", "residue"];
+
+/// The `{scope}.attributes` raw accessor for a container on the typed
+/// layout: an Arrow struct of its five typed columns
+/// (`common::schema::typed_attributes::typed_columns`) — native scalars from
+/// their typed home, plus the residue column for values with no typed home.
+/// Tagged via `with_metadata` with `IR_TYPE_METADATA_KEY` =
+/// `RAW_ATTRIBUTE_BAG_IR_TYPE`, so the router renders it as a JSON object,
+/// not the legacy layout's `map<string,string>`. Built from column
+/// identifiers, not `col()`, so a `parent.`-prefixed container name (a `.`
+/// that must not parse as a table qualifier) still resolves. Unaliased —
+/// the caller names the result column.
+fn attribute_bag_expr(container_col: &str) -> Expr {
+    let mut struct_args = Vec::with_capacity(2 * ATTRIBUTE_BAG_FIELD_NAMES.len());
+    for (field_name, column_name) in ATTRIBUTE_BAG_FIELD_NAMES
+        .iter()
+        .zip(typed_columns(container_col))
+    {
+        struct_args.push(lit(*field_name));
+        struct_args.push(ident(column_name));
     }
+    with_metadata(vec![
+        named_struct(struct_args),
+        lit(typed_attributes::IR_TYPE_METADATA_KEY),
+        lit(typed_attributes::RAW_ATTRIBUTE_BAG_IR_TYPE),
+    ])
 }
 
 /// The Arrow data type an extracted field is cast to.
@@ -6323,6 +6389,180 @@ mod tests {
         assert_eq!(
             typed, legacy,
             "typed vs legacy scope-attribute groups differ"
+        );
+    }
+
+    /// A `logs` table with `log_attributes` on the typed layout, holding one
+    /// row whose attributes exercise every raw-accessor case: a key in its
+    /// typed home (`http.method`), an off-type string on a key the type
+    /// authority has declared `Int64` (`retries` — forced to residue despite
+    /// its `String` observed kind, `off_type: true`), an array (`tags`), and
+    /// a bytes carrier (`payload`) — the last three all land in the residue.
+    fn logs_ctx_typed_residue() -> SessionContext {
+        use common::schema::type_authority::{CanonicalType, ObservedKind, Placement};
+        use serde_json::{Map, json};
+
+        let base_schema = Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("trace_id", DataType::Utf8, true),
+        ]);
+        let rows = vec![Some(Map::from_iter([
+            ("http.method".to_string(), json!("GET")),
+            ("retries".to_string(), json!("three")),
+            ("tags".to_string(), json!(["a", "b"])),
+            (
+                "payload".to_string(),
+                json!({"$otlp_type": "bytes", "base64": "AP9h"}),
+            ),
+        ]))];
+        let place = |key: &str, observed: ObservedKind| {
+            if key == "retries" {
+                Placement::Residue { off_type: true }
+            } else {
+                match observed {
+                    ObservedKind::String => Placement::Home(CanonicalType::String),
+                    ObservedKind::Int64 => Placement::Home(CanonicalType::Int64),
+                    ObservedKind::Float64 => Placement::Home(CanonicalType::Float64),
+                    ObservedKind::Bool => Placement::Home(CanonicalType::Bool),
+                    _ => Placement::Residue { off_type: false },
+                }
+            }
+        };
+        let (typed_fields, typed_arrays) =
+            common::testing::typed_attribute_columns_from_with_placement(
+                "logs",
+                "physical-v4",
+                "log_attributes",
+                &rows,
+                place,
+            );
+
+        let mut fields: Vec<Field> = base_schema
+            .fields()
+            .iter()
+            .map(|f| f.as_ref().clone())
+            .collect();
+        fields.extend(typed_fields);
+        let schema = Arc::new(Schema::new(fields));
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![10_i64])),
+            Arc::new(StringArray::from(vec![Some("t1")])),
+        ];
+        columns.extend(typed_arrays);
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+        single_table_ctx("logs", schema, batch)
+    }
+
+    /// Reads `log_attributes` off a batch as its decoded JSON value — the
+    /// typed layout's raw-accessor column is a `Utf8` JSON object; a `rows`
+    /// batch always has exactly one row in these tests.
+    fn log_attributes_json(batch: &RecordBatch) -> serde_json::Value {
+        use common::attrs::typed::decode_typed_arrays;
+        use datafusion::arrow::array::{BinaryArray, MapArray, StructArray};
+
+        let column = batch.column_by_name("log_attributes").unwrap();
+        let s = column.as_any().downcast_ref::<StructArray>().unwrap();
+        let map_child = |i: usize| s.column(i).as_any().downcast_ref::<MapArray>().unwrap();
+        let rows = decode_typed_arrays(
+            map_child(0),
+            map_child(1),
+            map_child(2),
+            map_child(3),
+            s.column(4).as_any().downcast_ref::<BinaryArray>().unwrap(),
+        )
+        .unwrap();
+        match &rows[0] {
+            Some(doc) => serde_json::Value::Object(doc.clone()),
+            None => serde_json::Value::Null,
+        }
+    }
+
+    /// The `rows` default projection returns `log_attributes` as a JSON
+    /// object of the container's *original* values on the typed layout: the
+    /// typed-home key untouched, the off-type residue key untouched (never
+    /// coerced towards its declared type), the array, and the bytes carrier.
+    #[tokio::test]
+    async fn typed_logs_rows_default_returns_raw_attribute_values() {
+        let svc = IrService::new(logs_ctx_typed_residue());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "pipeline": []
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let output_field = df
+            .schema()
+            .field_with_unqualified_name("log_attributes")
+            .unwrap();
+        assert_eq!(
+            output_field
+                .metadata()
+                .get(typed_attributes::IR_TYPE_METADATA_KEY),
+            Some(&typed_attributes::RAW_ATTRIBUTE_BAG_IR_TYPE.to_string()),
+            "the output field must carry the IR type tag through the DataFrame plan"
+        );
+        let batches = df.collect().await.unwrap();
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+        let batch = batches.iter().find(|b| b.num_rows() > 0).unwrap();
+        assert_eq!(
+            log_attributes_json(batch),
+            serde_json::json!({
+                "http.method": "GET",
+                "retries": "three",
+                "tags": ["a", "b"],
+                "payload": {"$otlp_type": "bytes", "base64": "AP9h"},
+            })
+        );
+    }
+
+    /// The same raw-accessor result, from an explicit `log.attributes`
+    /// projection rather than the `rows` default — both routes through
+    /// [`Lowering::column_projection_expr`] must agree.
+    #[tokio::test]
+    async fn typed_logs_explicit_attributes_projection_matches_the_default() {
+        let svc = IrService::new(logs_ctx_typed_residue());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows", "fields": ["log.attributes"],
+            "pipeline": []
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let batches = df.collect().await.unwrap();
+        let batch = batches.iter().find(|b| b.num_rows() > 0).unwrap();
+        assert_eq!(
+            log_attributes_json(batch),
+            serde_json::json!({
+                "http.method": "GET",
+                "retries": "three",
+                "tags": ["a", "b"],
+                "payload": {"$otlp_type": "bytes", "base64": "AP9h"},
+            })
+        );
+    }
+
+    /// The legacy `Map<Utf8,Utf8>` layout is unaffected: `log_attributes`
+    /// stays a `Map` column, not the typed layout's JSON-object `Utf8`.
+    #[tokio::test]
+    async fn legacy_logs_attributes_projection_stays_a_map_column() {
+        let svc = IrService::new(logs_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows", "fields": ["log.attributes"],
+            "pipeline": []
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let field = df
+            .schema()
+            .field_with_unqualified_name("log_attributes")
+            .unwrap();
+        assert!(
+            matches!(field.data_type(), DataType::Map(_, _)),
+            "expected a Map column, got {:?}",
+            field.data_type()
         );
     }
 
