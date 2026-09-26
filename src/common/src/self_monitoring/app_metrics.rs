@@ -106,6 +106,12 @@ pub struct AppMetrics {
     pub writer_tables_provisioned: Counter<u64>,
     pub writer_table_provisioning_failures: Counter<u64>,
 
+    // Warm containment index tokens (4.3) written to `attr_index` per typed
+    // batch, by `signaldb.table`. Zero for a table that hasn't opted into
+    // the column; a rate far below `ingest_batches_written` on an opted-in
+    // table means most values are landing as residue, not a typed home.
+    pub writer_warm_index_tokens_written: Counter<u64>,
+
     // Ingest ids (from `do_put`'s `app_metadata`, #1734) recognized as a
     // repeat within the writer's dedup window, by tenant and signal. Its
     // freshly appended WAL entries are marked processed immediately instead
@@ -392,6 +398,13 @@ impl AppMetrics {
                 .u64_counter("signaldb.writer.table_provisioning_failures")
                 .with_description("Signal tables the reconciler could not create")
                 .with_unit("{table}")
+                .build(),
+            writer_warm_index_tokens_written: meter
+                .u64_counter("signaldb.writer.warm_index_tokens_written")
+                .with_description(
+                    "Warm containment index tokens written to attr_index, by table",
+                )
+                .with_unit("{token}")
                 .build(),
             ingest_duplicates_dropped: meter
                 .u64_counter("signaldb.writer.ingest_duplicates_dropped")

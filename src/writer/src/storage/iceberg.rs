@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use common::CatalogManager;
 
 use common::attrs::typed::{TypedAttrBuilder, observed_kind, parse_json_object_rows};
+use common::attrs::warm_index::{WARM_INDEX_COLUMN, WarmIndexBuilder, encode_token};
 use common::iceberg::sort::{
     DeclaredSortColumn, UndeclaredFallback, is_sorted_by, sort_batch_by, write_sort_key,
 };
@@ -17,7 +18,9 @@ use common::schema::type_authority::{
     CanonicalType, ObservedKind, SchemaUrls, TypeAuthority, place,
 };
 use common::schema::typed_attributes;
-use datafusion::arrow::array::{Array, ArrayRef, RecordBatch, StringArray, new_null_array};
+use datafusion::arrow::array::{
+    Array, ArrayRef, ListArray, RecordBatch, StringArray, new_null_array,
+};
 use datafusion::arrow::compute::concat_batches;
 use datafusion::arrow::datatypes::{DataType, Field, SchemaRef as ArrowSchemaRef};
 use iceberg_rust::arrow::write::{write_parquet_partitioned, write_sorted_parquet_partitioned};
@@ -666,6 +669,11 @@ impl IcebergTableWriter {
             .map(|(_, batch)| parse_typed_containers(batch, &typed_containers))
             .collect();
 
+        // Resolved once per call (reused for both the type-authority scope
+        // and the warm-index metric label below) rather than re-fetched
+        // from the identifier each time.
+        let table_name = self.table.identifier().name().to_string();
+
         // Step 2: resolve every typed container's distinct keys to a
         // canonical type, once per call rather than once per entry. An
         // authority error here is infrastructure (a catalog outage), not a
@@ -675,9 +683,8 @@ impl IcebergTableWriter {
         let resolved_types = match &type_authority {
             None => ResolvedAttributeTypes::new(),
             Some(authority) => {
-                let table_name = self.table.identifier().name();
                 let signal =
-                    common::discovery::signal_for_source(table_name).with_context(|| {
+                    common::discovery::signal_for_source(&table_name).with_context(|| {
                         format!("no attribute-type signal for table '{table_name}'")
                     })?;
                 let batches: Vec<(&RecordBatch, &ParsedContainerRows)> = prepared_batches
@@ -706,6 +713,7 @@ impl IcebergTableWriter {
                 &target_schema,
                 &parsed,
                 &resolved_types,
+                &table_name,
             )
             .and_then(|batch| coerce_batch_to_schema(batch, &target_schema));
             match prepared {
@@ -1139,6 +1147,7 @@ fn apply_typed_attribute_containers(
     target: &ArrowSchemaRef,
     parsed: &ParsedContainerRows,
     resolved: &ResolvedAttributeTypes,
+    table_name: &str,
 ) -> Result<RecordBatch> {
     if typed_containers.is_empty() {
         return Ok(batch);
@@ -1147,6 +1156,14 @@ fn apply_typed_attribute_containers(
     let mut fields: Vec<std::sync::Arc<Field>> = Vec::new();
     let mut columns: Vec<ArrayRef> = Vec::new();
     let mut consumed = HashSet::new();
+
+    // Present only on tables opted into the warm containment index (4.3):
+    // every typed home value placed below also feeds one token into this
+    // builder, so a table without the column pays nothing extra.
+    let warm_index_field = target.field_with_name(WARM_INDEX_COLUMN).ok().cloned();
+    let mut warm_index = warm_index_field
+        .is_some()
+        .then(|| WarmIndexBuilder::new(batch.num_rows()));
 
     for (container, level) in typed_containers {
         let Some(rows) = parsed.get(container) else {
@@ -1169,12 +1186,22 @@ fn apply_typed_attribute_containers(
         let mut builder = TypedAttrBuilder::new(&typed_fields).map_err(|e| {
             anyhow::anyhow!("failed to build typed-attribute builder for '{container}': {e}")
         })?;
-        for row in rows {
+        for (row_idx, row) in rows.iter().enumerate() {
             builder
-                .append_row(row.as_ref(), |key, observed| {
-                    let canonical = level_map.and_then(|m| m.get(key)).copied().flatten();
-                    place(canonical, observed)
-                })
+                .append_row_with(
+                    row.as_ref(),
+                    |key, observed| {
+                        let canonical = level_map.and_then(|m| m.get(key)).copied().flatten();
+                        place(canonical, observed)
+                    },
+                    |key, home| {
+                        if let Some(warm_index) = warm_index.as_mut()
+                            && let Some(token) = encode_token(key, home)
+                        {
+                            warm_index.add(row_idx, token);
+                        }
+                    },
+                )
                 .map_err(|e| {
                     anyhow::anyhow!("failed to split typed attribute container '{container}': {e}")
                 })?;
@@ -1194,6 +1221,28 @@ fn apply_typed_attribute_containers(
         }
         fields.push(field.clone());
         columns.push(column.clone());
+    }
+
+    if let (Some(warm_index), Some(warm_index_field)) = (warm_index, warm_index_field.as_ref()) {
+        let array = warm_index.finish(warm_index_field).map_err(|e| {
+            anyhow::anyhow!("failed to build warm-index column '{WARM_INDEX_COLUMN}': {e}")
+        })?;
+        let tokens_written = array
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .map(|list| list.values().len())
+            .unwrap_or(0);
+        common::self_monitoring::app_metrics()
+            .writer_warm_index_tokens_written
+            .add(
+                tokens_written as u64,
+                &[opentelemetry::KeyValue::new(
+                    "signaldb.table",
+                    table_name.to_string(),
+                )],
+            );
+        fields.push(std::sync::Arc::new(warm_index_field.clone()));
+        columns.push(array);
     }
 
     let schema = std::sync::Arc::new(datafusion::arrow::datatypes::Schema::new(fields));
@@ -1932,25 +1981,48 @@ mod tests {
 
     // --- Typed attribute layout (otel-native-schema layer 4.2a) ---
 
+    /// A [`common::config::WarmIndexConfig`] with small, deterministic
+    /// sizing, for tests that just need bloom properties present rather
+    /// than tuned.
+    fn test_warm_index_config() -> common::config::WarmIndexConfig {
+        common::config::WarmIndexConfig {
+            signals: vec![],
+            datasets: None,
+            fpp: 0.01,
+            rows_per_row_group: 1_000,
+            attrs_per_row: 8,
+            max_bloom_ndv: 1_000_000,
+        }
+    }
+
     /// Creates a `traces` table directly in the typed `physical-v5` layout,
     /// bypassing `CatalogManager::ensure_table` — which would evolve it back
     /// down to the still-current legacy `physical-v4` layout, since v5 is
     /// deliberately not current yet (one-shot cutover, `otel-native-schema`
-    /// design D2).
+    /// design D2). `warm_index` opts the table into the warm containment
+    /// index column and its bloom-filter properties (task 4.3).
     async fn create_typed_traces_table(
         catalog_manager: &CatalogManager,
         tenant_id: &str,
         dataset_id: &str,
+        warm_index: bool,
     ) -> Table {
         use common::iceberg::evolution::SCHEMA_VERSION_PROPERTY;
         use common::schema::SCHEMA_DEFINITIONS;
+        use common::schema::schema_parser::DerivedColumns;
         use iceberg_rust::catalog::create::CreateTableBuilder;
         use iceberg_rust::catalog::tabular::Tabular;
 
         let schema = SCHEMA_DEFINITIONS
             .resolve_trace_schema("physical-v5")
             .unwrap()
-            .to_iceberg_schema()
+            .to_iceberg_schema_with(
+                &[],
+                DerivedColumns {
+                    attr_tokens: false,
+                    warm_index,
+                },
+            )
             .unwrap();
 
         let namespace = catalog_manager
@@ -1961,15 +2033,22 @@ mod tests {
             .create_namespace(&namespace, None)
             .await;
 
+        let mut properties = HashMap::from([(
+            SCHEMA_VERSION_PROPERTY.to_string(),
+            "physical-v5".to_string(),
+        )]);
+        if warm_index {
+            properties.extend(common::schema::warm_index_properties(
+                &test_warm_index_config(),
+            ));
+        }
+
         let identifier = catalog_manager.build_table_identifier(tenant_id, dataset_id, "traces");
         let create = CreateTableBuilder::default()
             .with_name("traces".to_string())
             .with_schema(schema)
             .with_location(catalog_manager.build_table_location(tenant_id, dataset_id, "traces"))
-            .with_properties(HashMap::from([(
-                SCHEMA_VERSION_PROPERTY.to_string(),
-                "physical-v5".to_string(),
-            )]))
+            .with_properties(properties)
             .create()
             .unwrap();
         catalog_manager
@@ -2072,7 +2151,8 @@ mod tests {
     async fn typed_layout_writer_without_a_type_authority_errors_clearly() {
         let catalog_manager = create_test_catalog_manager().await;
         let table =
-            create_typed_traces_table(&catalog_manager, "typed-tenant", "no-authority").await;
+            create_typed_traces_table(&catalog_manager, "typed-tenant", "no-authority", false)
+                .await;
         let mut writer = writer_for(&catalog_manager, table, "typed-tenant", "no-authority");
 
         // The typed layout is detected from the table's own schema, before
@@ -2141,7 +2221,8 @@ mod tests {
         use opentelemetry_proto::tonic::common::v1::{AnyValue, ArrayValue, any_value::Value};
 
         let catalog_manager = create_test_catalog_manager().await;
-        let table = create_typed_traces_table(&catalog_manager, "typed-tenant", "local").await;
+        let table =
+            create_typed_traces_table(&catalog_manager, "typed-tenant", "local", false).await;
         let (type_authority, sql_catalog) = test_type_authority().await;
         let mut writer = writer_for(&catalog_manager, table, "typed-tenant", "local")
             .with_type_authority(type_authority);
@@ -2258,6 +2339,167 @@ mod tests {
         assert!(
             row_doc.get("payload").is_some(),
             "bytes must round-trip via the residue"
+        );
+    }
+
+    /// End-to-end proof for task 4.3 (warm containment index): a typed
+    /// table opted into `attr_index` gets one token per row for exactly the
+    /// values that land in a typed home -- an off-type value (residue) and
+    /// an array contribute nothing -- and the committed Parquet file's
+    /// `attr_index.list.item` leaf carries a bloom filter sized from the
+    /// table's warm-index properties.
+    #[tokio::test]
+    async fn typed_layout_with_warm_index_writes_tokens_and_a_bloom_filter() {
+        use common::attrs::typed::HomeValue;
+        use common::attrs::warm_index::{WARM_INDEX_COLUMN, encode_token};
+        use datafusion::arrow::array::{BinaryArray, ListArray};
+        use datafusion::object_store::ObjectStoreExt as _;
+        use datafusion::parquet::file::reader::{FileReader, SerializedFileReader};
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, ArrayValue, any_value::Value};
+
+        let catalog_manager = create_test_catalog_manager().await;
+        let table = create_typed_traces_table(&catalog_manager, "warm-tenant", "local", true).await;
+        let (type_authority, _sql_catalog) = test_type_authority().await;
+        let mut writer = writer_for(&catalog_manager, table, "warm-tenant", "local")
+            .with_type_authority(type_authority);
+
+        // First establishes "off.type" as Int64, so the second batch's
+        // string value for the same key is a genuine off-type mismatch.
+        let setup = wire_trace_batch(0x01, vec![("off.type", Value::IntValue(1))]);
+        writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), setup)])
+            .await
+            .unwrap();
+
+        let batch = wire_trace_batch(
+            0x02,
+            vec![
+                ("str.attr", Value::StringValue("v".to_string())),
+                ("int.attr", Value::IntValue(7)),
+                ("double.attr", Value::DoubleValue(1.5)),
+                ("bool.attr", Value::BoolValue(true)),
+                ("off.type", Value::StringValue("nope".to_string())),
+                (
+                    "tags",
+                    Value::ArrayValue(ArrayValue {
+                        values: vec![AnyValue {
+                            value: Some(Value::IntValue(1)),
+                        }],
+                    }),
+                ),
+            ],
+        );
+        let outcome = writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), batch)])
+            .await
+            .unwrap();
+        assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+
+        let batches = scan_batches(&writer.table).await;
+        let (record_batch, row) = find_row_by_span_id(&batches, "0202020202020202");
+        let attr_index = record_batch
+            .column_by_name(WARM_INDEX_COLUMN)
+            .expect("attr_index column present")
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .unwrap();
+        let tokens = attr_index.value(row);
+        let tokens = tokens.as_any().downcast_ref::<BinaryArray>().unwrap();
+        let actual: HashSet<Vec<u8>> = (0..tokens.len())
+            .map(|i| tokens.value(i).to_vec())
+            .collect();
+        let expected: HashSet<Vec<u8>> = [
+            encode_token("str.attr", HomeValue::Str("v")),
+            encode_token("int.attr", HomeValue::Int(7)),
+            encode_token("double.attr", HomeValue::Double(1.5)),
+            encode_token("bool.attr", HomeValue::Bool(true)),
+            // `resource_attributes` (`service.name`) is a typed container
+            // too, and shares the same warm-index builder as
+            // `span_attributes` -- one token set per row, across every
+            // typed container.
+            encode_token("service.name", HomeValue::Str("checkout-svc")),
+        ]
+        .into_iter()
+        .map(Option::unwrap)
+        .collect();
+        assert_eq!(
+            actual, expected,
+            "the off-type value and the array must contribute no token"
+        );
+
+        // Every committed file's attr_index leaf carries a bloom filter,
+        // sized per the table's warm-index properties.
+        let store = writer.table.object_store();
+        let mut listing = store.list(None);
+        let mut found_leaf = false;
+        while let Some(meta) = futures::StreamExt::next(&mut listing).await {
+            let meta = meta.unwrap();
+            if !meta.location.as_ref().ends_with(".parquet") {
+                continue;
+            }
+            let bytes = store
+                .get(&meta.location)
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap();
+            let reader = SerializedFileReader::new(bytes).unwrap();
+            let row_group = reader.metadata().row_group(0);
+            if let Some(leaf) = row_group
+                .columns()
+                .iter()
+                .find(|c| c.column_path().string() == "attr_index.list.item")
+            {
+                assert!(
+                    leaf.bloom_filter_offset().is_some(),
+                    "attr_index leaf should carry a bloom filter"
+                );
+                found_leaf = true;
+            }
+        }
+        assert!(found_leaf, "no data file carried the attr_index leaf");
+    }
+
+    /// A table that never opted into the warm index gets no `attr_index`
+    /// column and writes exactly as before typed placement gained the
+    /// feature.
+    #[tokio::test]
+    async fn typed_layout_without_warm_index_writes_unchanged() {
+        use common::attrs::warm_index::WARM_INDEX_COLUMN;
+        use opentelemetry_proto::tonic::common::v1::any_value::Value;
+
+        let catalog_manager = create_test_catalog_manager().await;
+        let table =
+            create_typed_traces_table(&catalog_manager, "no-warm-tenant", "local", false).await;
+        assert!(
+            table
+                .current_schema()
+                .unwrap()
+                .fields()
+                .iter()
+                .all(|f| f.name != WARM_INDEX_COLUMN),
+            "table must not have opted into the warm index"
+        );
+        let (type_authority, _sql_catalog) = test_type_authority().await;
+        let mut writer = writer_for(&catalog_manager, table, "no-warm-tenant", "local")
+            .with_type_authority(type_authority);
+
+        let batch = wire_trace_batch(
+            0x09,
+            vec![("str.attr", Value::StringValue("v".to_string()))],
+        );
+        let outcome = writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), batch)])
+            .await
+            .unwrap();
+        assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+
+        let batches = scan_batches(&writer.table).await;
+        let (record_batch, _row) = find_row_by_span_id(&batches, "0909090909090909");
+        assert!(
+            record_batch.column_by_name(WARM_INDEX_COLUMN).is_none(),
+            "a table with no warm-index column must not gain one"
         );
     }
 }
