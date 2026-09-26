@@ -49,6 +49,33 @@ function renderApp(path = "/") {
   return renderWithClient(<RouterProvider router={createAppRouter()} />);
 }
 
+/** A page link in the sidebar's page list. */
+function navLink(name: string) {
+  return within(screen.getByRole("navigation", { name: "Pages" })).getByRole(
+    "link",
+    { name },
+  );
+}
+
+const WHOAMI_TWO_TENANTS = {
+  user: {
+    id: "u1",
+    email: "a@b",
+    display_name: "A",
+    is_instance_admin: false,
+  },
+  memberships: [
+    { tenant_id: "acme", role: "admin" },
+    { tenant_id: "globex", role: "member" },
+  ],
+  tenant: { id: "acme", slug: "acme", name: "Acme" },
+  datasets: [
+    { id: "prod", slug: "prod", is_default: true },
+    { id: "staging", slug: "staging", is_default: false },
+  ],
+  default_dataset: "prod",
+};
+
 afterEach(() => {
   vi.unstubAllGlobals();
   window.history.replaceState(null, "", "/");
@@ -58,17 +85,19 @@ afterEach(() => {
 });
 
 describe("App", () => {
-  it("renders the shell with the product mark and explore tabs", async () => {
+  it("renders the shell with the product mark and the page nav", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
       { match: "/api/v1/query", body: emptyIrLogs },
     ]);
     renderApp();
-    expect(screen.getByRole("banner")).toHaveTextContent(/signaldb/i);
-    expect(screen.getByRole("tab", { name: "Logs" })).toHaveAttribute(
-      "aria-selected",
-      "true",
-    );
+    expect(
+      screen.getByRole("complementary", { name: "Main navigation" }),
+    ).toHaveTextContent(/signaldb/i);
+    expect(navLink("Logs")).toHaveAttribute("aria-current", "page");
+    expect(
+      screen.getByRole("navigation", { name: "Current page" }),
+    ).toHaveTextContent("Investigate/Logs");
     expect(
       await screen.findByText(/No log lines in this range/),
     ).toBeInTheDocument();
@@ -94,42 +123,50 @@ describe("App", () => {
     expect(window.location.pathname).toBe("/logs");
   });
 
-  it("changes the tenant context from the top bar", async () => {
+  it("changes the tenant and dataset from the sidebar switcher", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
       { match: "/api/v1/query", body: emptyIrLogs },
+      { match: "/api/v1/whoami", body: WHOAMI_TWO_TENANTS },
     ]);
-    renderApp("/logs");
+    renderApp("/logs?tenant=acme&dataset=prod");
     const user = (await import("@testing-library/user-event")).default;
     await user.click(
-      screen.getByTitle("Tenant / dataset context for all queries"),
+      await screen.findByRole("button", { name: /Switch tenant or dataset/ }),
     );
-    await user.clear(screen.getByLabelText("Tenant"));
-    await user.type(screen.getByLabelText("Tenant"), "acme");
-    await user.clear(screen.getByLabelText("Dataset"));
-    await user.type(screen.getByLabelText("Dataset"), "prod");
-    await user.click(screen.getByRole("button", { name: "Apply" }));
-    expect(window.location.search).toContain("tenant=acme");
-    expect(window.location.search).toContain("dataset=prod");
-    expect(screen.getByRole("button", { name: /acme/ })).toHaveTextContent(
-      "acme·prod",
+    const tenants = screen.getByRole("listbox", { name: "Tenant" });
+    expect(
+      within(tenants).getByRole("option", { name: "acme" }),
+    ).toHaveAttribute("aria-selected", "true");
+    // Picking a tenant resets the dataset and keeps the popover open …
+    await user.click(within(tenants).getByRole("option", { name: "globex" }));
+    expect(window.location.search).toContain("tenant=globex");
+    expect(window.location.search).not.toContain("dataset=");
+    // … picking a dataset applies it and closes the popover.
+    await user.click(
+      within(screen.getByRole("listbox", { name: "Dataset" })).getByRole(
+        "option",
+        { name: "staging" },
+      ),
     );
+    expect(window.location.search).toContain("dataset=staging");
+    expect(screen.queryByRole("listbox", { name: "Tenant" })).toBeNull();
+    expect(window.location.pathname).toBe("/logs");
   });
 
-  it("changing the tenant context from the top bar stays on a non-explore route", async () => {
+  it("changing the dataset from the switcher stays on a non-explore route", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
       { match: "/api/v1/query", body: emptyIrLogs },
       { match: "/api/v1/schema/registries", body: { registries: [] } },
+      { match: "/api/v1/whoami", body: WHOAMI_TWO_TENANTS },
     ]);
     renderApp("/schema/conventions?tenant=acme&dataset=prod");
     const user = (await import("@testing-library/user-event")).default;
     await user.click(
-      screen.getByTitle("Tenant / dataset context for all queries"),
+      await screen.findByRole("button", { name: /Switch tenant or dataset/ }),
     );
-    await user.clear(screen.getByLabelText("Dataset"));
-    await user.type(screen.getByLabelText("Dataset"), "staging");
-    await user.click(screen.getByRole("button", { name: "Apply" }));
+    await user.click(await screen.findByRole("option", { name: "staging" }));
     expect(window.location.search).toContain("dataset=staging");
     // Only the context changed; the route must not fall back to /logs.
     expect(window.location.pathname).toBe("/schema/conventions");
@@ -293,13 +330,13 @@ describe("App", () => {
     expect(window.location.pathname).toBe("/catalog");
   });
 
-  it("switches signals via tabs, updating the path", async () => {
+  it("switches pages via the sidebar, updating the path", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyMatrix },
       { match: "/tempo/api/search", body: { traces: [], metrics: {} } },
     ]);
     renderApp("/logs");
-    screen.getByRole("tab", { name: "Traces" }).click();
+    navLink("Traces").click();
     expect(await screen.findByLabelText("Trace ID")).toBeInTheDocument();
     expect(window.location.pathname).toBe("/traces");
   });
@@ -312,9 +349,9 @@ describe("App", () => {
     renderApp("/logs");
     const user = (await import("@testing-library/user-event")).default;
 
-    await user.click(screen.getByRole("tab", { name: "Traces" }));
+    await user.click(navLink("Traces"));
     await screen.findByLabelText("Trace ID");
-    await user.click(screen.getByRole("tab", { name: "Metrics" }));
+    await user.click(navLink("Metrics"));
     await screen.findByText("Pick a metric above, then Run to chart it.");
     expect(window.location.pathname).toBe("/metrics");
 
@@ -325,7 +362,7 @@ describe("App", () => {
     await waitFor(() => expect(window.location.pathname).toBe("/logs"));
   });
 
-  it("drops signal-specific state when switching tabs, keeping range/tenant/dataset/live", async () => {
+  it("drops signal-specific state when switching pages, keeping range/tenant/dataset/live", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyMatrix },
       { match: "/tempo/api/search", body: { traces: [], metrics: {} } },
@@ -333,7 +370,7 @@ describe("App", () => {
     renderApp("/logs?q=boom&range=6h&tenant=acme&dataset=prod&live=1");
     const user = (await import("@testing-library/user-event")).default;
 
-    await user.click(screen.getByRole("tab", { name: "Traces" }));
+    await user.click(navLink("Traces"));
     await screen.findByLabelText("Trace ID");
 
     expect(window.location.search).not.toContain("q=boom");
@@ -386,7 +423,7 @@ describe("App", () => {
     expect(window.location.pathname).toBe("/traces/t1cafe");
   });
 
-  it("clicking the Traces tab while viewing a trace returns to the traces list", async () => {
+  it("clicking Traces in the sidebar while viewing a trace returns to the traces list", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyMatrix },
       { match: "/tempo/api/search", body: { traces: [], metrics: {} } },
@@ -406,7 +443,7 @@ describe("App", () => {
     const user = (await import("@testing-library/user-event")).default;
 
     await screen.findByText("t1cafe");
-    await user.click(screen.getByRole("tab", { name: "Traces" }));
+    await user.click(navLink("Traces"));
 
     expect(await screen.findByLabelText("Trace ID")).toBeInTheDocument();
     expect(window.location.pathname).toBe("/traces");
@@ -440,7 +477,7 @@ describe("App", () => {
     expect(window.location.pathname).toBe("/traces/a%25b");
   });
 
-  it("re-clicking the active tab returns to that tab's main view", async () => {
+  it("re-clicking the current page returns to its's main view", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
       { match: "/api/v1/query", body: emptyIrLogs },
@@ -448,9 +485,9 @@ describe("App", () => {
     renderApp("/logs?q=boom");
     const user = (await import("@testing-library/user-event")).default;
 
-    await user.click(screen.getByRole("tab", { name: "Logs" }));
+    await user.click(navLink("Logs"));
 
-    // Same as clicking a different tab: back to the bare main view, filters
+    // Same as clicking a different page: back to the bare main view, filters
     // and search dropped — re-clicking isn't a no-op.
     expect(window.location.pathname).toBe("/logs");
     expect(window.location.search).toBe("");
@@ -477,7 +514,7 @@ describe("App", () => {
       { match: "/memberships", body: [] },
     ]);
     // A tenant already resolved into the URL — the whoami-backed Manage link
-    // only queries once one exists (see TopBar's gating).
+    // only queries once one exists (see useWhoami's gating).
     renderApp("/logs?tenant=acme&dataset=production");
     const user = (await import("@testing-library/user-event")).default;
     await user.click(await screen.findByRole("link", { name: "Manage" }));
@@ -693,7 +730,7 @@ describe("App", () => {
       setUpdateAvailable(updateSW);
 
       const user = (await import("@testing-library/user-event")).default;
-      await user.click(screen.getByRole("tab", { name: "Traces" }));
+      await user.click(navLink("Traces"));
       await screen.findByLabelText("Trace ID");
 
       expect(updateSW).toHaveBeenCalledWith(true);
@@ -711,7 +748,7 @@ describe("App", () => {
       markDirty("test-form", true);
 
       const user = (await import("@testing-library/user-event")).default;
-      await user.click(screen.getByRole("tab", { name: "Traces" }));
+      await user.click(navLink("Traces"));
       // The dirty form now also blocks the navigation itself
       // (UnsavedChangesGuard) — leave anyway to reach the point where the
       // pending-update check runs.

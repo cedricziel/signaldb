@@ -1,14 +1,14 @@
-// The app frame — top bar + signal tab bar + a content view — the "canvas"
-// every generated page design drops into (see the shell/login-stories
-// task). Composed from the real components rather than a placeholder:
-// TopBar's container (whoami/session hooks) and ExploreView on the logs
-// tab, with LogsView.stories's fixtures.
+// The app frame — sidebar nav + page header + a content view — the
+// "canvas" every generated page design drops into (see the
+// shell/login-stories task). Composed from the real components rather than
+// a placeholder: the real `App` shell (whoami/session hooks) with
+// ExploreView on the logs route, using LogsView.stories's fixtures.
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { MemoryRouter } from "react-router";
-import { TopBar } from "../shell/TopBar";
+import { MemoryRouter, Route, Routes } from "react-router";
+import { App } from "../../App";
+import { useOutletState } from "../../lib/outletState";
 import { testQueryClient } from "../../lib/queryClient";
-import { DEFAULT_STATE } from "../../lib/urlState";
 import {
   describeFieldsResponse,
   irLogRowsResponse,
@@ -87,18 +87,21 @@ const routes: JsonRoute[] = [
   },
 ];
 
+function ExploreOutlet() {
+  const { state, update } = useOutletState();
+  return <ExploreView state={state} update={update} />;
+}
+
 function AppShellPage() {
-  const state = { ...DEFAULT_STATE, tenant: "acme", dataset: "production" };
   return (
     <StoryFetchStub routes={routes}>
       <QueryClientProvider client={testQueryClient()}>
         <MemoryRouter initialEntries={["/logs?tenant=acme&dataset=production"]}>
-          <div className="app-frame">
-            <TopBar state={state} update={() => {}} />
-            <main className="app-main">
-              <ExploreView state={state} update={() => {}} />
-            </main>
-          </div>
+          <Routes>
+            <Route path="/" element={<App />}>
+              <Route path=":signal" element={<ExploreOutlet />} />
+            </Route>
+          </Routes>
         </MemoryRouter>
       </QueryClientProvider>
     </StoryFetchStub>

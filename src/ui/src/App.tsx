@@ -8,15 +8,19 @@ import {
   setTenantContext,
 } from "./api/http";
 import { ThrottleBanner } from "./components/ThrottleBanner";
-import { TopBar } from "./features/shell/TopBar";
+import { AppNav, useAppNavState } from "./features/shell/AppNav";
+import { CommandPalette } from "./features/shell/CommandPalette";
+import { PageHeader } from "./features/shell/PageHeader";
 import { UpdateBanner } from "./features/shell/UpdateBanner";
 import { maybeAutoApplyUpdate } from "./lib/pwaUpdate";
 import { loginRedirectPath, safeRedirectTarget } from "./lib/redirectTarget";
-import { useExploreState } from "./lib/urlState";
-import { useCurrentSession } from "./lib/useWhoami";
+import { useExploreState, type ExploreState } from "./lib/urlState";
+import { recentQueryText, recordRecentQuery } from "./lib/recentQueries";
+import { useCurrentSession, useIsDemo, useWhoami } from "./lib/useWhoami";
 
 /**
- * The persistent shell (top bar + 401-to-`/login` redirect) around whichever
+ * The persistent shell (sidebar nav, page header, ⌘K palette, and the
+ * 401-to-`/login` redirect) around whichever
  * route is active — the explore view for a signal, or the management panel.
  * Renders state/update via outlet context so route children share the one
  * URL-backed ExploreState instead of re-deriving it.
@@ -128,14 +132,65 @@ export function App() {
     [queryClient, location.pathname, location.search, location.hash, navigate],
   );
 
+  const { data: who, canManage } = useWhoami(effective);
+  const isDemo = useIsDemo();
+  const nav = useAppNavState();
+  useRecordRecentQueries(effective);
+
   return (
     <div className="app-frame">
-      <TopBar state={effective} update={update} />
-      <UpdateBanner />
-      <ThrottleBanner />
-      <main className="app-main">
-        <Outlet context={{ state: effective, update }} />
-      </main>
+      {isDemo && (
+        <div className="demo-banner" title="Read-only public demo account">
+          Demo · read-only
+        </div>
+      )}
+      <div className="app-body">
+        <AppNav
+          state={effective}
+          update={update}
+          who={who}
+          canManage={canManage}
+          nav={nav}
+        />
+        <div className="app-column">
+          {!nav.narrow && <PageHeader onOpenPalette={nav.openPalette} />}
+          <UpdateBanner />
+          <ThrottleBanner />
+          <main className="app-main">
+            <Outlet context={{ state: effective, update }} />
+          </main>
+        </div>
+      </div>
+      {nav.overlay === "palette" && (
+        <CommandPalette
+          state={effective}
+          canManage={canManage}
+          onClose={nav.close}
+        />
+      )}
     </div>
   );
+}
+
+/**
+ * Feeds the command palette's "Recent queries": a logs search or traces
+ * query that stays put for a couple of seconds counts as run — the views
+ * run on every committed change, so a debounce is what separates a query
+ * from the keystrokes on the way to it.
+ */
+function useRecordRecentQueries(state: ExploreState) {
+  const location = useLocation();
+  const signal = state.signal;
+  const text = recentQueryText(state);
+  const onExplorePath = location.pathname === `/${signal}`;
+  const href = `${location.pathname}${location.search}`;
+  useEffect(() => {
+    if (!onExplorePath || text.trim() === "") return;
+    if (signal !== "logs" && signal !== "traces") return;
+    const timer = window.setTimeout(
+      () => recordRecentQuery({ text, signal, href }),
+      2000,
+    );
+    return () => window.clearTimeout(timer);
+  }, [onExplorePath, signal, text, href]);
 }
