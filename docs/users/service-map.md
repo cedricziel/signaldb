@@ -46,6 +46,10 @@ dependency kinds and every response field.
 
 ### In the UI
 
+- **At a glance:** the [Overview](explore-ui.md#the-overview) (`/overview`,
+  the UI's landing page) shows the whole-system map scoped to the selected
+  environment, with zoom buttons, ⌘/Ctrl + scroll to zoom and drag to pan.
+  Click a node to open that service's catalog entry.
 - **Whole system:** Catalog → Services → **Map**. The URL keeps
   `?cview=map`, so the link reopens the map. Click a node for its side panel;
   use **Hide external** to show only instrumented services.
