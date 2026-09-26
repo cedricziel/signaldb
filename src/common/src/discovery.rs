@@ -233,15 +233,16 @@ pub const DEFAULT_FIELD_LIMIT: usize = 1_000;
 /// The default cap on suggested values in one discovery answer.
 pub const DEFAULT_VALUE_LIMIT: usize = 200;
 
-/// The signal a source's statistics are recorded under. `metrics_histogram`
-/// is a distinct IR source but the same signal, exactly as it is for read
-/// authorization.
+/// The signal a source's statistics are recorded under. Every `metrics_*`
+/// physical table (`metrics_histogram`, `metrics_gauge`, ...) is a distinct
+/// IR source but the same signal, exactly as it is for read authorization.
 pub fn signal_for_source(source: &str) -> Option<&'static str> {
     match source {
         "logs" => Some("logs"),
         "traces" => Some("traces"),
         "profiles" => Some("profiles"),
-        "metrics" | "metrics_histogram" => Some("metrics"),
+        "metrics" => Some("metrics"),
+        name if name.starts_with("metrics_") => Some("metrics"),
         _ => None,
     }
 }
@@ -640,10 +641,18 @@ mod tests {
 
     #[test]
     fn every_ir_source_maps_to_a_statistics_signal() {
-        for source in ["logs", "traces", "profiles", "metrics", "metrics_histogram"] {
+        for source in [
+            "logs",
+            "traces",
+            "profiles",
+            "metrics",
+            "metrics_histogram",
+            "metrics_gauge",
+        ] {
             assert!(signal_for_source(source).is_some(), "{source}");
         }
         assert_eq!(signal_for_source("metrics_histogram"), Some("metrics"));
+        assert_eq!(signal_for_source("metrics_gauge"), Some("metrics"));
         assert_eq!(signal_for_source("nope"), None);
     }
 

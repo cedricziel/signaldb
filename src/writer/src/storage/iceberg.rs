@@ -8,12 +8,18 @@ use crate::schema_transform::{
 use anyhow::{Context, Result};
 use common::CatalogManager;
 
+use common::attrs::typed::{TypedAttrBuilder, observed_kind, parse_json_object_rows};
 use common::iceberg::sort::{
     DeclaredSortColumn, UndeclaredFallback, is_sorted_by, sort_batch_by, write_sort_key,
 };
-use datafusion::arrow::array::{RecordBatch, new_null_array};
+use common::schema::logical::AttributeLevel;
+use common::schema::type_authority::{
+    CanonicalType, ObservedKind, SchemaUrls, TypeAuthority, place,
+};
+use common::schema::typed_attributes;
+use datafusion::arrow::array::{Array, ArrayRef, RecordBatch, StringArray, new_null_array};
 use datafusion::arrow::compute::concat_batches;
-use datafusion::arrow::datatypes::SchemaRef as ArrowSchemaRef;
+use datafusion::arrow::datatypes::{DataType, Field, SchemaRef as ArrowSchemaRef};
 use iceberg_rust::arrow::write::{write_parquet_partitioned, write_sorted_parquet_partitioned};
 use iceberg_rust::catalog::Catalog as IcebergRustCatalog;
 use iceberg_rust::catalog::commit::{CommitTable, TableRequirement, TableUpdate};
@@ -243,6 +249,12 @@ pub struct IcebergTableWriter {
     materialized: common::config::MaterializedLabels,
     /// Retry configuration for failed operations
     retry_config: RetryConfig,
+    /// Canonical-type resolver for the typed attribute layout
+    /// ([`detect_typed_containers`]). Writing to a table that declares a
+    /// typed container without one is an error rather than a silent
+    /// fallback to observed-type placement — see
+    /// [`Self::append_batches_with_marker`].
+    type_authority: Option<Arc<TypeAuthority>>,
 }
 
 impl IcebergTableWriter {
@@ -290,7 +302,16 @@ impl IcebergTableWriter {
             dataset_id,
             materialized,
             retry_config: RetryConfig::default(),
+            type_authority: None,
         })
+    }
+
+    /// Attaches the canonical-type resolver used to place values into the
+    /// typed attribute layout. Builder-style so existing `new` call sites
+    /// are unaffected; a writer for a legacy-layout table never needs one.
+    pub fn with_type_authority(mut self, type_authority: Arc<TypeAuthority>) -> Self {
+        self.type_authority = Some(type_authority);
+        self
     }
 
     /// Apply schema transformation if the batch has v1 (wire) schema but the
@@ -596,14 +617,30 @@ impl IcebergTableWriter {
             current_schema,
         );
 
-        // Step 1: prepare every entry independently. A transform/coercion
-        // failure is a property of that entry's bytes, not of the group —
-        // collecting it as a rejection here (rather than aborting the whole
-        // call via `?`) is what keeps a poison entry from taking its
-        // healthy neighbours down with it.
+        // Resolved once per call, like `label_reconciliation`. A typed
+        // container with no configured authority is a hard error — there is
+        // no observed-type fallback to place values with (4.2a).
+        let typed_containers = detect_typed_containers(&target_schema);
+        let type_authority: Option<Arc<TypeAuthority>> = if typed_containers.is_empty() {
+            None
+        } else {
+            Some(self.type_authority.clone().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "table {} uses the typed attribute layout but this writer has no \
+                     TypeAuthority configured",
+                    self.table.identifier()
+                )
+            })?)
+        };
+
+        // Step 1: prepare every entry independently. A transform failure is
+        // a property of that entry's bytes, not of the group — collecting
+        // it as a rejection here (rather than aborting the whole call via
+        // `?`) is what keeps a poison entry from taking its healthy
+        // neighbours down with it.
         let mut committed_ids = Vec::new();
         let mut rejected = Vec::new();
-        let mut transformed = Vec::new();
+        let mut prepared_batches = Vec::new();
         for (id, batch) in entries {
             if batch.num_rows() == 0 {
                 // Nothing to commit for this id, but there is also nothing
@@ -614,8 +651,63 @@ impl IcebergTableWriter {
             }
             let prepared = self
                 .apply_schema_transformation_if_needed(batch)
-                .and_then(|batch| label_reconciliation.apply(batch))
-                .and_then(|batch| coerce_batch_to_schema(batch, &target_schema));
+                .and_then(|batch| label_reconciliation.apply(batch));
+            match prepared {
+                Ok(batch) => prepared_batches.push((id, batch)),
+                Err(e) => rejected.push((id, e)),
+            }
+        }
+
+        // Every typed container's JSON source column, parsed once per batch
+        // — reused below for both key collection and placement, rather than
+        // parsing each row's JSON twice.
+        let parsed_containers: Vec<ParsedContainerRows> = prepared_batches
+            .iter()
+            .map(|(_, batch)| parse_typed_containers(batch, &typed_containers))
+            .collect();
+
+        // Step 2: resolve every typed container's distinct keys to a
+        // canonical type, once per call rather than once per entry. An
+        // authority error here is infrastructure (a catalog outage), not a
+        // property of any one entry's bytes, so it propagates as an `Err`
+        // from the whole call instead of a rejection — the processor retries
+        // the group rather than dead-lettering it.
+        let resolved_types = match &type_authority {
+            None => ResolvedAttributeTypes::new(),
+            Some(authority) => {
+                let table_name = self.table.identifier().name();
+                let signal =
+                    common::discovery::signal_for_source(table_name).with_context(|| {
+                        format!("no attribute-type signal for table '{table_name}'")
+                    })?;
+                let batches: Vec<(&RecordBatch, &ParsedContainerRows)> = prepared_batches
+                    .iter()
+                    .map(|(_, batch)| batch)
+                    .zip(parsed_containers.iter())
+                    .collect();
+                let keys = collect_typed_attribute_keys(&typed_containers, &batches);
+                let scope = authority
+                    .scope(&self.tenant_id, &self.dataset_id, signal)
+                    .await
+                    .context("failed to resolve attribute type scope")?;
+                resolve_typed_attribute_types(&scope, keys)
+                    .await
+                    .context("failed to resolve canonical attribute types")?
+            }
+        };
+
+        // Step 3: split typed containers into their per-type homes plus
+        // residue, then coerce onto the table's exact Arrow schema.
+        let mut transformed = Vec::new();
+        for ((id, batch), parsed) in prepared_batches.into_iter().zip(parsed_containers) {
+            let prepared = apply_typed_attribute_containers(
+                batch,
+                &typed_containers,
+                &target_schema,
+                &parsed,
+                &resolved_types,
+            )
+            .and_then(|batch| coerce_batch_to_schema(batch, &target_schema));
             match prepared {
                 Ok(batch) => {
                     committed_ids.push(id);
@@ -893,6 +985,220 @@ fn stale_marker_keys(
         })
         .map(|(key, _)| key.clone())
         .collect()
+}
+
+/// Every attribute container the target schema declares in the typed layout
+/// — a `<container>_residue` `Binary` column — with the [`AttributeLevel`]
+/// its container name implies.
+fn detect_typed_containers(target: &ArrowSchemaRef) -> Vec<(String, AttributeLevel)> {
+    target
+        .fields()
+        .iter()
+        .filter_map(|field| {
+            if field.data_type() != &DataType::Binary {
+                return None;
+            }
+            let container = field.name().strip_suffix("_residue")?;
+            Some((
+                container.to_string(),
+                typed_attributes::container_level(container),
+            ))
+        })
+        .collect()
+}
+
+fn string_column<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a StringArray> {
+    batch.column_by_name(name)?.as_any().downcast_ref()
+}
+
+/// One typed container's JSON source column, parsed row by row (see
+/// [`common::attrs::typed::parse_json_object_rows`]).
+type ParsedRows = Vec<Option<serde_json::Map<String, serde_json::Value>>>;
+
+/// Every typed container present in one batch, keyed by container name —
+/// reused for both key collection and placement so a row's JSON is parsed
+/// only once.
+type ParsedContainerRows = HashMap<String, ParsedRows>;
+
+/// A typed-attribute key's [`ObservedKind`] and (resource, scope) schema
+/// urls at its first occurrence in a call's batches.
+type ObservedAttributeKeys =
+    HashMap<(AttributeLevel, String), (ObservedKind, Option<String>, Option<String>)>;
+
+/// Parses every typed container's JSON source column in `batch`. A
+/// container the table declares but this batch does not carry (e.g. an
+/// unpopulated `resource_attributes`) is simply absent from the result.
+fn parse_typed_containers(
+    batch: &RecordBatch,
+    typed_containers: &[(String, AttributeLevel)],
+) -> ParsedContainerRows {
+    let mut parsed = HashMap::with_capacity(typed_containers.len());
+    for (container, _) in typed_containers {
+        let Some(strings) = string_column(batch, container) else {
+            continue;
+        };
+        parsed.insert(container.clone(), parse_json_object_rows(strings));
+    }
+    parsed
+}
+
+/// Every distinct (level, key) pair across `batches`' already-parsed typed
+/// containers, each paired with the [`ObservedKind`] and schema urls of its
+/// first occurrence -- the only occurrence that matters, since
+/// [`SignalScope::canonical`] (called once per key below) resolves and
+/// caches a key on first sight.
+fn collect_typed_attribute_keys(
+    typed_containers: &[(String, AttributeLevel)],
+    batches: &[(&RecordBatch, &ParsedContainerRows)],
+) -> ObservedAttributeKeys {
+    let mut seen = HashMap::new();
+    for (batch, parsed) in batches {
+        let resource_urls = string_column(batch, "resource_schema_url");
+        let scope_urls = string_column(batch, "scope_schema_url");
+        let row_url = |urls: Option<&StringArray>, row: usize| {
+            urls.filter(|a| !a.is_null(row))
+                .map(|a| a.value(row).to_string())
+        };
+        for (container, level) in typed_containers {
+            let Some(rows) = parsed.get(container) else {
+                continue;
+            };
+            for (row, entries) in rows.iter().enumerate() {
+                let Some(entries) = entries else { continue };
+                for (key, value) in entries {
+                    seen.entry((*level, key.clone())).or_insert_with(|| {
+                        (
+                            observed_kind(value),
+                            row_url(resource_urls, row),
+                            row_url(scope_urls, row),
+                        )
+                    });
+                }
+            }
+        }
+    }
+    seen
+}
+
+/// Canonical types resolved for the call, keyed by level and then by key —
+/// a `&str` lookup in [`apply_typed_attribute_containers`]'s per-value
+/// placement closure, never a per-value `String` allocation.
+type ResolvedAttributeTypes = HashMap<AttributeLevel, HashMap<String, Option<CanonicalType>>>;
+
+/// How many [`common::schema::type_authority::SignalScope::canonical`] calls
+/// [`resolve_typed_attribute_types`] runs concurrently.
+const TYPE_RESOLUTION_CONCURRENCY: usize = 16;
+
+/// Resolves every key [`collect_typed_attribute_keys`] found to its
+/// canonical type through `scope`, up to [`TYPE_RESOLUTION_CONCURRENCY`]
+/// calls in flight at once; the first error aborts the rest.
+async fn resolve_typed_attribute_types(
+    scope: &common::schema::type_authority::SignalScope,
+    keys: ObservedAttributeKeys,
+) -> Result<ResolvedAttributeTypes> {
+    use futures::stream::{StreamExt, TryStreamExt};
+
+    let resolved_keys: Vec<(AttributeLevel, String, Option<CanonicalType>)> =
+        futures::stream::iter(keys)
+            .map(
+                |((level, key), (observed, resource_url, scope_url))| async move {
+                    let urls = SchemaUrls {
+                        resource: resource_url.as_deref(),
+                        scope: scope_url.as_deref(),
+                    };
+                    let canonical =
+                        scope
+                            .canonical(level, &key, urls, observed)
+                            .await
+                            .map_err(|e| {
+                                anyhow::anyhow!("failed to resolve canonical type for '{key}': {e}")
+                            })?;
+                    Ok::<_, anyhow::Error>((level, key, canonical))
+                },
+            )
+            .buffer_unordered(TYPE_RESOLUTION_CONCURRENCY)
+            .try_collect()
+            .await?;
+
+    let mut resolved: ResolvedAttributeTypes = HashMap::new();
+    for (level, key, canonical) in resolved_keys {
+        resolved.entry(level).or_default().insert(key, canonical);
+    }
+    Ok(resolved)
+}
+
+/// Splits every typed container's already-parsed rows (e.g. `span_attributes`)
+/// into its five typed-attribute columns (e.g. `span_attributes_str`, ...,
+/// `span_attributes_residue`), placed per `resolved`. The source JSON
+/// columns are consumed; every other column of `batch` passes through
+/// unchanged, so the result still needs [`coerce_batch_to_schema`] to reach
+/// the table's exact Arrow schema.
+fn apply_typed_attribute_containers(
+    batch: RecordBatch,
+    typed_containers: &[(String, AttributeLevel)],
+    target: &ArrowSchemaRef,
+    parsed: &ParsedContainerRows,
+    resolved: &ResolvedAttributeTypes,
+) -> Result<RecordBatch> {
+    if typed_containers.is_empty() {
+        return Ok(batch);
+    }
+
+    let mut fields: Vec<std::sync::Arc<Field>> = Vec::new();
+    let mut columns: Vec<ArrayRef> = Vec::new();
+    let mut consumed = HashSet::new();
+
+    for (container, level) in typed_containers {
+        let Some(rows) = parsed.get(container) else {
+            continue;
+        };
+        consumed.insert(container.clone());
+        let level_map = resolved.get(level);
+        let field_names = typed_attributes::typed_columns(container);
+        let mut typed_fields = Vec::with_capacity(5);
+        for name in &field_names {
+            let field = target.field_with_name(name).map_err(|e| {
+                anyhow::anyhow!("typed field '{name}' missing from the target schema: {e}")
+            })?;
+            typed_fields.push(field.as_ref().clone());
+        }
+        let typed_fields: [Field; 5] = typed_fields.try_into().map_err(|_| {
+            anyhow::anyhow!("container '{container}' does not resolve to exactly five typed fields")
+        })?;
+
+        let mut builder = TypedAttrBuilder::new(&typed_fields).map_err(|e| {
+            anyhow::anyhow!("failed to build typed-attribute builder for '{container}': {e}")
+        })?;
+        for row in rows {
+            builder
+                .append_row(row.as_ref(), |key, observed| {
+                    let canonical = level_map.and_then(|m| m.get(key)).copied().flatten();
+                    place(canonical, observed)
+                })
+                .map_err(|e| {
+                    anyhow::anyhow!("failed to split typed attribute container '{container}': {e}")
+                })?;
+        }
+        let arrays = builder.finish().map_err(|e| {
+            anyhow::anyhow!("failed to finish typed attribute builder for '{container}': {e}")
+        })?;
+        for (field, array) in typed_fields.into_iter().zip(arrays) {
+            fields.push(std::sync::Arc::new(field));
+            columns.push(array);
+        }
+    }
+
+    for (field, column) in batch.schema().fields().iter().zip(batch.columns()) {
+        if consumed.contains(field.name()) {
+            continue;
+        }
+        fields.push(field.clone());
+        columns.push(column.clone());
+    }
+
+    let schema = std::sync::Arc::new(datafusion::arrow::datatypes::Schema::new(fields));
+    RecordBatch::try_new(schema, columns)
+        .map_err(|e| anyhow::anyhow!("failed to build typed-attribute batch: {e}"))
 }
 
 /// Project and cast a batch onto the table's Arrow schema (columns matched
@@ -1626,6 +1932,102 @@ mod tests {
                 .metadata()
                 .properties
                 .contains_key(&wal_marker_key("undated"))
+        );
+    }
+
+    // --- Typed attribute layout (otel-native-schema layer 4.2a) ---
+
+    /// Creates a `traces` table directly in the typed `physical-v5` layout,
+    /// bypassing `CatalogManager::ensure_table` — which would evolve it back
+    /// down to the still-current legacy `physical-v4` layout, since v5 is
+    /// deliberately not current yet (one-shot cutover, `otel-native-schema`
+    /// design D2).
+    async fn create_typed_traces_table(
+        catalog_manager: &CatalogManager,
+        tenant_id: &str,
+        dataset_id: &str,
+    ) -> Table {
+        use common::iceberg::evolution::SCHEMA_VERSION_PROPERTY;
+        use common::schema::SCHEMA_DEFINITIONS;
+        use iceberg_rust::catalog::create::CreateTableBuilder;
+        use iceberg_rust::catalog::tabular::Tabular;
+
+        let schema = SCHEMA_DEFINITIONS
+            .resolve_trace_schema("physical-v5")
+            .unwrap()
+            .to_iceberg_schema()
+            .unwrap();
+
+        let namespace = catalog_manager
+            .build_namespace(tenant_id, dataset_id)
+            .unwrap();
+        let _ = catalog_manager
+            .catalog()
+            .create_namespace(&namespace, None)
+            .await;
+
+        let identifier = catalog_manager.build_table_identifier(tenant_id, dataset_id, "traces");
+        let create = CreateTableBuilder::default()
+            .with_name("traces".to_string())
+            .with_schema(schema)
+            .with_location(catalog_manager.build_table_location(tenant_id, dataset_id, "traces"))
+            .with_properties(HashMap::from([(
+                SCHEMA_VERSION_PROPERTY.to_string(),
+                "physical-v5".to_string(),
+            )]))
+            .create()
+            .unwrap();
+        catalog_manager
+            .catalog()
+            .create_table(identifier.clone(), create)
+            .await
+            .unwrap();
+        match catalog_manager
+            .catalog()
+            .load_tabular(&identifier)
+            .await
+            .unwrap()
+        {
+            Tabular::Table(table) => table,
+            _ => panic!("expected a table"),
+        }
+    }
+
+    /// A writer for an already-created table, bypassing `IcebergTableWriter::new`'s
+    /// `ensure_table` call for the same reason `create_typed_traces_table` does.
+    fn writer_for(
+        catalog_manager: &CatalogManager,
+        table: Table,
+        tenant_id: &str,
+        dataset_id: &str,
+    ) -> IcebergTableWriter {
+        IcebergTableWriter {
+            catalog: catalog_manager.catalog(),
+            table,
+            tenant_id: tenant_id.to_string(),
+            dataset_id: dataset_id.to_string(),
+            materialized: Default::default(),
+            retry_config: RetryConfig::default(),
+            type_authority: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_layout_writer_without_a_type_authority_errors_clearly() {
+        let catalog_manager = create_test_catalog_manager().await;
+        let table =
+            create_typed_traces_table(&catalog_manager, "typed-tenant", "no-authority").await;
+        let mut writer = writer_for(&catalog_manager, table, "typed-tenant", "no-authority");
+
+        // The typed layout is detected from the table's own schema, before
+        // any entry is touched, so an empty call is enough to exercise it.
+        let result = writer.append_batches_with_marker("w1", vec![]).await;
+        let Err(err) = result else {
+            panic!("a typed table with no configured TypeAuthority must error");
+        };
+        assert!(
+            err.to_string().contains("TypeAuthority"),
+            "unexpected error: {err}"
         );
     }
 }
