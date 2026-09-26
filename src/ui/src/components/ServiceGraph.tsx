@@ -265,9 +265,18 @@ export function ServiceGraph({
     pointer.clear();
   };
 
+  // Every branch roots the same `.service-graph` div on `outerRef`, so React
+  // keeps one DOM node across loading → loaded and `useContainerWidth`'s
+  // observer (attached once, on mount) keeps measuring it. A loading-only
+  // mount used to leave the width stuck at the empty layout's fallback,
+  // scaling the finished graph down to a sliver.
   if (loading) {
     return (
-      <div className="service-graph service-graph-status" aria-busy="true">
+      <div
+        className="service-graph service-graph-status"
+        ref={outerRef}
+        aria-busy="true"
+      >
         Loading…
       </div>
     );
@@ -276,6 +285,7 @@ export function ServiceGraph({
     return (
       <div
         className="service-graph service-graph-status error-text"
+        ref={outerRef}
         role="alert"
       >
         {error}
@@ -284,7 +294,7 @@ export function ServiceGraph({
   }
   if (visibleNodes.length === 0) {
     return (
-      <div className="service-graph">
+      <div className="service-graph" ref={outerRef}>
         <EmptyState title={emptyMessage} />
       </div>
     );

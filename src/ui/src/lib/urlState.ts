@@ -124,6 +124,10 @@ export interface ExploreState {
    * only the service entity type offers Map). Kept in the URL so a link
    * reopens the map. */
   catalogView: "list" | "map";
+  /** The Overview page's `deployment.environment` scope — "" means every
+   * environment. Only the Overview reads it; it isn't carried to other
+   * pages (see `crossSignalSearch`). */
+  env: string;
 }
 
 export const DEFAULT_STATE: ExploreState = {
@@ -160,6 +164,7 @@ export const DEFAULT_STATE: ExploreState = {
   catalogPrimary: "",
   catalogSecondary: "",
   catalogView: "list",
+  env: "",
 };
 
 export const SIGNALS: Signal[] = [
@@ -332,6 +337,7 @@ export function parseExploreState(search: string): ExploreState {
     catalogPrimary: "",
     catalogSecondary: "",
     catalogView: catalogViewFromParam(p.get("cview")),
+    env: p.get("env") ?? "",
   };
 }
 
@@ -416,6 +422,7 @@ export function buildSearch(state: ExploreState): string {
   if (state.tenant) p.set("tenant", state.tenant);
   if (state.dataset) p.set("dataset", state.dataset);
   if (state.catalogView !== "list") p.set("cview", state.catalogView);
+  if (state.env) p.set("env", state.env);
   const s = p.toString();
   return s === "" ? "" : `?${s}`;
 }

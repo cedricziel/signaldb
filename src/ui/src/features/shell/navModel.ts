@@ -6,6 +6,7 @@
 import { crossSignalSearch, type ExploreState } from "../../lib/urlState";
 
 export type PageId =
+  | "overview"
   | "errors"
   | "catalog"
   | "logs"
@@ -34,6 +35,7 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     title: "Monitor",
     pages: [
+      { id: "overview", label: "Overview", path: "/overview" },
       { id: "errors", label: "Errors", path: "/errors" },
       { id: "catalog", label: "Catalog", path: "/catalog" },
     ],
@@ -69,12 +71,13 @@ export const MANAGE_PAGE: NavPage = {
 };
 
 /** Where the brand mark and the bare `/` route land. */
-export const HOME_PATH = "/logs";
+export const HOME_PATH = "/overview";
 
 /** Explore pages share the URL-backed window and tenant context; their
  * links carry it over (see `crossSignalSearch`). Configure/admin pages
  * don't read the range, and the tenant context is sticky in `App` anyway. */
 const EXPLORE_PAGES = new Set<PageId>([
+  "overview",
   "errors",
   "catalog",
   "logs",

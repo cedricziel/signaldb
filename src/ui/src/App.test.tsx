@@ -90,7 +90,7 @@ describe("App", () => {
       { match: "query_range", body: emptyStreams },
       { match: "/api/v1/query", body: emptyIrLogs },
     ]);
-    renderApp();
+    renderApp("/logs");
     expect(
       screen.getByRole("complementary", { name: "Main navigation" }),
     ).toHaveTextContent(/signaldb/i);
@@ -103,14 +103,20 @@ describe("App", () => {
     ).toBeInTheDocument();
   });
 
-  it("redirects / to /logs", async () => {
+  it("redirects / to /overview", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
       { match: "/api/v1/query", body: emptyIrLogs },
     ]);
-    renderApp("/");
-    await screen.findByText(/No log lines in this range/);
-    expect(window.location.pathname).toBe("/logs");
+    renderApp("/?tenant=acme");
+    await waitFor(() => expect(window.location.pathname).toBe("/overview"));
+    expect(window.location.search).toContain("tenant=acme");
+    expect(
+      within(screen.getByRole("navigation", { name: "Pages" })).getByRole(
+        "link",
+        { name: "Overview" },
+      ),
+    ).toHaveAttribute("aria-current", "page");
   });
 
   it("redirects an unknown path to /logs", async () => {
@@ -762,7 +768,7 @@ describe("App", () => {
   });
 
   describe("unsaved changes guard", () => {
-    it("prompts before leaving the registry editor via a top-bar link, discarding the edit only after Leave", async () => {
+    it("prompts before leaving the registry editor via the brand link, discarding the edit only after Leave", async () => {
       stubFetchRoutes([
         { match: "query_range", body: emptyStreams },
         { match: "/api/v1/query", body: emptyIrLogs },
@@ -789,11 +795,10 @@ describe("App", () => {
         "name: acme",
       );
 
-      // Leave: the top-bar link's navigation goes through.
+      // Leave: the brand link's navigation (home, the Overview) goes through.
       await user.click(brand);
       await user.click(screen.getByRole("button", { name: "Leave" }));
-      await screen.findByText(/No log lines in this range/);
-      expect(window.location.pathname).toBe("/logs");
+      await waitFor(() => expect(window.location.pathname).toBe("/overview"));
     });
 
     it("prompts before an in-app navigation away from a dirty consent form, even though /oauth/consent sits outside the explore shell", async () => {

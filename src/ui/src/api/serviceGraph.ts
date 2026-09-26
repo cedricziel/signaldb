@@ -14,6 +14,9 @@ export interface FetchServiceGraphOptions {
   focus?: string;
   /** Hops from `focus`, 1-3. Ignored (server default: 1) without `focus`. */
   depth?: number;
+  /** `where` stages scoping the spans the graph is built from — the graph
+   * pipeline accepts `where` only (the Overview's environment filter). */
+  where?: Record<string, unknown>[];
 }
 
 export interface ServiceGraphResult {
@@ -35,6 +38,7 @@ export async function fetchServiceGraph(
     range: { from: msToNanos(range.fromMs), to: msToNanos(range.toMs) },
     ...(options.focus !== undefined ? { focus: options.focus } : {}),
     ...(options.depth !== undefined ? { depth: options.depth } : {}),
+    ...(options.where?.length ? { pipeline: options.where } : {}),
   });
   return {
     graph: res.graph ?? { nodes: [], edges: [] },

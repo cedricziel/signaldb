@@ -16,6 +16,7 @@ import {
 import { App } from "./App";
 import { ConsentView } from "./features/consent/ConsentView";
 import { ExploreView } from "./features/explore/ExploreView";
+import { OverviewRoute } from "./features/overview/OverviewRoute";
 import { GitHubIntegrationRoute } from "./features/integrations/GitHubIntegrationRoute";
 import { ApiKeysRoute } from "./features/management/ApiKeysRoute";
 import { InstrumentationRoute } from "./features/management/InstrumentationRoute";
@@ -44,9 +45,16 @@ function RootLayout() {
   );
 }
 
-/** Redirects to `/logs`, preserving the query string — used for both the
- * bare index route and the unrecognized-path catch-all so a deep link's
- * `?tenant=&dataset=` (or any other query state) survives the redirect. */
+/** Redirects to `/overview` — the landing page — preserving the query
+ * string, so a deep link's `?tenant=&dataset=` survives the redirect. */
+function RedirectToOverview() {
+  const location = useLocation();
+  return <Navigate to={`/overview${location.search}`} replace />;
+}
+
+/** Redirects to `/logs`, preserving the query string — used for the
+ * unrecognized-path catch-all so a deep link's `?tenant=&dataset=` (or any
+ * other query state) survives the redirect. */
 function RedirectToLogs() {
   const location = useLocation();
   return <Navigate to={`/logs${location.search}`} replace />;
@@ -86,7 +94,8 @@ export function routeElements() {
       <Route path="/oauth/consent" element={<ConsentView />} />
       <Route path="/login" element={<LoginRoute />} />
       <Route path="/" element={<App />}>
-        <Route index element={<RedirectToLogs />} />
+        <Route index element={<RedirectToOverview />} />
+        <Route path="overview" element={<OverviewRoute />} />
         <Route path="manage" element={<ManagementRoute />} />
         <Route path="select-tenant" element={<SelectTenantRoute />} />
         <Route path="api-keys" element={<ApiKeysRoute />} />

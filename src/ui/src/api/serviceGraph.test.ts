@@ -61,6 +61,37 @@ describe("fetchServiceGraph", () => {
     expect(body.depth).toBe(2);
   });
 
+  it("sends where stages as the graph pipeline", async () => {
+    // A fresh Response per call: a body can only be read once.
+    const fetchMock = vi
+      .fn()
+      .mockImplementation(async () =>
+        jsonResponse({ result: "graph", graph: { nodes: [], edges: [] } }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    const where = [
+      {
+        where: {
+          field: "deployment.environment.name",
+          op: "eq",
+          value: "prod",
+        },
+      },
+    ];
+
+    await fetchServiceGraph(range, { where });
+    await fetchServiceGraph(range, { where: [] });
+
+    const first = await (fetchMock.mock.calls[0]?.[0] as Request)
+      .clone()
+      .json();
+    const second = await (fetchMock.mock.calls[1]?.[0] as Request)
+      .clone()
+      .json();
+    expect(first.pipeline).toEqual(where);
+    expect(second.pipeline).toBeUndefined();
+  });
+
   it("returns the graph from the response envelope", async () => {
     const graph = {
       nodes: [

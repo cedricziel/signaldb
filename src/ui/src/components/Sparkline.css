@@ -13,6 +13,21 @@
    class that would fill the wedge under the line. */
 .sparkline-line {
   fill: none;
+  vector-effect: non-scaling-stroke;
+}
+
+.sparkline-marker {
+  stroke: var(--faint);
+  stroke-width: 1;
+  stroke-dasharray: 3 2;
+  vector-effect: non-scaling-stroke;
+}
+
+.sparkline-crosshair {
+  stroke: var(--dim);
+  stroke-width: 1;
+  vector-effect: non-scaling-stroke;
+  pointer-events: none;
 }
 
 .sparkline-line.sparkline-tone-neutral {
