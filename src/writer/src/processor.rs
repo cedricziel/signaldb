@@ -3,6 +3,7 @@ use crate::storage::IcebergTableWriter;
 use anyhow::{Context, Result};
 use common::CatalogManager;
 use common::config::WriterConfig;
+use common::schema::type_authority::TypeAuthority;
 use common::wal::manager::WalManager;
 use common::wal::{Wal, WalEntry, bytes_to_record_batch};
 use datafusion::arrow::array::RecordBatch;
@@ -332,6 +333,10 @@ pub struct WalProcessor {
     /// they must be, since a commit reloads the table and rewrites the
     /// idempotency marker.
     table_writers: tokio::sync::Mutex<HashMap<String, Arc<tokio::sync::Mutex<IcebergTableWriter>>>>,
+    /// Canonical-type resolver attached to every table writer this
+    /// processor creates ([`IcebergTableWriter::with_type_authority`]).
+    /// `None` unless the deployment enables the typed attribute layout.
+    type_authority: Option<Arc<TypeAuthority>>,
     /// Consecutive processing failures per entry. Entries that keep
     /// failing are dead-lettered so one poison entry cannot wedge the
     /// processing loop forever (in-memory: a restart grants a fresh set
@@ -396,6 +401,7 @@ impl WalProcessor {
             wal_manager,
             catalog_manager,
             table_writers: tokio::sync::Mutex::new(HashMap::new()),
+            type_authority: None,
             entry_failures: tokio::sync::Mutex::new(HashMap::new()),
             coalescer: tokio::sync::Mutex::new(CommitCoalescer::new(writer_config)),
             wal_marker_retention: writer_config.wal_marker_retention,
@@ -412,6 +418,14 @@ impl WalProcessor {
             #[cfg(test)]
             injected_commit_delay: tokio::sync::Mutex::new(None),
         }
+    }
+
+    /// Attaches the canonical-type resolver every table writer this
+    /// processor creates is built with. Builder-style so existing `new`/
+    /// `with_config` call sites are unaffected.
+    pub fn with_type_authority(mut self, type_authority: Arc<TypeAuthority>) -> Self {
+        self.type_authority = Some(type_authority);
+        self
     }
 
     /// Make every subsequent group commit fail with `kind` instead of doing
@@ -1210,20 +1224,22 @@ impl WalProcessor {
                 // removes. `or_insert` settles a race by keeping the first
                 // writer in; a table appears in only one group per cycle, so
                 // that race is not reachable today anyway.
-                let writer = Arc::new(tokio::sync::Mutex::new(
-                    IcebergTableWriter::new(
-                        &self.catalog_manager,
-                        tenant_id.to_string(),
-                        dataset_id.to_string(),
-                        table_name.to_string(),
-                    )
-                    .await
-                    .map_err(|e| CommitFailure {
-                        kind: classify_table_creation_error(&e),
-                        processed: Vec::new(),
-                        source: e,
-                    })?,
-                ));
+                let mut writer = IcebergTableWriter::new(
+                    &self.catalog_manager,
+                    tenant_id.to_string(),
+                    dataset_id.to_string(),
+                    table_name.to_string(),
+                )
+                .await
+                .map_err(|e| CommitFailure {
+                    kind: classify_table_creation_error(&e),
+                    processed: Vec::new(),
+                    source: e,
+                })?;
+                if let Some(authority) = self.type_authority.clone() {
+                    writer = writer.with_type_authority(authority);
+                }
+                let writer = Arc::new(tokio::sync::Mutex::new(writer));
                 self.table_writers
                     .lock()
                     .await

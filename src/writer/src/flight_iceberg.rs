@@ -28,6 +28,7 @@ use bytes::Bytes;
 use common::CatalogManager;
 use common::config::WriterConfig;
 use common::flight::decode::flight_data_vec_to_batches;
+use common::schema::type_authority::TypeAuthority;
 use common::wal::manager::WalManager;
 use common::wal::{WalOperation, record_batch_to_bytes};
 use futures::StreamExt;
@@ -108,20 +109,45 @@ impl IcebergWriterFlightService {
             wal_manager,
             writer_config,
             Arc::new(SystemClock),
+            None,
+        )
+    }
+
+    /// As [`Self::new`], but wired to place typed-attribute values through
+    /// `type_authority` (see [`WalProcessor::with_type_authority`]). The
+    /// writer's real startup path uses this; test constructors go through
+    /// [`Self::new`], whose tables stay in the legacy attribute layout.
+    pub fn with_type_authority(
+        catalog_manager: Arc<CatalogManager>,
+        wal_manager: Arc<WalManager>,
+        writer_config: &WriterConfig,
+        type_authority: Arc<TypeAuthority>,
+    ) -> Self {
+        Self::with_ingest_dedup_clock(
+            catalog_manager,
+            wal_manager,
+            writer_config,
+            Arc::new(SystemClock),
+            Some(type_authority),
         )
     }
 
     /// As [`Self::new`], but with an injectable clock for the ingest-dedup
-    /// cache. Exposed so tests can move past `ingest_dedup_window` without
-    /// sleeping; production callers use [`Self::new`].
+    /// cache and an optional type authority. Exposed so tests can move past
+    /// `ingest_dedup_window` without sleeping; production callers use
+    /// [`Self::new`] or [`Self::with_type_authority`].
     pub(crate) fn with_ingest_dedup_clock(
         catalog_manager: Arc<CatalogManager>,
         wal_manager: Arc<WalManager>,
         writer_config: &WriterConfig,
         clock: Arc<dyn Clock>,
+        type_authority: Option<Arc<TypeAuthority>>,
     ) -> Self {
-        let processor =
+        let mut processor =
             WalProcessor::with_config(wal_manager.clone(), catalog_manager.clone(), writer_config);
+        if let Some(type_authority) = type_authority {
+            processor = processor.with_type_authority(type_authority);
+        }
 
         Self {
             processor: Arc::new(Mutex::new(processor)),
@@ -1378,6 +1404,7 @@ mod tests {
             wal_manager,
             &writer_config,
             clock,
+            None,
         )
     }
 
