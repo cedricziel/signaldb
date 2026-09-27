@@ -37,7 +37,7 @@
 - [x] 5.3 Router handler tests: CRUD, append cases, tenant isolation, privilege checks (`cargo test -p router`). Appending from a trace query follows in its own task (5.6).
 - [x] 5.4 `router/src/endpoints/eval_sets.rs`, `evals:read`/`evals:write` scopes, and OpenAPI registration; `cargo xtask generate`.
 - [x] 5.5 Regenerate the Rust SDK (`src/signaldb-sdk`) and the TypeScript client (`src/ui/src/api/gen`).
-- [ ] 5.6 Append cases from a trace query (`invoke_agent` spans by filter, run through the Query IR), with tests.
+- [x] 5.6 Append cases from a trace query (`invoke_agent` spans by filter, run through the Query IR), with tests.
 
 ## 6. Results upload
 
