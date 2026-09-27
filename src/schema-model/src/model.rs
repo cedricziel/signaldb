@@ -312,15 +312,70 @@ impl PartialEq<RegistryDocument> for Arc<RegistryDocument> {
     }
 }
 
+/// Path reported in errors for a single-document upload.
+const DOCUMENT: &str = "<document>";
+
+/// Model layout of a registry file, from its `file_format` key.
+enum Layout {
+    Groups,
+    DefinitionV2,
+}
+
+impl Layout {
+    fn of(file_format: Option<&str>, path: &str) -> Result<Self, ParseError> {
+        match file_format {
+            None => Ok(Layout::Groups),
+            Some("definition/2") => Ok(Layout::DefinitionV2),
+            Some(other) => Err(ParseError::UnsupportedFileFormat {
+                path: path.to_string(),
+                format: other.to_string(),
+            }),
+        }
+    }
+}
+
+/// Top-level keys of a `definition/2` model file ([`ModelFileV2`]'s fields).
+const V2_SECTIONS: [&str; 8] = [
+    "attributes",
+    "attribute_groups",
+    "metrics",
+    "spans",
+    "events",
+    "entities",
+    "span_refinements",
+    "metric_refinements",
+];
+
 impl RegistryDocument {
-    /// Parse a single-document registry from YAML text.
+    /// Parse a single-document registry from YAML text, in the `groups` or
+    /// the `definition/2` layout (lowered to `groups`).
     pub fn from_yaml(text: &str) -> Result<Self, ParseError> {
-        serde_norway::from_str(text).map_err(yaml_err(Path::new("<document>")))
+        serde_norway::from_str::<Self>(text)
+            .map_err(yaml_err(Path::new(DOCUMENT)))?
+            .lower_layout()
     }
 
-    /// Parse a single-document registry from JSON text.
+    /// Parse a single-document registry from JSON text, in the `groups` or
+    /// the `definition/2` layout (lowered to `groups`).
     pub fn from_json(text: &str) -> Result<Self, ParseError> {
-        Ok(serde_json::from_str(text)?)
+        serde_json::from_str::<Self>(text)?.lower_layout()
+    }
+
+    /// A `definition/2` document parses with its model sections in `extra`;
+    /// lower them into `groups`.
+    fn lower_layout(mut self) -> Result<Self, ParseError> {
+        let file_format = self.extra.get("file_format").and_then(|f| f.as_str());
+        if let Layout::DefinitionV2 = Layout::of(file_format, DOCUMENT)? {
+            self.extra.remove("file_format");
+            let sections: serde_json::Map<_, _> = V2_SECTIONS
+                .into_iter()
+                .filter_map(|key| self.extra.remove_entry(key))
+                .collect();
+            let model: ModelFileV2 = serde_json::from_value(sections.into())?;
+            self.groups
+                .extend(lower_v2(vec![(format!("registry.{}", self.name), model)]));
+        }
+        Ok(self)
     }
 
     /// Append `other`'s groups and any dependency whose namespace `self` does
@@ -369,24 +424,19 @@ impl RegistryDocument {
             }
             let value: serde_norway::Value =
                 serde_norway::from_str(&text).map_err(yaml_err(&path))?;
-            match value.get("file_format").and_then(|f| f.as_str()) {
-                None => {
+            let file_format = value.get("file_format").and_then(|f| f.as_str());
+            match Layout::of(file_format, &path.display().to_string())? {
+                Layout::Groups => {
                     let file: ModelFileV1 =
                         serde_norway::from_value(value).map_err(yaml_err(&path))?;
                     groups.extend(file.groups.ok_or_else(|| ParseError::MissingGroups {
                         path: path.display().to_string(),
                     })?);
                 }
-                Some("definition/2") => {
+                Layout::DefinitionV2 => {
                     let file: ModelFileV2 =
                         serde_norway::from_value(value).map_err(yaml_err(&path))?;
                     v2_files.push((synthetic_registry_id(dir, &path), file));
-                }
-                Some(other) => {
-                    return Err(ParseError::UnsupportedFileFormat {
-                        path: path.display().to_string(),
-                        format: other.to_string(),
-                    });
                 }
             }
         }

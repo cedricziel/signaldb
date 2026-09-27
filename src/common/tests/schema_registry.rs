@@ -4,7 +4,8 @@
 
 use common::catalog::Catalog;
 use common::schema_registry::{
-    RegistrySource, SchemaResolver, StoreError, bundled_registries, is_bundled,
+    AttributeHit, RegistrySource, Resolution, SchemaResolver, StoreError, bundled_registries,
+    is_bundled,
 };
 use schema_model::{RegistryDocument, Role};
 
@@ -514,5 +515,102 @@ async fn otel_genai_is_bundled_read_only_and_reserved() {
     assert!(
         matches!(&err, StoreError::ReservedNamespace(ns) if ns == "otel-genai"),
         "{err:?}"
+    );
+}
+
+// ---- semconv-definition-v2 2.1 uploads ------------------------------------
+
+const ACME_V2: &str = include_str!("../../schema-model/tests/fixtures/acme-v2.yaml");
+
+/// definition/2 has no named group for top-level `attributes`, so the
+/// containing group is the one thing that differs from acme.yaml.
+fn without_group(mut res: Resolution<AttributeHit>) -> Resolution<AttributeHit> {
+    for hit in res.primary.iter_mut().chain(res.hits.iter_mut()) {
+        hit.def.group_id.clear();
+        hit.def.group_display_name = None;
+    }
+    res
+}
+
+#[tokio::test]
+async fn definition_v2_upload_resolves_like_its_groups_equivalent() {
+    let r = resolver().await;
+    let v2 = RegistryDocument::from_yaml(ACME_V2).expect("definition/2 parses");
+    let created = r.create("v2", &v2).await.expect("create v2");
+    r.create("v1", &acme("1.0.0")).await.expect("create v1");
+    assert_eq!(
+        (created.namespace.as_str(), created.version.as_str()),
+        ("acme", "1.0.0")
+    );
+    assert_eq!(created.entity_count, 2);
+    assert_eq!(created.metric_count, 1);
+
+    for key in [
+        "acme.order.id",
+        "acme.order.total",
+        "acme.order.channel",
+        "acme.rack.id",
+        "service.name",
+    ] {
+        assert_eq!(
+            without_group(r.resolve_attribute("v2", key).await.expect("resolve")),
+            without_group(r.resolve_attribute("v1", key).await.expect("resolve")),
+            "{key}"
+        );
+    }
+    for name in ["acme.order", "acme.k8s.pod", "k8s.pod"] {
+        assert_eq!(
+            r.resolve_entity("v2", name).await.expect("resolve"),
+            r.resolve_entity("v1", name).await.expect("resolve"),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        r.resolve_metric("v2", "acme.checkout.latency")
+            .await
+            .expect("resolve"),
+        r.resolve_metric("v1", "acme.checkout.latency")
+            .await
+            .expect("resolve"),
+    );
+
+    let (_, stored) = r
+        .get("v2", "acme", "1.0.0")
+        .await
+        .expect("get")
+        .expect("exists");
+    let json = serde_json::to_value(&stored).expect("serialize");
+    assert!(json.get("file_format").is_none(), "{json}");
+    assert!(json.get("entities").is_none(), "{json}");
+    assert!(
+        stored
+            .groups
+            .iter()
+            .any(|g| g.r#type == "entity" && g.name.as_deref() == Some("acme.order"))
+    );
+}
+
+#[tokio::test]
+async fn unsupported_file_format_upload_is_rejected_naming_the_format() {
+    let r = resolver().await;
+    for parsed in [
+        RegistryDocument::from_yaml(&ACME_V2.replace("definition/2", "definition/3")),
+        RegistryDocument::from_json(
+            r#"{"file_format": "definition/3", "name": "acme", "version": "1.0.0"}"#,
+        ),
+    ] {
+        let err = parsed.expect_err("definition/3 is not supported");
+        assert!(
+            matches!(&err, schema_model::ParseError::UnsupportedFileFormat { format, .. } if format == "definition/3"),
+            "{err:?}"
+        );
+        assert!(err.to_string().contains("definition/3"), "{err}");
+    }
+    assert!(
+        !r.list("t1")
+            .await
+            .expect("list")
+            .iter()
+            .any(|s| s.namespace == "acme")
     );
 }
