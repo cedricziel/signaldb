@@ -11,6 +11,12 @@ describe("currentPageFor", () => {
     });
     expect(currentPageFor("/traces/abc123").id).toBe("traces");
     expect(currentPageFor("/catalog/service/checkout").id).toBe("catalog");
+    expect(currentPageFor("/rum/overview")).toEqual({
+      id: "rum",
+      group: "Monitor",
+      label: "Real users",
+    });
+    expect(currentPageFor("/rum/setup").id).toBe("rum");
     expect(currentPageFor("/schema/conventions/new")).toMatchObject({
       id: "schema",
       group: "Configure",
