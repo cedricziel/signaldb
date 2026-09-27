@@ -21,16 +21,20 @@ One binary: `signaldb` is the monolith, `signaldb <service>` runs one service (a
 
 Storage locations: WAL files in `.data/wal/`, Parquet data in `.data/storage/`, SQLite in `.data/*.db`
 
-### Pre-Commit Workflow
+### Verifying a change
 
-The project uses cargo-husky for pre-commit hooks that automatically run:
+When a commit stages Rust files, the cargo-husky pre-commit hook runs `cargo fmt --check` and `cargo clippy --workspace --all-targets --all-features`, so it compiles the whole workspace (UI files trigger the pnpm checks instead). Run the scoped checks yourself first:
 
 ```bash
-cargo fmt                  # Format code (runs automatically on commit)
-cargo clippy --workspace --all-targets --all-features  # Lint (runs automatically on commit)
-cargo machete --with-metadata  # Check for unused dependencies (run manually before commit)
-cargo deny check           # License and security auditing
+cargo fmt
+cargo clippy -p <crate> --all-targets --all-features -- -D warnings
+cargo test -p <crate> <filter>
+cargo machete --with-metadata        # when a Cargo.toml changed
+cargo deny check                     # when dependencies changed
+pnpm --filter ./src/ui typecheck && pnpm --filter ./src/ui lint && pnpm --filter ./src/ui test   # UI changes
 ```
+
+Build with `CARGO_INCREMENTAL=0` (keeps sccache hits high, matches CI) and stop building below ~8 GB free disk.
 
 JS tooling is pnpm (root workspace + `pnpm-lock.yaml`); `npm install` desyncs the lockfile.
 
