@@ -473,33 +473,51 @@ mod tests {
         assert!(!looks_generated("k8s.pod.name"));
     }
 
-    fn json_utf8_batch() -> RecordBatch {
-        // Two source columns: resource attrs win over record attrs.
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("body", DataType::Utf8, true),
-            Field::new("resource_attributes", DataType::Utf8, true),
-            Field::new("log_attributes", DataType::Utf8, true),
-            Field::new("label_env", DataType::Utf8, true),
-        ]));
-        RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(StringArray::from(vec![Some("a"), Some("b"), Some("c")])),
-                Arc::new(StringArray::from(vec![
-                    Some(r#"{"env":"prod"}"#),
-                    None,
-                    Some("{}"),
-                ])),
-                Arc::new(StringArray::from(vec![
-                    Some(r#"{"env":"record-level","pod":"api-1"}"#),
-                    Some(r#"{"env":"staging"}"#),
-                    Some("{}"),
-                ])),
-                // Existing column with writer-left nulls to be healed.
-                Arc::new(StringArray::from(vec![None::<&str>, None, None])),
-            ],
-        )
-        .unwrap()
+    /// Two typed-layout source containers over three rows: resource attrs
+    /// win over record attrs for the shared `env` key (row 0), only the
+    /// record-level source carries the key (row 1), and the key is absent
+    /// everywhere (row 2, both containers present but empty).
+    fn typed_source_batch() -> RecordBatch {
+        let json_map = |pairs: &[(&str, &str)]| {
+            Some(serde_json::Map::from_iter(pairs.iter().map(|(k, v)| {
+                (k.to_string(), serde_json::Value::String(v.to_string()))
+            })))
+        };
+        let resource_rows = [json_map(&[("env", "prod")]), None, json_map(&[])];
+        let log_rows = [
+            json_map(&[("env", "record-level"), ("pod", "api-1")]),
+            json_map(&[("env", "staging")]),
+            json_map(&[]),
+        ];
+        let (resource_fields, resource_arrays) = common::testing::typed_attribute_columns_from(
+            "logs",
+            "physical-v4",
+            "resource_attributes",
+            &resource_rows,
+        );
+        let (log_fields, log_arrays) = common::testing::typed_attribute_columns_from(
+            "logs",
+            "physical-v4",
+            "log_attributes",
+            &log_rows,
+        );
+
+        let mut fields = vec![Field::new("body", DataType::Utf8, true)];
+        fields.extend(resource_fields);
+        fields.extend(log_fields);
+        fields.push(Field::new("label_env", DataType::Utf8, true));
+
+        let mut columns: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![
+            Some("a"),
+            Some("b"),
+            Some("c"),
+        ]))];
+        columns.extend(resource_arrays);
+        columns.extend(log_arrays);
+        // Existing column with writer-left nulls to be healed.
+        columns.push(Arc::new(StringArray::from(vec![None::<&str>, None, None])));
+
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
     }
 
     fn string_column<'a>(batch: &'a RecordBatch, name: &str) -> &'a StringArray {
@@ -514,7 +532,7 @@ mod tests {
     #[test]
     fn backfill_overwrites_existing_column_with_source_precedence() {
         let pairs = vec![("env".to_string(), "label_env".to_string())];
-        let out = backfill_label_columns(vec![json_utf8_batch()], &pairs).unwrap();
+        let out = backfill_label_columns(vec![typed_source_batch()], &pairs).unwrap();
         assert_eq!(out.len(), 1);
         let env = string_column(&out[0], "label_env");
         // Row 0: resource wins over the record-level value.
@@ -524,7 +542,7 @@ mod tests {
         // Row 2: key absent everywhere -> null.
         assert!(env.is_null(2));
         // Column count unchanged: the existing column was replaced.
-        assert_eq!(out[0].num_columns(), 4);
+        assert_eq!(out[0].num_columns(), typed_source_batch().num_columns());
     }
 
     #[test]
@@ -533,11 +551,13 @@ mod tests {
             ("pod".to_string(), "label_pod".to_string()),
             ("env".to_string(), "label_env".to_string()),
         ];
-        let out = backfill_label_columns(vec![json_utf8_batch()], &pairs).unwrap();
+        let source = typed_source_batch();
+        let source_columns = source.num_columns();
+        let out = backfill_label_columns(vec![source], &pairs).unwrap();
         let batch = &out[0];
         // `label_pod` is new and appended before the (replaced) `label_env`.
-        assert_eq!(batch.num_columns(), 5);
-        assert_eq!(batch.schema().field(4).name(), "label_pod");
+        assert_eq!(batch.num_columns(), source_columns + 1);
+        assert_eq!(batch.schema().field(source_columns).name(), "label_pod");
         let pod = string_column(batch, "label_pod");
         assert_eq!(pod.value(0), "api-1");
         assert!(pod.is_null(1));
@@ -546,7 +566,7 @@ mod tests {
 
     #[test]
     fn backfill_without_pairs_is_a_no_op() {
-        let batch = json_utf8_batch();
+        let batch = typed_source_batch();
         let out = backfill_label_columns(vec![batch.clone()], &[]).unwrap();
         assert_eq!(out[0], batch);
     }
