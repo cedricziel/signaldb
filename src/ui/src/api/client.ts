@@ -9,11 +9,15 @@
 //     `tenantHeaders()`; and
 //   * `retryingFetch` as the client's fetch, so every generated operation
 //     backs off on throttling (429) and idempotent transient failures the same
-//     way the Rust SDK does (see `client-retry-on-throttle`).
+//     way the Rust SDK does (see `client-retry-on-throttle`); and
+//   * `withProxyLoginRecovery` on top of that, so a reverse proxy's expired
+//     login (see `lib/proxyLoginRecovery.ts`) gets caught and recovered from
+//     on every generated operation too.
 import { client } from "./gen/client.gen";
 import { retryingFetch, tenantHeaders } from "./http";
+import { withProxyLoginRecovery } from "../lib/proxyLoginRecovery";
 
-client.setConfig({ baseUrl: "", fetch: retryingFetch });
+client.setConfig({ baseUrl: "", fetch: withProxyLoginRecovery(retryingFetch) });
 
 client.interceptors.request.use((request) => {
   for (const [key, value] of Object.entries(tenantHeaders())) {
