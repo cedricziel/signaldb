@@ -3,8 +3,8 @@
 //! Two layers, used by different tests:
 //! - [`connect`]: an in-process duplex client (no HTTP layer) for
 //!   registration/schema checks that never dispatch a tool call.
-//! - [`spawn_router`], [`mcp_request_with_key`], [`read_jsonrpc_response`]:
-//!   building blocks for a full Streamable HTTP round trip against a mock
+//! - [`spawn_router`], [`mcp_request_with_key`], [`read_jsonrpc_response`]
+//!   and [`McpSession`]: a full Streamable HTTP round trip against a mock
 //!   router, for tests that need the `Extension<Parts>` only that transport
 //!   populates.
 //!
@@ -13,7 +13,7 @@
 #![allow(dead_code)]
 
 use axum::body::Body;
-use axum::http::Request;
+use axum::http::{Request, StatusCode};
 use axum::response::Response;
 use futures::StreamExt;
 use rmcp::{ClientHandler, RoleClient, ServiceExt, model::ClientInfo, service::RunningService};
@@ -130,4 +130,114 @@ pub async fn read_jsonrpc_response(response: Response, id: u64) -> serde_json::V
             }
         }
     }
+}
+
+/// An initialized Streamable HTTP MCP session against `app`, authenticated
+/// with one API key for every request.
+pub struct McpSession {
+    app: axum::Router,
+    api_key: String,
+    session_id: String,
+    next_id: u64,
+}
+
+impl McpSession {
+    /// Runs `initialize` + `notifications/initialized` as `api_key`.
+    pub async fn open(app: axum::Router, api_key: &str) -> Self {
+        use tower::ServiceExt;
+        let init = mcp_request_with_key(
+            api_key,
+            None,
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": 1, "method": "initialize",
+                "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                           "clientInfo": {"name": "mcp-server-test", "version": "0"}}
+            }),
+        );
+        let response = app
+            .clone()
+            .oneshot(init)
+            .await
+            .expect("initialize responds");
+        assert_eq!(response.status(), StatusCode::OK, "initialize");
+        let session_id = response
+            .headers()
+            .get("mcp-session-id")
+            .and_then(|v| v.to_str().ok())
+            .expect("initialize assigns a session id")
+            .to_string();
+        let _ = read_jsonrpc_response(response, 1).await;
+
+        let initialized = mcp_request_with_key(
+            api_key,
+            Some(&session_id),
+            serde_json::json!({"jsonrpc": "2.0", "method": "notifications/initialized"}),
+        );
+        let response = app
+            .clone()
+            .oneshot(initialized)
+            .await
+            .expect("initialized responds");
+        assert_eq!(response.status(), StatusCode::ACCEPTED, "initialized");
+
+        Self {
+            app,
+            api_key: api_key.to_string(),
+            session_id,
+            next_id: 2,
+        }
+    }
+
+    /// Sends `tools/call` and returns the JSON-RPC reply.
+    pub async fn call_tool(
+        &mut self,
+        tool: &str,
+        arguments: serde_json::Value,
+    ) -> serde_json::Value {
+        use tower::ServiceExt;
+        let id = self.next_id;
+        self.next_id += 1;
+        let request = mcp_request_with_key(
+            &self.api_key,
+            Some(&self.session_id),
+            serde_json::json!({
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": {"name": tool, "arguments": arguments}
+            }),
+        );
+        let response = self
+            .app
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("tools/call responds");
+        assert_eq!(response.status(), StatusCode::OK, "tools/call HTTP status");
+        read_jsonrpc_response(response, id).await
+    }
+}
+
+/// The error text of a JSON-RPC error or an `isError` tool result.
+pub fn tool_error_message(reply: &serde_json::Value) -> String {
+    if let Some(error) = reply.get("error") {
+        return error["message"].as_str().unwrap_or_default().to_string();
+    }
+    reply["result"]["content"]
+        .as_array()
+        .and_then(|blocks| blocks.first())
+        .and_then(|b| b["text"].as_str())
+        .unwrap_or_default()
+        .to_string()
+}
+
+/// True for a JSON-RPC error or an `isError` tool result.
+pub fn tool_is_error(reply: &serde_json::Value) -> bool {
+    reply.get("error").is_some() || reply["result"]["isError"].as_bool() == Some(true)
+}
+
+/// The first text block of a successful tool result, parsed as JSON.
+pub fn result_json(reply: &serde_json::Value) -> serde_json::Value {
+    let text = reply["result"]["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("tool result has text content: {reply}"));
+    serde_json::from_str(text).expect("tool result is JSON")
 }

@@ -1767,6 +1767,185 @@ struct DeleteProcessorParams {
     name: String,
 }
 
+// ---- Agent eval set parameters (tenant credential) ----
+
+/// Parameters for `list_eval_sets`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ListEvalSetsParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset whose eval sets to list. Required: one MCP session may span
+    /// several datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
+}
+
+/// Default and ceiling for `get_eval_set`'s `limit`: large enough for a
+/// typical set in one call, small enough that a page stays well under the
+/// tool payload cap.
+const EVAL_CASES_DEFAULT_LIMIT: usize = 200;
+const EVAL_CASES_MAX_LIMIT: usize = 1000;
+
+/// Parameters for `get_eval_set`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct GetEvalSetParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset the eval set lives in. Required: one MCP session may span
+    /// several datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
+    /// Eval set name.
+    name: String,
+    /// Index of the first case to return. Default 0.
+    #[serde(default)]
+    offset: Option<usize>,
+    /// Maximum number of cases to return. Default 200, at most 1000.
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// Parameters for `delete_eval_set`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct DeleteEvalSetParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset the eval set lives in. Required: one MCP session may span
+    /// several datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
+    /// Eval set name.
+    name: String,
+}
+
+/// JSON-schema mirror of the SDK's `EvalCase`: the tool parameters
+/// deserialize straight into the SDK type (`#[schemars(with)]`), so this only
+/// describes the wire shape to the client.
+#[derive(JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[expect(
+    dead_code,
+    reason = "schema-only mirror of signaldb_sdk::types::EvalCase"
+)]
+struct EvalCaseParam {
+    /// Case id, unique within the set; 1-128 characters.
+    id: String,
+    /// The input the agent under test receives.
+    input: String,
+    /// Tool names the agent should call, in order. Omit to leave the
+    /// trajectory unchecked.
+    #[serde(default)]
+    expected_tools: Vec<String>,
+    /// Reference answer, for evaluators that compare against one.
+    #[serde(default)]
+    reference: Option<String>,
+    /// Free-form labels.
+    #[serde(default)]
+    tags: Vec<String>,
+    /// Where the case came from. Defaults to `hand_written`.
+    #[serde(default)]
+    source: Option<EvalCaseSourceParam>,
+}
+
+/// JSON-schema mirror of the SDK's `EvalCaseSource`
+/// (`{"kind": "trace", "trace_id": "…"}`, `{"kind": "upload"}`,
+/// `{"kind": "hand_written"}`).
+#[derive(JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[expect(
+    dead_code,
+    reason = "schema-only mirror of signaldb_sdk::types::EvalCaseSource"
+)]
+enum EvalCaseSourceParam {
+    /// Captured from a production trace.
+    Trace {
+        /// The 32-hex-character trace id.
+        trace_id: String,
+    },
+    /// Imported from an uploaded file.
+    Upload,
+    /// Written by hand.
+    HandWritten,
+}
+
+/// Parameters for `create_eval_set` and `replace_eval_set`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct WriteEvalSetParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset the eval set lives in. Required: one MCP session may span
+    /// several datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
+    /// Eval set name: lowercase letters, digits, `-`, `_` and `.`, starting
+    /// with a letter or digit; 1-128 characters. `replace_eval_set` replaces
+    /// the existing set of this name.
+    name: String,
+    /// The agent the set evaluates (`gen_ai.agent.name`). Must not be empty.
+    agent: String,
+    /// Human-readable description.
+    #[serde(default)]
+    description: Option<String>,
+    /// Cases, in order (at most 10,000). A replace swaps in exactly these.
+    #[serde(default)]
+    #[schemars(with = "Vec<EvalCaseParam>")]
+    cases: Vec<signaldb_sdk::types::EvalCase>,
+}
+
+impl From<WriteEvalSetParams> for signaldb_sdk::types::EvalSetSpec {
+    fn from(p: WriteEvalSetParams) -> Self {
+        signaldb_sdk::types::EvalSetSpec {
+            name: p.name,
+            agent: p.agent,
+            description: p.description,
+            cases: p.cases,
+        }
+    }
+}
+
+/// Parameters for `append_eval_cases`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct AppendEvalCasesParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset the eval set lives in. Required: one MCP session may span
+    /// several datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
+    /// Eval set name.
+    name: String,
+    /// Cases to append. Ids the set already holds are skipped and reported,
+    /// never overwritten.
+    #[schemars(with = "Vec<EvalCaseParam>")]
+    cases: Vec<signaldb_sdk::types::EvalCase>,
+}
+
 #[tool_router]
 impl McpServer {
     /// Construct a handler that forwards to `router_base_url`, bounding each
@@ -2045,7 +2224,7 @@ impl McpServer {
             .body(request)
             .send()
             .await
-            .map_err(|e| map_query_err(e, "get_trace"))?;
+            .map_err(|e| map_api_error_body(e, "get_trace"))?;
         // The waterfall app renders from `structuredContent`, which the host
         // forwards to the iframe without adding it to the model's context;
         // it is attached only for UI-capable clients so a plain client is
@@ -2096,7 +2275,7 @@ impl McpServer {
             .body(request)
             .send()
             .await
-            .map_err(|e| map_query_err(e, "get_service_map"))?;
+            .map_err(|e| map_api_error_body(e, "get_service_map"))?;
         let graph = resp
             .into_inner()
             .graph
@@ -2141,7 +2320,7 @@ impl McpServer {
             .body(request)
             .send()
             .await
-            .map_err(|e| map_query_err(e, "search_trace_groups"))?;
+            .map_err(|e| map_api_error_body(e, "search_trace_groups"))?;
         let groups =
             trace_groups_from_response(resp.into_inner(), p.group_by.len(), limit as usize);
         json_result_ext(&groups, false, links)
@@ -2169,7 +2348,7 @@ impl McpServer {
             .body(request)
             .send()
             .await
-            .map_err(|e| map_query_err(e, "get_profile"))?;
+            .map_err(|e| map_api_error_body(e, "get_profile"))?;
         let flamegraph = flamegraph_or_not_found(resp.into_inner())?;
         // The flamegraph app renders from `structuredContent`, mirroring
         // `get_trace`'s waterfall.
@@ -2547,7 +2726,7 @@ impl McpServer {
             .body(request)
             .send()
             .await
-            .map_err(|e| map_query_err(e, "discover_fields"))?;
+            .map_err(|e| map_api_error_body(e, "discover_fields"))?;
         json_result(&resp.into_inner())
     }
 
@@ -2583,7 +2762,7 @@ impl McpServer {
             .body(request)
             .send()
             .await
-            .map_err(|e| map_query_err(e, "discover_field_values"))?;
+            .map_err(|e| map_api_error_body(e, "discover_field_values"))?;
         json_result(&resp.into_inner())
     }
 
@@ -2725,7 +2904,7 @@ impl McpServer {
             .body(request)
             .send()
             .await
-            .map_err(|e| map_query_err(e, "query_ir"))?;
+            .map_err(|e| map_api_error_body(e, "query_ir"))?;
         json_result(&resp.into_inner())
     }
 
@@ -3997,6 +4176,176 @@ impl McpServer {
             "name": p.name,
         }))
     }
+
+    #[tool(
+        description = "List the agent eval sets in a dataset, without their cases: name, agent, case count, description, timestamps. An eval set is a named, ordered list of test cases (input, expected tool trajectory, reference answer) that an offline eval harness runs one agent over. Requires the `evals:read` scope.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_eval_sets(
+        &self,
+        Parameters(p): Parameters<ListEvalSetsParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let resp = client
+            .list_eval_sets()
+            .send()
+            .await
+            .map_err(|e| map_api_error_body(e, "list_eval_sets"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Fetch one agent eval set by name with a page of its cases in order (id, input, expected_tools, reference, tags, source). Returns the set header plus `total_cases`, `offset`, `returned` and `has_more`; page through a large set with `offset`/`limit` (default 200 cases, at most 1000). Requires the `evals:read` scope.",
+        annotations(read_only_hint = true)
+    )]
+    async fn get_eval_set(
+        &self,
+        Parameters(p): Parameters<GetEvalSetParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let set = client
+            .get_eval_set()
+            .name(&p.name)
+            .send()
+            .await
+            .map_err(|e| map_api_error_body(e, "get_eval_set"))?
+            .into_inner();
+        json_result(&eval_set_page(set, p.offset, p.limit))
+    }
+
+    #[tool(
+        description = "Create an agent eval set (a named, ordered list of test cases for one agent) in a dataset. Fails if the name is taken; use `append_eval_cases` to add cases to an existing set. Requires the `evals:write` scope.",
+        annotations(destructive_hint = false)
+    )]
+    async fn create_eval_set(
+        &self,
+        Parameters(p): Parameters<WriteEvalSetParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let resp = client
+            .create_eval_set()
+            .body(signaldb_sdk::types::EvalSetSpec::from(p))
+            .send()
+            .await
+            .map_err(|e| map_api_error_body(e, "create_eval_set"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Replace an existing agent eval set (by `name`): its agent, description and every case are swapped for the ones given; cases not listed are dropped. Never creates a set. Requires the `evals:write` scope.",
+        annotations(destructive_hint = true)
+    )]
+    async fn replace_eval_set(
+        &self,
+        Parameters(p): Parameters<WriteEvalSetParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let spec = signaldb_sdk::types::EvalSetSpec::from(p);
+        let resp = client
+            .replace_eval_set()
+            .name(&spec.name)
+            .body(spec)
+            .send()
+            .await
+            .map_err(|e| map_api_error_body(e, "replace_eval_set"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Delete an agent eval set and all its cases by name. Requires the `evals:write` scope.",
+        annotations(destructive_hint = true, read_only_hint = false)
+    )]
+    async fn delete_eval_set(
+        &self,
+        Parameters(p): Parameters<DeleteEvalSetParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        client
+            .delete_eval_set()
+            .name(&p.name)
+            .send()
+            .await
+            .map_err(|e| map_api_error_body(e, "delete_eval_set"))?;
+        json_result(&serde_json::json!({
+            "deleted": true,
+            "name": p.name,
+        }))
+    }
+
+    #[tool(
+        description = "Append cases to an existing agent eval set. Case ids the set already holds are skipped and reported, never overwritten; the result gives `added`/`already_present` counts and ids. Requires the `evals:write` scope.",
+        annotations(destructive_hint = false)
+    )]
+    async fn append_eval_cases(
+        &self,
+        Parameters(p): Parameters<AppendEvalCasesParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let resp = client
+            .append_eval_cases()
+            .name(&p.name)
+            .body(signaldb_sdk::types::AppendEvalCasesRequest { cases: p.cases })
+            .send()
+            .await
+            .map_err(|e| map_api_error_body(e, "append_eval_cases"))?;
+        json_result(&resp.into_inner())
+    }
+}
+
+/// One page of an eval set for `get_eval_set`: the set header with
+/// `cases[offset..offset + limit]` and the paging fields, so a large set
+/// never reaches the tool payload cap.
+fn eval_set_page(
+    set: signaldb_sdk::types::EvalSetResponse,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> serde_json::Value {
+    let signaldb_sdk::types::EvalSetResponse {
+        agent,
+        cases,
+        created_at,
+        dataset,
+        description,
+        links,
+        name,
+        tenant_id,
+        updated_at,
+        case_count: _,
+    } = set;
+    let total_cases = cases.len();
+    let offset = offset.unwrap_or(0).min(total_cases);
+    let limit = limit
+        .unwrap_or(EVAL_CASES_DEFAULT_LIMIT)
+        .min(EVAL_CASES_MAX_LIMIT);
+    let page: Vec<_> = cases.into_iter().skip(offset).take(limit).collect();
+    let returned = page.len();
+    serde_json::json!({
+        "name": name,
+        "agent": agent,
+        "description": description,
+        "dataset": dataset,
+        "tenant_id": tenant_id,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "total_cases": total_cases,
+        "offset": offset,
+        "returned": returned,
+        "has_more": offset + returned < total_cases,
+        "cases": page,
+        "_links": links,
+    })
 }
 
 impl McpServer {
@@ -4724,42 +5073,6 @@ fn map_manage_err(
     }
 }
 
-/// Map a `/api/v1/query` error to an MCP error, keeping the router's typed
-/// `error`/`errorType` body in the message — otherwise a `400` (e.g. an
-/// invalid IR document) reaches the client as an opaque `Error Response:
-/// status: 400 ...; value: ()`, with the actual reason dropped. Other
-/// statuses fall back to [`map_sdk_err`].
-fn map_query_err(
-    err: signaldb_sdk::Error<signaldb_sdk::types::ApiErrorBody>,
-    what: &str,
-) -> ErrorData {
-    let signaldb_sdk::Error::ErrorResponse(response) = err else {
-        return map_sdk_err(err.into_untyped(), what);
-    };
-    let status = response.status().as_u16();
-    if status == 429 {
-        let retry_after = response
-            .into_inner()
-            .retry_after_ms
-            .and_then(|ms| u64::try_from(ms).ok())
-            .map(std::time::Duration::from_millis);
-        return throttled_error(what, retry_after);
-    }
-    let body = response.into_inner();
-    let message = format!("{what}: {}", body.error);
-    let mapped = match status {
-        400 | 422 => ErrorData::invalid_params(message, None),
-        401 => ErrorData::invalid_request(
-            format!("{what}: credential expired or was revoked; re-authenticate the session"),
-            None,
-        ),
-        403 => ErrorData::invalid_request(message, None),
-        404 => ErrorData::resource_not_found(message, None),
-        _ => ErrorData::internal_error(message, None),
-    };
-    with_http_status(mapped, status)
-}
-
 /// The `QueryIrRequest` fields with neither `Option<_>` nor `#[serde(default)]`
 /// (see `src/signaldb-sdk/src/generated.rs`) — a document missing any of
 /// these fails to deserialize.
@@ -4800,6 +5113,7 @@ fn map_schema_err(
         return map_sdk_err(err.into_untyped(), what);
     };
     let status = response.status().as_u16();
+    let retry_after = signaldb_sdk::retry::retry_after_from_headers(response.headers());
     let body = response.into_inner();
     let mut message = format!("{what}: {}", body.error);
     if !body.errors.is_empty() {
@@ -4812,17 +5126,7 @@ fn map_schema_err(
         message.push_str(&details.join("; "));
         message.push(']');
     }
-    let mapped = match status {
-        400 | 422 => ErrorData::invalid_params(message, None),
-        401 => ErrorData::invalid_request(
-            format!("{what}: credential expired or was revoked; re-authenticate the session"),
-            None,
-        ),
-        403 | 409 => ErrorData::invalid_request(message, None),
-        404 => ErrorData::resource_not_found(message, None),
-        _ => ErrorData::internal_error(message, None),
-    };
-    with_http_status(mapped, status)
+    status_to_error(status, what, message, retry_after)
 }
 
 /// Map a processors-API error to an MCP error, keeping the router's typed
@@ -4837,6 +5141,7 @@ fn map_processor_err(
         return map_sdk_err(err.into_untyped(), what);
     };
     let status = response.status().as_u16();
+    let retry_after = signaldb_sdk::retry::retry_after_from_headers(response.headers());
     let body = response.into_inner();
     let mut message = format!("{what}: {}", body.error);
     if !body.errors.is_empty() {
@@ -4849,14 +5154,50 @@ fn map_processor_err(
         message.push_str(&details.join("; "));
         message.push(']');
     }
+    status_to_error(status, what, message, retry_after)
+}
+
+/// Map an error carrying the router's shared `ApiErrorBody` envelope (the
+/// query and eval-sets APIs) to an MCP error, keeping its `error` text in the
+/// message so a model can fix the request (an invalid IR document, a bad
+/// eval set name, duplicate case ids, a taken name); other failures fall
+/// back to [`map_sdk_err`].
+fn map_api_error_body(
+    err: signaldb_sdk::Error<signaldb_sdk::types::ApiErrorBody>,
+    what: &str,
+) -> ErrorData {
+    let signaldb_sdk::Error::ErrorResponse(response) = err else {
+        return map_sdk_err(err.into_untyped(), what);
+    };
+    let status = response.status().as_u16();
+    let header_wait = signaldb_sdk::retry::retry_after_from_headers(response.headers());
+    let body = response.into_inner();
+    let retry_after = body
+        .retry_after_ms
+        .and_then(|ms| u64::try_from(ms).ok())
+        .map(std::time::Duration::from_millis)
+        .or(header_wait);
+    status_to_error(status, what, format!("{what}: {}", body.error), retry_after)
+}
+
+/// The status mapping shared by the typed-body mappers: `message` carries
+/// the router's error text, except on a `401` (a fixed re-authenticate hint)
+/// and a `429` (the throttled error, naming `retry_after`).
+fn status_to_error(
+    status: u16,
+    what: &str,
+    message: String,
+    retry_after: Option<std::time::Duration>,
+) -> ErrorData {
     let mapped = match status {
-        400 | 422 => ErrorData::invalid_params(message, None),
+        400 | 413 | 422 => ErrorData::invalid_params(message, None),
         401 => ErrorData::invalid_request(
             format!("{what}: credential expired or was revoked; re-authenticate the session"),
             None,
         ),
         403 | 409 => ErrorData::invalid_request(message, None),
         404 => ErrorData::resource_not_found(message, None),
+        429 => throttled_error(what, retry_after),
         _ => ErrorData::internal_error(message, None),
     };
     with_http_status(mapped, status)
@@ -7260,11 +7601,51 @@ mod tests {
             reqwest::StatusCode::BAD_REQUEST,
             reqwest::header::HeaderMap::new(),
         ));
-        let mapped = map_query_err(err, "query_ir");
+        let mapped = map_api_error_body(err, "query_ir");
         assert_eq!(mapped.code, ErrorData::invalid_params("", None).code);
         assert!(
             mapped.message.contains("unknown field `all`"),
             "router error text should reach the MCP client: {}",
+            mapped.message
+        );
+    }
+
+    #[test]
+    fn query_ir_413_is_invalid_params_naming_the_router_error() {
+        let body = signaldb_sdk::types::ApiErrorBody {
+            status: "error".to_string(),
+            error_type: "payload_too_large".to_string(),
+            error: "result exceeds the row limit".to_string(),
+            retry_after_ms: None,
+        };
+        let err = signaldb_sdk::Error::ErrorResponse(signaldb_sdk::ResponseValue::new(
+            body,
+            reqwest::StatusCode::PAYLOAD_TOO_LARGE,
+            reqwest::header::HeaderMap::new(),
+        ));
+        let mapped = map_api_error_body(err, "query_ir");
+        assert_eq!(mapped.code, ErrorData::invalid_params("", None).code);
+        assert!(mapped.message.contains("row limit"), "{}", mapped.message);
+    }
+
+    #[test]
+    fn eval_set_409_is_an_invalid_request_naming_the_router_error() {
+        let body = signaldb_sdk::types::ApiErrorBody {
+            status: "error".to_string(),
+            error_type: "conflict".to_string(),
+            error: "eval set `refunds` already exists".to_string(),
+            retry_after_ms: None,
+        };
+        let err = signaldb_sdk::Error::ErrorResponse(signaldb_sdk::ResponseValue::new(
+            body,
+            reqwest::StatusCode::CONFLICT,
+            reqwest::header::HeaderMap::new(),
+        ));
+        let mapped = map_api_error_body(err, "create_eval_set");
+        assert_eq!(mapped.code, ErrorData::invalid_request("", None).code);
+        assert!(
+            mapped.message.contains("already exists"),
+            "{}",
             mapped.message
         );
     }
