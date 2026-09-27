@@ -205,11 +205,6 @@
   white-space: nowrap;
 }
 
-.err-rate {
-  color: var(--err);
-  font-weight: 600;
-}
-
 /* Multi-select facet rows (span.kind): a checkbox in front of the value. */
 .facet-check {
   display: flex;

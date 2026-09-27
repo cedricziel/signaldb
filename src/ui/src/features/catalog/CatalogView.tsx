@@ -566,7 +566,7 @@ export function EntityTable({
                   </td>
                 ))}
                 <td className="num">{redRate(g.red, rangeSeconds)}</td>
-                <td className={`num${redErrorClass(g.red) ? " err-rate" : ""}`}>
+                <td className={`num ${redErrorClass(g.red)}`}>
                   {redErrorRate(g.red)}
                 </td>
                 <td className="num">{redDuration(g.red, "p50Ms")}</td>

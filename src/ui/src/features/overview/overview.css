@@ -551,10 +551,6 @@
   font-family: var(--mono);
 }
 
-.overview-services td.err {
-  color: var(--err);
-}
-
 .overview-health-col {
   width: 8px;
   padding-right: 0 !important;

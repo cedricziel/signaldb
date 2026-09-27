@@ -26,7 +26,7 @@ import {
   resolveRange,
   type ResolvedRange,
 } from "../../lib/time";
-import { compactCount } from "../../lib/vizFormat";
+import { compactCount, errorRateClass } from "../../lib/vizFormat";
 import { formatDurationMs } from "../../lib/waterfall";
 import { formatRatePerSec } from "../../lib/traceGroups";
 import { crossSignalSearch, type ExploreState } from "../../lib/urlState";
@@ -520,7 +520,9 @@ function ServicesTable({
                 <td className="num">
                   {traced ? formatRatePerSec(r.ratePerSec) : "–"}
                 </td>
-                <td className={`num${r.errorRate >= 0.005 ? " err" : ""}`}>
+                <td
+                  className={`num ${traced ? errorRateClass(r.errorRate) : ""}`}
+                >
                   {traced
                     ? r.errorRate < 0.001
                       ? r.errorRate === 0

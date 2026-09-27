@@ -746,6 +746,22 @@ select:focus-visible {
   color: var(--err);
 }
 
+/* ---------- shared error-rate cells, coloured by `errorRateSeverity` */
+
+.err-rate-ok {
+  color: var(--dim);
+}
+
+.err-rate-warn {
+  color: var(--warn);
+  font-weight: 600;
+}
+
+.err-rate-critical {
+  color: var(--err);
+  font-weight: 600;
+}
+
 /* ---------- shared chips (filter/tenant/origin/status/facet/semantic-key
    pills) ---------- */
 

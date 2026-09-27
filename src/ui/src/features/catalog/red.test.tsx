@@ -27,14 +27,20 @@ describe("redErrorRate", () => {
 });
 
 describe("redErrorClass", () => {
-  it("is unset for no measurement or a clean rate", () => {
-    expect(redErrorClass(undefined)).toBe(false);
-    expect(redErrorClass(red({ errors: 0 }))).toBe(false);
+  it("is unset when nothing was measured", () => {
+    expect(redErrorClass(undefined)).toBe("");
+    expect(redErrorClass(red({ traces: 0 }))).toBe("");
   });
 
-  // Even a rate small enough to render "<1%" is still a real error and
-  // keeps the red styling — the fix corrects the text, not the styling rule.
-  it("is set for any nonzero error count", () => {
-    expect(redErrorClass(red({ errors: 1, traces: 500 }))).toBe(true);
+  // A rate that reads "<1%" is healthy and must not look like a failing one.
+  it("colours by threshold", () => {
+    expect(redErrorClass(red({ errors: 0 }))).toBe("err-rate-ok");
+    expect(redErrorClass(red({ errors: 1, traces: 500 }))).toBe("err-rate-ok");
+    expect(redErrorClass(red({ errors: 5, traces: 500 }))).toBe(
+      "err-rate-warn",
+    );
+    expect(redErrorClass(red({ errors: 50, traces: 500 }))).toBe(
+      "err-rate-critical",
+    );
   });
 });
