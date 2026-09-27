@@ -72,6 +72,7 @@ This is the shared foundation. Key modules:
 | `storage`                  | `src/common/src/storage.rs`           | Object store creation from DSN                                                                                                                                                    |
 | `service_bootstrap`        | `src/common/src/service_bootstrap.rs` | Service registration + heartbeat                                                                                                                                                  |
 | `processors`               | `src/common/src/processors/mod.rs`    | `processors` catalog CRUD + `ProcessorRegistry` (per-tenant compiled-program cache, TTL refresh + in-process invalidation), `[processors]` config, `processors:read/write` scopes |
+| `eval_sets`                | `src/common/src/eval_sets/mod.rs`     | `eval_sets`/`eval_cases` catalog CRUD for offline agent evals, scoped per tenant + dataset; `evals:read/write` scopes live in `auth`                                              |
 
 ## The `writer` Crate
 
@@ -116,6 +117,7 @@ This is the shared foundation. Key modules:
 | `endpoints/github.rs`         | `src/router/src/endpoints/github.rs`         | GitHub App installation linking: `/api/v1/tenants/{id}/github-installations{,/link,/{id}}` + the `/ui/github/callback` install redirect; 404 when `[github]` is unset |
 | `github.rs`                   | `src/router/src/github.rs`                   | GitHub App outbound client: RS256 app JWT, installation-token minting with an in-process cache, OAuth-on-install code exchange, installation/repo listing             |
 | `endpoints/source_context.rs` | `src/router/src/endpoints/source_context.rs` | `POST /api/v1/tenants/{id}/source-context`: source lines around a stack frame from the tenant's linked GitHub repositories (always 200, `available`/`unavailable`)    |
+| `endpoints/eval_sets.rs`      | `src/router/src/endpoints/eval_sets.rs`      | Eval-set CRUD under `/api/v1/eval-sets` plus `POST .../{name}/cases` (append, skipping existing ids)                                                                  |
 | `source_context.rs`           | `src/router/src/source_context.rs`           | Snippet service: repository normalization/probing, Contents API fetch + slice, TTL/LRU cache keyed per installation/repo/ref/path/window                              |
 | `endpoints/flight.rs`         | `src/router/src/endpoints/flight.rs`         | Router Flight service                                                                                                                                                 |
 

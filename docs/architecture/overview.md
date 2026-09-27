@@ -440,6 +440,11 @@ its own tenant and read scopes (tenant-from-token, `X-Tenant-ID` ignored),
 audience-bound to the configured MCP resource. See `docs/users/mcp.md` and the
 `multi-tenancy` skill.
 
+**Eval sets** (`/api/v1/eval-sets`, `endpoints/eval_sets.rs`) store
+tenant- and dataset-scoped lists of test cases for offline agent
+evaluation in the catalog (`common::eval_sets`), guarded by the
+`evals:read` / `evals:write` scopes. See [Eval sets](../users/eval-sets.md).
+
 The tenant management API (`/api/v1/*`, `endpoints/management.rs`)
 accepts a human principal (session or OAuth) with the tenant-admin role or
 instance-admin flag, or an API key carrying the explicit `tenant:manage` scope

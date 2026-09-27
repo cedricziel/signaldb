@@ -6,6 +6,7 @@ sources:
   - src/router/src/lib.rs
   - src/router/src/openapi.rs
   - src/router/src/endpoints/api_error.rs
+  - src/router/src/endpoints/links.rs
   - src/router/src/read_scope.rs
   - src/common/src/auth/mod.rs
 ---
@@ -38,9 +39,12 @@ handler states the privilege it needs and checks it itself:
 
 - Take `TenantContext` (via `TenantContextExtractor`) and call an explicit
   check at the top of the handler, or take a typed extractor that performs
-  it. The existing checks are `ctx.can_manage_tenant()` and the
+  it. The existing checks are `ctx.can_manage_tenant()`, the
   `require_read` / `require_write` helpers in `endpoints/schema.rs` and
-  `endpoints/processors.rs`. Add a shared helper rather than copying one.
+  `endpoints/processors.rs`, and the `EvalsRead` / `EvalsWrite` extractors
+  in `endpoints/eval_sets.rs`. Prefer an extractor: placed before the body
+  extractor, it rejects with `403` before the body is read. Add a shared
+  helper rather than copying one.
 - Instance-admin operations check instance-admin privilege in the handler
   too, through the shared helper in `endpoints/authz.rs`. The break-glass
   admin key counts as instance admin in that same check.
@@ -109,7 +113,10 @@ links, without building URLs from documentation.
 
 - **Errors:** always the shared `ApiError` JSON envelope
   (`{"status":"error","errorType":...,"error":...}`), with the status code
-  matching the failure. Never an empty body.
+  matching the failure. Never an empty body. `errorType` follows the status:
+  400 `bad_data`, 401 `unauthorized`, 403 `forbidden`, 404 `not_found`,
+  409 `conflict`, 413 `payload_too_large`, 422 `invalid`, 429
+  `rate_limited` (see `endpoints/api_error.rs`).
 - **Timestamps:** `chrono::DateTime<Utc>` in response types, which serialize
   as RFC 3339 with a `Z` suffix and appear in OpenAPI as `format: date-time`.
   Never pre-formatted strings.
@@ -185,7 +192,13 @@ Treat these as debt to pay down. Don't copy them.
 - The session, OIDC and GitHub-callback routes are mounted at the root, not
   under `/api/v1`. The OIDC and GitHub callbacks are URLs registered with
   external providers, so moving them means updating those registrations too.
-- No endpoint emits `_links` yet, and no `/api/v1` index exists.
+- Only `/api/v1/eval-sets` emits `_links` so far, and no `/api/v1` index
+  exists. Eval sets (`endpoints/eval_sets.rs`) are the reference for
+  `_links` (built from `endpoints/links.rs`), `ApiJson` bodies and
+  extractor-based privilege checks (`EvalsRead` / `EvalsWrite`).
+- The processors, management and tenants endpoints still emit their own
+  error bodies (`{"error"}`, `{error,message}`, processors'
+  `{error,errors}`) instead of `ApiError`.
 - List endpoints return bare arrays or ad-hoc wrappers, not
   `{items, _links}`.
 - About 20 `#[utoipa::path]` handlers have no explicit `operation_id`, so

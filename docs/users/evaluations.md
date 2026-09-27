@@ -181,9 +181,15 @@ and the API can reproduce it. Pass rate and mean per evaluator for one run:
 signaldb-cli query --ir --file run-scores.json
 ```
 
+## Eval sets
+
+Stored eval sets hold a harness's cases (inputs, expected tool trajectories,
+reference answers) per tenant and dataset, behind an HTTP API. See
+[Eval sets](eval-sets.md).
+
 ## Coming next
 
-Stored eval sets (inputs, expected tool trajectories, reference answers)
-with an API and CLI, uploading results as JSONL/CSV with a CI gate
-(`signaldb-cli evals upload --fail-if`), and accepting results sent as
-span events. See the `agent-offline-evals` OpenSpec change.
+Eval sets in the CLI and UI and built from a trace query, uploading results
+as JSONL/CSV with a CI gate (`signaldb-cli evals upload --fail-if`), and
+accepting results sent as span events. See the `agent-offline-evals`
+OpenSpec change.
