@@ -58,7 +58,7 @@ _None._
 - Router HTTP API: the schema-registry upload accepts the new layout. The OpenAPI
   request description changes, but the response shapes do not.
 - CI: the `weaver registry check` image must understand `definition/2` (Weaver
-  ≥ v0.26 per upstream `versions.env`; CI uses v0.25.1).
+  ≥ v0.26 per upstream `versions.env`; every CI Weaver check pins v0.26.1).
 - Docs: `docs/users/schema-registry.md`.
 - No change to OTLP ingest, query surfaces, Flight schemas, WAL or Iceberg layout.
   Not breaking for existing v1 registries.
