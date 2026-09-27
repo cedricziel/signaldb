@@ -16,6 +16,7 @@ import {
 import { App } from "./App";
 import { ConsentView } from "./features/consent/ConsentView";
 import { ExploreView } from "./features/explore/ExploreView";
+import { evalsRoutes } from "./features/evals/routes";
 import { OverviewRoute } from "./features/overview/OverviewRoute";
 import { GitHubIntegrationRoute } from "./features/integrations/GitHubIntegrationRoute";
 import { ApiKeysRoute } from "./features/management/ApiKeysRoute";
@@ -106,6 +107,7 @@ export function routeElements() {
         <Route path="instrumentation" element={<InstrumentationRoute />} />
         {schemaRoutes()}
         {processorsRoutes()}
+        {evalsRoutes()}
         {/* Single-trace view is a route, not a `?trace=` param on /traces —
             see buildPath in lib/urlState.ts. Matched by React Router's
             specificity ranking regardless of declaration order relative to

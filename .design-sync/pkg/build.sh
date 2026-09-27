@@ -9,9 +9,13 @@ COMPONENTS=$(for s in "$UI"/components/*.stories.tsx; do basename "$s" .stories.
 # Page stories render a feature view; export it by name (export * would
 # collide on shared helper names across feature modules).
 PAGES="
+AgentsScoresView:features/evals/AgentsScoresView
+CaseView:features/evals/CaseView
 CatalogView:features/catalog/CatalogView
+CompareView:features/evals/CompareView
 ConsentView:features/consent/ConsentView
 ErrorsView:features/errors/ErrorsView
+EvaluatorsView:features/evals/EvaluatorsView
 ExploreView:features/explore/ExploreView
 GitHubIntegration:features/integrations/GitHubIntegration
 LogsView:features/logs/LogsView
@@ -24,6 +28,7 @@ OverviewView:features/overview/OverviewView
 ProcessorList:features/processors/ProcessorList
 ProfilesView:features/profiles/ProfilesView
 QueryView:features/query/QueryView
+RunsView:features/evals/RunsView
 SchemaHub:features/schema/SchemaHub
 LoginRoute:features/shell/LoginRoute
 TracesView:features/traces/TracesView

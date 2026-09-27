@@ -67,6 +67,15 @@ test("switching pages in the sidebar updates the path", async ({ page }) => {
   await expect(navLink(page, "Traces")).toHaveAttribute("aria-current", "page");
 });
 
+test("/evals/runs marks Runs as the current page", async ({ page }) => {
+  // A tenant-less request 401s and the shell bounces to /login (see
+  // App.tsx's redirect effect), so this needs the sticky tenant context in
+  // the URL, same as the /manage test below.
+  await page.goto("/evals/runs?tenant=acme&dataset=production");
+  await expect(page).toHaveURL(/\/evals\/runs\?/);
+  await expect(navLink(page, "Runs")).toHaveAttribute("aria-current", "page");
+});
+
 test("⌘K opens the command palette and Enter navigates", async ({ page }) => {
   await page.goto("/logs");
   await expect(navLink(page, "Logs")).toBeVisible();
