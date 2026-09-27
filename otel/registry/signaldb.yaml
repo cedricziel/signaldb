@@ -177,6 +177,7 @@ groups:
           Debug-formatted manifest partition value for a field whose type
           didn't match what the reader expected (e.g. `timestamp_hour` stored
           as something other than an int).
+        examples: ['String("2024-01-15-10")']
 
   - id: registry.signaldb.wal
     type: attribute_group
