@@ -2,6 +2,7 @@ pub mod api_key;
 pub mod completions;
 pub mod dataset;
 pub mod discover;
+pub mod eval_sets;
 pub mod ops;
 pub mod processors;
 pub mod profiles;
@@ -12,12 +13,51 @@ pub mod tenant;
 pub mod tenant_self;
 pub mod user;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use clap::{Parser, Subcommand};
+use anyhow::Context;
+use clap::{Args, Parser, Subcommand};
 use clap_complete::engine::ArgValueCompleter;
 use signaldb_sdk::Client;
+
+#[derive(Args)]
+pub struct OutputArgs {
+    #[command(flatten)]
+    pub(crate) connect: discover::ConnectArgs,
+    /// Print raw JSON instead of the human-readable output
+    #[arg(long)]
+    pub(crate) json: bool,
+}
+
+/// Read a YAML or JSON file as JSON: `.json` is parsed as JSON, any other
+/// extension as YAML (a superset of JSON).
+pub(crate) fn read_json_value(path: &Path) -> anyhow::Result<serde_json::Value> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let is_json = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("json"));
+    if is_json {
+        serde_json::from_str(&text).with_context(|| format!("{} is not valid JSON", path.display()))
+    } else {
+        serde_norway::from_str(&text)
+            .with_context(|| format!("{} is not valid YAML", path.display()))
+    }
+}
+
+/// [`read_json_value`] for a file that must hold one object, `what` naming
+/// it in the error (e.g. "registry document").
+pub(crate) fn read_json_object(
+    path: &Path,
+    what: &str,
+) -> anyhow::Result<serde_json::Map<String, serde_json::Value>> {
+    match read_json_value(path)? {
+        serde_json::Value::Object(map) => Ok(map),
+        _ => anyhow::bail!("{} must contain a {what} object", path.display()),
+    }
+}
 
 /// Pretty-print a JSON-serializable value to stdout.
 pub(crate) fn print_json<T: serde::Serialize>(value: &T) -> anyhow::Result<()> {
@@ -146,6 +186,11 @@ enum Commands {
         #[command(subcommand)]
         action: processors::ProcessorsAction,
     },
+    /// Agent eval sets: list, get, and export cases as JSONL
+    EvalSets {
+        #[command(subcommand)]
+        action: eval_sets::EvalSetsAction,
+    },
     /// Administrative operations (tenants, API keys, datasets, schema registries)
     Admin {
         #[command(subcommand)]
@@ -264,6 +309,11 @@ enum AdminAction {
         #[command(subcommand)]
         action: processors::AdminProcessorsAction,
     },
+    /// Manage agent eval sets (tenant API key with `evals:write`)
+    EvalSets {
+        #[command(subcommand)]
+        action: eval_sets::AdminEvalSetsAction,
+    },
 }
 
 impl Cli {
@@ -301,6 +351,10 @@ impl Cli {
             return action.run().await;
         }
 
+        if let Commands::EvalSets { action } = self.command {
+            return action.run().await;
+        }
+
         // The `tenant` group and `whoami` authenticate with a tenant API key
         // (management API / `/api/v1/whoami`), like `discover` and `schema`
         // above — never the instance admin key `admin` uses.
@@ -332,6 +386,15 @@ impl Cli {
         // `processors:write`, not the instance admin key.
         if let Commands::Admin {
             action: AdminAction::Processors { action },
+        } = self.command
+        {
+            return action.run().await;
+        }
+
+        // Eval set management authenticates with a tenant API key carrying
+        // `evals:write`, not the instance admin key.
+        if let Commands::Admin {
+            action: AdminAction::EvalSets { action },
         } = self.command
         {
             return action.run().await;
@@ -392,6 +455,7 @@ impl Cli {
                 AdminAction::Dataset { action } => action.run(&client).await,
                 AdminAction::Schema { .. } => unreachable!(),
                 AdminAction::Processors { .. } => unreachable!(),
+                AdminAction::EvalSets { .. } => unreachable!(),
             },
             Commands::User { action } => action.run(&client).await,
             Commands::Ops { .. } => unreachable!(),
@@ -401,6 +465,7 @@ impl Cli {
             Commands::Services { .. } => unreachable!(),
             Commands::Profiles { .. } => unreachable!(),
             Commands::Processors { .. } => unreachable!(),
+            Commands::EvalSets { .. } => unreachable!(),
             Commands::Completions { .. } => unreachable!(),
             Commands::Tui { .. } => unreachable!(),
             Commands::Tenant { .. } => unreachable!(),
@@ -483,6 +548,51 @@ fn parse_duration(s: &str) -> anyhow::Result<Duration> {
         return Ok(Duration::from_secs(val * 60));
     }
     anyhow::bail!("unsupported duration format: {s} (expected e.g. '5s', '100ms', '2m')")
+}
+
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::discover::ConnectArgs;
+
+    /// Tenant-key connection args for tenant `acme`, dataset `production`.
+    pub(crate) fn connect(url: &str) -> ConnectArgs {
+        ConnectArgs {
+            url: url.to_string(),
+            api_key: Some("sk-test".to_string()),
+            tenant_id: Some("acme".to_string()),
+            dataset_id: Some("production".to_string()),
+        }
+    }
+
+    /// A fixture file, removed on drop.
+    pub(crate) struct TempFile(PathBuf);
+
+    impl TempFile {
+        pub(crate) fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// Write `contents` to a fresh temp file named `<pid>-<n>-<name>`, so
+    /// parallel tests never share one; `name` keeps the extension that picks
+    /// the parser.
+    pub(crate) fn write_temp(name: &str, contents: &str) -> TempFile {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("signaldb-cli-{}-{n}-{name}", std::process::id()));
+        std::fs::write(&path, contents).expect("write fixture");
+        TempFile(path)
+    }
 }
 
 #[cfg(test)]

@@ -70,10 +70,20 @@ these:
 | `create_processor`         | Create a processor (requires `processors:write`; tenant-admin only, not OAuth-grantable).                                                                                                                                                                                                                                                                       |
 | `replace_processor`        | Replace a processor's full document by name (requires `processors:write`; tenant-admin only, not OAuth-grantable).                                                                                                                                                                                                                                              |
 | `delete_processor`         | Delete a processor by name (requires `processors:write`; tenant-admin only, not OAuth-grantable).                                                                                                                                                                                                                                                               |
+| `list_eval_sets`           | List the agent eval sets in a dataset, without their cases (requires `evals:read`). See [Eval sets](eval-sets.md).                                                                                                                                                                                                                                              |
+| `get_eval_set`             | Fetch one eval set by name with a page of its cases in order: `offset` (default 0) and `limit` (default 200, at most 1000); the reply adds `total_cases`, `offset`, `returned` and `has_more` (requires `evals:read`).                                                                                                                                          |
+| `create_eval_set`          | Create an eval set: name, agent, description, cases (requires `evals:write`; not OAuth-grantable).                                                                                                                                                                                                                                                              |
+| `replace_eval_set`         | Replace an eval set's agent, description and every case by name; never creates (requires `evals:write`; not OAuth-grantable).                                                                                                                                                                                                                                   |
+| `delete_eval_set`          | Delete an eval set and its cases by name (requires `evals:write`; not OAuth-grantable).                                                                                                                                                                                                                                                                         |
+| `append_eval_cases`        | Append cases to an eval set; ids it already holds are skipped and reported (requires `evals:write`; not OAuth-grantable).                                                                                                                                                                                                                                       |
 
 Every processor tool takes the `tenant` parameter validated the same way as
 the query tools above. Changes apply at ingest within
 `[processors].reload_interval` (default 30s) — see [Processors](processors.md#applies-within-reload_interval).
+
+The eval set tools take the same `tenant` parameter and, like the query
+tools, a required `dataset`: a set belongs to one dataset, and one MCP session
+may span several, so there is no implicit default.
 
 Each query tool requires a `dataset` argument, targeting the dataset your
 tenant may access (the router validates access and rejects the rest). Large
@@ -526,10 +536,10 @@ a multi-tenant connector's whole reachable set before any one tenant has been
 selected for a call; it isn't something you call directly as an operator or
 agent. The read scopes a token may hold —
 `traces:read`, `logs:read`, `metrics:read`, `profiles:read`, `schema:read`,
-`processors:read` —
+`processors:read`, `evals:read` —
 gate the corresponding query surface (see the
 [multi-tenancy](../architecture/overview.md) model); a request with no `scope`
-is granted all of them, and `schema:write`/`processors:write` are never
+is granted all of them, and `schema:write`/`processors:write`/`evals:write` are never
 grantable through OAuth (a request naming only one of them is rejected with
 `invalid_scope`). The
 existing `Bearer <api-key>` + `X-Tenant-ID` path is unchanged; OAuth is an

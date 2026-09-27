@@ -1,9 +1,11 @@
 pub mod api_error;
 pub mod authz;
 pub mod discovery;
+pub mod eval_sets;
 pub mod flight;
 mod flight_decode;
 pub mod github;
+pub mod links;
 pub mod logql;
 pub mod management;
 pub mod oauth;

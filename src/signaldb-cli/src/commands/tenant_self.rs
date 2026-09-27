@@ -37,6 +37,7 @@ use signaldb_sdk::types::{
     SourceContextResponse, SourceContextStatus, UpsertMembershipRequest,
 };
 
+use super::OutputArgs;
 use super::discover::ConnectArgs;
 use super::query::print_json_response;
 use signaldb_sdk::types::ListTablesResponse;
@@ -628,25 +629,15 @@ impl TableAction {
     }
 }
 
-/// `tenant github link|list` connection args plus the output-format toggle.
-#[derive(Args)]
-pub struct GithubOutputArgs {
-    #[command(flatten)]
-    connect: ConnectArgs,
-    /// Print raw JSON instead of the human-readable output
-    #[arg(long)]
-    json: bool,
-}
-
 /// `signaldb-cli tenant github <verb>` — the caller's own GitHub App
 /// installations through the management API (`tenant:manage`).
 #[derive(Subcommand)]
 pub enum GithubAction {
     /// Start linking a GitHub App installation: prints the install URL to
     /// open in a browser signed in to SignalDB as an admin of this tenant
-    Link(GithubOutputArgs),
+    Link(OutputArgs),
     /// List the linked installations and the repositories they cover
-    List(GithubOutputArgs),
+    List(OutputArgs),
     /// Attach an installation that already exists for this GitHub App
     /// directly, with no OAuth install flow (instance-admin only — see
     /// docs/operations/github-app.md)
@@ -654,7 +645,7 @@ pub enum GithubAction {
         /// GitHub installation ID to attach
         installation_id: i64,
         #[command(flatten)]
-        output: GithubOutputArgs,
+        output: OutputArgs,
     },
     /// Remove a linked installation (SignalDB stops minting tokens for it immediately)
     Remove {
@@ -724,7 +715,7 @@ fn format_repositories(repositories: &[String]) -> String {
 impl GithubAction {
     pub async fn run(self) -> anyhow::Result<()> {
         match self {
-            GithubAction::Link(GithubOutputArgs { connect, json }) => {
+            GithubAction::Link(OutputArgs { connect, json }) => {
                 let tenant_id = require_tenant_id(&connect)?;
                 let v = connect
                     .build_client()?
@@ -746,7 +737,7 @@ impl GithubAction {
                 }
                 Ok(())
             }
-            GithubAction::List(GithubOutputArgs { connect, json }) => {
+            GithubAction::List(OutputArgs { connect, json }) => {
                 let tenant_id = require_tenant_id(&connect)?;
                 let v = connect
                     .build_client()?
@@ -769,7 +760,7 @@ impl GithubAction {
             }
             GithubAction::Attach {
                 installation_id,
-                output: GithubOutputArgs { connect, json },
+                output: OutputArgs { connect, json },
             } => {
                 let tenant_id = require_tenant_id(&connect)?;
                 let v = connect
@@ -2005,7 +1996,7 @@ mod tests {
 
     #[tokio::test]
     async fn github_link_requires_tenant_id() {
-        let result = GithubAction::Link(GithubOutputArgs {
+        let result = GithubAction::Link(OutputArgs {
             connect: ConnectArgs {
                 url: "http://127.0.0.1:1".to_string(),
                 api_key: Some("sk-test".to_string()),
@@ -2036,7 +2027,7 @@ mod tests {
             .create_async()
             .await;
 
-        GithubAction::Link(GithubOutputArgs {
+        GithubAction::Link(OutputArgs {
             connect: connect_acme(&server),
             json: false,
         })
@@ -2066,7 +2057,7 @@ mod tests {
 
         GithubAction::Attach {
             installation_id: 42,
-            output: GithubOutputArgs {
+            output: OutputArgs {
                 connect: connect_acme(&server),
                 json: false,
             },
@@ -2088,7 +2079,7 @@ mod tests {
             .create_async()
             .await;
 
-        GithubAction::List(GithubOutputArgs {
+        GithubAction::List(OutputArgs {
             connect: connect_acme(&server),
             json: false,
         })

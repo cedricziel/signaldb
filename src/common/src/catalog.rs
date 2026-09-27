@@ -10,7 +10,7 @@ use tracing::Instrument;
 use uuid::Uuid;
 
 /// Helper to parse RFC3339 datetime strings (SQLite stores timestamps as text)
-fn parse_rfc3339(s: &str) -> Result<DateTime<Utc>, sqlx::Error> {
+pub(crate) fn parse_rfc3339(s: &str) -> Result<DateTime<Utc>, sqlx::Error> {
     DateTime::parse_from_rfc3339(s)
         .map(|dt| dt.with_timezone(&Utc))
         .map_err(|e| sqlx::Error::Decode(Box::new(e)))
@@ -1139,6 +1139,60 @@ impl Catalog {
                 .execute(pool)
                 .await?;
 
+                // Eval sets for offline agent evaluation (change:
+                // agent-offline-evals, design D7). Scoped by tenant and
+                // dataset *name* (what `TenantContext.dataset_id` carries);
+                // like `processors`, the composite FK relies on `datasets`'
+                // `UNIQUE(tenant_id, name)` so a dataset delete cascades to
+                // its sets, and a set delete cascades to its cases.
+                // Timestamps are RFC 3339 text written by the store.
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS eval_sets (
+                    tenant_id TEXT NOT NULL,
+                    dataset TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    agent TEXT NOT NULL,
+                    description TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (tenant_id, dataset, name),
+                    FOREIGN KEY (tenant_id, dataset) REFERENCES datasets(tenant_id, name) ON DELETE CASCADE,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                // `position` orders a set's cases; `expected_tools` and
+                // `tags` are JSON arrays of strings. `WITHOUT ROWID` stores
+                // rows clustered by the composite key.
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS eval_cases (
+                    tenant_id TEXT NOT NULL,
+                    dataset TEXT NOT NULL,
+                    set_name TEXT NOT NULL,
+                    case_id TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    input TEXT NOT NULL,
+                    expected_tools TEXT NOT NULL,
+                    reference TEXT,
+                    tags TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    source_trace_id TEXT,
+                    PRIMARY KEY (tenant_id, dataset, set_name, case_id),
+                    FOREIGN KEY (tenant_id, dataset, set_name) REFERENCES eval_sets(tenant_id, dataset, name) ON DELETE CASCADE
+                ) WITHOUT ROWID"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_eval_cases_position \
+                     ON eval_cases(tenant_id, dataset, set_name, position)",
+                )
+                .execute(pool)
+                .await?;
+
                 // OAuth 2.1 authorization-server tables (change: mcp-oauth-dcr).
                 // Dynamically-registered clients, single-use authorization
                 // codes, and opaque access/refresh tokens (stored as hashes).
@@ -1618,6 +1672,53 @@ impl Catalog {
                     FOREIGN KEY (tenant_id, dataset) REFERENCES datasets(tenant_id, name) ON DELETE CASCADE,
                     FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
                 )"#,
+                )
+                .execute(pool)
+                .await?;
+
+                // Eval sets for offline agent evaluation (change:
+                // agent-offline-evals, design D7). See the SQLite branch
+                // above for the scoping and FK rationale.
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS eval_sets (
+                    tenant_id TEXT NOT NULL,
+                    dataset TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    agent TEXT NOT NULL,
+                    description TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (tenant_id, dataset, name),
+                    FOREIGN KEY (tenant_id, dataset) REFERENCES datasets(tenant_id, name) ON DELETE CASCADE,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS eval_cases (
+                    tenant_id TEXT NOT NULL,
+                    dataset TEXT NOT NULL,
+                    set_name TEXT NOT NULL,
+                    case_id TEXT NOT NULL,
+                    position BIGINT NOT NULL,
+                    input TEXT NOT NULL,
+                    expected_tools TEXT NOT NULL,
+                    reference TEXT,
+                    tags TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    source_trace_id TEXT,
+                    PRIMARY KEY (tenant_id, dataset, set_name, case_id),
+                    FOREIGN KEY (tenant_id, dataset, set_name) REFERENCES eval_sets(tenant_id, dataset, name) ON DELETE CASCADE
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_eval_cases_position \
+                     ON eval_cases(tenant_id, dataset, set_name, position)",
                 )
                 .execute(pool)
                 .await?;
@@ -4223,6 +4324,18 @@ impl Catalog {
                     .collect())
             }
         }
+    }
+
+    /// Check that `dataset_name` exists for `tenant_id`, so a bad reference
+    /// is rejected with a clear error rather than relying on the FK's
+    /// (dialect-specific) error text.
+    pub(crate) async fn dataset_exists(
+        &self,
+        tenant_id: &str,
+        dataset_name: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let datasets = self.get_datasets(tenant_id).await?;
+        Ok(datasets.iter().any(|d| d.name == dataset_name))
     }
 
     /// Find the first element of `dataset_ids` that is not a dataset of

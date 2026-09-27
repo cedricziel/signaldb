@@ -2,31 +2,9 @@
 //! lives in `tests/processors_store.rs` (change: tenant-ottl-processors,
 //! task 2.1).
 
-use common::catalog::Catalog;
 use common::processors::{ProcessorSpec, StoreError};
-use common::testing::start_container_with_retry;
+use common::testing::{connect_catalog_with_retry, start_container_with_retry};
 use testcontainers_modules::postgres::Postgres;
-use tokio::time::{Duration, sleep};
-
-async fn connect_catalog_with_retry(dsn: &str) -> Catalog {
-    const MAX_ATTEMPTS: u32 = 20;
-    const RETRY_DELAY: Duration = Duration::from_millis(100);
-
-    let mut last_err = None;
-    for _ in 0..MAX_ATTEMPTS {
-        match Catalog::new(dsn).await {
-            Ok(catalog) => return catalog,
-            Err(err) => {
-                last_err = Some(err);
-                sleep(RETRY_DELAY).await;
-            }
-        }
-    }
-    panic!(
-        "Failed to create Catalog after {MAX_ATTEMPTS} attempts: {}",
-        last_err.expect("at least one connection attempt was made")
-    );
-}
 
 fn spec(name: &str) -> ProcessorSpec {
     ProcessorSpec {

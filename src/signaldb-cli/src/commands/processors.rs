@@ -135,25 +135,6 @@ pub struct TestArgs {
 /// A processor spec as the JSON object the API takes.
 type Document = serde_json::Map<String, serde_json::Value>;
 
-fn read_document(path: &Path) -> anyhow::Result<serde_json::Value> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
-    parse_document(&text, path)
-}
-
-fn parse_document(text: &str, path: &Path) -> anyhow::Result<serde_json::Value> {
-    let is_json = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("json"));
-    if is_json {
-        serde_json::from_str(text).with_context(|| format!("{} is not valid JSON", path.display()))
-    } else {
-        serde_norway::from_str(text)
-            .with_context(|| format!("{} is not valid YAML", path.display()))
-    }
-}
-
 fn spec_object(value: serde_json::Value, path: &Path) -> anyhow::Result<Document> {
     match value {
         serde_json::Value::Object(map) => Ok(map),
@@ -199,7 +180,7 @@ impl ProcessorsAction {
 async fn run_validate(args: ValidateArgs) -> anyhow::Result<()> {
     let (signal, statements) = match &args.file {
         Some(path) => {
-            let value = read_document(path)?;
+            let value = super::read_json_value(path)?;
             let req: ValidateFile = serde_json::from_value(value)
                 .with_context(|| format!("{} is not a valid validate request", path.display()))?;
             (req.signal, req.statements)
@@ -242,11 +223,11 @@ struct ValidateFile {
 }
 
 async fn run_test(args: TestArgs) -> anyhow::Result<()> {
-    let payload = read_document(&args.payload)
+    let payload = super::read_json_value(&args.payload)
         .with_context(|| format!("failed to read payload {}", args.payload.display()))?;
     let processors = match &args.file {
         Some(path) => {
-            let value = read_document(path)?;
+            let value = super::read_json_value(path)?;
             let specs = match value {
                 serde_json::Value::Array(items) => items
                     .into_iter()
@@ -326,8 +307,7 @@ struct BuiltSpec {
 fn build_spec(args: CreateArgs) -> anyhow::Result<BuiltSpec> {
     let spec = match &args.file {
         Some(path) => {
-            let value = read_document(path)?;
-            let mut map = spec_object(value, path)?;
+            let mut map = super::read_json_object(path, "processor spec")?;
             if !map.contains_key("name")
                 && let Some(name) = &args.name
             {
@@ -368,6 +348,7 @@ fn build_spec(args: CreateArgs) -> anyhow::Result<BuiltSpec> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::test_support::{connect, write_temp};
     use clap::Parser;
 
     #[derive(Parser)]
@@ -380,24 +361,6 @@ mod tests {
     struct AdminProcessorsCli {
         #[command(subcommand)]
         action: AdminProcessorsAction,
-    }
-
-    fn connect(url: &str) -> ConnectArgs {
-        ConnectArgs {
-            url: url.to_string(),
-            api_key: Some("sk-test".to_string()),
-            tenant_id: Some("acme".to_string()),
-            dataset_id: None,
-        }
-    }
-
-    fn write_temp(name: &str, contents: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("signaldb-cli-processors-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        let path = dir.join(name);
-        std::fs::write(&path, contents).expect("write fixture");
-        path
     }
 
     #[test]
@@ -544,7 +507,7 @@ mod tests {
             r#"{"name":"redact","signal":"traces","statements":["set(attributes[\"x\"], \"y\")"]}"#,
         );
         let args = CreateArgs {
-            file: Some(json),
+            file: Some(json.path().to_path_buf()),
             name: None,
             signal: None,
             dataset: None,
@@ -563,7 +526,7 @@ mod tests {
             "name: redact\nsignal: traces\nstatements:\n  - 'set(attributes[\"x\"], \"y\")'\n",
         );
         let args = CreateArgs {
-            file: Some(yaml),
+            file: Some(yaml.path().to_path_buf()),
             name: None,
             signal: None,
             dataset: None,
@@ -585,7 +548,7 @@ mod tests {
             r#"{"signal":"traces","statements":["set(attributes[\"x\"], \"y\")"]}"#,
         );
         let args = CreateArgs {
-            file: Some(file),
+            file: Some(file.path().to_path_buf()),
             name: Some("redact".to_string()),
             signal: None,
             dataset: None,
@@ -737,8 +700,8 @@ mod tests {
         ProcessorsAction::Test(TestArgs {
             signal: "traces".to_string(),
             dataset: None,
-            file: Some(spec_file),
-            payload,
+            file: Some(spec_file.path().to_path_buf()),
+            payload: payload.path().to_path_buf(),
             connect: connect(&server.url()),
         })
         .run()

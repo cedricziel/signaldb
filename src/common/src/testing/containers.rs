@@ -7,6 +7,7 @@
 use std::future::Future;
 use std::time::Duration;
 
+use crate::catalog::Catalog;
 use testcontainers_modules::testcontainers::core::error::ClientError;
 use testcontainers_modules::testcontainers::runners::AsyncRunner;
 use testcontainers_modules::testcontainers::{
@@ -64,6 +65,30 @@ where
     })
     .await
     .unwrap_or_else(|err| panic!("container failed to start after {MAX_ATTEMPTS} attempts: {err}"))
+}
+
+/// Connects a [`Catalog`] to `dsn`, retrying for up to two seconds.
+/// Testcontainers' Postgres wait strategy already blocks `start()` until the
+/// container reports itself ready, but the mapped port can still refuse the
+/// very first connection for a few milliseconds afterward.
+pub async fn connect_catalog_with_retry(dsn: &str) -> Catalog {
+    const ATTEMPTS: u32 = 20;
+    const RETRY_DELAY: Duration = Duration::from_millis(100);
+
+    let mut last_err = None;
+    for _ in 0..ATTEMPTS {
+        match Catalog::new(dsn).await {
+            Ok(catalog) => return catalog,
+            Err(err) => {
+                last_err = Some(err);
+                tokio::time::sleep(RETRY_DELAY).await;
+            }
+        }
+    }
+    match last_err {
+        Some(err) => panic!("failed to create Catalog after {ATTEMPTS} attempts: {err}"),
+        None => panic!("failed to create Catalog: no connection attempt was made"),
+    }
 }
 
 #[cfg(test)]

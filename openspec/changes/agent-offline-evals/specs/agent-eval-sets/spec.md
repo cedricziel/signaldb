@@ -6,15 +6,38 @@ SignalDB SHALL store named eval sets per tenant and dataset, each with an
 agent, a description and an ordered list of cases. A case SHALL have an id
 unique within the set, an input, optional expected tool trajectory (an
 ordered list of tool names), an optional reference answer, optional tags
-and a source (a trace id, `upload` or `hand-written`). Sets SHALL be
-managed through `GET|POST /api/v1/evalsets`,
-`GET|PUT|DELETE /api/v1/evalsets/{name}` and
-`POST /api/v1/evalsets/{name}/cases`, each with an explicit OpenAPI
-operation id and its own privilege check (read for GET, write otherwise).
+and a source (a trace id, `upload` or `hand_written`). Sets SHALL be
+managed through `GET|POST /api/v1/eval-sets`,
+`GET|PUT|DELETE /api/v1/eval-sets/{name}` and
+`POST /api/v1/eval-sets/{name}/cases` (append; cases whose id is already
+in the set are reported, not overwritten), each with an explicit OpenAPI
+operation id and its own privilege check: reads need the `evals:read`
+scope, writes the `evals:write` scope and, for a user session, the
+tenant-admin role. Errors use the shared API error envelope.
+
+#### Scenario: Creating a set
+
+- **WHEN** a client with `evals:write` posts a set named
+  `refund-edge-cases-40` with 40 cases
+- **THEN** the response is 201 with a `Location` of
+  `/api/v1/eval-sets/refund-edge-cases-40`, and listing sets shows it
+  with 40 cases
+
+#### Scenario: Appending a case that already exists
+
+- **WHEN** a client appends cases `edge-40` and `edge-41` to a set that
+  already holds `edge-40`
+- **THEN** only `edge-41` is added and the response reports 1 added and 1
+  already present
+
+#### Scenario: Read-only keys cannot write
+
+- **WHEN** a key with only `evals:read` tries to delete a set
+- **THEN** the response is 403 and the set still exists
 
 #### Scenario: Pulling a set in an eval script
 
-- **WHEN** a harness calls `GET /api/v1/evalsets/triage-golden-200` with a
+- **WHEN** a harness calls `GET /api/v1/eval-sets/triage-golden-200` with a
   read key for the owning tenant
 - **THEN** it receives the set's 200 cases with their inputs, expected
   tools and references
@@ -46,9 +69,11 @@ matches, already-present and added counts.
 The UI SHALL list eval sets (`/evals/sets`: name, agent, cases, built
 from, last run, pass rate, updated) and show a set's cases with their last
 score (`/evals/sets/{name}`), with a New eval set dialog (from JSONL, from
-traces, or empty), an Add traces panel, and Export JSONL. Compare SHALL
+traces, or empty), an Add traces panel, and Export JSONL (written by the
+client from the set's cases). Compare SHALL
 offer "Save N regressed cases as eval set". The CLI SHALL offer
-`signaldb-cli evals sets list|get|create|delete|export|add-traces`.
+`signaldb-cli eval-sets list|get|export` (export writes the cases as JSONL)
+and `signaldb-cli admin eval-sets create|replace|delete|append`.
 
 #### Scenario: Saving regressions
 

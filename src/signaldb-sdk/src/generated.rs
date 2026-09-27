@@ -25,7 +25,7 @@ pub mod types {
             Default::default()
         }
     }
-    /**The JSON envelope every query-surface error responds with: `status` is
+    /**The JSON envelope every [`ApiError`] responds with: `status` is
     always `"error"`, `errorType` a stable low-cardinality code, `error` a
     human-readable message, and `retryAfterMs` present only on rate-limit
     rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -48,6 +48,32 @@ pub mod types {
     }
     impl ApiErrorBody {
         pub fn builder() -> builder::ApiErrorBody {
+            Default::default()
+        }
+    }
+    /**Result of appending cases to a set: ids already in the set are reported,
+    never overwritten.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct AppendCasesOutcome {
+        pub added: i64,
+        ///Ids appended, in the order they now appear in the set.
+        pub added_ids: ::std::vec::Vec<::std::string::String>,
+        pub already_present: i64,
+        ///Ids skipped because the set already held them.
+        pub already_present_ids: ::std::vec::Vec<::std::string::String>,
+    }
+    impl AppendCasesOutcome {
+        pub fn builder() -> builder::AppendCasesOutcome {
+            Default::default()
+        }
+    }
+    ///Body of `POST /api/v1/eval-sets/{name}/cases`.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct AppendEvalCasesRequest {
+        pub cases: ::std::vec::Vec<EvalCase>,
+    }
+    impl AppendEvalCasesRequest {
+        pub fn builder() -> builder::AppendEvalCasesRequest {
             Default::default()
         }
     }
@@ -946,6 +972,179 @@ pub mod types {
             Default::default()
         }
     }
+    ///One test case of an eval set.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct EvalCase {
+        ///Expected tool trajectory, in call order. Empty when not checked.
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub expected_tools: ::std::vec::Vec<::std::string::String>,
+        ///Unique within the set; 1-128 characters.
+        pub id: ::std::string::String,
+        ///The input the agent under test receives.
+        pub input: ::std::string::String,
+        ///Reference answer for evaluators that compare against one.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub reference: ::std::option::Option<::std::string::String>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub source: ::std::option::Option<EvalCaseSource>,
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub tags: ::std::vec::Vec<::std::string::String>,
+    }
+    impl EvalCase {
+        pub fn builder() -> builder::EvalCase {
+            Default::default()
+        }
+    }
+    ///Where a case came from.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(tag = "kind", content = "trace_id")]
+    pub enum EvalCaseSource {
+        ///Captured from a production trace.
+        #[serde(rename = "trace")]
+        Trace(::std::string::String),
+        #[serde(rename = "upload")]
+        Upload,
+        #[serde(rename = "hand_written")]
+        HandWritten,
+    }
+    /**Links on one eval set. The mutation links appear only when the caller
+    may write.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct EvalSetLinks {
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub append_cases: ::std::option::Option<Link>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub delete: ::std::option::Option<Link>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub replace: ::std::option::Option<Link>,
+        #[serde(rename = "self")]
+        pub self_: Link,
+    }
+    impl EvalSetLinks {
+        pub fn builder() -> builder::EvalSetLinks {
+            Default::default()
+        }
+    }
+    ///Links on the eval-set collection.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct EvalSetListLinks {
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub create: ::std::option::Option<Link>,
+        #[serde(rename = "self")]
+        pub self_: Link,
+    }
+    impl EvalSetListLinks {
+        pub fn builder() -> builder::EvalSetListLinks {
+            Default::default()
+        }
+    }
+    ///Every eval set in the caller's dataset, ordered by name.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct EvalSetListResponse {
+        pub items: ::std::vec::Vec<EvalSetSummaryResponse>,
+        #[serde(rename = "_links")]
+        pub links: EvalSetListLinks,
+    }
+    impl EvalSetListResponse {
+        pub fn builder() -> builder::EvalSetListResponse {
+            Default::default()
+        }
+    }
+    ///A stored eval set with its cases in order.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct EvalSetRecord {
+        pub agent: ::std::string::String,
+        pub case_count: i64,
+        pub cases: ::std::vec::Vec<EvalCase>,
+        pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        ///The dataset *name* the set belongs to.
+        pub dataset: ::std::string::String,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub description: ::std::option::Option<::std::string::String>,
+        pub name: ::std::string::String,
+        pub tenant_id: ::std::string::String,
+        pub updated_at: ::chrono::DateTime<::chrono::offset::Utc>,
+    }
+    impl EvalSetRecord {
+        pub fn builder() -> builder::EvalSetRecord {
+            Default::default()
+        }
+    }
+    ///An eval set with its cases in order.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct EvalSetResponse {
+        pub agent: ::std::string::String,
+        pub case_count: i64,
+        pub cases: ::std::vec::Vec<EvalCase>,
+        pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        ///The dataset *name* the set belongs to.
+        pub dataset: ::std::string::String,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub description: ::std::option::Option<::std::string::String>,
+        #[serde(rename = "_links")]
+        pub links: EvalSetLinks,
+        pub name: ::std::string::String,
+        pub tenant_id: ::std::string::String,
+        pub updated_at: ::chrono::DateTime<::chrono::offset::Utc>,
+    }
+    impl EvalSetResponse {
+        pub fn builder() -> builder::EvalSetResponse {
+            Default::default()
+        }
+    }
+    ///Caller-supplied eval set: the body of a create/replace request.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct EvalSetSpec {
+        ///The agent this set evaluates (`gen_ai.agent.name`).
+        pub agent: ::std::string::String,
+        ///Cases, in order.
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub cases: ::std::vec::Vec<EvalCase>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub description: ::std::option::Option<::std::string::String>,
+        /**Slug: lowercase letters, digits, `-`, `_` and `.`, starting with a
+        letter or digit; 1-128 characters.*/
+        pub name: ::std::string::String,
+    }
+    impl EvalSetSpec {
+        pub fn builder() -> builder::EvalSetSpec {
+            Default::default()
+        }
+    }
+    ///An eval set without its cases, as listed.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct EvalSetSummary {
+        pub agent: ::std::string::String,
+        pub case_count: i64,
+        pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub description: ::std::option::Option<::std::string::String>,
+        pub name: ::std::string::String,
+        pub updated_at: ::chrono::DateTime<::chrono::offset::Utc>,
+    }
+    impl EvalSetSummary {
+        pub fn builder() -> builder::EvalSetSummary {
+            Default::default()
+        }
+    }
+    ///An eval set as listed, without its cases.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct EvalSetSummaryResponse {
+        pub agent: ::std::string::String,
+        pub case_count: i64,
+        pub created_at: ::chrono::DateTime<::chrono::offset::Utc>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub description: ::std::option::Option<::std::string::String>,
+        #[serde(rename = "_links")]
+        pub links: EvalSetLinks,
+        pub name: ::std::string::String,
+        pub updated_at: ::chrono::DateTime<::chrono::offset::Utc>,
+    }
+    impl EvalSetSummaryResponse {
+        pub fn builder() -> builder::EvalSetSummaryResponse {
+            Default::default()
+        }
+    }
     ///Which metadata tier a discovered item came from.
     #[derive(
         ::serde::Deserialize,
@@ -1378,6 +1577,18 @@ pub mod types {
     }
     impl LabelsResponse {
         pub fn builder() -> builder::LabelsResponse {
+            Default::default()
+        }
+    }
+    ///A hypermedia link. `method` is omitted for `GET`.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct Link {
+        pub href: ::std::string::String,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub method: ::std::option::Option<::std::string::String>,
+    }
+    impl Link {
+        pub fn builder() -> builder::Link {
             Default::default()
         }
     }
@@ -3682,6 +3893,136 @@ pub mod types {
                     error_type: Ok(value.error_type),
                     retry_after_ms: Ok(value.retry_after_ms),
                     status: Ok(value.status),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct AppendCasesOutcome {
+            added: ::std::result::Result<i64, ::std::string::String>,
+            added_ids: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            already_present: ::std::result::Result<i64, ::std::string::String>,
+            already_present_ids: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for AppendCasesOutcome {
+            fn default() -> Self {
+                Self {
+                    added: Err("no value supplied for added".to_string()),
+                    added_ids: Err("no value supplied for added_ids".to_string()),
+                    already_present: Err("no value supplied for already_present".to_string()),
+                    already_present_ids: Err(
+                        "no value supplied for already_present_ids".to_string()
+                    ),
+                }
+            }
+        }
+        impl AppendCasesOutcome {
+            pub fn added<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.added = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for added: {e}"));
+                self
+            }
+            pub fn added_ids<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.added_ids = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for added_ids: {e}"));
+                self
+            }
+            pub fn already_present<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.already_present = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for already_present: {e}")
+                });
+                self
+            }
+            pub fn already_present_ids<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.already_present_ids = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for already_present_ids: {e}")
+                });
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<AppendCasesOutcome> for super::AppendCasesOutcome {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: AppendCasesOutcome,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    added: value.added?,
+                    added_ids: value.added_ids?,
+                    already_present: value.already_present?,
+                    already_present_ids: value.already_present_ids?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::AppendCasesOutcome> for AppendCasesOutcome {
+            fn from(value: super::AppendCasesOutcome) -> Self {
+                Self {
+                    added: Ok(value.added),
+                    added_ids: Ok(value.added_ids),
+                    already_present: Ok(value.already_present),
+                    already_present_ids: Ok(value.already_present_ids),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct AppendEvalCasesRequest {
+            cases: ::std::result::Result<::std::vec::Vec<super::EvalCase>, ::std::string::String>,
+        }
+        impl ::std::default::Default for AppendEvalCasesRequest {
+            fn default() -> Self {
+                Self {
+                    cases: Err("no value supplied for cases".to_string()),
+                }
+            }
+        }
+        impl AppendEvalCasesRequest {
+            pub fn cases<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::EvalCase>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.cases = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for cases: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<AppendEvalCasesRequest> for super::AppendEvalCasesRequest {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: AppendEvalCasesRequest,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    cases: value.cases?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::AppendEvalCasesRequest> for AppendEvalCasesRequest {
+            fn from(value: super::AppendEvalCasesRequest) -> Self {
+                Self {
+                    cases: Ok(value.cases),
                 }
             }
         }
@@ -7347,6 +7688,998 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct EvalCase {
+            expected_tools: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            input: ::std::result::Result<::std::string::String, ::std::string::String>,
+            reference: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            source: ::std::result::Result<
+                ::std::option::Option<super::EvalCaseSource>,
+                ::std::string::String,
+            >,
+            tags: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for EvalCase {
+            fn default() -> Self {
+                Self {
+                    expected_tools: Ok(Default::default()),
+                    id: Err("no value supplied for id".to_string()),
+                    input: Err("no value supplied for input".to_string()),
+                    reference: Ok(Default::default()),
+                    source: Ok(Default::default()),
+                    tags: Ok(Default::default()),
+                }
+            }
+        }
+        impl EvalCase {
+            pub fn expected_tools<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.expected_tools = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for expected_tools: {e}")
+                });
+                self
+            }
+            pub fn id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
+                self
+            }
+            pub fn input<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.input = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for input: {e}"));
+                self
+            }
+            pub fn reference<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.reference = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for reference: {e}"));
+                self
+            }
+            pub fn source<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::EvalCaseSource>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.source = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for source: {e}"));
+                self
+            }
+            pub fn tags<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tags = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tags: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<EvalCase> for super::EvalCase {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: EvalCase,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    expected_tools: value.expected_tools?,
+                    id: value.id?,
+                    input: value.input?,
+                    reference: value.reference?,
+                    source: value.source?,
+                    tags: value.tags?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::EvalCase> for EvalCase {
+            fn from(value: super::EvalCase) -> Self {
+                Self {
+                    expected_tools: Ok(value.expected_tools),
+                    id: Ok(value.id),
+                    input: Ok(value.input),
+                    reference: Ok(value.reference),
+                    source: Ok(value.source),
+                    tags: Ok(value.tags),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct EvalSetLinks {
+            append_cases:
+                ::std::result::Result<::std::option::Option<super::Link>, ::std::string::String>,
+            delete:
+                ::std::result::Result<::std::option::Option<super::Link>, ::std::string::String>,
+            replace:
+                ::std::result::Result<::std::option::Option<super::Link>, ::std::string::String>,
+            self_: ::std::result::Result<super::Link, ::std::string::String>,
+        }
+        impl ::std::default::Default for EvalSetLinks {
+            fn default() -> Self {
+                Self {
+                    append_cases: Ok(Default::default()),
+                    delete: Ok(Default::default()),
+                    replace: Ok(Default::default()),
+                    self_: Err("no value supplied for self_".to_string()),
+                }
+            }
+        }
+        impl EvalSetLinks {
+            pub fn append_cases<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::Link>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.append_cases = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for append_cases: {e}"));
+                self
+            }
+            pub fn delete<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::Link>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.delete = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for delete: {e}"));
+                self
+            }
+            pub fn replace<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::Link>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.replace = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for replace: {e}"));
+                self
+            }
+            pub fn self_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::Link>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.self_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for self_: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<EvalSetLinks> for super::EvalSetLinks {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: EvalSetLinks,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    append_cases: value.append_cases?,
+                    delete: value.delete?,
+                    replace: value.replace?,
+                    self_: value.self_?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::EvalSetLinks> for EvalSetLinks {
+            fn from(value: super::EvalSetLinks) -> Self {
+                Self {
+                    append_cases: Ok(value.append_cases),
+                    delete: Ok(value.delete),
+                    replace: Ok(value.replace),
+                    self_: Ok(value.self_),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct EvalSetListLinks {
+            create:
+                ::std::result::Result<::std::option::Option<super::Link>, ::std::string::String>,
+            self_: ::std::result::Result<super::Link, ::std::string::String>,
+        }
+        impl ::std::default::Default for EvalSetListLinks {
+            fn default() -> Self {
+                Self {
+                    create: Ok(Default::default()),
+                    self_: Err("no value supplied for self_".to_string()),
+                }
+            }
+        }
+        impl EvalSetListLinks {
+            pub fn create<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::Link>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.create = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for create: {e}"));
+                self
+            }
+            pub fn self_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::Link>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.self_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for self_: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<EvalSetListLinks> for super::EvalSetListLinks {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: EvalSetListLinks,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    create: value.create?,
+                    self_: value.self_?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::EvalSetListLinks> for EvalSetListLinks {
+            fn from(value: super::EvalSetListLinks) -> Self {
+                Self {
+                    create: Ok(value.create),
+                    self_: Ok(value.self_),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct EvalSetListResponse {
+            items: ::std::result::Result<
+                ::std::vec::Vec<super::EvalSetSummaryResponse>,
+                ::std::string::String,
+            >,
+            links: ::std::result::Result<super::EvalSetListLinks, ::std::string::String>,
+        }
+        impl ::std::default::Default for EvalSetListResponse {
+            fn default() -> Self {
+                Self {
+                    items: Err("no value supplied for items".to_string()),
+                    links: Err("no value supplied for links".to_string()),
+                }
+            }
+        }
+        impl EvalSetListResponse {
+            pub fn items<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::EvalSetSummaryResponse>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.items = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for items: {e}"));
+                self
+            }
+            pub fn links<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::EvalSetListLinks>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.links = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for links: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<EvalSetListResponse> for super::EvalSetListResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: EvalSetListResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    items: value.items?,
+                    links: value.links?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::EvalSetListResponse> for EvalSetListResponse {
+            fn from(value: super::EvalSetListResponse) -> Self {
+                Self {
+                    items: Ok(value.items),
+                    links: Ok(value.links),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct EvalSetRecord {
+            agent: ::std::result::Result<::std::string::String, ::std::string::String>,
+            case_count: ::std::result::Result<i64, ::std::string::String>,
+            cases: ::std::result::Result<::std::vec::Vec<super::EvalCase>, ::std::string::String>,
+            created_at: ::std::result::Result<
+                ::chrono::DateTime<::chrono::offset::Utc>,
+                ::std::string::String,
+            >,
+            dataset: ::std::result::Result<::std::string::String, ::std::string::String>,
+            description: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            tenant_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            updated_at: ::std::result::Result<
+                ::chrono::DateTime<::chrono::offset::Utc>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for EvalSetRecord {
+            fn default() -> Self {
+                Self {
+                    agent: Err("no value supplied for agent".to_string()),
+                    case_count: Err("no value supplied for case_count".to_string()),
+                    cases: Err("no value supplied for cases".to_string()),
+                    created_at: Err("no value supplied for created_at".to_string()),
+                    dataset: Err("no value supplied for dataset".to_string()),
+                    description: Ok(Default::default()),
+                    name: Err("no value supplied for name".to_string()),
+                    tenant_id: Err("no value supplied for tenant_id".to_string()),
+                    updated_at: Err("no value supplied for updated_at".to_string()),
+                }
+            }
+        }
+        impl EvalSetRecord {
+            pub fn agent<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.agent = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for agent: {e}"));
+                self
+            }
+            pub fn case_count<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.case_count = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for case_count: {e}"));
+                self
+            }
+            pub fn cases<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::EvalCase>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.cases = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for cases: {e}"));
+                self
+            }
+            pub fn created_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::chrono::DateTime<::chrono::offset::Utc>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.created_at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for created_at: {e}"));
+                self
+            }
+            pub fn dataset<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset: {e}"));
+                self
+            }
+            pub fn description<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.description = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for description: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn tenant_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tenant_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tenant_id: {e}"));
+                self
+            }
+            pub fn updated_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::chrono::DateTime<::chrono::offset::Utc>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.updated_at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for updated_at: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<EvalSetRecord> for super::EvalSetRecord {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: EvalSetRecord,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    agent: value.agent?,
+                    case_count: value.case_count?,
+                    cases: value.cases?,
+                    created_at: value.created_at?,
+                    dataset: value.dataset?,
+                    description: value.description?,
+                    name: value.name?,
+                    tenant_id: value.tenant_id?,
+                    updated_at: value.updated_at?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::EvalSetRecord> for EvalSetRecord {
+            fn from(value: super::EvalSetRecord) -> Self {
+                Self {
+                    agent: Ok(value.agent),
+                    case_count: Ok(value.case_count),
+                    cases: Ok(value.cases),
+                    created_at: Ok(value.created_at),
+                    dataset: Ok(value.dataset),
+                    description: Ok(value.description),
+                    name: Ok(value.name),
+                    tenant_id: Ok(value.tenant_id),
+                    updated_at: Ok(value.updated_at),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct EvalSetResponse {
+            agent: ::std::result::Result<::std::string::String, ::std::string::String>,
+            case_count: ::std::result::Result<i64, ::std::string::String>,
+            cases: ::std::result::Result<::std::vec::Vec<super::EvalCase>, ::std::string::String>,
+            created_at: ::std::result::Result<
+                ::chrono::DateTime<::chrono::offset::Utc>,
+                ::std::string::String,
+            >,
+            dataset: ::std::result::Result<::std::string::String, ::std::string::String>,
+            description: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            links: ::std::result::Result<super::EvalSetLinks, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            tenant_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            updated_at: ::std::result::Result<
+                ::chrono::DateTime<::chrono::offset::Utc>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for EvalSetResponse {
+            fn default() -> Self {
+                Self {
+                    agent: Err("no value supplied for agent".to_string()),
+                    case_count: Err("no value supplied for case_count".to_string()),
+                    cases: Err("no value supplied for cases".to_string()),
+                    created_at: Err("no value supplied for created_at".to_string()),
+                    dataset: Err("no value supplied for dataset".to_string()),
+                    description: Ok(Default::default()),
+                    links: Err("no value supplied for links".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                    tenant_id: Err("no value supplied for tenant_id".to_string()),
+                    updated_at: Err("no value supplied for updated_at".to_string()),
+                }
+            }
+        }
+        impl EvalSetResponse {
+            pub fn agent<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.agent = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for agent: {e}"));
+                self
+            }
+            pub fn case_count<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.case_count = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for case_count: {e}"));
+                self
+            }
+            pub fn cases<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::EvalCase>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.cases = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for cases: {e}"));
+                self
+            }
+            pub fn created_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::chrono::DateTime<::chrono::offset::Utc>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.created_at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for created_at: {e}"));
+                self
+            }
+            pub fn dataset<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset: {e}"));
+                self
+            }
+            pub fn description<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.description = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for description: {e}"));
+                self
+            }
+            pub fn links<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::EvalSetLinks>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.links = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for links: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn tenant_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tenant_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tenant_id: {e}"));
+                self
+            }
+            pub fn updated_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::chrono::DateTime<::chrono::offset::Utc>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.updated_at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for updated_at: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<EvalSetResponse> for super::EvalSetResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: EvalSetResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    agent: value.agent?,
+                    case_count: value.case_count?,
+                    cases: value.cases?,
+                    created_at: value.created_at?,
+                    dataset: value.dataset?,
+                    description: value.description?,
+                    links: value.links?,
+                    name: value.name?,
+                    tenant_id: value.tenant_id?,
+                    updated_at: value.updated_at?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::EvalSetResponse> for EvalSetResponse {
+            fn from(value: super::EvalSetResponse) -> Self {
+                Self {
+                    agent: Ok(value.agent),
+                    case_count: Ok(value.case_count),
+                    cases: Ok(value.cases),
+                    created_at: Ok(value.created_at),
+                    dataset: Ok(value.dataset),
+                    description: Ok(value.description),
+                    links: Ok(value.links),
+                    name: Ok(value.name),
+                    tenant_id: Ok(value.tenant_id),
+                    updated_at: Ok(value.updated_at),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct EvalSetSpec {
+            agent: ::std::result::Result<::std::string::String, ::std::string::String>,
+            cases: ::std::result::Result<::std::vec::Vec<super::EvalCase>, ::std::string::String>,
+            description: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for EvalSetSpec {
+            fn default() -> Self {
+                Self {
+                    agent: Err("no value supplied for agent".to_string()),
+                    cases: Ok(Default::default()),
+                    description: Ok(Default::default()),
+                    name: Err("no value supplied for name".to_string()),
+                }
+            }
+        }
+        impl EvalSetSpec {
+            pub fn agent<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.agent = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for agent: {e}"));
+                self
+            }
+            pub fn cases<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::EvalCase>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.cases = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for cases: {e}"));
+                self
+            }
+            pub fn description<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.description = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for description: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<EvalSetSpec> for super::EvalSetSpec {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: EvalSetSpec,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    agent: value.agent?,
+                    cases: value.cases?,
+                    description: value.description?,
+                    name: value.name?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::EvalSetSpec> for EvalSetSpec {
+            fn from(value: super::EvalSetSpec) -> Self {
+                Self {
+                    agent: Ok(value.agent),
+                    cases: Ok(value.cases),
+                    description: Ok(value.description),
+                    name: Ok(value.name),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct EvalSetSummary {
+            agent: ::std::result::Result<::std::string::String, ::std::string::String>,
+            case_count: ::std::result::Result<i64, ::std::string::String>,
+            created_at: ::std::result::Result<
+                ::chrono::DateTime<::chrono::offset::Utc>,
+                ::std::string::String,
+            >,
+            description: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            updated_at: ::std::result::Result<
+                ::chrono::DateTime<::chrono::offset::Utc>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for EvalSetSummary {
+            fn default() -> Self {
+                Self {
+                    agent: Err("no value supplied for agent".to_string()),
+                    case_count: Err("no value supplied for case_count".to_string()),
+                    created_at: Err("no value supplied for created_at".to_string()),
+                    description: Ok(Default::default()),
+                    name: Err("no value supplied for name".to_string()),
+                    updated_at: Err("no value supplied for updated_at".to_string()),
+                }
+            }
+        }
+        impl EvalSetSummary {
+            pub fn agent<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.agent = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for agent: {e}"));
+                self
+            }
+            pub fn case_count<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.case_count = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for case_count: {e}"));
+                self
+            }
+            pub fn created_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::chrono::DateTime<::chrono::offset::Utc>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.created_at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for created_at: {e}"));
+                self
+            }
+            pub fn description<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.description = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for description: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn updated_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::chrono::DateTime<::chrono::offset::Utc>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.updated_at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for updated_at: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<EvalSetSummary> for super::EvalSetSummary {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: EvalSetSummary,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    agent: value.agent?,
+                    case_count: value.case_count?,
+                    created_at: value.created_at?,
+                    description: value.description?,
+                    name: value.name?,
+                    updated_at: value.updated_at?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::EvalSetSummary> for EvalSetSummary {
+            fn from(value: super::EvalSetSummary) -> Self {
+                Self {
+                    agent: Ok(value.agent),
+                    case_count: Ok(value.case_count),
+                    created_at: Ok(value.created_at),
+                    description: Ok(value.description),
+                    name: Ok(value.name),
+                    updated_at: Ok(value.updated_at),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct EvalSetSummaryResponse {
+            agent: ::std::result::Result<::std::string::String, ::std::string::String>,
+            case_count: ::std::result::Result<i64, ::std::string::String>,
+            created_at: ::std::result::Result<
+                ::chrono::DateTime<::chrono::offset::Utc>,
+                ::std::string::String,
+            >,
+            description: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            links: ::std::result::Result<super::EvalSetLinks, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            updated_at: ::std::result::Result<
+                ::chrono::DateTime<::chrono::offset::Utc>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for EvalSetSummaryResponse {
+            fn default() -> Self {
+                Self {
+                    agent: Err("no value supplied for agent".to_string()),
+                    case_count: Err("no value supplied for case_count".to_string()),
+                    created_at: Err("no value supplied for created_at".to_string()),
+                    description: Ok(Default::default()),
+                    links: Err("no value supplied for links".to_string()),
+                    name: Err("no value supplied for name".to_string()),
+                    updated_at: Err("no value supplied for updated_at".to_string()),
+                }
+            }
+        }
+        impl EvalSetSummaryResponse {
+            pub fn agent<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.agent = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for agent: {e}"));
+                self
+            }
+            pub fn case_count<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.case_count = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for case_count: {e}"));
+                self
+            }
+            pub fn created_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::chrono::DateTime<::chrono::offset::Utc>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.created_at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for created_at: {e}"));
+                self
+            }
+            pub fn description<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.description = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for description: {e}"));
+                self
+            }
+            pub fn links<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::EvalSetLinks>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.links = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for links: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn updated_at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::chrono::DateTime<::chrono::offset::Utc>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.updated_at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for updated_at: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<EvalSetSummaryResponse> for super::EvalSetSummaryResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: EvalSetSummaryResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    agent: value.agent?,
+                    case_count: value.case_count?,
+                    created_at: value.created_at?,
+                    description: value.description?,
+                    links: value.links?,
+                    name: value.name?,
+                    updated_at: value.updated_at?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::EvalSetSummaryResponse> for EvalSetSummaryResponse {
+            fn from(value: super::EvalSetSummaryResponse) -> Self {
+                Self {
+                    agent: Ok(value.agent),
+                    case_count: Ok(value.case_count),
+                    created_at: Ok(value.created_at),
+                    description: Ok(value.description),
+                    links: Ok(value.links),
+                    name: Ok(value.name),
+                    updated_at: Ok(value.updated_at),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct Flamebearer {
             levels:
                 ::std::result::Result<::std::vec::Vec<::std::vec::Vec<i64>>, ::std::string::String>,
@@ -8641,6 +9974,61 @@ pub mod types {
             fn from(value: super::LabelsResponse) -> Self {
                 Self {
                     names: Ok(value.names),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct Link {
+            href: ::std::result::Result<::std::string::String, ::std::string::String>,
+            method: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for Link {
+            fn default() -> Self {
+                Self {
+                    href: Err("no value supplied for href".to_string()),
+                    method: Ok(Default::default()),
+                }
+            }
+        }
+        impl Link {
+            pub fn href<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.href = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for href: {e}"));
+                self
+            }
+            pub fn method<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.method = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for method: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<Link> for super::Link {
+            type Error = super::error::ConversionError;
+            fn try_from(value: Link) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    href: value.href?,
+                    method: value.method?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::Link> for Link {
+            fn from(value: super::Link) -> Self {
+                Self {
+                    href: Ok(value.href),
+                    method: Ok(value.method),
                 }
             }
         }
@@ -16289,6 +17677,95 @@ impl Client {
     pub fn connection_info(&self) -> builder::ConnectionInfo<'_> {
         builder::ConnectionInfo::new(self)
     }
+    /**List the eval sets in the caller's dataset
+
+    Sends a `GET` request to `/api/v1/eval-sets`
+
+    ```ignore
+    let response = client.list_eval_sets()
+        .send()
+        .await;
+    ```*/
+    pub fn list_eval_sets(&self) -> builder::ListEvalSets<'_> {
+        builder::ListEvalSets::new(self)
+    }
+    /**Create an eval set in the caller's dataset
+
+    Sends a `POST` request to `/api/v1/eval-sets`
+
+    ```ignore
+    let response = client.create_eval_set()
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn create_eval_set(&self) -> builder::CreateEvalSet<'_> {
+        builder::CreateEvalSet::new(self)
+    }
+    /**Get an eval set with its cases in order
+
+    Sends a `GET` request to `/api/v1/eval-sets/{name}`
+
+    Arguments:
+    - `name`: Eval set name
+    ```ignore
+    let response = client.get_eval_set()
+        .name(name)
+        .send()
+        .await;
+    ```*/
+    pub fn get_eval_set(&self) -> builder::GetEvalSet<'_> {
+        builder::GetEvalSet::new(self)
+    }
+    /**Replace an eval set's agent, description and cases
+
+    Sends a `PUT` request to `/api/v1/eval-sets/{name}`
+
+    Arguments:
+    - `name`: Eval set name
+    - `body`
+    ```ignore
+    let response = client.replace_eval_set()
+        .name(name)
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn replace_eval_set(&self) -> builder::ReplaceEvalSet<'_> {
+        builder::ReplaceEvalSet::new(self)
+    }
+    /**Delete an eval set and its cases
+
+    Sends a `DELETE` request to `/api/v1/eval-sets/{name}`
+
+    Arguments:
+    - `name`: Eval set name
+    ```ignore
+    let response = client.delete_eval_set()
+        .name(name)
+        .send()
+        .await;
+    ```*/
+    pub fn delete_eval_set(&self) -> builder::DeleteEvalSet<'_> {
+        builder::DeleteEvalSet::new(self)
+    }
+    /**Append cases to an eval set, skipping ids it already holds
+
+    Sends a `POST` request to `/api/v1/eval-sets/{name}/cases`
+
+    Arguments:
+    - `name`: Eval set name
+    - `body`
+    ```ignore
+    let response = client.append_eval_cases()
+        .name(name)
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn append_eval_cases(&self) -> builder::AppendEvalCases<'_> {
+        builder::AppendEvalCases::new(self)
+    }
     /**POST /api/v1/ops/compact — trigger a compaction pass now
 
     Sends a `POST` request to `/api/v1/ops/compact`
@@ -17763,6 +19240,520 @@ pub mod builder {
                 200u16 => ResponseValue::from_response(response).await,
                 401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::list_eval_sets`]
+
+    [`Client::list_eval_sets`]: super::Client::list_eval_sets*/
+    #[derive(Debug, Clone)]
+    pub struct ListEvalSets<'a> {
+        client: &'a super::Client,
+    }
+    impl<'a> ListEvalSets<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self { client: client }
+        }
+        ///Sends a `GET` request to `/api/v1/eval-sets`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::EvalSetListResponse>, Error<types::ApiErrorBody>> {
+            let Self { client } = self;
+            let url = format!("{}/api/v1/eval-sets", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "list_eval_sets",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::create_eval_set`]
+
+    [`Client::create_eval_set`]: super::Client::create_eval_set*/
+    #[derive(Debug, Clone)]
+    pub struct CreateEvalSet<'a> {
+        client: &'a super::Client,
+        body: Result<types::builder::EvalSetSpec, String>,
+    }
+    impl<'a> CreateEvalSet<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::EvalSetSpec>,
+            <V as std::convert::TryInto<types::EvalSetSpec>>::Error: std::fmt::Display,
+        {
+            self.body = value
+                .try_into()
+                .map(From::from)
+                .map_err(|s| format!("conversion to `EvalSetSpec` for body failed: {}", s));
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(types::builder::EvalSetSpec) -> types::builder::EvalSetSpec,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/eval-sets`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::EvalSetResponse>, Error<types::ApiErrorBody>> {
+            let Self { client, body } = self;
+            let body = body
+                .and_then(|v| types::EvalSetSpec::try_from(v).map_err(|e| e.to_string()))
+                .map_err(Error::InvalidRequest)?;
+            let url = format!("{}/api/v1/eval-sets", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "create_eval_set",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                201u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                409u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                413u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                422u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::get_eval_set`]
+
+    [`Client::get_eval_set`]: super::Client::get_eval_set*/
+    #[derive(Debug, Clone)]
+    pub struct GetEvalSet<'a> {
+        client: &'a super::Client,
+        name: Result<::std::string::String, String>,
+    }
+    impl<'a> GetEvalSet<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                name: Err("name was not initialized".to_string()),
+            }
+        }
+        pub fn name<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.name = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for name failed".to_string()
+            });
+            self
+        }
+        ///Sends a `GET` request to `/api/v1/eval-sets/{name}`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::EvalSetResponse>, Error<types::ApiErrorBody>> {
+            let Self { client, name } = self;
+            let name = name.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/eval-sets/{}",
+                client.baseurl,
+                encode_path(&name.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .get(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "get_eval_set",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::replace_eval_set`]
+
+    [`Client::replace_eval_set`]: super::Client::replace_eval_set*/
+    #[derive(Debug, Clone)]
+    pub struct ReplaceEvalSet<'a> {
+        client: &'a super::Client,
+        name: Result<::std::string::String, String>,
+        body: Result<types::builder::EvalSetSpec, String>,
+    }
+    impl<'a> ReplaceEvalSet<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                name: Err("name was not initialized".to_string()),
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn name<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.name = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for name failed".to_string()
+            });
+            self
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::EvalSetSpec>,
+            <V as std::convert::TryInto<types::EvalSetSpec>>::Error: std::fmt::Display,
+        {
+            self.body = value
+                .try_into()
+                .map(From::from)
+                .map_err(|s| format!("conversion to `EvalSetSpec` for body failed: {}", s));
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(types::builder::EvalSetSpec) -> types::builder::EvalSetSpec,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `PUT` request to `/api/v1/eval-sets/{name}`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::EvalSetResponse>, Error<types::ApiErrorBody>> {
+            let Self { client, name, body } = self;
+            let name = name.map_err(Error::InvalidRequest)?;
+            let body = body
+                .and_then(|v| types::EvalSetSpec::try_from(v).map_err(|e| e.to_string()))
+                .map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/eval-sets/{}",
+                client.baseurl,
+                encode_path(&name.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .put(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "replace_eval_set",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                413u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                422u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::delete_eval_set`]
+
+    [`Client::delete_eval_set`]: super::Client::delete_eval_set*/
+    #[derive(Debug, Clone)]
+    pub struct DeleteEvalSet<'a> {
+        client: &'a super::Client,
+        name: Result<::std::string::String, String>,
+    }
+    impl<'a> DeleteEvalSet<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                name: Err("name was not initialized".to_string()),
+            }
+        }
+        pub fn name<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.name = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for name failed".to_string()
+            });
+            self
+        }
+        ///Sends a `DELETE` request to `/api/v1/eval-sets/{name}`
+        pub async fn send(self) -> Result<ResponseValue<()>, Error<types::ApiErrorBody>> {
+            let Self { client, name } = self;
+            let name = name.map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/eval-sets/{}",
+                client.baseurl,
+                encode_path(&name.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .delete(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "delete_eval_set",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                204u16 => Ok(ResponseValue::empty(response)),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::append_eval_cases`]
+
+    [`Client::append_eval_cases`]: super::Client::append_eval_cases*/
+    #[derive(Debug, Clone)]
+    pub struct AppendEvalCases<'a> {
+        client: &'a super::Client,
+        name: Result<::std::string::String, String>,
+        body: Result<types::builder::AppendEvalCasesRequest, String>,
+    }
+    impl<'a> AppendEvalCases<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                name: Err("name was not initialized".to_string()),
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn name<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.name = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for name failed".to_string()
+            });
+            self
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::AppendEvalCasesRequest>,
+            <V as std::convert::TryInto<types::AppendEvalCasesRequest>>::Error: std::fmt::Display,
+        {
+            self.body = value.try_into().map(From::from).map_err(|s| {
+                format!(
+                    "conversion to `AppendEvalCasesRequest` for body failed: {}",
+                    s
+                )
+            });
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(
+                    types::builder::AppendEvalCasesRequest,
+                ) -> types::builder::AppendEvalCasesRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/eval-sets/{name}/cases`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::AppendCasesOutcome>, Error<types::ApiErrorBody>> {
+            let Self { client, name, body } = self;
+            let name = name.map_err(Error::InvalidRequest)?;
+            let body = body
+                .and_then(|v| types::AppendEvalCasesRequest::try_from(v).map_err(|e| e.to_string()))
+                .map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/eval-sets/{}/cases",
+                client.baseurl,
+                encode_path(&name.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "append_eval_cases",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                413u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                422u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -24427,22 +26418,27 @@ pub mod prelude {
 /// Every operation id declared in the OpenAPI document, alphabetized.
 /// Regenerated by `cargo xtask generate`; see `client-surface-parity`.
 pub const OPERATIONS: &[&str] = &[
+    "append_eval_cases",
     "attach_github_installation",
     "connection_info",
     "create_api_key",
     "create_dataset",
+    "create_eval_set",
     "create_tenant",
     "create_tenant_tables",
     "create_user",
     "current_session",
     "delete_dataset",
+    "delete_eval_set",
     "delete_tenant",
+    "get_eval_set",
     "get_schema",
     "get_tenant",
     "github_callback",
     "list_api_keys",
     "list_available_schemas",
     "list_datasets",
+    "list_eval_sets",
     "list_github_installations",
     "list_memberships",
     "list_tenant_schemas",
@@ -24481,6 +26477,7 @@ pub const OPERATIONS: &[&str] = &[
     "query_sources",
     "remove_github_installation",
     "remove_membership",
+    "replace_eval_set",
     "revoke_api_key",
     "schema_create_registry",
     "schema_delete_registry",

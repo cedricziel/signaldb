@@ -1,17 +1,22 @@
-//! JSON error responses for the query HTTP surfaces.
+//! The router-wide JSON error envelope, [`ApiError`].
 //!
-//! Loki- and Prometheus-style clients expect failures as
+//! Every first-party endpoint, and the Loki- and Prometheus-style query
+//! surfaces, answer failures as
 //! `{"status":"error","errorType":"...","error":"..."}`; a bare status code
-//! with an empty body leaves UIs nothing to display. Rate-limit rejections
-//! carry the same envelope plus `retryAfterMs` and the `Retry-After` /
-//! `X-RateLimit-*` header trio, computed from the token bucket's actual
-//! state (see [`common::ratelimit`]).
+//! with an empty body leaves clients nothing to display. Rate-limit
+//! rejections carry the same envelope plus `retryAfterMs` and the
+//! `Retry-After` / `X-RateLimit-*` header trio, computed from the token
+//! bucket's actual state (see [`common::ratelimit`]). [`ApiJson`] parses
+//! request bodies into the same envelope on failure.
 
 use axum::Json;
+use axum::body::Bytes;
+use axum::extract::{FromRequest, Request};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use common::ratelimit::RateLimitExceeded;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use utoipa::ToSchema;
 
 /// An HTTP error with a client-visible message.
@@ -81,7 +86,12 @@ impl ApiError {
     fn error_type(&self) -> &'static str {
         match self.status {
             StatusCode::BAD_REQUEST => "bad_data",
+            StatusCode::UNAUTHORIZED => "unauthorized",
+            StatusCode::FORBIDDEN => "forbidden",
             StatusCode::NOT_FOUND => "not_found",
+            StatusCode::CONFLICT => "conflict",
+            StatusCode::PAYLOAD_TOO_LARGE => "payload_too_large",
+            StatusCode::UNPROCESSABLE_ENTITY => "invalid",
             StatusCode::TOO_MANY_REQUESTS => "rate_limited",
             StatusCode::GATEWAY_TIMEOUT => "timeout",
             StatusCode::SERVICE_UNAVAILABLE => "unavailable",
@@ -107,7 +117,7 @@ impl From<StatusCode> for ApiError {
     }
 }
 
-/// The JSON envelope every query-surface error responds with: `status` is
+/// The JSON envelope every [`ApiError`] responds with: `status` is
 /// always `"error"`, `errorType` a stable low-cardinality code, `error` a
 /// human-readable message, and `retryAfterMs` present only on rate-limit
 /// rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -207,6 +217,36 @@ impl IntoResponse for ApiError {
     }
 }
 
+/// A JSON request body whose rejections use the [`ApiError`] envelope. An
+/// unreadable or oversized body keeps its own status (e.g. `413`),
+/// malformed JSON is `400`, and well-formed JSON of the wrong shape is
+/// `422`: the same split axum's `Json` extractor makes.
+///
+/// Takes the body, so it goes last in a handler's arguments, after any
+/// privilege-checking extractor.
+pub struct ApiJson<T>(pub T);
+
+impl<T, S> FromRequest<S> for ApiJson<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let body = Bytes::from_request(req, state)
+            .await
+            .map_err(|rejection| ApiError::new(rejection.status(), rejection.body_text()))?;
+        serde_json::from_slice(&body).map(ApiJson).map_err(|e| {
+            let status = match e.classify() {
+                serde_json::error::Category::Data => StatusCode::UNPROCESSABLE_ENTITY,
+                _ => StatusCode::BAD_REQUEST,
+            };
+            ApiError::new(status, format!("invalid request body: {e}"))
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,6 +259,19 @@ mod tests {
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
         assert_eq!(err.error_type(), "bad_data");
         assert_eq!(err.message, "parse error at line 1");
+    }
+
+    #[test]
+    fn client_error_statuses_have_their_own_error_types() {
+        for (status, error_type) in [
+            (StatusCode::UNAUTHORIZED, "unauthorized"),
+            (StatusCode::FORBIDDEN, "forbidden"),
+            (StatusCode::CONFLICT, "conflict"),
+            (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large"),
+            (StatusCode::UNPROCESSABLE_ENTITY, "invalid"),
+        ] {
+            assert_eq!(ApiError::new(status, "x").error_type(), error_type);
+        }
     }
 
     #[test]
