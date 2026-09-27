@@ -19,6 +19,7 @@ pub mod table_ref;
 pub(crate) mod tags_to_ir;
 pub mod trace;
 pub(crate) mod typed_attrs;
+pub(crate) mod warm_index;
 
 /// Parameters carried in the `query_logs` Flight ticket (JSON-encoded).
 ///
