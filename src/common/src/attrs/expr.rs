@@ -79,27 +79,35 @@ pub fn typed_home_expr(homes: &[String], promoted: Option<&str>, key: &str, pref
     }
 }
 
-/// The column names to project for `containers`: each container's five
-/// typed columns. For a caller that hands the projected batch to a decoder
-/// (e.g. `attrs::attr_documents`) that reads the typed layout. When `schema`
-/// is given, asserts (debug builds only) that every container is actually on
-/// the typed layout — a caller with no schema in hand skips the check.
-pub fn select_columns_for_containers(schema: Option<&Schema>, containers: &[&str]) -> Vec<String> {
-    debug_assert!(
-        schema.is_none_or(|schema| containers.iter().all(|&c| is_typed_layout(schema, c))),
-        "every container must be on the typed attribute layout"
-    );
-    containers
+/// The column names to project for `columns`: each entry expands to its
+/// five typed columns when `schema` shows it is an attribute container (or
+/// unconditionally, when no `schema` is given); every other entry passes
+/// through unchanged.
+pub fn select_columns_for_containers(schema: Option<&Schema>, columns: &[&str]) -> Vec<String> {
+    columns
         .iter()
-        .flat_map(|&container| typed_columns(container).to_vec())
+        .flat_map(|&c| match schema {
+            Some(schema) if !is_typed_layout(schema, c) => vec![c.to_string()],
+            _ => typed_columns(c).to_vec(),
+        })
         .collect()
+}
+
+/// Projects `df` onto `columns`, expanding any attribute container name in
+/// it to its typed columns via [`select_columns_for_containers`] first.
+pub fn select_attr_columns(
+    df: datafusion::dataframe::DataFrame,
+    columns: &[&str],
+) -> datafusion::error::Result<datafusion::dataframe::DataFrame> {
+    let projected = select_columns_for_containers(Some(df.schema().as_arrow()), columns);
+    df.select_columns(&projected.iter().map(String::as_str).collect::<Vec<_>>())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::testing::{typed_attribute_columns, typed_attribute_columns_from};
-    use datafusion::arrow::array::{Array, RecordBatch, StringArray};
+    use datafusion::arrow::array::{Array, ArrayRef, RecordBatch, StringArray};
     use datafusion::arrow::datatypes::Fields;
     use datafusion::prelude::SessionContext;
     use serde_json::json;
@@ -237,6 +245,61 @@ mod tests {
         assert_eq!(
             select_columns_for_containers(Some(&typed), &["span_attributes"]),
             typed_columns("span_attributes").to_vec()
+        );
+    }
+
+    #[test]
+    fn select_columns_for_containers_passes_non_container_names_through() {
+        let (fields, _) = typed_attribute_columns("span_attributes", &[]);
+        let mut all_fields = fields.to_vec();
+        all_fields.push(datafusion::arrow::datatypes::Field::new(
+            "trace_id",
+            DataType::Utf8,
+            true,
+        ));
+        let schema = Schema::new(all_fields);
+        assert_eq!(
+            select_columns_for_containers(Some(&schema), &["trace_id", "span_attributes"]),
+            [
+                vec!["trace_id".to_string()],
+                typed_columns("span_attributes").to_vec()
+            ]
+            .concat()
+        );
+    }
+
+    #[tokio::test]
+    async fn select_attr_columns_projects_containers_and_leaves_the_rest() {
+        let (fields, arrays) = typed_attribute_columns("span_attributes", &[None]);
+        let mut all_fields = fields.to_vec();
+        all_fields.push(datafusion::arrow::datatypes::Field::new(
+            "trace_id",
+            DataType::Utf8,
+            true,
+        ));
+        let mut all_arrays: Vec<ArrayRef> = arrays.to_vec();
+        all_arrays.push(Arc::new(StringArray::from(vec!["t1"])) as ArrayRef);
+        let schema = Arc::new(Schema::new(all_fields));
+        let batch = RecordBatch::try_new(schema.clone(), all_arrays).unwrap();
+
+        let ctx = SessionContext::new();
+        ctx.register_batch("spans", batch).unwrap();
+        let df = ctx.table("spans").await.unwrap();
+
+        let projected = select_attr_columns(df, &["trace_id", "span_attributes"]).unwrap();
+        let names: Vec<String> = projected
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        assert_eq!(
+            names,
+            [
+                vec!["trace_id".to_string()],
+                typed_columns("span_attributes").to_vec()
+            ]
+            .concat()
         );
     }
 

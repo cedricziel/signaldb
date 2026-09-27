@@ -29,9 +29,14 @@ pub async fn writer_with_type_authority(
     dataset_id: String,
     table_name: String,
 ) -> Result<IcebergTableWriter> {
-    let writer =
-        IcebergTableWriter::new(catalog_manager, tenant_id, dataset_id, table_name).await?;
-    Ok(writer.with_type_authority(test_type_authority().await?))
+    writer_with_type_authority_and_catalog(
+        catalog_manager,
+        tenant_id,
+        dataset_id,
+        table_name,
+        Catalog::new_in_memory().await?,
+    )
+    .await
 }
 
 /// Same as [`writer_with_type_authority`], but committing types to `catalog`
@@ -66,11 +71,11 @@ pub async fn writer_service_with_type_authority(
     wal_manager: Arc<WalManager>,
     writer_config: &WriterConfig,
 ) -> Result<IcebergWriterFlightService> {
-    Ok(IcebergWriterFlightService::with_type_authority(
+    Ok(writer_service_with_type_authority_and_catalog(
         catalog_manager,
         wal_manager,
         writer_config,
-        test_type_authority().await?,
+        Catalog::new_in_memory().await?,
     ))
 }
 
@@ -89,6 +94,22 @@ pub fn writer_service_with_type_authority_and_catalog(
         writer_config,
         test_type_authority_with_catalog(catalog),
     )
+}
+
+/// A `CatalogManager` wired with `type_authority_catalog` as its tenant
+/// source, so its `CanonicalTypeLookup` sees the canonical types a writer
+/// sharing the same `Catalog` commits. Returns `type_authority_catalog` back
+/// alongside it for that writer to use.
+pub async fn catalog_manager_with_tenant_source(
+    config: Configuration,
+    type_authority_catalog: Catalog,
+) -> Result<(Arc<CatalogManager>, Catalog)> {
+    let catalog_manager = Arc::new(
+        CatalogManager::new(config)
+            .await?
+            .with_tenant_source(Arc::new(type_authority_catalog.clone())),
+    );
+    Ok((catalog_manager, type_authority_catalog))
 }
 
 /// A `TypeAuthority` backed by a fresh in-memory SQL catalog -- independent

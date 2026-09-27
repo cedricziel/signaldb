@@ -662,18 +662,11 @@ fn batches_to_streams(batches: &[RecordBatch]) -> Vec<Stream> {
         let severity = str_col(batch, "severity_text");
         let trace_id = str_col(batch, "trace_id");
         let span_id = str_col(batch, "span_id");
-        // A container the projection omitted, or one stored in a form this
-        // build cannot read, degrades to "no attributes from that container"
-        // rather than failing the query.
+        // A container the projection omitted decodes to `None` rows rather
+        // than failing the batch -- normal when the query didn't need it.
         let attrs: Vec<Vec<Option<common::attrs::AttrDocument>>> = ATTR_CONTAINERS
             .iter()
-            .filter_map(|name| match common::attrs::attr_documents(batch, name) {
-                Ok(docs) => Some(docs),
-                Err(error) => {
-                    tracing::warn!(?error, container = name, "skipping attribute container");
-                    None
-                }
-            })
+            .filter_map(|name| common::attrs::attr_documents(batch, name).ok())
             .collect();
 
         for i in 0..batch.num_rows() {

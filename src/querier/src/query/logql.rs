@@ -662,7 +662,7 @@ mod tests {
     /// still render as `regexp_like(ir_body_decode(body), ...)`. Execute the
     /// lowered filter over a fixture whose `body` column is JSON-encoded the
     /// way ingest actually encodes it (`serde_json::to_string`, issue
-    /// #1410), not `differential.rs`'s bare (non-JSON) bodies, and use an
+    /// #1410), not a bare (non-JSON) body fixture, and use an
     /// anchored pattern (`^boom`) so a decode failure changes the row
     /// count rather than passing by luck the way an unanchored `contains`
     /// can (the raw column's leading `"` would defeat the anchor but not a

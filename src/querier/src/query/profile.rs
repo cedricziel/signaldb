@@ -275,12 +275,7 @@ impl ProfileService {
             return Ok(Vec::new());
         };
         let df = Self::apply_time_window(df, params.start, params.end)?;
-        let attr_columns = common::attrs::expr::select_columns_for_containers(
-            Some(df.schema().as_arrow()),
-            &["profile_attributes"],
-        );
-        let df = df
-            .select_columns(&attr_columns.iter().map(String::as_str).collect::<Vec<_>>())
+        let df = common::attrs::expr::select_attr_columns(df, &["profile_attributes"])
             .map_err(QuerierError::QueryFailed)?;
         // Arrow's row format cannot sort Map columns; skip the dedup there.
         let df = if df.schema().fields().iter().any(|f| {
@@ -345,12 +340,7 @@ impl ProfileService {
             return distinct_non_empty(&batches, "service_name");
         }
 
-        let attr_columns = common::attrs::expr::select_columns_for_containers(
-            Some(df.schema().as_arrow()),
-            &["profile_attributes"],
-        );
-        let df = df
-            .select_columns(&attr_columns.iter().map(String::as_str).collect::<Vec<_>>())
+        let df = common::attrs::expr::select_attr_columns(df, &["profile_attributes"])
             .map_err(QuerierError::QueryFailed)?;
         // Arrow's row format cannot sort Map columns; skip the dedup there.
         let df = if df.schema().fields().iter().any(|f| {
@@ -875,8 +865,7 @@ mod tests {
     }
 
     /// [`context_with_profiles`], with `profile_attributes` rewritten onto
-    /// the typed attribute layout -- no single `profile_attributes` column,
-    /// five typed homes instead.
+    /// the typed attribute layout.
     async fn context_with_typed_profiles() -> SessionContext {
         use datafusion::catalog::{
             CatalogProvider, MemoryCatalogProvider, MemorySchemaProvider, SchemaProvider,
@@ -920,9 +909,6 @@ mod tests {
         new_ctx
     }
 
-    /// The typed-layout profiles table has no `profile_attributes` column
-    /// at all; this pins that label discovery still works instead of
-    /// erroring with "No field named profile_attributes".
     #[tokio::test]
     async fn label_discovery_reads_typed_attribute_layout() {
         let service = ProfileService::new(context_with_typed_profiles().await);
