@@ -10,6 +10,8 @@
 
 use opentelemetry_semantic_conventions::attribute;
 
+pub mod upload;
+
 /// `event_name` of an evaluator result log record. The semconv crate has no
 /// constant for this event name (only for the attributes on it), so it stays
 /// a local literal.
@@ -29,8 +31,24 @@ pub const EVALUATION_SCORE_VALUE: &str = attribute::GEN_AI_EVALUATION_SCORE_VALU
 /// Verdict label, e.g. `pass` / `fail`.
 #[allow(deprecated)]
 pub const EVALUATION_SCORE_LABEL: &str = attribute::GEN_AI_EVALUATION_SCORE_LABEL;
+/// The judge's reasoning.
+#[allow(deprecated)]
+pub const EVALUATION_EXPLANATION: &str = attribute::GEN_AI_EVALUATION_EXPLANATION;
 /// Set when the evaluator itself failed.
 pub const ERROR_TYPE: &str = attribute::ERROR_TYPE;
+
+/// Groups results into one offline run (design D2); absent on production
+/// results. The `signaldb.eval.*` names are SignalDB's own: semconv has no
+/// run or eval-set layer.
+pub const RUN_ID: &str = "signaldb.eval.run_id";
+/// The eval set the run replayed.
+pub const SET: &str = "signaldb.eval.set";
+/// The case within the set: the join key between runs.
+pub const CASE_ID: &str = "signaldb.eval.case_id";
+/// Evaluator implementation and version, e.g. `trajectory-match@2.1.0`.
+pub const EVALUATOR: &str = "signaldb.eval.evaluator";
+/// Trial index for a case run several times.
+pub const TRIAL: &str = "signaldb.eval.trial";
 
 /// `gen_ai.operation.name` of a GenAI span (`invoke_agent`, `execute_tool`, `chat`).
 #[allow(deprecated)]
@@ -42,6 +60,9 @@ pub const OPERATION_EXECUTE_TOOL: &str = "execute_tool";
 /// `gen_ai.agent.name` on an agent span.
 #[allow(deprecated)]
 pub const AGENT_NAME: &str = attribute::GEN_AI_AGENT_NAME;
+/// `gen_ai.agent.version` on an agent span or result.
+#[allow(deprecated)]
+pub const AGENT_VERSION: &str = attribute::GEN_AI_AGENT_VERSION;
 /// `gen_ai.tool.name` on a tool call span.
 #[allow(deprecated)]
 pub const TOOL_NAME: &str = attribute::GEN_AI_TOOL_NAME;

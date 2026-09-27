@@ -1,8 +1,10 @@
 //! In-memory, windowed cache of ids seen recently, for recognizing a resend
 //! of something already durably ingested.
 //!
-//! Both users key it by a batch's content fingerprint, a uuid the acceptor
-//! derives from tenant, dataset, signal and serialized bytes:
+//! Both users key it by a batch's content fingerprint ([`fingerprint`]), a
+//! uuid the acceptor derives from tenant, dataset, signal and serialized
+//! bytes (the router's eval-results upload, from tenant, dataset, run and
+//! file bytes):
 //!
 //! - The writer: `do_put`'s `app_metadata` carries it as `ingest_id`, so a
 //!   copy of a batch that the acceptor's rendezvous hashing routes back to
@@ -39,6 +41,19 @@ pub fn ingest_id_from_metadata(metadata_json: &str) -> Option<Uuid> {
     serde_json::from_str::<IngestIdOnly>(metadata_json)
         .ok()?
         .ingest_id
+}
+
+/// A content fingerprint of `parts`, for use as an `ingest_id`: equal parts
+/// give the same id, so a resend of the same content dedups. Each part is
+/// length-prefixed so no two distinct inputs concatenate to the same byte
+/// stream.
+pub fn fingerprint(parts: &[&[u8]]) -> Uuid {
+    let mut hasher = twox_hash::XxHash3_128::new();
+    for part in parts {
+        hasher.write(&(part.len() as u64).to_le_bytes());
+        hasher.write(part);
+    }
+    Uuid::from_u128(hasher.finish_128())
 }
 
 /// A source of wall-clock time, injectable so tests can move past the dedup

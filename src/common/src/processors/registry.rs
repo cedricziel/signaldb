@@ -31,7 +31,7 @@ pub struct CompiledProcessor {
 }
 
 impl CompiledProcessor {
-    fn compile(record: ProcessorRecord, limits: &ottl::Limits) -> Self {
+    pub(crate) fn compile(record: ProcessorRecord, limits: &ottl::Limits) -> Self {
         let signal = match record.signal.as_str() {
             "traces" => ottl::Signal::Traces,
             "logs" => ottl::Signal::Logs,

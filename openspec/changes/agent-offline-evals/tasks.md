@@ -41,10 +41,10 @@
 
 ## 6. Results upload
 
-- [ ] 6.1 Parser tests for JSONL/CSV rows, column errors and run-level rows (`cargo test -p common`).
-- [ ] 6.2 Results parser and conversion to `gen_ai.evaluation.result` log records.
-- [ ] 6.3 `POST /api/v1/evals/results` handler tests, then the handler writing through the log ingest path; OpenAPI and both clients regenerated.
-- [ ] 6.4 Integration test in `tests-integration`: upload → the run is queryable over the IR with the right pass rate.
+- [x] 6.1 Parser tests for JSONL/CSV rows, column errors and run-level rows (`cargo test -p common`).
+- [x] 6.2 Results parser and conversion to `gen_ai.evaluation.result` log records.
+- [x] 6.3 `POST /api/v1/evals/results` handler tests, then the handler writing through the log ingest path; OpenAPI and both clients regenerated.
+- [x] 6.4 Integration test in `tests-integration`: upload → the run is queryable over the IR with the right pass rate.
 
 ## 7. Span-event results
 
@@ -54,7 +54,7 @@
 ## 8. Surfaces
 
 - [x] 8.1a CLI: eval sets — `signaldb-cli eval-sets list|get|export` and `signaldb-cli admin eval-sets create|replace|delete|append`, with tests.
-- [ ] 8.1b CLI: `evals upload` with `--compare-to` / `--fail-if`, with tests.
+- [x] 8.1b CLI: `evals upload` with `--compare-to` / `--fail-if`, with tests.
 - [ ] 8.2 UI: Eval sets list and detail, New eval set dialog, Add traces panel, Upload results dialog, "Save regressed cases as eval set".
 - [x] 8.3a MCP: eval set tools `list_eval_sets`, `get_eval_set`, `create_eval_set`, `replace_eval_set`, `delete_eval_set`, `append_eval_cases` (`mcp-server`), with tests.
 - [ ] 8.3b MCP: read tools for runs and comparisons (`mcp-server`), with tests.

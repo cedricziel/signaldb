@@ -2022,6 +2022,62 @@ impl From<AppendEvalCasesFromTracesParams> for signaldb_sdk::types::AppendCasesF
     }
 }
 
+/// File format of `upload_eval_results`.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(rename_all = "lowercase")]
+enum EvalResultsFormatParam {
+    /// CSV with a header row.
+    Csv,
+    /// One JSON object per line.
+    Jsonl,
+}
+
+impl From<EvalResultsFormatParam> for signaldb_sdk::types::EvalResultsFormat {
+    fn from(format: EvalResultsFormatParam) -> Self {
+        match format {
+            EvalResultsFormatParam::Csv => Self::Csv,
+            EvalResultsFormatParam::Jsonl => Self::Jsonl,
+        }
+    }
+}
+
+/// Parameters for `upload_eval_results`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct UploadEvalResultsParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset to write the results to. Required: one MCP session may span
+    /// several datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
+    /// The results file's text: one row per evaluator result. Columns
+    /// (CSV header or JSONL keys): `case_id`, `name` (the evaluator)
+    /// required; `score`, `label`, `explanation`, `trace_id` (32 hex),
+    /// `span_id` (16 hex), `evaluator`, `error`, `trial` optional; each row
+    /// needs a score, a label or an error.
+    content: String,
+    /// `csv` or `jsonl`.
+    format: EvalResultsFormatParam,
+    /// The agent the run evaluated (`gen_ai.agent.name`).
+    agent: String,
+    /// The agent version under test (`gen_ai.agent.version`).
+    version: String,
+    /// The eval set the run replayed (a valid eval set name; the set need
+    /// not exist).
+    set: String,
+    /// Run id. Generated when omitted (and named in an error). Re-using one
+    /// with a different file adds to that run; re-sending the same file
+    /// under the same run id (a retry) is not written twice.
+    #[serde(default)]
+    run_id: Option<String>,
+}
+
 #[tool_router]
 impl McpServer {
     /// Construct a handler that forwards to `router_base_url`, bounding each
@@ -4400,6 +4456,50 @@ impl McpServer {
             .map_err(|e| map_api_error_body(e, "append_eval_cases_from_traces"))?;
         json_result(&resp.into_inner())
     }
+
+    #[tool(
+        description = "Upload agent eval results as one offline run, for harnesses that do not export OpenTelemetry: `content` is a JSONL or CSV file with one row per evaluator result. The whole file is validated first; any invalid row rejects it and every problem is listed (row, column, reason), nothing written. Each row becomes a `gen_ai.evaluation.result` log record with the run attributes, so the run appears on the Evaluate pages and in `query_ir` like one sent over OTLP (queryable once the writer commits, typically within seconds). Returns the run id and, per evaluator, results, errors, mean and pass rate. Requires the `evals:write` scope.",
+        annotations(destructive_hint = false)
+    )]
+    async fn upload_eval_results(
+        &self,
+        Parameters(p): Parameters<UploadEvalResultsParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        // Chosen here rather than by the server so the error can name it: a
+        // retry with the same run id and content is deduplicated.
+        let run_id = p
+            .run_id
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let resp = client
+            .upload_eval_results()
+            .agent(p.agent)
+            .version(p.version)
+            .set(p.set)
+            .run_id(&run_id)
+            .format(signaldb_sdk::types::EvalResultsFormat::from(p.format))
+            .body(p.content)
+            .send()
+            .await
+            .map_err(|e| {
+                // A 4xx wrote nothing; anything else may have landed.
+                let rejected = matches!(&e, signaldb_sdk::Error::ErrorResponse(r)
+                    if r.status().is_client_error());
+                let mut err = map_api_error_body(e, "upload_eval_results");
+                if !rejected {
+                    err.message = format!(
+                        "{} (run_id `{run_id}`: retrying with the same run_id and content is safe)",
+                        err.message
+                    )
+                    .into();
+                }
+                err
+            })?;
+        json_result(&resp.into_inner())
+    }
 }
 
 /// One page of an eval set for `get_eval_set`: the set header with
@@ -5275,7 +5375,23 @@ fn map_api_error_body(
         .and_then(|ms| u64::try_from(ms).ok())
         .map(std::time::Duration::from_millis)
         .or(header_wait);
-    status_to_error(status, what, format!("{what}: {}", body.error), retry_after)
+    // Problems the router listed one by one (e.g. an upload's invalid rows).
+    let details: String = body
+        .details
+        .iter()
+        .flatten()
+        .map(|d| match (d.row, &d.column) {
+            (Some(row), Some(column)) => format!("\n- row {row}, `{column}`: {}", d.reason),
+            (Some(row), None) => format!("\n- row {row}: {}", d.reason),
+            (None, _) => format!("\n- {}", d.reason),
+        })
+        .collect();
+    status_to_error(
+        status,
+        what,
+        format!("{what}: {}{details}", body.error),
+        retry_after,
+    )
 }
 
 /// The status mapping shared by the typed-body mappers: `message` carries
@@ -7693,6 +7809,7 @@ mod tests {
                      `metrics`, `metrics_histogram`, `profiles`"
                 .to_string(),
             retry_after_ms: None,
+            details: None,
         };
         let err = signaldb_sdk::Error::ErrorResponse(signaldb_sdk::ResponseValue::new(
             body,
@@ -7715,6 +7832,7 @@ mod tests {
             error_type: "payload_too_large".to_string(),
             error: "result exceeds the row limit".to_string(),
             retry_after_ms: None,
+            details: None,
         };
         let err = signaldb_sdk::Error::ErrorResponse(signaldb_sdk::ResponseValue::new(
             body,
@@ -7733,6 +7851,7 @@ mod tests {
             error_type: "conflict".to_string(),
             error: "eval set `refunds` already exists".to_string(),
             retry_after_ms: None,
+            details: None,
         };
         let err = signaldb_sdk::Error::ErrorResponse(signaldb_sdk::ResponseValue::new(
             body,

@@ -82,6 +82,7 @@ impl Modify for SecurityAddon {
         (name = "github", description = "GitHub App installations linked to a tenant"),
         (name = "processors", description = "Tenant OTTL processors applied at ingest"),
         (name = "eval-sets", description = "Named lists of test cases for offline agent evaluation"),
+        (name = "evals", description = "Offline agent evaluation results"),
     ),
     paths(
         // Tenant identity resource (change: no-scope-prefixed-paths)
@@ -182,6 +183,7 @@ impl Modify for SecurityAddon {
         crate::endpoints::eval_sets::delete_eval_set,
         crate::endpoints::eval_sets::append_eval_cases,
         crate::endpoints::eval_sets::append_eval_cases_from_traces,
+        crate::endpoints::evals::upload_eval_results,
     ),
     components(schemas(
         // signaldb-api DTOs shared by the tenant identity resource
@@ -332,6 +334,11 @@ impl Modify for SecurityAddon {
         crate::endpoints::eval_sets::EvalSetSummaryResponse,
         crate::endpoints::eval_sets::EvalSetListResponse,
         crate::endpoints::eval_sets::AppendEvalCasesRequest,
+        common::evals::upload::UploadSummary,
+        common::evals::upload::EvaluatorSummary,
+        common::evals::upload::ResultsFormat,
+        crate::endpoints::evals::EvalResultsUploadLinks,
+        crate::endpoints::evals::EvalResultsUploadResponse,
         crate::endpoints::eval_sets::AppendCasesFromTracesRequest,
         crate::endpoints::eval_sets::AppendCasesFromTracesOutcome,
         common::schema_registry::RegistrySource,
@@ -352,6 +359,7 @@ impl Modify for SecurityAddon {
         schema_model::Role,
         // Rate-limit rejection envelope (change: query-throttle-signalling)
         crate::endpoints::api_error::ApiErrorBody,
+        crate::endpoints::api_error::ApiErrorDetail,
         // Pyroscope-compatible profile query DTOs
         pyroscope_api::RenderResponse,
         pyroscope_api::Flamebearer,

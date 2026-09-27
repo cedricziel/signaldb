@@ -108,7 +108,7 @@ Each component implements a Flight service:
 - **Acceptor**: no Flight server; acts as a Flight client forwarding data to the Writer
 - **IcebergWriterFlightService**: Receives data from Acceptor and writes to Iceberg tables
 - **QuerierFlightService**: Executes queries against storage and returns results
-- **SignalDBFlightService** (Router): Exposes HTTP API and forwards requests to Querier via Flight
+- **SignalDBFlightService** (Router): Exposes HTTP API and forwards requests to Querier via Flight. It also writes uploaded eval results (`POST /api/v1/evals/results`) to a Writer as logs batches, through the same `common::flight::forward::forward_batch_to_writer` `DoPut` the Acceptor uses; unlike the Acceptor it keeps no WAL, so the upload is durable once the Writer acks
 - **CompactorFlightService**: Admin-only `DoAction` interface for compaction management
 
 ### 4.3 External Flight Interface

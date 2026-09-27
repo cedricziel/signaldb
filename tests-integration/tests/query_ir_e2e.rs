@@ -438,7 +438,7 @@ pub(crate) fn traces_request(service: &str, spans: Vec<Span>) -> ExportTraceServ
     }
 }
 
-/// Build the router with the native IR, processors and eval-sets endpoints
+/// Build the router with the native IR, processors, eval-sets and eval-results endpoints
 /// and test auth.
 pub(crate) async fn build_router(services: &TestServices) -> Router {
     let catalog = Catalog::new(services.config.discovery.as_ref().unwrap().dsn.as_str())
@@ -467,6 +467,7 @@ pub(crate) async fn build_router(services: &TestServices) -> Router {
             endpoints::query::router()
                 .merge(endpoints::processors::router())
                 .merge(endpoints::eval_sets::router())
+                .merge(endpoints::evals::router())
                 .with_state(state),
         )
         .merge(traces_http)

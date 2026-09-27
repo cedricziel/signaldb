@@ -446,7 +446,15 @@ evaluation in the catalog (`common::eval_sets`), guarded by the
 `evals:read` / `evals:write` scopes. Building cases from traces
 (`cases/from-traces`) runs Query IR documents server-side through the same
 querier ticket path as `/api/v1/query`, and applies the shared pass rule
-(`common::evals`). See [Eval sets](../users/eval-sets.md).
+(`common::evals`). See [Eval sets](../users/eval-sets.md). **Results
+upload** (`POST /api/v1/evals/results`, `endpoints/evals.rs`) turns a
+JSONL/CSV file into `gen_ai.evaluation.result` log records and reuses two
+pieces of the acceptor's ingest path from `common`: the tenant processor loop
+(`common::processors::apply`) and the writer `DoPut`
+(`common::flight::forward`). The router has no WAL of its own; the writer's
+WAL makes the upload durable before the router answers, and a retry with the
+same run id and file is deduplicated by the writer's ingest-id check. See
+[Evaluating AI agents](../users/evaluations.md#upload-a-results-file).
 
 The tenant management API (`/api/v1/*`, `endpoints/management.rs`)
 accepts a human principal (session or OAuth) with the tenant-admin role or

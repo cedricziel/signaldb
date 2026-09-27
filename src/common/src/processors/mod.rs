@@ -3,8 +3,10 @@
 //! Catalog-backed configuration for the per-tenant/per-dataset OTTL
 //! transform rules applied at ingest (change: tenant-ottl-processors, design
 //! D3). The uploaded statement list is stored verbatim; compilation into a
-//! runnable `ottl::CompiledProgram` happens elsewhere (`ProcessorRegistry`).
+//! runnable `ottl::CompiledProgram` happens elsewhere (`ProcessorRegistry`),
+//! and [`apply`] runs the compiled programs against a request.
 
+pub mod apply;
 pub mod registry;
 pub mod store;
 

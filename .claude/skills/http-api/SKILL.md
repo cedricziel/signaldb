@@ -116,7 +116,10 @@ links, without building URLs from documentation.
   matching the failure. Never an empty body. `errorType` follows the status:
   400 `bad_data`, 401 `unauthorized`, 403 `forbidden`, 404 `not_found`,
   409 `conflict`, 413 `payload_too_large`, 422 `invalid`, 429
-  `rate_limited` (see `endpoints/api_error.rs`).
+  `rate_limited` (see `endpoints/api_error.rs`). An endpoint that reports
+  several problems at once lists them in the optional `details` array
+  (`{row?, column?, reason}`, via `ApiError::with_details`), e.g. the
+  invalid rows of an uploaded results file.
 - **Timestamps:** `chrono::DateTime<Utc>` in response types, which serialize
   as RFC 3339 with a `Z` suffix and appear in OpenAPI as `format: date-time`.
   Never pre-formatted strings.
@@ -192,8 +195,8 @@ Treat these as debt to pay down. Don't copy them.
 - The session, OIDC and GitHub-callback routes are mounted at the root, not
   under `/api/v1`. The OIDC and GitHub callbacks are URLs registered with
   external providers, so moving them means updating those registrations too.
-- Only `/api/v1/eval-sets` emits `_links` so far, and no `/api/v1` index
-  exists. Eval sets (`endpoints/eval_sets.rs`) are the reference for
+- Only `/api/v1/eval-sets` and `POST /api/v1/evals/results` emit `_links`
+  so far, and no `/api/v1` index exists. Eval sets (`endpoints/eval_sets.rs`) are the reference for
   `_links` (built from `endpoints/links.rs`), `ApiJson` bodies and
   extractor-based privilege checks (`EvalsRead` / `EvalsWrite`).
 - The processors, management and tenants endpoints still emit their own

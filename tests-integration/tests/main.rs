@@ -26,6 +26,7 @@ mod writer;
 
 mod acceptor_resend_dedup;
 mod dataset_restriction_e2e;
+mod eval_results_upload_e2e;
 mod eval_sets_from_traces_e2e;
 mod flight_message_limits;
 mod ingest_type_enforcement_e2e;
