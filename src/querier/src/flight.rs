@@ -41,11 +41,25 @@ use crate::query::{
     TraceTagValuesParams, TraceTagsParams,
 };
 
+/// Translates `[querier.warm_index]` into the gate
+/// `crate::query::warm_index::WarmIndexTable::maybe_wrap` probes with.
+fn warm_index_gate(
+    cfg: &common::config::WarmIndexQuerierConfig,
+) -> crate::query::warm_index::WarmIndexGate {
+    crate::query::warm_index::WarmIndexGate {
+        min_files: cfg.min_files,
+        sample_files: cfg.sample_files,
+        max_keep_ratio: cfg.max_keep_ratio,
+        probe_concurrency: cfg.probe_concurrency,
+    }
+}
+
 /// Queries the Iceberg catalog directly, bypassing `datafusion_iceberg`'s
 /// stale `Mirror` cache so newly-created tables are immediately visible.
 struct LiveIcebergSchema {
     namespace: iceberg_rust::catalog::namespace::Namespace,
     catalog: Arc<dyn iceberg_rust::catalog::Catalog>,
+    warm_index: common::config::WarmIndexQuerierConfig,
 }
 
 impl std::fmt::Debug for LiveIcebergSchema {
@@ -78,6 +92,16 @@ impl SchemaProvider for LiveIcebergSchema {
 
         match self.catalog.clone().load_tabular(&ident).await {
             Ok(tabular) => {
+                // Captured (when enabled at all) before `tabular` is moved
+                // into `DataFusionTable::new` below, since that's the only
+                // place the warm-index property check can happen once the
+                // table itself is wrapped. Skipped entirely when disabled,
+                // so a deployment that doesn't use the warm index never
+                // pays for cloning every table's properties on every scan.
+                let properties = self.warm_index.enabled.then(|| match &tabular {
+                    Tabular::Table(t) => t.metadata().properties.clone(),
+                    _ => std::collections::HashMap::new(),
+                });
                 let table = match tabular {
                     Tabular::Table(t) => Arc::new(datafusion_iceberg::DataFusionTable::new(
                         Tabular::Table(t),
@@ -90,6 +114,14 @@ impl SchemaProvider for LiveIcebergSchema {
                         other, None, None, None,
                     ))
                         as Arc<dyn datafusion::datasource::TableProvider>,
+                };
+                let table = match properties {
+                    Some(properties) => crate::query::warm_index::WarmIndexTable::maybe_wrap(
+                        table,
+                        &properties,
+                        warm_index_gate(&self.warm_index),
+                    ),
+                    None => table,
                 };
                 Ok(Some(table))
             }
@@ -108,6 +140,7 @@ impl SchemaProvider for LiveIcebergSchema {
 struct TenantCatalog {
     tenant_slug: String,
     catalog: Arc<dyn iceberg_rust::catalog::Catalog>,
+    warm_index: common::config::WarmIndexQuerierConfig,
 }
 
 impl std::fmt::Debug for TenantCatalog {
@@ -133,6 +166,7 @@ impl CatalogProvider for TenantCatalog {
         Some(Arc::new(LiveIcebergSchema {
             namespace,
             catalog: self.catalog.clone(),
+            warm_index: self.warm_index.clone(),
         }))
     }
 
@@ -635,6 +669,7 @@ impl QuerierFlightService {
             let tenant_catalog = TenantCatalog {
                 tenant_slug: tenant.slug.clone(),
                 catalog: iceberg_catalog.clone(),
+                warm_index: limits.warm_index.clone(),
             };
 
             session_ctx.register_catalog(&tenant.slug, Arc::new(tenant_catalog));
@@ -746,6 +781,7 @@ impl QuerierFlightService {
         let tenant_catalog = TenantCatalog {
             tenant_slug: tenant.slug.clone(),
             catalog: iceberg_catalog,
+            warm_index: self.limits.warm_index.clone(),
         };
         self.session_ctx
             .register_catalog(&tenant.slug, Arc::new(tenant_catalog));

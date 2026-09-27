@@ -2398,6 +2398,9 @@ pub struct QuerierConfig {
     /// `focus` node, then the highest-traffic nodes, and reports how many
     /// it dropped in a warning.
     pub graph_max_nodes: usize,
+    /// Warm-tier containment-index prefilter tuning. See
+    /// `[querier.warm_index]` in `signaldb.dist.toml`.
+    pub warm_index: WarmIndexQuerierConfig,
 }
 
 impl QuerierConfig {
@@ -2440,6 +2443,43 @@ impl Default for QuerierConfig {
             datafusion: QuerierDataFusionConfig::default(),
             correlate_max_rows: 5_000_000,
             graph_max_nodes: 200,
+            warm_index: WarmIndexQuerierConfig::default(),
+        }
+    }
+}
+
+/// Selectivity/cost knobs for the warm containment-index scan prefilter (see
+/// `openspec/changes/otel-native-schema`, spec `typed-attribute-storage`,
+/// "Warm tier"). Has no effect on a table that wasn't written with the warm
+/// index (`[schema].warm_index` on the writer); this only tunes whether and
+/// how aggressively an opted-in table's scans are pruned by it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WarmIndexQuerierConfig {
+    /// Whether the querier probes the warm containment index at all.
+    pub enabled: bool,
+    /// Fewer candidate files than this and probing isn't worth the I/O.
+    pub min_files: usize,
+    /// Files to sample before committing to a full probe.
+    pub sample_files: usize,
+    /// Sample keep ratio above which the predicate isn't selective enough
+    /// to be worth a full probe.
+    pub max_keep_ratio: f64,
+    /// Bound on in-flight per-file probes.
+    pub probe_concurrency: usize,
+}
+
+impl Default for WarmIndexQuerierConfig {
+    fn default() -> Self {
+        // Mirrors querier::query::warm_index::WarmIndexGate::default(); kept
+        // here as plain values since the gate type itself lives in the
+        // querier crate, downstream of this one.
+        Self {
+            enabled: true,
+            min_files: 4,
+            sample_files: 16,
+            max_keep_ratio: 0.5,
+            probe_concurrency: 16,
         }
     }
 }
