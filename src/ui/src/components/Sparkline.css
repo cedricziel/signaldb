@@ -47,7 +47,7 @@
 }
 
 .sparkline-bar.sparkline-tone-error {
-  fill: var(--err);
+  fill: var(--err-bar);
 }
 
 .sparkline-bar.sparkline-tone-accent {

@@ -110,8 +110,12 @@
   margin: 8px 0 4px;
 }
 
-.errors-sparkline-host .sparkline-bar {
-  fill: var(--svc-a);
+.errors-sparkline-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 2px;
+  font: 10px var(--mono);
+  color: var(--dim);
 }
 
 /* Invisible full-height hit targets; focus tints the column rather than
