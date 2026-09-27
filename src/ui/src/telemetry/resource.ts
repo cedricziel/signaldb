@@ -15,6 +15,7 @@ import {
   ATTR_SERVICE_NAME,
   ATTR_SERVICE_NAMESPACE,
   ATTR_SERVICE_VERSION,
+  ATTR_USER_AGENT_ORIGINAL,
 } from "@opentelemetry/semantic-conventions";
 import {
   resolveDeploymentEnvironment,
@@ -46,6 +47,31 @@ export const SERVICE_VERSION =
   typeof __SIGNALDB_UI_VERSION__ !== "undefined"
     ? __SIGNALDB_UI_VERSION__
     : "0.0.0";
+
+/** User-Agent Client Hints (`navigator.userAgentData`): Chromium only and not
+ * in TypeScript's DOM lib. */
+interface NavigatorUAData {
+  readonly brands: ReadonlyArray<{ brand: string; version: string }>;
+  readonly platform: string;
+}
+
+/** `browser.*` keys are literals: their constants live only in the
+ * incubating semconv entry point. */
+function browserIdentityAttributes(): Record<string, unknown> {
+  const uaData = (navigator as Navigator & { userAgentData?: NavigatorUAData })
+    .userAgentData;
+  return {
+    [ATTR_USER_AGENT_ORIGINAL]: navigator.userAgent,
+    ...(uaData
+      ? {
+          "browser.brands": uaData.brands.map(
+            ({ brand, version }) => `${brand} ${version}`,
+          ),
+          "browser.platform": uaData.platform,
+        }
+      : {}),
+  };
+}
 
 /**
  * Build the Resource shared by the trace and log providers.
@@ -83,6 +109,7 @@ export function buildResource(
         : {}),
       "browser.language": navigator.language,
       "browser.mobile": /Mobi/i.test(navigator.userAgent),
+      ...browserIdentityAttributes(),
     }),
   );
 }

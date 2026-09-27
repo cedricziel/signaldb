@@ -4,14 +4,17 @@
 // via outlet context so `/logs`, `/traces`, ... and `/manage` all read/write
 // the same tenant, dataset, and range without re-deriving them.
 
+import { useEffect } from "react";
 import {
   createBrowserRouter,
   createRoutesFromElements,
   Navigate,
   Outlet,
+  matchRoutes,
   Route,
   useLocation,
   useParams,
+  type RouteObject,
 } from "react-router";
 import { App } from "./App";
 import { ConsentView } from "./features/consent/ConsentView";
@@ -30,6 +33,32 @@ import { processorsRoutes } from "./features/processors/routes";
 import { schemaRoutes } from "./features/schema/routes";
 import { useOutletState } from "./lib/outletState";
 import { signalFromParam } from "./lib/urlState";
+import { buildRouteTemplate } from "./telemetry/routeTemplate";
+import { setRouteTemplate } from "./telemetry/routeTemplateLogRecordProcessor";
+
+let routeTree: RouteObject[] | undefined;
+
+/** The telemetry `url.template` for a pathname, from the declared paths of
+ * the routes it matches. */
+export function routeTemplateFor(pathname: string): string | undefined {
+  routeTree ??= createRoutesFromElements(routeElements());
+  const matches = matchRoutes(routeTree, pathname);
+  const leaf = matches?.at(-1);
+  if (!matches || !leaf) return undefined;
+  return buildRouteTemplate(
+    matches.map((m) => m.route.path),
+    leaf.params,
+  );
+}
+
+/** Keeps the telemetry `url.template` in step with the matched route. */
+function RouteTemplateReporter() {
+  const { pathname } = useLocation();
+  useEffect(() => {
+    setRouteTemplate(routeTemplateFor(pathname));
+  }, [pathname]);
+  return null;
+}
 
 /**
  * Pathless root layout above every route, including `/oauth/consent` and
@@ -41,6 +70,7 @@ function RootLayout() {
   return (
     <>
       <UnsavedChangesGuard />
+      <RouteTemplateReporter />
       <Outlet />
     </>
   );

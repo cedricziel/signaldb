@@ -28,9 +28,11 @@ import {
 } from "@opentelemetry/sdk-logs";
 import { resolveExportConfig } from "./runtimeConfig";
 import { RUNTIME_CONFIG, buildResource } from "./resource";
+import { RouteTemplateLogRecordProcessor } from "./routeTemplateLogRecordProcessor";
 import { sanitizeNavigationUrl } from "./sanitizeNavigationUrl";
 import { SessionLogRecordProcessor } from "./sessionLogRecordProcessor";
 import { getDefaultSessionManager } from "./session";
+import { SvgAwareUserActionInstrumentation } from "./userAction";
 
 // Endpoint baked in at build time; the runtime config takes precedence. Same
 // build-time variable as the trace exporter (see index.ts) — one config
@@ -73,6 +75,7 @@ export function initBrowserLogs(): void {
 
   const processors: LogRecordProcessor[] = [
     new SessionLogRecordProcessor(getDefaultSessionManager()),
+    new RouteTemplateLogRecordProcessor(),
   ];
   const exporter = resolveLogExporter();
   if (exporter) {
@@ -118,6 +121,8 @@ export function initBrowserLogs(): void {
       // query results, or accidentally-logged tokens that should not ship to
       // the backend by default.
       new ConsoleInstrumentation({ logMethods: ["error", "warn"] }),
+      // Retargets clicks on SVG icons, which the upstream class drops.
+      new SvgAwareUserActionInstrumentation(),
     ],
   });
 }
