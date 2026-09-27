@@ -1,35 +1,10 @@
 use common::catalog::{Catalog, GrantSource, MembershipRole};
 use common::flight::transport::ServiceCapability;
 use common::service_bootstrap::ServiceType;
-use common::testing::start_container_with_retry;
+use common::testing::{connect_catalog_with_retry, start_container_with_retry};
 use testcontainers_modules::postgres::Postgres;
 use tokio::time::{Duration, sleep};
 use uuid::Uuid;
-
-/// Testcontainers' Postgres wait strategy already blocks `start()` until the
-/// container reports itself ready, but the mapped port can still refuse the
-/// very first connection for a few milliseconds afterward. Retry the actual
-/// connection attempt with a short, bounded backoff instead of guessing at a
-/// fixed startup delay.
-async fn connect_catalog_with_retry(dsn: &str) -> Catalog {
-    const MAX_ATTEMPTS: u32 = 20;
-    const RETRY_DELAY: Duration = Duration::from_millis(100);
-
-    let mut last_err = None;
-    for _ in 0..MAX_ATTEMPTS {
-        match Catalog::new(dsn).await {
-            Ok(catalog) => return catalog,
-            Err(err) => {
-                last_err = Some(err);
-                sleep(RETRY_DELAY).await;
-            }
-        }
-    }
-    panic!(
-        "Failed to create Catalog after {MAX_ATTEMPTS} attempts: {}",
-        last_err.expect("at least one connection attempt was made")
-    );
-}
 
 #[tokio::test]
 async fn test_ingester_operations() {
