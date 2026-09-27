@@ -2718,8 +2718,9 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let request: signaldb_sdk::types::QueryIrRequest = serde_json::from_value(p.query)
-            .map_err(|e| ErrorData::invalid_params(format!("invalid IR document: {e}"), None))?;
+        let request =
+            <signaldb_sdk::types::QueryIrRequest as serde::Deserialize>::deserialize(&p.query)
+                .map_err(|e| ErrorData::invalid_params(query_ir_parse_error(&p.query, e), None))?;
         let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
         let resp = client
             .query_ir()
@@ -4856,6 +4857,34 @@ fn map_query_err(
     with_http_status(mapped, status)
 }
 
+/// The `QueryIrRequest` fields with neither `Option<_>` nor `#[serde(default)]`
+/// (see `src/signaldb-sdk/src/generated.rs`) — a document missing any of
+/// these fails to deserialize.
+const QUERY_IR_REQUIRED_FIELDS: &[&str] = &["irVersion", "from", "range", "result"];
+
+/// Turn a `QueryIrRequest` deserialization failure into a message that names
+/// every missing required top-level field in one shot, not just the first
+/// one serde reports — so a model doesn't burn a call per field.
+fn query_ir_parse_error(query: &serde_json::Value, e: serde_json::Error) -> String {
+    let missing: Vec<&str> = match query.as_object() {
+        Some(obj) => QUERY_IR_REQUIRED_FIELDS
+            .iter()
+            .copied()
+            .filter(|key| !obj.contains_key(*key))
+            .collect(),
+        None => QUERY_IR_REQUIRED_FIELDS.to_vec(),
+    };
+    if missing.is_empty() {
+        format!("invalid IR document: {e}")
+    } else {
+        format!(
+            "invalid IR document: {e} (missing required field{}: {}; see get_skill(\"query-ir\") for the full reference)",
+            if missing.len() == 1 { "" } else { "s" },
+            missing.join(", ")
+        )
+    }
+}
+
 /// Map a schema-API error to an MCP error, keeping the router's typed body
 /// (`error` plus per-path validation `errors`) in the message so a model can
 /// fix an invalid registry document; other failures fall back to
@@ -5018,6 +5047,42 @@ mod tests {
         }));
         let err = flamegraph_or_not_found(response).expect_err("no flamegraph means not found");
         assert!(err.message.contains("not found"), "got {}", err.message);
+    }
+
+    // ---- `query_ir_parse_error` ----
+
+    #[test]
+    fn query_ir_parse_error_names_every_missing_required_field() {
+        let query = serde_json::json!({ "irVersion": 2 });
+        let e = serde_json::from_value::<signaldb_sdk::types::QueryIrRequest>(query.clone())
+            .expect_err("missing fields should fail to parse");
+        let message = query_ir_parse_error(&query, e);
+        for field in ["from", "range", "result"] {
+            assert!(message.contains(field), "expected `{field}` in {message}");
+        }
+        assert!(
+            !message.contains("irVersion"),
+            "irVersion was present, should not be listed as missing: {message}"
+        );
+        assert!(message.contains("query-ir"), "got {message}");
+    }
+
+    #[test]
+    fn query_ir_parse_error_keeps_serdes_message_for_a_bad_type() {
+        let query = serde_json::json!({
+            "irVersion": "not-a-number",
+            "from": "traces",
+            "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+        });
+        let e = serde_json::from_value::<signaldb_sdk::types::QueryIrRequest>(query.clone())
+            .expect_err("wrong type should fail to parse");
+        let serde_message = e.to_string();
+        let message = query_ir_parse_error(&query, e);
+        assert!(
+            message.contains(&serde_message),
+            "expected serde's own message in {message}"
+        );
     }
 
     // ---- `search_trace_groups` (mirrors `src/ui/src/api/traceGroups.ts`) ----
