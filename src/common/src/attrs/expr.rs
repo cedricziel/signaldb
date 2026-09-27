@@ -6,8 +6,9 @@
 
 use datafusion::arrow::datatypes::{DataType, Schema};
 use datafusion::functions::core::expr_fn::{coalesce, get_field};
-use datafusion::logical_expr::{Expr, cast, col};
+use datafusion::logical_expr::{Expr, cast, col, lit};
 use datafusion::prelude::ident;
+use datafusion::scalar::ScalarValue;
 
 use crate::schema::type_authority::CanonicalType;
 use crate::schema::typed_attributes::{has_typed_container, home_column, typed_columns};
@@ -45,6 +46,34 @@ pub fn typed_compat_attr_expr(container_col: &str, key: &str) -> Expr {
         cast(home(CanonicalType::Float64), DataType::Utf8),
         cast(home(CanonicalType::Bool), DataType::Utf8),
     ])
+}
+
+/// The IR's typed-attribute read for a resolved typed-home reference:
+/// `get_field(key)` on each home column, coalesced same-typed (no cast —
+/// every home in `homes` is expected to share one canonical type), with
+/// `promoted` (a `label_<key>` column, only ever set when that type is
+/// `String`) checked first when present. `homes` empty reads as a typed NULL
+/// rather than an error. `prefix` addresses `<prefix><home>` — built with
+/// [`ident`], never [`col`], so a dotted prefix (e.g. a `parent.`-scoped
+/// reference) stays one identifier rather than a table qualifier.
+pub fn typed_home_expr(homes: &[String], promoted: Option<&str>, key: &str, prefix: &str) -> Expr {
+    if homes.is_empty() {
+        return lit(ScalarValue::Utf8(None));
+    }
+    let mut parts: Vec<Expr> = Vec::with_capacity(homes.len() + 1);
+    if let Some(label) = promoted {
+        parts.push(ident(format!("{prefix}{label}")));
+    }
+    parts.extend(
+        homes
+            .iter()
+            .map(|home| get_field(ident(format!("{prefix}{home}")), key)),
+    );
+    if parts.len() == 1 {
+        parts.remove(0)
+    } else {
+        coalesce(parts)
+    }
 }
 
 /// The column names to project for `containers`: each container itself on
@@ -133,6 +162,48 @@ mod tests {
         );
         assert!(
             text.contains("CAST(get_field(parent.span_attributes_int") && text.contains("AS Utf8"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn typed_home_expr_reads_directly_when_there_is_exactly_one_home() {
+        let homes = vec!["span_attributes_int".to_string()];
+        let expr = typed_home_expr(&homes, None, "status", "");
+        assert_eq!(
+            expr.to_string(),
+            r#"get_field(span_attributes_int, Utf8("status"))"#
+        );
+    }
+
+    #[test]
+    fn typed_home_expr_coalesces_multiple_homes_with_the_promoted_label_first() {
+        let homes = vec![
+            "span_attributes_str".to_string(),
+            "resource_attributes_str".to_string(),
+        ];
+        let text = typed_home_expr(&homes, Some("label_host"), "host", "").to_string();
+        assert!(text.starts_with("coalesce("), "{text}");
+        assert!(text.contains("label_host"));
+        assert!(
+            text.find("label_host") < text.find("span_attributes_str"),
+            "{text}"
+        );
+        assert!(text.contains("resource_attributes_str"));
+    }
+
+    #[test]
+    fn typed_home_expr_reads_typed_null_when_no_home_is_committed() {
+        let expr = typed_home_expr(&[], None, "status", "");
+        assert_eq!(expr, lit(ScalarValue::Utf8(None)));
+    }
+
+    #[test]
+    fn typed_home_expr_keeps_a_dotted_prefix_as_one_identifier() {
+        let homes = vec!["span_attributes_str".to_string()];
+        let text = typed_home_expr(&homes, None, "host", "parent.").to_string();
+        assert!(
+            text.contains("get_field(parent.span_attributes_str"),
             "{text}"
         );
     }

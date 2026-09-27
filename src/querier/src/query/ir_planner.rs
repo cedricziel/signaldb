@@ -32,6 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 use common::attrs::expr::is_typed_layout;
 use common::attrs::expr::typed_compat_attr_expr;
+use common::attrs::expr::typed_home_expr;
 use common::profile::aggregate_profiles_to_flamegraph;
 use common::query_ir::{
     Aggregate, ComparisonOp, Correlate, CorrelateTarget, Document, Extract, FieldResolver, Heatmap,
@@ -3096,16 +3097,9 @@ impl Lowering<'_> {
         coalesce(vec![ident(name), self.attr_expr(key)])
     }
 
-    /// Read a [`Resolved::TypedAttribute`]: `get_field(key)` on each home
-    /// column, coalesced same-typed (no cast — every home in `homes` was
-    /// chosen for sharing `value_type`'s canonical type), with `promoted`
-    /// (a `label_<key>` column, only ever set when `value_type` is `String`)
-    /// checked first when present. `homes` empty (no committed type for
-    /// `key` anywhere) reads as a typed NULL rather than an error. `prefix`
-    /// is `""` for the child side and [`PARENT_COLUMN_PREFIX`] for a
-    /// `parent.`-scoped reference, addressing `<prefix><home>` either way —
-    /// built with `ident()`, never `col()`, for the same reason as
-    /// [`Self::attr_expr_with_prefix`].
+    /// Read a [`Resolved::TypedAttribute`]: `prefix` is `""` for the child
+    /// side and [`PARENT_COLUMN_PREFIX`] for a `parent.`-scoped reference —
+    /// see [`typed_home_expr`] for the expression itself.
     fn typed_attribute_expr(
         &self,
         homes: &[String],
@@ -3113,23 +3107,7 @@ impl Lowering<'_> {
         key: &str,
         prefix: &str,
     ) -> Expr {
-        if homes.is_empty() {
-            return lit(ScalarValue::Utf8(None));
-        }
-        let mut parts: Vec<Expr> = Vec::with_capacity(homes.len() + 1);
-        if let Some(label) = promoted {
-            parts.push(ident(format!("{prefix}{label}")));
-        }
-        parts.extend(
-            homes
-                .iter()
-                .map(|home| get_field(ident(format!("{prefix}{home}")), key)),
-        );
-        if parts.len() == 1 {
-            parts.remove(0)
-        } else {
-            coalesce(parts)
-        }
+        typed_home_expr(homes, promoted, key, prefix)
     }
 
     /// Extract one attribute from a named span event (see

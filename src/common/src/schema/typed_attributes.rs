@@ -29,6 +29,23 @@ pub fn home_column(container: &str, canonical: CanonicalType) -> String {
     format!("{container}_{suffix}")
 }
 
+/// The reverse of [`home_column`]: splits a typed-home column name back into
+/// its container prefix and [`CanonicalType`], or `None` if `column` doesn't
+/// end in one of the four home suffixes.
+pub fn canonical_of_home_column(column: &str) -> Option<(&str, CanonicalType)> {
+    for (suffix, canonical) in [
+        ("_str", CanonicalType::String),
+        ("_int", CanonicalType::Int64),
+        ("_double", CanonicalType::Float64),
+        ("_bool", CanonicalType::Bool),
+    ] {
+        if let Some(container) = column.strip_suffix(suffix) {
+            return Some((container, canonical));
+        }
+    }
+    None
+}
+
 /// The binary-residue column of `container`.
 pub fn residue_column(container: &str) -> String {
     format!("{container}_residue")
@@ -107,6 +124,24 @@ pub const RAW_ATTRIBUTE_BAG_IR_TYPE: &str = "map<string,any>";
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn canonical_of_home_column_reverses_home_column_for_every_canonical_type() {
+        for canonical in [
+            CanonicalType::String,
+            CanonicalType::Int64,
+            CanonicalType::Float64,
+            CanonicalType::Bool,
+        ] {
+            let column = home_column("span_attributes", canonical);
+            assert_eq!(
+                canonical_of_home_column(&column),
+                Some(("span_attributes", canonical))
+            );
+        }
+        assert_eq!(canonical_of_home_column("span_attributes_residue"), None);
+        assert_eq!(canonical_of_home_column("trace_id"), None);
+    }
 
     #[test]
     fn typed_columns_name_the_four_homes_then_the_residue() {
