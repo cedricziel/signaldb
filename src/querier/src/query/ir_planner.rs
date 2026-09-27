@@ -30,7 +30,6 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
-use common::attrs::expr::is_typed_layout;
 use common::attrs::expr::typed_compat_attr_expr;
 use common::attrs::expr::typed_home_expr;
 use common::profile::aggregate_profiles_to_flamegraph;
@@ -50,7 +49,7 @@ use datafusion::arrow::array::{
 use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::datatypes::{DataType, Field, IntervalMonthDayNano, Schema, TimeUnit};
 use datafusion::datasource::TableProvider;
-use datafusion::functions::core::expr_fn::{coalesce, get_field, named_struct, with_metadata};
+use datafusion::functions::core::expr_fn::{coalesce, named_struct, with_metadata};
 use datafusion::functions::datetime::expr_fn::date_bin;
 use datafusion::functions::regex::expr_fn::regexp_like;
 use datafusion::functions::string::expr_fn::contains;
@@ -65,7 +64,6 @@ use datafusion::logical_expr::{
     Signature, TypeSignature, Volatility, cast, col, lit, not, try_cast,
 };
 use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_expr::ScalarFunctionExpr;
 use datafusion::physical_expr::expressions::{CastExpr, Column as PhysicalColumn};
 use datafusion::physical_plan::ExecutionPlan;
 use datafusion::physical_plan::projection::ProjectionExec;
@@ -332,11 +330,7 @@ impl SourcePlan {
 /// full raw schema unchanged — `SchemaResolver`'s promoted-attribute
 /// discovery depends on seeing every column the table actually has, not
 /// just `row_defaults` — so the projection-then-union step only runs when
-/// there's more than one table to reconcile onto a common schema. Its own
-/// scan still runs through [`coerce_legacy_containers`], so a legacy
-/// Utf8-JSON attribute container (a table created before the Map-typed
-/// migration) presents as a typed map the same way a *union* branch's would
-/// (#1206) — same column set and order, only a container's type changes.
+/// there's more than one table to reconcile onto a common schema.
 async fn scan_source_tables(
     ctx: &SessionContext,
     tenant_slug: &str,
@@ -355,23 +349,21 @@ async fn scan_source_tables(
         0 => Ok(None),
         1 => {
             // Also reached for `metrics` when only one of gauge/sum has been
-            // ingested yet — the lone table still gets legacy-container
-            // coercion here, not just genuinely single-table sources.
+            // ingested yet.
             let (table_ref, provider) = providers.remove(0);
-            let provider = coerce_legacy_containers(provider, source)?;
             Ok(Some(scan_provider(ctx, table_ref, provider)?))
         }
         _ => {
             // Tables created at different times can disagree on a column's
-            // physical type — most commonly an attribute container that is
-            // a legacy JSON string on one table and a typed
-            // `Map<Utf8,Utf8>` on the other. UNION requires identical types
-            // per position, so pick one target type per column and coerce
-            // each mismatching table's *scan* to it (a wrapping provider,
+            // physical type or order — most commonly the typed-attribute
+            // migration flipping which columns an attribute container
+            // expands to. UNION requires identical types per position, so
+            // pick one target type per column and coerce each mismatching
+            // table's *scan* to it (a wrapping provider,
             // not a projection expression: DataFusion 54's
             // `optimize_projections` mis-orders the pushed-down projections
             // of a UNION whose inputs mix columns and expressions) (#1206).
-            let columns = union_columns(&providers, source)?;
+            let columns = union_columns(source);
             let column_refs: Vec<&str> = columns.iter().map(String::as_str).collect();
             let targets = union_target_types(&providers, &column_refs);
             let mut union: Option<DataFrame> = None;
@@ -442,63 +434,14 @@ async fn scan_parent_traces(
             table,
         } => TableReference::full(catalog, schema, format!("{table}__correlate_parent")),
     };
-    // Same coercion the child scan gets in `scan_source_tables`'s
-    // single-table branch: a legacy Utf8-JSON attribute container (a table
-    // created before the Map-typed migration) must present as a typed map
-    // here too, or a `parent.span.<key>`/`parent.resource.<key>` attribute
-    // reference silently reads nothing instead of erroring or matching.
-    let provider = coerce_legacy_containers(provider, source)?;
     Ok(Some(scan_provider(ctx, parent_ref, provider)?))
 }
 
-/// The columns [`scan_source_tables`]'s union branch scans, in order: plain
-/// `source.row_defaults` on the legacy layout, or `row_defaults` with every
-/// attribute container expanded to its five typed columns on the typed
-/// layout. All of `source.tables` must agree on layout — the typed-layout
-/// cutover flips every table at once (module doc comment), so a union
-/// spanning both is a schema mismatch this planner does not have a rewrite
-/// for, and is rejected up front rather than left for `CoercedTableProvider`
-/// to fail on a missing column.
-fn union_columns(
-    providers: &[(datafusion::common::TableReference, Arc<dyn TableProvider>)],
-    source: &SourcePlan,
-) -> Result<Vec<String>, QuerierError> {
-    let layout_name = |typed: bool| {
-        if typed {
-            "typed layout"
-        } else {
-            "legacy layout"
-        }
-    };
-    let mut layouts = providers.iter().map(|(table_ref, p)| {
-        let schema = p.schema();
-        let typed = source
-            .containers
-            .iter()
-            .any(|c| is_typed_layout(&schema, c));
-        (table_ref.to_string(), typed)
-    });
-    let (first_table, typed) = layouts.next().ok_or_else(|| {
-        QuerierError::QueryFailed(datafusion::error::DataFusionError::Plan(
-            "union has no tables to scan".to_string(),
-        ))
-    })?;
-    for (table, other_typed) in layouts {
-        if other_typed != typed {
-            return Err(QuerierError::QueryFailed(
-                datafusion::error::DataFusionError::Plan(format!(
-                    "source '{}' cannot union table '{first_table}' ({}) with table '{table}' ({}) — a typed-layout cutover flips every table together",
-                    source.name,
-                    layout_name(typed),
-                    layout_name(other_typed),
-                )),
-            ));
-        }
-    }
-    if !typed {
-        return Ok(source.row_defaults.iter().map(|c| c.to_string()).collect());
-    }
-    Ok(source
+/// The columns [`scan_source_tables`]'s union branch scans, in order:
+/// `source.row_defaults` with every attribute container expanded to its five
+/// typed columns.
+fn union_columns(source: &SourcePlan) -> Vec<String> {
+    source
         .row_defaults
         .iter()
         .flat_map(|&c| {
@@ -508,12 +451,10 @@ fn union_columns(
                 vec![c.to_string()]
             }
         })
-        .collect())
+        .collect()
 }
 
-/// The type each unioned column should have: the first `Map` seen when any
-/// table stores the column as a map (so legacy JSON-string tables coerce up
-/// to the typed form), otherwise the first table's type.
+/// The type each unioned column should have: the first table's type.
 fn union_target_types(
     providers: &[(datafusion::common::TableReference, Arc<dyn TableProvider>)],
     columns: &[&str],
@@ -521,105 +462,22 @@ fn union_target_types(
     columns
         .iter()
         .map(|c| {
-            let types: Vec<DataType> = providers
-                .iter()
-                .filter_map(|(_, p)| {
-                    p.schema()
-                        .field_with_name(c)
-                        .ok()
-                        .map(|f| f.data_type().clone())
-                })
-                .collect();
-            types
-                .iter()
-                .find(|t| matches!(t, DataType::Map(_, _)))
-                .or(types.first())
-                .cloned()
+            providers.iter().find_map(|(_, p)| {
+                p.schema()
+                    .field_with_name(c)
+                    .ok()
+                    .map(|f| f.data_type().clone())
+            })
         })
         .collect()
 }
 
-/// The canonical `Map<Utf8,Utf8>` shape a legacy JSON-string container
-/// coerces up to when there is no *other* table's own map type to borrow
-/// (unlike [`union_target_types`], which prefers whichever real table
-/// already stores the column as a map — a single-table source has no such
-/// reference). `JsonToMapUdf::invoke_with_args` derives its `MapBuilder`'s
-/// key/value field names from whatever `DataType::Map` it is given, so this
-/// shape is a free choice, not a contract with any other table's schema.
-fn utf8_map_type() -> DataType {
-    let entries = Field::new(
-        "entries",
-        DataType::Struct(
-            vec![
-                Field::new("keys", DataType::Utf8, false),
-                Field::new("values", DataType::Utf8, true),
-            ]
-            .into(),
-        ),
-        false,
-    );
-    DataType::Map(Arc::new(entries), false)
-}
-
-/// Coerce a single-table source's legacy JSON-string attribute containers
-/// (`source.containers`) up to a typed `Map<Utf8,Utf8>`, so `Lowering::attr_expr`'s
-/// `get_field` works uniformly regardless of which schema generation wrote
-/// the table. A table created before the Map-typed-attribute migration
-/// stores `log_attributes`/`span_attributes`/etc. as a flat JSON string —
-/// real, currently-reachable data (`schemas.toml`'s physical-v1/v2 history;
-/// Iceberg never rewrites already-written files) — and `get_field` on a
-/// `Utf8` column is a hard DataFusion execution error, never a graceful
-/// IR-level rejection, since the document itself is perfectly valid.
-///
-/// Reuses [`CoercedTableProvider`]/[`JsonToMapUdf`], the same machinery
-/// [`scan_source_tables`]'s union branch already applies across several
-/// tables (#1206) — here there is exactly one table, so `wrap` is given its
-/// own full column list (order and count unchanged, per this function's
-/// caller's doc comment) rather than the union's `row_defaults` subset.
-/// Every operator (`eq`, `ne`, `regex`, `contains`, `exists`, Kleene
-/// absent-key semantics) works the same as it does against a genuinely
-/// typed table, strictly better than the old per-language lowerings'
-/// substring-match approximation for this same legacy shape. Pushdown on
-/// the coerced column is disabled by the same `supports_filters_pushdown`
-/// guard the union path already has — acceptable for the legacy tables this
-/// reaches, which have no bloom-filtered attribute column to prune on
-/// either way.
-fn coerce_legacy_containers(
-    provider: Arc<dyn TableProvider>,
-    source: &SourcePlan,
-) -> Result<Arc<dyn TableProvider>, QuerierError> {
-    let fields = provider.schema().fields().clone();
-    let columns: Vec<&str> = fields.iter().map(|f| f.name().as_str()).collect();
-    let targets: Vec<Option<DataType>> = fields
-        .iter()
-        .map(|f| {
-            let is_legacy_container =
-                source.containers.contains(&f.name().as_str()) && is_utf8_variant(f.data_type());
-            is_legacy_container.then(utf8_map_type)
-        })
-        .collect();
-    CoercedTableProvider::wrap(provider, &columns, &targets)
-}
-
-/// Whether `dt` is one of Arrow's three UTF-8 string representations — the
-/// legacy shape a not-yet-migrated attribute container physically has,
-/// checked here and by [`CoercedTableProvider::scan`]'s own cast-vs-UDF
-/// choice.
-fn is_utf8_variant(dt: &DataType) -> bool {
-    matches!(
-        dt,
-        DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
-    )
-}
-
 /// A [`TableProvider`] that presents `inner` as an explicit column list, in
-/// that order, with any column coerced to an explicit target type — a legacy
-/// JSON-string attribute container becomes a typed `Map<Utf8,Utf8>` (via
-/// [`JsonToMapUdf`]), anything else is cast. Two callers pick that column
-/// list and those targets differently; see `wrap`'s doc comment.
+/// that order, with any column cast to an explicit target type — used by
+/// `scan_source_tables`'s union branch (see `wrap`'s doc comment) so that
+/// every union input's scan presents an identical schema.
 ///
-/// For the union caller (`scan_source_tables`'s multi-table branch):
-/// presenting the *shape*, not just the types, is what makes a multi-table
+/// Presenting the *shape*, not just the types, is what makes a multi-table
 /// source safe to union. The tables of one source disagree on column order and
 /// count as well as on type — `metrics_sum` carries `aggregation_temporality`
 /// and `is_monotonic` in the middle, so every column after them sits at a
@@ -640,11 +498,6 @@ fn is_utf8_variant(dt: &DataType) -> bool {
 /// optimizer rewrite can misalign them. Coercing types alone (#1206) was the
 /// same idea one step short of this.
 ///
-/// For the single-table caller (`coerce_legacy_containers`): there is no
-/// sibling branch to align with, so this instead closes the gap between what
-/// `Lowering::attr_expr` assumes (every attribute container is a typed map)
-/// and what a table written before the Map migration actually has on disk.
-///
 /// Filters that only touch un-coerced columns are still offered to the inner
 /// provider, so time-range and partition pruning survive.
 #[derive(Debug)]
@@ -661,23 +514,16 @@ struct CoercedTableProvider {
 }
 
 impl CoercedTableProvider {
-    /// Present `inner` as `columns`, coerced to `targets`. Two callers:
+    /// Present `inner` as `columns`, coerced to `targets` —
     /// `scan_source_tables`'s union branch, with `columns` the union's
     /// `row_defaults` subset (needed so every branch's `TableScan` has an
-    /// identical schema); and its single-table branch via
-    /// `coerce_legacy_containers`, with `columns` the provider's own full
-    /// column list (`row_defaults` would silently narrow the scan a
-    /// single-table source is documented to keep unnarrowed) and only the
-    /// legacy containers actually present in `targets`.
+    /// identical schema).
     ///
     /// Returns `inner` untouched only when it already *is* that schema: same
-    /// columns, same order, same types. For the union caller, in practice no
-    /// real table matches — `row_defaults` is a strict subset of a physical
-    /// schema, which also carries `date_day`/`hour` and the rest — so this
-    /// is an identity check rather than an optimization for any known
-    /// caller there; for the single-table caller, this *is* the common,
-    /// optimizing case — a table already storing every container as a
-    /// typed map returns unwrapped.
+    /// columns, same order, same types. In practice no real table matches —
+    /// `row_defaults` is a strict subset of a physical schema, which also
+    /// carries `date_day`/`hour` and the rest — so this is an identity check
+    /// rather than an optimization for any known caller.
     fn wrap(
         inner: Arc<dyn TableProvider>,
         columns: &[&str],
@@ -794,7 +640,6 @@ impl TableProvider for CoercedTableProvider {
             .inner
             .scan(state, Some(&inner_projection), filters, limit)
             .await?;
-        let inner_schema = inner_plan.schema();
         // The inner plan already yields the selected columns in the selected
         // order; a cast is only needed where the type still differs.
         if !selected.iter().any(|i| self.is_coerced(*i)) {
@@ -807,124 +652,11 @@ impl TableProvider for CoercedTableProvider {
             let expr: Arc<dyn PhysicalExpr> = match self.coerced.iter().find(|(i, _)| i == src_idx)
             {
                 None => column,
-                Some((_, target)) => {
-                    let actual = inner_schema.field(out_idx).data_type();
-                    if is_utf8_variant(actual) && matches!(target, DataType::Map(_, _)) {
-                        let udf = Arc::new(ScalarUDF::from(JsonToMapUdf::new(target.clone())));
-                        Arc::new(ScalarFunctionExpr::try_new(
-                            udf,
-                            vec![column],
-                            &inner_schema,
-                            Arc::new(state.config_options().clone()),
-                        )?)
-                    } else {
-                        Arc::new(CastExpr::new(column, target.clone(), None))
-                    }
-                }
+                Some((_, target)) => Arc::new(CastExpr::new(column, target.clone(), None)),
             };
             exprs.push((expr, name));
         }
         Ok(Arc::new(ProjectionExec::try_new(exprs, inner_plan)?))
-    }
-}
-
-/// `ir_json_to_map(Utf8) -> Map<Utf8,Utf8>`: decodes a legacy JSON-string
-/// attribute document into the typed map form (non-string JSON values are
-/// stringified), producing
-/// exactly the `target` map type — matching a sibling table's own map
-/// (`union_target_types`) when unioning several tables, or a canonical
-/// `Map<Utf8,Utf8>` (`utf8_map_type`) when there is no sibling to match, only
-/// `Lowering::attr_expr`'s own assumption that every container is a map.
-#[derive(Debug, PartialEq, Eq, Hash)]
-struct JsonToMapUdf {
-    signature: Signature,
-    target: DataType,
-}
-
-impl JsonToMapUdf {
-    fn new(target: DataType) -> Self {
-        Self {
-            signature: Signature::one_of(
-                vec![
-                    TypeSignature::Exact(vec![DataType::Utf8]),
-                    TypeSignature::Exact(vec![DataType::LargeUtf8]),
-                    TypeSignature::Exact(vec![DataType::Utf8View]),
-                ],
-                Volatility::Immutable,
-            ),
-            target,
-        }
-    }
-}
-
-impl ScalarUDFImpl for JsonToMapUdf {
-    fn name(&self) -> &str {
-        "ir_json_to_map"
-    }
-    fn signature(&self) -> &Signature {
-        &self.signature
-    }
-    fn return_type(&self, _arg_types: &[DataType]) -> datafusion::error::Result<DataType> {
-        Ok(self.target.clone())
-    }
-    fn invoke_with_args(
-        &self,
-        args: ScalarFunctionArgs,
-    ) -> datafusion::error::Result<ColumnarValue> {
-        use datafusion::arrow::array::{MapBuilder, MapFieldNames};
-        let num_rows = args.number_rows;
-        let docs = BodyArg::try_from(&args.args[0])?;
-        let DataType::Map(entry_field, _) = &self.target else {
-            return Err(datafusion::error::DataFusionError::Internal(
-                "ir_json_to_map target is not a map".into(),
-            ));
-        };
-        let DataType::Struct(kv) = entry_field.data_type() else {
-            return Err(datafusion::error::DataFusionError::Internal(
-                "ir_json_to_map map entries are not a struct".into(),
-            ));
-        };
-        let names = MapFieldNames {
-            entry: entry_field.name().clone(),
-            key: kv[0].name().clone(),
-            value: kv[1].name().clone(),
-        };
-        let mut builder = MapBuilder::new(Some(names), StringBuilder::new(), StringBuilder::new());
-        for i in 0..num_rows {
-            match docs
-                .value_at(i)
-                .map(serde_json::from_str::<serde_json::Value>)
-            {
-                Some(Ok(serde_json::Value::Object(map))) => {
-                    for (k, v) in map {
-                        builder.keys().append_value(k);
-                        match v {
-                            serde_json::Value::String(s) => builder.values().append_value(s),
-                            other => builder.values().append_value(other.to_string()),
-                        }
-                    }
-                    builder.append(true)?;
-                }
-                _ => builder.append(false)?,
-            }
-        }
-        let built = builder.finish();
-        // MapBuilder fixes its own entry-struct nullability; rebuild against
-        // the exact target field so the UNION sees identical types.
-        let (_, offsets, entries, nulls, ordered) = built.into_parts();
-        let entries = datafusion::arrow::array::StructArray::try_new(
-            kv.clone(),
-            entries.columns().to_vec(),
-            None,
-        )?;
-        let array = datafusion::arrow::array::MapArray::try_new(
-            entry_field.clone(),
-            offsets,
-            entries,
-            nulls,
-            ordered,
-        )?;
-        Ok(ColumnarValue::Array(Arc::new(array)))
     }
 }
 
@@ -1762,7 +1494,7 @@ pub(crate) enum AttributeReads {
 
 /// Whether a [`PlanRequest`] wants a typed-layout table's committed
 /// attribute types resolved before planning. Every compat lowering
-/// (LogQL/TraceQL) and every differential/planner test — anything built via
+/// (LogQL/TraceQL) and every planner test — anything built via
 /// [`PlanRequest::new`] — stays `CompatOnly`: they already read a typed
 /// table's columns directly (see `has_typed_container`) without needing the
 /// per-key canonical types. Only [`IrService::query`]'s `POST /api/v1/query`
@@ -1779,7 +1511,7 @@ pub(crate) enum AttributeTypeRequest {
 /// [`plan_document`]'s request-scoped parameters — tenant/dataset scope, the
 /// query clock, the `correlate` row cap, and the attribute-type request —
 /// bundled so a caller that never reaches a `correlate` stage or a typed
-/// table (every compat lowering, every differential/predicate test) can
+/// table (every compat lowering, every planner test) can
 /// build one with [`PlanRequest::new`] and not spell out either default at
 /// every call site.
 pub(crate) struct PlanRequest<'a> {
@@ -3043,7 +2775,7 @@ impl Lowering<'_> {
             .containers
             .iter()
             .map(|c| format!("{prefix}{c}"))
-            .filter(|c| self.schema_cols.iter().any(|s| s == c) || self.is_typed_container(c))
+            .filter(|c| self.is_typed_container(c))
             .map(|c| self.attr_expr_for_container(&c, key))
             .collect();
         match parts.len() {
@@ -3054,16 +2786,12 @@ impl Lowering<'_> {
     }
 
     /// Read `key` from `container_col` (already prefixed for the parent
-    /// side, if applicable): the legacy `get_field` extraction when the
-    /// scanned schema still has `container_col` as a single map column, the
-    /// typed-layout coalesce (`typed_compat_attr_expr`) when it's been
-    /// rewritten onto the typed layout instead, or a NULL literal when
-    /// neither is present (a qualifier for a container this source/schema
+    /// side, if applicable) through the typed-layout coalesce
+    /// (`typed_compat_attr_expr`), or a NULL literal when the scanned schema
+    /// has no such container (a qualifier for a container this source
     /// doesn't have).
     fn attr_expr_for_container(&self, container_col: &str, key: &str) -> Expr {
-        if self.schema_cols.iter().any(|s| s == container_col) {
-            get_field(ident(container_col), key)
-        } else if self.is_typed_container(container_col) {
+        if self.is_typed_container(container_col) {
             typed_compat_attr_expr(container_col, key)
         } else {
             lit(ScalarValue::Utf8(None))
