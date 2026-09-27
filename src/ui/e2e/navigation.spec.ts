@@ -254,5 +254,5 @@ test("sidebar → Real users → Overview renders", async ({ page }) => {
   ).toBeVisible();
   await page.getByRole("button", { name: "Open Setup" }).click();
   await expect(page).toHaveURL(/\/rum\/setup$/);
-  await expect(page.getByText("1. Install the SDK")).toBeVisible();
+  await expect(page.getByText("Install the SDK")).toBeVisible();
 });
