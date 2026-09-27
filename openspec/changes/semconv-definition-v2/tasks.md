@@ -15,16 +15,16 @@
 - [ ] 2.4 Verify `signaldb schema` upload in the CLI accepts a `definition/2` file (add or extend a CLI test)
 - [ ] 2.5 Document `definition/2` uploads in `docs/users/schema-registry.md` (route via the docs skill). Verify the example uploads cleanly against a local dev server
 
-## 3. Core semconv pin to 1.44.0
+## 3. Core semconv pin to 1.44.0 (optional; only if GenAI refs something 1.43.0 lacks)
 
 - [ ] 3.1 Bump `common::self_monitoring::SEMCONV_SCHEMA_URL` and the `otel/registry/manifest.yaml` dependency to 1.44.0, run `cargo xtask vendor-semconv`, and fix what the bump breaks. Verify with `cargo test -p common` and the CI `weaver registry check`
 
-## 4. Bundle otel-genai (blocked until upstream tags a release)
+## 4. Bundle otel-genai at a pinned commit
 
-- [ ] 4.1 Add a GenAI target to `cargo xtask vendor-semconv` that clones `semantic-conventions-genai` at a pinned tag into `vendor/otel-semconv-genai/<version>/` with `VERSION`, `LICENSE` and a README. Verify by running it and checking the tree
+- [ ] 4.1 Add `cargo xtask vendor-semconv-genai <sha>` that clones `semantic-conventions-genai` at a pinned commit into `vendor/otel-semconv-genai/<sha>/` with `VERSION`, `LICENSE` and a README, and vendor `e57c543`. Verify by running it and checking the tree
 - [ ] 4.2 Add failing tests in `src/common/tests/schema_registry.rs`: bundled registries list `otel`, `otel-genai` and `signaldb`; `otel-genai` rejects mutation; `gen_ai.agent.id` resolves primary `otel-genai` (not deprecated) with `otel` as an alternative; a custom registry named `otel-genai` is rejected. Verify with `cargo test -p common --test schema_registry`
-- [ ] 4.3 Bundle `otel-genai` in `src/common/build.rs` (resolved against `otel`), insert it into the precedence order and the reserved-namespace list in `common::schema_registry`, and fail the build when its core dependency differs from the core pin. Verify with the 4.2 tests plus a `build.rs` check test
-- [ ] 4.4 Reconcile with the `gen_ai.agent` entity from change `genai-agent-entity`: drop it if upstream now defines an agent entity, otherwise keep it. Verify with `cargo test -p common --test schema_registry`
+- [ ] 4.3 Bundle `otel-genai` in `src/common/build.rs` (resolved against `otel`), insert it into the precedence order and the reserved-namespace list in `common::schema_registry`, and fold `otel/registry-genai/` into the bundled `signaldb` registry (resolved against `otel` and `otel-genai`). Verify with the 4.2 tests
+- [ ] 4.4 Create `otel/registry-genai/` (manifest depending on GenAI at the pinned commit) and add a Weaver v0.26.1 `registry check` step for it in `.github/workflows/ci.yml`. Verify by running the same command locally
 - [ ] 4.5 Update `docs/users/schema-registry.md` and the `multi-tenancy`/`configuration` skills only if they list bundled or reserved namespaces (route via the docs skill). Verify with a grep for `otel` and `signaldb` namespace lists
 
 ## 5. Integration check

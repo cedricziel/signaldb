@@ -12,12 +12,14 @@ producers of telemetry, so this is worth fixing now.
 
 ## What Changes
 
-- Add a `gen_ai.agent` entity to SignalDB's own bundled registry (`otel/registry/`).
+- Add a `gen_ai.agent` entity to SignalDB's own bundled registry, defined in a new
+  `otel/registry-genai/` directory whose manifest depends on the GenAI conventions.
   `gen_ai.agent.id` is the identifying attribute. `gen_ai.agent.name`,
   `gen_ai.agent.description` and `gen_ai.agent.version` are descriptive.
-- The entity refers to the attributes already in the bundled `otel` registry. It does
-  not redefine them, so attribute lookups keep reporting their upstream deprecation
-  note until the GenAI conventions are vendored (see change `semconv-definition-v2`).
+- The entity refers to the GenAI attribute definitions that `semconv-definition-v2`
+  bundles as `otel-genai`. It does not redefine them, and it ships in or after that
+  change. The deprecated copies in core semconv can't be used: upstream marks them
+  `dependency_resolution: exclude`, so Weaver rejects any `ref` to them.
 - The entity's brief states the upstream meaning of `gen_ai.agent.id`: the
   provider-assigned, stable identifier of a hosted agent (e.g. a Bedrock agent ARN),
   not an in-memory instance id.
@@ -38,10 +40,13 @@ _None._
 
 ## Impact
 
-- `otel/registry/signaldb.yaml`: one new `entity` group.
+- New `otel/registry-genai/` (manifest + one `entity` group), folded into the bundled
+  `signaldb` registry by `src/common/build.rs`, and Weaver-checked in CI.
+- Depends on `semconv-definition-v2` (the `definition/2` parser and the vendored
+  GenAI conventions).
 - `common` crate: bundled snapshot (built by `src/common/build.rs`) now contains the
   entity; new assertion in `src/common/tests/schema_registry.rs`.
-- CI `weaver registry check` over `otel/registry/` must still pass.
+- The self-monitoring registry (`otel/registry/`) and its live-check are unchanged.
 - Docs: `docs/users/schema-registry.md` lists the entity.
 - No change to OTLP ingest, query surfaces, Flight schemas, WAL or Iceberg layout.
   Not breaking.

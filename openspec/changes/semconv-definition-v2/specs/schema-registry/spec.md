@@ -55,8 +55,8 @@ wire key, entity name, or metric name without conflict. The namespaces `otel`,
 SignalDB SHALL ship the OpenTelemetry semantic conventions as the bundled
 registry `otel` at the semantic-conventions version pinned for self-monitoring
 (`common::self_monitoring::SEMCONV_SCHEMA_URL`), the OpenTelemetry GenAI semantic
-conventions as the bundled registry `otel-genai` at a pinned release whose declared
-core semantic-conventions dependency equals that pin, and SignalDB's own conventions
+conventions as the bundled registry `otel-genai` at a pinned upstream commit, and
+SignalDB's own conventions
 (`otel/registry/`) as the bundled registry `signaldb`. Bundled registries SHALL be
 visible to every tenant, SHALL be available without any tenant configuration, and
 SHALL reject create, replace, and delete requests.
@@ -81,10 +81,10 @@ SHALL reject create, replace, and delete requests.
   self-monitoring pin
 - **THEN** the build/CI check fails, so the two versions cannot drift
 
-#### Scenario: GenAI conventions depend on the pinned core version
+#### Scenario: Vendored GenAI conventions match their pin
 
-- **WHEN** the vendored GenAI conventions declare a core semantic-conventions
-  dependency that differs from the self-monitoring pin
+- **WHEN** the vendored GenAI conventions differ from the pinned upstream commit,
+  or any of their references does not resolve against the bundled `otel` registry
 - **THEN** the build/CI check fails
 
 #### Scenario: Moved GenAI attributes resolve to their current definition

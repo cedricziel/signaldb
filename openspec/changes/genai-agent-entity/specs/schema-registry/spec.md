@@ -25,8 +25,9 @@ identifier and is not an in-memory instance id.
 #### Scenario: Agent attributes report their entity role
 
 - **WHEN** a client resolves attribute `gen_ai.agent.id`
-- **THEN** the hit lists `gen_ai.agent` among the entities in which it plays a role,
-  with role `identifying`
+- **THEN** the primary hit is the GenAI conventions' definition, and it lists
+  `gen_ai.agent` among the entities in which it plays a role, with role
+  `identifying`
 
 #### Scenario: Tenant can extend the agent entity
 

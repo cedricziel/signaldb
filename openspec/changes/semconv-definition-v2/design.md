@@ -20,7 +20,7 @@ release tag. Core semconv v1.44.0 still uses v1 `groups`.
 **Goals:**
 - Read `definition/2` without changing the resolved model or any API response shape.
 - Make unreadable model files loud.
-- Bundle GenAI as its own registry once a tagged release exists.
+- Bundle GenAI as its own registry, pinned to an upstream commit.
 
 **Non-Goals:**
 - Writing `definition/2` back out. We normalise to `groups`.
@@ -57,13 +57,24 @@ release tag. Core semconv v1.44.0 still uses v1 `groups`.
   Precedence is custom → `signaldb` → `otel-genai` → `otel`, so current definitions
   beat the shells. `otel-genai` is resolved with `otel` as its dependency, mirroring
   upstream's manifest.
-- **Version coupling is enforced.** `build.rs` reads the vendored GenAI manifest's
-  core dependency and fails when it differs from the core pin. Bumping core to 1.44.0
-  is the first task and goes through the existing vendoring flow.
-- **Vendoring.** `cargo xtask vendor-semconv` gains a GenAI target that clones
-  `semantic-conventions-genai` at a pinned tag into
-  `vendor/otel-semconv-genai/<version>/`, with a `VERSION` file, `LICENSE` and a
-  README like the core vendor tree.
+- **Pin a commit, not a tag.** Upstream has no release. `cargo xtask
+  vendor-semconv-genai <sha>` clones `semantic-conventions-genai` at that commit into
+  `vendor/otel-semconv-genai/<sha>/`, with a `VERSION` file, `LICENSE` and a README
+  like the core vendor tree. The registry version is the short SHA. Moving to a
+  tag once one exists is a re-vendor.
+- **No core-version coupling.** GenAI declares core v1.44.0, and we pin v1.43.0.
+  `otel-genai` is resolved against the bundled 1.43.0 `otel`, and `build.rs` fails on
+  any unresolved ref. That is the check that matters to SignalDB. Weaver (CI) checks
+  SignalDB's GenAI-dependent registry against 1.44.0, pulled in transitively.
+  *Alternative:* bump the core pin first. Deferred, because it changes
+  self-monitoring semconv for no gain here.
+- **The self-monitoring registry does not depend on GenAI.** A spike showed Weaver
+  live-check (`--include-unreferenced`) fails once core's `gen_ai.*` shells and
+  GenAI's real definitions load together: 58 "declared multiple times" errors,
+  upstream's overlap and not ours. SignalDB-owned groups that need GenAI live in
+  `otel/registry-genai/`, with its own manifest depending on GenAI at the pinned
+  commit, and a Weaver v0.26.1 `registry check` step in CI. `build.rs` folds that
+  directory into the bundled `signaldb` registry.
 - **Reconcile with `genai-agent-entity`.** If the vendored release defines its own
   agent entity, remove the `signaldb` one in the same change. If it doesn't, keep
   ours, and its refs start resolving to the `otel-genai` attributes because
@@ -77,11 +88,11 @@ release tag. Core semconv v1.44.0 still uses v1 `groups`.
   fixture corpus of real upstream files under `src/schema-model/tests/fixtures/`,
   and run `weaver registry check` on the same fixtures in CI
   (`scripts/weaver-check-fixtures.sh`) with an image that supports the format.
-- [No upstream release for a long time] → Task groups 1–3 ship on their own. Group
-  4 is gated on a tag and stays unchecked until then. Do not vendor an untagged
-  commit.
-- [Core pin bump to 1.44.0 changes self-monitoring semconv] → Do it as its own
-  commit, with the existing registry-pin and semconv tests as the gate.
+- [Pinned commit is not a release, and upstream may rename things before tagging] →
+  Re-vendoring is one xtask run. Tests pin the definitions we depend on
+  (`gen_ai.agent.*`), so a breaking re-vendor fails loudly.
+- [GenAI refs a core attribute added after 1.43.0] → `build.rs` fails naming the
+  ref. Then bump the core pin (task group 3) before re-vendoring.
 - [Custom registries round-trip in a different layout than uploaded] → This is
   accepted and documented. The resolved content is identical.
 

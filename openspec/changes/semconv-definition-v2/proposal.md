@@ -23,13 +23,14 @@ Weaver is moving to.
   skipped.
 - Tenant custom registries may be uploaded in either layout. They are stored and
   returned in the normalised form.
-- Once upstream tags a release, vendor `semantic-conventions-genai` and ship it as a
-  new bundled, read-only registry `otel-genai`. It takes precedence over `otel`, so
+- Vendor `semantic-conventions-genai` at a pinned commit (upstream has no release
+  tag yet) and ship it as a new bundled, read-only registry `otel-genai`. It takes precedence over `otel`, so
   its current definitions win over the deprecated shells. Those shells stay
   available as alternatives.
 - The namespace `otel-genai` becomes reserved.
-- `cargo xtask vendor-semconv` learns to vendor the GenAI repo at a pinned tag, and
-  the build fails if its declared core-semconv dependency differs from the core pin.
+- `cargo xtask vendor-semconv-genai` vendors the GenAI repo at a pinned commit. The
+  build fails if any GenAI reference does not resolve against the bundled `otel`
+  registry.
 
 ## Capabilities
 
@@ -50,9 +51,10 @@ _None._
 - `common` crate: `build.rs` bundles a third registry, the precedence order in
   `common::schema_registry`, and reserved-namespace validation.
 - `xtask`: vendoring for the GenAI repo. New `vendor/otel-semconv-genai/` tree.
-- Upstream GenAI currently depends on core semconv v1.44.0, and we pin v1.43.0. The
-  vendoring step needs the core pin (`common::self_monitoring::SEMCONV_SCHEMA_URL`)
-  bumped to match first.
+- Upstream GenAI declares core semconv v1.44.0, and we pin v1.43.0. SignalDB resolves
+  `otel-genai` against the bundled 1.43.0 `otel`. Weaver checks our GenAI-dependent
+  registry against 1.44.0, pulled in through GenAI. Bumping the core pin is a
+  separate, optional step.
 - Router HTTP API: the schema-registry upload accepts the new layout. The OpenAPI
   request description changes, but the response shapes do not.
 - CI: the `weaver registry check` image must understand `definition/2` (Weaver
