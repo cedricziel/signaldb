@@ -279,7 +279,9 @@ fn every_surface_routes_requests_through_the_retrying_client() {
 
     let client_ts = std::fs::read_to_string(root.join("src/ui/src/api/client.ts")).unwrap();
     assert!(
-        client_ts.contains("fetch: retryingFetch"),
+        client_ts
+            .lines()
+            .any(|line| line.contains("fetch:") && line.contains("retryingFetch")),
         "src/ui/src/api/client.ts must install retryingFetch on the generated client"
     );
     let mut api_files = vec![root.join("src/ui/src/api")];
