@@ -32,6 +32,7 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 use common::attrs::expr::typed_compat_attr_expr;
 use common::attrs::expr::typed_home_expr;
+use common::attrs::expr::typed_home_filter_expr;
 use common::profile::aggregate_profiles_to_flamegraph;
 use common::query_ir::{
     Aggregate, ComparisonOp, Correlate, CorrelateTarget, Document, Extract, FieldResolver, Heatmap,
@@ -61,8 +62,8 @@ use datafusion::functions_window::expr_fn::lag;
 use datafusion::logical_expr::SortExpr;
 use datafusion::logical_expr::TableProviderFilterPushDown;
 use datafusion::logical_expr::{
-    ColumnarValue, Expr, ExprFunctionExt, JoinType, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl,
-    Signature, TypeSignature, Volatility, cast, col, lit, not, try_cast,
+    ColumnarValue, Expr, ExprFunctionExt, JoinType, Operator, ScalarFunctionArgs, ScalarUDF,
+    ScalarUDFImpl, Signature, TypeSignature, Volatility, cast, col, lit, not, try_cast,
 };
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::{CastExpr, Column as PhysicalColumn};
@@ -1519,6 +1520,11 @@ use datafusion::arrow::array::RecordBatch;
 /// parsed as a qualifier.
 const PARENT_COLUMN_PREFIX: &str = "parent.";
 
+/// A `TypedAttribute`'s `(homes, promoted, key, prefix)` — the arguments
+/// `typed_home_filter_expr` needs to lower a filter comparison through the
+/// OR-rewrite (see `promoted_typed_attribute`, `ordered`).
+type TypedAttrFilterParts = (Vec<String>, Vec<Option<String>>, String, &'static str);
+
 /// A collision-free rename applied to the parent-side scan before the join —
 /// see [`Lowering::lower_correlate`] for why a flat rename is used instead
 /// of a `DataFrame::alias` table qualifier.
@@ -2903,6 +2909,35 @@ impl Lowering<'_> {
         typed_home_expr(homes, promoted, key, prefix)
     }
 
+    /// `resolved`'s typed-attribute parts, when it has at least one promoted
+    /// column — the shape [`lower_leaf`] needs to rewrite a filter
+    /// comparison through [`typed_home_filter_expr`] instead of the plain
+    /// coalesce. `None` for every other resolution, or a promoted-free
+    /// `TypedAttribute` (the coalesce form is already pushdown-friendly
+    /// there).
+    fn promoted_typed_attribute(
+        resolved: Option<Resolved>,
+        prefix: &'static str,
+    ) -> Option<TypedAttrFilterParts> {
+        match resolved {
+            Some(Resolved::TypedAttribute {
+                homes,
+                promoted,
+                key,
+                ..
+            }) if promoted.iter().any(Option::is_some) => Some((homes, promoted, key, prefix)),
+            _ => None,
+        }
+    }
+
+    /// [`typed_home_filter_expr`] over `parts`' unpacked homes/promoted/key/
+    /// prefix — the one-line call every OR-rewrite site in [`Self::lower_leaf`]
+    /// and [`Self::ordered`] shares.
+    fn typed_attr_filter_expr(parts: &TypedAttrFilterParts, op: Operator, literal: Expr) -> Expr {
+        let (homes, promoted, key, prefix) = parts;
+        typed_home_filter_expr(homes, promoted, key, prefix, op, literal)
+    }
+
     /// Extract one attribute from a named span event (see
     /// `Resolved::EventAttribute`), via the `ir_event_attr` UDF.
     fn event_attr_expr(&self, events_column: &str, event_name: &str, key: &str) -> Expr {
@@ -2950,7 +2985,7 @@ impl Lowering<'_> {
     fn lower_leaf(&self, leaf: &Leaf) -> Result<Expr, QuerierError> {
         // An extract-derived or aggregate-output column takes precedence over
         // registry resolution (it is a real DataFrame column now).
-        let (is_json, value_type, field_expr, is_body, untyped) = if let Some(alias) =
+        let (is_json, value_type, field_expr, is_body, untyped, typed_attr) = if let Some(alias) =
             self.col_of.get(&leaf.field)
         {
             let ty = self
@@ -2958,10 +2993,14 @@ impl Lowering<'_> {
                 .get(&leaf.field)
                 .cloned()
                 .unwrap_or(ValueType::String);
-            (false, ty, ident(alias.clone()), false, false)
+            (false, ty, ident(alias.clone()), false, false, None)
         } else if let Some(stripped) = leaf.field.strip_prefix("parent.") {
             let (expr, ty, advisory) = self.parent_field(stripped)?;
-            (advisory, ty, expr, false, advisory)
+            let typed_attr = Self::promoted_typed_attribute(
+                self.resolver.resolve("", stripped),
+                PARENT_COLUMN_PREFIX,
+            );
+            (advisory, ty, expr, false, advisory, typed_attr)
         } else {
             let resolved = self.resolver.resolve("", &leaf.field).ok_or_else(|| {
                 QuerierError::InvalidInput(format!("unknown field '{}'", leaf.field))
@@ -3011,7 +3050,8 @@ impl Lowering<'_> {
                 // the `value_expr` arm above); a NULL literal, not a panic.
                 Resolved::AttributeBag { .. } => lit(ScalarValue::Utf8(None)),
             };
-            (is_json, ty, expr, is_body, untyped)
+            let typed_attr = Self::promoted_typed_attribute(Some(resolved), "");
+            (is_json, ty, expr, is_body, untyped, typed_attr)
         };
         // The decoded form of `field_expr`, used by every operator except
         // `eq`/`ne`/`in` (which compare against the encoded literal instead,
@@ -3036,6 +3076,12 @@ impl Lowering<'_> {
                 let literal = coerce_val(v, &value_type)?;
                 if is_body {
                     field_expr.in_list(body_eq_candidates(&string_of(&literal)), false)
+                } else if let Some(parts) = &typed_attr {
+                    Self::typed_attr_filter_expr(
+                        parts,
+                        Operator::Eq,
+                        self.value_lit(&literal, is_json),
+                    )
                 } else {
                     field_expr.eq(self.value_lit(&literal, is_json))
                 }
@@ -3045,13 +3091,25 @@ impl Lowering<'_> {
                 let literal = coerce_val(v, &value_type)?;
                 if is_body {
                     field_expr.in_list(body_eq_candidates(&string_of(&literal)), true)
+                } else if let Some(parts) = &typed_attr {
+                    Self::typed_attr_filter_expr(
+                        parts,
+                        Operator::NotEq,
+                        self.value_lit(&literal, is_json),
+                    )
                 } else {
                     field_expr.not_eq(self.value_lit(&literal, is_json))
                 }
             }
-            ComparisonOp::Gt | ComparisonOp::Gte | ComparisonOp::Lt | ComparisonOp::Lte => {
-                self.ordered(leaf, decoded_field_expr(), &value_type, is_json, untyped)?
-            }
+            ComparisonOp::Gt | ComparisonOp::Gte | ComparisonOp::Lt | ComparisonOp::Lte => self
+                .ordered(
+                    leaf,
+                    decoded_field_expr(),
+                    &value_type,
+                    is_json,
+                    untyped,
+                    typed_attr.as_ref(),
+                )?,
             ComparisonOp::Contains => {
                 let v = self.require_value(leaf)?;
                 let s = coerce_val(v, &ValueType::String)?;
@@ -3118,6 +3176,7 @@ impl Lowering<'_> {
         value_type: &ValueType,
         is_json: bool,
         untyped: bool,
+        typed_attr: Option<&TypedAttrFilterParts>,
     ) -> Result<Expr, QuerierError> {
         let field = leaf.field.as_str();
         let op = leaf.op;
@@ -3169,6 +3228,21 @@ impl Lowering<'_> {
                 .map_err(|e| QuerierError::InvalidInput(format!("field '{field}': {e}")))?;
             (field_expr, self.value_lit(&literal, is_json))
         };
+        // A promoted `TypedAttribute` is never `is_json`/`untyped` (see
+        // `lower_leaf`), so `lhs` above is always the plain `field_expr`
+        // (the coalesce `typed_attribute_expr` built) — safe to discard in
+        // favor of the homes-based rewrite, which gives DataFusion a
+        // prunable disjunct on the promoted column instead.
+        if let Some(parts) = typed_attr {
+            let df_op = match op {
+                ComparisonOp::Gt => Operator::Gt,
+                ComparisonOp::Gte => Operator::GtEq,
+                ComparisonOp::Lt => Operator::Lt,
+                ComparisonOp::Lte => Operator::LtEq,
+                _ => unreachable!(),
+            };
+            return Ok(Self::typed_attr_filter_expr(parts, df_op, rhs));
+        }
         Ok(match op {
             ComparisonOp::Gt => lhs.gt(rhs),
             ComparisonOp::Gte => lhs.gt_eq(rhs),
@@ -6330,6 +6404,52 @@ mod tests {
         );
     }
 
+    /// An `eq` filter on a typed attribute with no promoted column keeps the
+    /// plain coalesce shape (a bare `get_field(...) = <literal>`, the shape
+    /// the warm-index probe recognizes); one with a promoted column lowers
+    /// to the `IS NOT NULL`/`OR` disjunction that gives DataFusion a
+    /// prunable predicate on it instead.
+    #[tokio::test]
+    async fn eq_filter_lowers_to_the_or_form_only_when_promoted() {
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows", "fields": ["service.tier"],
+            "pipeline": [{ "where": { "field": "service.tier", "op": "eq", "value": "gold" } }]
+        }));
+
+        let unpromoted = typed_attribute_logs_ctx();
+        let unpromoted_types = canonical_types(&[(
+            "service.tier",
+            AttributeLevel::Record,
+            CanonicalType::String,
+        )]);
+        let plan_text = plan_typed(&unpromoted, &d, unpromoted_types)
+            .await
+            .logical_plan()
+            .to_string();
+        assert!(!plan_text.contains("IS NOT NULL"), "{plan_text}");
+        assert!(!plan_text.contains(" OR "), "{plan_text}");
+
+        let promoted = typed_promotion_logs_ctx([
+            vec![Some("gold"), Some("silver")],
+            vec![Some("legacy"), Some("legacy")],
+        ]);
+        let promoted_types = canonical_types(&[(
+            "service.tier",
+            AttributeLevel::Record,
+            CanonicalType::String,
+        )]);
+        let plan_text = plan_typed(&promoted, &d, promoted_types)
+            .await
+            .logical_plan()
+            .to_string();
+        assert!(
+            plan_text.contains("label_service_tier IS NOT NULL"),
+            "{plan_text}"
+        );
+        assert!(plan_text.contains(" OR "), "{plan_text}");
+    }
+
     /// An off-type value (a string on an `Int64`-declared key) reads as NULL
     /// through the typed home — `exists` is false for that row — but the
     /// value itself is never lost: the raw `log.attributes` bag still shows
@@ -6776,6 +6896,15 @@ mod tests {
             )
         }
 
+        fn not_where_doc(field: &str, op: &str, value: serde_json::Value) -> serde_json::Value {
+            rows_doc(
+                &[field],
+                serde_json::json!([{
+                    "where": { "not": { "field": field, "op": op, "value": value } }
+                }]),
+            )
+        }
+
         fn table_doc(pipeline: serde_json::Value) -> serde_json::Value {
             serde_json::json!({
                 "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
@@ -6848,6 +6977,10 @@ mod tests {
             ] {
                 docs.push((name, where_doc(field, op, value)));
             }
+            docs.push((
+                "not eq string",
+                not_where_doc("str_field", "eq", serde_json::json!("apple")),
+            ));
             docs
         }
 
