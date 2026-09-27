@@ -1744,8 +1744,11 @@ mod tests {
         assert_eq!(column_for_label("service.name"), Some("service_name"));
     }
 
-    fn logs_schema() -> Arc<Schema> {
-        Arc::new(Schema::new(vec![
+    /// The base (non-attribute) log columns; see [`push_typed_log_attrs`]
+    /// for the typed-layout `log_attributes`/`resource_attributes` columns
+    /// a fixture appends alongside these.
+    fn logs_base_fields() -> Vec<Field> {
+        vec![
             Field::new(
                 "timestamp",
                 DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -1756,9 +1759,33 @@ mod tests {
             Field::new("severity_text", DataType::Utf8, true),
             Field::new("trace_id", DataType::Utf8, true),
             Field::new("span_id", DataType::Utf8, true),
-            Field::new("log_attributes", DataType::Utf8, true),
-            Field::new("resource_attributes", DataType::Utf8, true),
-        ]))
+        ]
+    }
+
+    /// Append typed-layout `log_attributes`/`resource_attributes` columns
+    /// (`logs` `physical-v4`), built from `log_rows`; `resource_attributes`
+    /// is an empty (but present) container on every row.
+    fn push_typed_log_attrs(
+        fields: &mut Vec<Field>,
+        columns: &mut Vec<ArrayRef>,
+        log_rows: &[Option<serde_json::Map<String, serde_json::Value>>],
+    ) {
+        let resource_rows: Vec<Option<serde_json::Map<String, serde_json::Value>>> =
+            vec![Some(serde_json::Map::new()); log_rows.len()];
+        for (name, rows) in [
+            ("log_attributes", log_rows),
+            ("resource_attributes", &resource_rows),
+        ] {
+            let (typed_fields, typed_arrays) =
+                common::testing::typed_attribute_columns_from("logs", "physical-v4", name, rows);
+            fields.extend(typed_fields);
+            columns.extend(typed_arrays);
+        }
+    }
+
+    /// `n` rows with no `log_attributes` keys (an empty, present container).
+    fn empty_log_rows(n: usize) -> Vec<Option<serde_json::Map<String, serde_json::Value>>> {
+        vec![Some(serde_json::Map::new()); n]
     }
 
     fn str_col(values: &[&str]) -> Arc<StringArray> {
@@ -1769,30 +1796,22 @@ mod tests {
     /// (`label_namespace`, `label_status`) so the querier routes those
     /// labels to columns for exact / regex / ordered matching.
     fn service_with_materialized_labels() -> LogsService {
-        let mut fields: Vec<Field> = logs_schema()
-            .fields()
-            .iter()
-            .map(|f| (**f).clone())
-            .collect();
+        let mut fields = logs_base_fields();
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
+            str_col(&["a", "b", "c"]),
+            str_col(&["api", "api", "web"]),
+            str_col(&["error", "info", "error"]),
+            str_col(&["t1", "t2", "t3"]),
+            str_col(&["s1", "s2", "s3"]),
+        ];
+        push_typed_log_attrs(&mut fields, &mut columns, &empty_log_rows(3));
         fields.push(Field::new("label_namespace", DataType::Utf8, true));
         fields.push(Field::new("label_status", DataType::Utf8, true));
+        columns.push(str_col(&["prod", "prod", "staging"]));
+        columns.push(str_col(&["200", "500", "503"]));
         let schema = Arc::new(Schema::new(fields));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
-                str_col(&["a", "b", "c"]),
-                str_col(&["api", "api", "web"]),
-                str_col(&["error", "info", "error"]),
-                str_col(&["t1", "t2", "t3"]),
-                str_col(&["s1", "s2", "s3"]),
-                str_col(&["{}", "{}", "{}"]),
-                str_col(&["{}", "{}", "{}"]),
-                str_col(&["prod", "prod", "staging"]),
-                str_col(&["200", "500", "503"]),
-            ],
-        )
-        .unwrap();
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
 
         let ctx = SessionContext::new();
         let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
@@ -1810,28 +1829,20 @@ mod tests {
     /// (`label_StatusCode`), for issue #1392: grouping by a mixed-case
     /// attribute label through the old `execute_plan` path.
     fn service_with_mixed_case_label() -> LogsService {
-        let mut fields: Vec<Field> = logs_schema()
-            .fields()
-            .iter()
-            .map(|f| (**f).clone())
-            .collect();
+        let mut fields = logs_base_fields();
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![100, 200])),
+            str_col(&["a", "b"]),
+            str_col(&["api", "api"]),
+            str_col(&["info", "info"]),
+            str_col(&["t1", "t2"]),
+            str_col(&["s1", "s2"]),
+        ];
+        push_typed_log_attrs(&mut fields, &mut columns, &empty_log_rows(2));
         fields.push(Field::new("label_StatusCode", DataType::Utf8, true));
+        columns.push(str_col(&["200", "500"]));
         let schema = Arc::new(Schema::new(fields));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![100, 200])),
-                str_col(&["a", "b"]),
-                str_col(&["api", "api"]),
-                str_col(&["info", "info"]),
-                str_col(&["t1", "t2"]),
-                str_col(&["s1", "s2"]),
-                str_col(&["{}", "{}"]),
-                str_col(&["{}", "{}"]),
-                str_col(&["200", "500"]),
-            ],
-        )
-        .unwrap();
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
 
         let ctx = SessionContext::new();
         let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
@@ -1987,25 +1998,32 @@ mod tests {
 
     /// A context with a `t.d.logs` table holding three sample rows.
     fn service_with_data() -> LogsService {
-        let schema = logs_schema();
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
-                str_col(&["boom happened", "all good", "boom again"]),
-                str_col(&["api", "api", "web"]),
-                str_col(&["error", "info", "error"]),
-                str_col(&["t1", "t2", "t3"]),
-                str_col(&["s1", "s2", "s3"]),
-                str_col(&[
-                    r#"{"namespace":"prod","pod":"api-1"}"#,
-                    r#"{"namespace":"prod","pod":"api-2"}"#,
-                    r#"{"namespace":"staging","pod":"web-1"}"#,
-                ]),
-                str_col(&["{}", "{}", "{}"]),
-            ],
-        )
-        .unwrap();
+        let mut fields = logs_base_fields();
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
+            str_col(&["boom happened", "all good", "boom again"]),
+            str_col(&["api", "api", "web"]),
+            str_col(&["error", "info", "error"]),
+            str_col(&["t1", "t2", "t3"]),
+            str_col(&["s1", "s2", "s3"]),
+        ];
+        let log_rows = [
+            Some(serde_json::Map::from_iter([
+                ("namespace".to_string(), serde_json::json!("prod")),
+                ("pod".to_string(), serde_json::json!("api-1")),
+            ])),
+            Some(serde_json::Map::from_iter([
+                ("namespace".to_string(), serde_json::json!("prod")),
+                ("pod".to_string(), serde_json::json!("api-2")),
+            ])),
+            Some(serde_json::Map::from_iter([
+                ("namespace".to_string(), serde_json::json!("staging")),
+                ("pod".to_string(), serde_json::json!("web-1")),
+            ])),
+        ];
+        push_typed_log_attrs(&mut fields, &mut columns, &log_rows);
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
 
         let ctx = SessionContext::new();
         let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
@@ -2025,22 +2043,19 @@ mod tests {
     /// via the same [`common::flight::conversion::encode_log_body`] ingest
     /// uses — for the `bytes_over_time` regression below.
     fn service_with_encoded_body(decoded_body: &str) -> LogsService {
-        let schema = logs_schema();
         let encoded = common::flight::conversion::encode_log_body(decoded_body);
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![100])),
-                str_col(&[encoded.as_str()]),
-                str_col(&["api"]),
-                str_col(&["error"]),
-                str_col(&["t1"]),
-                str_col(&["s1"]),
-                str_col(&["{}"]),
-                str_col(&["{}"]),
-            ],
-        )
-        .unwrap();
+        let mut fields = logs_base_fields();
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![100])),
+            str_col(&[encoded.as_str()]),
+            str_col(&["api"]),
+            str_col(&["error"]),
+            str_col(&["t1"]),
+            str_col(&["s1"]),
+        ];
+        push_typed_log_attrs(&mut fields, &mut columns, &empty_log_rows(1));
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
 
         let ctx = SessionContext::new();
         let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
@@ -2665,21 +2680,18 @@ mod tests {
     /// counts in one bucket: `error`×3 and `info`×1 — so a cross-series
     /// `stddev`/`stdvar` over them is non-zero.
     fn service_with_varying_counts() -> LogsService {
-        let schema = logs_schema();
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300, 400])),
-                str_col(&["a", "b", "c", "d"]),
-                str_col(&["api", "api", "api", "api"]),
-                str_col(&["error", "error", "error", "info"]),
-                str_col(&["t1", "t2", "t3", "t4"]),
-                str_col(&["s1", "s2", "s3", "s4"]),
-                str_col(&["{}", "{}", "{}", "{}"]),
-                str_col(&["{}", "{}", "{}", "{}"]),
-            ],
-        )
-        .unwrap();
+        let mut fields = logs_base_fields();
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300, 400])),
+            str_col(&["a", "b", "c", "d"]),
+            str_col(&["api", "api", "api", "api"]),
+            str_col(&["error", "error", "error", "info"]),
+            str_col(&["t1", "t2", "t3", "t4"]),
+            str_col(&["s1", "s2", "s3", "s4"]),
+        ];
+        push_typed_log_attrs(&mut fields, &mut columns, &empty_log_rows(4));
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
 
         let ctx = SessionContext::new();
         let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
@@ -2702,26 +2714,36 @@ mod tests {
     /// has no `ql_ir` equivalent and so always exercises the old lowering's
     /// bare-physical-column `unwrap` instead (see that test's doc comment).
     fn service_with_attribute_unwrap() -> LogsService {
-        let schema = logs_schema();
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300, 400])),
-                str_col(&["a", "b", "c", "d"]),
-                str_col(&["api", "api", "api", "api"]),
-                str_col(&["info", "info", "info", "info"]),
-                str_col(&["10", "20", "30", "40"]),
-                str_col(&["s1", "s2", "s3", "s4"]),
-                str_col(&[
-                    r#"{"value":"10"}"#,
-                    r#"{"value":"20"}"#,
-                    r#"{"value":"30"}"#,
-                    r#"{"value":"40"}"#,
-                ]),
-                str_col(&["{}", "{}", "{}", "{}"]),
-            ],
-        )
-        .unwrap();
+        let mut fields = logs_base_fields();
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300, 400])),
+            str_col(&["a", "b", "c", "d"]),
+            str_col(&["api", "api", "api", "api"]),
+            str_col(&["info", "info", "info", "info"]),
+            str_col(&["10", "20", "30", "40"]),
+            str_col(&["s1", "s2", "s3", "s4"]),
+        ];
+        let log_rows = [
+            Some(serde_json::Map::from_iter([(
+                "value".to_string(),
+                serde_json::json!("10"),
+            )])),
+            Some(serde_json::Map::from_iter([(
+                "value".to_string(),
+                serde_json::json!("20"),
+            )])),
+            Some(serde_json::Map::from_iter([(
+                "value".to_string(),
+                serde_json::json!("30"),
+            )])),
+            Some(serde_json::Map::from_iter([(
+                "value".to_string(),
+                serde_json::json!("40"),
+            )])),
+        ];
+        push_typed_log_attrs(&mut fields, &mut columns, &log_rows);
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
 
         let ctx = SessionContext::new();
         let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
