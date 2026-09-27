@@ -7,10 +7,7 @@ import {
   persistTenantContext,
   setTenantContext,
 } from "./api/http";
-import { ThrottleBanner } from "./components/ThrottleBanner";
-import { AppNav, useAppNavState } from "./features/shell/AppNav";
-import { CommandPalette } from "./features/shell/CommandPalette";
-import { PageHeader } from "./features/shell/PageHeader";
+import { AppShell } from "./features/shell/AppShell";
 import { maybeAutoApplyUpdate } from "./lib/pwaUpdate";
 import { loginRedirectPath, safeRedirectTarget } from "./lib/redirectTarget";
 import { useExploreState, type ExploreState } from "./lib/urlState";
@@ -18,11 +15,11 @@ import { recentQueryText, recordRecentQuery } from "./lib/recentQueries";
 import { useCurrentSession, useIsDemo, useWhoami } from "./lib/useWhoami";
 
 /**
- * The persistent shell (sidebar nav, page header, ⌘K palette, and the
- * 401-to-`/login` redirect) around whichever
- * route is active — the explore view for a signal, or the management panel.
- * Renders state/update via outlet context so route children share the one
- * URL-backed ExploreState instead of re-deriving it.
+ * The persistent shell around whichever route is active: the signed-in
+ * identity and tenant context for {@link AppShell}, and the 401-to-`/login`
+ * redirect. The active route (the explore view for a signal, or the
+ * management panel) gets state/update via outlet context, so route
+ * children share the one URL-backed ExploreState instead of re-deriving it.
  */
 export function App() {
   const [state, update] = useExploreState();
@@ -133,44 +130,18 @@ export function App() {
 
   const { data: who, canManage } = useWhoami(effective);
   const isDemo = useIsDemo();
-  const nav = useAppNavState();
   useRecordRecentQueries(effective);
 
   return (
-    <div className="app-frame">
-      {isDemo && (
-        <div
-          className="accent-banner demo-banner"
-          title="Read-only public demo account"
-        >
-          Demo · read-only
-        </div>
-      )}
-      <div className="app-body">
-        <AppNav
-          state={effective}
-          update={update}
-          who={who}
-          canManage={canManage}
-          isDemo={isDemo}
-          nav={nav}
-        />
-        <div className="app-column">
-          {!nav.narrow && <PageHeader onOpenPalette={nav.openPalette} />}
-          <ThrottleBanner />
-          <main className="app-main">
-            <Outlet context={{ state: effective, update }} />
-          </main>
-        </div>
-      </div>
-      {nav.overlay === "palette" && (
-        <CommandPalette
-          state={effective}
-          canManage={canManage}
-          onClose={nav.close}
-        />
-      )}
-    </div>
+    <AppShell
+      who={who}
+      canManage={canManage}
+      isDemo={isDemo}
+      state={effective}
+      update={update}
+    >
+      <Outlet context={{ state: effective, update }} />
+    </AppShell>
   );
 }
 
