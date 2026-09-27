@@ -77,6 +77,8 @@ cargo run --bin signaldb -- mcp        # MCP server (Streamable HTTP :8228 /mcp;
 ./scripts/run-dev.sh services   # All microservices (logs to .data/logs/)
 ```
 
+Both modes also start `signal-producer --estate all`, which sends sample OTLP traffic to `:4317` every 10s.
+
 ### Storage Locations
 
 - WAL: `.data/wal/`
