@@ -123,6 +123,7 @@ interface NavProps {
   update: (patch: Partial<ExploreState>) => void;
   who: WhoamiResponse | undefined;
   canManage: boolean;
+  isDemo: boolean;
   nav: ReturnType<typeof useAppNavState>;
 }
 
@@ -130,7 +131,7 @@ export function AppNav(props: NavProps) {
   return props.nav.narrow ? <MobileNav {...props} /> : <Sidebar {...props} />;
 }
 
-function Sidebar({ state, update, who, canManage, nav }: NavProps) {
+function Sidebar({ state, update, who, canManage, isDemo, nav }: NavProps) {
   const { pathname } = useLocation();
   const current = currentPageFor(pathname).id;
   const expanded = !nav.collapsed;
@@ -192,7 +193,13 @@ function Sidebar({ state, update, who, canManage, nav }: NavProps) {
               showLabel={expanded}
             />
           )}
-          <UserMenu state={state} variant="sidebar" expanded={expanded} />
+          <UserMenu
+            who={who}
+            canManage={canManage}
+            isDemo={isDemo}
+            variant="sidebar"
+            expanded={expanded}
+          />
           <button
             type="button"
             className="app-nav-item app-sidebar-collapse"
@@ -375,7 +382,7 @@ function TenantOption({
   );
 }
 
-function MobileNav({ state, update, who, canManage, nav }: NavProps) {
+function MobileNav({ state, update, who, canManage, isDemo, nav }: NavProps) {
   const { pathname } = useLocation();
   const page = currentPageFor(pathname);
   const drawerOpen = nav.overlay === "drawer";
@@ -411,7 +418,12 @@ function MobileNav({ state, update, who, canManage, nav }: NavProps) {
         >
           <NavIcon name="search" size={18} />
         </button>
-        <UserMenu state={state} variant="compact" />
+        <UserMenu
+          who={who}
+          canManage={canManage}
+          isDemo={isDemo}
+          variant="compact"
+        />
       </header>
       {drawerOpen && (
         <>

@@ -83,6 +83,15 @@ export const MANAGE_PAGE: NavPage = {
   path: "/manage",
 };
 
+const ALL_PAGES: NavPage[] = [
+  ...NAV_GROUPS.flatMap((g) => g.pages),
+  MANAGE_PAGE,
+];
+
+export function pageById(id: PageId): NavPage | undefined {
+  return ALL_PAGES.find((p) => p.id === id);
+}
+
 /** Where the brand mark and the bare `/` route land. */
 export const HOME_PATH = "/overview";
 
