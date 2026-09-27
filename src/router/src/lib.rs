@@ -466,6 +466,7 @@ pub fn create_router(state: RouterAppState) -> Router {
                 .nest("/schema", endpoints::schema::router())
                 .merge(endpoints::processors::router())
                 .merge(endpoints::eval_sets::router())
+                .merge(endpoints::evals::router())
                 .route("/whoami", get(endpoints::session::whoami))
                 .route("/connection", get(endpoints::session::connection_info))
                 .merge(endpoints::query::router())
