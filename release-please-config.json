@@ -888,6 +888,13 @@
           "type": "ci",
           "section": "Continuous Integration"
         }
+      ],
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "/.design-sync/pkg/package.json",
+          "jsonpath": "$.version"
+        }
       ]
     },
     "src/mcp-server": {
