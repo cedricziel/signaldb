@@ -31,6 +31,7 @@ reqwest.workspace = true
 # `discover_datasets`/`server_info` fan out one request per granted tenant
 # for a multi-tenant OAuth credential; `join_all` runs them concurrently.
 futures.workspace = true
+uuid.workspace = true
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 [package.metadata.cargo-machete]
