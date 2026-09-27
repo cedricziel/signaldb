@@ -179,6 +179,47 @@ groups:
     entity_associations: [acme.order]
 ```
 
+Weaver's newer `file_format: definition/2` layout works too: keep the manifest
+fields at the top and list definitions under `attributes`, `attribute_groups`,
+`entities`, `metrics`, `spans`, `events`, `span_refinements` and
+`metric_refinements` instead of `groups`. The same registry as above:
+
+```yaml
+file_format: definition/2
+name: acme
+version: 1.0.0
+schema_url: https://acme.example/schemas/1.0.0
+dependencies:
+  - name: otel
+attributes:
+  - key: acme.order.id
+    type: string
+    stability: development
+    brief: Internal order identifier (see the order-service runbook).
+    examples: ["ord_8f21a"]
+entities:
+  - name: acme.order
+    stability: development
+    brief: A customer order flowing through Acme's checkout.
+    attributes:
+      - ref: acme.order.id
+        role: identifying
+metrics:
+  - name: acme.checkout.latency
+    instrument: histogram
+    unit: "s"
+    stability: development
+    brief: End-to-end checkout latency per order.
+    entity_associations: [acme.order]
+```
+
+SignalDB converts a `definition/2` upload to `groups` when it stores it, so
+its definitions resolve exactly as the `groups` version would, and reading the
+registry back returns the `groups` form (metrics become `metric.<name>`,
+entities `entity.<name>`, and the top-level `attributes` the group
+`registry.<name>`). Any other `file_format` value is rejected with `422` and
+nothing is stored.
+
 Validate, then create:
 
 ```bash
@@ -225,7 +266,8 @@ and `metric` are stored but not resolved.
 - The MCP tools above.
 - `GET /api/v1/schema/registries` lists everything visible to the tenant with
   attribute/entity/metric counts; `GET …/registries/{ns}/{version}` returns
-  the document verbatim.
+  the stored document (a `definition/2` upload comes back in the `groups`
+  form).
 
 ## Troubleshooting
 
@@ -233,6 +275,9 @@ and `metric` are stored but not resolved.
   without `schema:read`; create a key with it (or use a session).
 - **`409 … is bundled and read-only`** — you tried to mutate `otel`,
   `otel-genai`, or `signaldb`; upload a custom registry that `ref`s or `extends` them instead.
+- **`422 … unsupported file_format`** — the document declares a
+  `file_format` other than `definition/2`. Drop the key for the `groups`
+  layout, or convert the file to `definition/2`.
 - **`422` with `dependencies[0]: unknown dependency namespace`** — the
   document names a dependency you have not uploaded; only `otel`, `otel-genai`,
   `signaldb`, and your own custom registries can be dependencies.
