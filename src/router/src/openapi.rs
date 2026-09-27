@@ -181,6 +181,7 @@ impl Modify for SecurityAddon {
         crate::endpoints::eval_sets::replace_eval_set,
         crate::endpoints::eval_sets::delete_eval_set,
         crate::endpoints::eval_sets::append_eval_cases,
+        crate::endpoints::eval_sets::append_eval_cases_from_traces,
     ),
     components(schemas(
         // signaldb-api DTOs shared by the tenant identity resource
@@ -331,6 +332,8 @@ impl Modify for SecurityAddon {
         crate::endpoints::eval_sets::EvalSetSummaryResponse,
         crate::endpoints::eval_sets::EvalSetListResponse,
         crate::endpoints::eval_sets::AppendEvalCasesRequest,
+        crate::endpoints::eval_sets::AppendCasesFromTracesRequest,
+        crate::endpoints::eval_sets::AppendCasesFromTracesOutcome,
         common::schema_registry::RegistrySource,
         common::schema_registry::RegistrySummary,
         common::schema_registry::ValidationReport,
@@ -637,6 +640,7 @@ mod tests {
         "/api/v1/eval-sets",
         "/api/v1/eval-sets/{name}",
         "/api/v1/eval-sets/{name}/cases",
+        "/api/v1/eval-sets/{name}/cases/from-traces",
     ];
 
     /// Routes registered by the auto-extracted files (see

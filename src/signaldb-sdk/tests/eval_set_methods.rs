@@ -1,5 +1,5 @@
-//! Verifies the generated client exposes the six eval-set operations
-//! (openspec change `agent-offline-evals`, task 5.5).
+//! Verifies the generated client exposes the eval-set operations
+//! (openspec change `agent-offline-evals`, tasks 5.5 and 5.6).
 //!
 //! Compile-and-construct assertions: the surface is generated from
 //! `api/signaldb-api.json`, so if an eval-set endpoint drops out of the
@@ -7,8 +7,8 @@
 
 use signaldb_sdk::Client;
 use signaldb_sdk::types::{
-    AppendCasesOutcome, AppendEvalCasesRequest, EvalCase, EvalCaseSource, EvalSetResponse,
-    EvalSetSpec,
+    AppendCasesFromTracesRequest, AppendCasesOutcome, AppendEvalCasesRequest, EvalCase,
+    EvalCaseSource, EvalSetResponse, EvalSetSpec, QueryRange,
 };
 
 fn client() -> Client {
@@ -54,6 +54,27 @@ fn client_exposes_append_builder() {
         .name("triage-golden")
         .body(AppendEvalCasesRequest {
             cases: vec![case("edge-2", Some(EvalCaseSource::Upload))],
+        });
+}
+
+#[test]
+fn client_exposes_append_from_traces_builder() {
+    let _append = client()
+        .append_eval_cases_from_traces()
+        .name("triage-golden")
+        .body(AppendCasesFromTracesRequest {
+            range: QueryRange {
+                from: "now-7d".to_string(),
+                to: "now".to_string(),
+            },
+            agent: None,
+            operation: None,
+            filters: Vec::new(),
+            failing_evaluator: Some("Correctness".to_string()),
+            sample: std::num::NonZeroU32::new(50),
+            expected_tools: Some(true),
+            reference_from_answer: None,
+            tags: Vec::new(),
         });
 }
 
