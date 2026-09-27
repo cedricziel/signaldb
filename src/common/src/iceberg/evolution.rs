@@ -205,6 +205,59 @@ async fn reload_current_schema(
     Ok(schema.clone())
 }
 
+/// Shared commit + post-commit verification for [`add_label_columns`] and
+/// [`remove_label_columns`]: commits `evolved` as the new current schema
+/// (`AddSchema` + `SetCurrentSchema`, `last_column_id` forwarded as-is --
+/// `None` for a removal, so dropped ids are never reused), then reloads and
+/// confirms `must_be_present` all landed and `must_be_absent` all
+/// disappeared. `what` names the change for the commit/verification error
+/// context (e.g. "evolution", "demotion").
+async fn commit_and_verify_schema(
+    catalog: Arc<dyn Catalog>,
+    identifier: &Identifier,
+    evolved: Schema,
+    last_column_id: Option<i32>,
+    what: &str,
+    must_be_present: &[String],
+    must_be_absent: &[String],
+) -> Result<Schema> {
+    let new_schema_id = *evolved.schema_id();
+    catalog
+        .clone()
+        .update_table(CommitTable {
+            identifier: identifier.clone(),
+            requirements: vec![],
+            updates: vec![
+                TableUpdate::AddSchema {
+                    schema: evolved,
+                    last_column_id,
+                },
+                TableUpdate::SetCurrentSchema {
+                    schema_id: new_schema_id,
+                },
+            ],
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to commit schema {what} for {identifier}: {e}"))?;
+
+    let verified = reload_current_schema(&catalog, identifier, what).await?;
+    for column in must_be_present {
+        anyhow::ensure!(
+            verified.fields().iter().any(|f| &f.name == column),
+            "Schema {what} of {identifier} did not take effect: column {column} missing from \
+             current schema; a concurrent commit likely won the race"
+        );
+    }
+    for column in must_be_absent {
+        anyhow::ensure!(
+            !verified.fields().iter().any(|f| &f.name == column),
+            "Schema {what} of {identifier} did not take effect: column {column} still present \
+             in current schema; a concurrent commit likely won the race"
+        );
+    }
+    Ok(verified)
+}
+
 /// Load a table (never a view) from the catalog.
 async fn load_table(catalog: &Arc<dyn Catalog>, identifier: &Identifier) -> Result<Table> {
     let tabular = catalog
@@ -285,35 +338,18 @@ pub async fn add_label_columns(
 
     let new_schema_id = next_schema_id(metadata, current);
     let evolved = Schema::from_struct_type(StructType::new(fields), new_schema_id, None);
+    let present: Vec<String> = new_columns.iter().map(|(_, c)| c.clone()).collect();
 
-    catalog
-        .clone()
-        .update_table(CommitTable {
-            identifier: identifier.clone(),
-            requirements: vec![],
-            updates: vec![
-                TableUpdate::AddSchema {
-                    schema: evolved,
-                    last_column_id: Some(last_column_id),
-                },
-                TableUpdate::SetCurrentSchema {
-                    schema_id: new_schema_id,
-                },
-            ],
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to commit schema evolution for {identifier}: {e}"))?;
-
-    // Post-commit verification: reload and confirm the evolved schema is
-    // current and carries every requested column.
-    let verified = reload_current_schema(&catalog, identifier, "evolution").await?;
-    for (key, column) in &new_columns {
-        anyhow::ensure!(
-            verified.fields().iter().any(|f| &f.name == column),
-            "Schema evolution of {identifier} did not take effect: column {column} (key '{key}') \
-             missing from current schema; a concurrent commit likely won the race"
-        );
-    }
+    let verified = commit_and_verify_schema(
+        catalog,
+        identifier,
+        evolved,
+        Some(last_column_id),
+        "evolution",
+        &present,
+        &[],
+    )
+    .await?;
 
     tracing::info!(
         table = %identifier,
@@ -382,36 +418,18 @@ pub async fn remove_label_columns(
     let new_schema_id = next_schema_id(metadata, current);
     let pruned = Schema::from_struct_type(StructType::new(fields), new_schema_id, None);
 
-    catalog
-        .clone()
-        .update_table(CommitTable {
-            identifier: identifier.clone(),
-            requirements: vec![],
-            updates: vec![
-                TableUpdate::AddSchema {
-                    schema: pruned,
-                    // Keep `last_column_id` as is: dropped ids must never
-                    // be handed out again.
-                    last_column_id: None,
-                },
-                TableUpdate::SetCurrentSchema {
-                    schema_id: new_schema_id,
-                },
-            ],
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to commit schema demotion for {identifier}: {e}"))?;
-
-    // Post-commit verification: reload and confirm the pruned schema is
-    // current and every named column is gone.
-    let verified = reload_current_schema(&catalog, identifier, "demotion").await?;
-    for column in &drop_columns {
-        anyhow::ensure!(
-            !verified.fields().iter().any(|f| &f.name == column),
-            "Schema demotion of {identifier} did not take effect: column {column} still present \
-             in current schema; a concurrent commit likely won the race"
-        );
-    }
+    // Keep `last_column_id` as is: dropped ids must never be handed out
+    // again.
+    let verified = commit_and_verify_schema(
+        catalog,
+        identifier,
+        pruned,
+        None,
+        "demotion",
+        &[],
+        &drop_columns,
+    )
+    .await?;
 
     tracing::info!(
         table = %identifier,
