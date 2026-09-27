@@ -23,6 +23,7 @@ import { useOutletState } from "../../lib/outletState";
 import { sourceContextAvailabilityKey } from "../../lib/useSourceContextEnabled";
 import { useWhoami } from "../../lib/useWhoami";
 import "./GitHubIntegration.css";
+import { HOME_PATH } from "../shell/navModel";
 
 const GITHUB_DOCS_URL = "https://signaldb.dev/docs/operations/github-app/";
 
@@ -63,7 +64,7 @@ export function GitHubIntegration() {
   if (whoamiIsError) return whoamiQueryError("your account", whoamiError);
 
   if (!who || !canManage) {
-    return <Navigate to="/logs" replace />;
+    return <Navigate to={HOME_PATH} replace />;
   }
 
   // Keyed on the outlet's own tenant, same reasoning as ApiKeys: every piece

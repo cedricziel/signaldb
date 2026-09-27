@@ -48,7 +48,7 @@ describe("DependencyBreakdown bar tooltip", () => {
     ]);
     expect(
       within(rows[0]!).getByTestId("viz-tip-swatch").style.background,
-    ).toBe("var(--svc-a)");
+    ).toBe("var(--svc-i)");
     expect(segs[0]).toHaveAttribute("aria-describedby", tip.id);
   });
 
@@ -97,7 +97,7 @@ describe("DependencyBreakdown legend", () => {
     // the shared `dep-swatch` marker, colored via `--kind-color` like
     // `DependencyTable`'s Kind column.
     expect(label.className).toBe("dep-swatch");
-    expect(label.style.getPropertyValue("--kind-color")).toBe("var(--svc-a)");
+    expect(label.style.getPropertyValue("--kind-color")).toBe("var(--svc-i)");
   });
 });
 

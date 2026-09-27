@@ -170,10 +170,62 @@ pub fn string_map_documents(
     Ok(out)
 }
 
+/// Read only the keys of a typed-layout home column's map, for a caller that
+/// only cares whether a key was present in a row — not its value — so a
+/// non-`Utf8`-valued home (`_int`, `_double`, `_bool`) doesn't have to be
+/// rejected just because its values aren't strings, the way
+/// [`string_map_documents`] does. A key whose paired value is null is
+/// skipped, matching [`string_map_documents`]'s row-level presence rule.
+pub fn map_key_documents(
+    batch: &RecordBatch,
+    name: &str,
+) -> Result<Vec<Option<Vec<String>>>, AttrDecodeError> {
+    let Some(column) = batch.column_by_name(name) else {
+        return Err(AttrDecodeError::MissingColumn(name.to_string()));
+    };
+    let Some(map) = column.as_any().downcast_ref::<MapArray>() else {
+        warn!(
+            column = name,
+            arrow_type = %column.data_type(),
+            "attribute column is not a Map"
+        );
+        return Ok(vec![None; batch.num_rows()]);
+    };
+
+    let mut out = Vec::with_capacity(map.len());
+    for i in 0..map.len() {
+        if map.is_null(i) {
+            out.push(None);
+            continue;
+        }
+        let entries = map.value(i);
+        let Some(keys) = entries.column(0).as_any().downcast_ref::<StringArray>() else {
+            warn!(column = name, "map attribute column has non-string keys");
+            out.push(None);
+            continue;
+        };
+        // The value column's type is irrelevant here, so it is never
+        // downcast — `Array::is_null` alone tells whether a key's value is
+        // present, regardless of whether that value is a string, int,
+        // double, or bool.
+        let values = entries.column(1);
+        let mut keys_present = Vec::with_capacity(keys.len());
+        for j in 0..entries.len() {
+            if !keys.is_null(j) && !values.is_null(j) {
+                keys_present.push(keys.value(j).to_string());
+            }
+        }
+        out.push(Some(keys_present));
+    }
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::array::{ArrayRef, MapBuilder, StringBuilder};
+    use datafusion::arrow::array::{
+        ArrayRef, BooleanBuilder, Float64Builder, Int64Builder, MapBuilder, StringBuilder,
+    };
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use std::sync::Arc;
 
@@ -308,6 +360,77 @@ mod tests {
         let batch = json_batch(vec![Some("{}")]);
         assert!(matches!(
             string_map_documents(&batch, "log_attributes_str"),
+            Err(AttrDecodeError::MissingColumn(_))
+        ));
+    }
+
+    /// `map_key_documents` must read keys out of a non-`Utf8`-valued home
+    /// (int, double, bool) without downcasting the value column — this is
+    /// the regression `string_map_documents` doesn't cover, since it rejects
+    /// exactly these homes as "non-string keys or values".
+    #[test]
+    fn map_key_documents_reads_keys_from_int_double_and_bool_homes() {
+        let int_batch = {
+            let mut builder = MapBuilder::new(None, StringBuilder::new(), Int64Builder::new());
+            builder.keys().append_value("retries");
+            builder.values().append_value(3);
+            builder.append(true).unwrap();
+            let array = builder.finish();
+            let schema = Arc::new(Schema::new(vec![Field::new(
+                "span_attributes_int",
+                array.data_type().clone(),
+                true,
+            )]));
+            RecordBatch::try_new(schema, vec![Arc::new(array) as ArrayRef]).unwrap()
+        };
+        let docs = map_key_documents(&int_batch, "span_attributes_int").unwrap();
+        assert_eq!(docs[0].as_ref().unwrap(), &vec!["retries".to_string()]);
+
+        let double_batch = {
+            let mut builder = MapBuilder::new(None, StringBuilder::new(), Float64Builder::new());
+            builder.keys().append_value("ratio");
+            builder.values().append_value(1.5);
+            builder.append(true).unwrap();
+            let array = builder.finish();
+            let schema = Arc::new(Schema::new(vec![Field::new(
+                "span_attributes_double",
+                array.data_type().clone(),
+                true,
+            )]));
+            RecordBatch::try_new(schema, vec![Arc::new(array) as ArrayRef]).unwrap()
+        };
+        let docs = map_key_documents(&double_batch, "span_attributes_double").unwrap();
+        assert_eq!(docs[0].as_ref().unwrap(), &vec!["ratio".to_string()]);
+
+        let bool_batch = {
+            let mut builder = MapBuilder::new(None, StringBuilder::new(), BooleanBuilder::new());
+            builder.keys().append_value("ok");
+            builder.values().append_value(true);
+            builder.append(true).unwrap();
+            let array = builder.finish();
+            let schema = Arc::new(Schema::new(vec![Field::new(
+                "span_attributes_bool",
+                array.data_type().clone(),
+                true,
+            )]));
+            RecordBatch::try_new(schema, vec![Arc::new(array) as ArrayRef]).unwrap()
+        };
+        let docs = map_key_documents(&bool_batch, "span_attributes_bool").unwrap();
+        assert_eq!(docs[0].as_ref().unwrap(), &vec!["ok".to_string()]);
+    }
+
+    #[test]
+    fn map_key_documents_null_row_has_no_keys() {
+        let batch = map_batch("log_attributes_str", vec![None]);
+        let docs = map_key_documents(&batch, "log_attributes_str").unwrap();
+        assert!(docs[0].is_none());
+    }
+
+    #[test]
+    fn map_key_documents_missing_column_is_an_error() {
+        let batch = json_batch(vec![Some("{}")]);
+        assert!(matches!(
+            map_key_documents(&batch, "log_attributes_str"),
             Err(AttrDecodeError::MissingColumn(_))
         ));
     }

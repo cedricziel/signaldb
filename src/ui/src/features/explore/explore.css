@@ -69,7 +69,7 @@
 
 .livebtn[aria-pressed="true"] {
   border-color: var(--accent);
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--accent-soft);
 }
 
@@ -152,7 +152,7 @@
 
 .chip-op {
   padding: 4px 4px;
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 600;
 }
 
@@ -166,7 +166,7 @@
 }
 
 .chip-x:hover {
-  color: var(--err);
+  color: var(--err-text);
 }
 
 /* `.chip`'s `overflow: hidden` (its rounded corners) otherwise clips the
@@ -395,7 +395,7 @@
 
   .mobile-filters-toggle[aria-expanded="true"] {
     border-color: var(--accent);
-    color: var(--accent);
+    color: var(--accent-text);
   }
 
   .mobile-sidebar-backdrop {
@@ -403,7 +403,7 @@
     position: fixed;
     inset: 0;
     z-index: 49;
-    background: rgba(0, 0, 0, 0.4);
+    background: color-mix(in srgb, var(--shadow) 40%, transparent);
   }
 
   .mobile-sidebar-drawer.open {
@@ -416,7 +416,7 @@
     width: min(320px, 85vw);
     z-index: 50;
     background: var(--surface);
-    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35);
+    box-shadow: 4px 0 24px color-mix(in srgb, var(--shadow) 35%, transparent);
   }
 
   /* Right-edge variant (the trace waterfall's span-detail pane, which sits
@@ -425,7 +425,7 @@
   .mobile-sidebar-drawer--right.open {
     left: auto;
     right: 0;
-    box-shadow: -4px 0 24px rgba(0, 0, 0, 0.35);
+    box-shadow: -4px 0 24px color-mix(in srgb, var(--shadow) 35%, transparent);
   }
 
   /* Whatever aside the drawer wraps (a facet/field .sidebar, the trace
@@ -599,7 +599,7 @@
   margin-left: 4px;
   font-family: var(--ui);
   font-size: 10px;
-  color: var(--warn-banner-text);
+  color: var(--warn-text);
 }
 
 .field-row:hover {
@@ -632,7 +632,7 @@
 
 .fieldval:hover {
   border-left-color: var(--accent);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* ---------- histogram ---------- */
@@ -722,11 +722,11 @@
 }
 
 span.level-error {
-  color: var(--err);
+  color: var(--err-text);
 }
 
 span.level-warn {
-  color: var(--warn);
+  color: var(--warn-text);
 }
 
 span.level-info {
@@ -911,7 +911,7 @@ span.level-debug {
 }
 
 .svol-scale[aria-pressed="true"] {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: var(--accent);
 }
 

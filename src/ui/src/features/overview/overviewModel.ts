@@ -286,7 +286,7 @@ export function setupSteps({
   const withLogs = traced.filter((r) => r.sources.has("logs"));
   const withProfiles = traced.filter((r) => r.sources.has("profiles"));
   const instrument = {
-    label: "Open Instrumentation",
+    label: "Send data",
     href: "/instrumentation",
   };
 

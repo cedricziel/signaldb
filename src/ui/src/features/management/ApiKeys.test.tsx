@@ -23,7 +23,7 @@ function ApiKeysHarness({ state }: { state: ExploreState }) {
       <Routes>
         <Route element={outletContextRoute(state)}>
           <Route path="/api-keys" element={<ApiKeys />} />
-          <Route path="/logs" element={<div>Logs page</div>} />
+          <Route path="/overview" element={<div>Home page</div>} />
         </Route>
       </Routes>
     </MemoryRouter>
@@ -42,7 +42,7 @@ function renderApiKeys(state: Partial<ExploreState> = {}) {
       <Routes>
         <Route element={outletContextRoute(contextState)}>
           <Route path="/api-keys" element={<ApiKeys />} />
-          <Route path="/logs" element={<div>Logs page</div>} />
+          <Route path="/overview" element={<div>Home page</div>} />
         </Route>
       </Routes>
     </MemoryRouter>,
@@ -125,24 +125,24 @@ afterEach(() => {
 const API_KEYS_PATH = "/api/v1/tenants/acme/api-keys";
 
 describe("ApiKeys page", () => {
-  it("redirects to /logs when user is not admin", async () => {
+  it("redirects home to /overview when user is not admin", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI_NON_ADMIN }]);
     renderApiKeys();
 
     await waitFor(() =>
-      expect(screen.getByText("Logs page")).toBeInTheDocument(),
+      expect(screen.getByText("Home page")).toBeInTheDocument(),
     );
     expect(screen.queryByText("API keys")).not.toBeInTheDocument();
   });
 
-  it("shows an inline error on a non-401 whoami failure instead of redirecting to /logs", async () => {
+  it("shows an inline error on a non-401 whoami failure instead of redirecting home", async () => {
     stubFetchRoutes([
       { match: "/api/v1/whoami", body: { error: "boom" }, status: 500 },
     ]);
     renderApiKeys();
 
     expect(await screen.findByRole("alert")).toHaveTextContent(/500/);
-    expect(screen.queryByText("Logs page")).not.toBeInTheDocument();
+    expect(screen.queryByText("Home page")).not.toBeInTheDocument();
   });
 
   it("refetches whoami under its own key when the outlet tenant changes", async () => {

@@ -7,16 +7,24 @@ const item = (label: string, meta = "x") => ({
   href: `/${label}`,
 });
 
+const page = (label: string, group: string) => ({
+  ...item(label, group.toLowerCase()),
+  group,
+});
+
 const SOURCES: PaletteSources = {
   pages: [
-    "Errors",
-    "Catalog",
-    "Logs",
-    "Traces",
-    "Metrics",
-    "Profiles",
-    "Query",
-  ].map((l) => item(l, "page")),
+    page("Errors", "Monitor"),
+    page("Catalog", "Monitor"),
+    page("Logs", "Investigate"),
+    page("Traces", "Investigate"),
+    page("Metrics", "Investigate"),
+    page("Profiles", "Investigate"),
+    page("Query", "Investigate"),
+    page("Runs", "Evaluate"),
+    page("Send data", "Configure"),
+    page("API keys", "Settings"),
+  ],
   services: ["checkout", "cart", "payments"].map((l) => item(l, "service")),
   rumApps: ["storefront-web", "admin-web"].map((l) => item(l, "app")),
   recent: ["level=error", "service.name=checkout", "a", "b"].map((l) =>
@@ -34,11 +42,15 @@ const titles = (q: string) =>
   buildPaletteGroups(q, SOURCES).map((g) => g.title);
 
 describe("buildPaletteGroups", () => {
-  it("lists recent queries (3), pages (6) and actions (3) for an empty query", () => {
+  it("lists every page by its nav group, then recent queries (3) and actions (3), for an empty query", () => {
     const groups = buildPaletteGroups("  ", SOURCES);
     expect(groups.map((g) => [g.title, g.items.length])).toEqual([
+      ["Monitor", 2],
+      ["Investigate", 5],
+      ["Evaluate", 1],
+      ["Configure", 1],
+      ["Settings", 1],
       ["Recent queries", 3],
-      ["Pages", 6],
       ["Actions", 3],
     ]);
   });
@@ -46,7 +58,10 @@ describe("buildPaletteGroups", () => {
   it("substring-matches every source, hiding empty groups", () => {
     expect(titles("check")).toEqual(["Services", "Recent queries"]);
     const [pages] = buildPaletteGroups("TRA", SOURCES);
-    expect(pages).toEqual({ title: "Pages", items: [item("Traces", "page")] });
+    expect(pages).toEqual({
+      title: "Pages",
+      items: [page("Traces", "Investigate")],
+    });
   });
 
   it("matches frontend apps with RUM data", () => {

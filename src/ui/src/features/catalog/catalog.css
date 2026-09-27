@@ -117,7 +117,7 @@
 }
 
 .catalog-breadcrumb button {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .catalog-breadcrumb button:hover {
@@ -252,7 +252,7 @@
 }
 
 .dep-database {
-  background: var(--svc-a);
+  background: var(--svc-i);
 }
 
 .dep-http {
@@ -264,7 +264,7 @@
 }
 
 .dep-messaging {
-  background: var(--svc-d);
+  background: var(--svc-g);
 }
 
 .dep-other {

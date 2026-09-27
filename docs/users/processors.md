@@ -250,7 +250,7 @@ catalogue](mcp.md#what-it-exposes).
 
 ## Explore UI
 
-`/processors` (linked from the user menu) lists the tenant's processors —
+`/processors` (**Configure → Processors** in the sidebar) lists the tenant's processors —
 name, signal, dataset, enabled, priority, status (`ok`/`invalid`), last
 update — and, for tenant admins, an editor: one statement per line, validated
 on blur against `:validate` with inline per-line errors, and a **Test** panel

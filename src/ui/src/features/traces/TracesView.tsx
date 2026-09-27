@@ -120,6 +120,7 @@ import { MemberTable } from "../../components/MemberTable";
 // owns the import too rather than assuming a parent already loaded it.
 import "../explore/explore.css";
 import "./traces.css";
+import { useBreadcrumbLeaf } from "../shell/breadcrumbLeaf";
 
 interface Props {
   state: ExploreState;
@@ -933,6 +934,7 @@ function GroupDetail({
 }
 
 function TraceDetail({ state, update }: Props) {
+  useBreadcrumbLeaf(state.trace.slice(0, 8));
   const [selected, setSelected] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<TraceViewMode>("waterfall");
   // Set by clicking a service node in the map; narrows the waterfall to

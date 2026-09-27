@@ -18,6 +18,7 @@ import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
 import { ExploreView } from "../explore/ExploreView";
 import { AppShell } from "./AppShell";
+import type { PageId } from "./navModel";
 
 const WHO = sampleWhoami();
 
@@ -106,10 +107,16 @@ function LogsPage() {
   );
 }
 
-function EmptyFrame() {
+function EmptyFrame({
+  page = "overview",
+  detail,
+}: {
+  page?: PageId;
+  detail?: string;
+}) {
   return (
     <QueryClientProvider client={testQueryClient()}>
-      <AppShell page="overview" who={WHO}>
+      <AppShell page={page} detail={detail} who={WHO}>
         <div style={{ padding: "var(--gutter)" }}>
           <h1 style={{ fontSize: "var(--text-title)", margin: 0 }}>
             Page title
@@ -163,4 +170,10 @@ export const Dark: Story = {
 
 export const BlankPage: Story = {
   render: () => <EmptyFrame />,
+};
+
+/** A detail view: the breadcrumb gains a leaf after the page, and the page
+ * crumb links back to its section. */
+export const DetailPage: Story = {
+  render: () => <EmptyFrame page="traces" detail="4bf92f35" />,
 };

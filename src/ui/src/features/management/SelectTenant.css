@@ -80,7 +80,7 @@
 .tenant-role {
   font-family: var(--mono);
   font-size: 11px;
-  color: var(--faint);
+  color: var(--dim);
   background: var(--surface2);
   border-radius: 4px;
   padding: 2px 6px;
@@ -137,5 +137,5 @@
 
 .dataset-default {
   font-size: 10px;
-  color: var(--faint);
+  color: var(--dim);
 }

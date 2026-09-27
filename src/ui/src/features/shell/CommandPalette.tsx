@@ -18,7 +18,7 @@ import {
   type ExploreState,
 } from "../../lib/urlState";
 import { NavIcon } from "./NavIcon";
-import { MANAGE_PAGE, NAV_GROUPS, pageHref } from "./navModel";
+import { pageHref, visibleNavGroups } from "./navModel";
 import {
   buildPaletteGroups,
   type PaletteItem,
@@ -28,10 +28,11 @@ import {
 interface Props {
   state: ExploreState;
   canManage: boolean;
+  isDemo: boolean;
   onClose: () => void;
 }
 
-export function CommandPalette({ state, canManage, onClose }: Props) {
+export function CommandPalette({ state, canManage, isDemo, onClose }: Props) {
   const navigate = useNavigate();
   const inputRef = useRef<HTMLInputElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
@@ -59,16 +60,17 @@ export function CommandPalette({ state, canManage, onClose }: Props) {
   );
 
   const sources: PaletteSources = useMemo(() => {
-    const pages: PaletteItem[] = NAV_GROUPS.flatMap((g) =>
+    const pages: PaletteItem[] = visibleNavGroups({
+      canManage,
+      isDemo,
+    }).flatMap((g) =>
       g.pages.map((p) => ({
         label: p.label,
         meta: g.title.toLowerCase(),
         href: pageHref(p, state),
+        group: g.title,
       })),
     );
-    if (canManage) {
-      pages.push({ label: MANAGE_PAGE.label, meta: "admin", href: "/manage" });
-    }
     // Every Real users tab (`rumModel.ts`'s `RUM_TABS`) — a later group's
     // new tab shows up here automatically.
     const rumSearch = crossSignalSearch(state);
@@ -77,6 +79,7 @@ export function CommandPalette({ state, canManage, onClose }: Props) {
         label: `Real users: ${t.label}`,
         meta: "real users",
         href: `/rum/${t.id}${rumSearch}`,
+        group: "Monitor",
       });
     }
     const actions: PaletteItem[] = [
@@ -108,7 +111,7 @@ export function CommandPalette({ state, canManage, onClose }: Props) {
       },
     ];
     return { pages, services, rumApps, recent, actions };
-  }, [state, canManage, services, rumApps, recent]);
+  }, [state, canManage, isDemo, services, rumApps, recent]);
 
   const groups = buildPaletteGroups(query, sources);
   const flat = groups.flatMap((g) => g.items);

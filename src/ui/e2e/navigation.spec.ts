@@ -109,11 +109,11 @@ test("the sidebar gives way to a top bar and drawer on a phone", async ({
   ).toHaveCount(0);
 });
 
-test("an unknown path redirects to /logs, preserving the query string", async ({
+test("an unknown path redirects home to /overview, preserving the query string", async ({
   page,
 }) => {
   await page.goto("/bogus?range=15m");
-  await expect(page).toHaveURL(/\/logs\?range=15m$/);
+  await expect(page).toHaveURL(/\/overview\?range=15m$/);
 });
 
 test("/ redirects to /overview, preserving the query string", async ({
@@ -123,13 +123,13 @@ test("/ redirects to /overview, preserving the query string", async ({
   await expect(page).toHaveURL(/\/overview\?tenant=homelab&dataset=default$/);
 });
 
-test("/manage redirects unauthenticated visitors to /logs", async ({
+test("/manage redirects unauthenticated visitors home to /overview", async ({
   page,
 }) => {
   // No mocks: whoami naturally fails without a backend, so this exercises
   // the same "not an admin" redirect path as an authenticated non-admin.
   await page.goto("/manage");
-  await expect(page).toHaveURL(/\/logs$/);
+  await expect(page).toHaveURL(/\/overview$/);
 });
 
 test("an admin can open /manage and the back button returns them", async ({

@@ -14,6 +14,7 @@ import { TestPanel } from "./TestPanel";
 import { useProcessorsSession } from "./useProcessorsSession";
 import { toErrorMessage } from "../../api/http";
 import "./processors.css";
+import { useBreadcrumbLeaf } from "../shell/breadcrumbLeaf";
 
 const SIGNALS = ["traces", "logs", "metrics"] as const;
 type Signal = (typeof SIGNALS)[number];
@@ -31,6 +32,7 @@ export function ProcessorEditor() {
   const { name } = useParams<{ name?: string }>();
   const { isTenantAdmin, isLoading, tenant, datasets } = useProcessorsSession();
   const editing = name !== undefined;
+  useBreadcrumbLeaf(name ?? "New processor");
   const stored = useQuery({
     queryKey: ["processors", tenant, name],
     queryFn: () => getProcessor(name!),

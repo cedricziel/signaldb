@@ -836,6 +836,58 @@ impl SchemaResolver {
         self.logical_schema.resolve(&self.source, field).is_some()
     }
 
+    /// The distinct attribute levels (among this source's containers) that
+    /// have a committed canonical type for `key` — the "exactly one level"
+    /// test a legacy `label_<key>` column must pass before it's trusted (see
+    /// [`Self::promoted_for`]): the compactor backfills `label_<key>`
+    /// resource→scope→record while an unqualified read coalesces
+    /// record→scope→resource, so a `label_<key>` shared by more than one
+    /// level can silently hold a different level's value than the one being
+    /// read.
+    fn attribute_levels_with_type(
+        &self,
+        types: &CanonicalTypes,
+        key: &str,
+    ) -> std::collections::HashSet<AttributeLevel> {
+        self.containers
+            .iter()
+            .map(|c| typed_attributes::container_level(c))
+            .filter(|level| types.get(*level, key).is_some())
+            .collect()
+    }
+
+    /// The promoted column backing one typed home (`container` at `level`,
+    /// canonical type `canonical`, attribute `key`), if any: a per-level
+    /// `attr_<level>_<key>` column, when it's present in the scanned schema
+    /// with the canonical type's own Arrow type — a mismatched-type column
+    /// (e.g. left over from a repinned type) is never trusted. Falling that,
+    /// a legacy `label_<key>` column stands in for a `String`-canonical home
+    /// but only when `single_level` (the key is recorded at exactly one
+    /// level) — see [`Self::attribute_levels_with_type`].
+    fn promoted_for(
+        &self,
+        level: AttributeLevel,
+        canonical: CanonicalType,
+        key: &str,
+        single_level: bool,
+    ) -> Option<String> {
+        let column = common::schema::promoted_attr_column(level, key);
+        let expected = logical_to_value_type(canonical.into());
+        if self.columns.get(&column) == Some(&expected) {
+            return Some(column);
+        }
+        if canonical != CanonicalType::String || !single_level {
+            return None;
+        }
+        let materialized = common::schema::materialized_column_name(key);
+        (self.columns.contains_key(&materialized)
+            && !common::schema::has_colliding_materialized_variant(
+                &materialized,
+                self.columns.keys().map(String::as_str),
+            ))
+        .then_some(materialized)
+    }
+
     /// Resolve an unpromoted attribute against the typed layout's committed
     /// canonical homes (task 4.4), or `None` when there's nothing typed to
     /// resolve against — no `with_typed` types, or `field`'s container isn't
@@ -843,15 +895,6 @@ impl SchemaResolver {
     /// `JsonPath` coalesce.
     fn typed_attribute(&self, field: &str) -> Option<Resolved> {
         let types = self.typed.as_ref()?;
-        let promoted_label = |canonical: CanonicalType, key: &str| -> Option<String> {
-            if canonical != CanonicalType::String {
-                return None;
-            }
-            let materialized = common::schema::materialized_column_name(key);
-            self.columns
-                .contains_key(&materialized)
-                .then_some(materialized)
-        };
 
         if let Some((container, bare)) = strip_scope_qualifier(self.attr_prefixes, field) {
             if !has_typed_container(self.physical_names.iter().map(String::as_str), container) {
@@ -859,15 +902,18 @@ impl SchemaResolver {
             }
             let level = typed_attributes::container_level(container);
             return Some(match types.get(level, bare) {
-                Some(canonical) => Resolved::TypedAttribute {
-                    homes: vec![home_column(container, canonical)],
-                    promoted: promoted_label(canonical, bare),
-                    key: bare.to_string(),
-                    value_type: logical_to_value_type(canonical.into()),
-                },
+                Some(canonical) => {
+                    let single_level = self.attribute_levels_with_type(types, bare).len() == 1;
+                    Resolved::TypedAttribute {
+                        homes: vec![home_column(container, canonical)],
+                        promoted: vec![self.promoted_for(level, canonical, bare, single_level)],
+                        key: bare.to_string(),
+                        value_type: logical_to_value_type(canonical.into()),
+                    }
+                }
                 None => Resolved::TypedAttribute {
                     homes: Vec::new(),
-                    promoted: None,
+                    promoted: Vec::new(),
                     key: bare.to_string(),
                     value_type: ValueType::String,
                 },
@@ -890,19 +936,25 @@ impl SchemaResolver {
         else {
             return Some(Resolved::TypedAttribute {
                 homes: Vec::new(),
-                promoted: None,
+                promoted: Vec::new(),
                 key: field.to_string(),
                 value_type: ValueType::String,
             });
         };
-        let homes = by_level
+        let single_level = self.attribute_levels_with_type(types, field).len() == 1;
+        let (homes, promoted): (Vec<String>, Vec<Option<String>>) = by_level
             .iter()
             .filter(|(_, level)| types.get(*level, field) == Some(canonical))
-            .map(|(container, _)| home_column(container, canonical))
-            .collect();
+            .map(|(container, level)| {
+                (
+                    home_column(container, canonical),
+                    self.promoted_for(*level, canonical, field, single_level),
+                )
+            })
+            .unzip();
         Some(Resolved::TypedAttribute {
             homes,
-            promoted: promoted_label(canonical, field),
+            promoted,
             key: field.to_string(),
             value_type: logical_to_value_type(canonical.into()),
         })
@@ -1846,7 +1898,7 @@ impl Lowering<'_> {
                 key,
                 value_type,
             }) => Ok((
-                self.typed_attribute_expr(&homes, promoted.as_deref(), &key, PARENT_COLUMN_PREFIX),
+                self.typed_attribute_expr(&homes, &promoted, &key, PARENT_COLUMN_PREFIX),
                 value_type,
                 false,
             )),
@@ -2749,7 +2801,7 @@ impl Lowering<'_> {
                 promoted,
                 key,
                 ..
-            }) => Ok(self.typed_attribute_expr(&homes, promoted.as_deref(), &key, "")),
+            }) => Ok(self.typed_attribute_expr(&homes, &promoted, &key, "")),
             // Retrieval-only, like `SpanEvents`; `is_filterable` rejects it
             // as a value position at validation time, so unreachable here.
             Some(Resolved::AttributeBag { container }) => Err(QuerierError::InvalidInput(format!(
@@ -2844,7 +2896,7 @@ impl Lowering<'_> {
     fn typed_attribute_expr(
         &self,
         homes: &[String],
-        promoted: Option<&str>,
+        promoted: &[Option<String>],
         key: &str,
         prefix: &str,
     ) -> Expr {
@@ -2954,7 +3006,7 @@ impl Lowering<'_> {
                     promoted,
                     key,
                     ..
-                } => self.typed_attribute_expr(homes, promoted.as_deref(), key, ""),
+                } => self.typed_attribute_expr(homes, promoted, key, ""),
                 // Retrieval-only, unreachable for a validated document (see
                 // the `value_expr` arm above); a NULL literal, not a panic.
                 Resolved::AttributeBag { .. } => lit(ScalarValue::Utf8(None)),
@@ -3204,7 +3256,7 @@ impl Lowering<'_> {
                                 key,
                                 ..
                             }) => self
-                                .typed_attribute_expr(&homes, promoted.as_deref(), &key, "")
+                                .typed_attribute_expr(&homes, &promoted, &key, "")
                                 .alias(safe_ident(f)),
                             None => ident(safe_ident(f)),
                         }
@@ -6163,7 +6215,7 @@ mod tests {
                     "same-typed levels coalesce in container order, the \
                      differently-typed resource level is excluded"
                 );
-                assert_eq!(promoted, None);
+                assert_eq!(promoted, vec![None, None]);
                 assert_eq!(key, "priority");
                 assert_eq!(value_type, ValueType::Int64);
             }
@@ -6194,7 +6246,7 @@ mod tests {
                 ..
             }) => {
                 assert!(homes.is_empty());
-                assert_eq!(promoted, None);
+                assert!(promoted.is_empty());
                 assert_eq!(value_type, ValueType::String);
             }
             other => panic!("expected a typed null, got {other:?}"),

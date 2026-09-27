@@ -48,7 +48,7 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 12px 40px rgb(0 0 0 / 10%);
+  box-shadow: 0 12px 40px color-mix(in srgb, var(--shadow) 10%, transparent);
 }
 
 .login-card h1 {
@@ -59,7 +59,7 @@
 }
 
 .login-card a:not(.login-sso) {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .login-foot {

@@ -184,7 +184,7 @@ impl ParquetRewriter {
                 stats_acc.push_batch(&batch);
             }
         }
-        let (attr_stats, rows_read) = stats_acc.finish();
+        let (attr_stats, rows_read, attr_level_presence) = stats_acc.finish();
 
         if rows_read == 0 {
             tracing::info!(
@@ -207,6 +207,7 @@ impl ParquetRewriter {
                     dataset,
                     &table_name,
                     &attr_stats,
+                    &attr_level_presence,
                     rows_read,
                 )
                 .await;

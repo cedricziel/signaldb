@@ -39,7 +39,7 @@ function renderGitHubIntegration(
       <Routes>
         <Route element={outletContextRoute(contextState)}>
           <Route path="/integrations/github" element={<GitHubIntegration />} />
-          <Route path="/logs" element={<div>Logs page</div>} />
+          <Route path="/overview" element={<div>Home page</div>} />
         </Route>
       </Routes>
     </MemoryRouter>,
@@ -115,12 +115,12 @@ afterEach(() => {
 });
 
 describe("GitHubIntegration page", () => {
-  it("redirects to /logs when user is not admin", async () => {
+  it("redirects home to /overview when user is not admin", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI_NON_ADMIN }]);
     renderGitHubIntegration();
 
     await waitFor(() =>
-      expect(screen.getByText("Logs page")).toBeInTheDocument(),
+      expect(screen.getByText("Home page")).toBeInTheDocument(),
     );
     expect(screen.queryByText("GitHub")).not.toBeInTheDocument();
   });
