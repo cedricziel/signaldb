@@ -15,7 +15,7 @@ echo "Note: All checks are fatal - any failure will prevent commit"
 staged=$(git diff --cached --name-only --diff-filter=ACMR)
 
 rust_staged=$(echo "$staged" | grep -E '\.rs$|(^|/)Cargo\.(toml|lock)$|^deny\.toml$|^rustfmt\.toml$|^\.cargo-husky/' || true)
-ui_staged=$(echo "$staged" | grep -E '^src/ui/' || true)
+ui_staged=$(echo "$staged" | grep -E '^src/ui/' | grep -vE '\.md$' || true)
 
 if [ -n "$rust_staged" ]; then
     # Check code formatting first (fastest check, most common failure)
