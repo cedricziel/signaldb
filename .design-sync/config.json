@@ -171,7 +171,7 @@
     },
     "AgentsScoresView": {
       "cardMode": "single",
-      "viewport": "1280x900",
+      "viewport": "1280x1000",
       "primaryStory": "Default"
     },
     "RunsView": {
