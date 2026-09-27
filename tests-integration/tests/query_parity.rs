@@ -328,6 +328,37 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
         CliSurface::Path(&["admin", "processors", "delete"]),
         "delete_processor",
     ),
+    // ---- Eval sets ----
+    (
+        "list_eval_sets",
+        CliSurface::Path(&["eval-sets", "list"]),
+        "list_eval_sets",
+    ),
+    (
+        "get_eval_set",
+        CliSurface::Path(&["eval-sets", "get"]),
+        "get_eval_set",
+    ),
+    (
+        "create_eval_set",
+        CliSurface::Path(&["admin", "eval-sets", "create"]),
+        "create_eval_set",
+    ),
+    (
+        "replace_eval_set",
+        CliSurface::Path(&["admin", "eval-sets", "replace"]),
+        "replace_eval_set",
+    ),
+    (
+        "delete_eval_set",
+        CliSurface::Path(&["admin", "eval-sets", "delete"]),
+        "delete_eval_set",
+    ),
+    (
+        "append_eval_cases",
+        CliSurface::Path(&["admin", "eval-sets", "append"]),
+        "append_eval_cases",
+    ),
     // ---- Query languages (also covered by the language-specific assertions
     // below) ----
     ("search", CliSurface::QueryFlag("traceql"), "search_traces"),
