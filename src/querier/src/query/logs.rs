@@ -91,10 +91,8 @@ const KNOWN_LABELS: &[&str] = &[
     "trace_id",
 ];
 
-/// Columns whose distinct values define a series' identity. Pinned against
-/// `ql_ir::STREAM_IDENTITY` (design D7 of `ir-single-lowering`) by
-/// `differential::ql_ir_stream_identity_matches_series_columns`, so the two
-/// constants cannot drift apart unnoticed.
+/// Columns whose distinct values define a series' identity. Must stay in
+/// step with `ql_ir::STREAM_IDENTITY` (design D7 of `ir-single-lowering`).
 pub(super) const SERIES_COLUMNS: &[&str] = &["service_name", "severity_text"];
 
 /// Scan direction for a log query.
@@ -898,12 +896,6 @@ impl LogsService {
 /// `body` projection is (issue #1410 — ingest JSON-encodes `body`, so a
 /// plain string value must come back decoded on every path that projects
 /// it), everything else is projected as-is.
-///
-/// `pub(crate)` and shared with the `differential` test harness
-/// (`old_logql_log_plan`), which pins its hand-built "old path" plan against
-/// this file's IR-routed plan at the optimized-plan-text level — sharing
-/// this function is what keeps that pin from drifting the moment either
-/// side changes how `body` is projected.
 pub(crate) fn log_query_projection(columns: &[&str]) -> Vec<Expr> {
     columns
         .iter()
