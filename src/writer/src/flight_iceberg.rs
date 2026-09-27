@@ -27,7 +27,7 @@ use bytes::Bytes;
 use common::CatalogManager;
 use common::config::WriterConfig;
 use common::flight::decode::flight_data_vec_to_batches;
-use common::ingest_dedup::{Clock, IngestDedup, SystemClock};
+use common::ingest_dedup::{Clock, IngestDedup, SystemClock, ingest_id_from_metadata};
 use common::schema::type_authority::TypeAuthority;
 use common::wal::manager::WalManager;
 use common::wal::{WalOperation, record_batch_to_bytes};
@@ -187,15 +187,7 @@ impl IcebergWriterFlightService {
                 }
             };
             for entry in entries {
-                let Some(ingest_id) = entry
-                    .metadata
-                    .as_deref()
-                    .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
-                    .and_then(|v| {
-                        v.get("ingest_id")
-                            .and_then(|v| v.as_str().map(str::to_string))
-                    })
-                    .and_then(|s| uuid::Uuid::parse_str(&s).ok())
+                let Some(ingest_id) = entry.metadata.as_deref().and_then(ingest_id_from_metadata)
                 else {
                     continue;
                 };

@@ -24,6 +24,20 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use uuid::Uuid;
 
+/// The `ingest_id` recorded in a WAL entry's metadata JSON, if any. The
+/// acceptor stores the batch fingerprint there so its retry consumer forwards
+/// under the same id as the hot path; the writer stores the id it received so
+/// a restart can rebuild its cache. Missing or unparseable ids read as `None`.
+pub fn ingest_id_from_metadata(metadata_json: &str) -> Option<Uuid> {
+    #[derive(serde::Deserialize)]
+    struct IngestIdOnly {
+        ingest_id: Option<Uuid>,
+    }
+    serde_json::from_str::<IngestIdOnly>(metadata_json)
+        .ok()?
+        .ingest_id
+}
+
 /// A source of wall-clock time, injectable so tests can move past the dedup
 /// window instantly instead of sleeping for it.
 pub trait Clock: Send + Sync {
@@ -180,6 +194,20 @@ impl IngestDedup {
 mod tests {
     use super::*;
     use std::sync::Mutex as StdMutex;
+
+    #[test]
+    fn ingest_id_is_read_back_from_wal_metadata() {
+        let id = Uuid::new_v4();
+        let metadata = format!(r#"{{"signal_type":"traces","ingest_id":"{id}"}}"#);
+
+        assert_eq!(ingest_id_from_metadata(&metadata), Some(id));
+        assert_eq!(ingest_id_from_metadata(r#"{"signal_type":"traces"}"#), None);
+        assert_eq!(
+            ingest_id_from_metadata(r#"{"ingest_id":"not-a-uuid"}"#),
+            None
+        );
+        assert_eq!(ingest_id_from_metadata("not json"), None);
+    }
 
     /// A clock whose value is set explicitly by the test, so window expiry
     /// can be asserted without sleeping.
