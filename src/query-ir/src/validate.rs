@@ -2142,7 +2142,7 @@ mod tests {
             if source == self.source && field == self.field {
                 return Some(Resolved::TypedAttribute {
                     homes: vec!["log_attributes_int".to_string()],
-                    promoted: None,
+                    promoted: vec![None],
                     key: field.to_string(),
                     value_type: self.value_type.clone(),
                 });

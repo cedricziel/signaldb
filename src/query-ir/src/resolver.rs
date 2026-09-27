@@ -76,15 +76,19 @@ pub enum Resolved {
     /// `otel-native-schema` task 4.4. `homes` lists every home column to
     /// coalesce, in resolution order (more than one when the same key is
     /// recorded with the same canonical type at more than one attribute
-    /// level); `promoted` is the `label_<key>` column that shadows them when
-    /// `value_type` is `String` and the column exists. Unlike `JsonPath`,
-    /// this carries the registry's *committed* canonical type — authoritative,
-    /// not advisory (see [`Self::is_advisory_type`]): the writer's type
-    /// authority already settled `key`'s type before this row was written, so
-    /// there is no untyped fallback left to hedge against.
+    /// level); `promoted` carries each home's own promoted column, in the
+    /// same order as `homes` (`homes[i]`'s promoted column, if any, is
+    /// `promoted[i]`) — a per-level `attr_<level>_<key>` column when present
+    /// with a matching Arrow type, or (only for a `String` canonical type
+    /// recorded at exactly one level) the legacy `label_<key>` column.
+    /// Unlike `JsonPath`, this carries the registry's *committed* canonical
+    /// type — authoritative, not advisory (see [`Self::is_advisory_type`]):
+    /// the writer's type authority already settled `key`'s type before this
+    /// row was written, so there is no untyped fallback left to hedge
+    /// against.
     TypedAttribute {
         homes: Vec<String>,
-        promoted: Option<String>,
+        promoted: Vec<Option<String>>,
         key: String,
         value_type: ValueType,
     },

@@ -276,7 +276,8 @@ mod tests {
             home_column("span_attributes", CanonicalType::Int64),
             home_column("resource_attributes", CanonicalType::Int64),
         ];
-        let expr = common::attrs::expr::typed_home_expr(&homes, None, "status", "").eq(lit(200i64));
+        let expr = common::attrs::expr::typed_home_expr(&homes, &[None, None], "status", "")
+            .eq(lit(200i64));
         let clauses = probe_clauses(&[expr]);
         assert_eq!(clauses.len(), 1);
         assert_eq!(
@@ -292,8 +293,8 @@ mod tests {
         // match `recognize_same_typed_homes` and the predicate is dropped
         // rather than guessed at.
         let homes = vec![home_column("span_attributes", CanonicalType::String)];
-        let expr = common::attrs::expr::typed_home_expr(&homes, Some("label_host"), "host", "")
-            .eq(lit("a"));
+        let promoted = vec![Some("label_host".to_string())];
+        let expr = common::attrs::expr::typed_home_expr(&homes, &promoted, "host", "").eq(lit("a"));
         assert!(probe_clauses(&[expr]).is_empty());
     }
 
