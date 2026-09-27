@@ -1,25 +1,23 @@
-// The app frame — sidebar nav + page header + a content view — the
-// "canvas" every generated page design drops into (see the
-// shell/login-stories task). Composed from the real components rather than
-// a placeholder: the real `App` shell (whoami/session hooks) with
-// ExploreView on the logs route, using LogsView.stories's fixtures.
+// The app frame (sidebar, page header, ⌘K palette) every page renders
+// inside. `Default`/`Dark` show it around the real logs view; `Blank Page`
+// renders it with no router or backend at all, the way a design built from
+// the design system uses it.
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import { MemoryRouter, Route, Routes } from "react-router";
-import { App } from "../../App";
-import { useOutletState } from "../../lib/outletState";
 import { testQueryClient } from "../../lib/queryClient";
+import { useExploreState } from "../../lib/urlState";
 import {
   describeFieldsResponse,
   irLogRowsResponse,
   irLogVolumeResponse,
-  sampleCurrentSession,
   sampleWhoami,
   type JsonRoute,
 } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
-import { ExploreView } from "./ExploreView";
+import { ExploreView } from "../explore/ExploreView";
+import { AppShell } from "./AppShell";
 
 const WHO = sampleWhoami();
 
@@ -68,8 +66,6 @@ function buildVolume() {
 }
 
 const routes: JsonRoute[] = [
-  { match: "/api/v1/whoami", body: WHO },
-  { match: "/ui/session", method: "GET", body: sampleCurrentSession(WHO) },
   {
     match: "/api/v1/query",
     bodyMatch: isRowsQuery,
@@ -87,20 +83,22 @@ const routes: JsonRoute[] = [
   },
 ];
 
-function ExploreOutlet() {
-  const { state, update } = useOutletState();
-  return <ExploreView state={state} update={update} />;
+function LogsInShell() {
+  const [state, update] = useExploreState();
+  return (
+    <AppShell who={WHO} state={state} update={update}>
+      <ExploreView state={state} update={update} />
+    </AppShell>
+  );
 }
 
-function AppShellPage() {
+function LogsPage() {
   return (
     <StoryFetchStub routes={routes}>
       <QueryClientProvider client={testQueryClient()}>
         <MemoryRouter initialEntries={["/logs?tenant=acme&dataset=production"]}>
           <Routes>
-            <Route path="/" element={<App />}>
-              <Route path=":signal" element={<ExploreOutlet />} />
-            </Route>
+            <Route path=":signal" element={<LogsInShell />} />
           </Routes>
         </MemoryRouter>
       </QueryClientProvider>
@@ -108,8 +106,36 @@ function AppShellPage() {
   );
 }
 
+function EmptyFrame() {
+  return (
+    <QueryClientProvider client={testQueryClient()}>
+      <AppShell page="overview" who={WHO}>
+        <div style={{ padding: "var(--gutter)" }}>
+          <h1 style={{ fontSize: "var(--text-title)", margin: 0 }}>
+            Page title
+          </h1>
+          <p style={{ color: "var(--dim)", margin: "4px 0 var(--gutter)" }}>
+            A page's own content goes in the main column.
+          </p>
+          <section
+            style={{
+              background: "var(--surface)",
+              border: "1px solid var(--border)",
+              borderRadius: 6,
+              padding: "var(--gutter)",
+              color: "var(--dim)",
+            }}
+          >
+            Panel
+          </section>
+        </div>
+      </AppShell>
+    </QueryClientProvider>
+  );
+}
+
 const meta = {
-  title: "Pages/App Shell",
+  title: "Shell/App Shell",
   parameters: { layout: "fullscreen" },
   decorators: [
     (Story) => (
@@ -118,19 +144,23 @@ const meta = {
       </div>
     ),
   ],
-} satisfies Meta<typeof AppShellPage>;
+} satisfies Meta<typeof LogsPage>;
 
 export default meta;
 type Story = StoryObj<typeof meta>;
 
 export const Default: Story = {
-  render: () => <AppShellPage />,
+  render: () => <LogsPage />,
 };
 
 export const Dark: Story = {
   render: () => (
     <DarkScope>
-      <AppShellPage />
+      <LogsPage />
     </DarkScope>
   ),
+};
+
+export const BlankPage: Story = {
+  render: () => <EmptyFrame />,
 };
