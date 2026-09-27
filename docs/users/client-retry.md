@@ -141,3 +141,8 @@ Callers that consume the generated SDK's `RequestResult` (which returns an
 re-throws as the same `ApiError` — preserving the HTTP status and
 `retryAfterMs` — so a `429` surfaced from a management or session call is
 still recognised and backed off exactly like a raw `retryingFetch` rejection.
+
+A network failure that outlasts the retries can also mean a reverse proxy's
+login has expired. The UI checks for that separately and reloads the page
+once so the proxy can show its login; see
+[Updates](explore-ui.md#updates) in the Explore UI guide.
