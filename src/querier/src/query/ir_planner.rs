@@ -830,7 +830,7 @@ impl TableProvider for CoercedTableProvider {
 
 /// `ir_json_to_map(Utf8) -> Map<Utf8,Utf8>`: decodes a legacy JSON-string
 /// attribute document into the typed map form (non-string JSON values are
-/// stringified, as the writer's `json_strings_to_map_array` does), producing
+/// stringified), producing
 /// exactly the `target` map type — matching a sibling table's own map
 /// (`union_target_types`) when unioning several tables, or a canonical
 /// `Map<Utf8,Utf8>` (`utf8_map_type`) when there is no sibling to match, only
