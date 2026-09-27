@@ -3,6 +3,7 @@ pub mod completions;
 pub mod dataset;
 pub mod discover;
 pub mod eval_sets;
+pub mod evals;
 pub mod ops;
 pub mod processors;
 pub mod profiles;
@@ -191,6 +192,12 @@ enum Commands {
         #[command(subcommand)]
         action: eval_sets::EvalSetsAction,
     },
+    /// Agent eval results: upload a JSONL/CSV results file as a run, with
+    /// `--fail-if` gates for CI
+    Evals {
+        #[command(subcommand)]
+        action: evals::EvalsAction,
+    },
     /// Administrative operations (tenants, API keys, datasets, schema registries)
     Admin {
         #[command(subcommand)]
@@ -355,6 +362,10 @@ impl Cli {
             return action.run().await;
         }
 
+        if let Commands::Evals { action } = self.command {
+            return action.run().await;
+        }
+
         // The `tenant` group and `whoami` authenticate with a tenant API key
         // (management API / `/api/v1/whoami`), like `discover` and `schema`
         // above — never the instance admin key `admin` uses.
@@ -466,6 +477,7 @@ impl Cli {
             Commands::Profiles { .. } => unreachable!(),
             Commands::Processors { .. } => unreachable!(),
             Commands::EvalSets { .. } => unreachable!(),
+            Commands::Evals { .. } => unreachable!(),
             Commands::Completions { .. } => unreachable!(),
             Commands::Tui { .. } => unreachable!(),
             Commands::Tenant { .. } => unreachable!(),
@@ -628,6 +640,30 @@ mod parse_tests {
         // --ir reads from --file or stdin, so the positional is optional.
         assert!(parse(&["signaldb-cli", "query", "--ir", "--file", "q.json"]).is_ok());
         assert!(parse(&["signaldb-cli", "query", "--ir"]).is_ok());
+    }
+
+    #[test]
+    fn evals_upload_takes_a_version_flag_of_its_own() {
+        assert!(
+            parse(&[
+                "signaldb-cli",
+                "evals",
+                "upload",
+                "r.csv",
+                "--agent",
+                "a",
+                "--version",
+                "v1",
+                "--set",
+                "golden",
+                "--fail-if",
+                "C.mean < 1",
+                "--fail-if",
+                "C.pass_rate < 1",
+            ])
+            .is_ok()
+        );
+        assert!(parse(&["signaldb-cli", "evals", "upload", "r.csv", "--agent", "a"]).is_err());
     }
 
     #[test]

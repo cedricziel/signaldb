@@ -21,6 +21,8 @@ crossterm.workspace = true
 tui-tree-widget.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
+url.workspace = true
+uuid.workspace = true
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 [lib]
