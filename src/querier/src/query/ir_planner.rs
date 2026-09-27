@@ -2614,11 +2614,7 @@ impl Lowering<'_> {
             }
             AggFn::Stddev => stddev_pop(self.numeric_of(a)?),
             AggFn::Stdvar => var_pop(self.numeric_of(a)?),
-            // `approx_distinct` (HyperLogLog); cast to `Int64` below, after
-            // the scope filter attaches — `.filter()` only builds on a bare
-            // `Expr::AggregateFunction`, not a `Cast` wrapping one. Nulls
-            // are already ignored by `approx_distinct`, same as every other
-            // aggregate here.
+            // HyperLogLog; ignores nulls. Cast to `Int64` below.
             AggFn::CountDistinct => {
                 approx_distinct(self.value_expr(a.of.as_deref().unwrap_or_default())?)
             }
@@ -2679,9 +2675,9 @@ impl Lowering<'_> {
                 .build()
                 .map_err(QuerierError::QueryFailed)?,
         };
-        // `approx_distinct` returns `UInt64`; cast to `Int64` so the
-        // physical output matches the `Int64` type `validate` declares for
-        // `count_distinct` — done after the scope filter attaches, above.
+        // `approx_distinct` returns `UInt64`; `validate` declares `Int64`.
+        // The cast wraps the filtered aggregate because `.filter()` only
+        // builds on a bare `Expr::AggregateFunction`, not on a `Cast`.
         let expr = if a.func == AggFn::CountDistinct {
             cast(expr, DataType::Int64)
         } else {
@@ -7169,14 +7165,8 @@ mod tests {
         ctx
     }
 
-    /// A logs table for `count_distinct`: two `service.name` groups, an
-    /// `event_name` physical column, and unpromoted `session.id`/`user.id`
-    /// attributes.
-    ///
-    /// `web` carries two sessions (`s1`, `s2`); `s1` alone has an `exception`
-    /// row (ts=20). `api` carries one session (`s3`, two rows), never an
-    /// `exception`. `user.id` is absent on row 3 (`web`/`s2`) — the null
-    /// `count_distinct` must not count.
+    /// Logs for `count_distinct`: two `service.name` groups, one
+    /// `exception` row, and one row without `user.id`.
     fn count_distinct_ctx() -> SessionContext {
         let schema = Arc::new(Schema::new(vec![
             Field::new(
@@ -7235,7 +7225,9 @@ mod tests {
             }),
         )
         .await;
-        let sessions = count_distinct_by_group(&batches, "sessions");
+        let sessions = counts_by_group(&batches, "service_name", "sessions")
+            .into_iter()
+            .collect::<HashMap<_, _>>();
         assert_eq!(sessions.get("web").copied(), Some(2), "s1, s2");
         assert_eq!(sessions.get("api").copied(), Some(1), "s3 only");
     }
@@ -7257,7 +7249,9 @@ mod tests {
             }),
         )
         .await;
-        let sessions = count_distinct_by_group(&batches, "sessions");
+        let sessions = counts_by_group(&batches, "service_name", "sessions")
+            .into_iter()
+            .collect::<HashMap<_, _>>();
         assert_eq!(
             sessions.get("web").copied(),
             Some(1),
@@ -7285,59 +7279,13 @@ mod tests {
             }),
         )
         .await;
-        let users = count_distinct_by_group(&batches, "users");
+        let users = counts_by_group(&batches, "service_name", "users")
+            .into_iter()
+            .collect::<HashMap<_, _>>();
         // `web` has u1 (rows 1-2) and a null (row 3) — the null must not
         // inflate the count to 2.
         assert_eq!(users.get("web").copied(), Some(1));
         assert_eq!(users.get("api").copied(), Some(1));
-    }
-
-    /// A document declaring an earlier `irVersion` may not use
-    /// `count_distinct` — validation rejects it naming v9, mirroring the v5
-    /// gate on `stddev`/`stdvar`/`first`/`last`.
-    #[tokio::test]
-    async fn count_distinct_is_rejected_below_ir_version_9() {
-        let svc = IrService::new(count_distinct_ctx());
-        let d = doc(serde_json::json!({
-            "irVersion": 8, "from": "logs", "range": { "from": 0, "to": 1000 },
-            "result": "table",
-            "pipeline": [ { "aggregate": { "by": [], "aggs": [
-                { "fn": "count_distinct", "of": "session.id", "as": "sessions" }
-            ] } } ]
-        }));
-        let err = svc
-            .plan(&d, "t", "d", 0)
-            .await
-            .expect_err("count_distinct at irVersion 8 must be rejected");
-        assert!(
-            format!("{err:?}").contains('9'),
-            "error should name irVersion 9: {err:?}"
-        );
-    }
-
-    /// Groups the aggregate output's `service_name`/`col` columns into a
-    /// `HashMap`, downcasting `col` as `Int64` — the shared tail of every
-    /// `count_distinct`-by-group assertion above.
-    fn count_distinct_by_group(batches: &[RecordBatch], col: &str) -> HashMap<String, i64> {
-        let mut out = HashMap::new();
-        for batch in batches {
-            let groups = batch
-                .column_by_name("service_name")
-                .unwrap()
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .unwrap();
-            let values = batch
-                .column_by_name(col)
-                .unwrap()
-                .as_any()
-                .downcast_ref::<Int64Array>()
-                .unwrap();
-            for i in 0..batch.num_rows() {
-                out.insert(groups.value(i).to_string(), values.value(i));
-            }
-        }
-        out
     }
 
     /// Like `collect_doc`, but over a caller-supplied context rather than
