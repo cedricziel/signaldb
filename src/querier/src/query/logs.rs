@@ -961,7 +961,8 @@ fn attr_context_of(df: &DataFrame) -> AttrContext {
         .schema()
         .fields()
         .iter()
-        .any(|f| f.name() == "log_attributes" && matches!(f.data_type(), DataType::Map(_, _)));
+        .any(|f| f.name() == "log_attributes" && matches!(f.data_type(), DataType::Map(_, _)))
+        || common::attrs::expr::is_typed_layout(df.schema().as_arrow(), "log_attributes");
     // The derived `key=value` token column, when present, backs an extra
     // bloom-prunable containment conjunct on attribute equality filters.
     let attr_tokens = df.schema().fields().iter().any(|f| {
@@ -2202,6 +2203,31 @@ mod tests {
         catalog.register_schema("d", schema_provider).unwrap();
         ctx.register_catalog("t", catalog);
         LogsService::new(ctx)
+    }
+
+    /// A typed-layout `log_attributes` (five typed homes, no single
+    /// `log_attributes` column) must still be detected as `map_attrs` --
+    /// the fallback LogQL path's only route to `compat_attr_expr` instead
+    /// of a JSON-substring `contains()` that would error with "No field
+    /// named log_attributes".
+    #[tokio::test]
+    async fn attr_context_of_detects_the_typed_attribute_layout() {
+        let (fields, arrays) = common::testing::typed_attribute_columns_from(
+            "logs",
+            "physical-v4",
+            "log_attributes",
+            &[None],
+        );
+        let schema = Arc::new(Schema::new(fields.to_vec()));
+        let batch = RecordBatch::try_new(schema.clone(), arrays.to_vec()).unwrap();
+
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let df = ctx
+            .read_table(Arc::new(table))
+            .expect("read the typed-layout table as a DataFrame");
+
+        assert!(attr_context_of(&df).map_attrs);
     }
 
     #[tokio::test]
