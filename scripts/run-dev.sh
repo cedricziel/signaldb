@@ -265,7 +265,7 @@ if [ "$MODE" = "monolithic" ]; then
     (
         export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317
         export OTEL_EXPORTER_OTLP_HEADERS="x-tenant-id=dev,authorization=Bearer dev-key-123"
-        "$SIGNAL_PRODUCER_BIN" --endpoint http://localhost:4317 --signals all --interval 10 2>&1 | sed 's/^/[signal-producer] /'
+        "$SIGNAL_PRODUCER_BIN" --endpoint http://localhost:4317 --estate all --interval 10 2>&1 | sed 's/^/[signal-producer] /'
     ) &
     SIGNAL_PRODUCER_PID=$!
     PIDS="$PIDS $SIGNAL_PRODUCER_PID"
@@ -333,7 +333,7 @@ else
 
     # Start signal producer for continuous test data generation
     echo -e "${GREEN}Starting signal producer (generates all signal types every 10s)...${NC}"
-    "$SIGNAL_PRODUCER_BIN" --endpoint http://localhost:4317 --signals all --interval 10 >> "${LOG_DIR}/signal-producer.log" 2>&1 &
+    "$SIGNAL_PRODUCER_BIN" --endpoint http://localhost:4317 --estate all --interval 10 >> "${LOG_DIR}/signal-producer.log" 2>&1 &
     SIGNAL_PRODUCER_PID=$!
     PIDS="$PIDS $SIGNAL_PRODUCER_PID"
     echo "  • Logs: ${LOG_DIR}/signal-producer.log"
