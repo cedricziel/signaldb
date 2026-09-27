@@ -21,7 +21,7 @@ import type { ShellContext } from "../../lib/outletState";
 import { seriesColorVar } from "../../lib/promSeries";
 import { axisLabelFormatter, type ResolvedRange } from "../../lib/time";
 import { viewHref, type EvalSource } from "../../lib/urlState";
-import { formatTimeBucket } from "../../lib/vizFormat";
+import { formatTimeBucket, pluralCount } from "../../lib/vizFormat";
 import {
   emptyStats,
   meanOf,
@@ -429,7 +429,7 @@ function NoEvaluations({
         <div className="evals-eyebrow">No evaluations yet</div>
         <h2>
           {agent && agentRuns
-            ? `${agent} sent ${fmtCount(agentRuns)} runs in this window. None of them has a score.`
+            ? `${agent} sent ${pluralCount(agentRuns, "run")} in this window. None of them has a score.`
             : "No evaluator results in this window."}
         </h2>
         <p>

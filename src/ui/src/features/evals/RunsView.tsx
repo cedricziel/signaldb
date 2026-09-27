@@ -25,6 +25,7 @@ import {
   useAgents,
   useRuns,
 } from "./useEvalData";
+import { pluralCount } from "../../lib/vizFormat";
 import "./evals.css";
 
 export function RunsView(shell: ShellContext) {
@@ -90,7 +91,9 @@ export function RunsView(shell: ShellContext) {
               onChange={(v) => setEvals({ set: v })}
             />
             <span className="evals-bar-fill" />
-            <span className="evals-bar-note">{shown.length} runs</span>
+            <span className="evals-bar-note">
+              {pluralCount(shown.length, "run")}
+            </span>
             <TimeRangePicker
               range={evalRange(state)}
               onChange={(r) => update({ range: r })}
