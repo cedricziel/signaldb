@@ -121,6 +121,25 @@ cache is soft-capped (`[wal].max_instances`) and warns at startup when
 `RLIMIT_NOFILE` looks thin for the expected tenant count — see
 [WAL Persistence](../operations/wal-persistence.md#instance-cap).
 
+## Attribute types
+
+Each attribute key has one canonical type per tenant, dataset and signal.
+It comes from a `[[schema.attribute_types]]` pin, a semantic-convention
+hint, or the first value SignalDB stored for that key. It never changes on
+its own. A value sent with a different type (say `http.status_code` as the
+string `"404"` once the key is an integer) is still stored exactly as sent.
+It can be retrieved through the raw attribute bag, but it can't be filtered
+as a typed value (see [Querying with the IR](querying-ir.md)).
+
+The export still succeeds, but the response carries an OTLP
+`partial_success` with nothing rejected and an `error_message` naming the
+keys, their canonical type and the type that was sent. The OpenTelemetry
+Collector and most SDKs log this as a warning. The acceptor learns new
+canonical types within about 30 seconds, so the first exports of a new key
+aren't flagged. Operators see the same condition as the
+`signaldb.writer.attribute_type_mismatches` counter, and the per-key total
+as `off_type_count` on `GET /api/v1/schema/attributes/{key}`.
+
 ## Per-signal support
 
 | Signal   | OTLP/gRPC :4317 | OTLP/HTTP :4318                      | Stored as                                                  |
@@ -170,13 +189,14 @@ a resend; an export that differs in any record is always stored.
 A successful export returns `200 OK` with an `Export*ServiceResponse`
 body in the same encoding as the request. Error responses:
 
-| Status                  | Meaning                                                                                                                                                                                                                                          |
-| ----------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `400 Bad Request`       | Malformed payload, or malformed `Authorization` / `X-Tenant-ID` / `X-Dataset-ID` headers (including a non-UTF-8 `X-Dataset-ID` — it is rejected, not silently treated as absent)                                                                 |
-| `401 Unauthorized`      | Missing `Authorization` / `X-Tenant-ID` headers, or API key wrong or revoked                                                                                                                                                                     |
-| `403 Forbidden`         | Key does not belong to the tenant/dataset you named                                                                                                                                                                                              |
-| `413 Payload Too Large` | Decoded request body exceeds `[acceptor].max_request_body_bytes`                                                                                                                                                                                 |
-| `429 Too Many Requests` | Per-tenant ingest rate limit or storage quota hit; a rate-limit `429` carries `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Burst` computed from the tenant's actual budget state, so a client can back off precisely instead of guessing |
+| Status                                                                 | Meaning                                                                                                                                                                                                                                          |
+| ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
+| `400 Bad Request`                                                      | Malformed payload, or malformed `Authorization` / `X-Tenant-ID` / `X-Dataset-ID` headers (including a non-UTF-8 `X-Dataset-ID` — it is rejected, not silently treated as absent)                                                                 |
+| `401 Unauthorized`                                                     | Missing `Authorization` / `X-Tenant-ID` headers, or API key wrong or revoked                                                                                                                                                                     |
+| `403 Forbidden`                                                        | Key does not belong to the tenant/dataset you named                                                                                                                                                                                              |
+| `413 Payload Too Large`                                                | Decoded request body exceeds `[acceptor].max_request_body_bytes`                                                                                                                                                                                 |
+| Export succeeds with a `partial_success` warning naming attribute keys | Those values were sent with a type other than the key's canonical type                                                                                                                                                                           | Send the key with its canonical type, or ask your operator to pin a different type; the values are stored as sent either way |
+| `429 Too Many Requests`                                                | Per-tenant ingest rate limit or storage quota hit; a rate-limit `429` carries `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Burst` computed from the tenant's actual budget state, so a client can back off precisely instead of guessing |
 
 To use OTLP/HTTP from the OpenTelemetry Collector:
 

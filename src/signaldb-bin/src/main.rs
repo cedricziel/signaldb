@@ -522,6 +522,7 @@ async fn main() -> Result<()> {
         storage_usage: http_resources.storage_usage,
         processor_registry: http_resources.processor_registry,
         retry_dedup: http_resources.retry_dedup,
+        type_snapshots: http_resources.type_snapshots,
         max_request_body_bytes: config.acceptor.max_request_body_bytes as usize,
     };
     let http_handle = tokio::spawn(async move {
