@@ -294,82 +294,15 @@ pub(crate) async fn prefilter_files(
 
 #[cfg(test)]
 mod tests {
+    use super::super::test_support::{
+        make_files, write_file_without_warm_index, write_warm_index_file,
+    };
     use super::*;
     use common::attrs::typed::HomeValue;
     use common::attrs::warm_index::encode_token;
-    use datafusion::arrow::array::{ArrayRef, BinaryBuilder, Int64Array, ListBuilder, RecordBatch};
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
     use datafusion::execution::runtime_env::RuntimeEnvBuilder;
-    use datafusion::parquet::arrow::ArrowWriter;
-    use datafusion::parquet::file::properties::WriterProperties;
-    use datafusion::parquet::schema::types::ColumnPath;
+    use object_store::ObjectStore;
     use object_store::memory::InMemory;
-    use object_store::path::Path;
-    use object_store::{ObjectStore, ObjectStoreExt};
-
-    /// Writes `schema`/`batch` to an in-memory Parquet file, returning its bytes.
-    fn write_parquet(
-        schema: Arc<Schema>,
-        batch: RecordBatch,
-        props: Option<WriterProperties>,
-    ) -> Vec<u8> {
-        let mut buf = Vec::new();
-        let mut writer = ArrowWriter::try_new(&mut buf, schema, props).unwrap();
-        writer.write(&batch).unwrap();
-        writer.close().unwrap();
-        buf
-    }
-
-    /// A one-column `attr_index: List<Binary>` batch with a bloom filter on
-    /// the `attr_index.list.item` leaf.
-    fn write_warm_index_file(rows: &[&[&[u8]]], ndv: u64) -> Vec<u8> {
-        let item_field = Arc::new(Field::new("item", DataType::Binary, true));
-        let field = Field::new(WARM_INDEX_COLUMN, DataType::List(item_field.clone()), true);
-        let mut builder = ListBuilder::new(BinaryBuilder::new()).with_field(item_field);
-        for row in rows {
-            builder.append_value(row.iter().map(|token| Some(*token)));
-        }
-        let array: ArrayRef = Arc::new(builder.finish());
-        let schema = Arc::new(Schema::new(vec![field]));
-        let batch = RecordBatch::try_new(schema.clone(), vec![array]).unwrap();
-
-        let leaf = ColumnPath::new(vec![
-            WARM_INDEX_COLUMN.to_string(),
-            "list".to_string(),
-            "item".to_string(),
-        ]);
-        let props = WriterProperties::builder()
-            .set_max_row_group_row_count(Some(1))
-            .set_column_bloom_filter_enabled(leaf.clone(), true)
-            .set_column_bloom_filter_max_ndv(leaf, ndv)
-            .build();
-        write_parquet(schema, batch, Some(props))
-    }
-
-    /// A file with no `attr_index` column at all — always kept.
-    fn write_file_without_warm_index() -> Vec<u8> {
-        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int64, false)]));
-        let array: ArrayRef = Arc::new(Int64Array::from(vec![1]));
-        let batch = RecordBatch::try_new(schema.clone(), vec![array]).unwrap();
-        write_parquet(schema, batch, None)
-    }
-
-    /// Writes `count` files (`f0.parquet`, `f1.parquet`, ...) with
-    /// `bytes_for(i)` as each one's content.
-    async fn make_files(
-        store: &Arc<dyn ObjectStore>,
-        count: u32,
-        mut bytes_for: impl FnMut(u32) -> Vec<u8>,
-    ) -> Vec<PartitionedFile> {
-        let mut files = Vec::new();
-        for i in 0..count {
-            let bytes = bytes_for(i);
-            let path = Path::from(format!("f{i}.parquet"));
-            store.put(&path, bytes.clone().into()).await.unwrap();
-            files.push(PartitionedFile::new(path.to_string(), bytes.len() as u64));
-        }
-        files
-    }
 
     fn test_cache() -> Arc<FileMetadataCache> {
         let runtime = RuntimeEnvBuilder::new().build().unwrap();
