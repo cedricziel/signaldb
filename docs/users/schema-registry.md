@@ -26,7 +26,7 @@ Four kinds of registry exist:
 | --------------- | ------- | -------------------------------------------------------------------------------------------------- |
 | `otel`          | bundled | The OpenTelemetry semantic conventions, vendored at the version SignalDB itself emits (`1.43.0`)   |
 | `otel-genai`    | bundled | The OpenTelemetry GenAI conventions (`gen_ai.*`, `mcp.*`), vendored at a pinned upstream commit    |
-| `signaldb`      | bundled | SignalDB's own `signaldb.*` conventions (its self-monitoring telemetry)                            |
+| `signaldb`      | bundled | SignalDB's own conventions: its `signaldb.*` self-monitoring telemetry and the `gen_ai.agent` entity |
 | _anything else_ | custom  | Registries **you** upload for your tenant, in the same OTel Weaver model, versioned `name@version` |
 
 Bundled registries are visible to every tenant and read-only. Custom registries
@@ -83,6 +83,7 @@ curl -H "Authorization: Bearer $KEY" -H "X-Tenant-ID: acme" \
 signaldb-cli schema attribute get k8s.pod.uid
 signaldb-cli schema entity get k8s.pod
 signaldb-cli schema metric get k8s.pod.cpu.time
+signaldb-cli schema entity get gen_ai.agent
 signaldb-cli schema attribute search k8s.pod. --limit 20
 ```
 
@@ -114,6 +115,15 @@ Deprecated keys carry their replacement (`"deprecated": {"reason": "renamed",
 and descriptive attributes, the metrics associated with the entity, and any
 custom entities that extend it; metric lookups include instrument, unit, and
 `entity_associations`. An unknown name returns an empty result, not an error.
+
+AI agents are an entity too. `gen_ai.agent` (from the `signaldb` registry) is
+identified by `gen_ai.agent.id` — the provider-assigned, stable id of a hosted
+agent such as an AWS Bedrock agent ARN, not an in-memory instance id — and
+described by `gen_ai.agent.name`, `gen_ai.agent.description`, and
+`gen_ai.agent.version`. Upstream defines these only as span attributes (on
+`create_agent` and `invoke_agent` spans), so SignalDB supplies the entity; a
+custom registry can `extends: entity.gen_ai.agent` to add its own descriptive
+attributes.
 
 Prefix search (`GET /api/v1/schema/attributes?prefix=http.re&limit=20`, also
 `/entities` and `/metrics`) powers autocomplete; `?keys=a,b,c` resolves several

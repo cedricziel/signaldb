@@ -594,7 +594,9 @@ registry what it means: `resolve_attribute` with `key: "k8s.pod.uid"` (or
 definitions — a tenant's own conventions (uploaded with
 `create_schema_registry`) come first, the bundled OpenTelemetry definition is
 kept as an alternative. `discover_*` tells you which names _have data_;
-`resolve_*` tells you what they _mean_.
+`resolve_*` tells you what they _mean_. `resolve_entity` with `name:
+"gen_ai.agent"` tells an agent which attribute identifies an AI agent
+(`gen_ai.agent.id`).
 
 ## From the CLI
 

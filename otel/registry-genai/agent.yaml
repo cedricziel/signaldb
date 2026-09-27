@@ -1,0 +1,19 @@
+groups:
+  - id: entity.gen_ai.agent
+    type: entity
+    stability: development
+    name: gen_ai.agent
+    brief: A GenAI agent — an application that plans and calls models and tools.
+    note: >
+      `gen_ai.agent.id` identifies a hosted agent by its provider-assigned,
+      stable identifier (for example an AWS Bedrock agent ARN or a GCP Agent
+      Registry identifier). It is not an in-memory agent instance id.
+    attributes:
+      - ref: gen_ai.agent.id
+        role: identifying
+      - ref: gen_ai.agent.name
+        role: descriptive
+      - ref: gen_ai.agent.description
+        role: descriptive
+      - ref: gen_ai.agent.version
+        role: descriptive
