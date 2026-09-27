@@ -364,8 +364,11 @@ impl RegistryDocument {
     /// A `definition/2` document parses with its model sections in `extra`;
     /// lower them into `groups`.
     fn lower_layout(mut self) -> Result<Self, ParseError> {
-        let file_format = self.extra.get("file_format").and_then(|f| f.as_str());
-        if let Layout::DefinitionV2 = Layout::of(file_format, DOCUMENT)? {
+        let file_format = self
+            .extra
+            .get("file_format")
+            .map(|f| f.as_str().map_or_else(|| f.to_string(), str::to_owned));
+        if let Layout::DefinitionV2 = Layout::of(file_format.as_deref(), DOCUMENT)? {
             self.extra.remove("file_format");
             let sections: serde_json::Map<_, _> = V2_SECTIONS
                 .into_iter()
@@ -424,8 +427,10 @@ impl RegistryDocument {
             }
             let value: serde_norway::Value =
                 serde_norway::from_str(&text).map_err(yaml_err(&path))?;
-            let file_format = value.get("file_format").and_then(|f| f.as_str());
-            match Layout::of(file_format, &path.display().to_string())? {
+            let file_format = value
+                .get("file_format")
+                .map(|f| f.as_str().map_or_else(|| format!("{f:?}"), str::to_owned));
+            match Layout::of(file_format.as_deref(), &path.display().to_string())? {
                 Layout::Groups => {
                     let file: ModelFileV1 =
                         serde_norway::from_value(value).map_err(yaml_err(&path))?;

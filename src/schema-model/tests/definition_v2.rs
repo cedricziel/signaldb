@@ -68,6 +68,18 @@ fn unknown_file_format_is_rejected() {
 }
 
 #[test]
+fn non_string_file_format_is_rejected() {
+    let dir = fixtures_dir().join("non-string-file-format/model");
+    let err = RegistryDocument::from_dir("bad", "1.0.0", &dir)
+        .expect_err("a non-string file_format must be rejected");
+    assert!(
+        matches!(err, schema_model::ParseError::UnsupportedFileFormat { .. }),
+        "{err}"
+    );
+    assert!(err.to_string().contains("numeric.yaml"), "{err}");
+}
+
+#[test]
 fn non_manifest_v1_file_without_groups_is_rejected() {
     let dir = fixtures_dir().join("missing-groups/model");
     let err = RegistryDocument::from_dir("bad", "1.0.0", &dir)
