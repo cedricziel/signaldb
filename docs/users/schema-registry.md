@@ -71,10 +71,10 @@ curl -H "Authorization: Bearer $KEY" -H "X-Tenant-ID: acme" \
   http://localhost:3000/api/v1/schema/attributes/k8s.pod.uid
 
 # CLI
-signaldb schema attribute get k8s.pod.uid
-signaldb schema entity get k8s.pod
-signaldb schema metric get k8s.pod.cpu.time
-signaldb schema attribute search k8s.pod. --limit 20
+signaldb-cli schema attribute get k8s.pod.uid
+signaldb-cli schema entity get k8s.pod
+signaldb-cli schema metric get k8s.pod.cpu.time
+signaldb-cli schema attribute search k8s.pod. --limit 20
 ```
 
 The response lists every visible definition:
@@ -163,11 +163,11 @@ groups:
 Validate, then create:
 
 ```bash
-signaldb admin schema validate --file acme.yaml
-signaldb admin schema create --file acme.yaml
+signaldb-cli admin schema validate --file acme.yaml
+signaldb-cli admin schema create --file acme.yaml
 # later
-signaldb admin schema replace acme 1.0.0 --file acme.yaml
-signaldb admin schema delete acme 1.0.0
+signaldb-cli admin schema replace acme 1.0.0 --file acme.yaml
+signaldb-cli admin schema delete acme 1.0.0
 ```
 
 or over HTTP (`Content-Type: application/yaml` for YAML, `application/json`
