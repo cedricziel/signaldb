@@ -190,18 +190,6 @@ impl Catalog {
         Ok(rows)
     }
 
-    /// Check that `dataset_name` exists for `tenant_id`, so a bad reference
-    /// is rejected with a clear error rather than relying on the FK's
-    /// (dialect-specific) error text.
-    async fn dataset_exists(
-        &self,
-        tenant_id: &str,
-        dataset_name: &str,
-    ) -> Result<bool, sqlx::Error> {
-        let datasets = self.get_datasets(tenant_id).await?;
-        Ok(datasets.iter().any(|d| d.name == dataset_name))
-    }
-
     /// Insert a new processor. Fails with [`StoreError::Conflict`] on a
     /// duplicate name and [`StoreError::UnknownDataset`] when `dataset` does
     /// not name an existing dataset of this tenant.
