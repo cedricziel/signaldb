@@ -1,6 +1,4 @@
 mod correlate_cap;
-#[cfg(test)]
-mod differential;
 pub mod error;
 mod graph;
 pub mod histogram;
@@ -9,8 +7,6 @@ pub mod logql;
 pub mod logql_metric;
 pub mod logs;
 pub mod metrics;
-#[cfg(test)]
-mod predicate_differential;
 pub mod profile;
 pub mod promql;
 pub mod search_filter;
