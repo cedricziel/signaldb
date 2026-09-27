@@ -9,11 +9,11 @@
 
 ## 2. Custom registry uploads
 
-- [ ] 2.1 Add a failing test in `src/common/tests/schema_registry.rs`: a `definition/2` YAML upload creates a registry whose definitions resolve like the `groups` equivalent, and reading it back returns `groups`. Also test that an unsupported `file_format` upload is rejected and stores nothing. Verify with `cargo test -p common --test schema_registry`
-- [ ] 2.2 Route YAML uploads through the new parser in the router's schema-registry endpoint. Verify with the 2.1 tests and `cargo test -p router schema`
-- [ ] 2.3 Update the upload request description in the OpenAPI spec, regenerate `src/signaldb-sdk` and the UI client in `src/ui/src/api/gen`. Verify the diff is description-only and `pnpm --filter ./src/ui typecheck` passes
-- [ ] 2.4 Verify `signaldb schema` upload in the CLI accepts a `definition/2` file (add or extend a CLI test)
-- [ ] 2.5 Document `definition/2` uploads in `docs/users/schema-registry.md` (route via the docs skill). Verify the example uploads cleanly against a local dev server
+- [x] 2.1 Add a failing test in `src/common/tests/schema_registry.rs`: a `definition/2` YAML upload creates a registry whose definitions resolve like the `groups` equivalent, and reading it back returns `groups`. Also test that an unsupported `file_format` upload is rejected and stores nothing. Verify with `cargo test -p common --test schema_registry`
+- [x] 2.2 Route YAML uploads through the new parser in the router's schema-registry endpoint. Verify with the 2.1 tests and `cargo test -p router schema`
+- [x] 2.3 Update the upload request description in the OpenAPI spec, regenerate `src/signaldb-sdk` and the UI client in `src/ui/src/api/gen`. Verify the diff is description-only and `pnpm --filter ./src/ui typecheck` passes
+- [x] 2.4 Verify `signaldb schema` upload in the CLI accepts a `definition/2` file (add or extend a CLI test)
+- [x] 2.5 Document `definition/2` uploads in `docs/users/schema-registry.md` (route via the docs skill). Verify the example uploads cleanly against a local dev server
 
 ## 3. Core semconv pin to 1.44.0 (optional; only if GenAI refs something 1.43.0 lacks)
 
