@@ -30,12 +30,15 @@ export function PillSelect({
   value,
   options,
   allLabel = "all",
+  allowAll = true,
   onChange,
 }: {
   label: string;
   value: string;
   options: string[];
   allLabel?: string;
+  /** Offer the empty "all" value; off where the page always picks one. */
+  allowAll?: boolean;
   onChange: (v: string) => void;
 }) {
   return (
@@ -46,7 +49,7 @@ export function PillSelect({
         value={value}
         onChange={(e) => onChange(e.target.value)}
       >
-        <option value="">{allLabel}</option>
+        {allowAll && <option value="">{allLabel}</option>}
         {options.map((o) => (
           <option key={o} value={o}>
             {o}
@@ -69,13 +72,12 @@ export function Segmented<T extends string>({
   onChange: (v: T) => void;
 }) {
   return (
-    <div role="radiogroup" aria-label={label} className="evals-segmented">
+    <div role="group" aria-label={label} className="evals-segmented">
       {options.map(([id, text]) => (
         <button
           key={id}
           type="button"
-          role="radio"
-          aria-checked={value === id}
+          aria-pressed={value === id}
           onClick={() => onChange(id)}
         >
           {text}

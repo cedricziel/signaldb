@@ -129,7 +129,7 @@
   border-right: 0;
 }
 
-.evals-segmented button[aria-checked="true"] {
+.evals-segmented button[aria-pressed="true"] {
   font-weight: 600;
   background: var(--surface3);
   color: var(--text);

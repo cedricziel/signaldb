@@ -200,6 +200,7 @@ export function AgentsScoresView(shell: ShellContext) {
           label="agent"
           value={agent}
           options={agents.data ?? []}
+          allowAll={false}
           onChange={(v) => setEvals({ agent: v })}
         />
         <span className="evals-divider" />
@@ -219,7 +220,11 @@ export function AgentsScoresView(shell: ShellContext) {
       {error && <QueryError what="evaluation results" error={error} />}
 
       {empty && (
-        <NoEvaluations agent={agent} agentRuns={coverage.data?.agentRuns} />
+        <NoEvaluations
+          agent={agent}
+          agentRuns={coverage.data?.agentRuns}
+          runsHref={viewHref("/evals/runs", state, {})}
+        />
       )}
 
       {!empty && (
@@ -412,9 +417,11 @@ function CoverageTile({
 function NoEvaluations({
   agent,
   agentRuns,
+  runsHref,
 }: {
   agent: string;
   agentRuns: number | undefined;
+  runsHref: string;
 }) {
   return (
     <div className="evals-empty">
@@ -432,7 +439,7 @@ function NoEvaluations({
           SignalDB picks them up with your traces. There is nothing to install.
         </p>
         <div className="evals-actions">
-          <Link className="btn btn-primary" to="/evals/runs">
+          <Link className="btn btn-primary" to={runsHref}>
             How offline runs work
           </Link>
         </div>

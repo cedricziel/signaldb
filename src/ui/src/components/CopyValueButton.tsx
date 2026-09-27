@@ -38,7 +38,7 @@ export function CopyValueButton({
       type="button"
       className={className ?? "copy-value-button"}
       data-copied={copied || undefined}
-      aria-label={`${copied ? "Copied" : "Copy"} ${label}`}
+      aria-label={`${copied ? text[1] : text[0]} ${label}`}
       onClick={() => void copyValue()}
     >
       {copied ? (

@@ -219,7 +219,7 @@ export function CompareView(shell: ShellContext) {
         actions={
           <CopyValueButton
             value={window.location.href}
-            label="page link"
+            label="to this comparison"
             text={["Copy link", "Link copied"]}
             className="btn"
           />
@@ -268,7 +268,7 @@ export function CompareView(shell: ShellContext) {
       {allRuns.isSuccess && pickable.length < 2 && (
         <EmptyState title="Two runs are needed to compare">
           Send a second run of the same eval set — see{" "}
-          <Link to="/evals/runs">Runs</Link>.
+          <Link to={viewHref("/evals/runs", state, {})}>Runs</Link>.
         </EmptyState>
       )}
       {baseline && candidate && baseline.set !== candidate.set && (

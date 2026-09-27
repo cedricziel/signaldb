@@ -317,7 +317,7 @@ export async function fetchCoverage(
   scope: ResultScope,
 ): Promise<Coverage> {
   const agentPreds: Stage[] = [{ where: eq(F.operation, "invoke_agent") }];
-  if (scope.agent) agentPreds.push({ where: eq(F.agent, scope.agent) });
+  if (scope.agent) agentPreds.push({ where: agentPred(scope.agent) });
   const [spans, traces] = await Promise.all([
     runIrQuery(
       irDoc("traces", "table", range, [

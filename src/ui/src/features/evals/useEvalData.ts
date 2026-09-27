@@ -224,7 +224,7 @@ export function useAgentTraces(
   return useEvalQuery(
     "eval-agent-traces",
     scope,
-    [baselineId, candidateId],
+    [baselineId, candidateId, traceIds],
     (range) => fetchAgentSpans(range, traceIds),
     enabled && traceIds.length > 0,
   );

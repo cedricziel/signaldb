@@ -218,7 +218,7 @@ describe("CaseView", () => {
     const update = renderView();
     await screen.findByText("invoke_agent support-triage");
 
-    await userEvent.click(screen.getByRole("radio", { name: "Side by side" }));
+    await userEvent.click(screen.getByRole("button", { name: "Side by side" }));
     expect(update).toHaveBeenCalledWith({
       evals: expect.objectContaining({ mode: "side" }),
     });
