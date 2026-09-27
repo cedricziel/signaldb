@@ -96,6 +96,16 @@ export function maybeAutoApplyUpdate(): void {
   if (updateState.updateSW && !anyDirty()) applyPendingUpdate();
 }
 
+/** Ask the browser to look for a new service worker right away, instead of
+ * waiting for the hourly poll. Finding one fires `onNeedRefresh` as usual.
+ * A no-op where service workers are unavailable. */
+export function checkForUpdateNow(): void {
+  void navigator.serviceWorker
+    ?.getRegistration()
+    .then((registration) => registration?.update())
+    .catch(() => {});
+}
+
 /** Test hook: forget any pending update. */
 export function resetUpdateState(): void {
   setUpdateState({ updateSW: null });

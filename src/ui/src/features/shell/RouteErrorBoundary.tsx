@@ -4,9 +4,17 @@
 // `error` event, so `ErrorsInstrumentation` (telemetry/logs.ts) can't see
 // it. This one records it once via `recordRenderError` and shows a styled
 // fallback instead of React Router's bare default.
+//
+// It also gets the visitor out of a crash caused by an outdated cached build.
+// With registerType "prompt" (vite.config.ts), a plain reload keeps serving
+// that build while the new service worker waits, and the shell's
+// UpdateBanner isn't rendered here. So this page looks for an update and
+// applies one as soon as it is ready: a crashed page has no form to protect.
 import { useEffect } from "react";
 import { isRouteErrorResponse, useLocation, useRouteError } from "react-router";
+import { applyPendingUpdate, checkForUpdateNow } from "../../lib/pwaUpdate";
 import { recordRenderError } from "../../telemetry/renderErrors";
+import { useUpdateAvailable } from "./UpdateBanner";
 import "./RouteErrorBoundary.css";
 
 function describeError(error: unknown): { title: string; detail: string } {
@@ -41,6 +49,12 @@ export function RouteErrorBoundary() {
     }
     recordRenderError(error, location.pathname);
   }, [error, location.pathname]);
+
+  const updateAvailable = useUpdateAvailable();
+  useEffect(() => {
+    if (updateAvailable) applyPendingUpdate();
+    else checkForUpdateNow();
+  }, [updateAvailable]);
 
   const { title, detail } = describeError(error);
 
