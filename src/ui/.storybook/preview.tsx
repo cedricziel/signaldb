@@ -2,6 +2,7 @@ import type { Preview } from "@storybook/react-vite";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { testQueryClient } from "../src/lib/queryClient";
 import "../src/styles/global.css";
+import "./preview.css";
 
 /** Storybook's `theme` toolbar values. "system" leaves `data-theme` unset so
  * `prefers-color-scheme` decides, matching the app's own default. */

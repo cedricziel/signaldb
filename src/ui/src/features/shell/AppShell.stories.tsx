@@ -16,6 +16,7 @@ import {
 } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
+import { pageFrame } from "../../stories/PageFrame";
 import { ExploreView } from "../explore/ExploreView";
 import { AppShell } from "./AppShell";
 import type { PageId } from "./navModel";
@@ -144,13 +145,7 @@ function EmptyFrame({
 const meta = {
   title: "Shell/App Shell",
   parameters: { layout: "fullscreen" },
-  decorators: [
-    (Story) => (
-      <div style={{ width: 1280, height: 800 }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: [pageFrame],
 } satisfies Meta<typeof LogsPage>;
 
 export default meta;

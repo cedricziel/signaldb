@@ -11,6 +11,7 @@ import {
 } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
+import { pageFrame } from "../../stories/PageFrame";
 import { schemaRoutes } from "./routes";
 
 const who = sampleWhoami({
@@ -236,13 +237,7 @@ function SchemaPage({
 const meta = {
   title: "Pages/Schema",
   parameters: { layout: "fullscreen" },
-  decorators: [
-    (Story) => (
-      <div style={{ width: 1280, height: 800 }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: [pageFrame],
 } satisfies Meta<typeof SchemaPage>;
 
 export default meta;

@@ -148,11 +148,19 @@ jobs:
       # `--with-deps` shells out to apt, which can stall for hours on a bad
       # mirror; cap it so the job fails rather than blocking the queue.
       - name: Install Playwright browsers
+        id: pw-install
         timeout-minutes: 10
         run: pnpm --filter signaldb-ui exec playwright install --with-deps chromium
 
       - name: E2E tests
         run: pnpm --filter signaldb-ui test:e2e
+
+      # Every page story at 390/768/1280 px: render errors, horizontal
+      # overflow, axe color-contrast (docs/contributing/ui-page-stories.md).
+      # Runs even when the e2e step failed, so one run reports both.
+      - name: Page story checks
+        if: ${{ !cancelled() && steps.pw-install.outcome == 'success' }}
+        run: pnpm --filter signaldb-ui test:stories
 
       - name: Upload Playwright report
         if: failure()

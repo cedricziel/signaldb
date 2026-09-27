@@ -11,6 +11,7 @@ import {
 } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
+import { pageFrame } from "../../stories/PageFrame";
 import { GitHubIntegration } from "./GitHubIntegration";
 
 const tenant = "acme";
@@ -35,13 +36,7 @@ function page(routes: JsonRoute[]) {
 const meta = {
   title: "Pages/GitHub Integration",
   parameters: { layout: "fullscreen" },
-  decorators: [
-    (Story) => (
-      <div style={{ width: 1280, height: 800 }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: [pageFrame],
 } satisfies Meta<typeof page>;
 
 export default meta;

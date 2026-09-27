@@ -4,6 +4,7 @@ import { testQueryClient } from "../../lib/queryClient";
 import { irCatchAll, irBody, type JsonRoute } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
+import { pageFrame } from "../../stories/PageFrame";
 import { Instrumentation } from "./Instrumentation";
 
 /** Ingest-status count queries (`fetchIngestStatus`, `from: <signal>`,
@@ -59,13 +60,7 @@ function InstrumentationPage() {
 const meta = {
   title: "Pages/Instrumentation",
   parameters: { layout: "fullscreen" },
-  decorators: [
-    (Story) => (
-      <div style={{ width: 1280, height: 800 }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: [pageFrame],
 } satisfies Meta<typeof InstrumentationPage>;
 
 export default meta;

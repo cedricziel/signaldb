@@ -12,6 +12,7 @@ import {
 } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
+import { pageFrame } from "../../stories/PageFrame";
 import { processorsRoutes } from "./routes";
 import { REDACTED_LOGS_ECHO } from "./serverEcho.fixture";
 
@@ -99,13 +100,7 @@ function ProcessorsPage({
 const meta = {
   title: "Pages/Processors",
   parameters: { layout: "fullscreen" },
-  decorators: [
-    (Story) => (
-      <div style={{ width: "100%", maxWidth: 1280, height: 800 }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: [pageFrame],
 } satisfies Meta<typeof ProcessorsPage>;
 
 export default meta;

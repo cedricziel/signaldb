@@ -7,6 +7,7 @@ import { OutletContextProvider } from "../../stories/OutletContextProvider";
 import { irCatchAll, type JsonRoute } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
+import { pageFrame } from "../../stories/PageFrame";
 import { SelectTenant, type SelectTenantProps } from "./SelectTenant";
 
 const session: SelectTenantProps["session"] = {
@@ -61,13 +62,7 @@ function SelectTenantPage() {
 const meta = {
   title: "Pages/Select Tenant",
   parameters: { layout: "fullscreen" },
-  decorators: [
-    (Story) => (
-      <div style={{ width: 1280, height: 800 }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: [pageFrame],
 } satisfies Meta<typeof SelectTenantPage>;
 
 export default meta;

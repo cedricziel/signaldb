@@ -31,6 +31,7 @@ pnpm --filter signaldb-ui test:coverage
 pnpm --filter signaldb-ui lint
 pnpm --filter signaldb-ui test:e2e       # mocked Playwright suite (src/ui/e2e)
 pnpm --filter signaldb-ui test:e2e:live  # live Playwright suite (src/ui/e2e-live)
+pnpm --filter signaldb-ui test:stories   # page stories at 390/768/1280, overflow + contrast (src/ui/e2e-stories)
 ```
 
 ## End-to-end tests
@@ -40,3 +41,7 @@ pnpm --filter signaldb-ui test:e2e:live  # live Playwright suite (src/ui/e2e-liv
 - `e2e-live/` (`pnpm test:e2e:live`): the UI against a real, seeded
   `signaldb` backend. Any rejected API call fails the test. See
   [docs/contributing/ui-e2e-live.md](../../docs/contributing/ui-e2e-live.md).
+- `e2e-stories/` (`pnpm test:stories`): every page story in a static
+  Storybook build at phone, tablet and desktop widths, checked for
+  horizontal overflow, render errors and colour contrast. See
+  [docs/contributing/ui-page-stories.md](../../docs/contributing/ui-page-stories.md).
