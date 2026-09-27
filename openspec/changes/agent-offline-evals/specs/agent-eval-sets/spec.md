@@ -35,9 +35,11 @@ matches, already-present and added counts.
 
 #### Scenario: Sampling failing runs
 
-- **WHEN** a user adds 50 traces of `support-triage` that failed
-  Correctness in the last 7 days, 12 of which are already in the set
-- **THEN** 50 new cases are added, sourced from their trace ids
+- **WHEN** 214 traces of `support-triage` failed Correctness in the last 7
+  days, 12 of them are already in the set, and the user samples 50
+- **THEN** 50 new cases are added from traces not yet in the set, sourced
+  from their trace ids, and the response reports 214 matches, 12 already
+  present and 50 added
 
 ### Requirement: Eval sets in the UI, CLI and export
 
