@@ -3,10 +3,12 @@
 #
 # Kept apart from otel/registry/ because that registry is live-checked with
 # `--include-unreferenced`, and core semconv's deprecated gen_ai.* shells
-# collide with the GenAI definitions once both are loaded. src/common/build.rs
-# folds these groups into the bundled `signaldb` schema registry, resolved
-# against `otel` and `otel-genai`. `cargo xtask vendor-semconv-genai <commit>`
-# vendors GenAI and rewrites the commit below; the build fails if they differ.
+# collide with the GenAI definitions once both are loaded. Both registries
+# share one Weaver pin (>= v0.26, for GenAI's definition/2 model).
+# src/common/build.rs folds these groups into the bundled `signaldb` schema
+# registry, resolved against `otel` and `otel-genai`.
+# `cargo xtask vendor-semconv-genai <commit>` vendors GenAI and rewrites the
+# commit below; the build fails if they differ.
 name: signaldb-genai
 description: SignalDB conventions over the OpenTelemetry GenAI semantic conventions
 # x-release-please-start-version
