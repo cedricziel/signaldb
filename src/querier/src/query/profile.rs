@@ -689,7 +689,7 @@ mod tests {
     /// full query surface against it.
     async fn context_with_profiles() -> SessionContext {
         use datafusion::arrow::array::{
-            Date32Array, Int32Array, Int64Array, StringArray, TimestampNanosecondArray,
+            ArrayRef, Date32Array, Int32Array, Int64Array, StringArray, TimestampNanosecondArray,
         };
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use datafusion::catalog::{
@@ -697,7 +697,7 @@ mod tests {
         };
         use datafusion::datasource::MemTable;
 
-        let schema = Arc::new(Schema::new(vec![
+        let mut fields = vec![
             Field::new("profile_id", DataType::Utf8, false),
             Field::new(
                 "timestamp",
@@ -713,52 +713,69 @@ mod tests {
             Field::new("service_name", DataType::Utf8, false),
             Field::new("stacktraces_json", DataType::Utf8, false),
             Field::new("samples_json", DataType::Utf8, false),
-            Field::new("resource_attributes", DataType::Utf8, true),
-            Field::new("scope_attributes", DataType::Utf8, true),
-            Field::new("profile_attributes", DataType::Utf8, true),
             Field::new("trace_id", DataType::Utf8, true),
             Field::new("span_id", DataType::Utf8, true),
             Field::new("date_day", DataType::Date32, false),
             Field::new("hour", DataType::Int32, false),
-        ]));
+        ];
 
         let base_nanos: i64 = 1_700_000_000_000_000_000;
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(StringArray::from(vec!["aa".repeat(16), "bb".repeat(16)])),
-                Arc::new(TimestampNanosecondArray::from(vec![
-                    base_nanos,
-                    base_nanos + 60_000_000_000,
-                ])),
-                Arc::new(Int64Array::from(vec![10_000_000_000, 10_000_000_000])),
-                Arc::new(StringArray::from(vec!["cpu", "alloc_space"])),
-                Arc::new(StringArray::from(vec!["nanoseconds", "bytes"])),
-                Arc::new(StringArray::from(vec![None::<&str>, None])),
-                Arc::new(StringArray::from(vec![None::<&str>, None])),
-                Arc::new(Int64Array::from(vec![None::<i64>, None])),
-                Arc::new(StringArray::from(vec!["checkout", "billing"])),
-                Arc::new(StringArray::from(vec![
-                    r#"[{"frames":[{"function_name":"work"},{"function_name":"main"}]}]"#,
-                    r#"[{"frames":[{"function_name":"alloc"},{"function_name":"main"}]}]"#,
-                ])),
-                Arc::new(StringArray::from(vec![
-                    r#"[{"stacktrace_index":0,"values":[100]}]"#,
-                    r#"[{"stacktrace_index":0,"values":[40]}]"#,
-                ])),
-                Arc::new(StringArray::from(vec![None::<&str>, None])),
-                Arc::new(StringArray::from(vec![None::<&str>, None])),
-                Arc::new(StringArray::from(vec![
-                    Some(r#"{"host":"web-1"}"#),
-                    Some(r#"{"host":"web-2","region":"eu"}"#),
-                ])),
-                Arc::new(StringArray::from(vec![Some("11".repeat(16)), None])),
-                Arc::new(StringArray::from(vec![Some("22".repeat(8)), None])),
-                Arc::new(Date32Array::from(vec![19676, 19676])),
-                Arc::new(Int32Array::from(vec![8, 8])),
-            ],
-        )
-        .expect("valid batch");
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(StringArray::from(vec!["aa".repeat(16), "bb".repeat(16)])),
+            Arc::new(TimestampNanosecondArray::from(vec![
+                base_nanos,
+                base_nanos + 60_000_000_000,
+            ])),
+            Arc::new(Int64Array::from(vec![10_000_000_000, 10_000_000_000])),
+            Arc::new(StringArray::from(vec!["cpu", "alloc_space"])),
+            Arc::new(StringArray::from(vec!["nanoseconds", "bytes"])),
+            Arc::new(StringArray::from(vec![None::<&str>, None])),
+            Arc::new(StringArray::from(vec![None::<&str>, None])),
+            Arc::new(Int64Array::from(vec![None::<i64>, None])),
+            Arc::new(StringArray::from(vec!["checkout", "billing"])),
+            Arc::new(StringArray::from(vec![
+                r#"[{"frames":[{"function_name":"work"},{"function_name":"main"}]}]"#,
+                r#"[{"frames":[{"function_name":"alloc"},{"function_name":"main"}]}]"#,
+            ])),
+            Arc::new(StringArray::from(vec![
+                r#"[{"stacktrace_index":0,"values":[100]}]"#,
+                r#"[{"stacktrace_index":0,"values":[40]}]"#,
+            ])),
+            Arc::new(StringArray::from(vec![Some("11".repeat(16)), None])),
+            Arc::new(StringArray::from(vec![Some("22".repeat(8)), None])),
+            Arc::new(Date32Array::from(vec![19676, 19676])),
+            Arc::new(Int32Array::from(vec![8, 8])),
+        ];
+
+        let resource_rows = [Some(serde_json::Map::new()), Some(serde_json::Map::new())];
+        let scope_rows = [Some(serde_json::Map::new()), Some(serde_json::Map::new())];
+        let profile_rows = [
+            Some(serde_json::Map::from_iter([(
+                "host".to_string(),
+                serde_json::json!("web-1"),
+            )])),
+            Some(serde_json::Map::from_iter([
+                ("host".to_string(), serde_json::json!("web-2")),
+                ("region".to_string(), serde_json::json!("eu")),
+            ])),
+        ];
+        for (name, rows) in [
+            ("resource_attributes", &resource_rows),
+            ("scope_attributes", &scope_rows),
+            ("profile_attributes", &profile_rows),
+        ] {
+            let (typed_fields, typed_arrays) = common::testing::typed_attribute_columns_from(
+                "profiles",
+                "physical-v3",
+                name,
+                rows,
+            );
+            fields.extend(typed_fields);
+            columns.extend(typed_arrays);
+        }
+
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).expect("valid batch");
 
         let ctx = SessionContext::new();
         let catalog = Arc::new(MemoryCatalogProvider::new());
