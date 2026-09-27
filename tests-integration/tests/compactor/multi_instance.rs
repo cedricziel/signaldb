@@ -36,7 +36,6 @@ use opentelemetry_proto::tonic::{
 };
 use tests_integration::compaction_helpers::busiest_partition;
 use uuid::Uuid;
-use writer::IcebergTableWriter;
 
 fn init_test_logging() {
     tracing_subscriber::fmt()
@@ -97,7 +96,7 @@ async fn write_small_log_files(
     dataset_id: &str,
     batches: usize,
 ) -> Result<()> {
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         catalog_manager,
         tenant_id.to_string(),
         dataset_id.to_string(),

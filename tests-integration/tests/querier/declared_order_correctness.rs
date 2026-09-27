@@ -19,7 +19,6 @@ use tests_integration::compaction_helpers::{
 };
 use tests_integration::generators;
 use tests_integration::ordering::append_unattested;
-use writer::IcebergTableWriter;
 
 const DATASET: &str = "order-dataset";
 const TABLE: &str = "traces";
@@ -45,7 +44,7 @@ impl Fixture {
             .with_tenant(tenant, DATASET)
             .build();
         let catalog_manager = Arc::new(CatalogManager::new(config).await?);
-        let mut writer = IcebergTableWriter::new(
+        let mut writer = tests_integration::test_support::writer_with_type_authority(
             &catalog_manager,
             tenant.to_string(),
             DATASET.to_string(),

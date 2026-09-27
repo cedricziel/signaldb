@@ -23,7 +23,6 @@ use compactor::metrics::CompactionMetrics;
 use compactor::planner::{CompactionCandidate, PartitionStats};
 use std::sync::Arc;
 use tests_integration::generators::generate_trace_files_with_ids;
-use writer::IcebergTableWriter;
 
 const MILLIS_PER_HOUR: i64 = 3_600 * 1_000;
 
@@ -71,7 +70,7 @@ async fn compaction_rolls_output_files_at_the_real_encoded_target_size() -> Resu
     let dataset_id = "test-dataset";
     let table_name = "traces";
 
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         tenant_id.to_string(),
         dataset_id.to_string(),

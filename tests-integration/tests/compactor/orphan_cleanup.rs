@@ -724,7 +724,7 @@ async fn files_replaced_by_compaction_stay_protected_while_snapshots_retained() 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
     let table_name = "traces";
-    let mut writer = writer::IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         tenant_id.to_string(),
         dataset_id.to_string(),
@@ -1371,7 +1371,7 @@ async fn large_table_detection_reads_each_manifest_once_and_flags_only_orphans()
     let tenant_id = "scale-tenant";
     let dataset_id = "scale-dataset";
     let table_name = "traces";
-    let mut writer = writer::IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         tenant_id.to_string(),
         dataset_id.to_string(),

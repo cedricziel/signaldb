@@ -31,7 +31,6 @@ use tokio::net::TcpListener;
 use tokio::time::{sleep, timeout};
 use tonic::transport::Server;
 use tower::ServiceExt;
-use writer::IcebergWriterFlightService;
 
 /// Test services configuration
 struct TestServices {
@@ -150,11 +149,13 @@ async fn setup_test_services() -> TestServices {
             .expect("Failed to create CatalogManager"),
     );
 
-    let writer_service = IcebergWriterFlightService::new(
+    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
         catalog_manager.clone(),
         writer_wal.clone(),
         &common::config::WriterConfig::default(),
-    );
+    )
+    .await
+    .expect("failed to build writer service with type authority");
 
     // Start background WAL processing
     let _writer_bg_handle = writer_service.start_background_processing();
@@ -1215,11 +1216,13 @@ async fn setup_multi_tenant_test_services() -> TestServices {
             .expect("Failed to create CatalogManager"),
     );
 
-    let writer_service = IcebergWriterFlightService::new(
+    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
         catalog_manager.clone(),
         writer_wal.clone(),
         &common::config::WriterConfig::default(),
-    );
+    )
+    .await
+    .expect("failed to build writer service with type authority");
 
     let _writer_bg_handle = writer_service.start_background_processing();
 

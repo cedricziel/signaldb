@@ -24,7 +24,7 @@ async fn writer_for(table: &str) -> Result<(Arc<CatalogManager>, IcebergTableWri
         .with_tenant(TENANT, DATASET)
         .build();
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
-    let writer = IcebergTableWriter::new(
+    let writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         TENANT.to_string(),
         DATASET.to_string(),

@@ -32,7 +32,6 @@ use querier::QuerierFlightService;
 use tests_integration::compaction_helpers::{MILLIS_PER_HOUR, aligned_hour_start};
 use tests_integration::generators;
 use tonic::Request;
-use writer::IcebergTableWriter;
 
 const TENANT: &str = "wide-sort-tenant";
 const DATASET: &str = "wide-sort-dataset";
@@ -109,7 +108,7 @@ async fn wide_row_sorts_succeed_only_under_a_bounded_scan_batch() -> Result<()> 
         .build();
 
     let catalog_manager = Arc::new(CatalogManager::new(config.clone()).await?);
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         TENANT.to_string(),
         DATASET.to_string(),

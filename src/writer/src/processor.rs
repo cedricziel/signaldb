@@ -1604,6 +1604,22 @@ mod tests {
     use common::wal::{Wal, WalConfig, WalOperation};
     use tempfile::tempdir;
 
+    /// A `TypeAuthority` backed by a fresh in-memory SQL catalog. Every
+    /// signal table's current `schemas.toml` version is the typed
+    /// attribute layout (one-shot cutover), so a processor that writes any
+    /// real batch needs one attached -- see
+    /// [`IcebergTableWriter::append_batches_with_marker`]'s hard error for
+    /// a typed table with no configured authority.
+    async fn test_type_authority() -> Arc<TypeAuthority> {
+        let sql_catalog = common::catalog::Catalog::new_in_memory().await.unwrap();
+        let resolver = common::schema_registry::SchemaResolver::new(sql_catalog.clone());
+        Arc::new(TypeAuthority::new(
+            sql_catalog,
+            resolver,
+            Arc::new(common::config::Configuration::default()),
+        ))
+    }
+
     /// A manager holding exactly `wal`, so tests that drive one WAL by hand
     /// can feed it to the processor.
     async fn manager_for(wal: &Arc<Wal>) -> Arc<WalManager> {
@@ -1656,7 +1672,8 @@ mod tests {
         }
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let mut processor = WalProcessor::new(manager, catalog_manager);
+        let mut processor = WalProcessor::new(manager, catalog_manager)
+            .with_type_authority(test_type_authority().await);
 
         // No pending entries anywhere, so drain_pending returns early after
         // the per-cycle bookkeeping — which is exactly where the dead-letter
@@ -1708,7 +1725,8 @@ mod tests {
         }
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let mut processor = WalProcessor::new(manager.clone(), catalog_manager);
+        let mut processor = WalProcessor::new(manager.clone(), catalog_manager)
+            .with_type_authority(test_type_authority().await);
 
         processor.process_pending_entries().await.unwrap();
 
@@ -1775,7 +1793,8 @@ mod tests {
         globex.flush().await.unwrap();
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let mut processor = WalProcessor::new(manager.clone(), catalog_manager);
+        let mut processor = WalProcessor::new(manager.clone(), catalog_manager)
+            .with_type_authority(test_type_authority().await);
         processor
             .process_pending_entries()
             .await
@@ -2017,7 +2036,8 @@ mod tests {
         );
 
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager)
+            .with_type_authority(test_type_authority().await);
 
         processor.process_pending_entries().await.unwrap();
 
@@ -2041,7 +2061,8 @@ mod tests {
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
 
-        let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
+        let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager)
+            .with_type_authority(test_type_authority().await);
 
         let stats = processor.get_stats().await;
         assert_eq!(stats.active_writers, 0);
@@ -2060,7 +2081,8 @@ mod tests {
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
 
-        let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
+        let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager)
+            .with_type_authority(test_type_authority().await);
 
         // Test different operation types
         let entry = WalEntry {
@@ -2121,7 +2143,8 @@ mod tests {
         let processor = WalProcessor::new(
             manager_for(&wal).await,
             Arc::new(CatalogManager::new_in_memory().await.unwrap()),
-        );
+        )
+        .with_type_authority(test_type_authority().await);
 
         // The entry ids are what the ingest path derived: `" acme "` trimmed,
         // and an empty dataset replaced by the default.
@@ -2173,7 +2196,8 @@ mod tests {
             .unwrap();
         wal.flush().await.unwrap();
 
-        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager)
+            .with_type_authority(test_type_authority().await);
         for _ in 0..super::MAX_ENTRY_FAILURES {
             processor
                 .process_pending_entries()
@@ -2248,7 +2272,8 @@ mod tests {
         bytes[idx] ^= 0x01;
         tokio::fs::write(&data_path, &bytes).await.unwrap();
 
-        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager)
+            .with_type_authority(test_type_authority().await);
         processor
             .process_pending_entries()
             .await
@@ -2319,7 +2344,8 @@ mod tests {
             .unwrap();
         wal.flush().await.unwrap();
 
-        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager.clone());
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager.clone())
+            .with_type_authority(test_type_authority().await);
         processor
             .process_pending_entries()
             .await
@@ -2396,7 +2422,8 @@ mod tests {
         };
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager)
+            .with_type_authority(test_type_authority().await);
 
         // _system-tenant entry: nothing may pass the export filter.
         wal.append(
@@ -2453,7 +2480,8 @@ mod tests {
         let wal = Arc::new(Wal::new(wal_config).await.unwrap());
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
 
-        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager)
+            .with_type_authority(test_type_authority().await);
 
         // Should handle empty entries gracefully
         let result = processor.process_pending_entries().await;
@@ -2485,7 +2513,8 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager)
+            .with_type_authority(test_type_authority().await);
 
         // No pending entries: force-commit must succeed and commit nothing.
         processor
@@ -2515,7 +2544,8 @@ mod tests {
             ..Default::default()
         };
         let mut processor =
-            WalProcessor::with_config(manager_for(&wal).await, catalog_manager, &config);
+            WalProcessor::with_config(manager_for(&wal).await, catalog_manager, &config)
+                .with_type_authority(test_type_authority().await);
 
         let meta = Some(r#"{"target_table":"metrics_gauge"}"#.to_string());
 
@@ -2579,7 +2609,8 @@ mod tests {
             ..Default::default()
         };
         let mut processor =
-            WalProcessor::with_config(manager_for(&wal).await, catalog_manager, &config);
+            WalProcessor::with_config(manager_for(&wal).await, catalog_manager, &config)
+                .with_type_authority(test_type_authority().await);
 
         let meta = Some(r#"{"target_table":"metrics_gauge"}"#.to_string());
 
@@ -2630,7 +2661,8 @@ mod tests {
             ..Default::default()
         };
         let mut processor =
-            WalProcessor::with_config(manager_for(&wal).await, catalog_manager, &config);
+            WalProcessor::with_config(manager_for(&wal).await, catalog_manager, &config)
+                .with_type_authority(test_type_authority().await);
 
         let meta_a = Some(
             r#"{"tenant_id":"acme","dataset_id":"production","target_table":"metrics_gauge"}"#
@@ -2714,7 +2746,8 @@ mod tests {
 
         // "Restart": a brand-new processor (fresh coalescer state, same catalog
         // + object store) over the same WAL commits the pending entry.
-        let mut restarted = WalProcessor::new(manager_for(&wal).await, catalog_manager);
+        let mut restarted = WalProcessor::new(manager_for(&wal).await, catalog_manager)
+            .with_type_authority(test_type_authority().await);
         restarted.process_pending_entries().await.unwrap();
         assert!(
             wal.get_unprocessed_entries().await.unwrap().is_empty(),
@@ -2738,7 +2771,8 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager)
+            .with_type_authority(test_type_authority().await);
         processor
             .inject_commit_failure(Some(CommitFailureKind::Transient))
             .await;
@@ -2780,7 +2814,8 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager)
+            .with_type_authority(test_type_authority().await);
         processor
             .inject_commit_failure(Some(CommitFailureKind::Transient))
             .await;
@@ -2824,7 +2859,8 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager)
+            .with_type_authority(test_type_authority().await);
 
         wal.append(
             WalOperation::WriteMetrics,
@@ -2872,7 +2908,8 @@ mod tests {
             ..Default::default()
         };
         let mut processor =
-            WalProcessor::with_config(manager_for(&wal).await, catalog_manager, &config);
+            WalProcessor::with_config(manager_for(&wal).await, catalog_manager, &config)
+                .with_type_authority(test_type_authority().await);
 
         let meta = Some(r#"{"target_table":"metrics_gauge"}"#.to_string());
         let mut ids = Vec::new();
@@ -2940,7 +2977,8 @@ mod tests {
             ..Default::default()
         };
         let mut processor =
-            WalProcessor::with_config(manager_for(&wal).await, catalog_manager, &config);
+            WalProcessor::with_config(manager_for(&wal).await, catalog_manager, &config)
+                .with_type_authority(test_type_authority().await);
 
         let meta = Some(r#"{"target_table":"metrics_gauge"}"#.to_string());
         for _ in 0..6 {
@@ -2983,7 +3021,8 @@ mod tests {
             ..Default::default()
         };
         let mut processor =
-            WalProcessor::with_config(manager_for(&wal).await, catalog_manager, &config);
+            WalProcessor::with_config(manager_for(&wal).await, catalog_manager, &config)
+                .with_type_authority(test_type_authority().await);
 
         let meta = Some(r#"{"target_table":"metrics_gauge"}"#.to_string());
         for _ in 0..6 {
@@ -3105,7 +3144,8 @@ mod tests {
                 .unwrap(),
         );
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
+        let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager)
+            .with_type_authority(test_type_authority().await);
 
         for _ in 0..ENTRY_COUNT {
             wal.append(
@@ -3189,7 +3229,8 @@ mod tests {
         .unwrap();
         wal.flush().await.unwrap();
 
-        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager)
+            .with_type_authority(test_type_authority().await);
         processor
             .inject_commit_failure(Some(super::CommitFailureKind::Transient))
             .await;
@@ -3250,7 +3291,8 @@ mod tests {
             ..Default::default()
         };
         let mut processor =
-            WalProcessor::with_config(manager_for(&wal).await, catalog_manager, &config);
+            WalProcessor::with_config(manager_for(&wal).await, catalog_manager, &config)
+                .with_type_authority(test_type_authority().await);
         // Sleep well past the timeout so the commit attempt is cancelled.
         processor
             .inject_commit_delay(Some(Duration::from_secs(2)))
@@ -3304,7 +3346,8 @@ mod tests {
             .unwrap();
         wal.flush().await.unwrap();
 
-        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager)
+            .with_type_authority(test_type_authority().await);
         processor
             .inject_commit_failure(Some(super::CommitFailureKind::Permanent))
             .await;
@@ -3360,7 +3403,8 @@ mod tests {
             .unwrap();
         wal.flush().await.unwrap();
 
-        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager);
+        let mut processor = WalProcessor::new(manager_for(&wal).await, catalog_manager)
+            .with_type_authority(test_type_authority().await);
         for _ in 0..super::MAX_ENTRY_FAILURES {
             processor
                 .process_pending_entries()

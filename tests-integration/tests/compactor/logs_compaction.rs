@@ -21,7 +21,6 @@ use opentelemetry_proto::tonic::{
 };
 use std::sync::Arc;
 use tests_integration::compaction_helpers::busiest_partition;
-use writer::IcebergTableWriter;
 
 /// Initialize test logging
 fn init_test_logging() {
@@ -147,7 +146,7 @@ async fn test_logs_table_compaction() -> Result<()> {
     // Phase 1: Create initial small files via Writer
     tracing::info!("Phase 1: Creating small log files");
 
-    let writer_result = IcebergTableWriter::new(
+    let writer_result = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         tenant_id.to_string(),
         dataset_id.to_string(),
@@ -270,7 +269,7 @@ async fn test_logs_compaction_with_sorting_verification() -> Result<()> {
     let table_name = "logs";
 
     // Create writer and write varied severity logs
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         tenant_id.to_string(),
         dataset_id.to_string(),

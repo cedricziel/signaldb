@@ -34,7 +34,6 @@ use futures::StreamExt;
 use querier::QuerierFlightService;
 use tests_integration::generators::{self, BLOOM_HIGH_SENTINEL, BLOOM_LOW_SENTINEL};
 use tonic::Request;
-use writer::IcebergTableWriter;
 
 const TENANT: &str = "lookup-tenant";
 const DATASET: &str = "lookup-dataset";
@@ -78,7 +77,7 @@ fn target_instants(boundary: i64) -> [i64; TARGET_SPAN_COUNT] {
 /// Seed a `traces` table holding `TARGET`'s spans spread over several hour
 /// partitions plus filler files that bracket it in `trace_id` order.
 async fn seed_traces(catalog_manager: &Arc<CatalogManager>, boundary: i64) -> Result<()> {
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         catalog_manager,
         TENANT.to_string(),
         DATASET.to_string(),

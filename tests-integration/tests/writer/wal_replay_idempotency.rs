@@ -23,7 +23,6 @@ use iceberg_rust::catalog::tabular::Tabular;
 use std::path::Path;
 use std::sync::Arc;
 use tempfile::tempdir;
-use writer::WalProcessor;
 
 /// Build a batch in the metrics_gauge storage schema.
 fn metrics_gauge_batch(values: &[f64]) -> Result<RecordBatch> {
@@ -173,7 +172,11 @@ async fn replay_after_crash_does_not_duplicate_rows() -> Result<()> {
     .await?;
     wal.flush().await?;
 
-    let mut processor = WalProcessor::new(wal_manager.clone(), catalog_manager.clone());
+    let mut processor = tests_integration::test_support::processor_with_type_authority(
+        wal_manager.clone(),
+        catalog_manager.clone(),
+    )
+    .await?;
     processor.process_pending_entries().await?;
     assert!(
         wal.get_unprocessed_entries().await?.is_empty(),
@@ -193,7 +196,11 @@ async fn replay_after_crash_does_not_duplicate_rows() -> Result<()> {
     let replayed = wal.get_unprocessed_entries().await?;
     assert_eq!(replayed.len(), 2, "index loss must resurface the entries");
 
-    let mut processor = WalProcessor::new(wal_manager.clone(), catalog_manager.clone());
+    let mut processor = tests_integration::test_support::processor_with_type_authority(
+        wal_manager.clone(),
+        catalog_manager.clone(),
+    )
+    .await?;
     processor.process_pending_entries().await?;
 
     // The idempotency marker must prevent re-inserting the committed rows.
@@ -226,7 +233,11 @@ async fn mixed_replay_commits_only_new_entries() -> Result<()> {
     .await?;
     wal.flush().await?;
 
-    let mut processor = WalProcessor::new(wal_manager.clone(), catalog_manager.clone());
+    let mut processor = tests_integration::test_support::processor_with_type_authority(
+        wal_manager.clone(),
+        catalog_manager.clone(),
+    )
+    .await?;
     processor.process_pending_entries().await?;
     assert_eq!(count_rows(&catalog_manager, "metrics_gauge").await?, 2);
     processor.shutdown().await?;
@@ -248,7 +259,11 @@ async fn mixed_replay_commits_only_new_entries() -> Result<()> {
     wal.flush().await?;
     assert_eq!(wal.get_unprocessed_entries().await?.len(), 2);
 
-    let mut processor = WalProcessor::new(wal_manager.clone(), catalog_manager.clone());
+    let mut processor = tests_integration::test_support::processor_with_type_authority(
+        wal_manager.clone(),
+        catalog_manager.clone(),
+    )
+    .await?;
     processor.process_pending_entries().await?;
 
     assert_eq!(
@@ -277,7 +292,11 @@ async fn processing_is_idempotent_across_repeated_replays() -> Result<()> {
     .await?;
     wal.flush().await?;
 
-    let mut processor = WalProcessor::new(wal_manager.clone(), catalog_manager.clone());
+    let mut processor = tests_integration::test_support::processor_with_type_authority(
+        wal_manager.clone(),
+        catalog_manager.clone(),
+    )
+    .await?;
     processor.process_pending_entries().await?;
     processor.shutdown().await?;
     drop(processor);
@@ -288,7 +307,11 @@ async fn processing_is_idempotent_across_repeated_replays() -> Result<()> {
     for _ in 0..2 {
         drop_wal_indexes(wal_dir.path()).await?;
         let (wal_manager, _wal) = open_writer_wal(&wal_config).await?;
-        let mut processor = WalProcessor::new(wal_manager.clone(), catalog_manager.clone());
+        let mut processor = tests_integration::test_support::processor_with_type_authority(
+            wal_manager.clone(),
+            catalog_manager.clone(),
+        )
+        .await?;
         processor.process_pending_entries().await?;
         assert_eq!(count_rows(&catalog_manager, "metrics_gauge").await?, 1);
         processor.shutdown().await?;

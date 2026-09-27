@@ -16,7 +16,6 @@ use tests_integration::compaction_helpers::{
 };
 use tests_integration::generators;
 use tests_integration::ordering::append_unattested;
-use writer::IcebergTableWriter;
 
 const TENANT: &str = "converge-tenant";
 const DATASET: &str = "converge-dataset";
@@ -52,7 +51,7 @@ async fn compaction_makes_a_partition_of_legacy_files_fully_attested() -> Result
         .with_tenant(TENANT, DATASET)
         .build();
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         TENANT.to_string(),
         DATASET.to_string(),
