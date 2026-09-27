@@ -242,6 +242,13 @@ describe("buildSearch", () => {
     expect(state.tenant).toBe("acme");
     expect(state.dataset).toBe("prod");
   });
+
+  it("round-trips the Real users page's selected app through ?app=", () => {
+    expect(buildSearch(DEFAULT_STATE)).not.toContain("app");
+    const state = { ...DEFAULT_STATE, rumApp: "storefront-web" };
+    expect(buildSearch(state)).toContain("app=storefront-web");
+    expect(parseExploreState(buildSearch(state)).rumApp).toBe("storefront-web");
+  });
 });
 
 describe("chart scale", () => {
