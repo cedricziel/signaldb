@@ -157,8 +157,12 @@ describe("CatalogServiceMap", () => {
     });
     renderMap();
     expect(
-      await screen.findByText("The span join was truncated at its row cap."),
+      await screen.findByText(/Some calls may be missing/),
     ).toBeInTheDocument();
+    expect(
+      screen.queryByText("The span join was truncated at its row cap."),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText(/Showing the busiest/)).toBeInTheDocument();
   });
 
   it("shows an empty state when the tenant has no service graph", async () => {

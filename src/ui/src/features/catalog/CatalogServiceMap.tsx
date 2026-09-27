@@ -1,6 +1,6 @@
 // The Catalog Map view: the tenant's whole service graph for the current
-// window and filters, a hide-external toggle, node-cap/correlate-truncation
-// warnings above the map, and a side panel on node select showing its RED
+// window and filters, a hide-external toggle, a truncation warning above
+// the map, and a side panel on node select showing its RED
 // figures, callers and dependencies with links to the service page, its
 // traces and its errors.
 import { useState, type ReactNode } from "react";
@@ -29,17 +29,11 @@ interface Props {
   viewSwitch?: ReactNode;
 }
 
-/** Diagnostics the Catalog Map surfaces above the graph — the node cap
- * (also reflected in `ServiceGraph`'s own "showing busiest N of M" note)
- * and the span-join row cap the `graph` envelope's `correlate` stage hits
- * on a large window. */
-const SURFACED_WARNING_CODES = new Set([
-  "graph_node_limit",
-  "correlate_row_limit",
-]);
-
-function relevantWarnings(warnings: QueryWarning[]): QueryWarning[] {
-  return warnings.filter((w) => SURFACED_WARNING_CODES.has(w.code));
+/** The span join behind the graph hit its row cap on a large window. The
+ * node cap needs no copy here: `ServiceGraph` already says "showing the
+ * busiest N of M". */
+function joinTruncated(warnings: QueryWarning[]): boolean {
+  return warnings.some((w) => w.code === "correlate_row_limit");
 }
 
 export function CatalogServiceMap({
@@ -102,7 +96,7 @@ export function CatalogServiceMap({
           nodes={query.data.graph.nodes}
           edges={query.data.graph.edges}
           droppedNodes={query.data.graph.dropped_nodes ?? 0}
-          warnings={relevantWarnings(query.data.warnings)}
+          truncated={joinTruncated(query.data.warnings)}
           hideExternal={hideExternal}
           selectedId={selectedId}
           onSelect={setSelectedId}
@@ -119,7 +113,7 @@ function CatalogServiceMapBody({
   nodes,
   edges,
   droppedNodes,
-  warnings,
+  truncated,
   hideExternal,
   selectedId,
   onSelect,
@@ -130,7 +124,7 @@ function CatalogServiceMapBody({
   nodes: GraphNode[];
   edges: GraphEdge[];
   droppedNodes: number;
-  warnings: QueryWarning[];
+  truncated: boolean;
   hideExternal: boolean;
   selectedId: string | null;
   onSelect: (id: string | null) => void;
@@ -145,11 +139,12 @@ function CatalogServiceMapBody({
   return (
     <div className={`catalog-map-layout${selected ? " with-panel" : ""}`}>
       <div className="catalog-map-graph-col">
-        {warnings.map((w) => (
-          <div key={w.code} className="warn-callout catalog-map-warning">
-            {w.message}
+        {truncated && (
+          <div className="warn-callout catalog-map-warning">
+            Some calls may be missing: this time range has more traffic than the
+            map can load. Pick a shorter range to see every connection.
           </div>
-        ))}
+        )}
         <ServiceGraph
           nodes={sgNodes}
           edges={sgEdges}
