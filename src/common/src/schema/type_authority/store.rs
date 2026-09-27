@@ -43,7 +43,7 @@ pub struct AttributeTypeRecord {
 }
 
 impl CanonicalType {
-    fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'static str {
         match self {
             CanonicalType::String => "string",
             CanonicalType::Int64 => "int64",
