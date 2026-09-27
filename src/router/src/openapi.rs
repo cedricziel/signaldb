@@ -81,6 +81,7 @@ impl Modify for SecurityAddon {
         (name = "schema", description = "Schema registry: semantic-convention registries, attribute/entity/metric resolution"),
         (name = "github", description = "GitHub App installations linked to a tenant"),
         (name = "processors", description = "Tenant OTTL processors applied at ingest"),
+        (name = "eval-sets", description = "Named lists of test cases for offline agent evaluation"),
     ),
     paths(
         // Tenant identity resource (change: no-scope-prefixed-paths)
@@ -174,6 +175,12 @@ impl Modify for SecurityAddon {
         crate::endpoints::processors::replace_processor,
         crate::endpoints::processors::delete_processor,
         crate::endpoints::processors::test_processor,
+        crate::endpoints::eval_sets::list_eval_sets,
+        crate::endpoints::eval_sets::create_eval_set,
+        crate::endpoints::eval_sets::get_eval_set,
+        crate::endpoints::eval_sets::replace_eval_set,
+        crate::endpoints::eval_sets::delete_eval_set,
+        crate::endpoints::eval_sets::append_eval_cases,
     ),
     components(schemas(
         // signaldb-api DTOs shared by the tenant identity resource
@@ -311,6 +318,19 @@ impl Modify for SecurityAddon {
         crate::endpoints::processors::TestRequest,
         crate::endpoints::processors::TestResponse,
         crate::endpoints::processors::TestStatementResult,
+        common::eval_sets::EvalCase,
+        common::eval_sets::EvalCaseSource,
+        common::eval_sets::EvalSetSpec,
+        common::eval_sets::EvalSetRecord,
+        common::eval_sets::EvalSetSummary,
+        common::eval_sets::AppendCasesOutcome,
+        crate::endpoints::links::Link,
+        crate::endpoints::eval_sets::EvalSetLinks,
+        crate::endpoints::eval_sets::EvalSetListLinks,
+        crate::endpoints::eval_sets::EvalSetResponse,
+        crate::endpoints::eval_sets::EvalSetSummaryResponse,
+        crate::endpoints::eval_sets::EvalSetListResponse,
+        crate::endpoints::eval_sets::AppendEvalCasesRequest,
         common::schema_registry::RegistrySource,
         common::schema_registry::RegistrySummary,
         common::schema_registry::ValidationReport,
@@ -613,6 +633,10 @@ mod tests {
         "/api/v1/processors:validate",
         "/api/v1/processors:test",
         "/api/v1/processors/{name}",
+        // endpoints/eval_sets.rs, merged at /api/v1
+        "/api/v1/eval-sets",
+        "/api/v1/eval-sets/{name}",
+        "/api/v1/eval-sets/{name}/cases",
     ];
 
     /// Routes registered by the auto-extracted files (see
@@ -698,7 +722,7 @@ mod tests {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         // (file, mount prefix, Some(fn name) to scope extraction to one
         // function body when the file assembles more than one router).
-        let files_with_prefix: [(&str, &str, Option<&str>); 14] = [
+        let files_with_prefix: [(&str, &str, Option<&str>); 15] = [
             ("src/endpoints/tempo.rs", "/tempo", None),
             ("src/endpoints/logql.rs", "/loki", None),
             ("src/endpoints/promql.rs", "/prometheus", None),
@@ -711,6 +735,7 @@ mod tests {
             ("src/endpoints/github.rs", "/api/v1", Some("manage_router")),
             ("src/endpoints/schema.rs", "/api/v1/schema", None),
             ("src/endpoints/processors.rs", "/api/v1", None),
+            ("src/endpoints/eval_sets.rs", "/api/v1", Some("router")),
             ("src/endpoints/pyroscope.rs", "/pyroscope", Some("router")),
             (
                 "src/endpoints/pyroscope.rs",
@@ -849,6 +874,12 @@ mod tests {
             ("/api/v1/whoami", "get"),
             ("/api/v1/connection", "get"),
             ("/api/v1/tenants/{tenant_id}/source-context", "post"),
+            ("/api/v1/eval-sets", "get"),
+            ("/api/v1/eval-sets", "post"),
+            ("/api/v1/eval-sets/{name}", "get"),
+            ("/api/v1/eval-sets/{name}", "put"),
+            ("/api/v1/eval-sets/{name}", "delete"),
+            ("/api/v1/eval-sets/{name}/cases", "post"),
         ];
 
         for (path, method) in rate_limited {

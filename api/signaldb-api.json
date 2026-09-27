@@ -91,6 +91,509 @@
         ]
       }
     },
+    "/api/v1/eval-sets": {
+      "get": {
+        "tags": [
+          "eval-sets"
+        ],
+        "summary": "List the eval sets in the caller's dataset",
+        "operationId": "list_eval_sets",
+        "responses": {
+          "200": {
+            "description": "Eval sets without their cases, ordered by name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalSetListResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing evals:read scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "post": {
+        "tags": [
+          "eval-sets"
+        ],
+        "summary": "Create an eval set in the caller's dataset",
+        "operationId": "create_eval_set",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvalSetSpec"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Eval set created",
+            "headers": {
+              "Location": {
+                "schema": {
+                  "type": "string"
+                },
+                "description": "URL of the new eval set"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalSetResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing evals:write scope, or a session without the tenant-admin role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "An eval set with this name already exists in the dataset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body exceeds the 32 MiB limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid name, empty agent, duplicate or invalid case ids, or an invalid trace id",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/eval-sets/{name}": {
+      "get": {
+        "tags": [
+          "eval-sets"
+        ],
+        "summary": "Get an eval set with its cases in order",
+        "operationId": "get_eval_set",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Eval set name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The eval set and its cases",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalSetResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing evals:read scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such eval set in the caller's dataset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "put": {
+        "tags": [
+          "eval-sets"
+        ],
+        "summary": "Replace an eval set's agent, description and cases",
+        "operationId": "replace_eval_set",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Eval set name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EvalSetSpec"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Eval set replaced",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalSetResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing evals:write scope, or a session without the tenant-admin role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such eval set (PUT never creates)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body exceeds the 32 MiB limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid spec, or the body name differs from the path name",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      },
+      "delete": {
+        "tags": [
+          "eval-sets"
+        ],
+        "summary": "Delete an eval set and its cases",
+        "operationId": "delete_eval_set",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Eval set name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Eval set deleted"
+          },
+          "403": {
+            "description": "Missing evals:write scope, or a session without the tenant-admin role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such eval set in the caller's dataset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/eval-sets/{name}/cases": {
+      "post": {
+        "tags": [
+          "eval-sets"
+        ],
+        "summary": "Append cases to an eval set, skipping ids it already holds",
+        "operationId": "append_eval_cases",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Eval set name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppendEvalCasesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Cases appended; ids already in the set are reported, not overwritten",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppendCasesOutcome"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing evals:write scope, or a session without the tenant-admin role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such eval set in the caller's dataset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body exceeds the 32 MiB limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Duplicate or invalid case ids, an invalid trace id, or the set would exceed its case limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/v1/ops/compact": {
       "post": {
         "tags": [
@@ -5159,7 +5662,7 @@
       },
       "ApiErrorBody": {
         "type": "object",
-        "description": "The JSON envelope every query-surface error responds with: `status` is\nalways `\"error\"`, `errorType` a stable low-cardinality code, `error` a\nhuman-readable message, and `retryAfterMs` present only on rate-limit\nrejections. Exists as a real (rather than `serde_json::json!`-built)\ntype so the OpenAPI document can declare its schema on the `429`\nresponse of every rate-limited operation.",
+        "description": "The JSON envelope every [`ApiError`] responds with: `status` is\nalways `\"error\"`, `errorType` a stable low-cardinality code, `error` a\nhuman-readable message, and `retryAfterMs` present only on rate-limit\nrejections. Exists as a real (rather than `serde_json::json!`-built)\ntype so the OpenAPI document can declare its schema on the `429`\nresponse of every rate-limited operation.",
         "required": [
           "status",
           "errorType",
@@ -5184,6 +5687,57 @@
           "status": {
             "type": "string",
             "description": "Always `\"error\"`."
+          }
+        }
+      },
+      "AppendCasesOutcome": {
+        "type": "object",
+        "description": "Result of appending cases to a set: ids already in the set are reported,\nnever overwritten.",
+        "required": [
+          "added",
+          "already_present",
+          "added_ids",
+          "already_present_ids"
+        ],
+        "properties": {
+          "added": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "added_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ids appended, in the order they now appear in the set."
+          },
+          "already_present": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "already_present_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ids skipped because the set already held them."
+          }
+        }
+      },
+      "AppendEvalCasesRequest": {
+        "type": "object",
+        "description": "Body of `POST /api/v1/eval-sets/{name}/cases`.",
+        "required": [
+          "cases"
+        ],
+        "properties": {
+          "cases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EvalCase"
+            }
           }
         }
       },
@@ -6383,6 +6937,323 @@
         ],
         "description": "One member of an enum attribute type."
       },
+      "EvalCase": {
+        "type": "object",
+        "description": "One test case of an eval set.",
+        "required": [
+          "id",
+          "input"
+        ],
+        "properties": {
+          "expected_tools": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Expected tool trajectory, in call order. Empty when not checked."
+          },
+          "id": {
+            "type": "string",
+            "description": "Unique within the set; 1-128 characters."
+          },
+          "input": {
+            "type": "string",
+            "description": "The input the agent under test receives."
+          },
+          "reference": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Reference answer for evaluators that compare against one."
+          },
+          "source": {
+            "$ref": "#/components/schemas/EvalCaseSource"
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "EvalCaseSource": {
+        "oneOf": [
+          {
+            "type": "object",
+            "description": "Captured from a production trace.",
+            "required": [
+              "trace_id",
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "trace"
+                ]
+              },
+              "trace_id": {
+                "type": "string",
+                "description": "W3C trace id: 32 hex characters, stored lower-case."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Imported from an uploaded file.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "upload"
+                ]
+              }
+            }
+          },
+          {
+            "type": "object",
+            "description": "Written by hand.",
+            "required": [
+              "kind"
+            ],
+            "properties": {
+              "kind": {
+                "type": "string",
+                "enum": [
+                  "hand_written"
+                ]
+              }
+            }
+          }
+        ],
+        "description": "Where a case came from."
+      },
+      "EvalSetLinks": {
+        "type": "object",
+        "description": "Links on one eval set. The mutation links appear only when the caller\nmay write.",
+        "required": [
+          "self"
+        ],
+        "properties": {
+          "append_cases": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Link"
+              }
+            ]
+          },
+          "delete": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Link"
+              }
+            ]
+          },
+          "replace": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Link"
+              }
+            ]
+          },
+          "self": {
+            "$ref": "#/components/schemas/Link"
+          }
+        }
+      },
+      "EvalSetListLinks": {
+        "type": "object",
+        "description": "Links on the eval-set collection.",
+        "required": [
+          "self"
+        ],
+        "properties": {
+          "create": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Link"
+              }
+            ]
+          },
+          "self": {
+            "$ref": "#/components/schemas/Link"
+          }
+        }
+      },
+      "EvalSetListResponse": {
+        "type": "object",
+        "description": "Every eval set in the caller's dataset, ordered by name.",
+        "required": [
+          "items",
+          "_links"
+        ],
+        "properties": {
+          "_links": {
+            "$ref": "#/components/schemas/EvalSetListLinks"
+          },
+          "items": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EvalSetSummaryResponse"
+            }
+          }
+        }
+      },
+      "EvalSetRecord": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/EvalSetSummary"
+          },
+          {
+            "type": "object",
+            "required": [
+              "tenant_id",
+              "dataset",
+              "cases"
+            ],
+            "properties": {
+              "cases": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/EvalCase"
+                }
+              },
+              "dataset": {
+                "type": "string",
+                "description": "The dataset *name* the set belongs to."
+              },
+              "tenant_id": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "A stored eval set with its cases in order."
+      },
+      "EvalSetResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/EvalSetRecord"
+          },
+          {
+            "type": "object",
+            "required": [
+              "_links"
+            ],
+            "properties": {
+              "_links": {
+                "$ref": "#/components/schemas/EvalSetLinks"
+              }
+            }
+          }
+        ],
+        "description": "An eval set with its cases in order."
+      },
+      "EvalSetSpec": {
+        "type": "object",
+        "description": "Caller-supplied eval set: the body of a create/replace request.",
+        "required": [
+          "name",
+          "agent"
+        ],
+        "properties": {
+          "agent": {
+            "type": "string",
+            "description": "The agent this set evaluates (`gen_ai.agent.name`)."
+          },
+          "cases": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EvalCase"
+            },
+            "description": "Cases, in order."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string",
+            "description": "Slug: lowercase letters, digits, `-`, `_` and `.`, starting with a\nletter or digit; 1-128 characters."
+          }
+        }
+      },
+      "EvalSetSummary": {
+        "type": "object",
+        "description": "An eval set without its cases, as listed.",
+        "required": [
+          "name",
+          "agent",
+          "case_count",
+          "created_at",
+          "updated_at"
+        ],
+        "properties": {
+          "agent": {
+            "type": "string"
+          },
+          "case_count": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "updated_at": {
+            "type": "string",
+            "format": "date-time"
+          }
+        }
+      },
+      "EvalSetSummaryResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/EvalSetSummary"
+          },
+          {
+            "type": "object",
+            "required": [
+              "_links"
+            ],
+            "properties": {
+              "_links": {
+                "$ref": "#/components/schemas/EvalSetLinks"
+              }
+            }
+          }
+        ],
+        "description": "An eval set as listed, without its cases."
+      },
       "FieldOrigin": {
         "type": "string",
         "description": "Which metadata tier a discovered item came from.",
@@ -6896,6 +7767,24 @@
             "items": {
               "type": "string"
             }
+          }
+        }
+      },
+      "Link": {
+        "type": "object",
+        "description": "A hypermedia link. `method` is omitted for `GET`.",
+        "required": [
+          "href"
+        ],
+        "properties": {
+          "href": {
+            "type": "string"
+          },
+          "method": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },
@@ -9473,7 +10362,7 @@
           "application/json": {
             "schema": {
               "type": "object",
-              "description": "The JSON envelope every query-surface error responds with: `status` is\nalways `\"error\"`, `errorType` a stable low-cardinality code, `error` a\nhuman-readable message, and `retryAfterMs` present only on rate-limit\nrejections. Exists as a real (rather than `serde_json::json!`-built)\ntype so the OpenAPI document can declare its schema on the `429`\nresponse of every rate-limited operation.",
+              "description": "The JSON envelope every [`ApiError`] responds with: `status` is\nalways `\"error\"`, `errorType` a stable low-cardinality code, `error` a\nhuman-readable message, and `retryAfterMs` present only on rate-limit\nrejections. Exists as a real (rather than `serde_json::json!`-built)\ntype so the OpenAPI document can declare its schema on the `429`\nresponse of every rate-limited operation.",
               "required": [
                 "status",
                 "errorType",
@@ -9594,6 +10483,10 @@
     {
       "name": "processors",
       "description": "Tenant OTTL processors applied at ingest"
+    },
+    {
+      "name": "eval-sets",
+      "description": "Named lists of test cases for offline agent evaluation"
     }
   ]
 }
