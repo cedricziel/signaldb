@@ -3,9 +3,18 @@ import { useEffect, useState } from "react";
 interface Props {
   value: string;
   label: string;
+  /** Visible text before and after copying; defaults to Copy / Copied. */
+  text?: [idle: string, done: string];
+  /** Replaces the compact inline look, e.g. `btn` for a toolbar button. */
+  className?: string;
 }
 
-export function CopyValueButton({ value, label }: Props) {
+export function CopyValueButton({
+  value,
+  label,
+  text = ["Copy", "Copied"],
+  className,
+}: Props) {
   const [copied, setCopied] = useState(false);
 
   useEffect(() => {
@@ -27,7 +36,7 @@ export function CopyValueButton({ value, label }: Props) {
   return (
     <button
       type="button"
-      className="copy-value-button"
+      className={className ?? "copy-value-button"}
       data-copied={copied || undefined}
       aria-label={`${copied ? "Copied" : "Copy"} ${label}`}
       onClick={() => void copyValue()}
@@ -42,7 +51,7 @@ export function CopyValueButton({ value, label }: Props) {
           <path d="M11 5V3H3v8h2" />
         </svg>
       )}
-      <span>{copied ? "Copied" : "Copy"}</span>
+      <span>{copied ? text[1] : text[0]}</span>
     </button>
   );
 }
