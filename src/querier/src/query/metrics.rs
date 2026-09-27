@@ -2225,8 +2225,6 @@ fn apply_filters(
             df.schema().as_arrow(),
             LOG_ATTRIBUTES,
         ),
-        // Metrics tables carry no derived token column (logs only).
-        attr_tokens: false,
         schema: Some(df.schema().inner().clone()),
     };
     let mut predicate = metric_name_expr(plan);

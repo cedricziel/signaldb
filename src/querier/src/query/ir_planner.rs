@@ -582,7 +582,7 @@ fn utf8_map_type() -> DataType {
 /// substring-match approximation for this same legacy shape. Pushdown on
 /// the coerced column is disabled by the same `supports_filters_pushdown`
 /// guard the union path already has — acceptable for the legacy tables this
-/// reaches, which have no bloom-filtered `attr_tokens` column to prune on
+/// reaches, which have no bloom-filtered attribute column to prune on
 /// either way.
 fn coerce_legacy_containers(
     provider: Arc<dyn TableProvider>,

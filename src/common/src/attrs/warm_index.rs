@@ -88,12 +88,10 @@ impl WarmIndexBuilder {
 
     /// Builds the `List<Binary>` array, with `field`'s list-item field used
     /// verbatim so the array matches the target table schema exactly. A row
-    /// with no tokens gets an empty list, not a null — matching
-    /// [`ATTR_TOKENS_COLUMN`](crate::schema::ATTR_TOKENS_COLUMN)'s
-    /// convention so an ANDed containment predicate never nulls out rows the
-    /// typed-home columns matched. Token order within a row is not
-    /// preserved — sorted for deduplication, which is all a bloom filter
-    /// leaf needs.
+    /// with no tokens gets an empty list, not a null, so an ANDed
+    /// containment predicate never nulls out rows the typed-home columns
+    /// matched. Token order within a row is not preserved — sorted for
+    /// deduplication, which is all a bloom filter leaf needs.
     pub fn finish(self, field: &Field) -> Result<ArrayRef, WarmIndexError> {
         let DataType::List(item_field) = field.data_type() else {
             return Err(WarmIndexError::NotAListField(field.name().clone()));

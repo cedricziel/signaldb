@@ -2016,13 +2016,7 @@ mod tests {
         let schema = SCHEMA_DEFINITIONS
             .resolve_trace_schema("physical-v5")
             .unwrap()
-            .to_iceberg_schema_with(
-                &[],
-                DerivedColumns {
-                    attr_tokens: false,
-                    warm_index,
-                },
-            )
+            .to_iceberg_schema_with(&[], DerivedColumns { warm_index })
             .unwrap();
 
         let namespace = catalog_manager
