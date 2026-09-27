@@ -3,9 +3,9 @@
 ### Requirement: Approximate distinct-count aggregate
 
 The `aggregate` stage SHALL accept `fn: "count_distinct"` with an `of` field
-of type `string`, `int64` or `timestamp` — the types DataFusion's
-`approx_distinct` accepts — and SHALL reject any other type (`float64`,
-`bool`, maps) at validation, naming the field and its type. It returns an integer estimate of the number of distinct
+of type `string`, `int64`, `bool` or `timestamp` — DataFusion's
+`approx_distinct` rejects floating point — and SHALL reject `float64` at
+validation, naming the field and its type. It returns an integer estimate of the number of distinct
 non-null values of that field in the group. The estimate SHALL be computed
 with a bounded-memory sketch (DataFusion `approx_distinct`, HyperLogLog), so
 its cost does not grow with the number of distinct values, and the IR
