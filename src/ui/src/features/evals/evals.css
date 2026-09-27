@@ -727,7 +727,15 @@
 }
 
 .evals-timing {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+}
+
+.evals-timing-track {
   position: relative;
+  flex: 1;
   height: 14px;
   border-radius: 2px;
   background: var(--bg-inset);
@@ -749,9 +757,9 @@
 }
 
 .evals-timing span {
-  position: absolute;
-  right: 4px;
-  top: -2px;
+  flex: none;
+  min-width: 6ch;
+  text-align: right;
   font: 10.5px var(--mono);
   color: var(--faint);
 }
