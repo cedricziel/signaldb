@@ -15,11 +15,24 @@
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
+use crate::schema::logical::AttributeLevel;
+
 /// One demand counter key: (tenant, dataset, signal, attribute key).
 pub type DemandKey = (String, String, String, String);
 
+/// One per-level demand counter key: (tenant, dataset, signal, level,
+/// attribute key). Kept in a separate registry from [`DemandKey`] so the
+/// unqualified `record`/`drain` pair (still flushed into `attribute_stats`)
+/// is unaffected by level-aware callers (change: otel-native-schema layer 6).
+pub type LevelDemandKey = (String, String, String, AttributeLevel, String);
+
 fn registry() -> &'static Mutex<HashMap<DemandKey, u64>> {
     static REGISTRY: OnceLock<Mutex<HashMap<DemandKey, u64>>> = OnceLock::new();
+    REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn level_registry() -> &'static Mutex<HashMap<LevelDemandKey, u64>> {
+    static REGISTRY: OnceLock<Mutex<HashMap<LevelDemandKey, u64>>> = OnceLock::new();
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
@@ -36,6 +49,28 @@ pub fn record(tenant_id: &str, dataset_id: &str, signal: &str, attr_key: &str) {
     }
 }
 
+/// Record one query-filter hit for an attribute key at a specific
+/// [`AttributeLevel`], flushed into `attribute_level_stats` (layer 6's
+/// per-level promotion demand, separate from the flat `record` above).
+pub fn record_level(
+    tenant_id: &str,
+    dataset_id: &str,
+    signal: &str,
+    level: AttributeLevel,
+    attr_key: &str,
+) {
+    let key = (
+        tenant_id.to_string(),
+        dataset_id.to_string(),
+        signal.to_string(),
+        level,
+        attr_key.to_string(),
+    );
+    if let Ok(mut map) = level_registry().lock() {
+        *map.entry(key).or_insert(0) += 1;
+    }
+}
+
 /// Take all accumulated counters, leaving the registry empty. Callers flush
 /// the result into the catalog's `attribute_stats` table.
 pub fn drain() -> Vec<(DemandKey, u64)> {
@@ -45,9 +80,19 @@ pub fn drain() -> Vec<(DemandKey, u64)> {
     }
 }
 
-/// Spawn a background task that periodically drains the registry into the
-/// catalog's `attribute_stats` table. Flush failures are logged and the
-/// counters are dropped (advisory data — losing a window is acceptable).
+/// Take all accumulated per-level counters, leaving the registry empty.
+/// Callers flush the result into the catalog's `attribute_level_stats` table.
+pub fn drain_level() -> Vec<(LevelDemandKey, u64)> {
+    match level_registry().lock() {
+        Ok(mut map) => map.drain().collect(),
+        Err(_) => Vec::new(),
+    }
+}
+
+/// Spawn a background task that periodically drains both registries into the
+/// catalog's `attribute_stats`/`attribute_level_stats` tables. Flush failures
+/// are logged and the counters are dropped (advisory data — losing a window
+/// is acceptable).
 pub fn spawn_flusher(
     catalog: std::sync::Arc<crate::catalog::Catalog>,
     interval: std::time::Duration,
@@ -63,6 +108,23 @@ pub fn spawn_flusher(
                     .await
                 {
                     tracing::warn!(error = %e, attr_key = %key, "Failed to flush attribute query-demand counter");
+                }
+            }
+            let queried_at = chrono::Utc::now();
+            for ((tenant, dataset, signal, level, key), hits) in drain_level() {
+                if let Err(e) = catalog
+                    .add_attribute_level_query_hits(
+                        &tenant,
+                        &dataset,
+                        &signal,
+                        level,
+                        &key,
+                        hits as i64,
+                        queried_at,
+                    )
+                    .await
+                {
+                    tracing::warn!(error = %e, attr_key = %key, level = level.as_str(), "Failed to flush per-level attribute query-demand counter");
                 }
             }
         }
@@ -91,5 +153,30 @@ mod tests {
                 .any(|((_, _, s, k), _)| s == "traces" && k == "http.method")
         );
         assert!(super::drain().is_empty());
+    }
+
+    /// Same coverage as `record_accumulates_and_drain_empties`, for the
+    /// per-level registry — level-qualified hits must not collide with the
+    /// flat registry or with a different level of the same key.
+    #[test]
+    fn record_level_accumulates_and_drain_level_empties() {
+        use crate::schema::logical::AttributeLevel;
+
+        super::record_level("t", "d", "logs", AttributeLevel::Record, "namespace");
+        super::record_level("t", "d", "logs", AttributeLevel::Record, "namespace");
+        super::record_level("t", "d", "logs", AttributeLevel::Resource, "namespace");
+        let mut drained = super::drain_level();
+        drained.sort();
+        let record_level_hits = drained
+            .iter()
+            .find(|((_, _, _, level, k), _)| *level == AttributeLevel::Record && k == "namespace")
+            .expect("record-level namespace counter");
+        assert_eq!(record_level_hits.1, 2);
+        let resource_level_hits = drained
+            .iter()
+            .find(|((_, _, _, level, k), _)| *level == AttributeLevel::Resource && k == "namespace")
+            .expect("resource-level namespace counter");
+        assert_eq!(resource_level_hits.1, 1);
+        assert!(super::drain_level().is_empty());
     }
 }
