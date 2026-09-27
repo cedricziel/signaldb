@@ -5,7 +5,7 @@
 The explore UI SHALL serve a Real users page at `/rum/{tab}` (`/rum` opens
 `overview`) scoped to one frontend app and the shared time range. A frontend
 app SHALL be a `service.name` that sent at least one RUM event in the window:
-a log record whose `event.name` is `browser.web_vital`,
+a log record whose `event_name` is `browser.web_vital`,
 `browser.navigation`, `browser.user_action.click` or
 `browser.resource_timing`, or any record carrying `session.id`. The selected
 app SHALL be recorded in the URL as `app`, and the tenant, dataset and range
@@ -113,13 +113,18 @@ filter SHALL accept `session.id`, `user.id` or `attribute=value`.
 
 ### Requirement: Session detail timeline
 
-Opening a session (URL `session`) SHALL show every span and log record with
-that `session.id` on a timeline with lanes Views, Actions, Network, Perf,
+Opening a session (URL `session`) SHALL show the spans and log records with
+that `session.id` — every record except `browser.resource_timing`, which
+the Network tab covers in aggregate — up to a cap of 2,000 records, on a
+timeline with lanes Views, Actions, Network, Perf,
 Errors and Logs, an ordered event list, and the session's resource
 attributes. Selecting a network event whose span has backend children SHALL
 show that trace's waterfall inline, with the time spent in the browser and
 network (client span minus its first server child, via the `correlate`
-stage of `query-ir-span-join`) separated from backend time, and links to the full trace and its backend logs. Selecting an
+stage of `query-ir-span-join`) separated from backend time, and links to
+the full trace and its backend logs. When the session holds more records
+than the cap, the page SHALL say so, show the earliest records up to the
+cap, and offer to load the next page. Selecting an
 exception SHALL show its stack frames with source context
 (`stack-frame-source-context`) and, when a failed request preceded it
 in the same view, that request as the likely cause.
@@ -131,6 +136,12 @@ in the same view, that request as the likely cause.
 - **THEN** both are marked as errors on the timeline, the exception's panel
   names the 502 request as preceding it, and "Show trace" selects the request
   and shows its backend waterfall
+
+#### Scenario: A session over the cap
+
+- **WHEN** a session holds 3,500 non-resource-timing records
+- **THEN** the timeline shows the first 2,000, states that 1,500 more exist,
+  and "Load more" fetches the next 2,000
 
 #### Scenario: Jumping to the trace
 
@@ -190,13 +201,23 @@ the sessions containing it.
 ### Requirement: Setup tab
 
 The Setup tab SHALL explain instrumenting a browser app with the upstream
-OpenTelemetry browser SDK against SignalDB — creating an ingest API key,
-installing, initializing with the tenant's OTLP endpoint and the selected
-`service.name`, propagating `traceparent` to the app's API origins and
+OpenTelemetry browser SDK against SignalDB — installing, initializing with
+the selected `service.name` and an OTLP endpoint the app's operator runs
+(an OpenTelemetry Collector or the app's own backend) that forwards to
+SignalDB with the API key attached server-side, propagating `traceparent` to the app's API origins and
 allowing it in CORS — with copyable snippets, and a live status checklist:
 first session received, vitals received, and the share of requests joined
 to backend traces. It SHALL NOT show steps for capabilities SignalDB does
-not have.
+not have, and SHALL NOT tell users to put a SignalDB API key in browser
+code: SignalDB keys are bearer credentials with no origin restriction, so
+any key shipped to a browser is public.
+
+#### Scenario: Exporter configuration
+
+- **WHEN** a user copies the initialization snippet
+- **THEN** it exports to a placeholder collector URL on the app's own
+  origin, carries no `Authorization` header or key, and the next snippet
+  shows the collector's `otlphttp` exporter holding the key
 
 #### Scenario: Checklist before any data
 

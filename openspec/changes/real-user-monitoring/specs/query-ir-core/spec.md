@@ -3,7 +3,9 @@
 ### Requirement: Approximate distinct-count aggregate
 
 The `aggregate` stage SHALL accept `fn: "count_distinct"` with an `of` field
-of any type, returning an integer estimate of the number of distinct
+of type `string`, `int64` or `timestamp` — the types DataFusion's
+`approx_distinct` accepts — and SHALL reject any other type (`float64`,
+`bool`, maps) at validation, naming the field and its type. It returns an integer estimate of the number of distinct
 non-null values of that field in the group. The estimate SHALL be computed
 with a bounded-memory sketch (DataFusion `approx_distinct`, HyperLogLog), so
 its cost does not grow with the number of distinct values, and the IR
@@ -22,7 +24,7 @@ validation.
 #### Scenario: Scoped distinct count
 
 - **WHEN** the same query also declares `count_distinct` of `session.id`
-  scoped to `event.name = exception`
+  scoped to `event_name = exception`
 - **THEN** that column counts only sessions with at least one exception
   record, and groups without one report zero
 
@@ -31,6 +33,11 @@ validation.
 - **WHEN** some records in a group have no `user.id`
 - **THEN** `count_distinct` of `user.id` counts only the records' present
   values
+
+#### Scenario: Unsupported type
+
+- **WHEN** a query declares `count_distinct` of a `float64` field
+- **THEN** validation rejects it, naming the field and `float64`
 
 #### Scenario: Version gate
 

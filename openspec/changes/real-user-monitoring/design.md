@@ -144,6 +144,11 @@ fixture data.
 - [PR size] The prototype is large → ship as a stack (see tasks), each PR
   under ~500 lines, each tab independently useful.
 
+- [Keys in browser code] SignalDB API keys are bearer credentials with no
+  origin restriction, so Setup never puts one in browser code; it exports to
+  a collector or backend the operator runs, which holds the key. Public,
+  origin-restricted ingest keys are a separate change.
+
 ## Migration Plan
 
 None: additive route, additive IR aggregate, additive UI telemetry

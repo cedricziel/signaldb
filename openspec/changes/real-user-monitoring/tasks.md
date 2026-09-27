@@ -2,7 +2,7 @@ Each numbered group is one PR in a stack (under ~500 changed lines each).
 
 ## 1. IR: `count_distinct`
 
-- [ ] 1.1 Failing tests in `cargo test -p querier` (IR lowering) for `count_distinct` over logs and traces: plain, scoped, nulls skipped, and the version gate rejecting an earlier `irVersion`.
+- [ ] 1.1 Failing tests in `cargo test -p querier` (IR lowering) for `count_distinct` over logs and traces: plain, scoped, nulls skipped, unsupported types rejected, and the version gate rejecting an earlier `irVersion`.
 - [ ] 1.2 Add `count_distinct` to the IR aggregate enum and validation (`common`), lower it to DataFusion `approx_distinct` (`querier`), bump the IR version.
 - [ ] 1.3 Integration test in `tests-integration`: a `POST /api/v1/query` counting distinct `session.id` over ingested OTLP logs.
 - [ ] 1.4 Update the OpenAPI spec for the new aggregate `fn`; regenerate `src/signaldb-sdk` and `src/ui/src/api/gen`.
@@ -13,7 +13,7 @@ Each numbered group is one PR in a stack (under ~500 changed lines each).
 - [ ] 2.1 Failing tests (`pnpm --filter ./src/ui test`) for a `RouteTemplateLogRecordProcessor` (stamps `url.template` from the active route; nothing before mount) and for the browser resource attributes.
 - [ ] 2.2 Implement the processor, wire it into `telemetry/logs.ts`, feed it the matched route pattern from the router.
 - [ ] 2.3 Add `browser.brands` / `browser.platform` / `user_agent.original` to `telemetry/resource.ts`.
-- [ ] 2.4 Enable `UserActionInstrumentation` (click, no text capture) in `telemetry/logs.ts`, with a test that no element text is recorded.
+- [ ] 2.4 Enable `UserActionInstrumentation` (click, no text capture) in `telemetry/logs.ts`, retargeting SVG clicks to the closest `HTMLElement`, with tests that no element text is recorded and an icon click is attributed to its button.
 - [ ] 2.5 Update the `frontend-instrumentation` skill's module map and signal table.
 
 ## 3. Real users page: shell + Overview + Setup
