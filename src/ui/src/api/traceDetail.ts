@@ -5,6 +5,7 @@
 // and the separate span-kinds enrichment.
 import type { QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
+import { ROOT_SPAN_SENTINEL } from "./traceGroups";
 import type {
   AttrValue,
   ProfileSummaryView,
@@ -164,7 +165,8 @@ function toSpan(row: Row): TempoSpan {
   const statusMessage = row.status_message;
   return {
     spanId: str(row.span_id),
-    parentSpanId: parent == null || parent === "" ? null : String(parent),
+    parentSpanId:
+      !parent || parent === ROOT_SPAN_SENTINEL ? null : String(parent),
     name: str(row.span_name),
     serviceName: str(row.service_name),
     // The Tempo path used lower-case status words; keep the contract.
