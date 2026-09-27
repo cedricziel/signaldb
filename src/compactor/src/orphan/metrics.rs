@@ -114,11 +114,12 @@ impl OrphanMetrics {
     /// Log a summary of current metrics at info level
     pub fn log_summary(&self) {
         tracing::info!(
-            cleanup_skipped_threshold = self.cleanup_skipped_threshold(),
-            candidates_identified = self.candidates_identified(),
-            files_deleted = self.files_deleted(),
-            bytes_freed = self.bytes_freed(),
-            deletion_failures = self.deletion_failures(),
+            signaldb.job.kind = "orphan_cleanup",
+            signaldb.job.tables_skipped = self.cleanup_skipped_threshold() as i64,
+            signaldb.job.candidates = self.candidates_identified() as i64,
+            signaldb.job.files_deleted = self.files_deleted() as i64,
+            signaldb.job.bytes_reclaimed = self.bytes_freed() as i64,
+            signaldb.job.deletion_failures = self.deletion_failures() as i64,
             "Orphan cleanup metrics summary"
         );
     }

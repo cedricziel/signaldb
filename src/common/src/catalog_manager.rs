@@ -322,18 +322,18 @@ impl CatalogManager {
                 }
                 Ok(_) => {
                     tracing::info!(
-                        tenant_id = %tenant_id,
-                        dataset = %dataset_id,
-                        table = %table,
+                        signaldb.tenant.id = %tenant_id,
+                        signaldb.dataset.id = %dataset_id,
+                        signaldb.table = %table,
                         "Provisioned signal table"
                     );
                     report.created.push((*table).to_string());
                 }
                 Err(e) => {
                     tracing::warn!(
-                        tenant_id = %tenant_id,
-                        dataset = %dataset_id,
-                        table = %table,
+                        signaldb.tenant.id = %tenant_id,
+                        signaldb.dataset.id = %dataset_id,
+                        signaldb.table = %table,
                         error = %e,
                         "Failed to provision signal table; will retry on the next pass"
                     );

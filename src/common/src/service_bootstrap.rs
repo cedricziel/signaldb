@@ -113,7 +113,7 @@ impl ServiceBootstrap {
     #[tracing::instrument(
         level = "debug",
         skip_all,
-        fields(service_type = ?service_type, address = %address)
+        fields(signaldb.service.type = ?service_type, signaldb.service.address = %address)
     )]
     pub async fn new(
         config: Configuration,
@@ -127,10 +127,10 @@ impl ServiceBootstrap {
             &config.database.dsn
         };
 
-        tracing::info!(dsn = %crate::config::redact_dsn(dsn), "Using DSN for service bootstrap");
-        tracing::info!(dsn = %crate::config::redact_dsn(&config.database.dsn), "Database config DSN");
+        tracing::info!(signaldb.catalog.dsn = %crate::config::redact_dsn(dsn), "Using DSN for service bootstrap");
+        tracing::info!(signaldb.catalog.dsn = %crate::config::redact_dsn(&config.database.dsn), "Database config DSN");
         if let Some(discovery_config) = &config.discovery {
-            tracing::info!(dsn = %crate::config::redact_dsn(&discovery_config.dsn), "Discovery config DSN");
+            tracing::info!(signaldb.catalog.dsn = %crate::config::redact_dsn(&discovery_config.dsn), "Discovery config DSN");
         } else {
             tracing::info!("No discovery config found");
         }
@@ -141,7 +141,7 @@ impl ServiceBootstrap {
         let catalog = Catalog::new(dsn).await?;
         let service_id = Uuid::new_v4();
 
-        tracing::info!(service_type = %service_type, service_id = %service_id, address = %address, "Registering service with catalog");
+        tracing::info!(signaldb.service.type = %service_type, service.instance.id = %service_id, signaldb.service.address = %address, "Registering service with catalog");
 
         // Get default capabilities for this service type
         let capabilities = Self::get_default_capabilities(&service_type);
@@ -193,7 +193,7 @@ impl ServiceBootstrap {
 
     /// Ensure the data directory exists for SQLite databases
     fn ensure_data_directory(dsn: &str) -> Result<()> {
-        tracing::info!(dsn = %crate::config::redact_dsn(dsn), "Ensuring data directory exists");
+        tracing::info!(signaldb.catalog.dsn = %crate::config::redact_dsn(dsn), "Ensuring data directory exists");
 
         // Only handle SQLite databases
         if !dsn.starts_with("sqlite:") {
@@ -236,11 +236,7 @@ impl ServiceBootstrap {
 
         // Get the directory part of the path
         if let Some(parent) = Path::new(file_path).parent() {
-            tracing::info!(
-                parent = %parent.display(),
-                exists = parent.exists(),
-                "Parent directory"
-            );
+            tracing::debug!(file.directory = %parent.display(), "Parent directory");
             if !parent.exists() {
                 tracing::info!(path = %parent.display(), "Creating directory");
                 fs::create_dir_all(parent).map_err(|e| {
@@ -469,8 +465,8 @@ impl ServiceBootstrap {
     /// Gracefully shutdown the service and deregister from catalog
     pub async fn shutdown(mut self) -> Result<()> {
         tracing::info!(
-            service_type = %self.service_type,
-            service_id = %self.service_id,
+            signaldb.service.type = %self.service_type,
+            service.instance.id = %self.service_id,
             "Shutting down service and deregistering from catalog"
         );
 

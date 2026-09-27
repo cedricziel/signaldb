@@ -137,7 +137,7 @@ pub async fn init_acceptor_resources(
     );
 
     tracing::info!(
-        wal_dir = %wal_dir.display(),
+        signaldb.wal.dir = %wal_dir.display(),
         "Initialized WalManager for multi-tenant WAL isolation"
     );
 
@@ -245,7 +245,7 @@ pub async fn serve_otlp_grpc(
     shutdown_rx: oneshot::Receiver<()>,
     stopped_tx: oneshot::Sender<()>,
 ) -> Result<(), anyhow::Error> {
-    tracing::info!(address = %config.addr, "Starting OTLP/gRPC acceptor");
+    tracing::info!(signaldb.service.address = %config.addr, "Starting OTLP/gRPC acceptor");
 
     let max_decoding_message_size = config.max_decoding_message_size;
 
@@ -1009,7 +1009,7 @@ pub async fn serve_otlp_http(
     shutdown_rx: oneshot::Receiver<()>,
     stopped_tx: oneshot::Sender<()>,
 ) -> Result<(), anyhow::Error> {
-    tracing::info!(address = %config.addr, "Starting OTLP/HTTP acceptor");
+    tracing::info!(signaldb.service.address = %config.addr, "Starting OTLP/HTTP acceptor");
 
     // Create Prometheus handler with shared resources
     let prometheus_handler = Arc::new(
