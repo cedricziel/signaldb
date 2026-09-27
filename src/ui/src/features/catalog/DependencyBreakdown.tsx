@@ -22,12 +22,13 @@ function plural(n: number, noun: string): string {
 
 /** Tooltip swatch per category — mirrors the `.dep-*` rules in catalog.css.
  * Exported so `DependencyTable`'s per-row kind swatch reuses the same
- * mapping rather than inventing a second palette. */
+ * mapping rather than inventing a second palette. Avoids the green and
+ * yellow series slots, which read as the ok/warn status colours. */
 export const DEP_COLORS: Record<string, string> = {
-  database: "var(--svc-a)",
+  database: "var(--svc-i)",
   http: "var(--svc-b)",
   rpc: "var(--svc-c)",
-  messaging: "var(--svc-d)",
+  messaging: "var(--svc-g)",
   other: "var(--faint)",
 };
 

@@ -7,8 +7,8 @@
   --surface3: #dfe3ea;
   --border: #d3d8e0;
   --text: #1c222b;
-  --dim: #5d6675;
-  --faint: #8b93a2;
+  --dim: #4f5866;
+  --faint: #5f6775;
   --accent: #b85408;
   --accent-soft: rgba(184, 84, 8, 0.12);
   --err: #c43a42;
@@ -20,38 +20,46 @@
   --info-bar: #6f95dd;
   --debug-bar: #aab2bf;
   --ok: #2c9070;
-  --svc-a: #218324;
-  --svc-b: #2c9070;
+  --svc-a: #1d7a21;
+  --svc-b: #9a2f8f;
   --svc-c: #8a56c9;
   --svc-d: #b08a10;
   --svc-e: #c04f8a;
-  --svc-f: #1c8a7a;
+  --svc-f: #0b7d86;
   --svc-g: #a8540c;
   --svc-h: #b23a5c;
   --svc-i: #2b7fae;
   --svc-j: #5c7a1a;
   --svc-k: #8a4a2a;
   --svc-l: #5b4fc4;
-  /* Darker than --warn: text-on-tint contexts (e.g. ThrottleBanner) sit on
-     a `color-mix(--warn-bar, --surface)` background, where --warn itself
-     falls under WCAG AA (~3.9:1) in the light theme. */
-  --warn-banner-text: #7a5f0a;
+  /* Status/accent colours as TEXT. The base tokens above are tuned for
+     marks (bars, dots, borders, fills) and fall under WCAG AA as text on
+     --bg, --surface2 or their own 12-14% tints in the light theme; these
+     clear 4.5:1 on --bg, --surface, --surface2 and on
+     color-mix(<base> 14%, --surface) in both themes (global.contrast.test.ts). */
+  --ok-text: #17704c;
+  --warn-text: #7a5f0a;
+  --accent-text: #9e4706;
+  --err-text: #b0303a;
+  /* Deprecated alias for metrics.css; use --warn-text. */
+  --warn-banner-text: var(--warn-text);
   /* Text on a solid `--accent` background (buttons, not the tinted
      `--accent-soft`): white here, where --accent is dark enough for it;
      dark in the dark theme below, where --accent is a much lighter orange
      white barely shows up on. */
   --on-accent: #ffffff;
-  /* Darker than --ok: text-on-`--surface` contexts (JSON viewer, warning
-     callouts) where --ok itself falls under WCAG AA (~3.9:1) in the light
-     theme. */
-  --ok-text: #1c7a54;
+  /* Opaque shadow colour; each site sets its own strength with
+     color-mix(in srgb, var(--shadow) N%, transparent). */
+  --shadow: #101620;
+  color-scheme: light;
   /* Theme-neutral like --mono/--ui below: a grey wash that reads as an
      inset on both grounds. */
   --bg-inset: rgba(127, 127, 127, 0.08);
   --mono:
     ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas,
     monospace; /* @kind font */
-  --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; /* @kind font */
+  --ui:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; /* @kind font */
   /* Shared horizontal inset for every view-level toolbar and pane. Use
      --gutter-sm only for a bar that's genuinely compact (e.g. the app's own
      single-row top bar), not as a per-feature alternative to --gutter. */
@@ -71,8 +79,8 @@
     --surface3: #222a36;
     --border: #29303c;
     --text: #e4e8ef;
-    --dim: #8b94a3;
-    --faint: #626b7a;
+    --dim: #9aa3b1;
+    --faint: #8a93a1;
     --accent: #f58a3c;
     --accent-soft: rgba(245, 138, 60, 0.14);
     --err: #f2555a;
@@ -85,9 +93,9 @@
     --debug-bar: #414b5a;
     --ok: #46b58a;
     --svc-a: #63d454;
-    --svc-b: #46b58a;
+    --svc-b: #e07fd9;
     --svc-c: #b183e6;
-    --svc-d: #e4c452;
+    --svc-d: #f0d890;
     --svc-e: #e070a8;
     --svc-f: #4fd0bc;
     --svc-g: #e8934f;
@@ -96,13 +104,17 @@
     --svc-j: #b8d24a;
     --svc-k: #d99a6c;
     --svc-l: #9d94f0;
-    /* Dark theme's --warn already clears WCAG AA against the banner tint. */
-    --warn-banner-text: #e4c452;
+    --ok-text: #46b58a;
+    --warn-text: #e4c452;
+    --accent-text: #f58a3c;
+    /* Lighter than --err, which sits at ~4.5:1 on its own tint here. */
+    --err-text: #f76c70;
+    --warn-banner-text: var(--warn-text);
     /* Dark text: dark theme's --accent is a light orange white barely
        contrasts against. */
     --on-accent: #0d1014;
-    /* Dark theme's --ok already clears WCAG AA against --surface. */
-    --ok-text: #46b58a;
+    --shadow: #000000;
+    color-scheme: dark;
   }
 }
 
@@ -118,8 +130,8 @@
   --surface3: #222a36;
   --border: #29303c;
   --text: #e4e8ef;
-  --dim: #8b94a3;
-  --faint: #626b7a;
+  --dim: #9aa3b1;
+  --faint: #8a93a1;
   --accent: #f58a3c;
   --accent-soft: rgba(245, 138, 60, 0.14);
   --err: #f2555a;
@@ -132,9 +144,9 @@
   --debug-bar: #414b5a;
   --ok: #46b58a;
   --svc-a: #63d454;
-  --svc-b: #46b58a;
+  --svc-b: #e07fd9;
   --svc-c: #b183e6;
-  --svc-d: #e4c452;
+  --svc-d: #f0d890;
   --svc-e: #e070a8;
   --svc-f: #4fd0bc;
   --svc-g: #e8934f;
@@ -143,9 +155,14 @@
   --svc-j: #b8d24a;
   --svc-k: #d99a6c;
   --svc-l: #9d94f0;
-  --warn-banner-text: #e4c452;
-  --on-accent: #0d1014;
   --ok-text: #46b58a;
+  --warn-text: #e4c452;
+  --accent-text: #f58a3c;
+  --err-text: #f76c70;
+  --warn-banner-text: var(--warn-text);
+  --on-accent: #0d1014;
+  --shadow: #000000;
+  color-scheme: dark;
 }
 
 /* :root's own background/color come from the `body` rule below; a scoped
@@ -164,8 +181,8 @@
   --surface3: #dfe3ea;
   --border: #d3d8e0;
   --text: #1c222b;
-  --dim: #5d6675;
-  --faint: #8b93a2;
+  --dim: #4f5866;
+  --faint: #5f6775;
   --accent: #b85408;
   --accent-soft: rgba(184, 84, 8, 0.12);
   --err: #c43a42;
@@ -177,31 +194,35 @@
   --info-bar: #6f95dd;
   --debug-bar: #aab2bf;
   --ok: #2c9070;
-  --svc-a: #218324;
-  --svc-b: #2c9070;
+  --svc-a: #1d7a21;
+  --svc-b: #9a2f8f;
   --svc-c: #8a56c9;
   --svc-d: #b08a10;
   --svc-e: #c04f8a;
-  --svc-f: #1c8a7a;
+  --svc-f: #0b7d86;
   --svc-g: #a8540c;
   --svc-h: #b23a5c;
   --svc-i: #2b7fae;
   --svc-j: #5c7a1a;
   --svc-k: #8a4a2a;
   --svc-l: #5b4fc4;
-  --warn-banner-text: #7a5f0a;
+  --ok-text: #17704c;
+  --warn-text: #7a5f0a;
+  --accent-text: #9e4706;
+  --err-text: #b0303a;
+  --warn-banner-text: var(--warn-text);
   --on-accent: #ffffff;
-  --ok-text: #1c7a54;
+  --shadow: #101620;
+  color-scheme: light;
 }
 
 /* Shared warn-tint callout (ThrottleBanner, Instrumentation's "public
    endpoints not configured" note): colour + background only, so each caller
    adds its own padding/border.
    Not --warn: on this tinted background --warn falls under WCAG AA (~3.9:1)
-   in the light theme. --warn-banner-text is darker there and matches --warn
-   in the dark theme, where it already clears 4.5:1. */
+   in the light theme; --warn-text clears it in both. */
 .warn-callout {
-  color: var(--warn-banner-text);
+  color: var(--warn-text);
   background: color-mix(in srgb, var(--warn-bar) 14%, var(--surface));
 }
 
@@ -265,7 +286,7 @@ select {
    convention. A feature's own class (e.g. `.trace-open`) still wins on
    specificity for whatever else it needs. */
 a {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 button:focus-visible,
@@ -335,7 +356,7 @@ select:focus-visible {
 }
 
 .btn-danger {
-  color: var(--err);
+  color: var(--err-text);
 }
 
 .btn-danger:hover:not(:disabled) {
@@ -405,7 +426,7 @@ select:focus-visible {
 }
 
 .attribute-value-toggle:hover {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: var(--accent);
 }
 
@@ -446,16 +467,16 @@ select:focus-visible {
 }
 
 .json-key {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .json-string {
   color: var(--ok-text);
 }
 .json-number {
-  color: var(--warn-banner-text);
+  color: var(--warn-text);
 }
 .json-boolean {
-  color: var(--err);
+  color: var(--err-text);
 }
 .json-null {
   color: var(--faint);
@@ -478,12 +499,12 @@ select:focus-visible {
 }
 
 .copy-value-button:hover {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: var(--accent);
 }
 
 .copy-value-button[data-copied] {
-  color: var(--ok);
+  color: var(--ok-text);
   border-color: var(--ok);
   background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
@@ -530,7 +551,7 @@ select:focus-visible {
 
 .semkey-dep {
   margin-left: 6px;
-  color: var(--warn-banner-text);
+  color: var(--warn-text);
 }
 
 /* Compact info glyph for sidebars and facet headers. */
@@ -547,7 +568,7 @@ select:focus-visible {
 
 .sem-info:hover,
 .sem-info:focus-visible {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* Shared tooltip: portaled to <body> and placed with fixed inline coordinates
@@ -568,7 +589,7 @@ select:focus-visible {
   border-radius: 6px;
   background: var(--surface);
   color: var(--text);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--shadow) 18%, transparent);
   font-family: var(--ui);
   font-size: 11.5px;
   line-height: 1.4;
@@ -629,7 +650,7 @@ select:focus-visible {
 }
 
 .sem-tip-deprecated {
-  color: var(--warn);
+  color: var(--warn-text);
 }
 
 /* ---------- viz tooltip (components/VizTooltip.tsx) ---------- */
@@ -658,7 +679,7 @@ select:focus-visible {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 4px;
-  box-shadow: 0 4px 14px rgb(0 0 0 / 12%);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--shadow) 12%, transparent);
   font-size: 11px;
   color: var(--text);
   pointer-events: none;
@@ -743,7 +764,7 @@ select:focus-visible {
 
 .error-text {
   font-size: 12px;
-  color: var(--err);
+  color: var(--err-text);
 }
 
 /* ---------- shared chips (filter/tenant/origin/status/facet/semantic-key
@@ -854,7 +875,7 @@ th[aria-sort="descending"] .th-sort::after {
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--shadow) 18%, transparent);
 }
 
 .chip-suggest-item {
@@ -900,7 +921,7 @@ th[aria-sort="descending"] .th-sort::after {
 }
 
 .chip-suggest-dep {
-  color: var(--warn-banner-text);
+  color: var(--warn-text);
   font-size: 10px;
   font-family: var(--ui);
 }
@@ -922,7 +943,7 @@ th[aria-sort="descending"] .th-sort::after {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 24px 80px rgb(0 0 0 / 35%);
+  box-shadow: 0 24px 80px color-mix(in srgb, var(--shadow) 35%, transparent);
   max-height: calc(100vh - 48px);
   overflow: auto;
 }
@@ -1001,7 +1022,7 @@ th[aria-sort="descending"] .th-sort::after {
 }
 
 .attrtable-ns[data-source="custom"] {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .attrtable-entity {
@@ -1129,7 +1150,7 @@ th[aria-sort="descending"] .th-sort::after {
 }
 
 .attrtable-actions button:hover {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: var(--accent);
 }
 
@@ -1195,7 +1216,7 @@ button.attrtable-section {
 }
 
 .attrtable-summary-more {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .attrtable-desc-toggle {

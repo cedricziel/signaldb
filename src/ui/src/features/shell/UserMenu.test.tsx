@@ -26,7 +26,7 @@ const WHOAMI: WhoamiResponse = {
   datasets: [{ id: "production", slug: "production", is_default: true }],
   default_dataset: "production",
 };
-const ADMIN_PROPS = { who: WHOAMI, canManage: true, isDemo: false };
+const ADMIN_PROPS = { who: WHOAMI };
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -34,11 +34,7 @@ afterEach(() => {
 
 describe("UserMenu", () => {
   it("does not render when user is unauthenticated", async () => {
-    renderUserMenu({
-      who: { ...WHOAMI, user: undefined },
-      canManage: false,
-      isDemo: false,
-    });
+    renderUserMenu({ who: { ...WHOAMI, user: undefined } });
     // No user menu button should appear
     await waitFor(() => {
       expect(screen.queryByText("JD")).not.toBeInTheDocument();
@@ -87,26 +83,27 @@ describe("UserMenu", () => {
     });
   });
 
-  it("shows navigation items with correct links", async () => {
+  it("keeps to account items, leaving pages to the sidebar", async () => {
     renderUserMenu(ADMIN_PROPS);
     const button = await screen.findByRole("button", { name: /jane doe/i });
     await userEvent.click(button);
     await waitFor(() => {
-      expect(screen.getByText("Send data")).toBeInTheDocument();
-      expect(screen.getByRole("link", { name: /send data/i })).toHaveAttribute(
-        "href",
-        "/instrumentation",
-      );
-      expect(screen.getByRole("link", { name: /api keys/i })).toHaveAttribute(
-        "href",
-        "/api-keys",
-      );
-      expect(screen.getByRole("link", { name: /github/i })).toHaveAttribute(
-        "href",
-        "/integrations/github",
-      );
-      expect(screen.getByText("Switch tenant")).toBeInTheDocument();
+      expect(screen.getByRole("menu")).toBeInTheDocument();
     });
+    expect(screen.getByText("Appearance")).toBeInTheDocument();
+    expect(
+      screen.getByRole("link", { name: "Switch tenant" }),
+    ).toHaveAttribute("href", "/select-tenant");
+    expect(screen.getByRole("button", { name: "Sign out" })).toBeInTheDocument();
+    for (const name of [
+      /send data/i,
+      /api keys/i,
+      /github/i,
+      /schema/i,
+      /processors/i,
+    ]) {
+      expect(screen.queryByRole("link", { name })).not.toBeInTheDocument();
+    }
   });
 
   it("closes popover on Escape key", async () => {
@@ -226,22 +223,6 @@ describe("UserMenu", () => {
         value: originalLocation,
       });
     }
-  });
-
-  it("only offers API keys to admins/instance-admins", async () => {
-    renderUserMenu({
-      who: { ...WHOAMI, memberships: [{ tenant_id: "acme", role: "viewer" }] },
-      canManage: false,
-      isDemo: false,
-    });
-    const button = await screen.findByRole("button", { name: /jane doe/i });
-    await userEvent.click(button);
-    await waitFor(() => {
-      expect(screen.getByRole("menu")).toBeInTheDocument();
-    });
-    expect(
-      screen.queryByRole("link", { name: /api keys/i }),
-    ).not.toBeInTheDocument();
   });
 
   it("updates the Appearance label immediately after toggling", async () => {

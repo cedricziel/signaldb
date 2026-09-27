@@ -281,22 +281,22 @@
 
 .evals-badge.fail {
   background: color-mix(in oklab, var(--err) 14%, transparent);
-  color: var(--err);
+  color: var(--err-text);
 }
 
 .evals-badge.partial {
   background: color-mix(in oklab, var(--warn) 20%, transparent);
-  color: var(--warn-banner-text);
+  color: var(--warn-text);
 }
 
 .evals-badge.missing {
   border: 1px dashed var(--err);
   background: transparent;
-  color: var(--err);
+  color: var(--err-text);
 }
 
 .evals .bad {
-  color: var(--err);
+  color: var(--err-text);
 }
 
 .evals .good {
@@ -310,7 +310,7 @@
 }
 
 .kpi-card.evals-kpi-warn .kpi-detail {
-  color: var(--warn-banner-text);
+  color: var(--warn-text);
 }
 
 .kpi-card.evals-kpi-dashed {
@@ -605,14 +605,14 @@
 
 .evals-tool.skipped {
   background: transparent;
-  color: var(--err);
+  color: var(--err-text);
   text-decoration: line-through;
 }
 
 .evals-tool.reordered,
 .evals-tool.repeated {
   background: color-mix(in oklab, var(--warn) 22%, transparent);
-  color: var(--warn-banner-text);
+  color: var(--warn-text);
 }
 
 .evals-tool.new {
@@ -689,7 +689,7 @@
 .evals-traj-row.ghost {
   border: 1px dashed var(--err);
   background: color-mix(in oklab, var(--err) 7%, transparent);
-  color: var(--err);
+  color: var(--err-text);
 }
 
 .evals-traj-name {
@@ -723,7 +723,7 @@
 .evals-traj-row.ghost .evals-kind {
   border: 1px dashed var(--err);
   background: transparent;
-  color: var(--err);
+  color: var(--err-text);
 }
 
 .evals-timing {

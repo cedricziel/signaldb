@@ -30,7 +30,7 @@
 }
 
 .kpi-value-error {
-  color: var(--err);
+  color: var(--err-text);
 }
 
 .kpi-unit {
@@ -44,11 +44,11 @@
 }
 
 .kpi-change-good {
-  color: var(--ok);
+  color: var(--ok-text);
 }
 
 .kpi-change-bad {
-  color: var(--err);
+  color: var(--err-text);
 }
 
 .kpi-change-neutral {

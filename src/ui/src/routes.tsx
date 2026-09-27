@@ -27,6 +27,7 @@ import { InstrumentationRoute } from "./features/management/InstrumentationRoute
 import { ManagementRoute } from "./features/management/ManagementRoute";
 import { SelectTenantRoute } from "./features/management/SelectTenantRoute";
 import { LoginRoute } from "./features/shell/LoginRoute";
+import { HOME_PATH } from "./features/shell/navModel";
 import { RouteErrorBoundary } from "./features/shell/RouteErrorBoundary";
 import { UnsavedChangesGuard } from "./features/shell/UnsavedChangesGuard";
 import { processorsRoutes } from "./features/processors/routes";
@@ -76,19 +77,12 @@ function RootLayout() {
   );
 }
 
-/** Redirects to `/overview` — the landing page — preserving the query
- * string, so a deep link's `?tenant=&dataset=` survives the redirect. */
-function RedirectToOverview() {
+/** Redirects home (`/overview`, the landing page) — for `/` and any
+ * unrecognized path — preserving the query string, so a deep link's
+ * `?tenant=&dataset=` survives the redirect. */
+function RedirectHome() {
   const location = useLocation();
-  return <Navigate to={`/overview${location.search}`} replace />;
-}
-
-/** Redirects to `/logs`, preserving the query string — used for the
- * unrecognized-path catch-all so a deep link's `?tenant=&dataset=` (or any
- * other query state) survives the redirect. */
-function RedirectToLogs() {
-  const location = useLocation();
-  return <Navigate to={`/logs${location.search}`} replace />;
+  return <Navigate to={`${HOME_PATH}${location.search}`} replace />;
 }
 
 function ExploreRoute() {
@@ -97,8 +91,8 @@ function ExploreRoute() {
     traceId?: string;
   }>();
   const { state, update } = useOutletState();
-  // An unknown path segment (typo, stale bookmark) settles on /logs instead
-  // of silently rendering the logs view under the wrong URL. Only the
+  // An unknown path segment (typo, stale bookmark) settles on the home page
+  // instead of silently rendering the logs view under the wrong URL. Only the
   // generic `:signal` route needs this guard — `traces/:traceId`'s static
   // "traces" segment is always valid, and `signal` isn't even matched there.
   // Routes without a `:signal` param (traces/:traceId, catalog/...) are
@@ -108,7 +102,7 @@ function ExploreRoute() {
     signal !== undefined &&
     signalFromParam(signal) !== signal
   ) {
-    return <RedirectToLogs />;
+    return <RedirectHome />;
   }
   return <ExploreView state={state} update={update} />;
 }
@@ -125,7 +119,7 @@ export function routeElements() {
       <Route path="/oauth/consent" element={<ConsentView />} />
       <Route path="/login" element={<LoginRoute />} />
       <Route path="/" element={<App />}>
-        <Route index element={<RedirectToOverview />} />
+        <Route index element={<RedirectHome />} />
         <Route path="overview" element={<OverviewRoute />} />
         <Route path="manage" element={<ManagementRoute />} />
         <Route path="select-tenant" element={<SelectTenantRoute />} />
@@ -153,7 +147,7 @@ export function routeElements() {
           element={<ExploreRoute />}
         />
         <Route path=":signal" element={<ExploreRoute />} />
-        <Route path="*" element={<RedirectToLogs />} />
+        <Route path="*" element={<RedirectHome />} />
       </Route>
     </Route>
   );

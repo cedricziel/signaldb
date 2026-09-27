@@ -29,6 +29,7 @@ import {
 } from "./registryIndex";
 import { useSchemaSession } from "./useSchemaSession";
 import { toErrorMessage } from "../../api/http";
+import { useBreadcrumbLeaf } from "../shell/breadcrumbLeaf";
 
 /**
  * `/schema/conventions/new` and `/schema/conventions/:ns/:version/edit` —
@@ -41,6 +42,7 @@ export function RegistryEditor() {
   const { ns, version } = useParams<{ ns?: string; version?: string }>();
   const { isTenantAdmin, isLoading, tenant, dataset } = useSchemaSession();
   const editing = ns !== undefined && version !== undefined;
+  useBreadcrumbLeaf(editing ? `Edit ${ns}@${version}` : "New registry");
   const stored = useQuery({
     queryKey: ["schema-registry", ns, version, tenant, dataset],
     queryFn: () => getRegistry(ns!, version!),

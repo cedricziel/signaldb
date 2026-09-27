@@ -89,12 +89,16 @@ afterEach(() => {
 });
 
 describe("sidebar", () => {
-  it("shows Manage and the account for admins, not for viewers", async () => {
+  it("shows the Settings group and the account for admins, not Settings for viewers", async () => {
     stubShell(ADMIN);
     const { unmount } = renderApp();
     expect(
       await within(sidebar()).findByRole("link", { name: "Manage" }),
     ).toHaveAttribute("href", "/manage");
+    expect(within(sidebar()).getByText("Settings")).toBeInTheDocument();
+    expect(
+      within(sidebar()).getByRole("link", { name: "API keys" }),
+    ).toHaveAttribute("href", "/api-keys");
     expect(
       within(sidebar()).getByRole("button", { name: "Account" }),
     ).toHaveTextContent("Ada Lovelace");
@@ -106,6 +110,36 @@ describe("sidebar", () => {
     expect(
       within(sidebar()).queryByRole("link", { name: "Manage" }),
     ).toBeNull();
+    expect(within(sidebar()).queryByText("Settings")).toBeNull();
+  });
+
+  it("highlights API keys under Settings on /api-keys", async () => {
+    stubShell(ADMIN);
+    renderApp("/api-keys?tenant=acme&dataset=prod");
+    expect(
+      await within(sidebar()).findByRole("link", { name: "API keys" }),
+    ).toHaveAttribute("aria-current", "page");
+    expect(
+      screen.getByRole("navigation", { name: "Current page" }),
+    ).toHaveTextContent("Settings/API keys");
+  });
+});
+
+describe("breadcrumb", () => {
+  it("adds the short trace id as a leaf on a trace, linking back to Traces", async () => {
+    stubShell();
+    renderApp(
+      "/traces/4bf92f3577b34da6a3ce929d0e0e4736?tenant=acme&dataset=prod",
+    );
+    const crumb = screen.getByRole("navigation", { name: "Current page" });
+    expect(await within(crumb).findByText("4bf92f35")).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(within(crumb).getByRole("link", { name: "Traces" })).toHaveAttribute(
+      "href",
+      "/traces?tenant=acme&dataset=prod",
+    );
   });
 
   it("collapses to icons, remembering the choice across reloads", async () => {
@@ -245,6 +279,44 @@ describe("command palette", () => {
     expect(
       screen.getByRole("group", { name: "Recent queries" }),
     ).toHaveTextContent("service.name=checkout");
+  });
+
+  it("lists every page by nav group when empty, Settings only for admins", async () => {
+    stubShell(ADMIN);
+    const user = userEvent.setup();
+    const { unmount } = renderApp();
+    await within(sidebar()).findByRole("link", { name: "Manage" });
+    await user.keyboard("{Meta>}k{/Meta}");
+    const groups = () =>
+      within(screen.getByRole("listbox", { name: "Results" }))
+        .getAllByRole("group")
+        .map((g) => g.getAttribute("aria-label"));
+    expect(groups()).toEqual([
+      "Monitor",
+      "Investigate",
+      "Evaluate",
+      "Configure",
+      "Settings",
+      "Actions",
+    ]);
+    expect(
+      within(screen.getByRole("group", { name: "Configure" })).getByRole(
+        "option",
+        { name: /Send data/ },
+      ),
+    ).toHaveAttribute("href", "/instrumentation");
+    expect(
+      within(screen.getByRole("group", { name: "Evaluate" })).getAllByRole(
+        "option",
+      ),
+    ).toHaveLength(4);
+    unmount();
+
+    stubShell(VIEWER);
+    renderApp();
+    await within(sidebar()).findByRole("button", { name: "Account" });
+    await user.keyboard("{Meta>}k{/Meta}");
+    expect(groups()).not.toContain("Settings");
   });
 
   it("shows the empty state when nothing matches", async () => {

@@ -28,15 +28,15 @@ const WHOAMI_VIEWER = {
   memberships: [{ tenant_id: "acme", role: "viewer" }],
 };
 
-/** Reports the search string /logs was reached with, so a redirect that
- * drops the tenant/dataset (a bare `/logs`) is distinguishable from one that
- * carries it via `crossSignalSearch`. */
-function LogsPage() {
+/** Reports the search string /overview (home) was reached with, so a
+ * redirect that drops the tenant/dataset (a bare `/overview`) is
+ * distinguishable from one that carries it via `crossSignalSearch`. */
+function HomePage() {
   const location = useLocation();
   return (
     <div>
-      Logs page
-      <span data-testid="logs-search">{location.search}</span>
+      Home page
+      <span data-testid="home-search">{location.search}</span>
     </div>
   );
 }
@@ -56,7 +56,8 @@ function renderManagementRoute(
       <Routes>
         <Route element={outletContextRoute(contextState)}>
           <Route path="/manage" element={<ManagementRoute />} />
-          <Route path="/logs" element={<LogsPage />} />
+          <Route path="/overview" element={<HomePage />} />
+          <Route path="/logs" element={<div>Logs page</div>} />
         </Route>
       </Routes>
     </MemoryRouter>,
@@ -68,31 +69,31 @@ afterEach(() => {
 });
 
 describe("ManagementRoute", () => {
-  it("redirects non-admins to /logs", async () => {
+  it("redirects non-admins home to /overview", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI_VIEWER }]);
     renderManagementRoute();
-    expect(await screen.findByText("Logs page")).toBeInTheDocument();
+    expect(await screen.findByText("Home page")).toBeInTheDocument();
   });
 
   it("carries the tenant/dataset search along the non-admin redirect, like the close button does", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI_VIEWER }]);
     renderManagementRoute();
-    await screen.findByText("Logs page");
-    expect(screen.getByTestId("logs-search")).toHaveTextContent(
+    await screen.findByText("Home page");
+    expect(screen.getByTestId("home-search")).toHaveTextContent(
       "tenant=acme",
     );
   });
 
-  it("shows an inline error on a non-401 whoami failure instead of redirecting to /logs", async () => {
+  it("shows an inline error on a non-401 whoami failure instead of redirecting home", async () => {
     stubFetchRoutes([
       { match: "/api/v1/whoami", body: { error: "boom" }, status: 500 },
     ]);
     renderManagementRoute();
     expect(await screen.findByRole("alert")).toHaveTextContent(/500/);
-    expect(screen.queryByText("Logs page")).not.toBeInTheDocument();
+    expect(screen.queryByText("Home page")).not.toBeInTheDocument();
   });
 
-  it("closes to /logs (replace) when opened with no in-app history to go back to", async () => {
+  it("closes home to /overview (replace) when opened with no in-app history to go back to", async () => {
     stubFetchRoutes([
       { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
       { match: "/memberships", body: [] },
@@ -100,7 +101,7 @@ describe("ManagementRoute", () => {
     renderManagementRoute(["/manage"]);
     await screen.findByRole("dialog", { name: "Manage tenant" });
     await userEvent.click(screen.getByRole("button", { name: "Close management" }));
-    expect(await screen.findByText("Logs page")).toBeInTheDocument();
+    expect(await screen.findByText("Home page")).toBeInTheDocument();
   });
 
   it("closes via history back when reached through in-app navigation", async () => {
@@ -108,9 +109,18 @@ describe("ManagementRoute", () => {
       { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
       { match: "/memberships", body: [] },
     ]);
-    renderManagementRoute(["/logs", "/manage"]);
-    await screen.findByRole("dialog", { name: "Manage tenant" });
-    await userEvent.click(screen.getByRole("button", { name: "Close management" }));
-    expect(await screen.findByText("Logs page")).toBeInTheDocument();
+    // goBackOr reads the browser router's history index; the memory router
+    // here doesn't write one, so stand in for an in-app entry behind /manage.
+    window.history.replaceState({ idx: 1 }, "");
+    try {
+      renderManagementRoute(["/logs", "/manage"]);
+      await screen.findByRole("dialog", { name: "Manage tenant" });
+      await userEvent.click(
+        screen.getByRole("button", { name: "Close management" }),
+      );
+      expect(await screen.findByText("Logs page")).toBeInTheDocument();
+    } finally {
+      window.history.replaceState(null, "");
+    }
   });
 });
