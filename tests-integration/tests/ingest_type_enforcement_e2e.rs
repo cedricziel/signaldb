@@ -2,7 +2,12 @@
 //! Query IR; an off-type value survives verbatim in the raw attribute bag.
 
 use crate::query_ir_e2e::{build_router, post_ir_until_rows, range, setup, test_tenant_context};
+use std::sync::Arc;
+use std::time::Duration;
+
 use axum::http::StatusCode;
+use common::schema::logical::{AttributeLevel, LogicalFieldId};
+use common::schema::type_authority::{CanonicalType, TypeSnapshots};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
 use opentelemetry_proto::tonic::resource::v1::Resource;
@@ -84,21 +89,56 @@ async fn unchanged_otlp_export_is_typed_at_write_and_off_type_survives_in_the_ra
 
     // Second span sends the same key as a string — off-type once the
     // canonical type is Int64.
+    let off_type_request = traces_request_with_spans(vec![status_span(
+        "second-span",
+        2,
+        Value::StringValue("404".to_string()),
+    )]);
+
+    // The acceptor's read-only lookup sees the type the writer established
+    // and warns the sender.
+    let catalog = &services.catalog;
+    let snapshots = Arc::new(TypeSnapshots::new(
+        (**catalog).clone(),
+        Duration::from_secs(30),
+    ));
+    snapshots
+        .refresh(&ctx.tenant_id, &ctx.dataset_id, "traces")
+        .await;
+    let warning = acceptor::type_warning::off_type_warning(
+        Some(&snapshots),
+        &ctx,
+        "traces",
+        &off_type_request,
+    )
+    .expect("the acceptor warns about the off-type value");
+    assert!(warning.contains("http.status_code"), "{warning}");
+
     services
         .trace_handler
-        .handle_grpc_otlp_traces(
-            &ctx,
-            traces_request_with_spans(vec![status_span(
-                "second-span",
-                2,
-                Value::StringValue("404".to_string()),
-            )]),
-        )
+        .handle_grpc_otlp_traces(&ctx, off_type_request)
         .await
         .expect("ingest second span (off-type, existing OTLP client, unchanged)");
     common::testing::flush_storage_writers(&services.flight_transport, &ctx.tenant_id, None)
         .await
         .expect("flush writer");
+
+    // The writer counted it once the commit landed.
+    let stored = catalog
+        .get_attribute_type(
+            &ctx.tenant_id,
+            &ctx.dataset_id,
+            &LogicalFieldId {
+                source: "traces".to_string(),
+                level: Some(AttributeLevel::Record),
+                name: "http.status_code".to_string(),
+            },
+        )
+        .await
+        .unwrap()
+        .expect("http.status_code is established");
+    assert_eq!(stored.canonical, CanonicalType::Int64);
+    assert_eq!(stored.off_type_count, 1);
 
     let app = build_router(&services).await;
 

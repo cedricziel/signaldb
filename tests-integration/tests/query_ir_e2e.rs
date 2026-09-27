@@ -52,6 +52,7 @@ pub(crate) struct TestServices {
     /// created through `POST /api/v1/processors` is visible to the next
     /// `for_request` lookup the ingest handlers make (task 3.3).
     processor_registry: Arc<common::processors::ProcessorRegistry>,
+    pub(crate) catalog: Arc<Catalog>,
     config: Configuration,
     _temp_dir: TempDir,
 }
@@ -270,7 +271,7 @@ pub(crate) async fn setup_with(config_override: impl FnOnce(&mut Configuration))
     ));
     let processor_catalog = Arc::new(Catalog::new(&catalog_dsn).await.expect("catalog"));
     let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
-        processor_catalog,
+        processor_catalog.clone(),
         &common::config::ProcessorsConfig::default(),
     ));
     let log_handler = Arc::new(LogHandler::new(
@@ -306,6 +307,7 @@ pub(crate) async fn setup_with(config_override: impl FnOnce(&mut Configuration))
         log_handler,
         trace_handler,
         processor_registry,
+        catalog: processor_catalog,
         config,
         _temp_dir: temp_dir,
     }
