@@ -5,6 +5,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -300,6 +301,14 @@ fn yaml_err(path: &Path) -> impl FnOnce(serde_norway::Error) -> ParseError + '_ 
     move |e| ParseError::Yaml {
         path: path.display().to_string(),
         message: e.to_string(),
+    }
+}
+
+/// Lets callers holding a shared document (e.g. from `SchemaResolver::get`)
+/// compare it against an owned one without dereferencing.
+impl PartialEq<RegistryDocument> for Arc<RegistryDocument> {
+    fn eq(&self, other: &RegistryDocument) -> bool {
+        **self == *other
     }
 }
 

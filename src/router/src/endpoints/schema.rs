@@ -8,6 +8,8 @@
 //! [`can_write_schema`](common::auth::TenantContext::can_write_schema)).
 //! Bundled registries additionally refuse mutation with `409`.
 
+use std::sync::Arc;
+
 use axum::{
     Extension, Json, Router,
     body::Bytes,
@@ -72,7 +74,7 @@ pub struct RegistryResponse {
     /// The registry document in the OpenTelemetry Weaver semantic-convention
     /// model (`name`, `version`, `schema_url`, `dependencies`, `groups`).
     #[schema(value_type = Object)]
-    pub document: RegistryDocument,
+    pub document: Arc<RegistryDocument>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
