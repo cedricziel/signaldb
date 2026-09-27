@@ -1,0 +1,6 @@
+file_format: 2
+attributes:
+  - key: widget.id
+    type: string
+    brief: Widget id.
+    stability: development

@@ -68,6 +68,73 @@ fn unknown_file_format_is_rejected() {
 }
 
 #[test]
+fn repeated_ref_group_splices_expand_once() {
+    // Each level splices the one below twice; naive expansion is 2^depth.
+    let depth = 64;
+    let mut yaml = String::from(
+        "file_format: definition/2\nname: chain\nversion: 1.0.0\nattribute_groups:\n  - id: g0\n    attributes:\n      - key: chain.id\n        type: string\n        brief: Chain id.\n        stability: development\n",
+    );
+    for n in 1..=depth {
+        let prev = n - 1;
+        yaml.push_str(&format!(
+            "  - id: g{n}\n    attributes:\n      - ref_group: g{prev}\n      - ref_group: g{prev}\n"
+        ));
+    }
+    let doc = RegistryDocument::from_yaml(&yaml).expect("parses");
+    let top = doc
+        .groups
+        .iter()
+        .find(|g| g.id == format!("g{depth}"))
+        .expect("top group");
+    assert_eq!(top.attributes.len(), 1);
+    assert_eq!(top.attributes[0].id.as_deref(), Some("chain.id"));
+}
+
+#[test]
+fn ref_group_cycle_is_rejected() {
+    let yaml = r#"
+file_format: definition/2
+name: loop
+version: 1.0.0
+attribute_groups:
+  - id: a
+    attributes:
+      - key: loop.a
+        type: string
+        brief: A.
+        stability: development
+      - ref_group: b
+  - id: b
+    attributes:
+      - key: loop.b
+        type: string
+        brief: B.
+        stability: development
+      - ref_group: a
+  - id: d
+    attributes:
+      - ref_group: a
+"#;
+    let err = RegistryDocument::from_yaml(yaml).expect_err("a ref_group cycle must be rejected");
+    assert!(
+        matches!(&err, schema_model::ParseError::RefGroupCycle { .. }),
+        "{err}"
+    );
+}
+
+#[test]
+fn non_string_file_format_is_rejected() {
+    let dir = fixtures_dir().join("non-string-file-format/model");
+    let err = RegistryDocument::from_dir("bad", "1.0.0", &dir)
+        .expect_err("a non-string file_format must be rejected");
+    assert!(
+        matches!(err, schema_model::ParseError::UnsupportedFileFormat { .. }),
+        "{err}"
+    );
+    assert!(err.to_string().contains("numeric.yaml"), "{err}");
+}
+
+#[test]
 fn non_manifest_v1_file_without_groups_is_rejected() {
     let dir = fixtures_dir().join("missing-groups/model");
     let err = RegistryDocument::from_dir("bad", "1.0.0", &dir)

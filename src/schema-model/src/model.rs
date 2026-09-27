@@ -287,6 +287,8 @@ pub enum ParseError {
     UnsupportedFileFormat { path: String, format: String },
     #[error("{path}: model file has no `groups` key")]
     MissingGroups { path: String },
+    #[error("definition/2 `ref_group` cycle through `{group}`")]
+    RefGroupCycle { group: String },
 }
 
 /// A v1 model file. `groups` is `Option` (rather than defaulting to empty) so
@@ -312,15 +314,73 @@ impl PartialEq<RegistryDocument> for Arc<RegistryDocument> {
     }
 }
 
+/// Path reported in errors for a single-document upload.
+const DOCUMENT: &str = "<document>";
+
+/// Model layout of a registry file, from its `file_format` key.
+enum Layout {
+    Groups,
+    DefinitionV2,
+}
+
+impl Layout {
+    fn of(file_format: Option<&str>, path: &str) -> Result<Self, ParseError> {
+        match file_format {
+            None => Ok(Layout::Groups),
+            Some("definition/2") => Ok(Layout::DefinitionV2),
+            Some(other) => Err(ParseError::UnsupportedFileFormat {
+                path: path.to_string(),
+                format: other.to_string(),
+            }),
+        }
+    }
+}
+
+/// Top-level keys of a `definition/2` model file ([`ModelFileV2`]'s fields).
+const V2_SECTIONS: [&str; 8] = [
+    "attributes",
+    "attribute_groups",
+    "metrics",
+    "spans",
+    "events",
+    "entities",
+    "span_refinements",
+    "metric_refinements",
+];
+
 impl RegistryDocument {
-    /// Parse a single-document registry from YAML text.
+    /// Parse a single-document registry from YAML text, in the `groups` or
+    /// the `definition/2` layout (lowered to `groups`).
     pub fn from_yaml(text: &str) -> Result<Self, ParseError> {
-        serde_norway::from_str(text).map_err(yaml_err(Path::new("<document>")))
+        serde_norway::from_str::<Self>(text)
+            .map_err(yaml_err(Path::new(DOCUMENT)))?
+            .lower_layout()
     }
 
-    /// Parse a single-document registry from JSON text.
+    /// Parse a single-document registry from JSON text, in the `groups` or
+    /// the `definition/2` layout (lowered to `groups`).
     pub fn from_json(text: &str) -> Result<Self, ParseError> {
-        Ok(serde_json::from_str(text)?)
+        serde_json::from_str::<Self>(text)?.lower_layout()
+    }
+
+    /// A `definition/2` document parses with its model sections in `extra`;
+    /// lower them into `groups`.
+    fn lower_layout(mut self) -> Result<Self, ParseError> {
+        let file_format = self
+            .extra
+            .get("file_format")
+            .map(|f| f.as_str().map_or_else(|| f.to_string(), str::to_owned));
+        if let Layout::DefinitionV2 = Layout::of(file_format.as_deref(), DOCUMENT)? {
+            self.extra.remove("file_format");
+            let sections: serde_json::Map<_, _> = V2_SECTIONS
+                .into_iter()
+                .filter_map(|key| self.extra.remove_entry(key))
+                .collect();
+            let model: ModelFileV2 = serde_json::from_value(sections.into())?;
+            self.groups
+                .extend(lower_v2(vec![(format!("registry.{}", self.name), model)])?);
+        }
+        Ok(self)
     }
 
     /// Append `other`'s groups and any dependency whose namespace `self` does
@@ -369,28 +429,25 @@ impl RegistryDocument {
             }
             let value: serde_norway::Value =
                 serde_norway::from_str(&text).map_err(yaml_err(&path))?;
-            match value.get("file_format").and_then(|f| f.as_str()) {
-                None => {
+            let file_format = value
+                .get("file_format")
+                .map(|f| f.as_str().map_or_else(|| format!("{f:?}"), str::to_owned));
+            match Layout::of(file_format.as_deref(), &path.display().to_string())? {
+                Layout::Groups => {
                     let file: ModelFileV1 =
                         serde_norway::from_value(value).map_err(yaml_err(&path))?;
                     groups.extend(file.groups.ok_or_else(|| ParseError::MissingGroups {
                         path: path.display().to_string(),
                     })?);
                 }
-                Some("definition/2") => {
+                Layout::DefinitionV2 => {
                     let file: ModelFileV2 =
                         serde_norway::from_value(value).map_err(yaml_err(&path))?;
                     v2_files.push((synthetic_registry_id(dir, &path), file));
                 }
-                Some(other) => {
-                    return Err(ParseError::UnsupportedFileFormat {
-                        path: path.display().to_string(),
-                        format: other.to_string(),
-                    });
-                }
             }
         }
-        groups.extend(lower_v2(v2_files));
+        groups.extend(lower_v2(v2_files)?);
         Ok(RegistryDocument {
             name: name.to_string(),
             version: version.to_string(),
@@ -559,7 +616,7 @@ fn v2_group(id: String, r#type: &str, common: V2Common) -> (Group, Vec<V2Attr>) 
 /// `metric.<name>`, spans `span.<type>`, events `event.<name>`, entities
 /// `entity.<name>`, and a file's top-level `attributes` a synthetic
 /// `registry.<path>` group.
-fn lower_v2(files: Vec<(String, ModelFileV2)>) -> Vec<Group> {
+fn lower_v2(files: Vec<(String, ModelFileV2)>) -> Result<Vec<Group>, ParseError> {
     let mut pending: Vec<(Group, Vec<V2Attr>)> = Vec::new();
     for (registry_id, file) in files {
         if !file.attributes.is_empty() {
@@ -609,36 +666,54 @@ fn lower_v2(files: Vec<(String, ModelFileV2)>) -> Vec<Group> {
         .iter()
         .map(|(group, attrs)| (group.id.as_str(), attrs.as_slice()))
         .collect();
-    let expanded: Vec<Vec<AttributeSpec>> = pending
+    let mut memo = BTreeMap::new();
+    let expanded = pending
         .iter()
-        .map(|(_, attrs)| expand_v2_attrs(attrs, &by_id, &mut BTreeSet::new()))
-        .collect();
-    pending
+        .map(|(_, attrs)| expand_v2_attrs(attrs, &by_id, &mut memo, &mut BTreeSet::new()))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(pending
         .into_iter()
         .zip(expanded)
         .map(|((mut group, _), attributes)| {
             group.attributes = attributes;
             group
         })
-        .collect()
+        .collect())
 }
 
 /// Flatten a v2 attribute list into [`AttributeSpec`]s, splicing each
-/// `ref_group` in place (recursively; a cycle splices nothing).
+/// `ref_group` in place (recursively; a cycle is an error). Each group is
+/// expanded once (`memo`), and a splice skips attributes already present,
+/// so uploads cannot make expansion grow exponentially.
 fn expand_v2_attrs<'a>(
     attrs: &'a [V2Attr],
     by_id: &BTreeMap<&str, &'a [V2Attr]>,
+    memo: &mut BTreeMap<&'a str, Vec<AttributeSpec>>,
     visiting: &mut BTreeSet<&'a str>,
-) -> Vec<AttributeSpec> {
-    let mut out = Vec::new();
+) -> Result<Vec<AttributeSpec>, ParseError> {
+    let mut out: Vec<AttributeSpec> = Vec::new();
+    let mut seen = BTreeSet::new();
     for attr in attrs {
         match &attr.ref_group {
             Some(group_id) => {
-                if let Some(inner) = by_id.get(group_id.as_str())
-                    && visiting.insert(group_id)
-                {
-                    out.extend(expand_v2_attrs(inner, by_id, visiting));
-                    visiting.remove(group_id.as_str());
+                let group_id = group_id.as_str();
+                if !memo.contains_key(group_id) {
+                    let Some(inner) = by_id.get(group_id) else {
+                        continue;
+                    };
+                    if !visiting.insert(group_id) {
+                        return Err(ParseError::RefGroupCycle {
+                            group: group_id.to_string(),
+                        });
+                    }
+                    let spliced = expand_v2_attrs(inner, by_id, memo, visiting)?;
+                    visiting.remove(group_id);
+                    memo.insert(group_id, spliced);
+                }
+                for spec in &memo[group_id] {
+                    if seen.insert((spec.id.clone(), spec.r#ref.clone())) {
+                        out.push(spec.clone());
+                    }
                 }
             }
             None => {
@@ -646,11 +721,12 @@ fn expand_v2_attrs<'a>(
                 if attr.key.is_some() {
                     spec.id = attr.key.clone();
                 }
+                seen.insert((spec.id.clone(), spec.r#ref.clone()));
                 out.push(spec);
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Deterministic synthetic `attribute_group` id for a file's top-level

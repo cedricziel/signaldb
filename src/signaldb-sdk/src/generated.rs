@@ -16563,7 +16563,7 @@ impl Client {
     /**Sends a `POST` request to `/api/v1/schema/registries`
 
     Arguments:
-    - `body`: Registry document (Weaver semantic-convention model) as JSON, or YAML with a yaml content type
+    - `body`: Registry document (Weaver semantic-convention model, in the `groups` or `file_format: definition/2` layout) as JSON, or YAML with a yaml content type; definition/2 documents are stored in the `groups` form
     ```ignore
     let response = client.schema_create_registry()
         .body(body)
@@ -16593,7 +16593,7 @@ impl Client {
     Arguments:
     - `namespace`: Registry namespace
     - `version`: Registry version
-    - `body`: Replacement registry document; its name/version must match the path
+    - `body`: Replacement registry document, in the `groups` or `file_format: definition/2` layout; its name/version must match the path
     ```ignore
     let response = client.schema_replace_registry()
         .namespace(namespace)
@@ -16623,7 +16623,7 @@ impl Client {
     /**Sends a `POST` request to `/api/v1/schema/registries:validate`
 
     Arguments:
-    - `body`: Registry document to validate (JSON, or YAML with a yaml content type); nothing is stored
+    - `body`: Registry document to validate, in the `groups` or `file_format: definition/2` layout (JSON, or YAML with a yaml content type); nothing is stored
     ```ignore
     let response = client.schema_validate_registry()
         .body(body)
@@ -19595,6 +19595,9 @@ pub mod builder {
                     ResponseValue::from_response(response).await?,
                 )),
                 403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                422u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 429u16 => Err(Error::ErrorResponse(

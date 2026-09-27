@@ -562,6 +562,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn admin_schema_create_uploads_a_definition_v2_file() {
+        let file = write_temp(
+            "acme-v2.yaml",
+            include_str!("../../../schema-model/tests/fixtures/acme-v2.yaml"),
+        );
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/v1/schema/registries")
+            .match_header("authorization", "Bearer sk-test")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "file_format": "definition/2",
+                "name": "acme",
+                "version": "1.0.0",
+                "entities": [{"name": "acme.order"}, {"name": "acme.k8s.pod"}],
+                "metrics": [{"name": "acme.checkout.latency"}],
+            })))
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"namespace":"acme","version":"1.0.0","source":"custom","attribute_count":5,"entity_count":2,"metric_count":1,"read_only":false}"#,
+            )
+            .create_async()
+            .await;
+
+        AdminSchemaAction::Create(DocumentArgs {
+            file,
+            connect: connect(&server.url()),
+        })
+        .run()
+        .await
+        .expect("admin schema create succeeds");
+        mock.assert_async().await;
+    }
+
+    #[tokio::test]
     async fn schema_attribute_get_resolves_via_sdk() {
         let mut server = mockito::Server::new_async().await;
         let mock = server

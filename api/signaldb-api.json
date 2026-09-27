@@ -1179,7 +1179,7 @@
         ],
         "operationId": "schema_create_registry",
         "requestBody": {
-          "description": "Registry document (Weaver semantic-convention model) as JSON, or YAML with a yaml content type",
+          "description": "Registry document (Weaver semantic-convention model, in the `groups` or `file_format: definition/2` layout) as JSON, or YAML with a yaml content type; definition/2 documents are stored in the `groups` form",
           "content": {
             "application/json": {
               "schema": {
@@ -1231,7 +1231,7 @@
             }
           },
           "422": {
-            "description": "Invalid document (errors carry paths)",
+            "description": "Invalid document (errors carry paths) or unsupported file_format",
             "content": {
               "application/json": {
                 "schema": {
@@ -1344,7 +1344,7 @@
           }
         ],
         "requestBody": {
-          "description": "Replacement registry document; its name/version must match the path",
+          "description": "Replacement registry document, in the `groups` or `file_format: definition/2` layout; its name/version must match the path",
           "content": {
             "application/json": {
               "schema": {
@@ -1406,7 +1406,7 @@
             }
           },
           "422": {
-            "description": "Invalid document or identity mismatch",
+            "description": "Invalid document, identity mismatch, or unsupported file_format",
             "content": {
               "application/json": {
                 "schema": {
@@ -1502,7 +1502,7 @@
         ],
         "operationId": "schema_validate_registry",
         "requestBody": {
-          "description": "Registry document to validate (JSON, or YAML with a yaml content type); nothing is stored",
+          "description": "Registry document to validate, in the `groups` or `file_format: definition/2` layout (JSON, or YAML with a yaml content type); nothing is stored",
           "content": {
             "application/json": {
               "schema": {
@@ -1535,6 +1535,16 @@
           },
           "403": {
             "description": "Missing schema:write scope",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SchemaError"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Unsupported file_format",
             "content": {
               "application/json": {
                 "schema": {

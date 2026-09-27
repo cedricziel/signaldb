@@ -3283,7 +3283,7 @@ export type SchemaListRegistriesResponse = SchemaListRegistriesResponses[keyof S
 
 export type SchemaCreateRegistryData = {
     /**
-     * Registry document (Weaver semantic-convention model) as JSON, or YAML with a yaml content type
+     * Registry document (Weaver semantic-convention model, in the `groups` or `file_format: definition/2` layout) as JSON, or YAML with a yaml content type; definition/2 documents are stored in the `groups` form
      */
     body: {
         [key: string]: unknown;
@@ -3307,7 +3307,7 @@ export type SchemaCreateRegistryErrors = {
      */
     409: SchemaError;
     /**
-     * Invalid document (errors carry paths)
+     * Invalid document (errors carry paths) or unsupported file_format
      */
     422: SchemaError;
     /**
@@ -3468,7 +3468,7 @@ export type SchemaGetRegistryResponse = SchemaGetRegistryResponses[keyof SchemaG
 
 export type SchemaReplaceRegistryData = {
     /**
-     * Replacement registry document; its name/version must match the path
+     * Replacement registry document, in the `groups` or `file_format: definition/2` layout; its name/version must match the path
      */
     body: {
         [key: string]: unknown;
@@ -3505,7 +3505,7 @@ export type SchemaReplaceRegistryErrors = {
      */
     409: SchemaError;
     /**
-     * Invalid document or identity mismatch
+     * Invalid document, identity mismatch, or unsupported file_format
      */
     422: SchemaError;
     /**
@@ -3544,7 +3544,7 @@ export type SchemaReplaceRegistryResponse = SchemaReplaceRegistryResponses[keyof
 
 export type SchemaValidateRegistryData = {
     /**
-     * Registry document to validate (JSON, or YAML with a yaml content type); nothing is stored
+     * Registry document to validate, in the `groups` or `file_format: definition/2` layout (JSON, or YAML with a yaml content type); nothing is stored
      */
     body: {
         [key: string]: unknown;
@@ -3563,6 +3563,10 @@ export type SchemaValidateRegistryErrors = {
      * Missing schema:write scope
      */
     403: SchemaError;
+    /**
+     * Unsupported file_format
+     */
+    422: SchemaError;
     /**
      * The JSON envelope every query-surface error responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a

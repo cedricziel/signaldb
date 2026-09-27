@@ -23,7 +23,7 @@ use common::schema::type_authority::AttributeTypeRecord;
 use common::schema_registry::{
     AttributeHit, EntityHit, MetricHit, RegistrySummary, Resolution, StoreError, ValidationReport,
 };
-use schema_model::{RegistryDocument, ValidationError};
+use schema_model::{ParseError, RegistryDocument, ValidationError};
 use serde::{Deserialize, Serialize};
 
 use crate::RouterAppState;
@@ -264,8 +264,14 @@ fn parse_document(headers: &HeaderMap, body: &Bytes) -> Result<RegistryDocument,
         RegistryDocument::from_json(text)
     };
     parsed.map_err(|e| {
+        let status = match e {
+            ParseError::UnsupportedFileFormat { .. } | ParseError::RefGroupCycle { .. } => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
+            _ => StatusCode::BAD_REQUEST,
+        };
         Box::new(error(
-            StatusCode::BAD_REQUEST,
+            status,
             format!("cannot parse registry document: {e}"),
         ))
     })
@@ -320,14 +326,14 @@ pub async fn list_registries(
     path = "/api/v1/schema/registries",
     tag = "schema",
     operation_id = "schema_create_registry",
-    request_body(content = Object, description = "Registry document (Weaver semantic-convention model) as JSON, or YAML with a yaml content type", content_type = "application/json"),
+    request_body(content = Object, description = "Registry document (Weaver semantic-convention model, in the `groups` or `file_format: definition/2` layout) as JSON, or YAML with a yaml content type; definition/2 documents are stored in the `groups` form", content_type = "application/json"),
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 201, description = "Registry created", body = RegistrySummary),
         (status = 400, description = "Unparseable document", body = SchemaError),
         (status = 403, description = "Missing schema:write scope", body = SchemaError),
         (status = 409, description = "Registry already exists", body = SchemaError),
-        (status = 422, description = "Invalid document (errors carry paths)", body = SchemaError),
+        (status = 422, description = "Invalid document (errors carry paths) or unsupported file_format", body = SchemaError),
     ),
     security(("bearer" = []))
 )]
@@ -358,12 +364,13 @@ pub async fn create_registry(
     path = "/api/v1/schema/registries:validate",
     tag = "schema",
     operation_id = "schema_validate_registry",
-    request_body(content = Object, description = "Registry document to validate (JSON, or YAML with a yaml content type); nothing is stored", content_type = "application/json"),
+    request_body(content = Object, description = "Registry document to validate, in the `groups` or `file_format: definition/2` layout (JSON, or YAML with a yaml content type); nothing is stored", content_type = "application/json"),
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "Validation outcome (errors with paths, or resulting counts)", body = ValidationReport),
         (status = 400, description = "Unparseable document", body = SchemaError),
         (status = 403, description = "Missing schema:write scope", body = SchemaError),
+        (status = 422, description = "Unsupported file_format", body = SchemaError),
     ),
     security(("bearer" = []))
 )]
@@ -430,7 +437,7 @@ pub async fn get_registry(
     tag = "schema",
     operation_id = "schema_replace_registry",
     params(("namespace" = String, Path, description = "Registry namespace"), ("version" = String, Path, description = "Registry version")),
-    request_body(content = Object, description = "Replacement registry document; its name/version must match the path", content_type = "application/json"),
+    request_body(content = Object, description = "Replacement registry document, in the `groups` or `file_format: definition/2` layout; its name/version must match the path", content_type = "application/json"),
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "Registry replaced", body = RegistrySummary),
@@ -438,7 +445,7 @@ pub async fn get_registry(
         (status = 403, description = "Missing schema:write scope", body = SchemaError),
         (status = 404, description = "No such custom registry", body = SchemaError),
         (status = 409, description = "Registry is bundled and read-only", body = SchemaError),
-        (status = 422, description = "Invalid document or identity mismatch", body = SchemaError),
+        (status = 422, description = "Invalid document, identity mismatch, or unsupported file_format", body = SchemaError),
     ),
     security(("bearer" = []))
 )]
@@ -1269,6 +1276,105 @@ mod tests {
         )
         .await;
         assert_eq!(status, 403);
+    }
+
+    #[tokio::test]
+    async fn definition_v2_uploads_are_stored_as_groups() {
+        const ACME_V2: &str = include_str!("../../../schema-model/tests/fixtures/acme-v2.yaml");
+        let (app, _) = app().await;
+        let (status, body) = call(
+            &app,
+            Auth::Key("sk-write", "acme"),
+            "POST",
+            "/api/v1/schema/registries",
+            Some(("application/yaml", ACME_V2.to_string())),
+        )
+        .await;
+        assert_eq!(status, 201, "{body}");
+        assert_eq!(body["entity_count"], 2);
+        assert_eq!(body["metric_count"], 1);
+
+        let (status, body) = call(
+            &app,
+            Auth::Key("acme-key", "acme"),
+            "GET",
+            "/api/v1/schema/registries/acme/1.0.0",
+            None,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert!(body["document"].get("file_format").is_none(), "{body}");
+        assert!(
+            body["document"]["groups"]
+                .as_array()
+                .is_some_and(|g| !g.is_empty())
+        );
+
+        // The CLI sends YAML files converted to JSON.
+        let v2_json = json!({
+            "file_format": "definition/2",
+            "name": "widgets",
+            "version": "1.0.0",
+            "attributes": [{"key": "widget.id", "type": "string", "stability": "development", "brief": "Widget id.", "examples": ["w-1"]}],
+            "entities": [{"name": "widget", "stability": "development", "brief": "A widget.", "attributes": [{"ref": "widget.id", "role": "identifying"}]}],
+        });
+        let (status, body) = call(
+            &app,
+            Auth::Key("sk-write", "acme"),
+            "POST",
+            "/api/v1/schema/registries:validate",
+            Some(("application/json", v2_json.to_string())),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["errors"].as_array().map(Vec::len), Some(0), "{body}");
+        assert_eq!(body["entity_count"], 1);
+
+        for (content_type, text) in [
+            (
+                "application/yaml",
+                ACME_V2.replace("definition/2", "definition/3"),
+            ),
+            (
+                "application/json",
+                v2_json.to_string().replace("definition/2", "definition/3"),
+            ),
+        ] {
+            let (status, body) = call(
+                &app,
+                Auth::Key("sk-write", "acme"),
+                "PUT",
+                "/api/v1/schema/registries/acme/1.0.0",
+                Some((content_type, text)),
+            )
+            .await;
+            assert_eq!(status, 422, "{body}");
+            assert!(
+                body["error"]
+                    .as_str()
+                    .is_some_and(|e| e.contains("definition/3")),
+                "{body}"
+            );
+        }
+
+        let cycle = json!({
+            "file_format": "definition/2",
+            "name": "loop",
+            "version": "1.0.0",
+            "attribute_groups": [
+                {"id": "a", "attributes": [{"ref_group": "b"}]},
+                {"id": "b", "attributes": [{"ref_group": "a"}]},
+            ],
+        });
+        let (status, body) = call(
+            &app,
+            Auth::Key("sk-write", "acme"),
+            "POST",
+            "/api/v1/schema/registries:validate",
+            Some(("application/json", cycle.to_string())),
+        )
+        .await;
+        assert_eq!(status, 422, "{body}");
     }
 
     // ---- 5.2 resolve / search --------------------------------------------
