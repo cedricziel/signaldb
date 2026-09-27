@@ -7,6 +7,7 @@ import {
   formatTimeBucket,
   formatTimestamp,
   formatValue,
+  pluralCount,
 } from "./vizFormat";
 
 describe("compactCount", () => {
@@ -173,5 +174,13 @@ describe("formatErrorRate", () => {
   it("rounds a rate at or above the <1% cutoff to the nearest whole percent", () => {
     expect(formatErrorRate(3, 500)).toBe("1%"); // 0.6%, rounds to 1%
     expect(formatErrorRate(1, 4)).toBe("25%");
+  });
+});
+
+describe("pluralCount", () => {
+  it("pluralises everything but one", () => {
+    expect(pluralCount(0, "case")).toBe("0 cases");
+    expect(pluralCount(1, "case")).toBe("1 case");
+    expect(pluralCount(1200, "case")).toBe("1,200 cases");
   });
 });
