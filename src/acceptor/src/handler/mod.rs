@@ -7,9 +7,11 @@ pub mod otlp_metrics_handler;
 pub mod otlp_profiles_handler;
 mod processors_apply;
 pub mod prometheus_handler;
+pub mod retry_dedup;
 pub mod wal_retry;
 
 pub use common::wal::manager::WalManager;
 pub use ingest_error::IngestError;
 pub use prometheus_handler::{PrometheusHandler, PrometheusHandlerState};
+pub use retry_dedup::RetryDedup;
 pub use wal_retry::WalRetryConsumer;

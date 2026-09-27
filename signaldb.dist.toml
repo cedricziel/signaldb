@@ -524,6 +524,11 @@ max_regex_len = 2048
 # size: gzip/zstd request bodies are decompressed before this limit is
 # applied. 64MB comfortably covers the [wal] segment tuning below.
 max_request_body_bytes = 67108864     # 64MB
+# How long a durably accepted batch is remembered, so an exporter that timed
+# out and resends the identical export is acknowledged instead of ingested a
+# second time. Covers the OpenTelemetry Collector's default retry horizon.
+# "0s" disables it.
+retry_dedup_window = "5m"
 
 [compactor]
 # Compactor Service Configuration

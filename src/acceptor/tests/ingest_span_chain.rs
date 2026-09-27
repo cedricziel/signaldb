@@ -41,7 +41,9 @@ const TEST_TENANT: &str = "test-tenant";
 const TEST_DATASET: &str = "default";
 const TEST_API_KEY: &str = "test-api-key";
 
-fn sample_trace_request() -> ExportTraceServiceRequest {
+/// A request whose span id is derived from `n`: identical requests would be
+/// deduplicated as client resends and never forwarded.
+fn sample_trace_request(n: u64) -> ExportTraceServiceRequest {
     ExportTraceServiceRequest {
         resource_spans: vec![ResourceSpans {
             resource: None,
@@ -52,7 +54,7 @@ fn sample_trace_request() -> ExportTraceServiceRequest {
                         0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c,
                         0x0d, 0x0e, 0x0f, 0x10,
                     ],
-                    span_id: vec![0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18],
+                    span_id: n.to_be_bytes().to_vec(),
                     name: "test-span".to_string(),
                     kind: span::SpanKind::Server as i32,
                     start_time_unix_nano: 1_700_000_000_000_000_000,
@@ -185,28 +187,28 @@ async fn ingest_span_chain_stays_in_one_trace() {
 
     let (app, _temp_dir) = setup_traces_test().await;
 
-    fn request() -> Request<Body> {
+    fn request(n: u64) -> Request<Body> {
         Request::builder()
             .method("POST")
             .uri("/v1/traces")
             .header(header::CONTENT_TYPE, "application/x-protobuf")
             .header("Authorization", format!("Bearer {TEST_API_KEY}"))
             .header("X-Tenant-ID", TEST_TENANT)
-            .body(Body::from(sample_trace_request().encode_to_vec()))
+            .body(Body::from(sample_trace_request(n).encode_to_vec()))
             .unwrap()
     }
 
     // Sequential load.
-    for _ in 0..100 {
-        let response = app.clone().oneshot(request()).await.unwrap();
+    for n in 0..100 {
+        let response = app.clone().oneshot(request(n)).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
     }
     // Concurrent load across worker threads.
     let mut handles = Vec::new();
-    for _ in 0..100 {
+    for n in 100..200 {
         let app = app.clone();
         handles.push(tokio::spawn(async move {
-            let response = app.oneshot(request()).await.unwrap();
+            let response = app.oneshot(request(n)).await.unwrap();
             assert_eq!(response.status(), StatusCode::OK);
         }));
     }

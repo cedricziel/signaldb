@@ -72,6 +72,11 @@ signaldb-cli query --sql "SELECT * FROM metrics_gauge LIMIT 5" \
   --api-key sk-acme-prod-key-123 --tenant-id acme
 ```
 
+Retries are safe. When Prometheus resends a write it already sent (say its
+remote-write timeout fired while SignalDB was still answering), a
+byte-identical resend within `[acceptor].retry_dedup_window` (default 5
+minutes) is acknowledged without storing the samples a second time.
+
 ## Troubleshooting
 
 | Symptom                                                           | Cause                                                                                      | Fix                                                                                                                                                                                                                      |

@@ -264,6 +264,13 @@ configuration reference. It is absent for acceptors that predate this field,
 which fall back to today's non-deduped behavior; a present-but-unparseable id
 is rejected with `invalid_argument`.
 
+`ingest_id` only covers resends of the *same* acceptor WAL entry. A client
+that resends an export (an OTLP exporter retrying after its own timeout) makes
+the acceptor append a new entry with a new id, so the acceptor dedups those
+itself, before forwarding: it fingerprints each flushed batch and acks a
+byte-identical resend within `[acceptor].retry_dedup_window` without
+forwarding it. Both caches live in `common::ingest_dedup`.
+
 **Write path.** At `do_put` the Writer records the active span's context into
 the WAL entry metadata alongside the routing fields. Because the background
 `WalProcessor` commits a batch that fans in entries from many independent
