@@ -248,16 +248,24 @@
   border-color: var(--dim);
 }
 
+.mlegend-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 8px var(--gutter) 14px;
+}
+
 .mlegend {
   list-style: none;
   margin: 0;
+  padding: 0;
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 6px 16px;
-  padding: 8px 18px 14px;
   font-size: 11.5px;
   color: var(--dim);
-  font-family: var(--mono);
 }
 
 .mlegend li {
@@ -268,7 +276,15 @@
   max-width: 100%;
 }
 
+.mlegend-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .mlegend i {
+  flex: none;
   width: 14px;
   height: 3px;
   border-radius: 2px;
