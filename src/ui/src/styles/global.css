@@ -322,6 +322,14 @@ select:focus-visible {
   filter: brightness(1.06);
 }
 
+/* Disabled, a primary button looks like any other disabled button rather
+   than a faded accent. */
+.btn-primary:disabled {
+  border-color: var(--border);
+  background: var(--surface2);
+  color: var(--text);
+}
+
 /* No border or background until interaction — a menu item or a quiet
    inline action, not a boxed control. */
 .btn-ghost {
