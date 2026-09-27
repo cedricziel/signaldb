@@ -1,5 +1,5 @@
 //! The agent eval set tools as an MCP client sees them (openspec change
-//! `agent-offline-evals`, task 8.3): the six tools are listed with their
+//! `agent-offline-evals`, tasks 8.3 and 5.6): the seven tools are listed with their
 //! required parameters, read and write credentials reach the router through
 //! them, the `dataset` argument reaches the router as `X-Dataset-ID`,
 //! `get_eval_set` pages a set's cases, and a malformed case is rejected
@@ -25,6 +25,10 @@ const EVAL_SET_TOOLS: &[(&str, &[&str])] = &[
     ("replace_eval_set", &["tenant", "dataset", "name", "agent"]),
     ("delete_eval_set", &["tenant", "dataset", "name"]),
     ("append_eval_cases", &["tenant", "dataset", "name", "cases"]),
+    (
+        "append_eval_cases_from_traces",
+        &["tenant", "dataset", "name"],
+    ),
 ];
 
 #[tokio::test]
@@ -75,8 +79,9 @@ async fn eval_set_tools_are_listed_with_their_parameters() {
 // need the `Extension<Parts>` only the Streamable HTTP transport populates.
 // ---------------------------------------------------------------------------
 
-/// `(method, path, X-Dataset-ID)` of every eval-sets request the mock saw.
-type Seen = Arc<Mutex<Vec<(Method, String, Option<String>)>>>;
+/// `(method, path, X-Dataset-ID, body)` of every eval-sets request the mock
+/// saw.
+type Seen = Arc<Mutex<Vec<(Method, String, Option<String>, serde_json::Value)>>>;
 
 async fn whoami() -> Response {
     axum::Json(serde_json::json!({
@@ -111,6 +116,7 @@ async fn behaviour(
     headers: HeaderMap,
     uri: Uri,
     method: Method,
+    body: axum::body::Bytes,
 ) -> Response {
     let Some(rest) = uri.path().strip_prefix("/api/v1/eval-sets") else {
         return axum::Json(serde_json::json!({})).into_response();
@@ -119,9 +125,10 @@ async fn behaviour(
         .get("x-dataset-id")
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
+    let body = serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null);
     seen.lock()
         .expect("seen lock")
-        .push((method.clone(), rest.to_string(), dataset.clone()));
+        .push((method.clone(), rest.to_string(), dataset.clone(), body));
     let dataset = dataset.unwrap_or_else(|| "production".to_string());
     let bearer = headers
         .get("authorization")
@@ -144,6 +151,11 @@ async fn behaviour(
         }))
         .into_response(),
         (Method::POST, "") => (StatusCode::CREATED, axum::Json(set_body(&dataset))).into_response(),
+        (Method::POST, "/refunds/cases/from-traces") => axum::Json(serde_json::json!({
+            "matches": 214, "already_present": 12, "added": 50,
+            "added_ids": ["trace-4bf92f3577b34da6"]
+        }))
+        .into_response(),
         (Method::POST, _) => axum::Json(serde_json::json!({
             "added": 1, "already_present": 1,
             "added_ids": ["edge-41"], "already_present_ids": ["edge-01"]
@@ -251,7 +263,7 @@ async fn dataset_argument_reaches_the_router() {
 
     let seen = seen.lock().expect("seen lock");
     assert_eq!(seen.len(), EVAL_SET_TOOLS.len(), "{seen:?}");
-    for (method, path, dataset) in seen.iter() {
+    for (method, path, dataset, _) in seen.iter() {
         assert_eq!(
             dataset.as_deref(),
             Some("staging"),
@@ -318,4 +330,54 @@ async fn trace_source_without_a_trace_id_is_rejected_before_any_router_request()
     assert!(tool_is_error(&reply), "{reply}");
     assert!(tool_error_message(&reply).contains("trace_id"), "{reply}");
     assert!(seen.lock().expect("seen lock").is_empty());
+}
+
+#[tokio::test]
+async fn append_eval_cases_from_traces_sends_the_trace_query() {
+    let (app, seen) = app().await;
+    let mut session = McpSession::open(app, "sk-acme-write").await;
+
+    let reply = session
+        .call_tool(
+            "append_eval_cases_from_traces",
+            serde_json::json!({
+                "tenant": "acme", "dataset": "production", "name": "refunds",
+                "failing_evaluator": "Correctness", "sample": 50, "expected_tools": true,
+                "filters": [{"field": "deployment.environment", "op": "eq", "value": "prod"}],
+            }),
+        )
+        .await;
+    assert!(!tool_is_error(&reply), "{reply}");
+    let outcome = result_json(&reply);
+    assert_eq!(outcome["matches"], 214);
+    assert_eq!(outcome["already_present"], 12);
+    assert_eq!(outcome["added"], 50);
+
+    let seen = seen.lock().expect("seen lock");
+    let (method, path, _, body) = seen.last().expect("one request");
+    assert_eq!(
+        (method, path.as_str()),
+        (&Method::POST, "/refunds/cases/from-traces")
+    );
+    assert_eq!(
+        body["range"],
+        serde_json::json!({"from": "now-7d", "to": "now"})
+    );
+    assert_eq!(body["failing_evaluator"], "Correctness");
+    assert_eq!(body["sample"], 50);
+    assert_eq!(body["expected_tools"], true);
+    assert_eq!(body["filters"][0]["field"], "deployment.environment");
+}
+
+#[tokio::test]
+async fn append_eval_cases_from_traces_needs_the_write_credential() {
+    let (app, _) = app().await;
+    let mut session = McpSession::open(app, "sk-acme-read").await;
+    let reply = session
+        .call_tool(
+            "append_eval_cases_from_traces",
+            serde_json::json!({"tenant": "acme", "dataset": "production", "name": "refunds"}),
+        )
+        .await;
+    assert!(tool_is_error(&reply), "{reply}");
 }

@@ -359,6 +359,11 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
         CliSurface::Path(&["admin", "eval-sets", "append"]),
         "append_eval_cases",
     ),
+    (
+        "append_eval_cases_from_traces",
+        CliSurface::Path(&["admin", "eval-sets", "add-traces"]),
+        "append_eval_cases_from_traces",
+    ),
     // ---- Query languages (also covered by the language-specific assertions
     // below) ----
     ("search", CliSurface::QueryFlag("traceql"), "search_traces"),
