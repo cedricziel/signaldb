@@ -5,8 +5,8 @@
  * - the dev server's proxy, which forwards these to a live backend instance
  *   so the browser only ever sees same-origin requests, exactly as in the
  *   embedded production build;
- * - the PWA service worker's `navigateFallbackDenylist`, which must never
- *   intercept a top-level browser navigation to one of these with the
+ * - the PWA service worker's navigation route (`src/sw.ts`), which must
+ *   never intercept a top-level browser navigation to one of these with the
  *   cached app shell — that would silently swallow the real response
  *   (notably GitHub's OAuth-callback redirect to `/ui/github/callback`,
  *   which never reaches the server at all if it's missing here).
