@@ -41,6 +41,82 @@ export type ApiErrorBody = {
 };
 
 /**
+ * Result of appending cases from traces.
+ */
+export type AppendCasesFromTracesOutcome = {
+    added: number;
+    /**
+     * Ids of the new cases, in the order they now appear in the set.
+     */
+    added_ids: Array<string>;
+    /**
+     * Matching traces the set already holds a case for.
+     */
+    already_present: number;
+    /**
+     * Distinct matching traces (after the `failing_evaluator` filter), at
+     * most 10,000.
+     */
+    matches: number;
+};
+
+/**
+ * Body of `POST /api/v1/eval-sets/{name}/cases/from-traces`.
+ *
+ * Unknown keys are rejected: every option narrows or shapes the query, so
+ * a misspelt one silently widening it would add the wrong cases.
+ */
+export type AppendCasesFromTracesRequest = {
+    /**
+     * `gen_ai.agent.name` of the agent span (a span without one matches on
+     * `service.name`). Defaults to the eval set's agent.
+     */
+    agent?: string | null;
+    /**
+     * Set each case's expected tools to the trace's `execute_tool` spans'
+     * `gen_ai.tool.name`s in call order.
+     */
+    expected_tools?: boolean;
+    /**
+     * Keep only traces holding at least one failing result
+     * (`gen_ai.evaluation.result`) of the evaluator with this
+     * `gen_ai.evaluation.name` in the same window. Evaluator errors never
+     * count as failures.
+     */
+    failing_evaluator?: string | null;
+    /**
+     * Extra Query IR predicates the agent span must satisfy (logical field
+     * names, e.g. `{"field": "deployment.environment", "op": "eq", "value":
+     * "prod"}`).
+     */
+    filters?: Array<{
+        [key: string]: unknown;
+    }>;
+    /**
+     * `gen_ai.operation.name` of the agent span. Default `invoke_agent`.
+     */
+    operation?: string | null;
+    /**
+     * Time window of the agent spans, as in a Query IR document (e.g.
+     * `{"from": "now-7d", "to": "now"}`).
+     */
+    range: QueryRange;
+    /**
+     * Set each case's reference to the agent's answer (the last text of
+     * the agent span's `gen_ai.output.messages`).
+     */
+    reference_from_answer?: boolean;
+    /**
+     * How many new cases to add, 1-1000. Default 50.
+     */
+    sample?: number | null;
+    /**
+     * Tags put on every new case.
+     */
+    tags?: Array<string>;
+};
+
+/**
  * Result of appending cases to a set: ids already in the set are reported,
  * never overwritten.
  */
@@ -744,6 +820,7 @@ export type EvalCaseSource = {
  */
 export type EvalSetLinks = {
     append_cases?: null | Link;
+    append_cases_from_traces?: null | Link;
     delete?: null | Link;
     replace?: null | Link;
     self: Link;
@@ -2812,6 +2889,77 @@ export type AppendEvalCasesResponses = {
 };
 
 export type AppendEvalCasesResponse = AppendEvalCasesResponses[keyof AppendEvalCasesResponses];
+
+export type AppendEvalCasesFromTracesData = {
+    body: AppendCasesFromTracesRequest;
+    path: {
+        /**
+         * Eval set name
+         */
+        name: string;
+    };
+    query?: never;
+    url: '/api/v1/eval-sets/{name}/cases/from-traces';
+};
+
+export type AppendEvalCasesFromTracesErrors = {
+    /**
+     * Malformed JSON body
+     */
+    400: ApiErrorBody;
+    /**
+     * Missing evals:write scope (or, for a session, the tenant-admin role), or missing traces:read (logs:read with failing_evaluator)
+     */
+    403: ApiErrorBody;
+    /**
+     * No such eval set in the caller's dataset
+     */
+    404: ApiErrorBody;
+    /**
+     * Invalid options or range, a filter the query engine rejects, or the set would exceed its case limit
+     */
+    422: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ApiErrorBody;
+    /**
+     * No querier service available
+     */
+    503: ApiErrorBody;
+};
+
+export type AppendEvalCasesFromTracesError = AppendEvalCasesFromTracesErrors[keyof AppendEvalCasesFromTracesErrors];
+
+export type AppendEvalCasesFromTracesResponses = {
+    /**
+     * Matching, already-present and added counts, with the new case ids
+     */
+    200: AppendCasesFromTracesOutcome;
+};
+
+export type AppendEvalCasesFromTracesResponse = AppendEvalCasesFromTracesResponses[keyof AppendEvalCasesFromTracesResponses];
 
 export type OpsCompactData = {
     body?: never;

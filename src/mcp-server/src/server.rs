@@ -1946,6 +1946,82 @@ struct AppendEvalCasesParams {
     cases: Vec<signaldb_sdk::types::EvalCase>,
 }
 
+fn default_eval_traces_from() -> String {
+    "now-7d".to_string()
+}
+
+/// Parameters for `append_eval_cases_from_traces`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct AppendEvalCasesFromTracesParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset the eval set and the traces live in. Required: one MCP
+    /// session may span several datasets, so there is no implicit session
+    /// default; see `discover_datasets`.
+    dataset: String,
+    /// Eval set name.
+    name: String,
+    /// Window start: RFC3339, a relative anchor (`now-7d`) or epoch
+    /// nanoseconds. Defaults to `now-7d`.
+    #[serde(default = "default_eval_traces_from")]
+    from: String,
+    /// Window end. Defaults to `now`.
+    #[serde(default = "default_discovery_to")]
+    to: String,
+    /// `gen_ai.agent.name` of the agent span. Defaults to the set's agent.
+    #[serde(default)]
+    agent: Option<String>,
+    /// `gen_ai.operation.name` of the agent span. Defaults to `invoke_agent`.
+    #[serde(default)]
+    operation: Option<String>,
+    /// Extra Query IR predicates the agent span must satisfy, e.g.
+    /// `{"field": "deployment.environment", "op": "eq", "value": "prod"}`.
+    #[serde(default)]
+    filters: Vec<serde_json::Map<String, serde_json::Value>>,
+    /// Keep only traces with at least one failing result of this evaluator
+    /// (`gen_ai.evaluation.name`) in the window. Evaluator errors never
+    /// count as failures.
+    #[serde(default)]
+    failing_evaluator: Option<String>,
+    /// How many new cases to add, 1-1000. Defaults to 50.
+    #[serde(default)]
+    sample: Option<std::num::NonZeroU32>,
+    /// Use each trace's `execute_tool` calls, in order, as the case's
+    /// expected tools.
+    #[serde(default)]
+    expected_tools: bool,
+    /// Use the agent's answer as the case's reference.
+    #[serde(default)]
+    reference_from_answer: bool,
+    /// Tags put on every new case.
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+impl From<AppendEvalCasesFromTracesParams> for signaldb_sdk::types::AppendCasesFromTracesRequest {
+    fn from(p: AppendEvalCasesFromTracesParams) -> Self {
+        signaldb_sdk::types::AppendCasesFromTracesRequest {
+            range: signaldb_sdk::types::QueryRange {
+                from: p.from,
+                to: p.to,
+            },
+            agent: p.agent,
+            operation: p.operation,
+            filters: p.filters,
+            failing_evaluator: p.failing_evaluator,
+            sample: p.sample,
+            expected_tools: Some(p.expected_tools),
+            reference_from_answer: Some(p.reference_from_answer),
+            tags: p.tags,
+        }
+    }
+}
+
 #[tool_router]
 impl McpServer {
     /// Construct a handler that forwards to `router_base_url`, bounding each
@@ -4302,6 +4378,28 @@ impl McpServer {
             .map_err(|e| map_api_error_body(e, "append_eval_cases"))?;
         json_result(&resp.into_inner())
     }
+
+    #[tool(
+        description = "Build eval cases from production traces: append one case per matching agent trace (a `gen_ai.operation.name` = `invoke_agent` span of the agent, in the window, matching `filters`) that the eval set does not hold yet, newest first, up to `sample` (default 50). With `failing_evaluator`, only traces holding a failing result of that evaluator count. A case's input is the agent span's last user message, its source the trace; optionally its expected tools are the trace's tool calls and its reference the agent's answer. Returns `matches`, `already_present`, `added` and `added_ids`. Requires the `evals:write` and `traces:read` scopes (plus `logs:read` with `failing_evaluator`).",
+        annotations(destructive_hint = false)
+    )]
+    async fn append_eval_cases_from_traces(
+        &self,
+        Parameters(p): Parameters<AppendEvalCasesFromTracesParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let name = p.name.clone();
+        let resp = client
+            .append_eval_cases_from_traces()
+            .name(&name)
+            .body(signaldb_sdk::types::AppendCasesFromTracesRequest::from(p))
+            .send()
+            .await
+            .map_err(|e| map_api_error_body(e, "append_eval_cases_from_traces"))?;
+        json_result(&resp.into_inner())
+    }
 }
 
 /// One page of an eval set for `get_eval_set`: the set header with
@@ -4328,7 +4426,7 @@ fn eval_set_page(
     let offset = offset.unwrap_or(0).min(total_cases);
     let limit = limit
         .unwrap_or(EVAL_CASES_DEFAULT_LIMIT)
-        .min(EVAL_CASES_MAX_LIMIT);
+        .clamp(1, EVAL_CASES_MAX_LIMIT);
     let page: Vec<_> = cases.into_iter().skip(offset).take(limit).collect();
     let returned = page.len();
     serde_json::json!({
