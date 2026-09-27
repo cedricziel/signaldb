@@ -14,6 +14,7 @@ import type { ConnectionInfoResponse } from "../../api/gen";
 import { irCatchAll, type JsonRoute } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
+import { growingPageFrame } from "../../stories/PageFrame";
 import { RealUsersRoute } from "./RealUsersRoute";
 
 const MS = 1_000_000;
@@ -287,13 +288,7 @@ function RealUsersPage({
 const meta = {
   title: "Pages/Real Users",
   parameters: { layout: "fullscreen" },
-  decorators: [
-    (Story) => (
-      <div style={{ width: 1280 }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: [growingPageFrame],
 } satisfies Meta<typeof RealUsersPage>;
 
 export default meta;
