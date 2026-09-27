@@ -39,7 +39,7 @@
   fill: none;
 }
 
-.sg-edge-neutral {
+.sg-edge-ok {
   stroke: var(--border);
 }
 
@@ -51,7 +51,7 @@
   stroke: var(--err);
 }
 
-.sg-arrow-neutral {
+.sg-arrow-ok {
   fill: var(--border);
 }
 

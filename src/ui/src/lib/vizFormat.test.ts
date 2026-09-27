@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   compactCount,
+  errorRateSeverity,
   formatErrorRate,
   formatRange,
   formatShare,
@@ -173,5 +174,22 @@ describe("formatErrorRate", () => {
   it("rounds a rate at or above the <1% cutoff to the nearest whole percent", () => {
     expect(formatErrorRate(3, 500)).toBe("1%"); // 0.6%, rounds to 1%
     expect(formatErrorRate(1, 4)).toBe("25%");
+  });
+});
+
+describe("errorRateSeverity", () => {
+  it("keeps a rate that reads <1% calm", () => {
+    expect(errorRateSeverity(0)).toBe("ok");
+    expect(errorRateSeverity(0.0049)).toBe("ok");
+  });
+
+  it("warns from 0.5%", () => {
+    expect(errorRateSeverity(0.005)).toBe("warn");
+    expect(errorRateSeverity(0.0199)).toBe("warn");
+  });
+
+  it("is critical from 2%", () => {
+    expect(errorRateSeverity(0.02)).toBe("critical");
+    expect(errorRateSeverity(1)).toBe("critical");
   });
 });

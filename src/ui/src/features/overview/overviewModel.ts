@@ -7,16 +7,17 @@ import type { CatalogEntity } from "../../api/catalog";
 import type { EntityKpis, SeriesPoint } from "../../api/entityDetailStats";
 import type { Deploy, VersionSighting } from "../../api/overview";
 import type { VolumeSeries } from "../../components/SignalHistogram";
-import { compactCount } from "../../lib/vizFormat";
+import { compactCount, errorRateSeverity } from "../../lib/vizFormat";
 import { compositeKey } from "../../lib/traceGroups";
 
 export type Health = "critical" | "degraded" | "healthy";
 
-/** Critical at ≥ 2% errors; degraded at ≥ 0.5% errors or p95 above 500 ms.
- * The error thresholds match `ServiceGraph`'s own severity colouring. */
+/** Error severity per `errorRateSeverity`; a p95 above 500 ms is also
+ * degraded. */
 export function healthOf(errorRate: number, p95Ms: number): Health {
-  if (errorRate >= 0.02) return "critical";
-  if (errorRate >= 0.005 || p95Ms > 500) return "degraded";
+  const severity = errorRateSeverity(errorRate);
+  if (severity === "critical") return "critical";
+  if (severity === "warn" || p95Ms > 500) return "degraded";
   return "healthy";
 }
 
@@ -156,7 +157,9 @@ export function kpiFigures(
   const rate = rateFigure(cur?.ratePerSec ?? 0);
   const errorRate = cur?.errorRate ?? 0;
   const p95 = durationFigure(cur?.p95Ms ?? 0);
-  const over2 = rows.filter((r) => r.errorRate >= 0.02).length;
+  const criticalCount = rows.filter(
+    (r) => errorRateSeverity(r.errorRate) === "critical",
+  ).length;
 
   const ingestTotals = (ingest ?? []).map((s) => ({
     key: s.key,
@@ -197,8 +200,8 @@ export function kpiFigures(
       unit: "%",
       change:
         cur && prev ? ppChangeFine(cur.errorRate, prev.errorRate) : undefined,
-      valueTone: errorRate >= 0.005 ? "error" : "neutral",
-      detail: `${over2} service${over2 === 1 ? "" : "s"} above 2%`,
+      valueTone: errorRateSeverity(errorRate) === "ok" ? "neutral" : "error",
+      detail: `${criticalCount} service${criticalCount === 1 ? "" : "s"} above 2%`,
       series: kpis?.series.errorRate ?? [],
       seriesTone: "error",
       formatPoint: (v) => `${(v * 100).toFixed(2)}% errors`,

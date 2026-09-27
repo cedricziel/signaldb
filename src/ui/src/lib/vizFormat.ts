@@ -147,6 +147,22 @@ export function formatShare(part: number, total: number): string {
   return `${((part / total) * 100).toFixed(1)}%`;
 }
 
+export type ErrorSeverity = "ok" | "warn" | "critical";
+
+/** How alarming an error-rate fraction (0-1) is: `warn` from 0.5% (the
+ * point where {@link formatErrorRate} stops reading `<1%`), `critical` from
+ * 2%. The one threshold rule for every error-rate colour in the UI. */
+export function errorRateSeverity(rate: number): ErrorSeverity {
+  if (rate >= 0.02) return "critical";
+  if (rate >= 0.005) return "warn";
+  return "ok";
+}
+
+/** The shared `err-rate-*` class (global.css) for a measured error rate. */
+export function errorRateClass(rate: number): string {
+  return `err-rate-${errorRateSeverity(rate)}`;
+}
+
 /**
  * A rate meant to flag trouble (an error rate, say) as a whole-percent
  * string. Unlike {@link formatShare}, a rate that rounds to zero but isn't
