@@ -6523,6 +6523,384 @@ mod tests {
         assert_eq!(parent_routes, vec![Some("/checkout".to_string())]);
     }
 
+    // otel-native-schema layer 6, task 6.1: promotion demote-and-still-correct
+    // invariant, extended to per-level `attr_<level>_<key>` promoted columns
+    // (D5). `Row` = (str_field, int_field, double_field, bool_field,
+    // env_record, env_resource, tier): every scalar type at record level,
+    // `env` at both record and resource level (row 3 has no record-level
+    // `env`, falling through to resource), `tier` — single-level, only
+    // promoted via the legacy `label_tier` column.
+    mod typed_promotion_invariant {
+        use super::*;
+        use AttributeLevel::{Record, Resource};
+        use common::schema::promoted_attr_column;
+        use datafusion::arrow::array::{BooleanArray, Float64Array};
+
+        type Row = (
+            &'static str,
+            i64,
+            f64,
+            bool,
+            Option<&'static str>,
+            &'static str,
+            Option<&'static str>,
+        );
+
+        const ROWS: [Row; 4] = [
+            ("apple", 1, 1.0, true, Some("prod"), "us", Some("gold")),
+            ("apple", 2, 2.0, false, Some("stg"), "us", Some("silver")),
+            ("banana", 3, 3.0, true, Some("prod"), "eu", None),
+            ("banana", 4, 4.0, false, None, "eu", Some("bronze")),
+        ];
+
+        fn fixture_types() -> CanonicalTypes {
+            canonical_types(&[
+                ("str_field", Record, CanonicalType::String),
+                ("int_field", Record, CanonicalType::Int64),
+                ("double_field", Record, CanonicalType::Float64),
+                ("bool_field", Record, CanonicalType::Bool),
+                ("env", Record, CanonicalType::String),
+                ("env", Resource, CanonicalType::String),
+                ("tier", Record, CanonicalType::String),
+            ])
+        }
+
+        /// `timestamp` plus the three typed attribute containers.
+        fn typed_container_fields_and_columns(rows: &[Row]) -> (Vec<Field>, Vec<ArrayRef>) {
+            let n = rows.len();
+            let mut fields = vec![Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            )];
+            let mut columns: Vec<ArrayRef> = vec![Arc::new(TimestampNanosecondArray::from(
+                (0..n).map(|i| 10 * (i as i64 + 1)).collect::<Vec<_>>(),
+            ))];
+            let record_rows = rows
+                .iter()
+                .map(|&(s, i, d, b, env, _, tier)| {
+                    let mut m = serde_json::json!({
+                        "str_field": s, "int_field": i, "double_field": d, "bool_field": b,
+                    });
+                    let obj = m.as_object_mut().unwrap();
+                    if let Some(env) = env {
+                        obj.insert("env".to_string(), serde_json::json!(env));
+                    }
+                    if let Some(tier) = tier {
+                        obj.insert("tier".to_string(), serde_json::json!(tier));
+                    }
+                    Some(obj.clone())
+                })
+                .collect::<Vec<_>>();
+            let resource_rows = rows
+                .iter()
+                .map(|&(.., env_resource, _)| {
+                    serde_json::json!({ "env": env_resource })
+                        .as_object()
+                        .cloned()
+                })
+                .collect::<Vec<_>>();
+            for (container, container_rows) in [
+                ("log_attributes", record_rows),
+                ("scope_attributes", vec![None; n]),
+                ("resource_attributes", resource_rows),
+            ] {
+                extend_typed_container(
+                    &mut fields,
+                    &mut columns,
+                    "logs",
+                    "physical-v4",
+                    container,
+                    &container_rows,
+                    |_, observed| standard_placement(observed),
+                );
+            }
+            (fields, columns)
+        }
+
+        /// Every promoted column, plus legacy `label_tier` (single-level,
+        /// trusted) and `label_env` (multi-level, must be ignored — WRONG).
+        fn promoted_fields_and_columns(rows: &[Row]) -> (Vec<Field>, Vec<ArrayRef>) {
+            let name = |level, key| promoted_attr_column(level, key);
+            let fields = vec![
+                Field::new(name(Record, "str_field"), DataType::Utf8, true),
+                Field::new(name(Record, "int_field"), DataType::Int64, true),
+                Field::new(name(Record, "double_field"), DataType::Float64, true),
+                Field::new(name(Record, "bool_field"), DataType::Boolean, true),
+                Field::new(name(Record, "env"), DataType::Utf8, true),
+                Field::new(name(Resource, "env"), DataType::Utf8, true),
+                Field::new("label_tier", DataType::Utf8, true),
+                Field::new("label_env", DataType::Utf8, true),
+            ];
+            macro_rules! arr {
+                ($ty:ty, $get:expr) => {
+                    Arc::new(<$ty>::from(rows.iter().map($get).collect::<Vec<_>>())) as ArrayRef
+                };
+            }
+            let columns: Vec<ArrayRef> = vec![
+                arr!(StringArray, |r| Some(r.0)),
+                arr!(Int64Array, |r| Some(r.1)),
+                arr!(Float64Array, |r| Some(r.2)),
+                arr!(BooleanArray, |r| Some(r.3)),
+                arr!(StringArray, |r| r.4),
+                arr!(StringArray, |r| Some(r.5)),
+                arr!(StringArray, |r| r.6),
+                arr!(StringArray, |_| Some("WRONG")),
+            ];
+            (fields, columns)
+        }
+
+        /// A batch's promoted-column shape: none; all-NULL (pre-backfill);
+        /// populated; or only `env`'s record-level home promoted.
+        enum Promotion {
+            Off,
+            Unbackfilled,
+            Backfilled,
+            RecordEnvOnly,
+        }
+
+        fn typed_batch(rows: &[Row], promotion: Promotion) -> RecordBatch {
+            let (mut fields, mut columns) = typed_container_fields_and_columns(rows);
+            match promotion {
+                Promotion::Off => {}
+                Promotion::RecordEnvOnly => {
+                    fields.push(Field::new(
+                        promoted_attr_column(Record, "env"),
+                        DataType::Utf8,
+                        true,
+                    ));
+                    columns.push(Arc::new(StringArray::from(
+                        rows.iter().map(|r| r.4).collect::<Vec<_>>(),
+                    )) as ArrayRef);
+                }
+                Promotion::Backfilled | Promotion::Unbackfilled => {
+                    let (pf, pc) = promoted_fields_and_columns(rows);
+                    fields.extend(pf);
+                    columns.extend(if matches!(promotion, Promotion::Unbackfilled) {
+                        pc.iter()
+                            .map(|c| {
+                                datafusion::arrow::array::new_null_array(c.data_type(), rows.len())
+                            })
+                            .collect()
+                    } else {
+                        pc
+                    });
+                }
+            }
+            RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+        }
+
+        fn ctx(rows: &[Row], promotion: Promotion) -> SessionContext {
+            let batch = typed_batch(rows, promotion);
+            single_table_ctx("logs", batch.schema(), batch)
+        }
+
+        /// Registers `batches` as one table across several files/row-groups.
+        fn multi_batch_table_ctx(schema: Arc<Schema>, batches: Vec<RecordBatch>) -> SessionContext {
+            let ctx = SessionContext::new();
+            let table = MemTable::try_new(schema, vec![batches]).unwrap();
+            let sp = Arc::new(MemorySchemaProvider::new());
+            sp.register_table("logs".to_string(), Arc::new(table))
+                .unwrap();
+            let cat = Arc::new(MemoryCatalogProvider::new());
+            cat.register_schema("d", sp).unwrap();
+            ctx.register_catalog("t", cat);
+            ctx
+        }
+
+        /// Promotion on, over two files: rows 0-1 unbackfilled, 2-3 backfilled.
+        fn promotion_on_ctx() -> SessionContext {
+            let batch1 = typed_batch(&ROWS[0..2], Promotion::Unbackfilled);
+            let batch2 = typed_batch(&ROWS[2..4], Promotion::Backfilled);
+            multi_batch_table_ctx(batch1.schema(), vec![batch1, batch2])
+        }
+
+        /// Asserts `d` (identified by `name`) plans to identical schema
+        /// (name/type/nullability, not incidental metadata) and rows with
+        /// promotion off vs on.
+        async fn assert_promotion_invariant(d: &Document, name: &str) {
+            fn shape(schema: &Schema) -> Vec<(String, DataType, bool)> {
+                schema
+                    .fields()
+                    .iter()
+                    .map(|f| (f.name().clone(), f.data_type().clone(), f.is_nullable()))
+                    .collect()
+            }
+            let off = plan_typed(&ctx(&ROWS, Promotion::Off), d, fixture_types()).await;
+            let on = plan_typed(&promotion_on_ctx(), d, fixture_types()).await;
+            assert_eq!(
+                shape(off.schema().as_arrow()),
+                shape(on.schema().as_arrow()),
+                "'{name}': promotion must not change the result schema"
+            );
+            let off_rows = sorted_rows(off.collect().await.unwrap());
+            let on_rows = sorted_rows(on.collect().await.unwrap());
+            assert!(
+                !off_rows.is_empty(),
+                "'{name}': the fixture must actually return rows"
+            );
+            assert_eq!(off_rows, on_rows, "'{name}': promotion changed the rows");
+        }
+
+        /// Every row of `batches`, debug-rendered and sorted.
+        fn sorted_rows(batches: Vec<RecordBatch>) -> Vec<String> {
+            let mut rows: Vec<String> = batches
+                .iter()
+                .flat_map(|b| (0..b.num_rows()).map(move |i| row_debug(b, i)))
+                .collect();
+            rows.sort();
+            rows
+        }
+
+        fn row_debug(batch: &RecordBatch, i: usize) -> String {
+            (0..batch.num_columns())
+                .map(|c| {
+                    datafusion::arrow::util::display::array_value_to_string(batch.column(c), i)
+                        .unwrap_or_else(|_| "<err>".to_string())
+                })
+                .collect::<Vec<_>>()
+                .join("|")
+        }
+
+        fn rows_doc(fields: &[&str], pipeline: serde_json::Value) -> serde_json::Value {
+            serde_json::json!({
+                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "rows", "fields": fields, "pipeline": pipeline
+            })
+        }
+
+        fn where_doc(field: &str, op: &str, value: serde_json::Value) -> serde_json::Value {
+            rows_doc(
+                &[field],
+                serde_json::json!([{ "where": { "field": field, "op": op, "value": value } }]),
+            )
+        }
+
+        fn table_doc(pipeline: serde_json::Value) -> serde_json::Value {
+            serde_json::json!({
+                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "table", "pipeline": pipeline
+            })
+        }
+
+        /// `sum`/`avg`/`min`/`max` of `int_field` and `double_field`.
+        fn scalar_aggs() -> Vec<serde_json::Value> {
+            ["int_field", "double_field"]
+                .iter()
+                .flat_map(|field| {
+                    let suffix = if *field == "int_field" { "i" } else { "d" };
+                    ["sum", "avg", "min", "max"].iter().map(move |func| {
+                        serde_json::json!({ "fn": func, "of": field, "as": format!("{func}_{suffix}") })
+                    })
+                })
+                .collect()
+        }
+
+        /// Documents this invariant must hold over: projections, filters
+        /// per scalar type, aggregates, and the multi-level `env` key.
+        fn scenarios() -> Vec<(&'static str, serde_json::Value)> {
+            let all_fields = [
+                "str_field",
+                "int_field",
+                "double_field",
+                "bool_field",
+                "env",
+                "log.env",
+                "resource.env",
+                "tier",
+            ];
+            let mut docs = vec![
+                (
+                    "project every field",
+                    rows_doc(&all_fields, serde_json::json!([])),
+                ),
+                (
+                    "count by str_field",
+                    table_doc(serde_json::json!([{ "aggregate": {
+                        "by": ["str_field"], "aggs": [{ "fn": "count", "as": "n" }]
+                    } }])),
+                ),
+                (
+                    "numeric aggregates",
+                    table_doc(
+                        serde_json::json!([{ "aggregate": { "by": [], "aggs": scalar_aggs() } }]),
+                    ),
+                ),
+                (
+                    "count by bool_field",
+                    table_doc(serde_json::json!([{ "aggregate": {
+                        "by": ["bool_field"], "aggs": [{ "fn": "count", "as": "n" }]
+                    } }])),
+                ),
+                (
+                    "multi-level env unqualified and qualified",
+                    rows_doc(&["env", "log.env", "resource.env"], serde_json::json!([])),
+                ),
+            ];
+            for (name, field, op, value) in [
+                ("eq string", "str_field", "eq", serde_json::json!("apple")),
+                ("eq int", "int_field", "eq", serde_json::json!(3)),
+                ("eq double", "double_field", "eq", serde_json::json!(3.0)),
+                ("eq bool", "bool_field", "eq", serde_json::json!(true)),
+                ("ne string", "str_field", "ne", serde_json::json!("apple")),
+                ("gt int", "int_field", "gt", serde_json::json!(2)),
+                ("lte double", "double_field", "lte", serde_json::json!(2.0)),
+            ] {
+                docs.push((name, where_doc(field, op, value)));
+            }
+            docs
+        }
+
+        #[tokio::test]
+        async fn promotion_is_invariant_across_scenarios() {
+            for (name, doc_json) in scenarios() {
+                assert_promotion_invariant(&doc(doc_json), name).await;
+            }
+        }
+
+        /// `env` stays invariant whether only its record-level home is
+        /// promoted, or both are.
+        #[tokio::test]
+        async fn multi_level_key_partial_and_full_promotion_agree() {
+            let d = doc(rows_doc(&["env"], serde_json::json!([])));
+            let expected = vec![
+                Some("prod".to_string()),
+                Some("stg".to_string()),
+                Some("prod".to_string()),
+                Some("eu".to_string()),
+            ];
+            for session in [promotion_on_ctx(), ctx(&ROWS, Promotion::RecordEnvOnly)] {
+                let values = column_values(
+                    plan_typed(&session, &d, fixture_types()).await,
+                    &safe_ident("env"),
+                )
+                .await;
+                assert_eq!(values, expected);
+            }
+        }
+
+        /// A type-mismatched promoted column (`Utf8`, not `Int64`) is ignored.
+        #[tokio::test]
+        async fn a_type_mismatched_promoted_column_is_ignored() {
+            let (mut fields, mut columns) = typed_container_fields_and_columns(&ROWS);
+            let mismatched = promoted_attr_column(Record, "int_field");
+            fields.push(Field::new(&mismatched, DataType::Utf8, true));
+            columns.push(Arc::new(StringArray::from(vec![Some("999"); ROWS.len()])) as ArrayRef);
+            let schema = Arc::new(Schema::new(fields));
+            let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+            let ctx = single_table_ctx("logs", schema, batch);
+
+            let d = doc(rows_doc(&["int_field"], serde_json::json!([])));
+            let values =
+                column_values_i64(plan_typed(&ctx, &d, fixture_types()).await, "int_field").await;
+            assert_eq!(
+                values,
+                vec![Some(1), Some(2), Some(3), Some(4)],
+                "the type-mismatched promoted column must be ignored"
+            );
+        }
+    }
+
     // --- IR-5: typed predicates compare against the field's canonical type
     // (`otel-native-schema` task 4.4) ---------------------------------------
 
