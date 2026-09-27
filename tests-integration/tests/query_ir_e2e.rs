@@ -189,18 +189,26 @@ pub(crate) async fn setup_with(config_override: impl FnOnce(&mut Configuration))
     let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
         tests_integration::test_helpers::writer_wal_config(&wal_config),
     ));
+    // Shared with the writer's `TypeAuthority` below, so the querier's
+    // `CanonicalTypeLookup` (wired via `with_tenant_source`) sees the
+    // canonical types the writer commits -- both read the same DB the
+    // production binary points at `router_bootstrap.catalog()` for.
+    let type_authority_catalog = Catalog::new(&catalog_dsn)
+        .await
+        .expect("type authority catalog");
     let catalog_manager = Arc::new(
         CatalogManager::new(config.clone())
             .await
-            .expect("catalog mgr"),
+            .expect("catalog mgr")
+            .with_tenant_source(Arc::new(type_authority_catalog.clone())),
     );
-    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
-        catalog_manager.clone(),
-        writer_wal,
-        &common::config::WriterConfig::default(),
-    )
-    .await
-    .expect("failed to build writer service with type authority");
+    let writer_service =
+        tests_integration::test_support::writer_service_with_type_authority_and_catalog(
+            catalog_manager.clone(),
+            writer_wal,
+            &common::config::WriterConfig::default(),
+            type_authority_catalog,
+        );
     let _writer_bg = writer_service.start_background_processing();
     tokio::spawn(
         Server::builder()

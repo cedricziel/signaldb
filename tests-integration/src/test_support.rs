@@ -13,6 +13,7 @@
 
 use anyhow::Result;
 use common::CatalogManager;
+use common::catalog::Catalog;
 use common::config::{Configuration, WriterConfig};
 use common::schema::type_authority::TypeAuthority;
 use common::schema_registry::SchemaResolver;
@@ -31,6 +32,21 @@ pub async fn writer_with_type_authority(
     let writer =
         IcebergTableWriter::new(catalog_manager, tenant_id, dataset_id, table_name).await?;
     Ok(writer.with_type_authority(test_type_authority().await?))
+}
+
+/// Same as [`writer_with_type_authority`], but committing types to `catalog`
+/// instead of a fresh throwaway one -- so a querier reading canonical types
+/// from the same `catalog` (e.g. via `CanonicalTypeLookup`) sees them.
+pub async fn writer_with_type_authority_and_catalog(
+    catalog_manager: &CatalogManager,
+    tenant_id: String,
+    dataset_id: String,
+    table_name: String,
+    catalog: Catalog,
+) -> Result<IcebergTableWriter> {
+    let writer =
+        IcebergTableWriter::new(catalog_manager, tenant_id, dataset_id, table_name).await?;
+    Ok(writer.with_type_authority(test_type_authority_with_catalog(catalog)))
 }
 
 /// Same signature as `WalProcessor::new`, but with a fresh
@@ -58,15 +74,40 @@ pub async fn writer_service_with_type_authority(
     ))
 }
 
+/// Same as [`writer_service_with_type_authority`], but committing types to
+/// `catalog` instead of a fresh throwaway one -- so a querier reading
+/// canonical types from the same `catalog` sees them.
+pub fn writer_service_with_type_authority_and_catalog(
+    catalog_manager: Arc<CatalogManager>,
+    wal_manager: Arc<WalManager>,
+    writer_config: &WriterConfig,
+    catalog: Catalog,
+) -> IcebergWriterFlightService {
+    IcebergWriterFlightService::with_type_authority(
+        catalog_manager,
+        wal_manager,
+        writer_config,
+        test_type_authority_with_catalog(catalog),
+    )
+}
+
 /// A `TypeAuthority` backed by a fresh in-memory SQL catalog -- independent
 /// of the target table's data catalog, since it only tracks canonical
 /// attribute types, not table data.
 pub async fn test_type_authority() -> Result<Arc<TypeAuthority>> {
-    let sql_catalog = common::catalog::Catalog::new_in_memory().await?;
+    Ok(test_type_authority_with_catalog(
+        Catalog::new_in_memory().await?,
+    ))
+}
+
+/// A `TypeAuthority` backed by the given SQL catalog, so callers can share
+/// one catalog between the writer that commits canonical types and a
+/// querier that later reads them (e.g. `CatalogCanonicalTypes`).
+pub fn test_type_authority_with_catalog(sql_catalog: Catalog) -> Arc<TypeAuthority> {
     let resolver = SchemaResolver::new(sql_catalog.clone());
-    Ok(Arc::new(TypeAuthority::new(
+    Arc::new(TypeAuthority::new(
         sql_catalog,
         resolver,
         Arc::new(Configuration::default()),
-    )))
+    ))
 }

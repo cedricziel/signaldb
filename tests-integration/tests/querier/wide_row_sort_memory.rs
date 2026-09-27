@@ -107,12 +107,22 @@ async fn wide_row_sorts_succeed_only_under_a_bounded_scan_batch() -> Result<()> 
         .with_tenant(TENANT, DATASET)
         .build();
 
-    let catalog_manager = Arc::new(CatalogManager::new(config.clone()).await?);
-    let mut writer = tests_integration::test_support::writer_with_type_authority(
+    // Shared with the writer's `TypeAuthority` below, so the querier's
+    // `CanonicalTypeLookup` (wired via `with_tenant_source`) sees the
+    // canonical types the writer commits for this table's typed-layout
+    // columns.
+    let type_authority_catalog = common::catalog::Catalog::new_in_memory().await?;
+    let catalog_manager = Arc::new(
+        CatalogManager::new(config.clone())
+            .await?
+            .with_tenant_source(Arc::new(type_authority_catalog.clone())),
+    );
+    let mut writer = tests_integration::test_support::writer_with_type_authority_and_catalog(
         &catalog_manager,
         TENANT.to_string(),
         DATASET.to_string(),
         TABLE.to_string(),
+        type_authority_catalog,
     )
     .await
     .context("Failed to create writer")?;

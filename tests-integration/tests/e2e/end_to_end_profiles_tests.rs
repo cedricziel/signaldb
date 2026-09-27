@@ -205,11 +205,18 @@ async fn setup_services() -> TestServices {
     let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
 
     // Shared CatalogManager: writer and querier must see the same Iceberg
-    // catalog for ingested data to be queryable back.
+    // catalog for ingested data to be queryable back. The tenant source
+    // (`catalog_dsn`, also the writer's `TypeAuthority` DB below) lets the
+    // querier's `CanonicalTypeLookup` see the canonical types the writer
+    // commits for this table's typed-layout columns.
+    let type_authority_catalog = common::catalog::Catalog::new(&catalog_dsn)
+        .await
+        .expect("Failed to create type authority catalog");
     let catalog_manager = Arc::new(
         CatalogManager::new(config.clone())
             .await
-            .expect("Failed to create CatalogManager"),
+            .expect("Failed to create CatalogManager")
+            .with_tenant_source(Arc::new(type_authority_catalog.clone())),
     );
 
     // Pre-create the Iceberg namespace so the querier's catalog cache
@@ -235,13 +242,13 @@ async fn setup_services() -> TestServices {
     let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
         tests_integration::test_helpers::writer_wal_config(&wal_config),
     ));
-    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
-        catalog_manager.clone(),
-        writer_wal,
-        &WriterConfig::default(),
-    )
-    .await
-    .expect("failed to build writer service with type authority");
+    let writer_service =
+        tests_integration::test_support::writer_service_with_type_authority_and_catalog(
+            catalog_manager.clone(),
+            writer_wal,
+            &WriterConfig::default(),
+            type_authority_catalog,
+        );
     let _writer_bg = writer_service.start_background_processing();
     tokio::spawn(
         Server::builder()
