@@ -79,7 +79,8 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   one-click toggle). Drilling into a group applies the same dimension-value
   filter to the span-volume chart as to its member list, so the chart above
   the list describes that group's spans, not the whole tab. The **span.kind** facet always lists all five kinds as
-  checkboxes with their counts, several can be on at once (one `in` filter),
+  checkboxes with their counts (a dash and "Could not load counts" when the
+  count query fails, never a row of zeros), several can be on at once (one `in` filter),
   and Server, Client, Producer, and Consumer are selected by default —
   Internal spans are opted into; unchecking the last kind selects them all.
   Root spans are what the default **Traces** grain already inspects. Facets
