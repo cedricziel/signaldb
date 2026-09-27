@@ -201,6 +201,18 @@ describe("traceFromIrResponses", () => {
     ]);
   });
 
+  it("reads the all-zero parent id as no parent and picks that span as root, even when a child starts earlier", () => {
+    const root = [...SPANS_RES.rows[0]!];
+    const charge = [...SPANS_RES.rows[1]!];
+    root[2] = "0000000000000000"; // parent_span_id
+    charge[7] = 900_000_000; // start_time_unix_nano, before the root's
+    const skewed = { ...SPANS_RES, rows: [charge, root] };
+    const trace = traceFromIrResponses("t1cafe", skewed, undefined);
+    expect(trace!.rootServiceName).toBe("gateway");
+    expect(trace!.rootTraceName).toBe("POST /api/checkout");
+    expect(trace!.spans[1]!.parentSpanId).toBeNull();
+  });
+
   it("is undefined for a trace with no spans", () => {
     expect(
       traceFromIrResponses("nope", { ...SPANS_RES, rows: [] }, PROFILES_RES),
