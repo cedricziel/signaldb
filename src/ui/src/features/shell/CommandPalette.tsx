@@ -5,6 +5,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { fetchCatalogEntities } from "../../api/catalog";
+import { fetchRumApps } from "../../api/rum";
+import { RUM_TABS } from "../rum/rumModel";
 import { entityType } from "../catalog/entityTypes";
 import { entityQueryKey, NAV_SORT } from "../catalog/CatalogView";
 import { loadRecentQueries } from "../../lib/recentQueries";
@@ -46,6 +48,7 @@ export function CommandPalette({ state, canManage, isDemo, onClose }: Props) {
   }, []);
 
   const services = useServiceItems(state, query.trim() !== "");
+  const rumApps = useRumAppItems(state, query.trim() !== "");
   const recent = useMemo(
     () =>
       loadRecentQueries().map((q) => ({
@@ -57,15 +60,28 @@ export function CommandPalette({ state, canManage, isDemo, onClose }: Props) {
   );
 
   const sources: PaletteSources = useMemo(() => {
-    const pages: PaletteItem[] = visibleNavGroups({ canManage, isDemo }).flatMap(
-      (g) =>
-        g.pages.map((p) => ({
-          label: p.label,
-          meta: g.title.toLowerCase(),
-          href: pageHref(p, state),
-          group: g.title,
-        })),
+    const pages: PaletteItem[] = visibleNavGroups({
+      canManage,
+      isDemo,
+    }).flatMap((g) =>
+      g.pages.map((p) => ({
+        label: p.label,
+        meta: g.title.toLowerCase(),
+        href: pageHref(p, state),
+        group: g.title,
+      })),
     );
+    // Every Real users tab (`rumModel.ts`'s `RUM_TABS`) — a later group's
+    // new tab shows up here automatically.
+    const rumSearch = crossSignalSearch(state);
+    for (const t of RUM_TABS) {
+      pages.push({
+        label: `Real users: ${t.label}`,
+        meta: "real users",
+        href: `/rum/${t.id}${rumSearch}`,
+        group: "Monitor",
+      });
+    }
     const actions: PaletteItem[] = [
       ...(canManage
         ? [
@@ -94,8 +110,8 @@ export function CommandPalette({ state, canManage, isDemo, onClose }: Props) {
         href: withParam(`/overview${crossSignalSearch(state)}`, "setup"),
       },
     ];
-    return { pages, services, recent, actions };
-  }, [state, canManage, isDemo, services, recent]);
+    return { pages, services, rumApps, recent, actions };
+  }, [state, canManage, isDemo, services, rumApps, recent]);
 
   const groups = buildPaletteGroups(query, sources);
   const flat = groups.flatMap((g) => g.items);
@@ -257,6 +273,29 @@ function useServiceItems(state: ExploreState, enabled: boolean): PaletteItem[] {
         catalogPrimary: compositeKey(e.values),
         catalogSecondary: "",
       })}${search}`,
+    }));
+  }, [data, state]);
+}
+
+/** Frontend apps with RUM data as palette rows, opening the Real users
+ * Overview scoped to that app (`explore-ui-rum`'s "Real users command
+ * palette entries" requirement) — fetched only once there's something
+ * typed to match against, like `useServiceItems`. */
+function useRumAppItems(state: ExploreState, enabled: boolean): PaletteItem[] {
+  const rangeKey = rangeScopeKey(state);
+  const { data } = useQuery({
+    queryKey: ["rum-apps", rangeKey],
+    queryFn: () => fetchRumApps(resolveRange(state.range, Date.now())),
+    enabled,
+    staleTime: 30_000,
+  });
+  return useMemo(() => {
+    if (!data) return [];
+    const search = crossSignalSearch(state);
+    return data.map((a) => ({
+      label: a.serviceName,
+      meta: "real users app",
+      href: `/rum/overview${search}${search ? "&" : "?"}app=${encodeURIComponent(a.serviceName)}`,
     }));
   }, [data, state]);
 }

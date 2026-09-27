@@ -26,6 +26,8 @@
 - Framing: the storybook canvas paints `--bg` behind stories; the preview pages are white. That's a harness difference, not a component one.
 
 ## Re-sync risks
+
+- RealUsersView (`Pages/Real Users`) is newly registered; its `1280x1000` viewport was checked against real Playwright screenshots of the Default/Setup/Dark stories (not a design-sync capture) — Default's content is ~740px tall, Setup's ~940px, so 1000 has slack on both and shouldn't clip; raise it if the page grows in a later group.
 - CatalogView's card shows EntityDetail at 1280x2000: the service overview page is ~2000px tall. If it grows further, raise the viewport or the card clips (the preview stops mid-page while the storybook side shrinks to fit).
 - Story fixtures that feed time series must derive timestamps from the request's own range (fetchStub `bodyFor`), in nanoseconds like the real IR; Date.now()/ms-scale fixtures render as a spike then flat.
 - Dark mode: every page has a `Dark` story (DarkScope → scoped `data-theme="dark"`), graded like the rest; components are only checked in light on sync (the Storybook toolbar covers them manually).

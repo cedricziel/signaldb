@@ -29,6 +29,7 @@ OverviewView:features/overview/OverviewView
 ProcessorList:features/processors/ProcessorList
 ProfilesView:features/profiles/ProfilesView
 QueryView:features/query/QueryView
+RealUsersView:features/rum/RealUsersView
 RunsView:features/evals/RunsView
 SchemaHub:features/schema/SchemaHub
 LoginRoute:features/shell/LoginRoute

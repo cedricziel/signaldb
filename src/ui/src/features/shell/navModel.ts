@@ -9,6 +9,7 @@ export type PageId =
   | "overview"
   | "errors"
   | "catalog"
+  | "rum"
   | "logs"
   | "traces"
   | "metrics"
@@ -48,6 +49,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { id: "overview", label: "Overview", path: "/overview" },
       { id: "errors", label: "Errors", path: "/errors" },
       { id: "catalog", label: "Catalog", path: "/catalog" },
+      { id: "rum", label: "Real users", path: "/rum" },
     ],
   },
   {

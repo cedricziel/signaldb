@@ -228,3 +228,31 @@ test("/login stays usable at a narrow (360x740) viewport", async ({ page }) => {
   expect(box!.x).toBeGreaterThanOrEqual(0);
   expect(box!.x + box!.width).toBeLessThanOrEqual(360);
 });
+
+test("sidebar → Real users → Overview renders", async ({ page }) => {
+  // No RUM data behind this build — the query IR endpoint answers with an
+  // empty envelope for every read the Overview tab issues (apps, KPIs,
+  // vitals, ...), same shape `emptyIrLogs` covers in the component tests.
+  await page.route("**/api/v1/query", (route) =>
+    json(route, {
+      result: "rows",
+      window: { start_ns: 0, end_ns: 0 },
+      columns: [],
+      rows: [],
+      series: [],
+    }),
+  );
+  await page.goto("/logs");
+  await navLink(page, "Real users").click();
+  await expect(page).toHaveURL(/\/rum\/overview$/);
+  await expect(navLink(page, "Real users")).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await expect(
+    page.getByText(/No frontend app has sent real-user data yet/),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Open Setup" }).click();
+  await expect(page).toHaveURL(/\/rum\/setup$/);
+  await expect(page.getByText("Install the SDK")).toBeVisible();
+});

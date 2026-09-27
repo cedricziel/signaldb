@@ -19,6 +19,10 @@ export interface PaletteGroup {
 export interface PaletteSources {
   pages: PaletteItem[];
   services: PaletteItem[];
+  /** Frontend apps with RUM data (`explore-ui-rum`'s "Real users command
+   * palette entries" requirement) — matched like `services`, not shown on
+   * an empty query. */
+  rumApps: PaletteItem[];
   recent: PaletteItem[];
   actions: PaletteItem[];
 }
@@ -64,6 +68,7 @@ export function buildPaletteGroups(
   return nonEmpty([
     { title: "Pages", items: match(sources.pages, 6) },
     { title: "Services", items: match(sources.services, 5) },
+    { title: "Real users apps", items: match(sources.rumApps, 5) },
     { title: "Recent queries", items: match(sources.recent, 3) },
     { title: "Actions", items: match(sources.actions, 4) },
   ]);

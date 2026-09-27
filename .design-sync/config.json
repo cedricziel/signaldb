@@ -32,7 +32,8 @@
     "Runs": "RunsView",
     "Compare": "CompareView",
     "Case": "CaseView",
-    "Evaluators": "EvaluatorsView"
+    "Evaluators": "EvaluatorsView",
+    "RealUsers": "RealUsersView"
   },
   "provider": {
     "component": "QueryClientProvider",
@@ -191,6 +192,11 @@
     "EvaluatorsView": {
       "cardMode": "single",
       "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "RealUsersView": {
+      "cardMode": "single",
+      "viewport": "1280x1000",
       "primaryStory": "Default"
     }
   },

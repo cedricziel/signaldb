@@ -26,6 +26,7 @@ const SOURCES: PaletteSources = {
     page("API keys", "Settings"),
   ],
   services: ["checkout", "cart", "payments"].map((l) => item(l, "service")),
+  rumApps: ["storefront-web", "admin-web"].map((l) => item(l, "app")),
   recent: ["level=error", "service.name=checkout", "a", "b"].map((l) =>
     item(l, "logs"),
   ),
@@ -61,6 +62,10 @@ describe("buildPaletteGroups", () => {
       title: "Pages",
       items: [page("Traces", "Investigate")],
     });
+  });
+
+  it("matches frontend apps with RUM data", () => {
+    expect(titles("storefront")).toEqual(["Real users apps"]);
   });
 
   it("returns no groups when nothing matches", () => {

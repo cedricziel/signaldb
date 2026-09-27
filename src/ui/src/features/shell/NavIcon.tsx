@@ -8,6 +8,7 @@ export type NavIconName =
   | "overview"
   | "errors"
   | "catalog"
+  | "rum"
   | "logs"
   | "traces"
   | "metrics"
@@ -69,6 +70,12 @@ const GLYPHS: Record<NavIconName, ReactNode> = {
           <line x1="6" y1={y} x2="14" y2={y} />
         </g>
       ))}
+    </>
+  ),
+  rum: (
+    <>
+      <circle cx="8" cy="4.5" r="2.5" />
+      <path d="M2.5 14 C2.5 10 5 8.5 8 8.5 C11 8.5 13.5 10 13.5 14" />
     </>
   ),
   logs: (

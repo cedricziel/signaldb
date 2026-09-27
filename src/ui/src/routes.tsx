@@ -31,6 +31,7 @@ import { HOME_PATH } from "./features/shell/navModel";
 import { RouteErrorBoundary } from "./features/shell/RouteErrorBoundary";
 import { UnsavedChangesGuard } from "./features/shell/UnsavedChangesGuard";
 import { processorsRoutes } from "./features/processors/routes";
+import { RealUsersRoute } from "./features/rum/RealUsersRoute";
 import { schemaRoutes } from "./features/schema/routes";
 import { useOutletState } from "./lib/outletState";
 import { signalFromParam } from "./lib/urlState";
@@ -85,6 +86,12 @@ function RedirectHome() {
   return <Navigate to={`${HOME_PATH}${location.search}`} replace />;
 }
 
+/** `/rum` opens its default tab, preserving the query string. */
+function RedirectToRumOverview() {
+  const location = useLocation();
+  return <Navigate to={`/rum/overview${location.search}`} replace />;
+}
+
 function ExploreRoute() {
   const { signal, traceId } = useParams<{
     signal?: string;
@@ -129,6 +136,11 @@ export function routeElements() {
           element={<GitHubIntegrationRoute />}
         />
         <Route path="instrumentation" element={<InstrumentationRoute />} />
+        {/* `/rum` opens Overview, preserving the query string — mirrors
+            RedirectToOverview. The tab lives in the path (see
+            RealUsersRoute), not a search param. */}
+        <Route path="rum" element={<RedirectToRumOverview />} />
+        <Route path="rum/:tab" element={<RealUsersRoute />} />
         {schemaRoutes()}
         {processorsRoutes()}
         {evalsRoutes()}

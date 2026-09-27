@@ -18,13 +18,13 @@ Each numbered group is one PR in a stack (under ~500 changed lines each).
 
 ## 3. Real users page: shell + Overview + Setup
 
-- [ ] 3.1 Failing tests for `api/rum.ts` decoders (apps discovery, KPIs — one read per KPI yielding value, delta and sparkline —, vitals, sessions-over-time, browser/device breakdown) and `rumModel.ts` (vital rating/format with lowercase names and ms values, distribution shares).
-- [ ] 3.2 `api/rum.ts` IR queries and `features/rum/useRumData.ts` hooks keyed by range scope + app.
-- [ ] 3.3 Navigation: `rum` page in `navModel.ts` (Monitor, after Catalog), icon, `/rum/:tab` route with unknown-tab redirect, `?app=` in URL state; tests in `navModel.test.ts` and `App.test.tsx`.
-- [ ] 3.4 `RealUsersView` with app switcher, tab strip, Overview (KPIs, vitals with `VizTooltip` distributions, sessions stacked chart, slowest pages, top errors, breakdowns) and Setup (snippets, live checklist); empty state when no app.
-- [ ] 3.5 `Pages/RealUsers` Storybook stories (Default, Dark, Empty) with range-derived fixtures from the prototype data; design-sync registration (`.design-sync/pkg/build.sh` PAGES line, `config.json` titleMap/overrides).
-- [ ] 3.6 Command palette: Real users tabs and frontend apps.
-- [ ] 3.7 e2e: sidebar → Real users → Overview renders against the seeded dataset.
+- [x] 3.1 Failing tests for `api/rum.ts` decoders (apps discovery, KPIs — one read per KPI yielding value, delta and sparkline —, vitals, sessions-over-time, browser/device breakdown) and `rumModel.ts` (vital rating/format with lowercase names and ms values, distribution shares).
+- [x] 3.2 `api/rum.ts` IR queries and `features/rum/useRumData.ts` hooks keyed by range scope + app.
+- [x] 3.3 Navigation: `rum` page in `navModel.ts` (Monitor, after Catalog), icon, `/rum/:tab` route with unknown-tab redirect, `?app=` in URL state; tests in `navModel.test.ts` and `App.test.tsx`.
+- [x] 3.4 `RealUsersView` with app switcher, tab strip, Overview (KPIs, vitals with `VizTooltip` distributions, sessions stacked chart, slowest pages, top errors, breakdowns) and Setup (snippets, live checklist); empty state when no app. (Slowest pages omitted per group scope — a later group's Pages tab.)
+- [x] 3.5 `Pages/RealUsers` Storybook stories (Default, Dark, Empty) with range-derived fixtures; design-sync registration (`.design-sync/pkg/build.sh` PAGES line, `config.json` titleMap/overrides).
+- [x] 3.6 Command palette: Real users tabs and frontend apps.
+- [x] 3.7 e2e: sidebar → Real users → Overview renders (mocked IR responses, no live backend — matches `e2e/navigation.spec.ts`'s existing pattern).
 
 ## 4. Network + frontend → backend
 

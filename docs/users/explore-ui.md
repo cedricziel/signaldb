@@ -270,6 +270,45 @@ window, 30 buckets wide, and every row links into the view that explains it
   step is done; the palette's **Open setup checklist** opens it directly
   (`/overview?setup`).
 
+### Real users
+
+`/rum/{tab}` shows browser telemetry per frontend app — a `service.name`
+that sent at least one RUM event (a `browser.web_vital`,
+`browser.navigation`, `browser.user_action.click` or
+`browser.resource_timing` record, or any record carrying `session.id`) in
+the window. The app switcher lists every such app, busiest first, and
+defaults to the busiest; picking one writes `?app=` and clears any
+route/error/session selection. With no frontend app yet, the page shows an
+empty state pointing at **Setup** instead of empty panels. This build ships
+the **Overview** and **Setup** tabs; Pages, Sessions, Errors, Network and
+Interactions follow in later changes and are not shown as placeholders.
+
+- **Overview.** Sessions and sessions-with-errors (distinct `session.id`,
+  the latter scoped to a session carrying an `exception` record) and page
+  views, each with the change against the equal-length window before it and
+  a sparkline computed from one bucketed read spanning both windows.
+  **Core Web Vitals** shows LCP, INP, CLS, FCP and TTFB: the p75 of
+  `browser.web_vital.value` per `browser.web_vital.name` (values are
+  lowercase, in milliseconds except CLS), rated against the Web Vitals
+  thresholds and shown by shape and colour; a vital with no records in the
+  window reads `—`, never `0`. Each card's good/needs-improvement/poor
+  distribution bar's tooltip lists every share and its threshold. **Sessions
+  over time** stacks sessions with and without errors. **Top errors** reuses
+  the Errors grouping, scoped to the app. **Sessions by browser** and **by
+  device** break down the window's records by `browser.brands` (when the SDK
+  sends it — many deployments don't yet, so this can read empty) and
+  `browser.mobile`.
+- **Setup.** Copyable snippets for instrumenting a browser app with the
+  upstream OpenTelemetry SDK: install, initialize with the app's
+  `service.name`, and export to an OpenTelemetry Collector or the app's own
+  backend — never a SignalDB API key in browser code, since SignalDB keys
+  are bearer credentials with no origin restriction and any key shipped to a
+  browser is public. The collector/backend then forwards to SignalDB holding
+  the key server-side. A live checklist tracks the first session, first page
+  view and first vitals record received for the selected app.
+- **Command palette.** The Real users tabs and every frontend app with RUM
+  data are palette entries; picking an app opens `/rum/overview?app=`.
+
 ### Agent evaluations
 
 The **Evaluate** group reads evaluator results for AI agents — offline eval
