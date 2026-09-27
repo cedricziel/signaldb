@@ -1401,12 +1401,20 @@ mod tests {
     /// fixture): a traces table created at physical-v3 -- the shape every
     /// table predating #1340 actually has -- gains a nullable
     /// `resource_identity` column and its recorded version property moves
-    /// to `current_trace_version()` (physical-v4) when
-    /// `TableManager::ensure_schema_evolved`'s underlying
-    /// `ensure_schema_current` brings it current. Logs' physical-v1 ->
-    /// physical-v2 hop is the same one-field-addition shape, so this one
-    /// signal stands for both; covering it too would just re-assert the
-    /// identical mechanism.
+    /// to physical-v4 when `TableManager::ensure_schema_evolved`'s
+    /// underlying `ensure_schema_current` brings it forward. Logs'
+    /// physical-v1 -> physical-v2 hop is the same one-field-addition
+    /// shape, so this one signal stands for both; covering it too would
+    /// just re-assert the identical mechanism.
+    ///
+    /// Targets physical-v4, not `current_trace_version()`: v4 -> v5 is the
+    /// typed-attribute-layout cutover, which replaces
+    /// `map<string,string>` columns with typed maps -- `diff_schema`
+    /// cannot add or remove those (see `iceberg_type_for`), so a live
+    /// table is never evolved across that hop. `IcebergTableManager`
+    /// intercepts a legacy table there and drops+recreates it instead
+    /// (`recreate_as_typed`); this test only exercises the
+    /// `resource_identity` addition evolution still handles.
     ///
     /// The table is created directly at the full v3 shape (rather than via
     /// `apply_schema_migration` onto a smaller base, as other tests here
@@ -1453,7 +1461,7 @@ mod tests {
             &identifier,
             &SCHEMA_DEFINITIONS,
             &SCHEMA_DEFINITIONS.traces,
-            SCHEMA_DEFINITIONS.current_trace_version(),
+            "physical-v4",
         )
         .await?;
 
@@ -1473,15 +1481,17 @@ mod tests {
     /// its real `physical-v1` shape (declaring `map<string,string>`
     /// attribute columns the way every live pre-#1340 table has -- live-table
     /// evolution can't add a map column, so a fresh create is the only way to
-    /// land that shape), evolves it to `current_version`, and asserts the
-    /// version property and the new nullable `resource_identity` column both
-    /// land. Shared by the `metrics_gauge` and `profiles` tests below;
+    /// land that shape), evolves it to `target_version` (the last pre-typed
+    /// version, not the typed `current_*_version()` -- see the traces test
+    /// above for why that hop is off-limits to live evolution), and asserts
+    /// the version property and the new nullable `resource_identity` column
+    /// both land. Shared by the `metrics_gauge` and `profiles` tests below;
     /// `metrics_gauge` stands in for the other four metrics representations,
     /// which go through the identical mechanism.
     async fn assert_v1_table_evolves_in_resource_identity(
         schemas_map: &HashMap<String, TableSchemaDefinition>,
         table_name: &str,
-        current_version: &str,
+        target_version: &str,
     ) -> anyhow::Result<()> {
         let manager = CatalogManager::new_in_memory().await?;
         let catalog = manager.catalog();
@@ -1515,14 +1525,14 @@ mod tests {
             &identifier,
             &SCHEMA_DEFINITIONS,
             schemas_map,
-            current_version,
+            target_version,
         )
         .await?;
 
         let table = load_table(&catalog, &identifier).await?;
         assert_eq!(
             table.metadata().properties.get(SCHEMA_VERSION_PROPERTY),
-            Some(&current_version.to_string())
+            Some(&target_version.to_string())
         );
         let current = table.current_schema()?;
         let added = field(current, "resource_identity").expect("resource_identity added");
@@ -1537,7 +1547,7 @@ mod tests {
         assert_v1_table_evolves_in_resource_identity(
             &SCHEMA_DEFINITIONS.metrics_gauge,
             "metrics_gauge_v1",
-            &SCHEMA_DEFINITIONS.metadata.current_metric_version,
+            "physical-v2",
         )
         .await
     }
@@ -1548,7 +1558,7 @@ mod tests {
         assert_v1_table_evolves_in_resource_identity(
             &SCHEMA_DEFINITIONS.profiles,
             "profiles_v1",
-            &SCHEMA_DEFINITIONS.metadata.current_profile_version,
+            "physical-v2",
         )
         .await
     }

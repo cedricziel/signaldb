@@ -3,10 +3,10 @@
 
 [metadata]
 description = "SignalDB built-in table schemas"
-current_trace_version = "physical-v4"
-current_log_version = "physical-v3"
-current_metric_version = "physical-v2"
-current_profile_version = "physical-v2"
+current_trace_version = "physical-v5"
+current_log_version = "physical-v4"
+current_metric_version = "physical-v3"
+current_profile_version = "physical-v3"
 logical_schema_version = "otel-2026-08"
 
 # ==============================================================================
@@ -75,7 +75,7 @@ field_additions = [
 ]
 
 [traces.physical-v5]
-description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (span/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>. Not current: tables move to this layout by recreation (one-shot cutover), never by evolving a live table."
+description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (span/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>."
 inherits = "physical-v4"
 field_removals = [
     { name = "span_attributes" },
@@ -132,7 +132,7 @@ field_additions = [
 ]
 
 [logs.physical-v4]
-description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (log/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>. Not current: tables move to this layout by recreation (one-shot cutover), never by evolving a live table."
+description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (log/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>."
 inherits = "physical-v3"
 field_removals = [
     { name = "log_attributes" },
@@ -182,7 +182,7 @@ field_additions = [
 ]
 
 [metrics_gauge.physical-v3]
-description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (record/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>. Not current: tables move to this layout by recreation (one-shot cutover), never by evolving a live table."
+description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (record/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>."
 inherits = "physical-v2"
 field_removals = [
     { name = "attributes" },
@@ -230,7 +230,7 @@ field_additions = [
 ]
 
 [metrics_sum.physical-v3]
-description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (record/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>. Not current: tables move to this layout by recreation (one-shot cutover), never by evolving a live table."
+description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (record/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>."
 inherits = "physical-v2"
 field_removals = [
     { name = "attributes" },
@@ -282,7 +282,7 @@ field_additions = [
 ]
 
 [metrics_histogram.physical-v3]
-description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (record/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>. Not current: tables move to this layout by recreation (one-shot cutover), never by evolving a live table."
+description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (record/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>."
 inherits = "physical-v2"
 field_removals = [
     { name = "attributes" },
@@ -339,7 +339,7 @@ field_additions = [
 ]
 
 [metrics_exponential_histogram.physical-v3]
-description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (record/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>. Not current: tables move to this layout by recreation (one-shot cutover), never by evolving a live table."
+description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (record/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>."
 inherits = "physical-v2"
 field_removals = [
     { name = "attributes" },
@@ -387,7 +387,7 @@ field_additions = [
 ]
 
 [metrics_summary.physical-v3]
-description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (record/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>. Not current: tables move to this layout by recreation (one-shot cutover), never by evolving a live table."
+description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (record/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>."
 inherits = "physical-v2"
 field_removals = [
     { name = "attributes" },
@@ -436,7 +436,7 @@ field_additions = [
 ]
 
 [profiles.physical-v3]
-description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (profile/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>. Not current: tables move to this layout by recreation (one-shot cutover), never by evolving a live table."
+description = "Typed attribute layout (otel-native-schema layer 4): each attribute container (profile/resource/scope) becomes five columns (one typed map per canonical type plus a binary residue) instead of one map<string,string>."
 inherits = "physical-v2"
 field_removals = [
     { name = "profile_attributes" },
