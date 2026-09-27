@@ -7,6 +7,8 @@
 // Not consumed until the prefilter (and later a `TableProvider`) wires it in.
 #![allow(unused_imports)]
 
+mod prefilter;
 mod probe;
 
+pub(crate) use prefilter::{KeptFile, PrefilterOutcome, WarmIndexGate, prefilter_files};
 pub(crate) use probe::{ProbeClause, probe_clauses};
