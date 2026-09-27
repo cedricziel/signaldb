@@ -1,5 +1,5 @@
 // Registry of which open forms currently hold unsaved input, so the PWA
-// update flow (pwa.ts, features/shell/UpdateBanner.tsx, App.tsx) never
+// update flow (pwa.ts, components/UpdateBanner.tsx, App.tsx) never
 // reloads out from under a half-typed API-key form, a pending consent
 // selection, an origin chip list, or a registry edit. A form registers under
 // a stable id via `useDirtyForm`; nothing here knows about any particular

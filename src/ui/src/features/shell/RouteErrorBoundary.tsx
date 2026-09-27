@@ -12,9 +12,9 @@
 // on the UpdateBanner: a crashed page has no form to protect.
 import { useEffect } from "react";
 import { isRouteErrorResponse, useLocation, useRouteError } from "react-router";
+import { useUpdateAvailable } from "../../components/UpdateBanner";
 import { applyPendingUpdate, checkForUpdateNow } from "../../lib/pwaUpdate";
 import { recordRenderError } from "../../telemetry/renderErrors";
-import { useUpdateAvailable } from "./UpdateBanner";
 import "./RouteErrorBoundary.css";
 
 function describeError(error: unknown): { title: string; detail: string } {

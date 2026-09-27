@@ -41,7 +41,7 @@ export function schedulePeriodicUpdateCheck(
 // edit (see lib/dirtyForms.ts). `pwa.ts`'s `onNeedRefresh` calls
 // `setUpdateAvailable` with the SDK's `updateSW` callback; from there the
 // update is applied either by the visitor clicking Reload on
-// `features/shell/UpdateBanner.tsx`, or automatically on the next route
+// `components/UpdateBanner.tsx`, or automatically on the next route
 // change once no form is dirty (`App.tsx` calls `maybeAutoApplyUpdate`).
 
 /** The virtual `pwa-register` module's `updateSW`: activates the waiting

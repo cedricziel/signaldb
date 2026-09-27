@@ -10,7 +10,7 @@ import {
   applyPendingUpdate,
   getUpdateState,
   subscribeUpdateState,
-} from "../../lib/pwaUpdate";
+} from "../lib/pwaUpdate";
 import "./UpdateBanner.css";
 
 export function useUpdateAvailable(): boolean {

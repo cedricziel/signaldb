@@ -3,7 +3,7 @@
 // not the error page a crash swaps in for the whole shell.
 import type { ComponentProps } from "react";
 import { RouterProvider } from "react-router";
-import { UpdateBanner } from "./features/shell/UpdateBanner";
+import { UpdateBanner } from "./components/UpdateBanner";
 
 export function AppRoot({
   router,
