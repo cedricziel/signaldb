@@ -7,6 +7,8 @@ export interface PaletteItem {
   meta: string;
   /** In-app path (with search) the row navigates to. */
   href: string;
+  /** Pages only: the nav group it sits under in the sidebar. */
+  group?: string;
 }
 
 export interface PaletteGroup {
@@ -34,8 +36,8 @@ export function buildPaletteGroups(
   const q = query.trim();
   if (q === "") {
     return nonEmpty([
+      ...groupPages(sources.pages),
       { title: "Recent queries", items: sources.recent.slice(0, 3) },
-      { title: "Pages", items: sources.pages.slice(0, 6) },
       { title: "Actions", items: sources.actions.slice(0, 3) },
     ]);
   }
@@ -65,6 +67,16 @@ export function buildPaletteGroups(
     { title: "Recent queries", items: match(sources.recent, 3) },
     { title: "Actions", items: match(sources.actions, 4) },
   ]);
+}
+
+/** Pages split by their nav group, in first-seen order — the sidebar's. */
+function groupPages(pages: PaletteItem[]): PaletteGroup[] {
+  const groups = new Map<string, PaletteItem[]>();
+  for (const p of pages) {
+    const title = p.group ?? "Pages";
+    groups.set(title, [...(groups.get(title) ?? []), p]);
+  }
+  return [...groups].map(([title, items]) => ({ title, items }));
 }
 
 function nonEmpty(groups: PaletteGroup[]): PaletteGroup[] {

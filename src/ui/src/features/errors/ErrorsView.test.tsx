@@ -2,6 +2,7 @@ import { useState } from "react";
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter } from "react-router";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { ErrorsView } from "./ErrorsView";
@@ -88,7 +89,11 @@ function renderView(
     };
     return <ErrorsView state={state} update={update} />;
   }
-  renderWithClient(<Harness />);
+  renderWithClient(
+    <MemoryRouter>
+      <Harness />
+    </MemoryRouter>,
+  );
 }
 
 describe("ErrorsView", () => {
@@ -141,6 +146,26 @@ describe("ErrorsView", () => {
       name: /View trace/,
     });
     expect(links).toHaveLength(2);
+  });
+
+  it("titles the page Errors", async () => {
+    renderView();
+    expect(await screen.findByText("Errors")).toHaveClass("catalog-title");
+    expect(screen.queryByText(/Exceptions/)).not.toBeInTheDocument();
+  });
+
+  it("links a selected group's service to its catalog entry", async () => {
+    fetchErrorGroups.mockResolvedValue({
+      groups: [group({ serviceName: "checkout" })],
+      truncated: false,
+    });
+    renderView({ tenant: "acme", dataset: "prod" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("std::io::Error"));
+    const link = await screen.findByRole("link", { name: "checkout" });
+    expect(link.getAttribute("href")).toMatch(
+      /^\/catalog\/service\/checkout\?.*tenant=acme/,
+    );
   });
 
   it("selects a group via keyboard (focus + Enter on its type button)", async () => {

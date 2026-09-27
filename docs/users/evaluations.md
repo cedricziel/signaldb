@@ -129,7 +129,8 @@ toxicity) — the case page shows each result on the span it scored.
   the candidate skipped as _expected, not called_ rows, the user input and
   answer (from `gen_ai.input.messages` / `gen_ai.output.messages` when
   recorded), and one card per evaluator with its explanation. Switch
-  between candidate, baseline and side by side.
+  between candidate, baseline and side by side. The breadcrumb reads
+  "Evaluate / Compare / _case id_", its Compare crumb leading back.
 - **Evaluators** (`/evals/evaluators`) — every evaluator that sent a
   result, with the implementation versions seen, the span type it scores,
   its output kind, and whether it ran offline, in production or both.

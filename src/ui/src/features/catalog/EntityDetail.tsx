@@ -52,6 +52,7 @@ import { OperationsTable } from "./OperationsTable";
 import { Observed } from "./red";
 import type { EntityTypeDef } from "./entityTypes";
 import "./catalog.css";
+import { useBreadcrumbLeaf } from "../shell/breadcrumbLeaf";
 
 interface Props {
   /**
@@ -117,6 +118,7 @@ export function EntityDetail({ entity, range, state, update }: Props) {
   const rangeKey = rangeScopeKey(state);
   const rangeSeconds = catalogRangeSeconds(range);
 
+  useBreadcrumbLeaf(groupLabel(state.catalogPrimary));
   const primaryValues = parseCompositeKey(
     state.catalogPrimary,
     entity.identity,
