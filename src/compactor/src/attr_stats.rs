@@ -264,22 +264,28 @@ pub async fn persist_stats(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use datafusion::arrow::array::StringArray;
-    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use datafusion::arrow::datatypes::Schema;
     use std::sync::Arc;
 
-    /// Build a batch whose single `log_attributes` column holds one JSON
-    /// document per row.
+    /// Build a typed-layout `log_attributes` batch, one row per JSON
+    /// document string (all object-shaped in these tests).
     fn attr_batch(docs: &[&str]) -> RecordBatch {
-        let schema = Arc::new(Schema::new(vec![Field::new(
+        let rows: Vec<Option<serde_json::Map<String, serde_json::Value>>> = docs
+            .iter()
+            .map(
+                |d| match serde_json::from_str(d).expect("valid JSON fixture") {
+                    serde_json::Value::Object(map) => Some(map),
+                    other => panic!("expected a JSON object fixture, got {other}"),
+                },
+            )
+            .collect();
+        let (fields, arrays) = common::testing::typed_attribute_columns_from(
+            "logs",
+            "physical-v4",
             "log_attributes",
-            DataType::Utf8,
-            true,
-        )]));
-        let column = datafusion::arrow::array::StringArray::from(
-            docs.iter().map(|d| Some(*d)).collect::<Vec<_>>(),
+            &rows,
         );
-        RecordBatch::try_new(schema, vec![Arc::new(column)]).unwrap()
+        RecordBatch::try_new(Arc::new(Schema::new(fields.to_vec())), arrays.to_vec()).unwrap()
     }
 
     #[test]
@@ -359,24 +365,14 @@ mod tests {
 
     #[test]
     fn analyzer_computes_presence_and_cardinality_and_ranks_candidates() {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "log_attributes",
-            DataType::Utf8,
-            true,
-        )]));
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![Arc::new(StringArray::from(vec![
-                Some(r#"{"namespace":"prod","pod":"a"}"#),
-                Some(r#"{"namespace":"prod","pod":"b"}"#),
-                Some(r#"{"namespace":"staging"}"#),
-                None,
-            ]))],
-        )
-        .unwrap();
+        let batch = attr_batch(&[
+            r#"{"namespace":"prod","pod":"a"}"#,
+            r#"{"namespace":"prod","pod":"b"}"#,
+            r#"{"namespace":"staging"}"#,
+        ]);
 
         let (stats, total) = analyze_batches(&[batch]);
-        assert_eq!(total, 4);
+        assert_eq!(total, 3);
         let ns = &stats["namespace"];
         assert_eq!(ns.present_rows, 3);
         assert_eq!(ns.distinct, 2);
@@ -385,46 +381,30 @@ mod tests {
         assert_eq!(stats["pod"].distinct, 2);
     }
 
-    /// A typed-layout container (four typed maps + CBOR residue) must feed
-    /// the same per-key stats as the equivalent legacy JSON container —
-    /// across a string key, an int key, and a residue (array) key.
+    /// A typed-layout container (four typed maps + CBOR residue) feeds
+    /// per-key stats across a string key, an int key, and a residue (array)
+    /// key.
     #[test]
-    fn stats_see_the_same_keys_over_a_typed_batch_as_over_the_equivalent_legacy_batch() {
+    fn stats_see_every_key_over_a_typed_batch() {
         let row = serde_json::Map::from_iter([
             ("namespace".to_string(), serde_json::json!("prod")),
             ("retries".to_string(), serde_json::json!(3)),
             ("tags".to_string(), serde_json::json!(["a", "b"])),
         ]);
-        let legacy_schema = Arc::new(Schema::new(vec![Field::new(
-            "span_attributes",
-            DataType::Utf8,
-            true,
-        )]));
-        let legacy_batch = RecordBatch::try_new(
-            legacy_schema,
-            vec![Arc::new(StringArray::from(vec![Some(
-                serde_json::Value::Object(row.clone()).to_string(),
-            )]))],
-        )
-        .unwrap();
-
         let (fields, arrays) =
             common::testing::typed_attribute_columns("span_attributes", &[Some(row)]);
-        let typed_schema = Arc::new(Schema::new(fields.to_vec()));
-        let typed_batch = RecordBatch::try_new(typed_schema, arrays.to_vec()).unwrap();
+        let schema = Arc::new(Schema::new(fields.to_vec()));
+        let batch = RecordBatch::try_new(schema, arrays.to_vec()).unwrap();
 
-        let (legacy_stats, legacy_total) = analyze_batches(&[legacy_batch]);
-        let (typed_stats, typed_total) = analyze_batches(&[typed_batch]);
-
-        assert_eq!(typed_total, legacy_total);
+        let (stats, total) = analyze_batches(&[batch]);
+        assert_eq!(total, 1);
         assert_eq!(
-            typed_stats.keys().collect::<Vec<_>>(),
-            legacy_stats.keys().collect::<Vec<_>>()
+            stats.keys().collect::<Vec<_>>(),
+            vec!["namespace", "retries", "tags"]
         );
-        for (key, expected) in &legacy_stats {
-            let actual = &typed_stats[key];
-            assert_eq!(actual.present_rows, expected.present_rows, "key {key}");
-            assert_eq!(actual.distinct, expected.distinct, "key {key}");
+        for key in ["namespace", "retries", "tags"] {
+            assert_eq!(stats[key].present_rows, 1, "key {key}");
+            assert_eq!(stats[key].distinct, 1, "key {key}");
         }
     }
 
@@ -433,28 +413,25 @@ mod tests {
     /// change which attributes get promoted.
     #[test]
     fn accumulating_batch_by_batch_matches_analyzing_them_together() {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "log_attributes",
-            DataType::Utf8,
-            true,
-        )]));
-        let make = |rows: Vec<Option<&str>>| {
-            RecordBatch::try_new(
-                schema.clone(),
-                vec![Arc::new(StringArray::from(
-                    rows.into_iter()
-                        .map(|r| r.map(|s| s.to_string()))
-                        .collect::<Vec<_>>(),
-                ))],
-            )
-            .unwrap()
+        let json_row = |s: &str| match serde_json::from_str(s).expect("valid JSON fixture") {
+            serde_json::Value::Object(map) => Some(map),
+            other => panic!("expected a JSON object fixture, got {other}"),
+        };
+        let make = |rows: Vec<Option<serde_json::Map<String, serde_json::Value>>>| {
+            let (fields, arrays) = common::testing::typed_attribute_columns_from(
+                "logs",
+                "physical-v4",
+                "log_attributes",
+                &rows,
+            );
+            RecordBatch::try_new(Arc::new(Schema::new(fields.to_vec())), arrays.to_vec()).unwrap()
         };
 
         let first = make(vec![
-            Some(r#"{"namespace":"prod","pod":"a"}"#),
-            Some(r#"{"namespace":"prod","pod":"b"}"#),
+            json_row(r#"{"namespace":"prod","pod":"a"}"#),
+            json_row(r#"{"namespace":"prod","pod":"b"}"#),
         ]);
-        let second = make(vec![Some(r#"{"namespace":"staging"}"#), None]);
+        let second = make(vec![json_row(r#"{"namespace":"staging"}"#), None]);
 
         let (batched, batched_rows) = analyze_batches(&[first.clone(), second.clone()]);
 
@@ -475,18 +452,7 @@ mod tests {
 
     #[test]
     fn log_promotion_candidates_does_not_panic_on_real_or_empty_stats() {
-        let schema = Arc::new(Schema::new(vec![Field::new(
-            "log_attributes",
-            DataType::Utf8,
-            true,
-        )]));
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![Arc::new(StringArray::from(vec![Some(
-                r#"{"namespace":"prod"}"#,
-            )]))],
-        )
-        .unwrap();
+        let batch = attr_batch(&[r#"{"namespace":"prod"}"#]);
         let (stats, total) = analyze_batches(&[batch]);
 
         log_promotion_candidates("logs", &stats, total);

@@ -667,7 +667,6 @@ fn batches_to_streams(batches: &[RecordBatch]) -> Vec<Stream> {
         // rather than failing the query.
         let attrs: Vec<Vec<Option<common::attrs::AttrDocument>>> = ATTR_CONTAINERS
             .iter()
-            .filter(|name| batch.column_by_name(name).is_some())
             .filter_map(|name| match common::attrs::attr_documents(batch, name) {
                 Ok(docs) => Some(docs),
                 Err(error) => {
@@ -944,8 +943,7 @@ mod tests {
             parse_timestamp_ns, series_from_batches, string_column,
         };
         use datafusion::arrow::array::{
-            ArrayRef, Float64Array, MapBuilder, RecordBatch, StringArray, StringBuilder,
-            TimestampNanosecondArray,
+            ArrayRef, Float64Array, RecordBatch, StringArray, TimestampNanosecondArray,
         };
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use std::sync::Arc;
@@ -1056,9 +1054,8 @@ mod tests {
             );
         }
 
-        /// Build a logs batch carrying attribute containers, in whichever
-        /// storage form the caller asks for.
-        fn batch_with_attrs(map_typed: bool) -> RecordBatch {
+        /// Build a typed-layout logs batch carrying attribute containers.
+        fn batch_with_attrs() -> RecordBatch {
             let mut fields = vec![
                 Field::new(
                     "timestamp",
@@ -1078,45 +1075,34 @@ mod tests {
                 Arc::new(StringArray::from(vec![Some("trace-1"), None])),
             ];
 
-            let log_rows = vec![
-                vec![("http.method", "GET"), ("user.id", "u-1")],
-                vec![("http.method", "POST")],
+            let json_row = |pairs: &[(&str, &str)]| {
+                Some(serde_json::Map::from_iter(
+                    pairs
+                        .iter()
+                        .map(|(k, v)| ((*k).to_string(), serde_json::json!(v))),
+                ))
+            };
+            let log_rows = [
+                json_row(&[("http.method", "GET"), ("user.id", "u-1")]),
+                json_row(&[("http.method", "POST")]),
             ];
-            let resource_rows = vec![
-                vec![("deployment.environment", "prod")],
-                vec![("deployment.environment", "prod")],
+            let resource_rows = [
+                json_row(&[("deployment.environment", "prod")]),
+                json_row(&[("deployment.environment", "prod")]),
             ];
 
             for (name, rows) in [
-                ("log_attributes", log_rows),
-                ("resource_attributes", resource_rows),
+                ("log_attributes", &log_rows),
+                ("resource_attributes", &resource_rows),
             ] {
-                let array: ArrayRef = if map_typed {
-                    let mut builder =
-                        MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
-                    for pairs in &rows {
-                        for (k, v) in pairs {
-                            builder.keys().append_value(*k);
-                            builder.values().append_value(*v);
-                        }
-                        builder.append(true).unwrap();
-                    }
-                    Arc::new(builder.finish())
-                } else {
-                    let json: Vec<String> = rows
-                        .iter()
-                        .map(|pairs| {
-                            let obj: serde_json::Map<String, serde_json::Value> = pairs
-                                .iter()
-                                .map(|(k, v)| ((*k).to_string(), serde_json::json!(v)))
-                                .collect();
-                            serde_json::Value::Object(obj).to_string()
-                        })
-                        .collect();
-                    Arc::new(StringArray::from(json))
-                };
-                fields.push(Field::new(name, array.data_type().clone(), true));
-                columns.push(array);
+                let (typed_fields, typed_arrays) = common::testing::typed_attribute_columns_from(
+                    "logs",
+                    "physical-v4",
+                    name,
+                    rows,
+                );
+                fields.extend(typed_fields);
+                columns.extend(typed_arrays);
             }
 
             RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
@@ -1132,32 +1118,30 @@ mod tests {
         /// distinct attribute combination into its own stream.
         #[test]
         fn log_and_resource_attributes_become_structured_metadata() {
-            for map_typed in [true, false] {
-                let streams = batches_to_streams(&[batch_with_attrs(map_typed)]);
-                assert_eq!(
-                    streams.len(),
-                    1,
-                    "attributes must not fragment the label set (map_typed={map_typed})"
-                );
-                let stream = &streams[0];
-                assert!(
-                    !stream.stream.contains_key("http.method"),
-                    "an attribute must not become a stream label"
-                );
+            let streams = batches_to_streams(&[batch_with_attrs()]);
+            assert_eq!(
+                streams.len(),
+                1,
+                "attributes must not fragment the label set"
+            );
+            let stream = &streams[0];
+            assert!(
+                !stream.stream.contains_key("http.method"),
+                "an attribute must not become a stream label"
+            );
 
-                let first = &stream.values[0];
-                assert_eq!(first.metadata["http.method"], "GET");
-                assert_eq!(first.metadata["user.id"], "u-1");
-                assert_eq!(first.metadata["deployment.environment"], "prod");
-                assert_eq!(first.metadata["trace_id"], "trace-1");
+            let first = &stream.values[0];
+            assert_eq!(first.metadata["http.method"], "GET");
+            assert_eq!(first.metadata["user.id"], "u-1");
+            assert_eq!(first.metadata["deployment.environment"], "prod");
+            assert_eq!(first.metadata["trace_id"], "trace-1");
 
-                // Per-row, not per-stream: the second line has its own value
-                // and does not inherit the first line's `user.id`.
-                let second = &stream.values[1];
-                assert_eq!(second.metadata["http.method"], "POST");
-                assert!(!second.metadata.contains_key("user.id"));
-                assert!(!second.metadata.contains_key("trace_id"));
-            }
+            // Per-row, not per-stream: the second line has its own value
+            // and does not inherit the first line's `user.id`.
+            let second = &stream.values[1];
+            assert_eq!(second.metadata["http.method"], "POST");
+            assert!(!second.metadata.contains_key("user.id"));
+            assert!(!second.metadata.contains_key("trace_id"));
         }
 
         /// `trace_id`/`span_id` are read from their own columns, so an
@@ -1165,7 +1149,7 @@ mod tests {
         /// the UI's trace link follows that key.
         #[test]
         fn column_trace_id_wins_over_a_same_named_attribute() {
-            let schema = Arc::new(Schema::new(vec![
+            let mut fields = vec![
                 Field::new(
                     "timestamp",
                     DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -1173,18 +1157,25 @@ mod tests {
                 ),
                 Field::new("body", DataType::Utf8, true),
                 Field::new("trace_id", DataType::Utf8, true),
-                Field::new("log_attributes", DataType::Utf8, true),
-            ]));
-            let batch = RecordBatch::try_new(
-                schema,
-                vec![
-                    Arc::new(TimestampNanosecondArray::from(vec![100])),
-                    Arc::new(StringArray::from(vec!["a"])),
-                    Arc::new(StringArray::from(vec![Some("from-column")])),
-                    Arc::new(StringArray::from(vec![Some(r#"{"trace_id":"from-attr"}"#)])),
-                ],
-            )
-            .unwrap();
+            ];
+            let mut columns: Vec<ArrayRef> = vec![
+                Arc::new(TimestampNanosecondArray::from(vec![100])),
+                Arc::new(StringArray::from(vec!["a"])),
+                Arc::new(StringArray::from(vec![Some("from-column")])),
+            ];
+            let rows = [Some(serde_json::Map::from_iter([(
+                "trace_id".to_string(),
+                serde_json::json!("from-attr"),
+            )]))];
+            let (typed_fields, typed_arrays) = common::testing::typed_attribute_columns_from(
+                "logs",
+                "physical-v4",
+                "log_attributes",
+                &rows,
+            );
+            fields.extend(typed_fields);
+            columns.extend(typed_arrays);
+            let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
 
             let streams = batches_to_streams(&[batch]);
             assert_eq!(streams[0].values[0].metadata["trace_id"], "from-column");
