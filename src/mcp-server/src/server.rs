@@ -151,6 +151,7 @@ use crate::audit::{
 use crate::docs;
 use crate::prompts;
 use crate::sdk_client_for;
+use crate::trace_view;
 use crate::ui_links;
 
 /// The SignalDB MCP server handler. One instance is created per session by the
@@ -227,9 +228,11 @@ struct GetTraceParams {
     /// Trace ID to fetch.
     trace_id: String,
     /// Optional start-of-range hint, unix seconds, to prune the scan.
+    /// Defaults to 30 days before now.
     #[serde(default)]
     start: Option<i64>,
     /// Optional end-of-range hint, unix seconds, to prune the scan.
+    /// Defaults to now.
     #[serde(default)]
     end: Option<i64>,
     /// Tenant to query — must match the credential's authenticated tenant
@@ -2018,7 +2021,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Fetch a single trace by its ID, scoped to your tenant. Optional `start`/`end` (unix seconds) hints prune the scan. Returns a not-found error when the trace does not exist."
+        description = "Fetch a single trace by its ID, scoped to your tenant, over the native Query IR. Optional `start`/`end` (unix seconds) hints prune the scan; the range defaults to the last 30 days when omitted, since a trace opened by pasting its ID may be much older than a short default window. Each span carries its span kind. When the trace's actual root span hasn't been stored yet (still in flight, or lost), the root falls back to the earliest orphan span rather than reporting \"unknown\". Returns a not-found error when the trace does not exist."
     )]
     async fn get_trace(
         &self,
@@ -2034,29 +2037,24 @@ impl McpServer {
             &p.dataset,
             &p.trace_id,
         ));
-        let mut req = client.query_single_trace().trace_id(p.trace_id);
-        if let Some(v) = p.start {
-            req = req.start(v);
-        }
-        if let Some(v) = p.end {
-            req = req.end(v);
-        }
-        let resp = req.send().await.map_err(|e| map_sdk_err(e, "get_trace"))?;
-        let trace = resp.into_inner();
-        // Adds a `services` summary (nodes with time-in-service, edges with
-        // call counts, failures marked) alongside the trace's own fields —
-        // see `trace_services_summary`. The waterfall app renders from
-        // `structuredContent`, which the host forwards to the iframe without
-        // adding it to the model's context; it is attached only for
-        // UI-capable clients so a plain client is not sent the same trace
-        // twice.
-        let mut payload = serde_json::to_value(&trace).map_err(|e| {
-            ErrorData::internal_error(format!("failed to serialize trace: {e}"), None)
-        })?;
-        if let Some(object) = payload.as_object_mut() {
-            object.insert("services".to_string(), trace_services_summary(&trace));
-        }
-        json_result_ext(&payload, client_supports_ui(&context), links)
+        let document = trace_view::trace_document(&p.trace_id, p.start, p.end);
+        let request: signaldb_sdk::types::QueryIrRequest = serde_json::from_value(document)
+            .map_err(|e| ErrorData::internal_error(format!("failed to build query: {e}"), None))?;
+        let resp = client
+            .query_ir()
+            .body(request)
+            .send()
+            .await
+            .map_err(|e| map_query_err(e, "get_trace"))?;
+        // The waterfall app renders from `structuredContent`, which the host
+        // forwards to the iframe without adding it to the model's context;
+        // it is attached only for UI-capable clients so a plain client is
+        // not sent the same trace twice.
+        let trace =
+            trace_view::trace_from_response(&p.trace_id, resp.into_inner()).ok_or_else(|| {
+                ErrorData::resource_not_found("get_trace: not found".to_string(), None)
+            })?;
+        json_result_ext(&trace, client_supports_ui(&context), links)
     }
 
     #[tool(
@@ -4403,7 +4401,7 @@ fn json_result_ext<T: serde::Serialize>(
 /// falling back to `default_from` (a relative `"now-<duration>"` expression)
 /// and `"now"` when a bound is absent. Shared by every tool that builds a
 /// Query IR document from an optional `start`/`end` hint.
-fn range_bounds_ns(
+pub(crate) fn range_bounds_ns(
     start: Option<i64>,
     end: Option<i64>,
     default_from: &'static str,
@@ -4541,101 +4539,6 @@ fn service_map_summary(graph: &signaldb_sdk::types::ServiceGraph) -> String {
     }
 
     lines.join("\n")
-}
-
-/// Derive `get_trace`'s `services` summary from the trace's own spans:
-/// nodes are services with total span duration and call count in this
-/// trace, edges are calls between *different* services found by walking to
-/// each span's direct parent (a span nested under its own service's parent
-/// extends the caller rather than drawing a self-edge), failed when any
-/// call or span reached error status. Mirrors
-/// `src/ui/src/lib/traceToGraph.ts`'s `traceToGraph`. Pure and synchronous.
-fn trace_services_summary(trace: &signaldb_sdk::types::Trace) -> serde_json::Value {
-    use std::collections::HashMap;
-
-    let spans: Vec<&signaldb_sdk::types::Span> = trace
-        .span_sets
-        .iter()
-        .flat_map(|span_set| span_set.spans.iter())
-        .collect();
-    if spans.is_empty() {
-        return serde_json::json!({ "nodes": [], "edges": [] });
-    }
-    let by_id: HashMap<&str, &signaldb_sdk::types::Span> = spans
-        .iter()
-        .map(|span| (span.span_id.as_str(), *span))
-        .collect();
-
-    struct NodeAcc {
-        duration_ms: f64,
-        span_count: i64,
-        failed: bool,
-    }
-    let mut nodes: HashMap<String, NodeAcc> = HashMap::new();
-    for span in &spans {
-        let service = span.service_name.clone().unwrap_or_default();
-        let duration_ns: f64 = span.duration_nanos.parse().unwrap_or(0.0);
-        let acc = nodes.entry(service).or_insert(NodeAcc {
-            duration_ms: 0.0,
-            span_count: 0,
-            failed: false,
-        });
-        acc.duration_ms += duration_ns / 1_000_000.0;
-        acc.span_count += 1;
-        if span.status.as_deref() == Some("error") {
-            acc.failed = true;
-        }
-    }
-
-    struct EdgeAcc {
-        count: i64,
-        failed: bool,
-    }
-    let mut edges: HashMap<(String, String), EdgeAcc> = HashMap::new();
-    for span in &spans {
-        let Some(parent) = span.parent_span_id.as_deref().and_then(|id| by_id.get(id)) else {
-            continue;
-        };
-        let Some(from) = parent.service_name.clone() else {
-            continue;
-        };
-        let to = span.service_name.clone().unwrap_or_default();
-        if from == to {
-            continue;
-        }
-        let acc = edges.entry((from, to)).or_insert(EdgeAcc {
-            count: 0,
-            failed: false,
-        });
-        acc.count += 1;
-        if span.status.as_deref() == Some("error") {
-            acc.failed = true;
-        }
-    }
-
-    let node_list: Vec<serde_json::Value> = nodes
-        .into_iter()
-        .map(|(service, acc)| {
-            serde_json::json!({
-                "service": service,
-                "durationMs": acc.duration_ms,
-                "spanCount": acc.span_count,
-                "failed": acc.failed,
-            })
-        })
-        .collect();
-    let edge_list: Vec<serde_json::Value> = edges
-        .into_iter()
-        .map(|((from, to), acc)| {
-            serde_json::json!({
-                "from": from,
-                "to": to,
-                "count": acc.count,
-                "failed": acc.failed,
-            })
-        })
-        .collect();
-    serde_json::json!({ "nodes": node_list, "edges": edge_list })
 }
 
 /// Build the Query IR document `search_trace_groups` submits: the same
@@ -5343,104 +5246,6 @@ mod tests {
             ],
         };
         assert!(!service_map_summary(&graph).contains("Highest-error edges"));
-    }
-
-    fn tempo_span(
-        span_id: &str,
-        parent_span_id: Option<&str>,
-        service_name: &str,
-        duration_nanos: &str,
-        status: Option<&str>,
-    ) -> serde_json::Value {
-        let mut span = serde_json::json!({
-            "spanID": span_id,
-            "serviceName": service_name,
-            "durationNanos": duration_nanos,
-            "startTimeUnixNano": "0",
-            "attributes": {},
-        });
-        if let Some(parent) = parent_span_id {
-            span["parentSpanID"] = serde_json::json!(parent);
-        }
-        if let Some(status) = status {
-            span["status"] = serde_json::json!(status);
-        }
-        span
-    }
-
-    fn trace_with_spans(spans: Vec<serde_json::Value>) -> signaldb_sdk::types::Trace {
-        serde_json::from_value(serde_json::json!({
-            "traceID": "abc",
-            "rootServiceName": "frontend",
-            "rootTraceName": "GET /",
-            "durationMs": 1,
-            "startTimeUnixNano": "0",
-            "spanSets": [{ "matched": spans.len(), "spans": spans }],
-        }))
-        .expect("trace fixture parses")
-    }
-
-    #[test]
-    fn trace_services_summary_is_empty_for_a_trace_with_no_spans() {
-        let trace = trace_with_spans(vec![]);
-        assert_eq!(
-            trace_services_summary(&trace),
-            serde_json::json!({ "nodes": [], "edges": [] })
-        );
-    }
-
-    #[test]
-    fn trace_services_summary_sums_duration_per_service_and_marks_failed_nodes() {
-        let trace = trace_with_spans(vec![
-            tempo_span("1", None, "frontend", "1000000", None),
-            tempo_span("2", Some("1"), "checkout", "2000000", Some("error")),
-        ]);
-        let summary = trace_services_summary(&trace);
-        let nodes = summary["nodes"].as_array().expect("nodes array");
-        let checkout = nodes
-            .iter()
-            .find(|n| n["service"] == "checkout")
-            .expect("checkout node present");
-        assert_eq!(checkout["durationMs"], 2.0);
-        assert_eq!(checkout["spanCount"], 1);
-        assert_eq!(checkout["failed"], true);
-        let frontend = nodes
-            .iter()
-            .find(|n| n["service"] == "frontend")
-            .expect("frontend node present");
-        assert_eq!(frontend["failed"], false);
-    }
-
-    #[test]
-    fn trace_services_summary_edges_use_the_direct_parents_service_and_mark_failed_calls() {
-        let trace = trace_with_spans(vec![
-            tempo_span("1", None, "frontend", "1000000", None),
-            tempo_span("2", Some("1"), "checkout", "1000000", Some("error")),
-        ]);
-        let summary = trace_services_summary(&trace);
-        let edges = summary["edges"].as_array().expect("edges array");
-        assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0]["from"], "frontend");
-        assert_eq!(edges[0]["to"], "checkout");
-        assert_eq!(edges[0]["count"], 1);
-        assert_eq!(edges[0]["failed"], true);
-    }
-
-    /// A span nested under a same-service parent extends the caller rather
-    /// than drawing a self-edge — mirrors `traceToGraph.ts`'s
-    /// `callerService`.
-    #[test]
-    fn trace_services_summary_skips_same_service_parent_child_edges() {
-        let trace = trace_with_spans(vec![
-            tempo_span("1", None, "checkout", "1000000", None),
-            tempo_span("2", Some("1"), "checkout", "500000", None),
-            tempo_span("3", Some("2"), "payments", "200000", None),
-        ]);
-        let summary = trace_services_summary(&trace);
-        let edges = summary["edges"].as_array().expect("edges array");
-        assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0]["from"], "checkout");
-        assert_eq!(edges[0]["to"], "payments");
     }
 
     #[test]
