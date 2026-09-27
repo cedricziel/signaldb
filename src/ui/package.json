@@ -8,14 +8,14 @@
   },
   "scripts": {
     "dev": "vite",
-    "build": "tsc --noEmit && vite build",
+    "build": "tsc --noEmit && tsc -p tsconfig.sw.json --noEmit && vite build",
     "preview": "vite preview",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage",
     "test:e2e": "playwright test",
     "test:e2e:live": "cargo build --bin signaldb --bin signaldb-cli --bin signal-producer && pnpm run build && playwright test --config=playwright.live.config.ts",
-    "typecheck": "tsc --noEmit",
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.sw.json --noEmit",
     "lint": "eslint src",
     "generate:api": "openapi-ts",
     "generate:icons": "node scripts/generate-pwa-icons.mjs",
@@ -79,6 +79,8 @@
     "@storybook/addon-mcp": "^10.6.0",
     "eslint-plugin-storybook": "^10.6.0",
     "@vitest/browser-playwright": "4.1.11",
-    "playwright": "latest"
+    "playwright": "latest",
+    "workbox-precaching": "7.4.1",
+    "workbox-routing": "7.4.1"
   }
 }

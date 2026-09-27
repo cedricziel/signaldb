@@ -205,7 +205,7 @@ Iceberg stores each column's value counts and min/max bounds inline in the **man
 - **`truncate(16)` by default.** Bounds are shortened to 16 characters rather than stored at full length. A lower bound truncates to a prefix; an upper bound truncates and is then incremented so it still covers every value it bounds — and is dropped outright if it cannot be incremented, since an understated upper bound would prune files that hold matching rows. This is the Iceberg default and needs no property; iceberg-rust previously stored untruncated bounds for every column.
 - **`counts` for free-text columns.** `body`, `status_message` and `exemplars` get `write.metadata.metrics.column.<col> = "counts"` at table creation (`common::schema::metrics_properties_for_free_text_columns`): counts are kept for the planner's cardinality estimates, bounds are dropped. No query compares these columns by range — `body` and `status_message` are matched by substring or regex, `exemplars` is a JSON blob read whole — so their bounds could never prune anything.
 
-Attribute columns (`resource_attributes`, `scope_attributes`, `attributes`) are `map<string,string>`, and `attr_tokens` is a list, so neither carries bounds regardless. `trace_id`/`span_id` keep the truncated default; their bounds effectively never prune (a file's random-id range spans nearly the whole space) but the Parquet bloom filters described below do that work.
+Attribute columns (`resource_attributes`, `scope_attributes`, `attributes`) are `map<string,string>`, so they carry no bounds regardless. `trace_id`/`span_id` keep the truncated default; their bounds effectively never prune (a file's random-id range spans nearly the whole space) but the Parquet bloom filters described below do that work.
 
 Honored by [JanKaul/iceberg-rust#385](https://github.com/JanKaul/iceberg-rust/pull/385).
 
@@ -676,8 +676,6 @@ columns:
   lookups on traces; logs-for-a-trace correlation on logs, where the columns
   are optional but named identically). Set via
   `common::schema::bloom_filter_properties_for_trace_columns`.
-- **logs** — additionally the derived `attr_tokens` list leaf (`key=value`
-  containment).
 - **all signals** — every materialized `label_<key>` column, read back from
   the table's already-built schema by which fields carry a materialized-label
   `doc` (`bloom_filter_properties_for_labels`), not independently re-resolved

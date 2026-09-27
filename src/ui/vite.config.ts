@@ -63,6 +63,22 @@ export default defineConfig(({ mode }) => {
         // long-lived tab may never navigate again to trigger the browser's
         // own check.
         registerType: "prompt",
+        // The generated SW (generateSW) has no way to let a same-origin
+        // navigation through to the network while still returning a
+        // redirect response as-is: `networkTimeoutSeconds` only applies to
+        // NetworkFirst, which caches opaqueredirect responses, and its
+        // urlPattern is stringified into the SW so it can't share
+        // PROXIED_PATHS. injectManifest hands full control to src/sw.ts
+        // instead; see src/sw/navigation.ts for the navigation strategy.
+        strategies: "injectManifest",
+        srcDir: "src",
+        filename: "sw.ts",
+        injectManifest: {
+          // Only the app shell needs to be installable offline; the icons
+          // are fetched by the browser itself when it installs the app
+          // (see includeAssets below for the one exception).
+          globPatterns: ["**/*.{js,css,html}"],
+        },
         // The install-only PNG icons aren't worth precaching for every
         // visitor; the browser fetches them itself if/when it installs the
         // app. Only the favicon (tiny) is added for an offline app shell.
@@ -95,17 +111,6 @@ export default defineConfig(({ mode }) => {
               purpose: "maskable",
             },
           ],
-        },
-        workbox: {
-          // Only the app shell needs to be installable offline; the icons
-          // are fetched by the browser itself when it installs the app
-          // (see includeAssets above for the one exception).
-          globPatterns: ["**/*.{js,css,html}"],
-          // See proxiedPaths.ts: these are the backend's own routes, which
-          // the SW's SPA navigate fallback must never intercept.
-          navigateFallbackDenylist: PROXIED_PATHS.map(
-            (path) => new RegExp(proxyKey(path)),
-          ),
         },
       }),
     ],
@@ -165,6 +170,11 @@ export default defineConfig(({ mode }) => {
           // logic it wires up is tested directly in
           // src/lib/pwaUpdate.test.ts.
           "src/pwa.ts",
+          // Only resolves as a service worker (imports workbox modules that
+          // assume a ServiceWorkerGlobalScope) — never runs under vitest.
+          // Its navigation strategy is tested directly in
+          // src/sw/navigation.test.ts.
+          "src/sw.ts",
         ],
         thresholds: {
           lines: 80,

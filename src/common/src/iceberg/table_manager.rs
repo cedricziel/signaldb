@@ -570,9 +570,8 @@ impl IcebergTableManager {
             .collect();
 
         // Enable a Parquet bloom filter for every materialized label column,
-        // plus (for logs) the derived `attr_tokens` column and (for traces
-        // and logs) the `trace_id`/`span_id` point-lookup columns. The
-        // pinned iceberg-rust Parquet writer reads these standard Iceberg
+        // plus (for traces and logs) the `trace_id`/`span_id` point-lookup
+        // columns. The pinned iceberg-rust Parquet writer reads these standard Iceberg
         // properties from the table metadata on every write. Read back from
         // `schema` itself (built just above) rather than independently
         // re-resolved from `labels`, so the two can never target different

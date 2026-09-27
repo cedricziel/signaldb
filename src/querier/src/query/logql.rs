@@ -72,16 +72,14 @@ pub type MaterializedColumns = HashSet<String>;
 
 /// What the target table offers for attribute matching: which materialized
 /// `label_<key>` columns exist, whether the attribute columns are typed
-/// maps (new tables) or JSON strings (legacy tables), whether the derived
-/// `attr_tokens` column exists for bloom-backed containment checks, and the
-/// scanned schema (for `map_attrs` tables only) so a key's extraction can
-/// route through the typed-attribute layout's `coalesce` when the table has
-/// been rewritten onto it (see `common::attrs::expr::compat_attr_expr`).
+/// maps (new tables) or JSON strings (legacy tables), and the scanned
+/// schema (for `map_attrs` tables only) so a key's extraction can route
+/// through the typed-attribute layout's `coalesce` when the table has been
+/// rewritten onto it (see `common::attrs::expr::compat_attr_expr`).
 #[derive(Debug, Default, Clone)]
 pub struct AttrContext {
     pub materialized: MaterializedColumns,
     pub map_attrs: bool,
-    pub attr_tokens: bool,
     pub schema: Option<SchemaRef>,
 }
 
@@ -212,23 +210,11 @@ fn label_expr(
     if common::schema::is_materialized_and_unambiguous(&materialized, &ctx.materialized) {
         return materialized_label_expr(&materialized, op, value);
     }
-    let base = if ctx.map_attrs {
-        map_attribute_expr(name, op, value, ctx.schema.as_deref())?
+    if ctx.map_attrs {
+        map_attribute_expr(name, op, value, ctx.schema.as_deref())
     } else {
-        attribute_expr(name, op, value)?
-    };
-    // Tables with the derived `attr_tokens` column get an extra exact
-    // containment conjunct on equality filters: it never changes the
-    // result (tokens are a superset of the attribute-column contents) but
-    // gives the Parquet layer a bloom-filtered column to prune with.
-    if ctx.attr_tokens && matches!(op, FilterOp::Eq | FilterOp::CmpEq) {
-        let token = format!("{name}={}", string_value(value)?);
-        return Ok(base.and(datafusion::functions_nested::expr_fn::array_has(
-            col(common::schema::ATTR_TOKENS_COLUMN),
-            lit(token),
-        )));
+        attribute_expr(name, op, value)
     }
-    Ok(base)
 }
 
 /// Predicate against typed attribute columns: the value is extracted per
@@ -470,21 +456,6 @@ mod tests {
         format!("{expr}")
     }
 
-    /// Lower against a table that has the derived `attr_tokens` column.
-    fn sql_tokens(query: &str, map_attrs: bool) -> String {
-        let q = parse_query(query).expect("parse");
-        let ctx = AttrContext {
-            materialized: MaterializedColumns::new(),
-            map_attrs,
-            attr_tokens: true,
-            ..Default::default()
-        };
-        let expr = log_query_filter_with_columns(&q, &ctx)
-            .expect("lower")
-            .expect("some filter");
-        format!("{expr}")
-    }
-
     #[test]
     fn map_attribute_tables_get_exact_regex_and_ordered_matching() {
         // Exact equality per key via get_field on both attribute maps.
@@ -516,62 +487,6 @@ mod tests {
             log_query_filter_with_columns(&q, &AttrContext::default()),
             Err(QuerierError::Unsupported(_))
         ));
-    }
-
-    #[test]
-    fn attr_tokens_adds_containment_conjunct_on_equality_only() {
-        // Map-typed table with attr_tokens: the map predicate keeps the
-        // exact semantics, the array_has conjunct adds bloom prunability.
-        let eq = sql_tokens(r#"{namespace="prod"}"#, true);
-        assert!(
-            eq.contains("get_field(log_attributes") && eq.contains(r#"= Utf8("prod")"#),
-            "{eq}"
-        );
-        assert!(
-            eq.contains(r#"array_has(attr_tokens, Utf8("namespace=prod"))"#),
-            "{eq}"
-        );
-
-        // Legacy JSON table with attr_tokens: substring predicate + conjunct.
-        let eq_json = sql_tokens(r#"{namespace="prod"}"#, false);
-        assert!(eq_json.contains("contains(log_attributes"), "{eq_json}");
-        assert!(
-            eq_json.contains(r#"array_has(attr_tokens, Utf8("namespace=prod"))"#),
-            "{eq_json}"
-        );
-
-        // Non-equality operators stay untouched: no token conjunct.
-        for query in [
-            r#"{namespace!="prod"}"#,
-            r#"{namespace=~"pro.*"}"#,
-            r#"{namespace!~"pro.*"}"#,
-        ] {
-            let rendered = sql_tokens(query, true);
-            assert!(!rendered.contains("array_has"), "{query} -> {rendered}");
-        }
-
-        // Well-known labels route to dedicated columns, never to tokens.
-        let svc = sql_tokens(r#"{service_name="api"}"#, true);
-        assert_eq!(svc, r#"service_name = Utf8("api")"#);
-
-        // Materialized label columns also skip the token conjunct.
-        let q = parse_query(r#"{namespace="prod"}"#).expect("parse");
-        let ctx = AttrContext {
-            materialized: ["label_namespace".to_string()].into_iter().collect(),
-            map_attrs: true,
-            attr_tokens: true,
-            ..Default::default()
-        };
-        let expr = format!(
-            "{}",
-            log_query_filter_with_columns(&q, &ctx)
-                .expect("lower")
-                .expect("some filter")
-        );
-        assert_eq!(expr, r#"label_namespace = Utf8("prod")"#);
-
-        // Tables without the column are unchanged.
-        assert!(!sql_map(r#"{namespace="prod"}"#).contains("array_has"));
     }
 
     #[test]

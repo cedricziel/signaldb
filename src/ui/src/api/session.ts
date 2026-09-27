@@ -24,6 +24,12 @@ import {
   tenantHeaders,
   unwrapSdkResult,
 } from "./http";
+import { WHOAMI_PATH, withProxyLoginRecovery } from "../lib/proxyLoginRecovery";
+
+/** `retryingFetch`, recovering from an expired reverse-proxy login the same
+ * way the generated client's transport does (see `client.ts`) — this
+ * module's three raw callers below bypass the generated client entirely. */
+const fetchWithRecovery = withProxyLoginRecovery(retryingFetch);
 
 /** `GET /ui/session/config`: which credentials the login page may offer.
  * Unauthenticated; throws `ApiError` on a non-2xx response (a 404 from an
@@ -97,7 +103,7 @@ export interface WhoamiResponse {
 export async function createSession(
   creds: SessionCredentials,
 ): Promise<SessionResult> {
-  const res = await retryingFetch("/ui/session", {
+  const res = await fetchWithRecovery("/ui/session", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
@@ -122,7 +128,7 @@ export async function createSession(
 
 /** Log out: the server clears the session cookie. */
 export async function deleteSession(): Promise<void> {
-  const res = await retryingFetch("/ui/session", { method: "DELETE" });
+  const res = await fetchWithRecovery("/ui/session", { method: "DELETE" });
   if (!res.ok) {
     throw new ApiError(
       `Logout failed (${res.status})`,
@@ -140,7 +146,7 @@ export async function whoami(tenant?: string): Promise<WhoamiResponse> {
   const headers = tenant
     ? { Accept: "application/json", "X-Tenant-ID": tenant }
     : tenantHeaders();
-  const res = await retryingFetch("/api/v1/whoami", { headers });
+  const res = await fetchWithRecovery(WHOAMI_PATH, { headers });
   if (!res.ok) {
     throw new ApiError(
       `whoami failed (${res.status})`,

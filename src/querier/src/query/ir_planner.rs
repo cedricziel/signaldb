@@ -582,7 +582,7 @@ fn utf8_map_type() -> DataType {
 /// substring-match approximation for this same legacy shape. Pushdown on
 /// the coerced column is disabled by the same `supports_filters_pushdown`
 /// guard the union path already has — acceptable for the legacy tables this
-/// reaches, which have no bloom-filtered `attr_tokens` column to prune on
+/// reaches, which have no bloom-filtered attribute column to prune on
 /// either way.
 fn coerce_legacy_containers(
     provider: Arc<dyn TableProvider>,
@@ -830,7 +830,7 @@ impl TableProvider for CoercedTableProvider {
 
 /// `ir_json_to_map(Utf8) -> Map<Utf8,Utf8>`: decodes a legacy JSON-string
 /// attribute document into the typed map form (non-string JSON values are
-/// stringified, as the writer's `json_strings_to_map_array` does), producing
+/// stringified), producing
 /// exactly the `target` map type — matching a sibling table's own map
 /// (`union_target_types`) when unioning several tables, or a canonical
 /// `Map<Utf8,Utf8>` (`utf8_map_type`) when there is no sibling to match, only
@@ -6342,7 +6342,7 @@ mod tests {
     /// scope attribute silently produced nothing.
     #[tokio::test]
     async fn scope_attributes_are_a_resolvable_container() {
-        let svc = IrService::new(logs_ctx());
+        let svc = IrService::new(logs_ctx_typed());
         let d = doc(serde_json::json!({
             "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
             "result": "table",
@@ -6367,7 +6367,7 @@ mod tests {
     /// qualification the coalesce hides which one answered.
     #[tokio::test]
     async fn a_container_qualifier_selects_one_scope() {
-        let svc = IrService::new(logs_ctx());
+        let svc = IrService::new(logs_ctx_typed());
         for (field, expected) in [
             ("resource.deployment.environment", "resource-prod"),
             ("log.deployment.environment", "prod"),
@@ -6410,7 +6410,7 @@ mod tests {
     /// written before qualification existed changes meaning.
     #[tokio::test]
     async fn an_unqualified_name_still_coalesces_across_containers() {
-        let svc = IrService::new(logs_ctx());
+        let svc = IrService::new(logs_ctx_typed());
         let d = doc(serde_json::json!({
             "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
             "result": "table",
@@ -7984,7 +7984,7 @@ mod tests {
     // does not — so it is covered by execution/E2E, not plan shape.)
     #[tokio::test]
     async fn logs_aggregate_step_lowers_to_expected_plan_shape() {
-        let svc = IrService::new(logs_ctx());
+        let svc = IrService::new(logs_ctx_typed());
         let d = doc(serde_json::json!({
             "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
             "result": "series",
@@ -8035,7 +8035,7 @@ mod tests {
     // Task 4.2 — promotion invariance: promoted column vs json-path, same result.
     #[tokio::test]
     async fn promotion_invariance_same_result() {
-        let svc = IrService::new(logs_ctx());
+        let svc = IrService::new(logs_ctx_typed());
         let promoted = doc(serde_json::json!({
             "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
             "result": "table",
@@ -8138,8 +8138,10 @@ mod tests {
             ],
         )
         .unwrap();
+        let batch =
+            common::testing::to_typed_layout("traces", "physical-v5", &batch, &["span_attributes"]);
         let ctx = SessionContext::new();
-        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
         let sp = Arc::new(MemorySchemaProvider::new());
         sp.register_table("traces".to_string(), Arc::new(table))
             .unwrap();
@@ -8223,8 +8225,10 @@ mod tests {
             ],
         )
         .unwrap();
+        let batch =
+            common::testing::to_typed_layout("traces", "physical-v5", &batch, &["span_attributes"]);
         let ctx = SessionContext::new();
-        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
         let sp = Arc::new(MemorySchemaProvider::new());
         sp.register_table("traces".to_string(), Arc::new(table))
             .unwrap();
@@ -10852,8 +10856,10 @@ mod tests {
         }
 
         let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+        let batch =
+            common::testing::to_typed_layout("logs", "physical-v4", &batch, &["log_attributes"]);
         let ctx = SessionContext::new();
-        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
         let sp = Arc::new(MemorySchemaProvider::new());
         sp.register_table("logs".to_string(), Arc::new(table))
             .unwrap();

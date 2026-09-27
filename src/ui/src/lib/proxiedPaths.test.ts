@@ -15,6 +15,8 @@ describe("PROXIED_PATHS", () => {
     // silently dropping the callback with no server-side trace at all.
     expect(isDenylisted("/ui/github/callback?code=abc&state=xyz")).toBe(true);
     expect(isDenylisted("/ui/session?next=%2Flogs")).toBe(true);
+    expect(isDenylisted("/api/v1/whoami")).toBe(true);
+    expect(isDenylisted("/ui/github/callback")).toBe(true);
   });
 
   it("leaves SPA client-side routes alone", () => {
@@ -22,5 +24,8 @@ describe("PROXIED_PATHS", () => {
     // once linking completes — it must still be served the cached app
     // shell, not proxied to the backend.
     expect(isDenylisted("/integrations/github?github=linked")).toBe(false);
+    expect(isDenylisted("/")).toBe(false);
+    expect(isDenylisted("/traces")).toBe(false);
+    expect(isDenylisted("/api-keys")).toBe(false);
   });
 });

@@ -1286,7 +1286,6 @@ mod tests {
             )
             .with_column("logs", "service.name", "service_name", ValueType::String)
             .with_physical_name("logs", "attributes_json")
-            .with_physical_name("logs", "attr_tokens")
             .with_column("logs", "body", "body", ValueType::String)
             .with_attribute(
                 "logs",

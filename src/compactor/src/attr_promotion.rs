@@ -29,7 +29,7 @@ use common::catalog::AttributeStatsRecord;
 use common::config::AttrPromotionConfig;
 use common::iceberg::evolution;
 use common::schema::type_authority::{AttributeKeyType, CanonicalType};
-use common::schema::typed_attributes::{home_column, is_typed_layout};
+use common::schema::typed_attributes::home_column;
 use datafusion::arrow::array::{ArrayRef, RecordBatch, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use std::collections::{HashMap, HashSet};
@@ -81,19 +81,17 @@ pub fn looks_generated(key: &str) -> bool {
 /// `materialized` is the table's current set of materialized label
 /// *attribute keys* (column names minus the `label_` prefix); `pinned` is
 /// the configured allowlist for the signal (never demoted). `typed_string_keys`
-/// is `Some` on a typed-layout table: only keys in the set (their canonical
-/// type authority home is `String` at every level it's recorded) are
-/// eligible for promotion, since any other key's typed home isn't a string
-/// and a `label_<key>` column can't safely stringify it (see
-/// [`string_only_keys`]). `None` means legacy layout, where every key is
-/// eligible as before. Returns the decision and the new streak value per key
-/// so the caller can persist the hysteresis state.
+/// holds the keys eligible for promotion (their canonical type authority
+/// home is `String` at every level it's recorded, see [`string_only_keys`]);
+/// any other key's typed home isn't a string and a `label_<key>` column
+/// can't safely stringify it. Returns the decision and the new streak value
+/// per key so the caller can persist the hysteresis state.
 pub fn decide(
     stats: &[AttributeStatsRecord],
     materialized: &[String],
     pinned: &[String],
     config: &AttrPromotionConfig,
-    typed_string_keys: Option<&HashSet<String>>,
+    typed_string_keys: &HashSet<String>,
 ) -> (PromotionDecision, Vec<(String, i64)>) {
     let mut decision = PromotionDecision::default();
     let mut new_streaks: Vec<(String, i64)> = Vec::new();
@@ -109,7 +107,7 @@ pub fn decide(
             && record.total_rows > 0
             && record.query_hits >= config.min_query_hits
             && (record.present_rows as f64 / record.total_rows as f64) >= config.min_presence
-            && typed_string_keys.is_none_or(|allowed| allowed.contains(&record.attr_key));
+            && typed_string_keys.contains(&record.attr_key);
         let streak = if over_threshold {
             record.promote_streak + 1
         } else {
@@ -159,13 +157,6 @@ pub fn decide(
     }
 
     (decision, new_streaks)
-}
-
-/// Whether `schema` is the typed attribute layout (four typed maps plus a
-/// CBOR residue column per container) rather than the legacy single map/JSON
-/// column.
-pub fn schema_is_typed(schema: &iceberg_rust::spec::schema::Schema) -> bool {
-    is_typed_layout(schema.fields().iter().map(|f| f.name.as_str()))
 }
 
 /// The keys eligible for promotion on a typed-layout table: those whose
@@ -364,6 +355,12 @@ mod tests {
         }
     }
 
+    /// Every stats key allowed, for tests exercising guardrails unrelated
+    /// to the typed-layout string-home filter.
+    fn all_keys(stats: &[AttributeStatsRecord]) -> HashSet<String> {
+        stats.iter().map(|r| r.attr_key.clone()).collect()
+    }
+
     fn config() -> AttrPromotionConfig {
         AttrPromotionConfig {
             enabled: true,
@@ -383,7 +380,8 @@ mod tests {
         let ready = record("namespace", 90, 100, 50, 2);
         // First over-threshold cycle: streak starts building.
         let fresh = record("pod", 90, 100, 50, 0);
-        let (decision, streaks) = decide(&[ready, fresh], &[], &[], &cfg, None);
+        let allowed = all_keys(&[ready.clone(), fresh.clone()]);
+        let (decision, streaks) = decide(&[ready, fresh], &[], &[], &cfg, &allowed);
         assert_eq!(decision.promote, vec!["namespace".to_string()]);
         assert_eq!(decision.building, vec![("pod".to_string(), 1)]);
         assert!(streaks.contains(&("namespace".to_string(), 3)));
@@ -394,7 +392,8 @@ mod tests {
     fn streak_resets_when_demand_disappears() {
         let cfg = config();
         let cooled = record("namespace", 90, 100, 0, 2);
-        let (decision, streaks) = decide(&[cooled], &[], &[], &cfg, None);
+        let allowed = all_keys(std::slice::from_ref(&cooled));
+        let (decision, streaks) = decide(&[cooled], &[], &[], &cfg, &allowed);
         assert!(decision.promote.is_empty());
         assert_eq!(streaks, vec![("namespace".to_string(), 0)]);
     }
@@ -406,7 +405,8 @@ mod tests {
         capped.capped = true;
         let generated = record("span.0123456789abcdef", 90, 100, 50, 5);
         let sparse = record("rare", 1, 10_000, 50, 5);
-        let (decision, _) = decide(&[capped, generated, sparse], &[], &[], &cfg, None);
+        let allowed = all_keys(&[capped.clone(), generated.clone(), sparse.clone()]);
+        let (decision, _) = decide(&[capped, generated, sparse], &[], &[], &cfg, &allowed);
         assert!(decision.promote.is_empty());
         assert!(decision.building.is_empty());
     }
@@ -418,12 +418,13 @@ mod tests {
         // Width 2 (one pinned + one auto-materialized) leaves headroom 1.
         let a = record("a", 100, 100, 10, 5); // score 10
         let b = record("b", 50, 100, 30, 5); // score 15 — wins
+        let allowed = all_keys(&[a.clone(), b.clone()]);
         let (decision, _) = decide(
             &[a, b],
             &["auto".to_string()],
             &["pinned".to_string()],
             &cfg,
-            None,
+            &allowed,
         );
         assert_eq!(decision.promote, vec!["b".to_string()]);
     }
@@ -434,7 +435,8 @@ mod tests {
         let stats = vec![record("auto_cold", 90, 100, 0, 0)];
         let materialized = vec!["auto_cold".to_string(), "pinned_cold".to_string()];
         let pinned = vec!["pinned_cold".to_string()];
-        let (decision, _) = decide(&stats, &materialized, &pinned, &cfg, None);
+        let allowed = all_keys(&stats);
+        let (decision, _) = decide(&stats, &materialized, &pinned, &cfg, &allowed);
         assert_eq!(decision.demote, vec!["auto_cold".to_string()]);
     }
 
@@ -459,7 +461,7 @@ mod tests {
                 canonical_type: CanonicalType::Int64,
             },
         ]);
-        let (decision, _) = decide(&[env, retries], &[], &[], &cfg, Some(&allowed));
+        let (decision, _) = decide(&[env, retries], &[], &[], &cfg, &allowed);
         assert_eq!(decision.promote, vec!["env".to_string()]);
     }
 
@@ -471,33 +473,51 @@ mod tests {
         assert!(!looks_generated("k8s.pod.name"));
     }
 
-    fn json_utf8_batch() -> RecordBatch {
-        // Two source columns: resource attrs win over record attrs.
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("body", DataType::Utf8, true),
-            Field::new("resource_attributes", DataType::Utf8, true),
-            Field::new("log_attributes", DataType::Utf8, true),
-            Field::new("label_env", DataType::Utf8, true),
-        ]));
-        RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(StringArray::from(vec![Some("a"), Some("b"), Some("c")])),
-                Arc::new(StringArray::from(vec![
-                    Some(r#"{"env":"prod"}"#),
-                    None,
-                    Some("{}"),
-                ])),
-                Arc::new(StringArray::from(vec![
-                    Some(r#"{"env":"record-level","pod":"api-1"}"#),
-                    Some(r#"{"env":"staging"}"#),
-                    Some("{}"),
-                ])),
-                // Existing column with writer-left nulls to be healed.
-                Arc::new(StringArray::from(vec![None::<&str>, None, None])),
-            ],
-        )
-        .unwrap()
+    /// Two typed-layout source containers over three rows: resource attrs
+    /// win over record attrs for the shared `env` key (row 0), only the
+    /// record-level source carries the key (row 1), and the key is absent
+    /// everywhere (row 2, both containers present but empty).
+    fn typed_source_batch() -> RecordBatch {
+        let json_map = |pairs: &[(&str, &str)]| {
+            Some(serde_json::Map::from_iter(pairs.iter().map(|(k, v)| {
+                (k.to_string(), serde_json::Value::String(v.to_string()))
+            })))
+        };
+        let resource_rows = [json_map(&[("env", "prod")]), None, json_map(&[])];
+        let log_rows = [
+            json_map(&[("env", "record-level"), ("pod", "api-1")]),
+            json_map(&[("env", "staging")]),
+            json_map(&[]),
+        ];
+        let (resource_fields, resource_arrays) = common::testing::typed_attribute_columns_from(
+            "logs",
+            "physical-v4",
+            "resource_attributes",
+            &resource_rows,
+        );
+        let (log_fields, log_arrays) = common::testing::typed_attribute_columns_from(
+            "logs",
+            "physical-v4",
+            "log_attributes",
+            &log_rows,
+        );
+
+        let mut fields = vec![Field::new("body", DataType::Utf8, true)];
+        fields.extend(resource_fields);
+        fields.extend(log_fields);
+        fields.push(Field::new("label_env", DataType::Utf8, true));
+
+        let mut columns: Vec<ArrayRef> = vec![Arc::new(StringArray::from(vec![
+            Some("a"),
+            Some("b"),
+            Some("c"),
+        ]))];
+        columns.extend(resource_arrays);
+        columns.extend(log_arrays);
+        // Existing column with writer-left nulls to be healed.
+        columns.push(Arc::new(StringArray::from(vec![None::<&str>, None, None])));
+
+        RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
     }
 
     fn string_column<'a>(batch: &'a RecordBatch, name: &str) -> &'a StringArray {
@@ -512,7 +532,7 @@ mod tests {
     #[test]
     fn backfill_overwrites_existing_column_with_source_precedence() {
         let pairs = vec![("env".to_string(), "label_env".to_string())];
-        let out = backfill_label_columns(vec![json_utf8_batch()], &pairs).unwrap();
+        let out = backfill_label_columns(vec![typed_source_batch()], &pairs).unwrap();
         assert_eq!(out.len(), 1);
         let env = string_column(&out[0], "label_env");
         // Row 0: resource wins over the record-level value.
@@ -522,7 +542,7 @@ mod tests {
         // Row 2: key absent everywhere -> null.
         assert!(env.is_null(2));
         // Column count unchanged: the existing column was replaced.
-        assert_eq!(out[0].num_columns(), 4);
+        assert_eq!(out[0].num_columns(), typed_source_batch().num_columns());
     }
 
     #[test]
@@ -531,11 +551,13 @@ mod tests {
             ("pod".to_string(), "label_pod".to_string()),
             ("env".to_string(), "label_env".to_string()),
         ];
-        let out = backfill_label_columns(vec![json_utf8_batch()], &pairs).unwrap();
+        let source = typed_source_batch();
+        let source_columns = source.num_columns();
+        let out = backfill_label_columns(vec![source], &pairs).unwrap();
         let batch = &out[0];
         // `label_pod` is new and appended before the (replaced) `label_env`.
-        assert_eq!(batch.num_columns(), 5);
-        assert_eq!(batch.schema().field(4).name(), "label_pod");
+        assert_eq!(batch.num_columns(), source_columns + 1);
+        assert_eq!(batch.schema().field(source_columns).name(), "label_pod");
         let pod = string_column(batch, "label_pod");
         assert_eq!(pod.value(0), "api-1");
         assert!(pod.is_null(1));
@@ -544,7 +566,7 @@ mod tests {
 
     #[test]
     fn backfill_without_pairs_is_a_no_op() {
-        let batch = json_utf8_batch();
+        let batch = typed_source_batch();
         let out = backfill_label_columns(vec![batch.clone()], &[]).unwrap();
         assert_eq!(out[0], batch);
     }
@@ -591,18 +613,6 @@ mod tests {
             write_default: None,
         };
         IcebergSchema::from_struct_type(StructType::new(vec![field]), 0, None)
-    }
-
-    #[test]
-    fn schema_is_typed_detects_a_residue_column() {
-        assert!(!schema_is_typed(&schema_with_label(
-            "http.method",
-            "label_http_method"
-        )));
-        assert!(schema_is_typed(&schema_with_label(
-            "http.method",
-            "span_attributes_residue"
-        )));
     }
 
     #[test]

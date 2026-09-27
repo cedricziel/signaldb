@@ -9,12 +9,14 @@
 
 use anyhow::Result;
 use common::catalog_manager::CatalogManager;
+use common::schema::logical::{AttributeLevel, LogicalFieldId};
+use common::schema::type_authority::CanonicalType;
 use compactor::executor::{CompactionExecutor, CompactionStatus, ExecutorConfig};
 use compactor::metrics::CompactionMetrics;
 use compactor::planner::{CompactionCandidate, PartitionStats};
 use datafusion::arrow::array::{
-    Array as _, MapBuilder, MapFieldNames, RecordBatch, StringArray, StringBuilder,
-    TimestampMicrosecondArray,
+    Array as _, ArrayRef, BinaryArray, MapBuilder, MapFieldNames, RecordBatch, StringArray,
+    StringBuilder, TimestampMicrosecondArray, new_null_array,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema as ArrowSchema, SchemaRef, TimeUnit};
 use datafusion::prelude::SessionContext;
@@ -36,6 +38,24 @@ const TENANT: &str = "t1";
 const DATASET: &str = "d1";
 const TABLE: &str = "logs";
 
+fn map_field(id: i32, name: &str, value: PrimitiveType) -> StructField {
+    StructField {
+        id,
+        name: name.to_string(),
+        required: false,
+        field_type: Type::Map(MapType {
+            key_id: id + 1,
+            key: Box::new(Type::Primitive(PrimitiveType::String)),
+            value_id: id + 2,
+            value_required: false,
+            value: Box::new(Type::Primitive(value)),
+        }),
+        doc: None,
+        initial_default: None,
+        write_default: None,
+    }
+}
+
 fn string_field(id: i32, name: &str) -> StructField {
     StructField {
         id,
@@ -49,7 +69,7 @@ fn string_field(id: i32, name: &str) -> StructField {
 }
 
 /// A small logs-shaped table: the real sort columns (timestamp,
-/// service_name, severity_text) plus a map-typed `log_attributes` column
+/// service_name, severity_text) plus a typed-layout `log_attributes` container (its string home plus residue)
 /// whose nested key/value ids (6, 7) are allocated after the top-level
 /// ids, as the production schema parser does.
 /// Hour-partition spec on `timestamp`, matching what every production signal
@@ -83,7 +103,7 @@ fn table_schema() -> IcebergSchema {
     };
     let attributes = StructField {
         id: 5,
-        name: "log_attributes".to_string(),
+        name: "log_attributes_str".to_string(),
         required: false,
         field_type: Type::Map(MapType {
             key_id: 6,
@@ -103,6 +123,18 @@ fn table_schema() -> IcebergSchema {
             string_field(3, "severity_text"),
             string_field(4, "body"),
             attributes,
+            StructField {
+                id: 8,
+                name: "log_attributes_residue".to_string(),
+                required: false,
+                field_type: Type::Primitive(PrimitiveType::Binary),
+                doc: None,
+                initial_default: None,
+                write_default: None,
+            },
+            map_field(9, "log_attributes_int", PrimitiveType::Long),
+            map_field(12, "log_attributes_double", PrimitiveType::Double),
+            map_field(15, "log_attributes_bool", PrimitiveType::Boolean),
         ]),
         0,
         None,
@@ -136,9 +168,9 @@ async fn write_file(
             .try_into()
             .map_err(|e: iceberg_rust::spec::error::Error| anyhow::anyhow!("to arrow: {e}"))?,
     );
-    let attr_field = arrow_schema.field_with_name("log_attributes")?;
+    let attr_field = arrow_schema.field_with_name("log_attributes_str")?;
     let DataType::Map(entry_field, _) = attr_field.data_type() else {
-        anyhow::bail!("log_attributes should convert to an Arrow Map");
+        anyhow::bail!("log_attributes_str should convert to an Arrow Map");
     };
     let DataType::Struct(kv_fields) = entry_field.data_type() else {
         anyhow::bail!("map entries should be a struct");
@@ -172,7 +204,16 @@ async fn write_file(
     let attrs = attrs.finish();
     let ts = TimestampMicrosecondArray::from(timestamps);
 
-    let batch_schema = Arc::new(ArrowSchema::new(vec![
+    let empty_homes = [
+        "log_attributes_int",
+        "log_attributes_double",
+        "log_attributes_bool",
+    ]
+    .into_iter()
+    .map(|name| arrow_schema.field_with_name(name).cloned())
+    .collect::<Result<Vec<_>, _>>()?;
+
+    let mut fields = vec![
         Field::new(
             "timestamp",
             DataType::Timestamp(TimeUnit::Microsecond, None),
@@ -181,18 +222,24 @@ async fn write_file(
         Field::new("service_name", DataType::Utf8, true),
         Field::new("severity_text", DataType::Utf8, true),
         Field::new("body", DataType::Utf8, true),
-        Field::new("log_attributes", attrs.data_type().clone(), true),
-    ]));
-    let batch = RecordBatch::try_new(
-        batch_schema,
-        vec![
-            Arc::new(ts),
-            Arc::new(StringArray::from(services)),
-            Arc::new(StringArray::from(severities)),
-            Arc::new(StringArray::from(bodies)),
-            Arc::new(attrs),
-        ],
-    )?;
+        Field::new("log_attributes_str", attrs.data_type().clone(), true),
+        Field::new("log_attributes_residue", DataType::Binary, true),
+    ];
+    fields.extend(empty_homes.iter().cloned());
+    let mut columns: Vec<ArrayRef> = vec![
+        Arc::new(ts),
+        Arc::new(StringArray::from(services)),
+        Arc::new(StringArray::from(severities)),
+        Arc::new(StringArray::from(bodies)),
+        Arc::new(attrs),
+        Arc::new(BinaryArray::from(vec![None::<&[u8]>; rows.len()])),
+    ];
+    columns.extend(
+        empty_homes
+            .iter()
+            .map(|f| new_null_array(f.data_type(), rows.len())),
+    );
+    let batch = RecordBatch::try_new(Arc::new(ArrowSchema::new(fields)), columns)?;
 
     let files = write_parquet_partitioned(&table, stream::iter(vec![Ok(batch)]), None).await?;
     table
@@ -283,6 +330,16 @@ async fn setup(
     service_catalog
         .add_attribute_query_hits(TENANT, DATASET, "logs", "env", 10)
         .await?;
+    for key in ["env", "pod"] {
+        let field = LogicalFieldId {
+            source: "logs".to_string(),
+            level: Some(AttributeLevel::Record),
+            name: key.to_string(),
+        };
+        service_catalog
+            .override_attribute_type(TENANT, DATASET, &field, CanonicalType::String)
+            .await?;
+    }
 
     Ok((catalog_manager, service_catalog, identifier))
 }
@@ -442,7 +499,7 @@ async fn active_promotion_evolves_schema_and_backfills_on_rewrite() -> Result<()
     assert_eq!(
         count_rows(
             &ctx,
-            "SELECT body FROM logs WHERE log_attributes['env'] = 'prod'"
+            "SELECT body FROM logs WHERE log_attributes_str['env'] = 'prod'"
         )
         .await?,
         2
