@@ -170,6 +170,12 @@ transitional carrier (it already preserves JSON types), so **WAL format is
 untouched in phase 1** — deliberate, given the WAL-corruption history. Typed
 wire is a later, explicitly-BREAKING phase for full fidelity.
 
+Placement stays in the writer: the acceptor can't carry a placement over the
+JSON-in-Utf8 wire, and only the writer establishes canonical types. The
+acceptor looks types up read-only through a non-blocking cached snapshot and
+warns the sender through OTLP `partial_success`, rejecting nothing. Off-type
+values are counted once, by the writer, after its commit lands.
+
 ### D7 — Reconcile the two schema systems: storage schema becomes the logical schema's physical realization
 
 `schemas.toml`/`schema_parser` is refactored so the physical Iceberg schema is
