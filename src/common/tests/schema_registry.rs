@@ -406,3 +406,113 @@ async fn a_fresh_resolver_reloads_custom_registries_from_the_catalog() {
         .expect("resolve");
     assert_eq!(res.hits.len(), 1);
 }
+
+#[tokio::test]
+async fn signaldb_bundles_the_gen_ai_agent_entity() {
+    let r = resolver().await;
+    let res = r
+        .resolve_entity("t1", "gen_ai.agent")
+        .await
+        .expect("resolve");
+    assert_eq!(res.hits.len(), 1);
+    let agent = &res.hits[0];
+    assert_eq!(agent.namespace, "signaldb");
+    assert_eq!(agent.source, RegistrySource::Bundled);
+    let keys = |attrs: &[schema_model::EntityAttribute]| {
+        attrs.iter().map(|a| a.key.clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(keys(&agent.def.identifying), ["gen_ai.agent.id"]);
+    assert_eq!(
+        keys(&agent.def.descriptive),
+        [
+            "gen_ai.agent.name",
+            "gen_ai.agent.description",
+            "gen_ai.agent.version"
+        ]
+    );
+
+    let res = r
+        .resolve_attribute("t1", "gen_ai.agent.id")
+        .await
+        .expect("resolve");
+    let namespaces: Vec<&str> = res.hits.iter().map(|h| h.namespace.as_str()).collect();
+    assert_eq!(namespaces, ["otel-genai", "otel"]);
+    assert!(res.hits[0].def.deprecated.is_none());
+    assert!(res.hits[1].def.deprecated.is_some());
+    assert!(res.hits[0].entity_roles.iter().any(|e| {
+        e.namespace == "signaldb" && e.entity == "gen_ai.agent" && e.role == Role::Identifying
+    }));
+}
+
+#[tokio::test]
+async fn tenant_registry_can_extend_the_gen_ai_agent_entity() {
+    let r = resolver().await;
+    let doc = RegistryDocument::from_yaml(
+        r#"
+name: agents
+version: 1.0.0
+schema_url: https://agents.example/schemas/1.0.0
+dependencies:
+  - name: signaldb
+groups:
+  - id: registry.agents
+    type: attribute_group
+    brief: Agent deployment attributes.
+    attributes:
+      - id: agents.team
+        type: string
+        stability: development
+        brief: Team that owns the agent.
+        examples: ["payments"]
+  - id: entity.agents.agent
+    type: entity
+    name: agents.agent
+    extends: entity.gen_ai.agent
+    stability: development
+    brief: A GenAI agent annotated with its owning team.
+    attributes:
+      - ref: agents.team
+        role: descriptive
+"#,
+    )
+    .expect("parses");
+    r.create("t1", &doc).await.expect("create");
+
+    let res = r
+        .resolve_entity("t1", "gen_ai.agent")
+        .await
+        .expect("resolve");
+    assert!(
+        res.hits[0]
+            .extended_by
+            .iter()
+            .any(|e| e == "agents/agents.agent")
+    );
+}
+
+#[tokio::test]
+async fn otel_genai_is_bundled_read_only_and_reserved() {
+    let names: Vec<&str> = bundled_registries()
+        .iter()
+        .map(|r| r.resolved.namespace.as_str())
+        .collect();
+    assert_eq!(names, ["signaldb", "otel-genai", "otel"]);
+    assert!(is_bundled("otel-genai"));
+
+    let r = resolver().await;
+    let version = bundled_registries()
+        .iter()
+        .find(|b| b.resolved.namespace == "otel-genai")
+        .map(|b| b.resolved.version.clone())
+        .expect("otel-genai");
+    let err = r.delete("t1", "otel-genai", &version).await.unwrap_err();
+    assert!(matches!(err, StoreError::ReadOnly { .. }), "{err:?}");
+
+    let mut doc = acme("1.0.0");
+    doc.name = "otel-genai".to_string();
+    let err = r.create("t1", &doc).await.unwrap_err();
+    assert!(
+        matches!(&err, StoreError::ReservedNamespace(ns) if ns == "otel-genai"),
+        "{err:?}"
+    );
+}

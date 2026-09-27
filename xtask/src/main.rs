@@ -26,6 +26,12 @@ enum Command {
         #[arg(long)]
         version: Option<String>,
     },
+    /// Vendor the OpenTelemetry GenAI semantic-conventions model at a pinned
+    /// commit into `vendor/otel-semconv-genai/` (upstream has no release tag).
+    VendorSemconvGenai {
+        /// Full commit SHA of `open-telemetry/semantic-conventions-genai`.
+        commit: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -34,6 +40,7 @@ fn main() -> Result<()> {
         Command::Generate => generate(false),
         Command::Check => generate(true),
         Command::VendorSemconv { version } => vendor_semconv(version),
+        Command::VendorSemconvGenai { commit } => vendor_semconv_genai(&commit),
     }
 }
 
@@ -59,62 +66,121 @@ fn pinned_semconv_version(root: &Path) -> Result<String> {
     Ok(version)
 }
 
-/// Clone `open-telemetry/semantic-conventions` at `v<version>` and copy its
-/// `model/` tree (plus LICENSE) into `vendor/otel-semconv/<version>/`,
-/// replacing whatever vintage was vendored before, and record the version in
-/// `vendor/otel-semconv/VERSION`. The bundled `otel` schema registry is built
-/// from this tree; a unit test in `common` keeps VERSION equal to the
-/// self-monitoring pin.
+/// Clone `open-telemetry/semantic-conventions` at `v<version>` and vendor its
+/// `model/` tree into `vendor/otel-semconv/<version>/`. The bundled `otel`
+/// schema registry is built from this tree; a unit test in `common` keeps
+/// VERSION equal to the self-monitoring pin.
 fn vendor_semconv(version: Option<String>) -> Result<()> {
     let root = project_root();
     let version = match version {
         Some(v) => v,
         None => pinned_semconv_version(&root)?,
     };
-    let dest_root = root.join("vendor/otel-semconv");
-    let tmp = std::env::temp_dir().join(format!("signaldb-semconv-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
-    let status = std::process::Command::new("git")
-        .args([
-            "clone",
-            "--quiet",
-            "--depth",
-            "1",
-            "--branch",
-            &format!("v{version}"),
-            "https://github.com/open-telemetry/semantic-conventions",
-        ])
-        .arg(&tmp)
-        .status()
-        .context("running git clone")?;
-    if !status.success() {
-        anyhow::bail!("git clone of semantic-conventions v{version} failed");
-    }
+    let readme = format!(
+        "# Vendored OpenTelemetry semantic conventions\n\n\
+         `{version}/model/` is a verbatim copy of `model/` from\n\
+         https://github.com/open-telemetry/semantic-conventions at tag `v{version}`\n\
+         (Apache-2.0, see `{version}/LICENSE`). It is the source of the bundled\n\
+         `otel` schema registry. Do not edit by hand — regenerate with\n\
+         `cargo xtask vendor-semconv` after bumping\n\
+         `common::self_monitoring::SEMCONV_SCHEMA_URL`.\n"
+    );
+    vendor_model(
+        "https://github.com/open-telemetry/semantic-conventions",
+        &format!("v{version}"),
+        &root.join("vendor/otel-semconv"),
+        &version,
+        &readme,
+    )
+}
 
+/// Vendor `open-telemetry/semantic-conventions-genai` at a full commit SHA
+/// into `vendor/otel-semconv-genai/<sha>/` (the bundled `otel-genai` schema
+/// registry) and repin `otel/registry-genai/manifest.yaml` to it.
+fn vendor_semconv_genai(commit: &str) -> Result<()> {
+    if commit.len() != 40 || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
+        anyhow::bail!("expected a full 40-character commit SHA, got {commit:?}");
+    }
+    const REPO: &str = "https://github.com/open-telemetry/semantic-conventions-genai";
+    let root = project_root();
+    let readme = format!(
+        "# Vendored OpenTelemetry GenAI semantic conventions\n\n\
+         `{commit}/model/` is a verbatim copy of `model/` from\n\
+         {REPO} at commit `{commit}`\n\
+         (Apache-2.0, see `{commit}/LICENSE`). It is the source of the bundled\n\
+         `otel-genai` schema registry. Do not edit by hand — regenerate with\n\
+         `cargo xtask vendor-semconv-genai <commit>`.\n"
+    );
+    vendor_model(
+        REPO,
+        commit,
+        &root.join("vendor/otel-semconv-genai"),
+        commit,
+        &readme,
+    )?;
+
+    let manifest = root.join("otel/registry-genai/manifest.yaml");
+    let text = std::fs::read_to_string(&manifest)
+        .with_context(|| format!("reading {}", manifest.display()))?;
+    let pin = format!("{REPO}.git@");
+    let start = text
+        .find(&pin)
+        .with_context(|| format!("no `{pin}` dependency in {}", manifest.display()))?
+        + pin.len();
+    let end = start
+        + text[start..]
+            .find('[')
+            .context("dependency registry_path has no `[model]` suffix")?;
+    std::fs::write(
+        &manifest,
+        format!("{}{commit}{}", &text[..start], &text[end..]),
+    )?;
+    Ok(())
+}
+
+/// Shallow-fetch `url` at `rev` and replace `dest_root` with its `model/` tree
+/// (under `dest_root/<version>/`) plus LICENSE, a `VERSION` file holding
+/// `version`, and `readme`.
+fn vendor_model(url: &str, rev: &str, dest_root: &Path, version: &str, readme: &str) -> Result<()> {
+    let tmp = shallow_checkout(url, rev)?;
     // Replace any previously vendored vintage wholesale.
     if dest_root.exists() {
-        std::fs::remove_dir_all(&dest_root).context("clearing vendor/otel-semconv")?;
+        std::fs::remove_dir_all(dest_root)
+            .with_context(|| format!("clearing {}", dest_root.display()))?;
     }
-    let dest = dest_root.join(&version);
+    let dest = dest_root.join(version);
     copy_tree(&tmp.join("model"), &dest.join("model"))?;
     std::fs::copy(tmp.join("LICENSE"), dest.join("LICENSE")).context("copying LICENSE")?;
     std::fs::write(dest_root.join("VERSION"), format!("{version}\n"))?;
-    std::fs::write(
-        dest_root.join("README.md"),
-        format!(
-            "# Vendored OpenTelemetry semantic conventions\n\n\
-             `{version}/model/` is a verbatim copy of `model/` from\n\
-             https://github.com/open-telemetry/semantic-conventions at tag `v{version}`\n\
-             (Apache-2.0, see `{version}/LICENSE`). It is the source of the bundled\n\
-             `otel` schema registry. Do not edit by hand — regenerate with\n\
-             `cargo xtask vendor-semconv` after bumping\n\
-             `common::self_monitoring::SEMCONV_SCHEMA_URL`.\n"
-        ),
-    )?;
+    std::fs::write(dest_root.join("README.md"), readme)?;
     let _ = std::fs::remove_dir_all(&tmp);
     let files = collect_files(&dest.join("model"))?.len();
-    eprintln!("  VENDORED semconv v{version} ({files} model files)");
+    eprintln!("  VENDORED {url} @ {rev} ({files} model files)");
     Ok(())
+}
+
+/// Fetch `rev` (a tag or a full commit SHA) of `url` at depth 1 into a fresh
+/// temporary directory and return its path.
+fn shallow_checkout(url: &str, rev: &str) -> Result<PathBuf> {
+    let tmp = std::env::temp_dir().join(format!("signaldb-vendor-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp)?;
+    let git = |args: &[&str]| -> Result<()> {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&tmp)
+            .args(args)
+            .status()
+            .with_context(|| format!("running git {}", args.join(" ")))?;
+        if !status.success() {
+            anyhow::bail!("git {} failed", args.join(" "));
+        }
+        Ok(())
+    };
+    git(&["init", "--quiet"])?;
+    git(&["fetch", "--quiet", "--depth", "1", url, rev])?;
+    git(&["checkout", "--quiet", "FETCH_HEAD"])?;
+    Ok(tmp)
 }
 
 /// Recursively copy `src` into `dst` (created if missing).

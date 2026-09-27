@@ -7,7 +7,7 @@
 //! - `signaldb-cli schema registry list|get <ns> <version>`
 //! - `signaldb-cli schema attribute|entity|metric get <name>` — every
 //!   definition of the name across the tenant's visible registries, in
-//!   precedence order (custom → signaldb → otel), `primary` first
+//!   precedence order (custom → signaldb → otel-genai → otel), `primary` first
 //! - `signaldb-cli schema attribute|entity|metric search <prefix> [--limit]`,
 //!   or `--keys a,b,c` to batch-resolve an exact name set instead of a
 //!   prefix (attribute and metric only)

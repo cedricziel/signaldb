@@ -1112,7 +1112,7 @@ views:
 
 - **Conventions** (`/schema/conventions`, every tenant user) — the
   semantic-convention registries visible to the tenant: the bundled
-  `otel` and `signaldb` registries (read-only, marked with a lock) plus
+  `otel`, `otel-genai`, and `signaldb` registries (read-only, marked with a lock) plus
   any custom registries, with version, source, definition counts, and
   last update. A precedence line shows the order lookups use (custom
   first). The lookup box resolves an attribute key, entity name, or

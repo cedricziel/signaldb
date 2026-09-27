@@ -1,0 +1,8 @@
+file_format: definition/2
+spans:
+  - type: widget.factory.produce
+    kind: internal
+    brief: A span describing widget production.
+    stability: development
+    attributes:
+      - ref_group: widget.common

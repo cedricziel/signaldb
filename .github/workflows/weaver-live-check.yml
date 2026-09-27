@@ -27,7 +27,7 @@ on:
     branches: [main]
 
 env:
-  WEAVER_VERSION: v0.25.1
+  WEAVER_VERSION: v0.26.1 # keep in step with WEAVER_IMAGE in ci.yml
 
 jobs:
   live-check:

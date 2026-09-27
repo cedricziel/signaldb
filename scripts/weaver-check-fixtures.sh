@@ -10,7 +10,7 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 FIXTURES="$ROOT/src/schema-model/tests/fixtures/weaver"
-WEAVER_IMAGE="${WEAVER_IMAGE:-otel/weaver:v0.25.1}"
+WEAVER_IMAGE="${WEAVER_IMAGE:-otel/weaver:v0.26.1}"
 SEMCONV_VERSION="$(tr -d '[:space:]' < "$ROOT/vendor/otel-semconv/VERSION")"
 
 status=0

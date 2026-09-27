@@ -146,12 +146,14 @@ This is the shared foundation. Key modules:
 
 ## Key Root Files
 
-| File                   | Purpose                                                                                                                                         |
-| ---------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `Cargo.toml`           | Workspace definition + shared dependencies                                                                                                      |
-| `schemas.toml`         | Signal type schema definitions (compiled into binary)                                                                                           |
-| `signaldb.dist.toml`   | Example configuration file                                                                                                                      |
-| `compose.yml`          | Development environment setup                                                                                                                   |
-| `Dockerfile`           | Multi-stage build for all services                                                                                                              |
-| `vendor/otel-semconv/` | Vendored OpenTelemetry semconv `model/` at the self-monitoring pin (`cargo xtask vendor-semconv`); source of the bundled `otel` schema registry |
-| `otel/registry/`       | SignalDB's own semconv registry (`signaldb.*` attributes; Weaver-checked in CI); source of the bundled `signaldb` schema registry               |
+| File                         | Purpose                                                                                                                                                   |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `Cargo.toml`                 | Workspace definition + shared dependencies                                                                                                                |
+| `schemas.toml`               | Signal type schema definitions (compiled into binary)                                                                                                     |
+| `signaldb.dist.toml`         | Example configuration file                                                                                                                                |
+| `compose.yml`                | Development environment setup                                                                                                                             |
+| `Dockerfile`                 | Multi-stage build for all services                                                                                                                        |
+| `vendor/otel-semconv/`       | Vendored OpenTelemetry semconv `model/` at the self-monitoring pin (`cargo xtask vendor-semconv`); source of the bundled `otel` schema registry           |
+| `otel/registry/`             | SignalDB's own semconv registry (`signaldb.*` attributes; Weaver-checked in CI); source of the bundled `signaldb` schema registry                         |
+| `vendor/otel-semconv-genai/` | Vendored OpenTelemetry GenAI semconv `model/` at a pinned commit (`cargo xtask vendor-semconv-genai`); source of the bundled `otel-genai` schema registry |
+| `otel/registry-genai/`       | SignalDB groups over the GenAI conventions (e.g. the `gen_ai.agent` entity), Weaver-checked separately; folded into the bundled `signaldb` registry       |

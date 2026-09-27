@@ -5,39 +5,10 @@
 //! subset validator against ~900 real definitions before it ever sees a
 //! tenant's custom registry.
 
-use std::path::{Path, PathBuf};
+mod common;
 
-use schema_model::{Registry, RegistryDocument, ResolvedRegistry};
-
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
-
-fn vendored_version() -> String {
-    std::fs::read_to_string(repo_root().join("vendor/otel-semconv/VERSION"))
-        .expect("vendor/otel-semconv/VERSION")
-        .trim()
-        .to_string()
-}
-
-fn otel_document() -> RegistryDocument {
-    let version = vendored_version();
-    let dir = repo_root().join(format!("vendor/otel-semconv/{version}/model"));
-    RegistryDocument::from_dir("otel", &version, &dir).expect("parse vendored semconv model")
-}
-
-fn otel_resolved() -> ResolvedRegistry {
-    Registry::resolve(&otel_document(), &[]).unwrap_or_else(|errs| {
-        panic!(
-            "vendored semconv must resolve cleanly, got {} errors:\n{}",
-            errs.len(),
-            errs.iter()
-                .map(|e| e.to_string())
-                .collect::<Vec<_>>()
-                .join("\n")
-        )
-    })
-}
+use common::{otel_document, otel_resolved, repo_root};
+use schema_model::{Registry, RegistryDocument};
 
 #[test]
 fn every_vendored_model_file_parses() {
