@@ -340,6 +340,20 @@ target_partitions = 0             # Scan fan-out; 0 = DataFusion default (availa
 sort_spill_reservation_mb = 10     # Headroom a spilling sort holds back for its merge, taken out of memory_limit_mb
 ```
 
+### Acceptor (Transport Limits, Resend Dedup)
+
+```toml
+[acceptor]
+max_request_body_bytes = 67108864 # 64MB decoded body cap for every OTLP/HTTP and remote_write route; also gRPC's max_decoding_message_size
+retry_dedup_window = "5m"         # How long a durably accepted batch is remembered so a byte-identical client resend is acked, not re-ingested; "0s" disables
+```
+
+A resend within `retry_dedup_window` is matched by a fingerprint of the
+WAL-bound batch, taken right after the WAL flush, and its fresh entry is marked
+processed instead of forwarded (`signaldb.acceptor.resends_dropped`). The
+cache is in-memory, per acceptor process. Rationale:
+`src/acceptor/src/handler/retry_dedup.rs`.
+
 ### Writer (Commit Coalescing)
 
 ```toml

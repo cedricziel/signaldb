@@ -157,6 +157,15 @@ body size (`[acceptor].max_request_body_bytes` in `signaldb.toml`,
 default 64MB, applied after decompression) — a request over the limit
 gets `413 Payload Too Large`.
 
+Retrying an export is safe. If your exporter times out waiting for a response
+that SignalDB had in fact already accepted, the identical resend is
+acknowledged without being stored a second time, as long as it arrives within
+`[acceptor].retry_dedup_window` (default 5 minutes). This matters most for the
+OpenTelemetry Collector, whose `otlp` exporter times out after 5 seconds by
+default and then retries: without it, every slow export showed up as every
+span, log record and data point twice. Only a byte-identical batch counts as
+a resend; an export that differs in any record is always stored.
+
 A successful export returns `200 OK` with an `Export*ServiceResponse`
 body in the same encoding as the request. Error responses:
 

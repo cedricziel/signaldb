@@ -66,6 +66,12 @@ an entry's dead-lettering budget; a sustained `transient` rate with no drop in
 `signaldb.wal.entries_pending` means a dependency is down, not that data is
 being lost — the affected entries stay pending and retry once it recovers.
 
+One acceptor counter pairs with those: `signaldb.acceptor.resends_dropped`
+(`signaldb.tenant.id` and `signal` attributes) counts client resends of a batch the
+acceptor had already made durable, acknowledged without being ingested again
+(`[acceptor].retry_dedup_window`). A steady rate means clients give up before
+the acceptor answers: its ingest latency exceeds their export timeout.
+
 ## Resource identity
 
 Every service exports with:
