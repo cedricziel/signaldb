@@ -963,15 +963,9 @@ fn attr_context_of(df: &DataFrame) -> AttrContext {
         .iter()
         .any(|f| f.name() == "log_attributes" && matches!(f.data_type(), DataType::Map(_, _)))
         || common::attrs::expr::is_typed_layout(df.schema().as_arrow(), "log_attributes");
-    // The derived `key=value` token column, when present, backs an extra
-    // bloom-prunable containment conjunct on attribute equality filters.
-    let attr_tokens = df.schema().fields().iter().any(|f| {
-        f.name() == common::schema::ATTR_TOKENS_COLUMN && matches!(f.data_type(), DataType::List(_))
-    });
     AttrContext {
         materialized: materialized_columns_of(df),
         map_attrs,
-        attr_tokens,
         schema: Some(df.schema().inner().clone()),
     }
 }

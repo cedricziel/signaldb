@@ -73,28 +73,6 @@ pub fn is_materialized_and_unambiguous(
         && !has_colliding_materialized_variant(base, columns.iter().map(String::as_str))
 }
 
-/// The derived `key=value` token column on logs tables. Each row carries
-/// one token per attribute across resource, scope, and record scopes, so a
-/// single bloom-filtered column can answer "does this file contain
-/// `key=value` for *any* attribute" without one column per key.
-pub const ATTR_TOKENS_COLUMN: &str = "attr_tokens";
-
-/// The bloom-filter table property for the derived [`ATTR_TOKENS_COLUMN`].
-///
-/// Parquet addresses the tokens through the List leaf column: arrow-rs
-/// writes a `List<Utf8>` with the 3-level encoding
-/// `attr_tokens (LIST) > list (repeated group) > item`, and the
-/// Iceberg-to-Arrow conversion names the element field `item`, so the leaf
-/// path is `attr_tokens.list.item`. The pinned iceberg-rust writer splits
-/// the property's column suffix on dots into exactly those path parts.
-pub fn bloom_filter_property_for_attr_tokens() -> (String, String) {
-    use iceberg_rust::spec::table_metadata::WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX;
-    (
-        format!("{WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX}{ATTR_TOKENS_COLUMN}.list.item"),
-        "true".to_string(),
-    )
-}
-
 /// Table property recording the warm index's token-encoding version, so a
 /// reader can tell how to decode `attr_index` bytes without inferring it
 /// from the column type alone.
@@ -147,9 +125,9 @@ pub fn warm_index_properties(cfg: &crate::config::WarmIndexConfig) -> Vec<(Strin
 /// The built-in traces columns that carry a Parquet bloom filter.
 ///
 /// Both are flat top-level `Utf8` columns (`schemas.toml` traces.v1/v2), so
-/// the property's column suffix is the bare column name — no `.list.item`
-/// leaf path like [`bloom_filter_property_for_attr_tokens`]. `trace_id` is
-/// the high-cardinality column single-trace lookups
+/// the property's column suffix is the bare column name rather than a
+/// `.list.item` leaf path. `trace_id` is the high-cardinality column
+/// single-trace lookups
 /// (`GET /api/traces/{traceID}`) filter on, for which manifest / row-group
 /// min/max statistics never prune (every time-ordered file spans the full
 /// random id range); a bloom filter is the only structure that can skip row
@@ -224,22 +202,17 @@ pub fn bloom_filter_properties_for_trace_columns() -> Vec<(String, String)> {
 /// Assembles every Parquet bloom-filter table property for a table's
 /// columns, dispatching by table type and its already-built `schema`.
 ///
-/// [`schemas::TableSchema::Logs`] gets a filter over the derived
-/// `attr_tokens` column (for `key=value` containment checks) in addition to
-/// every materialized label; both `Logs` and `Traces` get the `trace_id`/
-/// `span_id` point-lookup filters ([`bloom_filter_properties_for_trace_columns`])
-/// since `logs.v1` carries those same columns (optional, but named
-/// identically) for logs-for-a-trace correlation. Other table types get
-/// only the materialized-label filters.
+/// Every table type gets a filter for each materialized label; `Logs` and
+/// `Traces` additionally get the `trace_id`/`span_id` point-lookup filters
+/// ([`bloom_filter_properties_for_trace_columns`]) since `logs.v1` carries
+/// those same columns (optional, but named identically) for
+/// logs-for-a-trace correlation.
 pub fn bloom_filter_properties_for_table(
     table_schema: &crate::iceberg::schemas::TableSchema,
     schema: &IcebergSchema,
 ) -> Vec<(String, String)> {
     let mut properties = bloom_filter_properties_for_labels(schema);
 
-    if matches!(table_schema, crate::iceberg::schemas::TableSchema::Logs) {
-        properties.push(bloom_filter_property_for_attr_tokens());
-    }
     if matches!(
         table_schema,
         crate::iceberg::schemas::TableSchema::Traces | crate::iceberg::schemas::TableSchema::Logs
@@ -715,10 +688,9 @@ mod tests {
 
     /// `logs.v1` carries `trace_id`/`span_id` for logs-for-a-trace
     /// correlation, the same point-lookup problem traces has, so logs must
-    /// get the same filters. It must also keep its `attr_tokens` filter.
-    /// Traces has no `attr_tokens` column and must not get one.
+    /// get the same filters.
     #[test]
-    fn logs_and_traces_get_trace_columns_but_only_logs_gets_attr_tokens() {
+    fn logs_and_traces_get_trace_columns() {
         use crate::iceberg::schemas::TableSchema;
 
         let logs = bloom_filter_properties_for_table(
@@ -734,11 +706,6 @@ mod tests {
                 "logs must have a bloom filter on {column}"
             );
         }
-        let (attr_tokens_key, attr_tokens_value) = bloom_filter_property_for_attr_tokens();
-        assert!(
-            logs.contains(&(attr_tokens_key, attr_tokens_value)),
-            "logs must keep its attr_tokens filter"
-        );
 
         let traces = bloom_filter_properties_for_table(
             &TableSchema::Traces,
@@ -753,10 +720,6 @@ mod tests {
                 "traces must have a bloom filter on {column}"
             );
         }
-        assert!(
-            !traces.iter().any(|(key, _)| key.contains("attr_tokens")),
-            "traces has no attr_tokens column and must not get a filter for one"
-        );
     }
 
     /// A table type with no point-lookup id columns and no materialized
@@ -955,17 +918,6 @@ mod tests {
                     "true".to_string()
                 ),
             ]
-        );
-    }
-
-    #[test]
-    fn attr_tokens_bloom_property_targets_the_list_leaf() {
-        assert_eq!(
-            bloom_filter_property_for_attr_tokens(),
-            (
-                "write.parquet.bloom-filter-enabled.column.attr_tokens.list.item".to_string(),
-                "true".to_string()
-            )
         );
     }
 

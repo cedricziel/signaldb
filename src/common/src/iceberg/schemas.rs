@@ -57,8 +57,7 @@ pub fn create_traces_schema_with(labels: &[String]) -> Result<Schema> {
 }
 
 /// Create Iceberg schema for logs table using TOML definitions, plus any
-/// configured materialized-label columns and the derived `attr_tokens`
-/// column (see [`crate::schema::ATTR_TOKENS_COLUMN`]).
+/// configured materialized-label columns.
 ///
 /// Promotes configured attribute keys to dedicated columns. The schema is
 /// materialized once at table-creation time; the global config is the
@@ -66,7 +65,7 @@ pub fn create_traces_schema_with(labels: &[String]) -> Result<Schema> {
 pub fn create_logs_schema_with(labels: &[String]) -> Result<Schema> {
     TableSchema::Logs
         .resolved_schema()?
-        .to_iceberg_schema_with_labels_and_attr_tokens(labels)
+        .to_iceberg_schema_with_labels(labels)
 }
 
 /// Global-config variant of [`create_traces_schema_with`].
@@ -242,10 +241,7 @@ impl TableSchema {
         m: &crate::config::MaterializedLabels,
         warm_index: bool,
     ) -> Result<Schema> {
-        let derived = crate::schema::schema_parser::DerivedColumns {
-            attr_tokens: matches!(self, TableSchema::Logs),
-            warm_index,
-        };
+        let derived = crate::schema::schema_parser::DerivedColumns { warm_index };
         self.resolved_schema()?
             .to_iceberg_schema_with(self.materialized_labels_of(m), derived)
     }
