@@ -95,6 +95,55 @@ pub fn bloom_filter_property_for_attr_tokens() -> (String, String) {
     )
 }
 
+/// Table property recording the warm index's token-encoding version, so a
+/// reader can tell how to decode `attr_index` bytes without inferring it
+/// from the column type alone.
+pub const WARM_INDEX_ENCODING_PROPERTY: &str = "signaldb.warm-index.encoding";
+
+/// The current [`WARM_INDEX_ENCODING_PROPERTY`] value.
+pub const WARM_INDEX_ENCODING_VERSION: &str = "1";
+
+/// Parquet bloom-filter and encoding table properties for the derived
+/// [`crate::attrs::warm_index::WARM_INDEX_COLUMN`], sized from `cfg`.
+///
+/// NDV is derived, never measured: `spike/results.md` found the bloom filter
+/// must be sized explicitly from `rows_per_row_group * attrs_per_row` (a
+/// row group's expected count of distinct `key=value` tokens), capped at
+/// `max_bloom_ndv` so a misconfigured row-group size cannot blow the filter
+/// past a sane byte budget.
+pub fn warm_index_properties(cfg: &crate::config::WarmIndexConfig) -> Vec<(String, String)> {
+    use crate::attrs::warm_index::WARM_INDEX_COLUMN;
+    use iceberg_rust::spec::table_metadata::{
+        WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX,
+        WRITE_PARQUET_BLOOM_FILTER_FPP_COLUMN_PREFIX, WRITE_PARQUET_BLOOM_FILTER_NDV_COLUMN_PREFIX,
+    };
+
+    let ndv = cfg
+        .rows_per_row_group
+        .saturating_mul(cfg.attrs_per_row)
+        .min(cfg.max_bloom_ndv);
+    let leaf = format!("{WARM_INDEX_COLUMN}.list.item");
+
+    vec![
+        (
+            format!("{WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX}{leaf}"),
+            "true".to_string(),
+        ),
+        (
+            format!("{WRITE_PARQUET_BLOOM_FILTER_FPP_COLUMN_PREFIX}{leaf}"),
+            cfg.fpp.to_string(),
+        ),
+        (
+            format!("{WRITE_PARQUET_BLOOM_FILTER_NDV_COLUMN_PREFIX}{leaf}"),
+            ndv.to_string(),
+        ),
+        (
+            WARM_INDEX_ENCODING_PROPERTY.to_string(),
+            WARM_INDEX_ENCODING_VERSION.to_string(),
+        ),
+    ]
+}
+
 /// The built-in traces columns that carry a Parquet bloom filter.
 ///
 /// Both are flat top-level `Utf8` columns (`schemas.toml` traces.v1/v2), so
@@ -921,6 +970,56 @@ mod tests {
     }
 
     #[test]
+    fn warm_index_properties_are_sized_and_carry_the_encoding_property() {
+        let cfg = crate::config::WarmIndexConfig {
+            signals: vec![],
+            datasets: None,
+            fpp: 0.02,
+            rows_per_row_group: 10_000,
+            attrs_per_row: 16,
+            max_bloom_ndv: 2_000_000,
+        };
+        assert_eq!(
+            warm_index_properties(&cfg),
+            vec![
+                (
+                    "write.parquet.bloom-filter-enabled.column.attr_index.list.item".to_string(),
+                    "true".to_string()
+                ),
+                (
+                    "write.parquet.bloom-filter-fpp.column.attr_index.list.item".to_string(),
+                    "0.02".to_string()
+                ),
+                (
+                    "write.parquet.bloom-filter-ndv.column.attr_index.list.item".to_string(),
+                    "160000".to_string()
+                ),
+                (
+                    WARM_INDEX_ENCODING_PROPERTY.to_string(),
+                    WARM_INDEX_ENCODING_VERSION.to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn warm_index_ndv_is_capped_by_max_bloom_ndv() {
+        let cfg = crate::config::WarmIndexConfig {
+            signals: vec![],
+            datasets: None,
+            fpp: 0.01,
+            rows_per_row_group: 1_000_000,
+            attrs_per_row: 1_000,
+            max_bloom_ndv: 2_000_000,
+        };
+        let (_, ndv) = warm_index_properties(&cfg)
+            .into_iter()
+            .find(|(k, _)| k.contains("bloom-filter-ndv"))
+            .expect("ndv property present");
+        assert_eq!(ndv, "2000000");
+    }
+
+    #[test]
     fn trace_column_bloom_properties_target_flat_id_columns() {
         assert_eq!(
             bloom_filter_properties_for_trace_columns(),
@@ -996,6 +1095,41 @@ traces = ["http.method"]
         assert_eq!(parsed.materialized_labels.logs, vec!["namespace", "pod"]);
         assert_eq!(parsed.materialized_labels.traces, vec!["http.method"]);
         assert!(parsed.materialized_labels.metrics.is_empty());
+    }
+
+    #[test]
+    fn warm_index_config_default_is_off_and_parses_from_toml() {
+        let cfg = SchemaConfig::default();
+        assert!(cfg.warm_index.signals.is_empty());
+        assert_eq!(cfg.warm_index.fpp, 0.01);
+        assert_eq!(cfg.warm_index.rows_per_row_group, 10_000);
+        assert_eq!(cfg.warm_index.attrs_per_row, 16);
+        assert_eq!(cfg.warm_index.max_bloom_ndv, 2_000_000);
+
+        let toml = r#"
+catalog_type = "sql"
+catalog_uri = "sqlite::memory:"
+[warm_index]
+signals = ["logs", "traces"]
+datasets = ["prod"]
+fpp = 0.02
+rows_per_row_group = 5000
+attrs_per_row = 8
+max_bloom_ndv = 1000000
+"#;
+        let parsed: SchemaConfig = toml::from_str(toml).expect("parse schema config");
+        assert_eq!(
+            parsed.warm_index.signals,
+            vec![
+                crate::config::AttributeTypeSignal::Logs,
+                crate::config::AttributeTypeSignal::Traces
+            ]
+        );
+        assert_eq!(parsed.warm_index.datasets, Some(vec!["prod".to_string()]));
+        assert_eq!(parsed.warm_index.fpp, 0.02);
+        assert_eq!(parsed.warm_index.rows_per_row_group, 5000);
+        assert_eq!(parsed.warm_index.attrs_per_row, 8);
+        assert_eq!(parsed.warm_index.max_bloom_ndv, 1_000_000);
     }
 
     #[test]
