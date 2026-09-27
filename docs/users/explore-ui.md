@@ -269,6 +269,12 @@ window, 30 buckets wide, and every row links into the view that explains it
   step is done; the palette's **Open setup checklist** opens it directly
   (`/overview?setup`).
 
+### Agent evaluations
+
+The **Evaluate** group reads evaluator results for AI agents — offline eval
+runs first — and compares agent versions case by case. What to send and how
+each page reads it is in [Evaluating AI agents](evaluations.md).
+
 ### The catalog
 
 The catalog answers "what's actually sending telemetry" by discovery, not
@@ -909,9 +915,11 @@ Every page sits in one shell: a navigation sidebar on the left, and a page
 header across the top of the main column.
 
 - **Sidebar.** The signaldb wordmark, the tenant/dataset switcher, then the
-  pages in three groups — **Monitor** (Overview, Errors, Catalog),
-  **Investigate** (Logs, Traces, Metrics, Profiles, Query) and **Configure**
-  (Schema, Processors, Instrumentation). At the bottom are **Manage** (tenant and
+  pages in four groups — **Monitor** (Overview, Errors, Catalog),
+  **Investigate** (Logs, Traces, Metrics, Profiles, Query), **Evaluate**
+  (Agents & scores, Compare, Runs, Evaluators — see
+  [Evaluating AI agents](evaluations.md)) and **Configure** (Schema,
+  Processors, Instrumentation). At the bottom are **Manage** (tenant and
   instance admins only), your account (which opens the
   [user menu](#user-menu)) and **Collapse**. Links to explore pages carry
   the current time range and tenant/dataset; filters and search stay with

@@ -55,6 +55,7 @@ nav:
   - Using SignalDB:
       - users/sending-otlp.md
       - users/explore-ui.md
+      - users/evaluations.md
       - users/service-map.md
       - users/grafana-datasource.md
       - users/querying-promql.md
