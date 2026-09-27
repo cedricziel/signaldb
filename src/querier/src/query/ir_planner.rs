@@ -4051,6 +4051,7 @@ mod tests {
     use datafusion::arrow::datatypes::{Field, Fields, Schema};
     use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
     use datafusion::catalog::{CatalogProvider, MemTable, SchemaProvider};
+    use datafusion::functions::core::expr_fn::get_field;
     use std::sync::Arc;
 
     /// `FLAMEGRAPH_PROFILE_CAP`'s doc comment claims it matches
@@ -4221,16 +4222,6 @@ mod tests {
     }
 
     fn logs_ctx() -> SessionContext {
-        let (schema, batch) = logs_batch();
-        single_table_ctx("logs", schema, batch)
-    }
-
-    /// The typed-layout counterpart of [`logs_ctx`]: the identical rows,
-    /// but `log_attributes`/`resource_attributes`/`scope_attributes` are
-    /// rewritten onto their five typed columns each (`logs` `physical-v4`)
-    /// via [`common::testing::to_typed_layout`] instead of duplicating the
-    /// row data.
-    fn logs_ctx_typed() -> SessionContext {
         let (_, batch) = logs_batch();
         let batch = common::testing::to_typed_layout(
             "logs",
@@ -4306,8 +4297,18 @@ mod tests {
             ],
         )
         .unwrap();
+        let batch = common::testing::to_typed_layout(
+            "profiles",
+            "physical-v3",
+            &batch,
+            &[
+                "profile_attributes",
+                "scope_attributes",
+                "resource_attributes",
+            ],
+        );
         let ctx = SessionContext::new();
-        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
         let sp = Arc::new(MemorySchemaProvider::new());
         sp.register_table("profiles".to_string(), Arc::new(table))
             .unwrap();
@@ -4364,9 +4365,18 @@ mod tests {
         )
         .unwrap();
 
+        let containers = ["attributes", "resource_attributes"];
+        let gauge_batch = common::testing::to_typed_layout(
+            "metrics_gauge",
+            "physical-v3",
+            &gauge_batch,
+            &containers,
+        );
+        let sum_batch =
+            common::testing::to_typed_layout("metrics_sum", "physical-v3", &sum_batch, &containers);
         let ctx = SessionContext::new();
-        let gauge = MemTable::try_new(schema.clone(), vec![vec![gauge_batch]]).unwrap();
-        let sum = MemTable::try_new(schema, vec![vec![sum_batch]]).unwrap();
+        let gauge = MemTable::try_new(gauge_batch.schema(), vec![vec![gauge_batch]]).unwrap();
+        let sum = MemTable::try_new(sum_batch.schema(), vec![vec![sum_batch]]).unwrap();
         let sp = Arc::new(MemorySchemaProvider::new());
         sp.register_table("metrics_gauge".to_string(), Arc::new(gauge))
             .unwrap();
@@ -5164,114 +5174,6 @@ mod tests {
         assert_eq!(n, 3);
     }
 
-    /// Same document as above, but the two tables disagree on the attribute
-    /// container type — `metrics_gauge` created after the typed-attribute
-    /// change (Map), `metrics_sum` a legacy table (JSON string) — which is
-    /// what a long-lived deployment actually has (hive's `_system`). This is
-    /// the shape that produced the optimizer's UNION type mismatch.
-    #[tokio::test]
-    async fn metrics_union_groups_by_a_fallback_attribute_across_mixed_container_types() {
-        let map_schema = Arc::new(Schema::new(vec![
-            Field::new(
-                "timestamp",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
-            ),
-            Field::new("service_name", DataType::Utf8, false),
-            Field::new("metric_name", DataType::Utf8, false),
-            Field::new("value", DataType::Float64, false),
-            map_field_named("attributes"),
-            map_field_named("resource_attributes"),
-        ]));
-        let json_schema = Arc::new(Schema::new(vec![
-            Field::new(
-                "timestamp",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
-            ),
-            Field::new("service_name", DataType::Utf8, false),
-            Field::new("metric_name", DataType::Utf8, false),
-            Field::new("value", DataType::Float64, false),
-            Field::new("attributes", DataType::Utf8, true),
-            Field::new("resource_attributes", DataType::Utf8, true),
-        ]));
-        let gauge_batch = RecordBatch::try_new(
-            map_schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![10_i64, 20])),
-                Arc::new(StringArray::from(vec!["signaldb", "signaldb"])),
-                Arc::new(StringArray::from(vec!["m", "m"])),
-                Arc::new(Float64Array::from(vec![5.0, 7.0])),
-                build_map(&[&[], &[]]),
-                build_map(&[&[("host.name", "hive")], &[("host.name", "hive")]]),
-            ],
-        )
-        .unwrap();
-        let sum_batch = RecordBatch::try_new(
-            json_schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![15_i64])),
-                Arc::new(StringArray::from(vec!["signaldb"])),
-                Arc::new(StringArray::from(vec!["m"])),
-                Arc::new(Float64Array::from(vec![3.0])),
-                Arc::new(StringArray::from(vec![Some("{}")])),
-                Arc::new(StringArray::from(vec![Some(r#"{"host.name":"other"}"#)])),
-            ],
-        )
-        .unwrap();
-        let ctx = SessionContext::new();
-        let gauge = MemTable::try_new(map_schema, vec![vec![gauge_batch]]).unwrap();
-        let sum = MemTable::try_new(json_schema, vec![vec![sum_batch]]).unwrap();
-        let sp = Arc::new(MemorySchemaProvider::new());
-        sp.register_table("metrics_gauge".to_string(), Arc::new(gauge))
-            .unwrap();
-        sp.register_table("metrics_sum".to_string(), Arc::new(sum))
-            .unwrap();
-        let cat = Arc::new(MemoryCatalogProvider::new());
-        cat.register_schema("d", sp).unwrap();
-        ctx.register_catalog("t", cat);
-
-        let svc = IrService::new(ctx);
-        let d = doc(serde_json::json!({
-            "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
-            "result": "table",
-            "pipeline": [
-                { "aggregate": { "by": ["host.name"], "aggs": [{ "fn": "count", "as": "n" }] } },
-                { "limit": 501 }
-            ]
-        }));
-        let (df, _) = svc
-            .plan(&d, "t", "d", 0)
-            .await
-            .unwrap()
-            .expect("both metrics tables are registered");
-        let batches = df
-            .collect()
-            .await
-            .expect("mixed-container union grouped by a fallback attribute executes");
-        // hive: 2 rows, other: 1 row.
-        let mut groups: Vec<(String, i64)> = Vec::new();
-        for b in &batches {
-            let keys = b
-                .column_by_name("host_name")
-                .unwrap()
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .unwrap();
-            let ns = b
-                .column_by_name("n")
-                .unwrap()
-                .as_any()
-                .downcast_ref::<datafusion::arrow::array::Int64Array>()
-                .unwrap();
-            for i in 0..b.num_rows() {
-                groups.push((keys.value(i).to_string(), ns.value(i)));
-            }
-        }
-        groups.sort();
-        assert_eq!(groups, vec![("hive".into(), 2), ("other".into(), 1)]);
-    }
-
     /// The real persisted gauge/sum schemas as of physical-v1: the sum table
     /// carries two extra columns (`aggregation_temporality`, `is_monotonic`)
     /// in the middle, so every later column sits at a different index than in
@@ -5377,18 +5279,6 @@ mod tests {
     }
 
     fn realistic_metrics_ctx() -> SessionContext {
-        gauge_sum_ctx(
-            realistic_metrics_batch(false, 2),
-            realistic_metrics_batch(true, 1),
-        )
-    }
-
-    /// The typed-layout counterpart of [`realistic_metrics_ctx`]: the
-    /// identical gauge/sum rows, but `attributes`/`resource_attributes`/
-    /// `scope_attributes` are rewritten onto their five typed columns each
-    /// (`metrics_gauge`/`metrics_sum` `physical-v3`). Exercises
-    /// `union_columns`' typed-layout expansion.
-    fn typed_metrics_ctx() -> SessionContext {
         let containers = ["attributes", "resource_attributes", "scope_attributes"];
         let to_typed = |table: &str,
                         (_, batch): (Arc<Schema>, RecordBatch)|
@@ -5400,104 +5290,6 @@ mod tests {
             to_typed("metrics_gauge", realistic_metrics_batch(false, 2)),
             to_typed("metrics_sum", realistic_metrics_batch(true, 1)),
         )
-    }
-
-    /// IR-1: a gauge+sum union over two typed-layout tables filters by a
-    /// fallback (unpromoted) attribute the same way the legacy-layout union
-    /// does (`metrics_union_filters_by_a_fallback_attribute_with_every_operator`).
-    #[tokio::test]
-    async fn metrics_union_over_typed_gauge_and_sum_tables_filters_by_a_fallback_attribute() {
-        let svc = IrService::new(typed_metrics_ctx());
-        let d = doc(serde_json::json!({
-            "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
-            "result": "table",
-            "pipeline": [
-                { "where": { "field": "container.name", "op": "eq",
-                             "value": "ix-signaldb-mcp-1" } },
-                { "aggregate": { "by": ["container.name"],
-                                 "aggs": [{ "fn": "count", "as": "n" }] } }
-            ]
-        }));
-        let (df, _) = svc
-            .plan(&d, "t", "d", 0)
-            .await
-            .unwrap()
-            .expect("both typed metrics tables are registered");
-        let batches = df.collect().await.unwrap();
-        let n: i64 = batches
-            .iter()
-            .map(|b| {
-                b.column_by_name("n")
-                    .unwrap()
-                    .as_any()
-                    .downcast_ref::<Int64Array>()
-                    .unwrap()
-                    .values()
-                    .iter()
-                    .sum::<i64>()
-            })
-            .sum();
-        // All three rows (2 gauge + 1 sum) carry the matching container.name.
-        assert_eq!(n, 3);
-    }
-
-    /// IR-1: the typed-layout cutover flips every table together, so a
-    /// gauge+sum union spanning both layouts is a schema mismatch this
-    /// planner rejects up front rather than letting `CoercedTableProvider`
-    /// fail with an opaque "missing column" error.
-    #[tokio::test]
-    async fn metrics_union_across_mixed_legacy_and_typed_layout_errors() {
-        let legacy_ctx = realistic_metrics_ctx();
-        let typed_ctx = typed_metrics_ctx();
-        let legacy_sum = legacy_ctx
-            .catalog("t")
-            .unwrap()
-            .schema("d")
-            .unwrap()
-            .table("metrics_sum")
-            .await
-            .unwrap()
-            .unwrap();
-
-        let sp = Arc::new(MemorySchemaProvider::new());
-        sp.register_table(
-            "metrics_gauge".to_string(),
-            typed_ctx
-                .catalog("t")
-                .unwrap()
-                .schema("d")
-                .unwrap()
-                .table("metrics_gauge")
-                .await
-                .unwrap()
-                .unwrap(),
-        )
-        .unwrap();
-        sp.register_table("metrics_sum".to_string(), legacy_sum)
-            .unwrap();
-        let cat = Arc::new(MemoryCatalogProvider::new());
-        cat.register_schema("d", sp).unwrap();
-        let ctx = SessionContext::new();
-        ctx.register_catalog("t", cat);
-
-        let svc = IrService::new(ctx);
-        let d = doc(serde_json::json!({
-            "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
-            "result": "table",
-            "pipeline": [
-                { "aggregate": { "by": ["container.name"],
-                                 "aggs": [{ "fn": "count", "as": "n" }] } }
-            ]
-        }));
-        let err = svc
-            .plan(&d, "t", "d", 0)
-            .await
-            .expect_err("a union mixing legacy and typed tables must be rejected");
-        let msg = format!("{err}");
-        assert!(
-            msg.contains("metrics_gauge") && msg.contains("metrics_sum"),
-            "unexpected error: {msg}"
-        );
     }
 
     /// #1348: a `where` predicate on a resource attribute served from the
@@ -6205,7 +5997,8 @@ mod tests {
     /// profile-payload-access task 2.1 — flamegraph envelope end-to-end.
     #[tokio::test]
     async fn flamegraph_over_single_profile_id_returns_its_own_flamegraph() {
-        let svc = IrService::new(profiles_ctx());
+        let svc = IrService::new(profiles_ctx())
+            .with_canonical_types(Arc::new(StaticLookup(canonical_types(&[]))));
         let params = IrQueryParams {
             document: serde_json::json!({
                 "irVersion": 1, "from": "profiles", "range": { "from": 0, "to": 1000 },
@@ -6226,7 +6019,8 @@ mod tests {
 
     #[tokio::test]
     async fn flamegraph_over_service_filter_aggregates_matching_profiles() {
-        let svc = IrService::new(profiles_ctx());
+        let svc = IrService::new(profiles_ctx())
+            .with_canonical_types(Arc::new(StaticLookup(canonical_types(&[]))));
         let params = IrQueryParams {
             document: serde_json::json!({
                 "irVersion": 1, "from": "profiles", "range": { "from": 0, "to": 1000 },
@@ -6342,7 +6136,7 @@ mod tests {
     /// scope attribute silently produced nothing.
     #[tokio::test]
     async fn scope_attributes_are_a_resolvable_container() {
-        let svc = IrService::new(logs_ctx_typed());
+        let svc = IrService::new(logs_ctx());
         let d = doc(serde_json::json!({
             "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
             "result": "table",
@@ -6367,7 +6161,7 @@ mod tests {
     /// qualification the coalesce hides which one answered.
     #[tokio::test]
     async fn a_container_qualifier_selects_one_scope() {
-        let svc = IrService::new(logs_ctx_typed());
+        let svc = IrService::new(logs_ctx());
         for (field, expected) in [
             ("resource.deployment.environment", "resource-prod"),
             ("log.deployment.environment", "prod"),
@@ -6410,7 +6204,7 @@ mod tests {
     /// written before qualification existed changes meaning.
     #[tokio::test]
     async fn an_unqualified_name_still_coalesces_across_containers() {
-        let svc = IrService::new(logs_ctx_typed());
+        let svc = IrService::new(logs_ctx());
         let d = doc(serde_json::json!({
             "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
             "result": "table",
@@ -6463,113 +6257,6 @@ mod tests {
                 "row defaults must include '{expected}', got {names:?}"
             );
         }
-    }
-
-    /// IR-1: `plan_document`'s compat attribute reads return identical rows
-    /// whether a source's attribute containers are the legacy
-    /// `Map<Utf8,Utf8>` layout ([`logs_ctx`]) or the typed layout
-    /// ([`logs_ctx_typed`]) — `eq`, `regex`, `exists`, and a
-    /// container-qualified field.
-    #[tokio::test]
-    async fn typed_layout_logs_attribute_reads_match_legacy_layout() {
-        async fn trace_ids(ctx: SessionContext, d: &Document) -> Vec<Option<String>> {
-            let svc = IrService::new(ctx);
-            let (df, _) = svc
-                .plan(d, "t", "d", 0)
-                .await
-                .unwrap()
-                .expect("source table is registered");
-            let mut ids = column_values(df, "trace_id").await;
-            ids.sort();
-            ids
-        }
-
-        let docs = [
-            doc(serde_json::json!({
-                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
-                "result": "rows", "fields": ["trace_id"],
-                "pipeline": [{ "where": { "field": "deployment.environment", "op": "eq", "value": "prod" } }]
-            })),
-            doc(serde_json::json!({
-                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
-                "result": "rows", "fields": ["trace_id"],
-                "pipeline": [{ "where": { "field": "deployment.environment", "op": "regex", "value": "^pro" } }]
-            })),
-            doc(serde_json::json!({
-                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
-                "result": "rows", "fields": ["trace_id"],
-                "pipeline": [{ "where": { "field": "deployment.environment", "op": "exists" } }]
-            })),
-            doc(serde_json::json!({
-                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
-                "result": "rows", "fields": ["trace_id"],
-                "pipeline": [{ "where": {
-                    "field": "resource.deployment.environment", "op": "eq", "value": "resource-prod"
-                } }]
-            })),
-        ];
-
-        for (i, d) in docs.iter().enumerate() {
-            let legacy = trace_ids(logs_ctx(), d).await;
-            let typed = trace_ids(logs_ctx_typed(), d).await;
-            assert_eq!(
-                typed, legacy,
-                "case {i}: typed vs legacy trace_id rows differ"
-            );
-        }
-    }
-
-    /// IR-1's unqualified (coalescing) case, over an aggregate rather than a
-    /// `rows` result: grouping by `otel.scope.flavor` groups and counts
-    /// identically on the typed layout.
-    #[tokio::test]
-    async fn typed_layout_logs_group_by_scope_attribute_matches_legacy_layout() {
-        async fn groups(ctx: SessionContext, d: &Document) -> Vec<(Option<String>, i64)> {
-            let svc = IrService::new(ctx);
-            let (df, _) = svc
-                .plan(d, "t", "d", 0)
-                .await
-                .unwrap()
-                .expect("source table is registered");
-            let batches = df.collect().await.unwrap();
-            let mut out = Vec::new();
-            for b in &batches {
-                let keys = b
-                    .column_by_name(&safe_ident("otel.scope.flavor"))
-                    .unwrap()
-                    .as_any()
-                    .downcast_ref::<StringArray>()
-                    .unwrap();
-                let ns = b
-                    .column_by_name("n")
-                    .unwrap()
-                    .as_any()
-                    .downcast_ref::<Int64Array>()
-                    .unwrap();
-                for i in 0..b.num_rows() {
-                    out.push((
-                        (!keys.is_null(i)).then(|| keys.value(i).to_string()),
-                        ns.value(i),
-                    ));
-                }
-            }
-            out.sort();
-            out
-        }
-
-        let d = doc(serde_json::json!({
-            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
-            "result": "table",
-            "pipeline": [
-                { "aggregate": { "by": ["otel.scope.flavor"], "aggs": [{ "fn": "count", "as": "n" }] } }
-            ]
-        }));
-        let legacy = groups(logs_ctx(), &d).await;
-        let typed = groups(logs_ctx_typed(), &d).await;
-        assert_eq!(
-            typed, legacy,
-            "typed vs legacy scope-attribute groups differ"
-        );
     }
 
     // --- IR-4: typed attribute resolution and retrieval (`otel-native-schema`
@@ -7404,28 +7091,6 @@ mod tests {
         );
     }
 
-    /// The legacy `Map<Utf8,Utf8>` layout is unaffected: `log_attributes`
-    /// stays a `Map` column, not the typed layout's JSON-object `Utf8`.
-    #[tokio::test]
-    async fn legacy_logs_attributes_projection_stays_a_map_column() {
-        let svc = IrService::new(logs_ctx());
-        let d = doc(serde_json::json!({
-            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
-            "result": "rows", "fields": ["log.attributes"],
-            "pipeline": []
-        }));
-        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
-        let field = df
-            .schema()
-            .field_with_unqualified_name("log_attributes")
-            .unwrap();
-        assert!(
-            matches!(field.data_type(), DataType::Map(_, _)),
-            "expected a Map column, got {:?}",
-            field.data_type()
-        );
-    }
-
     /// Widening the row defaults must not open a back door to physical
     /// addressing: the server chooses the default projection, but a client
     /// still cannot name a storage column. Containers reach the client only
@@ -7436,7 +7101,7 @@ mod tests {
         let d = doc(serde_json::json!({
             "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
             "result": "rows",
-            "fields": ["log_attributes"],
+            "fields": ["log_attributes_str"],
             "pipeline": []
         }));
         let err = svc
@@ -7444,7 +7109,7 @@ mod tests {
             .await
             .expect_err("physical addressing must stay rejected");
         assert!(
-            format!("{err}").contains("log_attributes"),
+            format!("{err}").contains("log_attributes_str"),
             "unexpected error: {err}"
         );
     }
@@ -7516,25 +7181,10 @@ mod tests {
             ],
             "output columns keep the OTel-scope naming"
         );
-        let attrs = batch
-            .column_by_name("log_attributes")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<datafusion::arrow::array::MapArray>()
-            .expect("the container comes back as its Map, not a rendering");
-        let entries = attrs.value(0);
-        let keys = entries
-            .column(0)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        let values = entries
-            .column(1)
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        assert_eq!(keys.value(0), "deployment.environment");
-        assert_eq!(values.value(0), "prod");
+        assert_eq!(
+            log_attributes_json(batch),
+            serde_json::json!({ "deployment.environment": "prod" })
+        );
     }
 
     #[tokio::test]
@@ -7633,14 +7283,14 @@ mod tests {
             "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
             "result": "rows",
             "fields": ["trace_id"],
-            "pipeline": [{ "where": { "field": "log_attributes", "op": "exists" } }]
+            "pipeline": [{ "where": { "field": "log_attributes_str", "op": "exists" } }]
         }));
         let err = svc
             .plan(&d, "t", "d", 0)
             .await
             .expect_err("physical addressing must stay rejected in a where clause");
         assert!(
-            format!("{err}").contains("log_attributes"),
+            format!("{err}").contains("log_attributes_str"),
             "unexpected error: {err}"
         );
     }
@@ -7984,7 +7634,7 @@ mod tests {
     // does not — so it is covered by execution/E2E, not plan shape.)
     #[tokio::test]
     async fn logs_aggregate_step_lowers_to_expected_plan_shape() {
-        let svc = IrService::new(logs_ctx_typed());
+        let svc = IrService::new(logs_ctx());
         let d = doc(serde_json::json!({
             "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
             "result": "series",
@@ -8035,7 +7685,7 @@ mod tests {
     // Task 4.2 — promotion invariance: promoted column vs json-path, same result.
     #[tokio::test]
     async fn promotion_invariance_same_result() {
-        let svc = IrService::new(logs_ctx_typed());
+        let svc = IrService::new(logs_ctx());
         let promoted = doc(serde_json::json!({
             "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
             "result": "table",
@@ -8700,65 +8350,10 @@ mod tests {
     }
 
     fn correlate_attrs_ctx() -> SessionContext {
-        let (schema, batch) = correlate_attrs_batch();
-        single_table_ctx("traces", schema, batch)
-    }
-
-    /// The typed-layout counterpart of [`correlate_attrs_ctx`]: the
-    /// identical rows, but `span_attributes` is rewritten onto its five
-    /// typed columns (`traces` `physical-v5`) — proves a `parent.`-scoped
-    /// correlate read matches identically over either layout, since the
-    /// join renames the typed home columns exactly as it does a legacy
-    /// container.
-    fn correlate_attrs_ctx_typed() -> SessionContext {
         let (_, batch) = correlate_attrs_batch();
         let batch =
             common::testing::to_typed_layout("traces", "physical-v5", &batch, &["span_attributes"]);
         single_table_ctx("traces", batch.schema(), batch.clone())
-    }
-
-    /// IR-1: a `parent.span.<key>` correlate read matches identically
-    /// whether `span_attributes` is the legacy layout ([`group_by_parent_attribute_scope`])
-    /// or the typed layout.
-    #[tokio::test]
-    async fn group_by_parent_attribute_scope_matches_over_the_typed_layout() {
-        let svc = IrService::new(correlate_attrs_ctx_typed());
-        let d = doc(serde_json::json!({
-            "irVersion": 8, "from": "traces", "range": { "from": 0, "to": 1000 },
-            "result": "table",
-            "pipeline": [
-                { "correlate": { "to": "parent", "kind": "inner" } },
-                { "aggregate": {
-                    "by": ["parent.span.http.route"],
-                    "aggs": [{ "fn": "count", "as": "n" }]
-                } }
-            ]
-        }));
-        let (df, _) = svc
-            .plan(&d, "t", "d", 0)
-            .await
-            .unwrap()
-            .expect("source table is registered");
-        let batches = df.collect().await.unwrap();
-        let total: usize = batches.iter().map(|b| b.num_rows()).sum();
-        assert_eq!(total, 1, "one distinct parent route");
-        let batch = &batches[0];
-        let route = batch
-            .column_by_name("parent_span_http_route")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap()
-            .value(0);
-        assert_eq!(route, "/checkout");
-        let n = batch
-            .column_by_name("n")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<datafusion::arrow::array::Int64Array>()
-            .unwrap()
-            .value(0);
-        assert_eq!(n, 1);
     }
 
     #[tokio::test]
@@ -10154,7 +9749,8 @@ mod tests {
             tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
 
         async {
-            let svc = IrService::new(logs_ctx());
+            let svc = IrService::new(logs_ctx())
+                .with_canonical_types(Arc::new(StaticLookup(canonical_types(&[]))));
             let params = crate::query::IrQueryParams {
                 document: serde_json::json!({
                     "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
@@ -10444,247 +10040,6 @@ mod tests {
             21.0,
             "the quantile sees only the rows the scope admits"
         );
-    }
-
-    // -----------------------------------------------------------------
-    // Legacy Utf8-JSON attribute containers (issue found while removing
-    // `ir-single-lowering`'s rollout switches): a table created before the
-    // Map-typed-attribute-column migration stores `log_attributes`/
-    // `span_attributes`/etc. as a flat JSON string, not a typed
-    // `Map<Utf8,Utf8>`. `attr_expr` always emitted `get_field(col, key)`,
-    // which is a hard DataFusion execution error against a `Utf8` column —
-    // never a graceful IR-level rejection, since the document itself is
-    // perfectly valid. Real, currently-reachable data (`schemas.toml`'s
-    // physical-v1/v2 history; Iceberg never rewrites already-written files),
-    // not a hypothetical. Fixed by coercing a legacy container up to a typed
-    // map at scan time, reusing `CoercedTableProvider`/`JsonToMapUdf` (#1206
-    // already does this for the *union* of several tables; this generalizes
-    // it to a single-table source's own scan).
-    // -----------------------------------------------------------------
-
-    /// A `logs` table whose attribute containers are legacy flat-JSON
-    /// strings, not typed maps — `log_attributes` carries `http.method` on
-    /// two rows and nothing on the third (absent-key case); `label_env` is a
-    /// promoted column alongside, present for two rows.
-    fn legacy_json_logs_ctx() -> SessionContext {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(
-                "timestamp",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
-            ),
-            Field::new("body", DataType::Utf8, true),
-            Field::new("service_name", DataType::Utf8, true),
-            Field::new("severity_text", DataType::Utf8, true),
-            Field::new("trace_id", DataType::Utf8, true),
-            Field::new("span_id", DataType::Utf8, true),
-            Field::new("label_env", DataType::Utf8, true),
-            // Legacy shape: a flat JSON string, not `Map<Utf8,Utf8>`.
-            Field::new("log_attributes", DataType::Utf8, true),
-            Field::new("resource_attributes", DataType::Utf8, true),
-        ]));
-        let ts = TimestampNanosecondArray::from(vec![10_i64, 20, 30]);
-        let body = StringArray::from(vec![Some("a"), Some("b"), Some("c")]);
-        let service = StringArray::from(vec![Some("api"), Some("api"), Some("web")]);
-        let sev = StringArray::from(vec![Some("INFO"), Some("INFO"), Some("INFO")]);
-        let trace = StringArray::from(vec![Some("t1"), Some("t2"), Some("t3")]);
-        let span = StringArray::from(vec![Some("s1"), Some("s2"), Some("s3")]);
-        let env = StringArray::from(vec![Some("prod"), Some("staging"), None]);
-        let log_attrs = StringArray::from(vec![
-            Some(r#"{"http.method":"GET"}"#),
-            Some(r#"{"http.method":"POST"}"#),
-            // Row 3: the key is entirely absent, not merely empty.
-            Some("{}"),
-        ]);
-        let res_attrs = StringArray::from(vec![Some("{}"), Some("{}"), Some("{}")]);
-
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(ts),
-                Arc::new(body),
-                Arc::new(service),
-                Arc::new(sev),
-                Arc::new(trace),
-                Arc::new(span),
-                Arc::new(env),
-                Arc::new(log_attrs),
-                Arc::new(res_attrs),
-            ],
-        )
-        .unwrap();
-        legacy_json_single_table_ctx("logs", schema, batch)
-    }
-
-    /// Register `batch` as the sole table of `table_name`, under tenant `t`
-    /// / dataset `d` — the common tail both legacy-JSON fixtures share.
-    fn legacy_json_single_table_ctx(
-        table_name: &str,
-        schema: Arc<Schema>,
-        batch: RecordBatch,
-    ) -> SessionContext {
-        let ctx = SessionContext::new();
-        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
-        let sp = Arc::new(MemorySchemaProvider::new());
-        sp.register_table(table_name.to_string(), Arc::new(table))
-            .unwrap();
-        let cat = Arc::new(MemoryCatalogProvider::new());
-        cat.register_schema("d", sp).unwrap();
-        ctx.register_catalog("t", cat);
-        ctx
-    }
-
-    /// A `traces` table whose attribute containers are legacy flat-JSON
-    /// strings — the same gap, one representative case for the other
-    /// source `attr_expr` serves.
-    fn legacy_json_traces_ctx() -> SessionContext {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new("trace_id", DataType::Utf8, false),
-            Field::new("span_id", DataType::Utf8, false),
-            Field::new("parent_span_id", DataType::Utf8, true),
-            Field::new("span_name", DataType::Utf8, false),
-            Field::new("service_name", DataType::Utf8, false),
-            Field::new("start_time_unix_nano", DataType::Int64, false),
-            Field::new("duration_nanos", DataType::Int64, false),
-            Field::new("status_code", DataType::Utf8, true),
-            // Legacy shape: a flat JSON string, not `Map<Utf8,Utf8>`.
-            Field::new("span_attributes", DataType::Utf8, true),
-            Field::new("resource_attributes", DataType::Utf8, true),
-        ]));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(StringArray::from(vec!["t0", "t1"])),
-                Arc::new(StringArray::from(vec!["s0", "s1"])),
-                Arc::new(StringArray::from(vec![None::<&str>, None])),
-                Arc::new(StringArray::from(vec!["GET /api", "POST /x"])),
-                Arc::new(StringArray::from(vec!["api", "web"])),
-                Arc::new(Int64Array::from(vec![10_i64, 20])),
-                Arc::new(Int64Array::from(vec![100_i64, 200])),
-                Arc::new(StringArray::from(vec![Some("Ok"), Some("Ok")])),
-                Arc::new(StringArray::from(vec![
-                    Some(r#"{"http.method":"GET"}"#),
-                    Some(r#"{"http.method":"POST"}"#),
-                ])),
-                Arc::new(StringArray::from(vec![Some("{}"), Some("{}")])),
-            ],
-        )
-        .unwrap();
-        legacy_json_single_table_ctx("traces", schema, batch)
-    }
-
-    async fn rows_matching(ctx: &SessionContext, from: &str, pred: serde_json::Value) -> usize {
-        let svc = IrService::new(ctx.clone());
-        let d = doc(serde_json::json!({
-            "irVersion": 1, "from": from, "range": { "from": 0, "to": 1000 },
-            "result": "rows",
-            "pipeline": [{ "where": pred }]
-        }));
-        let (df, _) = svc
-            .plan(&d, "t", "d", 0)
-            .await
-            .unwrap_or_else(|e| panic!("plan failed: {e}"))
-            .expect("table is registered");
-        df.collect()
-            .await
-            .unwrap_or_else(|e| panic!("execute failed: {e}"))
-            .iter()
-            .map(|b| b.num_rows())
-            .sum()
-    }
-
-    #[tokio::test]
-    async fn legacy_json_container_equality_matches() {
-        let ctx = legacy_json_logs_ctx();
-        let n = rows_matching(
-            &ctx,
-            "logs",
-            serde_json::json!({ "field": "http.method", "op": "eq", "value": "GET" }),
-        )
-        .await;
-        assert_eq!(n, 1, "only row 1 has http.method=GET");
-    }
-
-    #[tokio::test]
-    async fn legacy_json_container_not_equal_excludes_absent_key() {
-        let ctx = legacy_json_logs_ctx();
-        // Kleene: an absent key satisfies neither `=` nor `!=` — row 3 (no
-        // `http.method` key at all) must not count, so only row 2 (POST)
-        // matches `!= "GET"`.
-        let n = rows_matching(
-            &ctx,
-            "logs",
-            serde_json::json!({ "field": "http.method", "op": "ne", "value": "GET" }),
-        )
-        .await;
-        assert_eq!(
-            n, 1,
-            "row 2 (POST) only — row 3's absent key matches neither = nor !="
-        );
-    }
-
-    #[tokio::test]
-    async fn legacy_json_container_regex_matches() {
-        let ctx = legacy_json_logs_ctx();
-        let n = rows_matching(
-            &ctx,
-            "logs",
-            serde_json::json!({ "field": "http.method", "op": "regex", "value": "^GE.*" }),
-        )
-        .await;
-        assert_eq!(n, 1, "only row 1 (GET) matches ^GE.*");
-    }
-
-    #[tokio::test]
-    async fn legacy_json_container_contains_matches() {
-        let ctx = legacy_json_logs_ctx();
-        let n = rows_matching(
-            &ctx,
-            "logs",
-            serde_json::json!({ "field": "http.method", "op": "contains", "value": "ET" }),
-        )
-        .await;
-        assert_eq!(n, 1, "only row 1 (GET) contains ET");
-    }
-
-    #[tokio::test]
-    async fn legacy_json_container_exists_excludes_absent_key() {
-        let ctx = legacy_json_logs_ctx();
-        let n = rows_matching(
-            &ctx,
-            "logs",
-            serde_json::json!({ "field": "http.method", "op": "exists" }),
-        )
-        .await;
-        assert_eq!(n, 2, "rows 1 and 2 have the key; row 3 does not");
-    }
-
-    /// A promoted column alongside a legacy JSON container: `env` resolves
-    /// to `label_env`, coalesced with the (legacy-JSON-coerced)
-    /// `log_attributes` fallback (#816) — the legacy-container coercion must
-    /// not change that.
-    #[tokio::test]
-    async fn legacy_json_container_promoted_column_still_takes_priority() {
-        let ctx = legacy_json_logs_ctx();
-        let n = rows_matching(
-            &ctx,
-            "logs",
-            serde_json::json!({ "field": "env", "op": "eq", "value": "prod" }),
-        )
-        .await;
-        assert_eq!(n, 1, "only row 1 has label_env = prod");
-    }
-
-    #[tokio::test]
-    async fn legacy_json_container_works_for_traces_too() {
-        let ctx = legacy_json_traces_ctx();
-        let n = rows_matching(
-            &ctx,
-            "traces",
-            serde_json::json!({ "field": "http.method", "op": "eq", "value": "POST" }),
-        )
-        .await;
-        assert_eq!(n, 1, "only t1 has http.method=POST");
     }
 
     // -----------------------------------------------------------------
@@ -11106,19 +10461,6 @@ mod tests {
             }),
             now_ns: 0,
         }
-    }
-
-    #[tokio::test]
-    async fn legacy_table_never_fetches_canonical_types() {
-        let (schema, batch) = logs_batch();
-        let ctx = single_table_ctx("logs", schema, batch);
-        let lookup = Arc::new(CountingLookup {
-            calls: std::sync::atomic::AtomicUsize::new(0),
-        });
-        let svc = IrService::new(ctx).with_canonical_types(lookup.clone());
-
-        svc.query(&rows_query_params(), "t", "d").await.unwrap();
-        assert_eq!(lookup.calls.load(AtomicOrdering::Relaxed), 0);
     }
 
     #[tokio::test]
