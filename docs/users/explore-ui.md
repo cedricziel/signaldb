@@ -1194,6 +1194,18 @@ straight away and switches to it as soon as it is ready, since an outdated
 cached build is a common cause and a crashed page has no unsaved edits to
 lose.
 
+Opening or reloading the UI asks the server first. The cached copy is only
+used when the server doesn't answer within about 5 seconds, for example
+while you are offline.
+
+If a reverse proxy with its own login (Pangolin, Authelia, oauth2-proxy)
+sits in front of SignalDB, an expired proxy session makes the proxy
+redirect the UI's data requests to its login page. The browser blocks those
+redirects, so panels fail with network errors. The UI spots this, reloads
+the page once, and the proxy shows its login page; after you sign in you
+land back in the UI, and the update check can find new builds again. The UI
+won't reload a second time until a request gets through, so it can't loop.
+
 ## Availability
 
 Container images (router and monolithic) ship the UI preinstalled. For

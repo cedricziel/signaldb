@@ -7,6 +7,18 @@
 /** Fallback target for a missing or unsafe `redirect` value. */
 export const DEFAULT_TARGET = "/logs";
 
+/** True when `raw` resolves, against the app's own origin, to that same
+ * origin. A parse failure counts as not same-origin. */
+export function isSameOrigin(raw: string): boolean {
+  try {
+    return (
+      new URL(raw, window.location.origin).origin === window.location.origin
+    );
+  } catch {
+    return false;
+  }
+}
+
 /** Only accept a same-app relative path as the redirect target, other than
  * `/login` itself (looping the credential step back onto its own landing
  * pad). Parses the candidate against the app's own origin and requires the
@@ -23,9 +35,9 @@ export function safeRedirectTarget(raw: string | null | undefined): string {
   for (let i = 0; i < raw.length; i++) {
     if (raw.charCodeAt(i) < 0x20) return DEFAULT_TARGET;
   }
+  if (!isSameOrigin(raw)) return DEFAULT_TARGET;
   try {
     const url = new URL(raw, window.location.origin);
-    if (url.origin !== window.location.origin) return DEFAULT_TARGET;
     if (url.pathname === "/login") return DEFAULT_TARGET;
     const target = `${url.pathname}${url.search}${url.hash}`;
     // Defense in depth against a dot-segment path escape: even though
