@@ -664,9 +664,10 @@ fn lower_v2(files: Vec<(String, ModelFileV2)>) -> Vec<Group> {
         .iter()
         .map(|(group, attrs)| (group.id.as_str(), attrs.as_slice()))
         .collect();
+    let mut memo = BTreeMap::new();
     let expanded: Vec<Vec<AttributeSpec>> = pending
         .iter()
-        .map(|(_, attrs)| expand_v2_attrs(attrs, &by_id, &mut BTreeSet::new()))
+        .map(|(_, attrs)| expand_v2_attrs(attrs, &by_id, &mut memo, &mut BTreeSet::new()))
         .collect();
     pending
         .into_iter()
@@ -679,21 +680,36 @@ fn lower_v2(files: Vec<(String, ModelFileV2)>) -> Vec<Group> {
 }
 
 /// Flatten a v2 attribute list into [`AttributeSpec`]s, splicing each
-/// `ref_group` in place (recursively; a cycle splices nothing).
+/// `ref_group` in place (recursively; a cycle splices nothing). Each group
+/// is expanded once (`memo`), and a splice skips attributes already present,
+/// so uploads cannot make expansion grow exponentially.
 fn expand_v2_attrs<'a>(
     attrs: &'a [V2Attr],
     by_id: &BTreeMap<&str, &'a [V2Attr]>,
+    memo: &mut BTreeMap<&'a str, Vec<AttributeSpec>>,
     visiting: &mut BTreeSet<&'a str>,
 ) -> Vec<AttributeSpec> {
-    let mut out = Vec::new();
+    let mut out: Vec<AttributeSpec> = Vec::new();
+    let mut seen = BTreeSet::new();
     for attr in attrs {
         match &attr.ref_group {
             Some(group_id) => {
-                if let Some(inner) = by_id.get(group_id.as_str())
-                    && visiting.insert(group_id)
-                {
-                    out.extend(expand_v2_attrs(inner, by_id, visiting));
-                    visiting.remove(group_id.as_str());
+                let group_id = group_id.as_str();
+                if !memo.contains_key(group_id) {
+                    let Some(inner) = by_id.get(group_id) else {
+                        continue;
+                    };
+                    if !visiting.insert(group_id) {
+                        continue;
+                    }
+                    let spliced = expand_v2_attrs(inner, by_id, memo, visiting);
+                    visiting.remove(group_id);
+                    memo.insert(group_id, spliced);
+                }
+                for spec in &memo[group_id] {
+                    if seen.insert((spec.id.clone(), spec.r#ref.clone())) {
+                        out.push(spec.clone());
+                    }
                 }
             }
             None => {
@@ -701,6 +717,7 @@ fn expand_v2_attrs<'a>(
                 if attr.key.is_some() {
                     spec.id = attr.key.clone();
                 }
+                seen.insert((spec.id.clone(), spec.r#ref.clone()));
                 out.push(spec);
             }
         }

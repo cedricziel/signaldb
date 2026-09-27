@@ -68,6 +68,29 @@ fn unknown_file_format_is_rejected() {
 }
 
 #[test]
+fn repeated_ref_group_splices_expand_once() {
+    // Each level splices the one below twice; naive expansion is 2^depth.
+    let depth = 64;
+    let mut yaml = String::from(
+        "file_format: definition/2\nname: chain\nversion: 1.0.0\nattribute_groups:\n  - id: g0\n    attributes:\n      - key: chain.id\n        type: string\n        brief: Chain id.\n        stability: development\n",
+    );
+    for n in 1..=depth {
+        let prev = n - 1;
+        yaml.push_str(&format!(
+            "  - id: g{n}\n    attributes:\n      - ref_group: g{prev}\n      - ref_group: g{prev}\n"
+        ));
+    }
+    let doc = RegistryDocument::from_yaml(&yaml).expect("parses");
+    let top = doc
+        .groups
+        .iter()
+        .find(|g| g.id == format!("g{depth}"))
+        .expect("top group");
+    assert_eq!(top.attributes.len(), 1);
+    assert_eq!(top.attributes[0].id.as_deref(), Some("chain.id"));
+}
+
+#[test]
 fn non_string_file_format_is_rejected() {
     let dir = fixtures_dir().join("non-string-file-format/model");
     let err = RegistryDocument::from_dir("bad", "1.0.0", &dir)
