@@ -26,6 +26,9 @@ fn typed_attribute_fields_from(table: &str, version: &str, container: &str) -> [
         "metrics_sum" => {
             SCHEMA_DEFINITIONS.resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_sum, version)
         }
+        "profiles" => {
+            SCHEMA_DEFINITIONS.resolve_table_schema(&SCHEMA_DEFINITIONS.profiles, version)
+        }
         other => panic!("unsupported table '{other}' in the typed-attribute test fixture"),
     }
     .unwrap_or_else(|_| panic!("{table} {version} schema resolves"));

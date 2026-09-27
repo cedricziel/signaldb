@@ -202,8 +202,12 @@ impl TraceService {
 
         // Projection pushdown: only read the columns needed to reconstruct the
         // trace, so the scan skips the fat `events` / `links` / `scope_*`
-        // columns entirely.
-        df = df.select_columns(&TRACE_LOOKUP_COLUMNS).map_err(|e| {
+        // columns entirely. `span_attributes`/`resource_attributes` project to
+        // their five typed-layout homes instead of the single legacy column
+        // when the table has been rewritten onto that layout.
+        let lookup_columns = attr_aware_columns(&df, &TRACE_LOOKUP_COLUMNS);
+        let lookup_columns: Vec<&str> = lookup_columns.iter().map(String::as_str).collect();
+        df = df.select_columns(&lookup_columns).map_err(|e| {
             tracing::error!(
                 "Failed to project trace lookup columns for trace_id={}: {e}",
                 params.trace_id
@@ -595,8 +599,11 @@ impl TraceService {
             cols.push("span_attributes");
         }
 
-        let scan = time_window(df, params.start, params.end)?
-            .select_columns(&cols)
+        let windowed = time_window(df, params.start, params.end)?;
+        let scan_columns = attr_aware_columns(&windowed, &cols);
+        let scan_columns: Vec<&str> = scan_columns.iter().map(String::as_str).collect();
+        let scan = windowed
+            .select_columns(&scan_columns)
             .map_err(QuerierError::QueryFailed)?;
         // Arrow's row format cannot sort Map columns, so the JSON-era
         // `distinct()` dedup is skipped for map-typed attribute tables.
@@ -709,8 +716,10 @@ impl TraceService {
         // documents — covers map-stored attributes and unknown tags alike
         // (an unknown key simply is never present, so the result is empty).
         let cols = ["resource_attributes", "span_attributes"];
+        let scan_columns = attr_aware_columns(&df, &cols);
+        let scan_columns: Vec<&str> = scan_columns.iter().map(String::as_str).collect();
         let scan = df
-            .select_columns(&cols)
+            .select_columns(&scan_columns)
             .map_err(QuerierError::QueryFailed)?;
         let map_typed = cols.iter().any(|c| is_map_column(&scan, c));
         let scan = if map_typed {
@@ -755,14 +764,35 @@ fn dedicated_tag_column(tag: &str) -> Option<(&'static str, bool)> {
     }
 }
 
-/// Whether `column` is a typed `Map` column in `df`'s schema — Arrow's row
-/// format cannot sort Map columns, so callers must skip `distinct()` on
-/// them (see [`TraceService::get_tags`]).
+/// Whether `column` is a typed `Map` column in `df`'s schema, or an
+/// attribute container rewritten onto the typed attribute layout (whose
+/// typed homes are themselves `Map` columns) — either way, Arrow's row
+/// format cannot sort it, so callers must skip `distinct()` on it (see
+/// [`TraceService::get_tags`]).
 fn is_map_column(df: &DataFrame, column: &str) -> bool {
-    df.schema()
-        .fields()
+    df.schema().fields().iter().any(|f| {
+        (f.name() == column && matches!(f.data_type(), DataType::Map(_, _)))
+            || common::attrs::expr::is_typed_layout(df.schema().as_arrow(), column)
+    })
+}
+
+/// `columns` (a fixed list of physical columns) with every attribute
+/// container name in it replaced by its typed-layout homes when `df`'s
+/// schema shows the container has been rewritten onto that layout — see
+/// [`common::attrs::expr::select_columns_for_containers`]. Non-container
+/// columns pass through unchanged.
+fn attr_aware_columns(df: &DataFrame, columns: &[&str]) -> Vec<String> {
+    let schema = Some(df.schema().as_arrow());
+    columns
         .iter()
-        .any(|f| f.name() == column && matches!(f.data_type(), DataType::Map(_, _)))
+        .flat_map(|&column| {
+            if matches!(column, "span_attributes" | "resource_attributes") {
+                common::attrs::expr::select_columns_for_containers(schema, &[column])
+            } else {
+                vec![column.to_string()]
+            }
+        })
+        .collect()
 }
 
 /// Columns required to reconstruct a trace in [`TraceService::find_by_id_with_tenant`].
@@ -2017,6 +2047,67 @@ mod tests {
             .unwrap();
         ctx.register_catalog("t", cat);
         TraceService::new(ctx, "traces".to_string())
+    }
+
+    /// [`search_session`]'s traces table, rewritten onto the typed
+    /// attribute layout (no single `span_attributes`/`resource_attributes`
+    /// column; five homes per container instead) -- the layout every table
+    /// is stored in since the typed-layout cutover.
+    async fn search_session_typed() -> SessionContext {
+        use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
+        use datafusion::catalog::{CatalogProvider, MemTable, SchemaProvider};
+
+        let ctx = search_session();
+        let batch = ctx
+            .table("t.d.traces")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        let typed_batch = common::testing::to_typed_layout(
+            "traces",
+            "physical-v5",
+            &batch,
+            &["span_attributes", "resource_attributes"],
+        );
+
+        let new_ctx = SessionContext::new();
+        let table = MemTable::try_new(typed_batch.schema(), vec![vec![typed_batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("traces".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        new_ctx.register_catalog("t", cat);
+        new_ctx
+    }
+
+    /// A typed-layout traces table has no `span_attributes`/
+    /// `resource_attributes` column at all; this pins that `find_by_id`
+    /// still reconstructs the trace instead of erroring with "No field
+    /// named span_attributes".
+    #[tokio::test]
+    async fn find_by_id_reads_typed_attribute_layout() {
+        let service = TraceService::new(search_session_typed().await, "traces".to_string());
+        let trace = service
+            .find_by_id_with_tenant(
+                FindTraceByIdParams {
+                    trace_id: "t-old".to_string(),
+                    start: None,
+                    end: None,
+                },
+                "t",
+                "d",
+            )
+            .await
+            .expect("typed-layout trace lookup must not error")
+            .expect("trace must be found");
+        assert_eq!(trace.trace_id, "t-old");
+        assert_eq!(trace.spans.len(), 1);
     }
 
     #[tokio::test]

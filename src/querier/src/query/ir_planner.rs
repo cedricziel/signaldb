@@ -10044,6 +10044,19 @@ mod tests {
         use common::schema::SCHEMA_DEFINITIONS;
         use std::collections::HashSet;
 
+        // A name is realized either as the legacy single map column, or
+        // (typed layout, e.g. every signal's current version) as its
+        // `{name}_residue` column among the five typed-home columns --
+        // either is a valid realization, since `SourcePlan`'s container
+        // names are logical container identities, not literal column names.
+        let realized = |cols: &HashSet<String>, name: &str| {
+            cols.contains(name)
+                || common::schema::typed_attributes::has_typed_container(
+                    cols.iter().map(String::as_str),
+                    name,
+                )
+        };
+
         let check = |sp: &SourcePlan, cols: &HashSet<String>, sig: &str| {
             assert!(
                 cols.contains(sp.time_col),
@@ -10051,14 +10064,14 @@ mod tests {
                 sp.time_col
             );
             for c in sp.containers {
-                assert!(cols.contains(*c), "{sig} container '{c}' not in schema");
+                assert!(realized(cols, c), "{sig} container '{c}' not in schema");
             }
             for c in sp.row_defaults {
-                assert!(cols.contains(*c), "{sig} row default '{c}' not in schema");
+                assert!(realized(cols, c), "{sig} row default '{c}' not in schema");
             }
             for (_, physical) in sp.aliases {
                 assert!(
-                    cols.contains(*physical),
+                    realized(cols, physical),
                     "{sig} alias target '{physical}' not in schema"
                 );
             }
@@ -10102,8 +10115,8 @@ mod tests {
         let sum_cols: HashSet<String> = sum.fields().iter().map(|f| f.name.to_string()).collect();
         let metrics = SourcePlan::for_source("metrics").unwrap();
         for c in metrics.row_defaults {
-            assert!(gauge_cols.contains(*c), "metrics_gauge missing '{c}'");
-            assert!(sum_cols.contains(*c), "metrics_sum missing '{c}'");
+            assert!(realized(&gauge_cols, c), "metrics_gauge missing '{c}'");
+            assert!(realized(&sum_cols, c), "metrics_sum missing '{c}'");
         }
         check(&metrics, &gauge_cols, "metrics (vs. gauge)");
 

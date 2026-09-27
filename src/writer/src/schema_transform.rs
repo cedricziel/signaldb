@@ -264,10 +264,18 @@ fn hour_from_start_time_extractor() -> Extractor {
     })
 }
 
-/// Resolves the compiled plan for the current traces schema version.
+/// Resolves the compiled plan against `physical-v4` -- the last version
+/// with `span_attributes`/`resource_attributes`/`scope_attributes` as
+/// JSON-string columns, not `SCHEMA_DEFINITIONS.current_trace_version()`.
+/// This plan's job is only to bridge the wire's v1 shape to that stable
+/// intermediate shape; [`IcebergTableWriter::append_batches_with_marker`]'s
+/// typed-container splitting handles the v4 -> v5 (typed layout) hop
+/// afterward, generically, from whatever table schema is actually current
+/// -- it does not need (and, for a `map<string,long>` typed column,
+/// [`create_arrow_schema_from_resolved`] cannot build) this plan to track
+/// the typed layout itself.
 fn build_trace_v1_to_v2_plan() -> Result<TraceV1ToV2Plan> {
-    let v2_schema =
-        SCHEMA_DEFINITIONS.resolve_trace_schema(SCHEMA_DEFINITIONS.current_trace_version())?;
+    let v2_schema = SCHEMA_DEFINITIONS.resolve_trace_schema("physical-v4")?;
     build_trace_v1_to_v2_plan_for(&v2_schema)
 }
 
@@ -3953,7 +3961,7 @@ mod schema_consistency {
     #[test]
     fn traces_transform_covers_every_non_computed_physical_v4_field() {
         let resolved = SCHEMA_DEFINITIONS
-            .resolve_trace_schema(SCHEMA_DEFINITIONS.current_trace_version())
+            .resolve_trace_schema("physical-v4")
             .unwrap();
         assert_covers_non_computed_fields(
             "traces",
@@ -3994,7 +4002,7 @@ mod schema_consistency {
     #[test]
     fn logs_transform_covers_every_non_computed_physical_v3_field() {
         let resolved = SCHEMA_DEFINITIONS
-            .resolve_log_schema(&SCHEMA_DEFINITIONS.metadata.current_log_version)
+            .resolve_log_schema("physical-v3")
             .unwrap();
         assert_covers_non_computed_fields(
             "logs",
@@ -4026,10 +4034,7 @@ mod schema_consistency {
     #[test]
     fn profiles_transform_covers_every_non_computed_physical_v2_field() {
         let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(
-                &SCHEMA_DEFINITIONS.profiles,
-                &SCHEMA_DEFINITIONS.metadata.current_profile_version,
-            )
+            .resolve_table_schema(&SCHEMA_DEFINITIONS.profiles, "physical-v2")
             .unwrap();
         assert_covers_non_computed_fields(
             "profiles",
@@ -4059,10 +4064,7 @@ mod schema_consistency {
     #[test]
     fn metrics_gauge_transform_covers_every_non_computed_physical_v2_field() {
         let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(
-                &SCHEMA_DEFINITIONS.metrics_gauge,
-                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
-            )
+            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_gauge, "physical-v2")
             .unwrap();
         let schema = create_metrics_gauge_arrow_schema();
         let touched = metrics_arrow_touched_fields(&schema);
@@ -4072,10 +4074,7 @@ mod schema_consistency {
     #[test]
     fn metrics_sum_transform_covers_every_non_computed_physical_v2_field() {
         let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(
-                &SCHEMA_DEFINITIONS.metrics_sum,
-                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
-            )
+            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_sum, "physical-v2")
             .unwrap();
         let schema = create_metrics_sum_arrow_schema();
         let touched = metrics_arrow_touched_fields(&schema);
@@ -4085,10 +4084,7 @@ mod schema_consistency {
     #[test]
     fn metrics_histogram_transform_covers_every_non_computed_physical_v2_field() {
         let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(
-                &SCHEMA_DEFINITIONS.metrics_histogram,
-                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
-            )
+            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_histogram, "physical-v2")
             .unwrap();
         let schema = create_metrics_histogram_arrow_schema();
         let touched = metrics_arrow_touched_fields(&schema);
@@ -4100,7 +4096,7 @@ mod schema_consistency {
         let resolved = SCHEMA_DEFINITIONS
             .resolve_table_schema(
                 &SCHEMA_DEFINITIONS.metrics_exponential_histogram,
-                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
+                "physical-v2",
             )
             .unwrap();
         let schema = create_metrics_exponential_histogram_arrow_schema();
@@ -4111,10 +4107,7 @@ mod schema_consistency {
     #[test]
     fn metrics_summary_transform_covers_every_non_computed_physical_v2_field() {
         let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(
-                &SCHEMA_DEFINITIONS.metrics_summary,
-                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
-            )
+            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_summary, "physical-v2")
             .unwrap();
         let schema = create_metrics_summary_arrow_schema();
         let touched = metrics_arrow_touched_fields(&schema);
@@ -4128,10 +4121,7 @@ mod schema_consistency {
         // without a matching schemas.toml entry -- the scenario this
         // derivation exists to catch.
         let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(
-                &SCHEMA_DEFINITIONS.metrics_gauge,
-                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
-            )
+            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_gauge, "physical-v2")
             .unwrap();
         let mut fields: Vec<Field> = create_metrics_gauge_arrow_schema()
             .fields()

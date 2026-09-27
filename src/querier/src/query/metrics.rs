@@ -51,15 +51,12 @@ use common::schema::materialized_column_name;
 /// and gauges; histograms are handled separately with histogram_quantile).
 const METRIC_TABLES: &[&str] = &["metrics_gauge", "metrics_sum"];
 
-/// Columns projected from each metrics table before the union.
-const SCAN_COLUMNS: &[&str] = &[
-    "timestamp",
-    "service_name",
-    "metric_name",
-    "value",
-    "attributes",
-    "resource_attributes",
-];
+/// Fixed (non-attribute) columns projected from each metrics table before
+/// the union. The attribute containers (`attributes`/`resource_attributes`)
+/// are projected separately per table via
+/// [`common::attrs::expr::select_columns_for_containers`], since a typed-
+/// layout table has no single `attributes` column to select.
+const SCAN_COLUMNS: &[&str] = &["timestamp", "service_name", "metric_name", "value"];
 
 const LOG_ATTRIBUTES: &str = "attributes";
 const RESOURCE_ATTRIBUTES: &str = "resource_attributes";
@@ -1572,6 +1569,11 @@ impl MetricsService {
         let mut union: Option<DataFrame> = None;
         for df in tables {
             let mut proj: Vec<Expr> = SCAN_COLUMNS.iter().map(|c| col(*c)).collect();
+            let attr_columns = common::attrs::expr::select_columns_for_containers(
+                Some(df.schema().as_arrow()),
+                &[LOG_ATTRIBUTES, RESOURCE_ATTRIBUTES],
+            );
+            proj.extend(attr_columns.iter().map(|c| col(c.as_str())));
             for label in &label_cols {
                 if df.schema().field_with_unqualified_name(label).is_ok() {
                     proj.push(col(label.as_str()));
@@ -2219,7 +2221,10 @@ fn apply_filters(
                     f.data_type(),
                     datafusion::arrow::datatypes::DataType::Map(_, _)
                 )
-        }),
+        }) || common::attrs::expr::is_typed_layout(
+            df.schema().as_arrow(),
+            LOG_ATTRIBUTES,
+        ),
         // Metrics tables carry no derived token column (logs only).
         attr_tokens: false,
         schema: Some(df.schema().inner().clone()),
@@ -2803,6 +2808,48 @@ mod tests {
         MetricsService::new(ctx)
     }
 
+    /// Same series as [`service_with_data`], rewritten onto the typed
+    /// attribute layout (`attributes_str`/`_int`/`_double`/`_bool`/`_residue`
+    /// instead of a single `attributes` column) -- the layout every table
+    /// is stored in since the typed-layout cutover.
+    fn service_with_typed_data() -> MetricsService {
+        let schema = metrics_schema();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
+                Arc::new(TimestampNanosecondArray::from(vec![None, None, None])),
+                Arc::new(StringArray::from(vec!["api", "api", "web"])),
+                Arc::new(StringArray::from(vec!["reqs", "reqs", "reqs"])),
+                Arc::new(Float64Array::from(vec![1.0, 3.0, 5.0])),
+                Arc::new(StringArray::from(vec![
+                    r#"{"code":"200"}"#,
+                    r#"{"code":"500"}"#,
+                    r#"{"code":"200"}"#,
+                ])),
+                Arc::new(StringArray::from(vec!["{}", "{}", "{}"])),
+            ],
+        )
+        .unwrap();
+        let typed_batch = common::testing::to_typed_layout(
+            "metrics_gauge",
+            "physical-v3",
+            &batch,
+            &["attributes", "resource_attributes"],
+        );
+
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(typed_batch.schema(), vec![vec![typed_batch]]).unwrap();
+        let schema_provider = Arc::new(MemorySchemaProvider::new());
+        schema_provider
+            .register_table("metrics_gauge".to_string(), Arc::new(table))
+            .unwrap();
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        catalog.register_schema("d", schema_provider).unwrap();
+        ctx.register_catalog("t", catalog);
+        MetricsService::new(ctx)
+    }
+
     /// A single `api` counter series with the given (timestamp, value)
     /// samples, for exercising the Prometheus counter-reset rule.
     fn service_with_counter_series(samples: &[(i64, f64)]) -> MetricsService {
@@ -3215,6 +3262,18 @@ mod tests {
     async fn label_matcher_filters_attributes() {
         let service = service_with_data();
         // code="500" only matches the api/500 row (value 3).
+        let out = matrix(&service, r#"sum(reqs{code="500"})"#, 1000).await;
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].2, 3.0);
+    }
+
+    /// The typed-layout table has no `attributes` column at all (it is
+    /// split into `attributes_str`/`_int`/`_double`/`_bool`/`_residue`), so
+    /// this pins the same matcher behavior as `label_matcher_filters_attributes`
+    /// against that layout instead of erroring with "No field named attributes".
+    #[tokio::test]
+    async fn label_matcher_filters_attributes_on_typed_layout() {
+        let service = service_with_typed_data();
         let out = matrix(&service, r#"sum(reqs{code="500"})"#, 1000).await;
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].2, 3.0);

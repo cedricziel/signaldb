@@ -275,8 +275,12 @@ impl ProfileService {
             return Ok(Vec::new());
         };
         let df = Self::apply_time_window(df, params.start, params.end)?;
+        let attr_columns = common::attrs::expr::select_columns_for_containers(
+            Some(df.schema().as_arrow()),
+            &["profile_attributes"],
+        );
         let df = df
-            .select_columns(&["profile_attributes"])
+            .select_columns(&attr_columns.iter().map(String::as_str).collect::<Vec<_>>())
             .map_err(QuerierError::QueryFailed)?;
         // Arrow's row format cannot sort Map columns; skip the dedup there.
         let df = if df.schema().fields().iter().any(|f| {
@@ -341,8 +345,12 @@ impl ProfileService {
             return distinct_non_empty(&batches, "service_name");
         }
 
+        let attr_columns = common::attrs::expr::select_columns_for_containers(
+            Some(df.schema().as_arrow()),
+            &["profile_attributes"],
+        );
         let df = df
-            .select_columns(&["profile_attributes"])
+            .select_columns(&attr_columns.iter().map(String::as_str).collect::<Vec<_>>())
             .map_err(QuerierError::QueryFailed)?;
         // Arrow's row format cannot sort Map columns; skip the dedup there.
         let df = if df.schema().fields().iter().any(|f| {
@@ -847,6 +855,79 @@ mod tests {
             .await
             .expect("windowed search");
         assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+    }
+
+    /// [`context_with_profiles`], with `profile_attributes` rewritten onto
+    /// the typed attribute layout -- no single `profile_attributes` column,
+    /// five typed homes instead.
+    async fn context_with_typed_profiles() -> SessionContext {
+        use datafusion::catalog::{
+            CatalogProvider, MemoryCatalogProvider, MemorySchemaProvider, SchemaProvider,
+        };
+        use datafusion::datasource::MemTable;
+
+        let ctx = context_with_profiles().await;
+        let batch = ctx
+            .table("acme.prod.profiles")
+            .await
+            .expect("scan the registered table")
+            .collect()
+            .await
+            .expect("collect")
+            .into_iter()
+            .next()
+            .expect("one batch");
+        let typed_batch = common::testing::to_typed_layout(
+            "profiles",
+            "physical-v3",
+            &batch,
+            &["profile_attributes"],
+        );
+
+        let new_ctx = SessionContext::new();
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        let schema_provider = Arc::new(MemorySchemaProvider::new());
+        schema_provider
+            .register_table(
+                "profiles".to_string(),
+                Arc::new(
+                    MemTable::try_new(typed_batch.schema(), vec![vec![typed_batch]])
+                        .expect("memtable"),
+                ),
+            )
+            .expect("register table");
+        catalog
+            .register_schema("prod", schema_provider)
+            .expect("register schema");
+        new_ctx.register_catalog("acme", catalog);
+        new_ctx
+    }
+
+    /// The typed-layout profiles table has no `profile_attributes` column
+    /// at all; this pins that label discovery still works instead of
+    /// erroring with "No field named profile_attributes".
+    #[tokio::test]
+    async fn label_discovery_reads_typed_attribute_layout() {
+        let service = ProfileService::new(context_with_typed_profiles().await);
+
+        let names = service
+            .label_names_with_tenant(ProfileDiscoveryParams::default(), "acme", "prod")
+            .await
+            .expect("names");
+        assert_eq!(
+            names,
+            vec![
+                "host".to_string(),
+                "region".to_string(),
+                "service_name".to_string()
+            ]
+        );
+
+        let values = service
+            .label_values_with_tenant("host", ProfileDiscoveryParams::default(), "acme", "prod")
+            .await
+            .expect("values");
+        assert_eq!(values, vec!["web-1".to_string(), "web-2".to_string()]);
     }
 
     #[tokio::test]

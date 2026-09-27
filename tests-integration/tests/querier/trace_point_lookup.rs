@@ -75,13 +75,21 @@ fn target_instants(boundary: i64) -> [i64; TARGET_SPAN_COUNT] {
 }
 
 /// Seed a `traces` table holding `TARGET`'s spans spread over several hour
-/// partitions plus filler files that bracket it in `trace_id` order.
-async fn seed_traces(catalog_manager: &Arc<CatalogManager>, boundary: i64) -> Result<()> {
-    let mut writer = tests_integration::test_support::writer_with_type_authority(
+/// partitions plus filler files that bracket it in `trace_id` order. Commits
+/// canonical types to `type_authority_catalog` -- shared with the querier's
+/// `CanonicalTypeLookup` (see `test_configuration`'s callers) so the types
+/// the writer establishes are visible to the query it runs against.
+async fn seed_traces(
+    catalog_manager: &Arc<CatalogManager>,
+    type_authority_catalog: common::catalog::Catalog,
+    boundary: i64,
+) -> Result<()> {
+    let mut writer = tests_integration::test_support::writer_with_type_authority_and_catalog(
         catalog_manager,
         TENANT.to_string(),
         DATASET.to_string(),
         TABLE.to_string(),
+        type_authority_catalog,
     )
     .await?;
 
@@ -211,8 +219,13 @@ async fn trace_spanning_partitions_returns_every_span() -> Result<()> {
 
     let boundary = hour_boundary();
     let config = test_configuration();
-    let catalog_manager = Arc::new(CatalogManager::new(config.clone()).await?);
-    seed_traces(&catalog_manager, boundary).await?;
+    let type_authority_catalog = common::catalog::Catalog::new_in_memory().await?;
+    let catalog_manager = Arc::new(
+        CatalogManager::new(config.clone())
+            .await?
+            .with_tenant_source(Arc::new(type_authority_catalog.clone())),
+    );
+    seed_traces(&catalog_manager, type_authority_catalog, boundary).await?;
 
     let bootstrap =
         ServiceBootstrap::new(config, ServiceType::Querier, "localhost:0".to_string()).await?;
@@ -287,7 +300,12 @@ async fn repeated_lookup_reads_footers_from_the_cache() -> Result<()> {
     let boundary = hour_boundary();
     let config = test_configuration();
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
-    seed_traces(&catalog_manager, boundary).await?;
+    seed_traces(
+        &catalog_manager,
+        common::catalog::Catalog::new_in_memory().await?,
+        boundary,
+    )
+    .await?;
 
     // Exactly the session the querier runs on, footer cache and all.
     let (ctx, cold_rows) = lookup_on_session(&catalog_manager, QuerierConfig::default()).await?;
