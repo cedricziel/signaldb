@@ -1723,6 +1723,23 @@ mod tests {
     }
 
     #[test]
+    fn attribute_map_reads_wire_format_json_columns() {
+        use datafusion::arrow::record_batch::RecordBatch;
+
+        let column: datafusion::arrow::array::ArrayRef = Arc::new(StringArray::from(vec![Some(
+            r#"{"db.system":"postgresql"}"#,
+        )]));
+        let batch = RecordBatch::try_from_iter([("span_attributes", column)]).unwrap();
+
+        let mut resolved = resolve_attribute_column(&batch, "span_attributes");
+        let attrs = attribute_map_from(&mut resolved, 0);
+        assert_eq!(
+            attrs.get("db.system"),
+            Some(&serde_json::Value::String("postgresql".to_string()))
+        );
+    }
+
+    #[test]
     fn attribute_map_reads_typed_layout_columns() {
         use datafusion::arrow::datatypes::Schema;
         use datafusion::arrow::record_batch::RecordBatch;

@@ -1,17 +1,20 @@
 //! # Attribute-column decoding
 //!
 //! Signal tables carry their unpromoted attributes in container columns
-//! (`log_attributes`, `resource_attributes`, `span_attributes`) that exist in
-//! three storage forms: legacy `Utf8` JSON, `Map<Utf8, Utf8>`, and the typed
-//! layout ([`typed`]) of four typed maps plus a CBOR residue column,
-//! detected by the presence of the container's `_residue` column.
+//! (`log_attributes`, `resource_attributes`, `span_attributes`). Persisted
+//! rows use the typed layout ([`typed`]): four typed maps plus a CBOR residue
+//! column, detected by the presence of the container's `_residue` column.
+//! Unflushed rows the querier merges in from the writer still arrive in the
+//! Flight wire format, where a container is one JSON-in-`Utf8` column.
 //!
 //! [`json_documents`] is the one place that detects the form and decodes to
 //! native-typed per-row JSON objects; every reader (label discovery, the
 //! Loki-compatible router API, trace/profile row decoding) builds on it
-//! rather than re-detecting the layout, so deleting the legacy forms later
-//! is an edit here only. [`attr_documents`] is the string-valued
-//! convenience built on top of it.
+//! rather than re-detecting the layout. [`attr_documents`] is the
+//! string-valued convenience built on top of it. [`string_map_documents`]
+//! decodes a single `Map<Utf8, Utf8>` column directly — for a caller that
+//! already knows which one typed home it wants (e.g. the compactor's label
+//! backfill reading a key's string home) rather than a whole container.
 
 use std::collections::BTreeMap;
 
@@ -50,11 +53,12 @@ fn render_value(value: JsonValue) -> String {
     }
 }
 
-/// Read an attribute column's per-row documents, native-typed, across every
-/// storage form. An absent column yields `None` for every row; a malformed
-/// one (wrong Arrow shape, a typed-layout decode error) logs a warning and
-/// also degrades to `None` for every row rather than failing the batch —
-/// the policy [`attr_documents`] inherits.
+/// Read an attribute container's per-row documents, native-typed, from
+/// either the typed layout or a wire-format JSON-in-`Utf8` column. An absent
+/// container yields `None` for every row; a malformed one (wrong Arrow
+/// shape, a typed-layout decode error) logs a warning and also degrades to
+/// `None` for every row rather than failing the batch — the policy
+/// [`attr_documents`] inherits.
 pub fn json_documents(batch: &RecordBatch, name: &str) -> Vec<Option<JsonDocument>> {
     let Some(column) = batch.column_by_name(name) else {
         if batch.column_by_name(&residue_column(name)).is_none() {
@@ -69,10 +73,7 @@ pub fn json_documents(batch: &RecordBatch, name: &str) -> Vec<Option<JsonDocumen
         };
     };
 
-    if let Some(map) = column.as_any().downcast_ref::<MapArray>() {
-        return map_documents(map, name);
-    }
-
+    // Wire-format (unflushed) batches carry the container as JSON text.
     if let Some(arr) = column.as_any().downcast_ref::<StringArray>() {
         return json_string_documents(arr);
     }
@@ -85,42 +86,7 @@ pub fn json_documents(batch: &RecordBatch, name: &str) -> Vec<Option<JsonDocumen
     vec![None; batch.num_rows()]
 }
 
-/// Decode a `Map<Utf8, Utf8>` attribute column into per-row JSON documents,
-/// one string value per entry.
-fn map_documents(map: &MapArray, name: &str) -> Vec<Option<JsonDocument>> {
-    let mut out = Vec::with_capacity(map.len());
-    for i in 0..map.len() {
-        if map.is_null(i) {
-            out.push(None);
-            continue;
-        }
-        let entries = map.value(i);
-        let (Some(keys), Some(values)) = (
-            entries.column(0).as_any().downcast_ref::<StringArray>(),
-            entries.column(1).as_any().downcast_ref::<StringArray>(),
-        ) else {
-            warn!(
-                container = name,
-                "map attribute column has non-string keys or values"
-            );
-            out.push(None);
-            continue;
-        };
-        let mut doc = JsonDocument::new();
-        for j in 0..entries.len() {
-            if !keys.is_null(j) && !values.is_null(j) {
-                doc.insert(
-                    keys.value(j).to_string(),
-                    JsonValue::String(values.value(j).to_string()),
-                );
-            }
-        }
-        out.push(Some(doc));
-    }
-    out
-}
-
-/// Decode a legacy flat-JSON-object `Utf8` attribute column into per-row
+/// Decode a flat-JSON-object `Utf8` attribute column into per-row
 /// documents. A null, unparseable, or non-object row decodes to `None` —
 /// this is the normal degrade path, not a malformed-column condition, so it
 /// is not logged.
@@ -138,7 +104,7 @@ fn json_string_documents(arr: &StringArray) -> Vec<Option<JsonDocument>> {
         .collect()
 }
 
-/// Read an attribute column's per-row documents as string key/value maps;
+/// Read an attribute container's per-row documents as string key/value maps;
 /// see [`json_documents`] for the layout detection and malformed-column
 /// policy this builds on.
 pub fn attr_documents(
@@ -153,6 +119,55 @@ pub fn attr_documents(
         .into_iter()
         .map(|row| row.map(|obj| obj.into_iter().map(|(k, v)| (k, render_value(v))).collect()))
         .collect())
+}
+
+/// Decode a single `Map<Utf8, Utf8>` typed-layout home column — not a whole
+/// container — into per-row string documents. For a caller that already
+/// knows which one typed home it wants by column name (e.g.
+/// `log_attributes_str`), rather than a whole container's layout.
+pub fn string_map_documents(
+    batch: &RecordBatch,
+    name: &str,
+) -> Result<Vec<Option<AttrDocument>>, AttrDecodeError> {
+    let Some(column) = batch.column_by_name(name) else {
+        return Err(AttrDecodeError::MissingColumn(name.to_string()));
+    };
+    let Some(map) = column.as_any().downcast_ref::<MapArray>() else {
+        warn!(
+            column = name,
+            arrow_type = %column.data_type(),
+            "attribute column is not a Map<Utf8, Utf8>"
+        );
+        return Ok(vec![None; batch.num_rows()]);
+    };
+
+    let mut out = Vec::with_capacity(map.len());
+    for i in 0..map.len() {
+        if map.is_null(i) {
+            out.push(None);
+            continue;
+        }
+        let entries = map.value(i);
+        let (Some(keys), Some(values)) = (
+            entries.column(0).as_any().downcast_ref::<StringArray>(),
+            entries.column(1).as_any().downcast_ref::<StringArray>(),
+        ) else {
+            warn!(
+                column = name,
+                "map attribute column has non-string keys or values"
+            );
+            out.push(None);
+            continue;
+        };
+        let mut doc = AttrDocument::new();
+        for j in 0..entries.len() {
+            if !keys.is_null(j) && !values.is_null(j) {
+                doc.insert(keys.value(j).to_string(), values.value(j).to_string());
+            }
+        }
+        out.push(Some(doc));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -172,7 +187,7 @@ mod tests {
     }
 
     /// Build a `Map<Utf8, Utf8>` column; `None` is a null row.
-    fn map_batch(rows: Vec<Option<Vec<(&str, &str)>>>) -> RecordBatch {
+    fn map_batch(name: &str, rows: Vec<Option<Vec<(&str, &str)>>>) -> RecordBatch {
         let mut builder = MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
         for row in rows {
             match row {
@@ -188,7 +203,7 @@ mod tests {
         }
         let array = builder.finish();
         let schema = Arc::new(Schema::new(vec![Field::new(
-            "log_attributes",
+            name,
             array.data_type().clone(),
             true,
         )]));
@@ -196,19 +211,16 @@ mod tests {
     }
 
     #[test]
-    fn decodes_typed_map_columns() {
-        let batch = map_batch(vec![
-            Some(vec![("http.method", "GET"), ("http.status", "200")]),
-            None,
-        ]);
-        let docs = attr_documents(&batch, "log_attributes").unwrap();
-        assert_eq!(docs[0].as_ref().unwrap()["http.method"], "GET");
-        assert_eq!(docs[0].as_ref().unwrap()["http.status"], "200");
-        assert!(docs[1].is_none(), "a null map row has no attributes");
+    fn missing_column_is_an_error() {
+        let batch = json_batch(vec![Some("{}")]);
+        assert!(matches!(
+            attr_documents(&batch, "resource_attributes"),
+            Err(AttrDecodeError::MissingColumn(_))
+        ));
     }
 
     #[test]
-    fn decodes_legacy_json_string_columns() {
+    fn decodes_wire_format_json_string_columns() {
         let batch = json_batch(vec![Some(r#"{"user.id":"u-1","retries":3}"#), None]);
         let docs = attr_documents(&batch, "log_attributes").unwrap();
         let doc = docs[0].as_ref().unwrap();
@@ -233,20 +245,19 @@ mod tests {
         assert_eq!(docs[2].as_ref().unwrap()["ok"], "yes");
     }
 
+    /// A whole-container `Map<Utf8, Utf8>` column is the retired physical
+    /// layout: it no longer decodes.
     #[test]
-    fn missing_column_is_an_error() {
-        let batch = json_batch(vec![Some("{}")]);
-        assert!(matches!(
-            attr_documents(&batch, "resource_attributes"),
-            Err(AttrDecodeError::MissingColumn(_))
-        ));
+    fn whole_container_map_column_is_not_decoded() {
+        let batch = map_batch("log_attributes", vec![Some(vec![("k", "v")])]);
+        assert_eq!(json_documents(&batch, "log_attributes"), vec![None]);
     }
 
-    /// A typed-layout batch (four typed maps + CBOR residue) decodes to the
-    /// same [`AttrDocument`] as the equivalent legacy JSON batch, across an
-    /// int, a double, a bool, a string, and an array (residue) value.
+    /// A typed-layout batch (four typed maps + CBOR residue) decodes each
+    /// value to its rendered string form, across an int, a double, a bool,
+    /// a string, and an array (residue) value.
     #[test]
-    fn decodes_typed_layout_columns_like_the_legacy_layout() {
+    fn decodes_typed_layout_columns() {
         use serde_json::json;
 
         let row = serde_json::Map::from_iter([
@@ -257,33 +268,47 @@ mod tests {
             ("tags".to_string(), json!(["a", "b"])),
         ]);
         let (fields, arrays) =
-            crate::testing::typed_attribute_columns("span_attributes", &[Some(row.clone())]);
+            crate::testing::typed_attribute_columns("span_attributes", &[Some(row), None]);
         let schema = Arc::new(Schema::new(fields.to_vec()));
-        let typed_batch = RecordBatch::try_new(schema, arrays.to_vec()).unwrap();
+        let batch = RecordBatch::try_new(schema, arrays.to_vec()).unwrap();
 
-        let legacy_batch = {
-            let schema = Arc::new(Schema::new(vec![Field::new(
-                "span_attributes",
-                DataType::Utf8,
-                true,
-            )]));
-            RecordBatch::try_new(
-                schema,
-                vec![Arc::new(StringArray::from(vec![Some(
-                    JsonValue::Object(row).to_string(),
-                )]))],
-            )
-            .unwrap()
-        };
-
-        let typed_docs = attr_documents(&typed_batch, "span_attributes").unwrap();
-        let legacy_docs = attr_documents(&legacy_batch, "span_attributes").unwrap();
-        assert_eq!(typed_docs, legacy_docs);
-        let doc = typed_docs[0].as_ref().unwrap();
+        let docs = attr_documents(&batch, "span_attributes").unwrap();
+        let doc = docs[0].as_ref().unwrap();
         assert_eq!(doc["count"], "3");
         assert_eq!(doc["ratio"], "1.5");
         assert_eq!(doc["ok"], "true");
         assert_eq!(doc["name"], "hello");
         assert_eq!(doc["tags"], "[\"a\",\"b\"]");
+        assert!(docs[1].is_none(), "a null row has no attributes");
+    }
+
+    /// A container with no `_residue` column at all (never written, or a
+    /// batch that doesn't carry it) decodes to `None` for every row, not an
+    /// error — [`attr_documents`] is the one that reports it missing.
+    #[test]
+    fn absent_container_decodes_to_none() {
+        let batch = json_batch(vec![Some("{}")]);
+        let docs = json_documents(&batch, "resource_attributes");
+        assert_eq!(docs, vec![None]);
+    }
+
+    #[test]
+    fn string_map_documents_decodes_one_map_column() {
+        let batch = map_batch(
+            "log_attributes_str",
+            vec![Some(vec![("http.method", "GET")]), None],
+        );
+        let docs = string_map_documents(&batch, "log_attributes_str").unwrap();
+        assert_eq!(docs[0].as_ref().unwrap()["http.method"], "GET");
+        assert!(docs[1].is_none(), "a null map row has no attributes");
+    }
+
+    #[test]
+    fn string_map_documents_missing_column_is_an_error() {
+        let batch = json_batch(vec![Some("{}")]);
+        assert!(matches!(
+            string_map_documents(&batch, "log_attributes_str"),
+            Err(AttrDecodeError::MissingColumn(_))
+        ));
     }
 }

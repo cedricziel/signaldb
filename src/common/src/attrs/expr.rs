@@ -1,12 +1,13 @@
 //! Expression- and projection-level compat helpers for LogQL/PromQL/
 //! TraceQL/Tempo (not the Query IR planner, which carries its own compat
-//! path in `ir_planner`/`differential`). `schema: None` means "assume the
-//! legacy layout" — a caller with no schema in hand (e.g. a differential
-//! test) keeps today's `get_field` behavior unchanged.
+//! path in `ir_planner`/`differential`). The typed layout is the only
+//! attribute layout these build expressions for; `schema` is accepted only
+//! to assert that precondition in debug builds (`None` skips the check, for
+//! a caller with no schema in hand, e.g. a differential test).
 
 use datafusion::arrow::datatypes::{DataType, Schema};
 use datafusion::functions::core::expr_fn::{coalesce, get_field};
-use datafusion::logical_expr::{Expr, cast, col, lit};
+use datafusion::logical_expr::{Expr, cast, lit};
 use datafusion::prelude::ident;
 use datafusion::scalar::ScalarValue;
 
@@ -19,15 +20,17 @@ pub fn is_typed_layout(schema: &Schema, container: &str) -> bool {
     has_typed_container(schema.fields().iter().map(|f| f.name().as_str()), container)
 }
 
-/// The compatibility string expression for `key` in `container`: the
-/// legacy `get_field` extraction, or a coalesce over the four typed homes
-/// (int/double/bool cast to `Utf8`) when `schema` shows `container` has
-/// been rewritten onto the typed layout. Matches what the legacy writer
-/// stored on the wire (`"200"`, `"true"`, `"1.5"`).
+/// The compatibility string expression for `key` in `container`: a coalesce
+/// over the four typed homes (int/double/bool cast to `Utf8`). Matches what
+/// the legacy writer stored on the wire (`"200"`, `"true"`, `"1.5"`). When
+/// `schema` is given, asserts (debug builds only) that `container` is
+/// actually on the typed layout — a caller with no schema in hand skips the
+/// check.
 pub fn compat_attr_expr(schema: Option<&Schema>, container: &str, key: &str) -> Expr {
-    if !schema.is_some_and(|schema| is_typed_layout(schema, container)) {
-        return get_field(col(container), key);
-    }
+    debug_assert!(
+        schema.is_none_or(|schema| is_typed_layout(schema, container)),
+        "container '{container}' must be on the typed attribute layout"
+    );
     typed_compat_attr_expr(container, key)
 }
 
@@ -76,17 +79,19 @@ pub fn typed_home_expr(homes: &[String], promoted: Option<&str>, key: &str, pref
     }
 }
 
-/// The column names to project for `containers`: each container itself on
-/// the legacy layout, or its five typed columns on the typed layout. For a
-/// caller that hands the projected batch to a decoder (e.g.
-/// `attrs::attr_documents`) that already reads whichever layout is present.
+/// The column names to project for `containers`: each container's five
+/// typed columns. For a caller that hands the projected batch to a decoder
+/// (e.g. `attrs::attr_documents`) that reads the typed layout. When `schema`
+/// is given, asserts (debug builds only) that every container is actually on
+/// the typed layout — a caller with no schema in hand skips the check.
 pub fn select_columns_for_containers(schema: Option<&Schema>, containers: &[&str]) -> Vec<String> {
+    debug_assert!(
+        schema.is_none_or(|schema| containers.iter().all(|&c| is_typed_layout(schema, c))),
+        "every container must be on the typed attribute layout"
+    );
     containers
         .iter()
-        .flat_map(|&container| match schema {
-            Some(schema) if is_typed_layout(schema, container) => typed_columns(container).to_vec(),
-            _ => vec![container.to_string()],
-        })
+        .flat_map(|&container| typed_columns(container).to_vec())
         .collect()
 }
 
@@ -119,16 +124,28 @@ mod tests {
     }
 
     #[test]
-    fn legacy_layout_extracts_get_field_on_the_container_column() {
-        let schema = legacy_logs_schema();
-        assert!(!is_typed_layout(&schema, "log_attributes"));
-        let expr = compat_attr_expr(Some(&schema), "log_attributes", "http.route");
+    fn is_typed_layout_detects_the_residue_column() {
+        let legacy = legacy_logs_schema();
+        assert!(!is_typed_layout(&legacy, "log_attributes"));
+        let (fields, _) = typed_attribute_columns("span_attributes", &[]);
+        let typed = Schema::new(fields.to_vec());
+        assert!(is_typed_layout(&typed, "span_attributes"));
+    }
+
+    #[test]
+    fn compat_attr_expr_reads_the_typed_layout_with_or_without_a_schema() {
+        let expr = compat_attr_expr(None, "span_attributes", "http.status_code");
         assert_eq!(
-            expr.to_string(),
-            r#"get_field(log_attributes, Utf8("http.route"))"#
+            expr,
+            typed_compat_attr_expr("span_attributes", "http.status_code")
         );
-        // No schema at all is the same as the legacy layout.
-        assert_eq!(expr, compat_attr_expr(None, "log_attributes", "http.route"));
+
+        let (fields, _) = typed_attribute_columns("span_attributes", &[]);
+        let typed = Schema::new(fields.to_vec());
+        assert_eq!(
+            compat_attr_expr(Some(&typed), "span_attributes", "http.status_code"),
+            expr
+        );
     }
 
     #[test]
@@ -209,15 +226,10 @@ mod tests {
     }
 
     #[test]
-    fn select_columns_for_containers_picks_the_layout_columns() {
-        let legacy = legacy_logs_schema();
-        assert_eq!(
-            select_columns_for_containers(Some(&legacy), &["log_attributes"]),
-            vec!["log_attributes".to_string()]
-        );
+    fn select_columns_for_containers_returns_the_typed_columns() {
         assert_eq!(
             select_columns_for_containers(None, &["log_attributes"]),
-            vec!["log_attributes".to_string()]
+            typed_columns("log_attributes").to_vec()
         );
 
         let (fields, _) = typed_attribute_columns("span_attributes", &[]);

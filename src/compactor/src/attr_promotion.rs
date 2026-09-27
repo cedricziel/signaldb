@@ -265,17 +265,12 @@ pub(crate) fn backfill_label_columns(
 /// One attribute source column parsed into per-row key/value documents.
 type AttrDocuments = Vec<Option<AttrDocument>>;
 
-/// One attribute source column's per-row documents. On the typed layout,
-/// only the key's string home backs a label column — coercing the
-/// int/double/bool homes would give the promoted field a type other than
-/// its canonical, typed one.
+/// One attribute source column's per-row documents, read from the key's
+/// string home — coercing the int/double/bool homes would give the
+/// promoted field a type other than its canonical, typed one.
 fn label_source_documents(batch: &RecordBatch, container: &str) -> AttrDocuments {
-    let source = if batch.column_by_name(container).is_some() {
-        container.to_string()
-    } else {
-        home_column(container, CanonicalType::String)
-    };
-    common::attrs::attr_documents(batch, &source).unwrap_or_default()
+    let source = home_column(container, CanonicalType::String);
+    common::attrs::string_map_documents(batch, &source).unwrap_or_default()
 }
 
 fn backfill_batch(batch: RecordBatch, pairs: &[(String, String)]) -> Result<RecordBatch> {
