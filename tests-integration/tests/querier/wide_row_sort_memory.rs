@@ -22,7 +22,6 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use arrow_flight::Ticket;
 use arrow_flight::flight_service_server::FlightService;
-use common::catalog_manager::CatalogManager;
 use common::config::{QuerierConfig, QuerierDataFusionConfig};
 use common::flight::decode::flight_data_vec_to_batches;
 use common::flight::transport::InMemoryFlightTransport;
@@ -108,15 +107,13 @@ async fn wide_row_sorts_succeed_only_under_a_bounded_scan_batch() -> Result<()> 
         .build();
 
     // Shared with the writer's `TypeAuthority` below, so the querier's
-    // `CanonicalTypeLookup` (wired via `with_tenant_source`) sees the
-    // canonical types the writer commits for this table's typed-layout
-    // columns.
-    let type_authority_catalog = common::catalog::Catalog::new_in_memory().await?;
-    let catalog_manager = Arc::new(
-        CatalogManager::new(config.clone())
-            .await?
-            .with_tenant_source(Arc::new(type_authority_catalog.clone())),
-    );
+    // `CanonicalTypeLookup` sees the canonical types the writer commits.
+    let (catalog_manager, type_authority_catalog) =
+        tests_integration::test_support::catalog_manager_with_tenant_source(
+            config.clone(),
+            common::catalog::Catalog::new_in_memory().await?,
+        )
+        .await?;
     let mut writer = tests_integration::test_support::writer_with_type_authority_and_catalog(
         &catalog_manager,
         TENANT.to_string(),

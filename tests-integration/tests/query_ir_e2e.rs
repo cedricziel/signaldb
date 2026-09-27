@@ -16,7 +16,6 @@ use axum::{
     http::{Request, StatusCode},
     middleware,
 };
-use common::CatalogManager;
 use common::auth::{TenantContext, TenantSource, auth_middleware};
 use common::catalog::Catalog;
 use common::config::Configuration;
@@ -190,18 +189,17 @@ pub(crate) async fn setup_with(config_override: impl FnOnce(&mut Configuration))
         tests_integration::test_helpers::writer_wal_config(&wal_config),
     ));
     // Shared with the writer's `TypeAuthority` below, so the querier's
-    // `CanonicalTypeLookup` (wired via `with_tenant_source`) sees the
-    // canonical types the writer commits -- both read the same DB the
-    // production binary points at `router_bootstrap.catalog()` for.
+    // `CanonicalTypeLookup` sees the canonical types the writer commits.
     let type_authority_catalog = Catalog::new(&catalog_dsn)
         .await
         .expect("type authority catalog");
-    let catalog_manager = Arc::new(
-        CatalogManager::new(config.clone())
-            .await
-            .expect("catalog mgr")
-            .with_tenant_source(Arc::new(type_authority_catalog.clone())),
-    );
+    let (catalog_manager, type_authority_catalog) =
+        tests_integration::test_support::catalog_manager_with_tenant_source(
+            config.clone(),
+            type_authority_catalog,
+        )
+        .await
+        .expect("catalog mgr");
     let writer_service =
         tests_integration::test_support::writer_service_with_type_authority_and_catalog(
             catalog_manager.clone(),

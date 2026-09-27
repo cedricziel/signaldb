@@ -20,7 +20,6 @@ use acceptor::handler::WalManager;
 use acceptor::handler::otlp_profiles_handler::ProfileHandler;
 use acceptor::services::otlp_profile_service::ProfileAcceptorService;
 use arrow_flight::utils::flight_data_to_batches;
-use common::CatalogManager;
 use common::auth::{TenantContext, TenantSource};
 use common::catalog::Catalog;
 use common::config::{
@@ -205,19 +204,17 @@ async fn setup_services() -> TestServices {
     let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
 
     // Shared CatalogManager: writer and querier must see the same Iceberg
-    // catalog for ingested data to be queryable back. The tenant source
-    // (`catalog_dsn`, also the writer's `TypeAuthority` DB below) lets the
-    // querier's `CanonicalTypeLookup` see the canonical types the writer
-    // commits for this table's typed-layout columns.
+    // catalog for ingested data to be queryable back.
     let type_authority_catalog = common::catalog::Catalog::new(&catalog_dsn)
         .await
         .expect("Failed to create type authority catalog");
-    let catalog_manager = Arc::new(
-        CatalogManager::new(config.clone())
-            .await
-            .expect("Failed to create CatalogManager")
-            .with_tenant_source(Arc::new(type_authority_catalog.clone())),
-    );
+    let (catalog_manager, type_authority_catalog) =
+        tests_integration::test_support::catalog_manager_with_tenant_source(
+            config.clone(),
+            type_authority_catalog,
+        )
+        .await
+        .expect("Failed to create CatalogManager");
 
     // Pre-create the Iceberg namespace so the querier's catalog cache
     // includes it: QuerierFlightService::new_with_catalog_manager caches
