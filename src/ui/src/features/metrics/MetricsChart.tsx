@@ -153,8 +153,8 @@ export function MetricsChart({
     // than repeating the same four-key object per axis.
     const axis: uPlot.Axis = {
       stroke: tickStroke,
-      ticks: { stroke: tickStroke },
-      grid: { stroke: gridStroke },
+      ticks: { stroke: tickStroke, width: 1 },
+      grid: { stroke: gridStroke, width: 1 },
       font: font ? `12px ${font}` : undefined,
     };
     // The y-axis routes its tick labels through the same unit-aware
