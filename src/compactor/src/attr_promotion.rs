@@ -29,7 +29,7 @@ use common::catalog::AttributeStatsRecord;
 use common::config::AttrPromotionConfig;
 use common::iceberg::evolution;
 use common::schema::type_authority::{AttributeKeyType, CanonicalType};
-use common::schema::typed_attributes::{home_column, is_typed_layout};
+use common::schema::typed_attributes::home_column;
 use datafusion::arrow::array::{ArrayRef, RecordBatch, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use std::collections::{HashMap, HashSet};
@@ -81,19 +81,17 @@ pub fn looks_generated(key: &str) -> bool {
 /// `materialized` is the table's current set of materialized label
 /// *attribute keys* (column names minus the `label_` prefix); `pinned` is
 /// the configured allowlist for the signal (never demoted). `typed_string_keys`
-/// is `Some` on a typed-layout table: only keys in the set (their canonical
-/// type authority home is `String` at every level it's recorded) are
-/// eligible for promotion, since any other key's typed home isn't a string
-/// and a `label_<key>` column can't safely stringify it (see
-/// [`string_only_keys`]). `None` means legacy layout, where every key is
-/// eligible as before. Returns the decision and the new streak value per key
-/// so the caller can persist the hysteresis state.
+/// holds the keys eligible for promotion (their canonical type authority
+/// home is `String` at every level it's recorded, see [`string_only_keys`]);
+/// any other key's typed home isn't a string and a `label_<key>` column
+/// can't safely stringify it. Returns the decision and the new streak value
+/// per key so the caller can persist the hysteresis state.
 pub fn decide(
     stats: &[AttributeStatsRecord],
     materialized: &[String],
     pinned: &[String],
     config: &AttrPromotionConfig,
-    typed_string_keys: Option<&HashSet<String>>,
+    typed_string_keys: &HashSet<String>,
 ) -> (PromotionDecision, Vec<(String, i64)>) {
     let mut decision = PromotionDecision::default();
     let mut new_streaks: Vec<(String, i64)> = Vec::new();
@@ -109,7 +107,7 @@ pub fn decide(
             && record.total_rows > 0
             && record.query_hits >= config.min_query_hits
             && (record.present_rows as f64 / record.total_rows as f64) >= config.min_presence
-            && typed_string_keys.is_none_or(|allowed| allowed.contains(&record.attr_key));
+            && typed_string_keys.contains(&record.attr_key);
         let streak = if over_threshold {
             record.promote_streak + 1
         } else {
@@ -159,13 +157,6 @@ pub fn decide(
     }
 
     (decision, new_streaks)
-}
-
-/// Whether `schema` is the typed attribute layout (four typed maps plus a
-/// CBOR residue column per container) rather than the legacy single map/JSON
-/// column.
-pub fn schema_is_typed(schema: &iceberg_rust::spec::schema::Schema) -> bool {
-    is_typed_layout(schema.fields().iter().map(|f| f.name.as_str()))
 }
 
 /// The keys eligible for promotion on a typed-layout table: those whose
@@ -364,6 +355,12 @@ mod tests {
         }
     }
 
+    /// Every stats key allowed, for tests exercising guardrails unrelated
+    /// to the typed-layout string-home filter.
+    fn all_keys(stats: &[AttributeStatsRecord]) -> HashSet<String> {
+        stats.iter().map(|r| r.attr_key.clone()).collect()
+    }
+
     fn config() -> AttrPromotionConfig {
         AttrPromotionConfig {
             enabled: true,
@@ -383,7 +380,8 @@ mod tests {
         let ready = record("namespace", 90, 100, 50, 2);
         // First over-threshold cycle: streak starts building.
         let fresh = record("pod", 90, 100, 50, 0);
-        let (decision, streaks) = decide(&[ready, fresh], &[], &[], &cfg, None);
+        let allowed = all_keys(&[ready.clone(), fresh.clone()]);
+        let (decision, streaks) = decide(&[ready, fresh], &[], &[], &cfg, &allowed);
         assert_eq!(decision.promote, vec!["namespace".to_string()]);
         assert_eq!(decision.building, vec![("pod".to_string(), 1)]);
         assert!(streaks.contains(&("namespace".to_string(), 3)));
@@ -394,7 +392,8 @@ mod tests {
     fn streak_resets_when_demand_disappears() {
         let cfg = config();
         let cooled = record("namespace", 90, 100, 0, 2);
-        let (decision, streaks) = decide(&[cooled], &[], &[], &cfg, None);
+        let allowed = all_keys(std::slice::from_ref(&cooled));
+        let (decision, streaks) = decide(&[cooled], &[], &[], &cfg, &allowed);
         assert!(decision.promote.is_empty());
         assert_eq!(streaks, vec![("namespace".to_string(), 0)]);
     }
@@ -406,7 +405,8 @@ mod tests {
         capped.capped = true;
         let generated = record("span.0123456789abcdef", 90, 100, 50, 5);
         let sparse = record("rare", 1, 10_000, 50, 5);
-        let (decision, _) = decide(&[capped, generated, sparse], &[], &[], &cfg, None);
+        let allowed = all_keys(&[capped.clone(), generated.clone(), sparse.clone()]);
+        let (decision, _) = decide(&[capped, generated, sparse], &[], &[], &cfg, &allowed);
         assert!(decision.promote.is_empty());
         assert!(decision.building.is_empty());
     }
@@ -418,12 +418,13 @@ mod tests {
         // Width 2 (one pinned + one auto-materialized) leaves headroom 1.
         let a = record("a", 100, 100, 10, 5); // score 10
         let b = record("b", 50, 100, 30, 5); // score 15 — wins
+        let allowed = all_keys(&[a.clone(), b.clone()]);
         let (decision, _) = decide(
             &[a, b],
             &["auto".to_string()],
             &["pinned".to_string()],
             &cfg,
-            None,
+            &allowed,
         );
         assert_eq!(decision.promote, vec!["b".to_string()]);
     }
@@ -434,7 +435,8 @@ mod tests {
         let stats = vec![record("auto_cold", 90, 100, 0, 0)];
         let materialized = vec!["auto_cold".to_string(), "pinned_cold".to_string()];
         let pinned = vec!["pinned_cold".to_string()];
-        let (decision, _) = decide(&stats, &materialized, &pinned, &cfg, None);
+        let allowed = all_keys(&stats);
+        let (decision, _) = decide(&stats, &materialized, &pinned, &cfg, &allowed);
         assert_eq!(decision.demote, vec!["auto_cold".to_string()]);
     }
 
@@ -459,7 +461,7 @@ mod tests {
                 canonical_type: CanonicalType::Int64,
             },
         ]);
-        let (decision, _) = decide(&[env, retries], &[], &[], &cfg, Some(&allowed));
+        let (decision, _) = decide(&[env, retries], &[], &[], &cfg, &allowed);
         assert_eq!(decision.promote, vec!["env".to_string()]);
     }
 
@@ -591,18 +593,6 @@ mod tests {
             write_default: None,
         };
         IcebergSchema::from_struct_type(StructType::new(vec![field]), 0, None)
-    }
-
-    #[test]
-    fn schema_is_typed_detects_a_residue_column() {
-        assert!(!schema_is_typed(&schema_with_label(
-            "http.method",
-            "label_http_method"
-        )));
-        assert!(schema_is_typed(&schema_with_label(
-            "http.method",
-            "span_attributes_residue"
-        )));
     }
 
     #[test]

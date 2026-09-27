@@ -114,9 +114,8 @@ impl IcebergWriterFlightService {
     }
 
     /// As [`Self::new`], but wired to place typed-attribute values through
-    /// `type_authority` (see [`WalProcessor::with_type_authority`]). The
-    /// writer's real startup path uses this; test constructors go through
-    /// [`Self::new`], whose tables stay in the legacy attribute layout.
+    /// `type_authority` (see [`WalProcessor::with_type_authority`]). Every
+    /// deployment that commits batches needs one: all tables are typed.
     pub fn with_type_authority(
         catalog_manager: Arc<CatalogManager>,
         wal_manager: Arc<WalManager>,
