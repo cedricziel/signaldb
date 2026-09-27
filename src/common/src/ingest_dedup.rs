@@ -1,12 +1,18 @@
 //! In-memory, windowed cache of ids seen recently, for recognizing a resend
 //! of something already durably ingested.
 //!
-//! The writer keys it by `ingest_id`: `do_put`'s `app_metadata` carries the
-//! acceptor WAL entry uuid a batch was forwarded for, so a resend that the
-//! acceptor's rendezvous hashing routes back to the same writer is deduped
-//! instead of re-inserted (issue #1734 step 2). Window:
-//! [`WriterConfig::ingest_dedup_window`](crate::config::WriterConfig),
-//! rebuilt at startup from ingest ids still in that writer's WAL.
+//! Two users, each keyed by a uuid:
+//!
+//! - The writer: `do_put`'s `app_metadata` carries an `ingest_id` -- the
+//!   acceptor WAL entry uuid a batch was forwarded for -- so a resend that the
+//!   acceptor's rendezvous hashing routes back to the same writer is deduped
+//!   instead of re-inserted (issue #1734 step 2). Window:
+//!   [`WriterConfig::ingest_dedup_window`](crate::config::WriterConfig),
+//!   rebuilt at startup from ingest ids still in that writer's WAL.
+//! - The acceptor: a client that gave up waiting (an OTLP exporter timeout)
+//!   resends a byte-identical export that already landed in the WAL; the
+//!   acceptor keys the cache by a fingerprint of the batch. Window:
+//!   [`AcceptorConfig::retry_dedup_window`](crate::config::AcceptorConfig).
 //!
 //! The cache is deliberately not the SQL catalog or an external store: an
 //! ack-path check against either would add a network round trip. It is

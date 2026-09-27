@@ -448,12 +448,21 @@ pub struct AcceptorConfig {
     /// note on the OTLP/HTTP routers for why.
     /// Env: SIGNALDB__ACCEPTOR__MAX_REQUEST_BODY_BYTES
     pub max_request_body_bytes: u64,
+    /// How long a durably accepted batch is remembered so a client's
+    /// byte-identical resend (an exporter retrying after its own timeout) is
+    /// acknowledged without being ingested again; see the acceptor's
+    /// `retry_dedup` module. Default 5m, the OpenTelemetry Collector's retry
+    /// horizon. `0s` disables it.
+    /// Env: SIGNALDB__ACCEPTOR__RETRY_DEDUP_WINDOW
+    #[serde(with = "humantime_serde")]
+    pub retry_dedup_window: Duration,
 }
 
 impl Default for AcceptorConfig {
     fn default() -> Self {
         Self {
             max_request_body_bytes: 64 * 1024 * 1024, // 64MB
+            retry_dedup_window: Duration::from_secs(300),
         }
     }
 }

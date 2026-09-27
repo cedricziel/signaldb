@@ -20,16 +20,19 @@ use common::wal::{WalOperation, record_batch_to_bytes};
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 
 use super::WalManager;
-use super::forward::spawn_forward_and_mark;
+use super::forward::{spawn_forward_and_mark, spawn_retire_resend};
 use super::ingest_error::IngestError;
 use super::metrics_partition;
 use super::processors_apply::apply_metric_processors;
+use super::retry_dedup::RetryDedup;
 
 pub struct MetricsHandler {
     /// Flight transport for forwarding telemetry
     flight_transport: Arc<InMemoryFlightTransport>,
     /// WAL manager for multi-tenant WAL isolation
     wal_manager: Arc<WalManager>,
+    /// Recognizes a client's resend of a batch already made durable
+    retry_dedup: Arc<RetryDedup>,
     /// Tenant OTTL processors (change: tenant-ottl-processors)
     processor_registry: Arc<ProcessorRegistry>,
 }
@@ -77,8 +80,17 @@ impl MetricsHandler {
         Self {
             flight_transport,
             wal_manager,
+            retry_dedup: Arc::new(RetryDedup::default()),
             processor_registry,
         }
+    }
+
+    /// Share one resend-dedup cache (`[acceptor].retry_dedup_window`) with
+    /// the acceptor's other handlers; the default is a private cache with
+    /// the default window.
+    pub fn with_retry_dedup(mut self, retry_dedup: Arc<RetryDedup>) -> Self {
+        self.retry_dedup = retry_dedup;
+        self
     }
 
     /// Handle an OTLP metrics export.
@@ -203,6 +215,12 @@ impl MetricsHandler {
             }
             let wal_metadata_str = serde_json::to_string(&wal_metadata).ok();
 
+            let fingerprint = self.retry_dedup.fingerprint(
+                &tenant_context.tenant_id,
+                &tenant_context.dataset_id,
+                &WalOperation::WriteMetrics,
+                &batch_bytes,
+            );
             let wal_entry_id = match wal
                 .append(WalOperation::WriteMetrics, batch_bytes, wal_metadata_str)
                 .await
@@ -227,6 +245,8 @@ impl MetricsHandler {
                 "Metrics written to WAL"
             );
 
+            let resend = self.retry_dedup.is_resend(fingerprint);
+
             let mut metadata = serde_json::json!({
                 "schema_version": "v1",
                 "signal_type": "metrics",
@@ -247,15 +267,26 @@ impl MetricsHandler {
             // Step 2: Forward from WAL to writer via Flight, detached from
             // this request future so a client disconnect cannot cancel it
             // after the flush above (issue #1734). Awaiting the handle keeps
-            // behavior for connected clients unchanged.
-            let forward_task = spawn_forward_and_mark(
-                self.flight_transport.clone(),
-                wal.clone(),
-                wal_entry_id,
-                record_batch,
-                Some(metadata.to_string()),
-                "metrics",
-            );
+            // behavior for connected clients unchanged. A client's resend of
+            // a partition already accepted is retired instead (see
+            // `retry_dedup`).
+            let forward_task = if resend {
+                spawn_retire_resend(
+                    wal.clone(),
+                    wal_entry_id,
+                    &tenant_context.tenant_id,
+                    &WalOperation::WriteMetrics,
+                )
+            } else {
+                spawn_forward_and_mark(
+                    self.flight_transport.clone(),
+                    wal.clone(),
+                    wal_entry_id,
+                    record_batch,
+                    Some(metadata.to_string()),
+                    "metrics",
+                )
+            };
             if let Err(e) = forward_task.await {
                 tracing::error!(
                     metric_type = %metric_type,

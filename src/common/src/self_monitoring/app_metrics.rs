@@ -120,6 +120,10 @@ pub struct AppMetrics {
     // hashing on ingest id) is unstable.
     pub ingest_duplicates_dropped: Counter<u64>,
 
+    // By tenant and signal. A steady rate means clients give up before the
+    // acceptor answers: its ingest latency is above their export timeout.
+    pub acceptor_resends_dropped: Counter<u64>,
+
     // MCP server audit: one count per tool call by tool and outcome
     // (`ok | truncated | denied | throttled | error`), and the call duration
     // by tool. Prometheus renders them as `signaldb_mcp_tool_calls_total`
@@ -412,6 +416,13 @@ impl AppMetrics {
                     "do_put ingest ids recognized as a repeat within the writer's dedup window",
                 )
                 .with_unit("{entry}")
+                .build(),
+            acceptor_resends_dropped: meter
+                .u64_counter("signaldb.acceptor.resends_dropped")
+                .with_description(
+                    "Client resends of an already-durable batch acknowledged without re-ingesting it",
+                )
+                .with_unit("{batch}")
                 .build(),
             mcp_tool_calls: meter
                 .u64_counter("signaldb.mcp.tool_calls")

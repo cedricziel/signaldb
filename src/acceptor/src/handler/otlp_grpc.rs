@@ -17,15 +17,18 @@ use common::wal::{WalOperation, record_batch_to_bytes};
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 
 use super::WalManager;
-use super::forward::spawn_forward_and_mark;
+use super::forward::{spawn_forward_and_mark, spawn_retire_resend};
 use super::ingest_error::IngestError;
 use super::processors_apply::apply_trace_processors;
+use super::retry_dedup::RetryDedup;
 
 pub struct TraceHandler {
     /// Flight transport for forwarding telemetry
     flight_transport: Arc<InMemoryFlightTransport>,
     /// WAL manager for multi-tenant WAL isolation
     wal_manager: Arc<WalManager>,
+    /// Recognizes a client's resend of a batch already made durable
+    retry_dedup: Arc<RetryDedup>,
     /// Tenant OTTL processors (change: tenant-ottl-processors)
     processor_registry: Arc<ProcessorRegistry>,
 }
@@ -73,8 +76,17 @@ impl TraceHandler {
         Self {
             flight_transport,
             wal_manager,
+            retry_dedup: Arc::new(RetryDedup::default()),
             processor_registry,
         }
+    }
+
+    /// Share one resend-dedup cache (`[acceptor].retry_dedup_window`) with
+    /// the acceptor's other handlers; the default is a private cache with
+    /// the default window.
+    pub fn with_retry_dedup(mut self, retry_dedup: Arc<RetryDedup>) -> Self {
+        self.retry_dedup = retry_dedup;
+        self
     }
 
     /// Handle an OTLP trace export.
@@ -156,6 +168,12 @@ impl TraceHandler {
             .context("Failed to serialize record batch")
             .map_err(IngestError::Unavailable)?;
 
+        let fingerprint = self.retry_dedup.fingerprint(
+            &tenant_context.tenant_id,
+            &tenant_context.dataset_id,
+            &WalOperation::WriteTraces,
+            &batch_bytes,
+        );
         let wal_entry_id = wal
             .append(WalOperation::WriteTraces, batch_bytes, metadata_str.clone())
             .await
@@ -173,15 +191,25 @@ impl TraceHandler {
         // Step 2: Forward from WAL to writer via Flight, detached from this
         // request future so a client disconnect cannot cancel it after the
         // flush above (issue #1734). Awaiting the handle keeps behavior for
-        // connected clients unchanged.
-        let forward_task = spawn_forward_and_mark(
-            self.flight_transport.clone(),
-            wal,
-            wal_entry_id,
-            record_batch,
-            metadata_str,
-            "traces",
-        );
+        // connected clients unchanged. A client's resend of a batch already
+        // accepted is retired instead (see `retry_dedup`).
+        let forward_task = if self.retry_dedup.is_resend(fingerprint) {
+            spawn_retire_resend(
+                wal,
+                wal_entry_id,
+                &tenant_context.tenant_id,
+                &WalOperation::WriteTraces,
+            )
+        } else {
+            spawn_forward_and_mark(
+                self.flight_transport.clone(),
+                wal,
+                wal_entry_id,
+                record_batch,
+                metadata_str,
+                "traces",
+            )
+        };
         if let Err(e) = forward_task.await {
             tracing::error!(entry_id = %wal_entry_id, error = %e, "Forward-and-mark task for traces did not complete");
         }
@@ -472,5 +500,84 @@ mod cancellation_safety_tests {
             1,
             "DoPut must run exactly once even though the request future was dropped"
         );
+    }
+
+    /// A handler whose writer is unreachable: forwards fail, so every entry
+    /// the handler appends stays unprocessed and is visible to the test.
+    async fn handler_without_writer(wal_manager: Arc<WalManager>) -> TraceHandler {
+        let catalog = Catalog::new_in_memory().await.unwrap();
+        let acceptor_bootstrap = ServiceBootstrap::new_for_test_with_catalog(
+            catalog,
+            ServiceType::Acceptor,
+            "127.0.0.1:0",
+        )
+        .await
+        .unwrap();
+        let processor_registry = Arc::new(ProcessorRegistry::new(
+            Arc::new(common::catalog::Catalog::new_in_memory().await.unwrap()),
+            &common::config::ProcessorsConfig::default(),
+        ));
+        TraceHandler::new(
+            Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap)),
+            wal_manager,
+            processor_registry,
+        )
+    }
+
+    async fn unprocessed_traces(wal_manager: &WalManager, tenant_context: &TenantContext) -> usize {
+        let wal = wal_manager
+            .get_wal(
+                &tenant_context.tenant_id,
+                &tenant_context.dataset_id,
+                "traces",
+            )
+            .await
+            .unwrap();
+        wal.get_unprocessed_entries().await.unwrap().len()
+    }
+
+    /// The hive duplicate-spans bug: an OTLP exporter whose `Export` timed
+    /// out after the acceptor had already flushed the batch resends the
+    /// identical request. The resend must not become a second WAL entry to
+    /// forward, or every span of the batch is stored twice.
+    #[tokio::test]
+    async fn a_resent_identical_export_is_ingested_once() {
+        let temp_dir = TempDir::new().unwrap();
+        let wal_manager = Arc::new(test_wal_manager(temp_dir.path()));
+        let handler = handler_without_writer(wal_manager.clone()).await;
+        let tenant_context = test_tenant_context();
+
+        for _ in 0..2 {
+            handler
+                .handle_grpc_otlp_traces(&tenant_context, sample_trace_request())
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(
+            unprocessed_traces(&wal_manager, &tenant_context).await,
+            1,
+            "the resend must be acknowledged without leaving a second entry to forward"
+        );
+    }
+
+    #[tokio::test]
+    async fn distinct_exports_are_each_ingested() {
+        let temp_dir = TempDir::new().unwrap();
+        let wal_manager = Arc::new(test_wal_manager(temp_dir.path()));
+        let handler = handler_without_writer(wal_manager.clone()).await;
+        let tenant_context = test_tenant_context();
+
+        let first = sample_trace_request();
+        let mut second = sample_trace_request();
+        second.resource_spans[0].scope_spans[0].spans[0].span_id = b"87654321".to_vec();
+        for request in [first, second] {
+            handler
+                .handle_grpc_otlp_traces(&tenant_context, request)
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(unprocessed_traces(&wal_manager, &tenant_context).await, 2);
     }
 }

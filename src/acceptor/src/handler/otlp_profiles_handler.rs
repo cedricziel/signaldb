@@ -17,14 +17,17 @@ use common::wal::{WalOperation, record_batch_to_bytes};
 use opentelemetry_proto::tonic::collector::profiles::v1development::ExportProfilesServiceRequest;
 
 use super::WalManager;
-use super::forward::spawn_forward_and_mark;
+use super::forward::{spawn_forward_and_mark, spawn_retire_resend};
 use super::ingest_error::IngestError;
+use super::retry_dedup::RetryDedup;
 
 pub struct ProfileHandler {
     /// Flight transport for forwarding telemetry
     flight_transport: Arc<InMemoryFlightTransport>,
     /// WAL manager for multi-tenant WAL isolation
     wal_manager: Arc<WalManager>,
+    /// Recognizes a client's resend of a batch already made durable
+    retry_dedup: Arc<RetryDedup>,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -69,7 +72,16 @@ impl ProfileHandler {
         Self {
             flight_transport,
             wal_manager,
+            retry_dedup: Arc::new(RetryDedup::default()),
         }
+    }
+
+    /// Share one resend-dedup cache (`[acceptor].retry_dedup_window`) with
+    /// the acceptor's other handlers; the default is a private cache with
+    /// the default window.
+    pub fn with_retry_dedup(mut self, retry_dedup: Arc<RetryDedup>) -> Self {
+        self.retry_dedup = retry_dedup;
+        self
     }
 
     /// Handle an OTLP profiles export.
@@ -134,6 +146,12 @@ impl ProfileHandler {
             .context("Failed to serialize record batch")
             .map_err(IngestError::Unavailable)?;
 
+        let fingerprint = self.retry_dedup.fingerprint(
+            &tenant_context.tenant_id,
+            &tenant_context.dataset_id,
+            &WalOperation::WriteProfiles,
+            &batch_bytes,
+        );
         let wal_entry_id = wal
             .append(
                 WalOperation::WriteProfiles,
@@ -155,15 +173,25 @@ impl ProfileHandler {
         // Step 2: Forward from WAL to writer via Flight, detached from this
         // request future so a client disconnect cannot cancel it after the
         // flush above (issue #1734). Awaiting the handle keeps behavior for
-        // connected clients unchanged.
-        let forward_task = spawn_forward_and_mark(
-            self.flight_transport.clone(),
-            wal,
-            wal_entry_id,
-            record_batch,
-            metadata_str,
-            "profiles",
-        );
+        // connected clients unchanged. A client's resend of a batch already
+        // accepted is retired instead (see `retry_dedup`).
+        let forward_task = if self.retry_dedup.is_resend(fingerprint) {
+            spawn_retire_resend(
+                wal,
+                wal_entry_id,
+                &tenant_context.tenant_id,
+                &WalOperation::WriteProfiles,
+            )
+        } else {
+            spawn_forward_and_mark(
+                self.flight_transport.clone(),
+                wal,
+                wal_entry_id,
+                record_batch,
+                metadata_str,
+                "profiles",
+            )
+        };
         if let Err(e) = forward_task.await {
             tracing::error!(entry_id = %wal_entry_id, error = %e, "Forward-and-mark task for profiles did not complete");
         }

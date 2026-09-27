@@ -11,7 +11,7 @@ use anyhow::Context;
 use bytes::Bytes;
 use common::flight::batches_to_compressed_flight_data;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
-use common::wal::Wal;
+use common::wal::{Wal, WalOperation};
 use datafusion::arrow::record_batch::RecordBatch;
 use futures::{StreamExt, stream};
 use tracing::Instrument;
@@ -191,6 +191,38 @@ pub fn spawn_forward_and_mark(
                 Err(e) => {
                     tracing::error!(entry_id = %wal_entry_id, signal, error = %e, "Failed to forward batch - data remains in WAL for retry");
                 }
+            }
+        }
+        .instrument(tracing::Span::current()),
+    )
+}
+
+/// Retire a WAL entry that [`super::retry_dedup::RetryDedup`] recognized as
+/// a client's resend of a batch already accepted: mark it processed without
+/// forwarding it, detached from the caller's future for the same reason as
+/// [`spawn_forward_and_mark`]. A failed mark leaves the entry for the retry
+/// consumer, which forwards it — the pre-dedup behavior, never data loss.
+pub fn spawn_retire_resend(
+    wal: Arc<Wal>,
+    wal_entry_id: Uuid,
+    tenant_id: &str,
+    operation: &WalOperation,
+) -> tokio::task::JoinHandle<()> {
+    let signal = operation.signal();
+    common::self_monitoring::app_metrics()
+        .acceptor_resends_dropped
+        .add(
+            1,
+            &[
+                opentelemetry::KeyValue::new("signaldb.tenant.id", tenant_id.to_string()),
+                opentelemetry::KeyValue::new("signal", signal),
+            ],
+        );
+    tracing::debug!(entry_id = %wal_entry_id, signal, "Dropped client resend of an already-accepted batch");
+    tokio::spawn(
+        async move {
+            if let Err(e) = wal.mark_processed(wal_entry_id).await {
+                tracing::warn!(entry_id = %wal_entry_id, signal, error = %e, "Failed to mark resent WAL entry as processed");
             }
         }
         .instrument(tracing::Span::current()),

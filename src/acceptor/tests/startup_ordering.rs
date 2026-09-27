@@ -71,6 +71,7 @@ async fn test_resources(temp_dir: &TempDir) -> AcceptorResources {
         rate_limiter,
         storage_usage,
         processor_registry,
+        retry_dedup: Arc::new(acceptor::handler::RetryDedup::default()),
     }
 }
 
@@ -140,6 +141,7 @@ async fn http_bind_failure_is_returned_as_error_not_a_panic() {
             rate_limiter: resources.rate_limiter,
             storage_usage: resources.storage_usage,
             processor_registry: resources.processor_registry,
+            retry_dedup: resources.retry_dedup,
             max_request_body_bytes: 64 * 1024 * 1024,
         },
         init_tx,
@@ -223,6 +225,7 @@ async fn http_init_send_after_receiver_dropped_is_returned_as_error_not_a_panic(
             rate_limiter: resources.rate_limiter,
             storage_usage: resources.storage_usage,
             processor_registry: resources.processor_registry,
+            retry_dedup: resources.retry_dedup,
             max_request_body_bytes: 64 * 1024 * 1024,
         },
         init_tx,

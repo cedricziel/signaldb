@@ -66,6 +66,8 @@ pub struct AcceptorResources {
     pub rate_limiter: Arc<common::ratelimit::TenantRateLimiter>,
     pub storage_usage: Arc<common::storage_usage::StorageUsageTracker>,
     pub processor_registry: Arc<common::processors::ProcessorRegistry>,
+    /// Resend-dedup cache shared by every ingest handler on both servers
+    pub retry_dedup: Arc<handler::RetryDedup>,
 }
 
 /// Initialize shared resources for acceptor services
@@ -78,6 +80,9 @@ pub async fn init_acceptor_resources(
     // configuration to open the Iceberg catalog.
     let full_config = config.clone();
     let processors_config = full_config.processors.clone();
+    let retry_dedup = Arc::new(handler::RetryDedup::new(
+        full_config.acceptor.retry_dedup_window,
+    ));
 
     // Initialize service bootstrap for catalog-based discovery
     let service_bootstrap = ServiceBootstrap::new(config, ServiceType::Acceptor, advertise_addr)
@@ -205,6 +210,7 @@ pub async fn init_acceptor_resources(
         rate_limiter,
         storage_usage,
         processor_registry,
+        retry_dedup,
     })
 }
 
@@ -235,6 +241,7 @@ pub async fn serve_otlp_grpc(
         rate_limiter,
         storage_usage,
         processor_registry,
+        retry_dedup,
     } = config.resources;
 
     // Set up OTLP/gRPC services with handler pattern and WAL Manager
@@ -245,7 +252,8 @@ pub async fn serve_otlp_grpc(
         flight_transport.clone(),
         wal_manager.clone(),
         processor_registry.clone(),
-    );
+    )
+    .with_retry_dedup(retry_dedup.clone());
     let log_service = LogAcceptorService::new(log_handler)
         .with_rate_limiter(rate_limiter.clone())
         .with_storage_quota(storage_usage.clone());
@@ -258,7 +266,8 @@ pub async fn serve_otlp_grpc(
         flight_transport.clone(),
         wal_manager.clone(),
         processor_registry.clone(),
-    );
+    )
+    .with_retry_dedup(retry_dedup.clone());
     let trace_service = TraceAcceptorService::new(trace_handler)
         .with_rate_limiter(rate_limiter.clone())
         .with_storage_quota(storage_usage.clone());
@@ -271,7 +280,8 @@ pub async fn serve_otlp_grpc(
         flight_transport.clone(),
         wal_manager.clone(),
         processor_registry.clone(),
-    );
+    )
+    .with_retry_dedup(retry_dedup.clone());
     let metrics_service = MetricsAcceptorService::new(metrics_handler)
         .with_rate_limiter(rate_limiter.clone())
         .with_storage_quota(storage_usage.clone());
@@ -280,7 +290,8 @@ pub async fn serve_otlp_grpc(
         .accept_compressed(CompressionEncoding::Zstd)
         .max_decoding_message_size(max_decoding_message_size);
 
-    let profile_handler = ProfileHandler::new(flight_transport.clone(), wal_manager.clone());
+    let profile_handler = ProfileHandler::new(flight_transport.clone(), wal_manager.clone())
+        .with_retry_dedup(retry_dedup.clone());
     let profile_service = ProfileAcceptorService::new(profile_handler)
         .with_rate_limiter(rate_limiter.clone())
         .with_storage_quota(storage_usage.clone());
@@ -895,6 +906,8 @@ pub struct HttpAcceptorConfig {
     pub rate_limiter: Arc<common::ratelimit::TenantRateLimiter>,
     pub storage_usage: Arc<common::storage_usage::StorageUsageTracker>,
     pub processor_registry: Arc<common::processors::ProcessorRegistry>,
+    /// Resend-dedup cache, shared with the gRPC server's handlers
+    pub retry_dedup: Arc<handler::RetryDedup>,
     /// Maximum decoded request body size, in bytes, for every OTLP/HTTP and
     /// Prometheus remote_write route. From `[acceptor].max_request_body_bytes`,
     /// shared with the gRPC side's `max_decoding_message_size`.
@@ -935,36 +948,46 @@ pub async fn serve_otlp_http(
     // Create Prometheus handler with shared resources
     let prometheus_handler = Arc::new(
         PrometheusHandler::new(config.flight_transport.clone(), config.wal_manager.clone())
+            .with_retry_dedup(config.retry_dedup.clone())
             .with_rate_limiter(config.rate_limiter.clone())
             .with_storage_quota(config.storage_usage.clone()),
     );
 
     // Create profiles handler with shared resources
-    let profile_handler = Arc::new(ProfileHandler::new(
-        config.flight_transport.clone(),
-        config.wal_manager.clone(),
-    ));
+    let profile_handler = Arc::new(
+        ProfileHandler::new(config.flight_transport.clone(), config.wal_manager.clone())
+            .with_retry_dedup(config.retry_dedup.clone()),
+    );
 
     // Create trace handler with shared resources (same WAL + Flight path as gRPC)
-    let trace_handler = Arc::new(TraceHandler::new(
-        config.flight_transport.clone(),
-        config.wal_manager.clone(),
-        config.processor_registry.clone(),
-    ));
+    let trace_handler = Arc::new(
+        TraceHandler::new(
+            config.flight_transport.clone(),
+            config.wal_manager.clone(),
+            config.processor_registry.clone(),
+        )
+        .with_retry_dedup(config.retry_dedup.clone()),
+    );
 
     // Create log handler with shared resources (same WAL + Flight path as gRPC)
-    let log_handler = Arc::new(LogHandler::new(
-        config.flight_transport.clone(),
-        config.wal_manager.clone(),
-        config.processor_registry.clone(),
-    ));
+    let log_handler = Arc::new(
+        LogHandler::new(
+            config.flight_transport.clone(),
+            config.wal_manager.clone(),
+            config.processor_registry.clone(),
+        )
+        .with_retry_dedup(config.retry_dedup.clone()),
+    );
 
     // Create metrics handler with shared resources (same WAL + Flight path as gRPC)
-    let metrics_handler = Arc::new(MetricsHandler::new(
-        config.flight_transport.clone(),
-        config.wal_manager.clone(),
-        config.processor_registry.clone(),
-    ));
+    let metrics_handler = Arc::new(
+        MetricsHandler::new(
+            config.flight_transport.clone(),
+            config.wal_manager.clone(),
+            config.processor_registry.clone(),
+        )
+        .with_retry_dedup(config.retry_dedup.clone()),
+    );
 
     // Build combined router with health, traces, logs, metrics, Prometheus,
     // and profiles endpoints
