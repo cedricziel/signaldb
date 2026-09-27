@@ -213,12 +213,13 @@ metrics:
     entity_associations: [acme.order]
 ```
 
-SignalDB converts a `definition/2` upload to `groups` when it stores it, so
-its definitions resolve exactly as the `groups` version would, and reading the
-registry back returns the `groups` form (metrics become `metric.<name>`,
-entities `entity.<name>`, and the top-level `attributes` the group
-`registry.<name>`). Any other `file_format` value is rejected with `422` and
-nothing is stored.
+SignalDB converts a `definition/2` upload to `groups` when it stores it, and
+reading the registry back returns the `groups` form: metrics become
+`metric.<name>`, entities `entity.<name>`, and the top-level `attributes` one
+group named `registry.<name>`. The attributes, entities and metrics resolve the
+same as in the `groups` version; only the group an attribute is listed under
+differs. Any other `file_format` value is rejected with `422` and nothing is
+stored.
 
 Validate, then create:
 
