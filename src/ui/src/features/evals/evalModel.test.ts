@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EvalRun } from "../../api/evals";
+import evalVerdictsFixture from "../../../../../testdata/eval_verdicts.json";
 import {
   baselinesOf,
   classifyCase,
@@ -13,6 +14,7 @@ import {
   statsDelta,
   toolDiff,
   verdictOfLabel,
+  verdictOfResult,
   type EvalStats,
 } from "./evalModel";
 
@@ -28,6 +30,29 @@ describe("verdictOfLabel", () => {
     expect(verdictOfLabel("incorrect")).toBe("fail");
     expect(verdictOfLabel("partial")).toBeNull();
     expect(verdictOfLabel(null)).toBeNull();
+  });
+});
+
+describe("verdictOfResult", () => {
+  it("matches the shared pass-rule fixture (also loaded by common::evals)", () => {
+    const cases = evalVerdictsFixture as Array<{
+      label: string | null;
+      score: number | null;
+      error_type: string | null;
+      verdict: "pass" | "fail" | "error" | "none";
+    }>;
+    expect(cases.length).toBeGreaterThan(0);
+    for (const c of cases) {
+      const expected =
+        c.verdict === "pass" || c.verdict === "fail" ? c.verdict : null;
+      expect(
+        verdictOfResult({
+          error: c.error_type,
+          label: c.label,
+          score: c.score,
+        }),
+      ).toBe(expected);
+    }
   });
 });
 
