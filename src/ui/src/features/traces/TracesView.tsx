@@ -644,12 +644,18 @@ function GroupList({
   const result = useQuery({
     queryKey: [
       "trace-groups",
+  // Rate is count over a fixed window: it keeps its own header key so the
+  // arrow follows the clicked column, but shares the count query and cache.
+  const querySort: GroupSort = {
+    key: sort.key === "rate" ? "n" : sort.key,
+    dir: sort.dir,
+  };
       rangeKey,
       dims.join(","),
       grain,
       filterKey,
-      sort.key,
-      sort.dir,
+      querySort.key,
+      querySort.dir,
     ],
     // Resolved fresh on every fetch (as the volume chart does), not hoisted
     // from a render captured before this call — a live refetch of a relative
@@ -664,7 +670,7 @@ function GroupList({
         range,
         filters,
         grain,
-        sort as GroupSort,
+        querySort,
       );
       return { ...groups, range };
     },
@@ -740,11 +746,9 @@ function GroupList({
                 toggle={toggle}
                 numeric
               />
-              {/* Rate is count / a fixed window — strictly increasing in count,
-                  so it sorts identically to n; no separate sort key needed. */}
               <SortTh
                 label="Rate"
-                sortKey="n"
+                sortKey="rate"
                 sort={sort}
                 toggle={toggle}
                 numeric
