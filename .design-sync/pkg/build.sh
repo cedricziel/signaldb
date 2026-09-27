@@ -10,6 +10,7 @@ COMPONENTS=$(for s in "$UI"/components/*.stories.tsx; do basename "$s" .stories.
 # collide on shared helper names across feature modules).
 PAGES="
 AgentsScoresView:features/evals/AgentsScoresView
+AppShell:features/shell/AppShell
 CaseView:features/evals/CaseView
 CatalogView:features/catalog/CatalogView
 CompareView:features/evals/CompareView
@@ -43,7 +44,8 @@ export { testQueryClient } from "./types/lib/queryClient";
 export { client } from "./types/api/gen/client.gen";
 export * from "./types/api/http";
 export * from "./types/lib/pwaUpdate";
-export declare const previewQueryClient: import("@tanstack/react-query").QueryClient;'
+export declare const previewQueryClient: import("@tanstack/react-query").QueryClient;
+export declare const previewWhoami: import("./types/api/session").WhoamiResponse;'
 ln -sfn ../../src/ui/node_modules node_modules
 rm -rf dist && mkdir -p dist
 {
@@ -70,6 +72,8 @@ rm -rf dist && mkdir -p dist
   echo "$RUNTIME_DTS" | sed "s#\./types/#../$UI/#; /export declare/d"
   echo "import { testQueryClient as makeClient } from \"../$UI/lib/queryClient\";"
   echo 'export const previewQueryClient = makeClient();'
+  echo "import { sampleWhoami } from \"../$UI/stories/fetchStub\";"
+  echo 'export const previewWhoami = sampleWhoami();'
 } > dist/entry.ts
 ../../src/ui/node_modules/.bin/tsc -p tsconfig.json
 ../../.ds-sync/node_modules/.bin/esbuild dist/entry.ts --bundle --format=esm --jsx=automatic \

@@ -24,7 +24,6 @@
     "Query": "QueryView",
     "Schema": "SchemaHub",
     "Login": "LoginRoute",
-    "AppShell": "ExploreView",
     "APIKeys": "ApiKeys",
     "GitHubIntegration": "GitHubIntegration",
     "SelectTenant": "SelectTenant",
@@ -91,7 +90,7 @@
       "viewport": "1280x800",
       "primaryStory": "Default"
     },
-    "ExploreView": {
+    "AppShell": {
       "cardMode": "single",
       "viewport": "1280x800",
       "primaryStory": "Default"
