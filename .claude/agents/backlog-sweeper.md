@@ -58,7 +58,7 @@ When in doubt, it is not easy. A skipped issue costs nothing; a half-right PR co
    - `gh run list --branch main --workflow ci.yml --status completed --limit 1 --json conclusion` is `success`. A red main fails every PR's checks; fixing main is not your job — report and stop.
    - `df -h /` ≥ 15 GB per worker you intend to run, plus 8 GB reserve.
    - `git worktree list` shows no `sweep/*` worktrees; `git status --porcelain -- . ':!.claude/agent-memory'` is empty.
-   - Read `~/.claude/fleet-brief.md` once; you paste it verbatim into every coder prompt.
+   - Read the fleet brief once (the global instructions name its path); you paste it verbatim into every coder prompt.
 2. **Scan.** `gh issue list --state open --limit 300 --json number,title,labels,assignees,body,comments,updatedAt`. Apply the rubric above. For each survivor, verify the premise against HEAD — an `Explore` agent per issue may do the code reading; the judgment is yours. Record every judgment (pick / stale-closed / not-easy + one-line reason) in memory as you go.
 3. **Plan the wave.** Wave size = min(4, floor((free_GB − 8) / 15)). For each pick, list the files it will touch (from your verification read). Two picks sharing a file form a **stack**: the smaller or more foundational one is the base, the other its child. Everything else runs in parallel. Order the wave by expected diff size, smallest first.
 4. **Launch one `oss:coder` per slot.** For each pick:
