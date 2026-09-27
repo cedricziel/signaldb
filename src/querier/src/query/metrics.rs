@@ -2754,61 +2754,30 @@ mod tests {
         CatalogProvider, MemoryCatalogProvider, MemorySchemaProvider, SchemaProvider,
     };
 
-    fn metrics_schema() -> Arc<Schema> {
-        Arc::new(Schema::new(vec![
-            Field::new(
-                "timestamp",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
-            ),
-            Field::new(
-                "start_timestamp",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                true,
-            ),
-            Field::new("service_name", DataType::Utf8, false),
-            Field::new("metric_name", DataType::Utf8, false),
-            Field::new("value", DataType::Float64, false),
-            Field::new("attributes", DataType::Utf8, true),
-            Field::new("resource_attributes", DataType::Utf8, true),
-        ]))
+    /// Append `n` rows of empty typed-layout `attributes`/`resource_attributes`
+    /// columns (the `metrics_gauge` `physical-v3` shape) to `fields`/`columns`.
+    fn push_empty_typed_metric_attrs(
+        fields: &mut Vec<Field>,
+        columns: &mut Vec<ArrayRef>,
+        n: usize,
+    ) {
+        let rows: Vec<Option<serde_json::Map<String, serde_json::Value>>> =
+            vec![Some(serde_json::Map::new()); n];
+        for name in [LOG_ATTRIBUTES, RESOURCE_ATTRIBUTES] {
+            let (typed_fields, typed_arrays) = common::testing::typed_attribute_columns_from(
+                "metrics_gauge",
+                "physical-v3",
+                name,
+                &rows,
+            );
+            fields.extend(typed_fields);
+            columns.extend(typed_arrays);
+        }
     }
 
+    /// Three samples over `reqs`: two `api`, one `web`, with a `code`
+    /// attribute and an empty `resource_attributes` container each.
     fn service_with_data() -> MetricsService {
-        let schema = metrics_schema();
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
-                Arc::new(TimestampNanosecondArray::from(vec![None, None, None])),
-                Arc::new(StringArray::from(vec!["api", "api", "web"])),
-                Arc::new(StringArray::from(vec!["reqs", "reqs", "reqs"])),
-                Arc::new(Float64Array::from(vec![1.0, 3.0, 5.0])),
-                Arc::new(StringArray::from(vec![
-                    r#"{"code":"200"}"#,
-                    r#"{"code":"500"}"#,
-                    r#"{"code":"200"}"#,
-                ])),
-                Arc::new(StringArray::from(vec!["{}", "{}", "{}"])),
-            ],
-        )
-        .unwrap();
-
-        let ctx = SessionContext::new();
-        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
-        let schema_provider = Arc::new(MemorySchemaProvider::new());
-        schema_provider
-            .register_table("metrics_gauge".to_string(), Arc::new(table))
-            .unwrap();
-        let catalog = Arc::new(MemoryCatalogProvider::new());
-        catalog.register_schema("d", schema_provider).unwrap();
-        ctx.register_catalog("t", catalog);
-        MetricsService::new(ctx)
-    }
-
-    /// Like [`service_with_data`], but with typed-layout (residue-backed)
-    /// attribute columns instead of legacy JSON-in-`Utf8` ones.
-    fn service_with_typed_attrs() -> MetricsService {
         let mut fields: Vec<Field> = vec![
             Field::new(
                 "timestamp",
@@ -2883,25 +2852,36 @@ mod tests {
     /// A single `api` counter series with the given (timestamp, value)
     /// samples, for exercising the Prometheus counter-reset rule.
     fn service_with_counter_series(samples: &[(i64, f64)]) -> MetricsService {
-        let schema = metrics_schema();
         let n = samples.len();
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(
-                    samples.iter().map(|(ts, _)| *ts).collect::<Vec<_>>(),
-                )),
-                Arc::new(TimestampNanosecondArray::from(vec![None::<i64>; n])),
-                Arc::new(StringArray::from(vec!["api"; n])),
-                Arc::new(StringArray::from(vec!["reqs"; n])),
-                Arc::new(Float64Array::from(
-                    samples.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
-                )),
-                Arc::new(StringArray::from(vec!["{}"; n])),
-                Arc::new(StringArray::from(vec!["{}"; n])),
-            ],
-        )
-        .unwrap();
+        let mut fields = vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(
+                "start_timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ];
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(
+                samples.iter().map(|(ts, _)| *ts).collect::<Vec<_>>(),
+            )),
+            Arc::new(TimestampNanosecondArray::from(vec![None::<i64>; n])),
+            Arc::new(StringArray::from(vec!["api"; n])),
+            Arc::new(StringArray::from(vec!["reqs"; n])),
+            Arc::new(Float64Array::from(
+                samples.iter().map(|(_, v)| *v).collect::<Vec<_>>(),
+            )),
+        ];
+        push_empty_typed_metric_attrs(&mut fields, &mut columns, n);
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
 
         let ctx = SessionContext::new();
         let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
@@ -2932,20 +2912,31 @@ mod tests {
     /// a `__name__` regex matcher's inclusion/exclusion can be told apart
     /// from an accidental empty-match fast path.
     fn service_with_reqs_and_errors() -> MetricsService {
-        let schema = metrics_schema();
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![100, 100])),
-                Arc::new(TimestampNanosecondArray::from(vec![None, None])),
-                Arc::new(StringArray::from(vec!["api", "api"])),
-                Arc::new(StringArray::from(vec!["reqs", "errors"])),
-                Arc::new(Float64Array::from(vec![3.0, 7.0])),
-                Arc::new(StringArray::from(vec!["{}", "{}"])),
-                Arc::new(StringArray::from(vec!["{}", "{}"])),
-            ],
-        )
-        .unwrap();
+        let mut fields = vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(
+                "start_timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ];
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![100, 100])),
+            Arc::new(TimestampNanosecondArray::from(vec![None, None])),
+            Arc::new(StringArray::from(vec!["api", "api"])),
+            Arc::new(StringArray::from(vec!["reqs", "errors"])),
+            Arc::new(Float64Array::from(vec![3.0, 7.0])),
+        ];
+        push_empty_typed_metric_attrs(&mut fields, &mut columns, 2);
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
 
         let ctx = SessionContext::new();
         let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
@@ -2997,7 +2988,7 @@ mod tests {
     /// A gauge table with a materialized `label_namespace` column plus a
     /// sum table without it, so the scan union has to null-fill.
     fn service_with_labeled_data() -> MetricsService {
-        let gauge_schema = Arc::new(Schema::new(vec![
+        let mut gauge_fields = vec![
             Field::new(
                 "timestamp",
                 DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -3006,37 +2997,46 @@ mod tests {
             Field::new("service_name", DataType::Utf8, false),
             Field::new("metric_name", DataType::Utf8, false),
             Field::new("value", DataType::Float64, false),
-            Field::new("attributes", DataType::Utf8, true),
-            Field::new("resource_attributes", DataType::Utf8, true),
-            Field::new("label_namespace", DataType::Utf8, true),
-        ]));
-        let gauge = RecordBatch::try_new(
-            gauge_schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300, 400])),
-                Arc::new(StringArray::from(vec!["api", "api", "api", "web"])),
-                Arc::new(StringArray::from(vec!["reqs", "reqs", "reqs", "reqs"])),
-                Arc::new(Float64Array::from(vec![1.0, 3.0, 10.0, 5.0])),
-                Arc::new(StringArray::from(vec!["{}", "{}", "{}", "{}"])),
-                Arc::new(StringArray::from(vec!["{}", "{}", "{}", "{}"])),
-                Arc::new(StringArray::from(vec!["prod", "prod", "dev", "prod"])),
-            ],
-        )
-        .unwrap();
-        let sum_schema = metrics_schema();
-        let sum = RecordBatch::try_new(
-            sum_schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![500])),
-                Arc::new(TimestampNanosecondArray::from(vec![None::<i64>])),
-                Arc::new(StringArray::from(vec!["api"])),
-                Arc::new(StringArray::from(vec!["reqs"])),
-                Arc::new(Float64Array::from(vec![100.0])),
-                Arc::new(StringArray::from(vec!["{}"])),
-                Arc::new(StringArray::from(vec!["{}"])),
-            ],
-        )
-        .unwrap();
+        ];
+        let mut gauge_columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300, 400])),
+            Arc::new(StringArray::from(vec!["api", "api", "api", "web"])),
+            Arc::new(StringArray::from(vec!["reqs", "reqs", "reqs", "reqs"])),
+            Arc::new(Float64Array::from(vec![1.0, 3.0, 10.0, 5.0])),
+        ];
+        push_empty_typed_metric_attrs(&mut gauge_fields, &mut gauge_columns, 4);
+        gauge_fields.push(Field::new("label_namespace", DataType::Utf8, true));
+        gauge_columns.push(Arc::new(StringArray::from(vec![
+            "prod", "prod", "dev", "prod",
+        ])));
+        let gauge_schema = Arc::new(Schema::new(gauge_fields));
+        let gauge = RecordBatch::try_new(gauge_schema.clone(), gauge_columns).unwrap();
+
+        let mut sum_fields = vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(
+                "start_timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ];
+        let mut sum_columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![500])),
+            Arc::new(TimestampNanosecondArray::from(vec![None::<i64>])),
+            Arc::new(StringArray::from(vec!["api"])),
+            Arc::new(StringArray::from(vec!["reqs"])),
+            Arc::new(Float64Array::from(vec![100.0])),
+        ];
+        push_empty_typed_metric_attrs(&mut sum_fields, &mut sum_columns, 1);
+        let sum_schema = Arc::new(Schema::new(sum_fields));
+        let sum = RecordBatch::try_new(sum_schema.clone(), sum_columns).unwrap();
 
         let ctx = SessionContext::new();
         let schema_provider = Arc::new(MemorySchemaProvider::new());
@@ -3288,22 +3288,15 @@ mod tests {
         assert_eq!(api.2, 3.0);
     }
 
+    /// The table's `attributes` container is the typed layout (no single
+    /// `attributes` column -- it is split into `attributes_str`/`_int`/
+    /// `_double`/`_bool`/`_residue`), so this also pins that the matcher
+    /// resolves through those typed homes instead of erroring with "No
+    /// field named attributes".
     #[tokio::test]
     async fn label_matcher_filters_attributes() {
         let service = service_with_data();
         // code="500" only matches the api/500 row (value 3).
-        let out = matrix(&service, r#"sum(reqs{code="500"})"#, 1000).await;
-        assert_eq!(out.len(), 1);
-        assert_eq!(out[0].2, 3.0);
-    }
-
-    /// The typed-layout table has no `attributes` column at all (it is
-    /// split into `attributes_str`/`_int`/`_double`/`_bool`/`_residue`), so
-    /// this pins the same matcher behavior as `label_matcher_filters_attributes`
-    /// against that layout instead of erroring with "No field named attributes".
-    #[tokio::test]
-    async fn label_matcher_filters_attributes_on_typed_layout() {
-        let service = service_with_typed_attrs();
         let out = matrix(&service, r#"sum(reqs{code="500"})"#, 1000).await;
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].2, 3.0);
@@ -3493,7 +3486,7 @@ mod tests {
 
     #[tokio::test]
     async fn label_names_include_known_and_attribute_keys() {
-        let service = service_with_typed_attrs();
+        let service = service_with_data();
         let labels = service.get_labels(0, 1000, "t", "d").await.unwrap();
         assert!(labels.contains(&"__name__".to_string()));
         assert!(labels.contains(&"job".to_string()));
@@ -3502,7 +3495,7 @@ mod tests {
 
     #[tokio::test]
     async fn label_values_for_name_job_and_attribute() {
-        let service = service_with_typed_attrs();
+        let service = service_with_data();
         assert_eq!(
             service
                 .get_label_values("__name__", 0, 1000, "t", "d")
@@ -4184,20 +4177,31 @@ mod tests {
     /// A gauge table holding one sample each of `reqs` (10) and `errs` (2)
     /// for the same service and bucket.
     fn service_with_two_metrics() -> MetricsService {
-        let schema = metrics_schema();
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![100, 100])),
-                Arc::new(TimestampNanosecondArray::from(vec![None, None])),
-                Arc::new(StringArray::from(vec!["api", "api"])),
-                Arc::new(StringArray::from(vec!["reqs", "errs"])),
-                Arc::new(Float64Array::from(vec![10.0, 2.0])),
-                Arc::new(StringArray::from(vec!["{}", "{}"])),
-                Arc::new(StringArray::from(vec!["{}", "{}"])),
-            ],
-        )
-        .unwrap();
+        let mut fields = vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(
+                "start_timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ];
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![100, 100])),
+            Arc::new(TimestampNanosecondArray::from(vec![None, None])),
+            Arc::new(StringArray::from(vec!["api", "api"])),
+            Arc::new(StringArray::from(vec!["reqs", "errs"])),
+            Arc::new(Float64Array::from(vec![10.0, 2.0])),
+        ];
+        push_empty_typed_metric_attrs(&mut fields, &mut columns, 2);
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
         let ctx = SessionContext::new();
         let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
         let schema_provider = Arc::new(MemorySchemaProvider::new());
