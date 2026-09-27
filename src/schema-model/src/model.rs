@@ -5,6 +5,7 @@
 
 use std::collections::BTreeMap;
 use std::path::Path;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
@@ -267,6 +268,14 @@ pub enum ParseError {
 struct ModelFile {
     #[serde(default)]
     groups: Vec<Group>,
+}
+
+/// Lets callers holding a shared document (e.g. from `SchemaResolver::get`)
+/// compare it against an owned one without dereferencing.
+impl PartialEq<RegistryDocument> for Arc<RegistryDocument> {
+    fn eq(&self, other: &RegistryDocument) -> bool {
+        **self == *other
+    }
 }
 
 impl RegistryDocument {
