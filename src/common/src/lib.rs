@@ -12,6 +12,7 @@ pub mod endpoints;
 pub mod error;
 pub mod flight;
 pub mod iceberg;
+pub mod ingest_dedup;
 pub mod model;
 pub mod parquet_metadata_cache;
 pub mod processors;

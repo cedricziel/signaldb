@@ -1,17 +1,16 @@
-//! In-memory, per-writer cache of ingest ids seen recently.
+//! In-memory, windowed cache of ids seen recently, for recognizing a resend
+//! of something already durably ingested.
 //!
-//! `do_put`'s `app_metadata` carries an `ingest_id` -- the acceptor WAL entry
-//! uuid a batch was forwarded for -- so a resend that the acceptor's
-//! rendezvous hashing routes back to this same writer can be recognized and
-//! deduped instead of re-inserted (design decision on issue #1734 step 2).
+//! The writer keys it by `ingest_id`: `do_put`'s `app_metadata` carries the
+//! acceptor WAL entry uuid a batch was forwarded for, so a resend that the
+//! acceptor's rendezvous hashing routes back to the same writer is deduped
+//! instead of re-inserted (issue #1734 step 2). Window:
+//! [`WriterConfig::ingest_dedup_window`](crate::config::WriterConfig),
+//! rebuilt at startup from ingest ids still in that writer's WAL.
 //!
 //! The cache is deliberately not the SQL catalog or an external store: an
-//! ack-path check against either would add a network round trip and a
-//! dependency this writer doesn't otherwise have. It is bounded by a time
-//! window ([`WriterConfig::ingest_dedup_window`](common::config::WriterConfig),
-//! default 1h) rather than kept forever, and is rebuilt at startup from ingest
-//! ids still present in this writer's own WAL entries within the window (see
-//! [`crate::flight_iceberg::IcebergWriterFlightService::rebuild_ingest_dedup_from_wal`]).
+//! ack-path check against either would add a network round trip. It is
+//! bounded by its time window rather than kept forever.
 
 use std::collections::VecDeque;
 use std::collections::hash_map::{Entry, HashMap};
@@ -44,7 +43,7 @@ struct Inner {
     order: VecDeque<(SystemTime, Uuid)>,
 }
 
-/// Windowed ingest-id dedup cache. See module docs.
+/// Windowed id dedup cache. See module docs.
 pub struct IngestDedup {
     window: Duration,
     clock: Arc<dyn Clock>,

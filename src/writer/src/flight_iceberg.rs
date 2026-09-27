@@ -14,7 +14,6 @@
 //! groups with `do_action(`[`FLUSH_ACTION`]`)` (advertised via `list_actions`),
 //! bounded by [`FLUSH_TIMEOUT`].
 
-use crate::ingest_dedup::{Clock, IngestDedup, SystemClock};
 use crate::processor::{FlushScope, WalProcessor};
 use crate::routing::{self, RouteMetadata, RouteTarget};
 use crate::schema_transform::{
@@ -28,6 +27,7 @@ use bytes::Bytes;
 use common::CatalogManager;
 use common::config::WriterConfig;
 use common::flight::decode::flight_data_vec_to_batches;
+use common::ingest_dedup::{Clock, IngestDedup, SystemClock};
 use common::schema::type_authority::TypeAuthority;
 use common::wal::manager::WalManager;
 use common::wal::{WalOperation, record_batch_to_bytes};
@@ -90,7 +90,7 @@ pub struct IcebergWriterFlightService {
     table_reconcile_interval: std::time::Duration,
     /// Windowed cache of ingest ids seen on `do_put`, so a resend the
     /// acceptor routes back to this writer is deduped rather than
-    /// re-inserted (#1734 step 2). See [`crate::ingest_dedup`].
+    /// re-inserted (#1734 step 2). See [`common::ingest_dedup`].
     ingest_dedup: Arc<IngestDedup>,
 }
 
