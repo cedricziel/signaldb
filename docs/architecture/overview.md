@@ -61,9 +61,13 @@ Apache Iceberg provides ACID transactions and structured metadata management:
   columns for exact querying across all four signal types; allowlists
   resolve per tenant (a tenant schema override replaces the global set —
   see [storage layout](storage-layout.md#materialized-labels))
-- **Typed attribute maps**: new tables across all four signals store
-  attributes as `Map<String,String>` columns, so any attribute is exactly queryable
-  (legacy tables keep JSON strings with per-table fallback)
+- **Typed attribute layout**: every signal's current `schemas.toml` version
+  realizes each attribute container as five columns — one typed map per
+  canonical type (`{container}_str/_int/_double/_bool`) plus a
+  `{container}_residue` binary CBOR column — so a canonical-typed attribute
+  is exactly queryable in its native type; a table still in the legacy
+  single-map layout is dropped and recreated rather than evolved (one-shot
+  cutover, see [storage layout](storage-layout.md#typed-attribute-layout-v5-one-shot-cutover))
 
 ### 5. Columnar Storage
 
@@ -544,14 +548,14 @@ Each service creates a `ServiceBootstrap` at startup which:
 
 Schema definitions are managed in `schemas.toml` at the repository root and compiled into the binary via `include_str!`. The schema system supports:
 
-- **Versioned schemas** with metadata tracking current physical versions (e.g., traces physical-v4, logs physical-v3, metrics physical-v2, profiles physical-v2) and a separate `logical_schema_version` (`otel-2026-08`) for the client-visible OTel logical schema
+- **Versioned schemas** with metadata tracking current physical versions (traces physical-v5, logs physical-v4, metrics physical-v3, profiles physical-v3 — the typed attribute layout, see below) and a separate `logical_schema_version` (`otel-2026-08`) for the client-visible OTel logical schema
 - **Inheritance**: A schema version can inherit fields from a parent version
 - **Field renames**: e.g., `name` -> `span_name` in traces physical-v2
 - **Field additions**: e.g., `timestamp`, `date_day`, `hour` computed partition fields
 - **Field removals**: A schema version can drop a field inherited from its parent
 - **Computed fields**: Fields derived from other fields at write time (e.g., `date_day` from `start_time_unix_nano`); computed and partition-by fields are marked `physical_only` during resolution — they exist in the Iceberg table but are not part of the client-visible logical schema
 
-The Flight wire format (v1) and Iceberg storage format (traces physical-v4, logs physical-v3) differ intentionally. The Writer applies schema transformations at ingestion time via `transform_trace_v1_to_v2()` / `transform_logs_v1_to_iceberg()`.
+The Flight wire format (v1) and Iceberg storage format differ intentionally. The Writer applies schema transformations at ingestion time via `transform_trace_v1_to_v2()` / `transform_logs_v1_to_iceberg()`, targeting each signal's last pre-typed intermediate shape (traces physical-v4, logs physical-v3 — fixed literals, not the current typed version); the typed-container splitting that carries a batch the rest of the way to the table's actual current schema (traces physical-v5, logs physical-v4) happens generically afterward, in `IcebergTableWriter::append_batches_with_marker`.
 
 **Schema evolution**: for traces and logs (the two signals whose physical schema is `schemas.toml`-sourced), an existing table's schema is brought forward to the current version on every load, not just at creation — `common::iceberg::evolution::ensure_schema_current` diffs the table's live Iceberg schema against the target version by field name (never by regenerating field IDs positionally, which is only safe for a brand-new table) and commits any missing columns additively. Metrics and profiles are hand-written in `iceberg_schemas.rs`, not yet covered by this mechanism.
 

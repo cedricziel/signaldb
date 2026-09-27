@@ -16,7 +16,7 @@ sources:
 
 Schemas are defined in `schemas.toml` (compiled into binary via `include_str!`) and support:
 
-- **Versioning**: Each signal type tracks a current physical version (traces=physical-v4, logs=physical-v3, metrics=physical-v2, profiles=physical-v2). A separate `logical_schema_version` (`otel-2026-08`) tracks the client-visible OTel logical schema, independent of the physical Iceberg realization.
+- **Versioning**: Each signal type tracks a current physical version (traces=physical-v5, logs=physical-v4, metrics=physical-v3, profiles=physical-v3) — the typed attribute layout (see below), landed as a one-shot cutover: a table still in the legacy single-map layout is dropped and recreated, never evolved, the next time `IcebergTableManager::ensure_table` loads it. A separate `logical_schema_version` (`otel-2026-08`) tracks the client-visible OTel logical schema, independent of the physical Iceberg realization.
 - **Three version axes, not one**: (1) the Flight **wire** format vs Iceberg storage — the `*_v1_to_*` transforms in `src/writer/src/schema_transform.rs`; "v1"/"v2" in those names is historical and means wire→storage, nothing else; (2) the **physical** chain `physical-v1..vN` in `schemas.toml`, one per signal; (3) the **logical** schema version (`logical_schema_version`), which describes `common::schema::logical`. A storage migration moves (2) only; a logical field change moves (3) only.
 - **Inheritance**: `inherits = "physical-v1"` pulls all parent fields
 - **Field renames**: `{ from = "name", to = "span_name" }`
@@ -36,19 +36,19 @@ Schema resolution in `SchemaDefinitions` (`src/common/src/schema/schema_parser.r
 
 **Positional field IDs, and why evolving a live table can't use them**: `ResolvedSchema::to_iceberg_schema()` assigns Iceberg field IDs by position (`idx + 1`) every time it's called — safe for a table being created fresh, but unsafe to diff against an existing table's live schema (a version that removes a field in the middle would shift every later field's ID, corrupting the mapping already burned into that table's Parquet files). `common::iceberg::evolution`'s live-table functions diff by field _name_ against the table's actual persisted schema instead, reusing existing IDs untouched and minting new ones only for genuine additions.
 
-## Flight Schema (v1) vs Iceberg Schema (physical-v4)
+## Flight Schema (v1) vs Iceberg Schema (physical-v4 intermediate shape)
 
-The wire format and storage format differ intentionally. Writer applies `transform_trace_v1_to_v2()` at ingestion. Despite the name, the transform resolves the physical schema dynamically via `resolve_trace_schema(SCHEMA_DEFINITIONS.current_trace_version())`, so bumping `schemas.toml`'s `current_trace_version` alone moves it — no matching literal to update in this function. `transform_logs_v1_to_iceberg` is the opposite: it resolves a hardcoded `"physical-v3"` literal, bumped by hand alongside `schemas.toml`'s `current_log_version` whenever the logs schema moves.
+The wire format and storage format differ intentionally. Writer applies `transform_trace_v1_to_v2()` at ingestion, resolving against a fixed `"physical-v4"` literal — **not** `SCHEMA_DEFINITIONS.current_trace_version()` (now `physical-v5`, the typed layout). This transform's only job is bridging the wire's v1 shape to the last version with `span_attributes`/`resource_attributes`/`scope_attributes` as plain `map<string,string>` columns; `IcebergTableWriter::append_batches_with_marker`'s typed-container splitting (via the attribute type authority) handles the v4 → v5 hop generically afterward, from whatever the table's actual current schema is — `create_arrow_schema_from_resolved` has no case for a typed map/binary column, so this plan can never target `physical-v5` directly. `transform_logs_v1_to_iceberg` is the same shape: a hardcoded `"physical-v3"` literal (logs' own last pre-typed version), not `current_log_version` (now `physical-v4`).
 
-| Aspect           | Flight v1 (wire)              | Iceberg physical-v4 (storage)                             |
-| ---------------- | ----------------------------- | --------------------------------------------------------- |
-| Span name        | `name`                        | `span_name`                                               |
-| Duration         | `duration_nano` (UInt64)      | `duration_nanos` (Int64)                                  |
-| Attributes       | `attributes_json`             | `span_attributes` (Map on new tables; JSON string legacy) |
-| Resource         | `resource_json`               | `resource_attributes`                                     |
-| Time fields      | UInt64 (nanos)                | Long/Int64 (nanos)                                        |
-| Events/Links     | `List<Struct>` (nested Arrow) | `String` (JSON)                                           |
-| Partition fields | None                          | `timestamp`, `date_day`, `hour`                           |
+| Aspect           | Flight v1 (wire)              | Iceberg physical-v4 (pre-typed intermediate shape)                                       |
+| ---------------- | ----------------------------- | ---------------------------------------------------------------------------------------- |
+| Span name        | `name`                        | `span_name`                                                                              |
+| Duration         | `duration_nano` (UInt64)      | `duration_nanos` (Int64)                                                                 |
+| Attributes       | `attributes_json`             | `span_attributes` (JSON-string carrier; split into the typed layout below before commit) |
+| Resource         | `resource_json`               | `resource_attributes`                                                                    |
+| Time fields      | UInt64 (nanos)                | Long/Int64 (nanos)                                                                       |
+| Events/Links     | `List<Struct>` (nested Arrow) | `String` (JSON)                                                                          |
+| Partition fields | None                          | `timestamp`, `date_day`, `hour`                                                          |
 
 ## Write-Time Transformation
 
@@ -75,7 +75,7 @@ Non-finite metric doubles (NaN, ±Inf) are carried in v1 `data_json` as the stri
 
 `writer::schema_transform::schema_consistency` (`unified-table-schema`'s `table-schema-consistency` capability) asserts, per table, that `schemas.toml`'s current non-computed field names exactly match a hand-maintained "fields this transform touches" set — the failure mode it exists to catch is a field declared physical but never actually read or written, the way `dropped_*_count` went silent before #1208. `transform_trace_v1_to_v2`/`transform_logs_v1_to_iceberg`/`transform_profiles_v1_to_iceberg` also self-check this at runtime (each iterates its own resolved schema's field list with an exhaustive match, erroring on an unhandled name); the five metrics transforms build columns positionally against their own hand-written `create_metrics_*_arrow_schema()` with no such runtime check, so the test-level check is these five tables' only guard.
 
-## Traces Table Schema (physical-v4 -- current)
+## Traces Table Schema (physical-v4, the write-transform's target -- current storage is physical-v5, the typed attribute layout; see `docs/architecture/storage-layout.md`)
 
 | #     | Field                                     | Iceberg Type | Required | Notes                                                                                             |
 | ----- | ----------------------------------------- | ------------ | -------- | ------------------------------------------------------------------------------------------------- |
@@ -108,32 +108,31 @@ Non-finite metric doubles (NaN, ±Inf) are carried in v1 `data_json` as the stri
 
 The five v3 columns and `resource_identity` are nullable, so rows written before their version have no value for them; `arrow_to_otlp_traces` falls back to deriving `span_kind`/`status_code`'s int from the string columns, and defaults the dropped counts to 0, only when the v3 column is absent or null. `resource_identity` is null on any row written before the column existed.
 
-## Logs Table Schema (physical-v3)
+## Logs Table Schema (physical-v3, the write-transform's target -- current storage is physical-v4, the typed attribute layout)
 
-Key fields: `timestamp` (partition), `trace_id`, `span_id`, `severity_text`, `severity_number`, `service_name`, `body`, `resource_attributes`, `log_attributes`, `date_day`, `hour`. On tables created since the typed-attribute change, `log_attributes`/`resource_attributes`/`scope_attributes` are Iceberg `Map<String,String>` (schemas.toml `map<string,string>`; nested key/value field IDs allocated after all top-level IDs); legacy tables have JSON strings. Transforms still emit JSON strings — `coerce_batch_to_schema` converts to `MapArray` (`json_strings_to_map_array`) when the table schema declares a map. v2 (#1340) adds a nullable `resource_identity` string column -- same digest and same null-before-the-column-existed rule as traces'. v3 (#1743) adds nullable `event_name` (String) and `dropped_attributes_count` (Long, cast from the wire batch's UInt32) columns, mirroring `traces.physical-v3`'s dropped counts.
+Key fields: `timestamp` (partition), `trace_id`, `span_id`, `severity_text`, `severity_number`, `service_name`, `body`, `resource_attributes`, `log_attributes`, `date_day`, `hour`. `transform_logs_v1_to_iceberg` emits `log_attributes`/`resource_attributes`/`scope_attributes` as JSON strings at this intermediate `physical-v3` shape; the table's actual current schema (`physical-v4`) declares each as five typed columns (`{container}_str/_int/_double/_bool/_residue` — see `docs/architecture/storage-layout.md`'s "Typed attribute layout" section), and `apply_typed_attribute_containers` splits the JSON into them before commit, resolving each key's canonical type through the attribute type authority. v2 (#1340) adds a nullable `resource_identity` string column -- same digest and same null-before-the-column-existed rule as traces'. v3 (#1743) adds nullable `event_name` (String) and `dropped_attributes_count` (Long, cast from the wire batch's UInt32) columns, mirroring `traces.physical-v3`'s dropped counts.
 
 Plus, when `[schema.materialized_labels].<signal>` is configured, a nullable `label_<key>` column per key — except when two configured keys sanitize to the same candidate name (e.g. `http.method`/`http_method`), in which case `common::iceberg::evolution::resolve_label_columns_canonical`/`resolve_label_columns_fresh` assign collision-safe suffixes (`label_http_method`, `label_http_method_2`, ...) deterministically from the full configured key _set_ (order-independent), stamping each column's `doc` as the authoritative key→column record (#1448; same doc-authoritative mechanism as auto-promotion's `resolve_label_columns`, #814). The writer reconciles a batch's label columns against the table's `doc`-authoritative assignment before commit, so a config edit that grows the key set on an already-existing table doesn't misroute one key's values into another's column; matching is by the origin key stamped into each label column's Arrow field metadata (`LABEL_ORIGIN_KEY_METADATA`), which survives the WAL's IPC round trip, not by column name (#1534) — a pre-#1534 WAL entry has no such metadata and falls back to the old name-based guard. All eight `transform_*_v1_to_iceberg` transforms append these via `extend_schema_with_labels` — value from resource→scope→record attributes, first non-null. Logs/traces/profiles use the batch-level `materialized_label_columns`; the 5 exploded metrics transforms use `materialized_label_columns_from_json` (per data point). Schema creation for all six built-in table types appends label columns via `ResolvedSchema::to_iceberg_schema_with_labels` (`schemas.toml`-sourced for every one of them since #1237 — no hand-written label-appending function remains). Default empty ⇒ unchanged schema. Per-tenant: transforms and schema creation take the tenant-resolved `MaterializedLabels` (tenant schema override replaces global; resolved in `CatalogManager::ensure_table` and `IcebergTableWriter::new`/`transform_for_signal`). See `docs/architecture/storage-layout.md#materialized-labels`.
 
 ## Metrics Schemas
 
-On new tables the metric/profile attribute columns are `Map<String,String>` (nested IDs after labels, via `ResolvedSchema::to_iceberg_schema_with_labels`); legacy tables have JSON strings.
+The current version (`physical-v3` for all five metrics representations and for `profiles`) is the typed attribute layout: `attributes`/`resource_attributes`/`scope_attributes` (metrics) and `profile_attributes`/`resource_attributes`/`scope_attributes` (profiles) are each five typed columns, not one `Map<String,String>`.
 
-`schemas.toml` defines `physical-v1` and `physical-v2` for all five metrics
+`schemas.toml` defines `physical-v1` through `physical-v3` for all five metrics
 representations (`metrics_gauge`, `metrics_sum`, `metrics_histogram`,
 `metrics_exponential_histogram`, `metrics_summary`) and for `profiles`; v2
 (#1340) adds the same nullable `resource_identity` digest column traces/logs
-gained, null on any row written before the column existed.
+gained, null on any row written before the column existed; v3 is the typed
+attribute layout, landed by the same one-shot cutover as traces/logs (a table
+still on `physical-v2` is dropped and recreated, never evolved, since live
+evolution cannot add/remove a map-typed column).
 `iceberg::schemas`'s `create_*_schema_with()` functions resolve from it via
 `ResolvedSchema::to_iceberg_schema_with_labels` — the same path traces/logs
-already used — rather than building `StructField` lists by hand. (Until
-this consolidation, only `metrics_gauge`/`metrics_sum`/`metrics_histogram`
-had a `schemas.toml` section at all, and even those were wired only to
-admin introspection, not the real tables; the sections had also drifted —
-attribute fields were typed `string` there but built as
-`Map<String,String>` in the real hand-written functions.) Live-table
+already used — rather than building `StructField` lists by hand. Live-table
 evolution (`common::iceberg::evolution`, via `TableManager::ensure_schema_evolved`)
-now covers all five metrics tables and `profiles` too, the same as
-traces/logs.
+covers the `physical-v1` → `physical-v2` hop for all five metrics tables and
+`profiles`; the `physical-v2` → `physical-v3` (typed layout) hop is the
+drop-and-recreate path instead, same as traces/logs.
 
 Tables:
 

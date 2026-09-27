@@ -254,6 +254,22 @@ materialized_labels` is applied when a table is created; `ensure_table`'s
   version (no recorded version, or one not found on the chain) skips
   straight to current with additions only. See
   [schema evolution](../architecture/storage-layout.md#an-existing-tables-schema-tracks-and-catches-up-to-schematomls-version).
+- **The typed-attribute-layout cutover recreates a legacy table instead of
+  evolving it, and that recreation drops its data.** Every signal's current
+  `schemas.toml` version is now the typed attribute layout (one typed map per
+  canonical type plus a binary residue per attribute container, replacing the
+  single `map<string,string>` column -- see
+  [Typed attribute layout](../architecture/storage-layout.md#typed-attribute-layout-v5-one-shot-cutover)).
+  Iceberg schema evolution cannot add or remove a map-typed column on a live
+  table, so `ensure_table` detects a table still in the legacy layout and,
+  instead of evolving it, drops and recreates it fresh at the current typed
+  version -- with the same schema, partitioning, bloom/compression
+  properties, and sort order a brand-new table gets. **The dropped table's
+  data is not migrated**; this is a deliberate one-shot cutover under the
+  post-1.0 breaking-changes policy, not a bug. It happens the first time any
+  reconcile pass or write touches a still-legacy table after upgrading past
+  the cutover, so plan the upgrade around each table's retention window if
+  the pre-cutover data matters.
 - **Not every table property is set at creation.** Provisioning applies the
   bloom-filter, column-statistics, compression and metadata-pruning
   properties, but deliberately not `write.target-file-size-bytes`: compaction

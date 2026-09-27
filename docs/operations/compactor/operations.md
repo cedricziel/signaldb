@@ -949,7 +949,9 @@ export AWS_S3_USE_ACCELERATE_ENDPOINT=true
 
 ## Attribute Promotion
 
-With [`[compactor.attr_promotion]`](configuration.md#attribute-promotion-configuration) enabled and `dry_run = false`, the compactor promotes qualifying attribute keys to materialized `label_<key>` columns as part of a normal compaction rewrite. Each acted-on promotion makes two commits per table:
+With [`[compactor.attr_promotion]`](configuration.md#attribute-promotion-configuration) enabled and `dry_run = false`, the compactor promotes qualifying attribute keys to materialized `label_<key>` columns as part of a normal compaction rewrite. On a table in the typed attribute layout (every table's current version -- see `docs/architecture/storage-layout.md`'s "Typed attribute layout" section), only a key whose canonical type is recorded as `String` at every attribute level it appears qualifies: `label_<key>` is itself a `String` column, and a numeric or boolean canonical key has no lossless `String` promotion today (typed promotion -- a native-typed promoted column -- is a later layer). Such a key stays in its typed home (`{container}_int`/`_double`/`_bool`) and is filterable there, just not promotable yet.
+
+Each acted-on promotion makes two commits per table:
 
 1. **Schema flip** (before the rewrite): a metadata-only `AddSchema` + `SetCurrentSchema` commit adds the promoted columns. No data files change; readers null-fill the new columns until the rewrite lands.
 2. **Rewrite/delta commit** (the normal compaction commit): every row _in the partition being compacted_ is rewritten with the label values backfilled from its attributes (resource, then scope, then record attributes). Existing label columns are recomputed too, healing rows the writer left null during the transition window. Because compaction is partition-scoped, backfill reaches a table's older rows as their partitions are compacted, not all at once.
