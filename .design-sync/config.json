@@ -178,7 +178,8 @@
       "@tanstack/react-query",
       "api/gen/client.gen",
       "api/http",
-      "react-router"
+      "react-router",
+      "lib/pwaUpdate"
     ]
   },
   "readmeHeader": ".design-sync/conventions.md"

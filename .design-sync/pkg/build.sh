@@ -29,13 +29,15 @@ LoginRoute:features/shell/LoginRoute
 TracesView:features/traces/TracesView
 "
 # Shared runtime the story wrappers must get from the bundle, not a second
-# copy (router context, query cache, and the API client the fetch stub patches).
+# copy (router context, query cache, the API client the fetch stub patches,
+# and the PWA update state UpdateBanner's story sets).
 RUNTIME_DTS='
 export * from "@tanstack/react-query";
 export * from "react-router";
 export { testQueryClient } from "./types/lib/queryClient";
 export { client } from "./types/api/gen/client.gen";
 export * from "./types/api/http";
+export * from "./types/lib/pwaUpdate";
 export declare const previewQueryClient: import("@tanstack/react-query").QueryClient;'
 ln -sfn ../../src/ui/node_modules node_modules
 rm -rf dist && mkdir -p dist
