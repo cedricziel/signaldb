@@ -41,7 +41,7 @@
 }
 
 .trace-volume-mode button[aria-pressed="true"] {
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--accent-soft);
 }
 
@@ -206,7 +206,7 @@
 }
 
 .err-rate {
-  color: var(--err);
+  color: var(--err-text);
   font-weight: 600;
 }
 
@@ -233,12 +233,12 @@
 }
 
 .status-chip.status-error {
-  color: var(--err);
+  color: var(--err-text);
   background: color-mix(in srgb, var(--err) 14%, transparent);
 }
 
 .status-chip.status-ok {
-  color: var(--ok);
+  color: var(--ok-text);
   background: color-mix(in srgb, var(--ok) 14%, transparent);
 }
 
@@ -312,7 +312,7 @@
 
 .trace-open {
   font-weight: 550;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .trace-id {
@@ -636,7 +636,7 @@
 }
 
 .span-dur.error {
-  color: var(--err);
+  color: var(--err-text);
 }
 
 /* ---------- span detail ---------- */
@@ -695,7 +695,7 @@
 }
 
 .span-event-err .span-event-name {
-  color: var(--err);
+  color: var(--err-text);
 }
 
 .span-event-type {
@@ -783,7 +783,7 @@
   margin-left: auto;
   font-size: 10px;
   font-variant-numeric: tabular-nums;
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--accent-soft);
   border-color: transparent;
 }
@@ -811,7 +811,7 @@
 }
 
 .facet-val[aria-pressed="true"] {
-  color: var(--accent);
+  color: var(--accent-text);
   border-left-color: var(--accent);
 }
 

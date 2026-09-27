@@ -60,7 +60,7 @@
 
 .source-button.selected {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 500;
 }
 
@@ -210,11 +210,11 @@
 }
 
 .status-icon.receiving {
-  color: var(--ok);
+  color: var(--ok-text);
 }
 
 .status-icon.error {
-  color: var(--err);
+  color: var(--err-text);
 }
 
 .status-text {

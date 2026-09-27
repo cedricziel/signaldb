@@ -1,9 +1,9 @@
 .line-diff-view {
   overflow: auto;
-  font-family: monospace;
+  font-family: var(--mono);
   font-size: 0.85rem;
   padding: 0.5rem;
-  border: 1px solid var(--color-border, #ccc);
+  border: 1px solid var(--border);
 }
 
 .line-diff-view-line {
@@ -11,9 +11,9 @@
 }
 
 .line-diff-view-removed {
-  background: rgba(220, 50, 47, 0.15);
+  background: color-mix(in srgb, var(--err-bar) 15%, transparent);
 }
 
 .line-diff-view-added {
-  background: rgba(38, 139, 210, 0.15);
+  background: color-mix(in srgb, var(--ok) 15%, transparent);
 }

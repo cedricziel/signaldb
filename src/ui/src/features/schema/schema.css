@@ -179,7 +179,7 @@
   padding: 1px 6px;
   border-radius: 10px;
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .schema-badge.muted {
@@ -239,7 +239,7 @@
 
 .schema-source-custom {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .schema-row-actions {
@@ -443,7 +443,7 @@
   border: 1px solid var(--warn);
   border-radius: 6px;
   padding: 6px 10px;
-  color: var(--warn);
+  color: var(--warn-text);
   font-size: 12px;
   margin: 8px 0;
 }
@@ -539,13 +539,13 @@
 }
 
 .schema-diff .added {
-  color: var(--ok);
+  color: var(--ok-text);
 }
 
 .schema-diff .changed {
-  color: var(--warn);
+  color: var(--warn-text);
 }
 
 .schema-diff .removed {
-  color: var(--err);
+  color: var(--err-text);
 }

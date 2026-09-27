@@ -1,18 +1,54 @@
 // Theme persistence. The saved choice lives in localStorage under
 // "signaldb-theme"; global.css falls back to prefers-color-scheme when no
 // data-theme attribute is set on <html>.
+//
+// index.html repeats initTheme()'s logic in a blocking <head> script so the
+// saved theme applies before first paint; keep the storage key, the
+// accepted values and THEME_COLOR in sync with it.
 
 const STORAGE_KEY = "signaldb-theme";
 
+type Theme = "light" | "dark";
+
+/** Browser-chrome colour per theme; matches the theme-color metas in
+ * index.html (light --bg, dark --surface). */
+export const THEME_COLOR: Record<Theme, string> = {
+  light: "#f2f3f6",
+  dark: "#14181e",
+};
+
+/**
+ * Point the color-scheme and theme-color metas at an explicit theme, or
+ * back at the OS preference when `theme` is null. Without this a forced
+ * theme would still get OS-coloured browser chrome and, before CSS loads,
+ * an OS-coloured canvas.
+ */
+export function syncThemeMeta(theme: Theme | null): void {
+  const scheme = document.querySelector<HTMLMetaElement>(
+    'meta[name="color-scheme"]',
+  );
+  if (scheme) scheme.content = theme ?? "light dark";
+  document
+    .querySelectorAll<HTMLMetaElement>('meta[name="theme-color"]')
+    .forEach((meta) => {
+      const own: Theme = meta.getAttribute("media")?.includes("light")
+        ? "light"
+        : "dark";
+      meta.content = THEME_COLOR[theme ?? own];
+    });
+}
+
 /** Apply the saved theme (if any) to <html> before first paint. */
 export function initTheme(): void {
+  let saved: string | null = null;
   try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (saved === "dark" || saved === "light") {
-      document.documentElement.setAttribute("data-theme", saved);
-    }
+    saved = localStorage.getItem(STORAGE_KEY);
   } catch {
     // localStorage unavailable
+  }
+  if (saved === "dark" || saved === "light") {
+    document.documentElement.setAttribute("data-theme", saved);
+    syncThemeMeta(saved);
   }
 }
 
@@ -31,6 +67,7 @@ export function toggleTheme(): void {
   const root = document.documentElement;
   const next = isDarkTheme() ? "light" : "dark";
   root.setAttribute("data-theme", next);
+  syncThemeMeta(next);
   try {
     localStorage.setItem(STORAGE_KEY, next);
   } catch {
