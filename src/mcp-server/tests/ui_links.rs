@@ -24,27 +24,47 @@ async fn whoami() -> Response {
 }
 
 /// A minimal Tempo/Loki-shaped body per path, just enough for the SDK's
-/// response types to deserialize.
-async fn behaviour(uri: axum::http::Uri) -> Response {
-    let body = if uri.path().starts_with("/tempo/api/traces/") {
-        serde_json::json!({
-            "durationMs": 10,
-            "rootServiceName": "api",
-            "rootTraceName": "GET /",
-            "spanSets": [],
-            "startTimeUnixNano": "0",
-            "traceID": "abc123",
-        })
-    } else if uri.path().starts_with("/tempo/api/search") {
+/// response types to deserialize. On `/api/v1/query`, a `rows` document
+/// (`get_trace`) gets one span; anything else the `search_trace_groups`
+/// table body.
+async fn behaviour(uri: axum::http::Uri, body: axum::body::Bytes) -> Response {
+    let body = if uri.path().starts_with("/tempo/api/search") {
         serde_json::json!({"metrics": {}, "traces": []})
     } else if uri.path().starts_with("/api/v1/query") {
-        serde_json::json!({
-            "result": "table",
-            "window": {"start_ns": 0, "end_ns": 1},
-            "rows": [
-                ["GET /", 12, 3, 50_000_000_i64, 95_000_000_i64, 1_700_000_000_000_000_000_i64],
-            ],
-        })
+        let request: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+        if request["result"] == "rows" {
+            serde_json::json!({
+                "result": "rows",
+                "window": {"start_ns": 0, "end_ns": 1},
+                "columns": [
+                    {"name": "span_id", "type": "utf8"},
+                    {"name": "parent_span_id", "type": "utf8"},
+                    {"name": "span_name", "type": "utf8"},
+                    {"name": "service_name", "type": "utf8"},
+                    {"name": "status_code", "type": "utf8"},
+                    {"name": "status_message", "type": "utf8"},
+                    {"name": "start_time_unix_nano", "type": "int64"},
+                    {"name": "duration_nanos", "type": "int64"},
+                    {"name": "span_kind", "type": "utf8"},
+                    {"name": "span_attributes", "type": "utf8"},
+                    {"name": "scope_attributes", "type": "utf8"},
+                    {"name": "resource_attributes", "type": "utf8"},
+                    {"name": "span_events", "type": "utf8"},
+                ],
+                "rows": [[
+                    "span1", "feedfacefeedface", "GET /", "api", "ok", null,
+                    0, 10_000_000_i64, "Server", "{}", "{}", "{}", null,
+                ]],
+            })
+        } else {
+            serde_json::json!({
+                "result": "table",
+                "window": {"start_ns": 0, "end_ns": 1},
+                "rows": [
+                    ["GET /", 12, 3, 50_000_000_i64, 95_000_000_i64, 1_700_000_000_000_000_000_i64],
+                ],
+            })
+        }
     } else {
         serde_json::json!({"status": "success", "data": {"resultType": "streams", "result": []}})
     };
@@ -238,6 +258,31 @@ async fn get_trace_carries_a_ui_link_when_ui_base_url_is_configured() {
         result["_links"]["ui"],
         "https://ui.example.com/traces/abc123?tenant=acme&dataset=production"
     );
+}
+
+/// The only stored span's parent is missing (the real root hasn't been
+/// ingested yet): the root falls back to it rather than "unknown", and its
+/// span kind survives the Query IR round trip.
+#[tokio::test]
+async fn get_trace_reads_span_kind_and_an_orphan_root_over_the_query_ir() {
+    let mut session = McpSession::open(app_with_ui_base_url(None).await).await;
+
+    let reply = session
+        .call_tool(
+            "get_trace",
+            serde_json::json!({
+                "trace_id": "abc123",
+                "tenant": "acme",
+                "dataset": "production",
+            }),
+        )
+        .await;
+    let result = tool_result_json(&reply);
+    assert_eq!(result["rootServiceName"], "api");
+    assert_eq!(result["rootTraceName"], "GET /");
+    let span = &result["spanSets"][0]["spans"][0];
+    assert_eq!(span["kind"], "Server");
+    assert_eq!(span["parentSpanID"], "feedfacefeedface");
 }
 
 #[tokio::test]
