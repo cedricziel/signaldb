@@ -52,7 +52,9 @@ pub struct AppendCasesOutcome {
     pub already_present_ids: Vec<String>,
 }
 
-fn validate_name(name: &str) -> Result<(), StoreError> {
+/// Checks an eval set name: a slug of lowercase letters, digits, `-`, `_`
+/// and `.`, starting with a letter or digit, at most 128 characters.
+pub fn validate_name(name: &str) -> Result<(), StoreError> {
     let mut chars = name.chars();
     let is_slug = matches!(chars.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
         && name.len() <= MAX_NAME_LEN

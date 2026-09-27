@@ -11,7 +11,7 @@ pub mod store;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-pub use store::{AppendCasesOutcome, MAX_CASES_PER_SET, StoreError};
+pub use store::{AppendCasesOutcome, MAX_CASES_PER_SET, StoreError, validate_name};
 
 /// Where a case came from.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]

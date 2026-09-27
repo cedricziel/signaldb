@@ -21,7 +21,6 @@ dependencies = [
  "opentelemetry-appender-tracing",
  "opentelemetry-proto",
  "opentelemetry_sdk",
- "ottl",
  "prost",
  "serde",
  "serde_json",
@@ -34,7 +33,6 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
- "twox-hash",
  "uuid",
  "workspace-hack",
  "zstd 0.14.0",
@@ -1304,6 +1302,7 @@ dependencies = [
  "clap",
  "crc32fast",
  "criterion",
+ "csv",
  "dashmap",
  "datafusion",
  "figment",
@@ -4511,6 +4510,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "url",
+ "uuid",
  "workspace-hack",
 ]
 
@@ -7407,6 +7407,8 @@ dependencies = [
  "tokio",
  "toml 1.1.6+spec-1.1.0",
  "tui-tree-widget",
+ "url",
+ "uuid",
  "workspace-hack",
 ]
 
