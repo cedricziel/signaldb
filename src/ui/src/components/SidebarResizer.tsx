@@ -14,6 +14,14 @@ import type { PanelWidth } from "../lib/sidebarWidth";
  * The panel carries its own drag direction, class and label, so a handle
  * cannot be wired to the wrong side.
  */
+/** The facet sidebar's handle sits inside its pane; the span-detail handle
+ * sits just before the (`display: contents`) drawer wrapping its pane. */
+function paneOf(handle: HTMLElement): Element | null {
+  const parent = handle.parentElement;
+  if (parent?.tagName === "ASIDE") return parent;
+  return handle.nextElementSibling?.querySelector("aside") ?? null;
+}
+
 export function SidebarResizer({ panel }: { panel: PanelWidth }) {
   const dragRef = useRef<{
     startX: number;
@@ -38,8 +46,10 @@ export function SidebarResizer({ panel }: { panel: PanelWidth }) {
     dragRef.current = null;
     window.removeEventListener("mousemove", onPointerMove);
     window.removeEventListener("mouseup", onPointerUp);
-    // Persist once, at the end of the drag, not on every move.
-    if (drag) panel.set(drag.width);
+    // Persist once, at the end of the drag, not on every move — and not for
+    // a click that moved nothing, which would overwrite a saved width with
+    // the capped one it is drawn at.
+    if (drag && drag.width !== drag.startWidth) panel.set(drag.width);
   }, [panel, onPointerMove]);
 
   // Unmounting mid-drag (navigating away with the button held) must not
@@ -54,9 +64,10 @@ export function SidebarResizer({ panel }: { panel: PanelWidth }) {
   );
 
   const startDrag = useCallback(
-    (e: ReactMouseEvent) => {
+    (e: ReactMouseEvent<HTMLDivElement>) => {
       e.preventDefault();
-      const startWidth = panel.read();
+      const pane = paneOf(e.currentTarget);
+      const startWidth = panel.dragStart(pane?.getBoundingClientRect().width);
       dragRef.current = { startX: e.clientX, startWidth, width: startWidth };
       window.addEventListener("mousemove", onPointerMove);
       window.addEventListener("mouseup", onPointerUp);

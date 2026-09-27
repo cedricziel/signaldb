@@ -1,4 +1,4 @@
-/* breakpoints: tablet <=900px, mobile <=600px */
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 
 .instrumentation-page {
   padding: 24px;
@@ -223,7 +223,7 @@
   color: var(--dim);
 }
 
-@media (max-width: 900px) {
+@container app-main (max-width: 720px) {
   .instrumentation-page {
     padding: 16px;
   }
@@ -247,7 +247,7 @@
   }
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   .instrumentation-page {
     padding: 12px;
   }

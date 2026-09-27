@@ -1,4 +1,4 @@
-/* breakpoints: tablet <=900px, mobile <=600px */
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 
 .api-keys-page {
   padding: 24px;
@@ -6,7 +6,7 @@
   margin: 0 auto;
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   .api-keys-page {
     padding: 12px;
   }
@@ -210,7 +210,7 @@
   margin-top: 16px;
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   .api-key-row {
     flex-direction: column;
     align-items: stretch;

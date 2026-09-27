@@ -7,6 +7,7 @@ sources:
   - src/ui/playwright.stories.config.ts
   - src/ui/src/stories/PageFrame.tsx
   - src/ui/src/stories/DarkScope.tsx
+  - src/ui/src/features/shell/AppNav.css
 ---
 
 # Check the UI page stories at every screen size
@@ -74,6 +75,40 @@ say so in its `reason`.
   width or height: the check and the design-sync capture set the viewport.
 - Wrap each `Dark` story's page in `<DarkScope>`.
 - Register the page for design-sync as `src/ui/CLAUDE.md` describes.
+
+## Breakpoints
+
+A page does not know how wide it is from the viewport: the app sidebar next
+to it is 234px, 58px or gone depending on the width and on whether the user
+collapsed it. `.app-main` (the column every page renders in) is therefore a
+size container named `app-main`, and `PageFrame` is one too, so page stories
+match the app.
+
+- **Space for the page** (stack a grid, fold a side pane into a drawer,
+  tighten padding, drop table columns): query the column, with two widths.
+
+  ```css
+  @container app-main (max-width: 720px) {
+    /* side panes become drawers */
+  }
+  @container app-main (max-width: 600px) {
+    /* phone-sized content */
+  }
+  ```
+
+- **The device** (the shell itself, a viewport-fixed popover, the login
+  page, which renders outside the shell): use a media query on the shell's
+  own breakpoints from `NARROW_QUERY` and `TABLET_QUERY` in `AppNav.tsx`:
+  `(max-width: 719px)` for the mobile top bar, `(max-width: 1023px)` where
+  the sidebar starts collapsed.
+- **Touch**: use `(hover: none)` to show controls that otherwise appear on
+  hover, and `(pointer: coarse)` to enlarge hit areas to at least 32px
+  (the block at the end of `styles/global.css`).
+
+A resizable side pane caps its saved width to a share of the space it has,
+so a width dragged on a wide screen never squeezes the list next to it on a
+laptop. The facet sidebar uses `min(var(--sidebar-w), 32cqi)`, the
+span-detail pane `min(var(--span-detail-w), 40%)`.
 
 ## In CI
 

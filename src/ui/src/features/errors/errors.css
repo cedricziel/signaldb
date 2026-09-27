@@ -35,7 +35,7 @@
    + Count for ~375px of width, so they're hidden rather than truncated to
    nothing. Message switches from a single ellipsised line to a wrapped
    2-line clamp so it stays readable without the hidden columns' room. */
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   .errors-table .errors-col-secondary {
     display: none;
   }

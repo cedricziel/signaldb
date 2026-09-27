@@ -1,4 +1,4 @@
-/* breakpoints: tablet <=900px, mobile <=600px */
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 .metricsview {
   display: flex;
   flex-direction: column;
@@ -291,7 +291,7 @@
   display: inline-block;
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   /* The ref badge, metric picker and "from" share the first line; filters,
      aggregation and function each take a full line below. */
   .qrow > :not(.qrow-ref, .qrow-kw, .qrow-metric-combobox) {

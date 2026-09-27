@@ -1,4 +1,4 @@
-/* breakpoints: tablet <=900px, mobile <=600px */
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 .select-tenant {
   display: flex;
   justify-content: center;
@@ -17,7 +17,7 @@
   margin: 0 auto;
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   .select-tenant {
     padding: 16px var(--gutter);
   }

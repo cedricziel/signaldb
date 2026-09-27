@@ -138,6 +138,19 @@ function layoutGraph(
   };
 }
 
+/** The smallest the fit-to-width scale goes: node names stay about 11px.
+ * Below it the graph keeps this scale and its box scrolls (or, on the
+ * Overview, pans) instead of shrinking to unreadable text. */
+export const MIN_GRAPH_SCALE = 0.85;
+
+/** Fit-to-width scale for a laid-out graph `graphWidth` wide in a
+ * `containerWidth` box: only ever scales down, and never below
+ * {@link MIN_GRAPH_SCALE}. An unmeasured (0) container draws at 1. */
+export function graphScale(containerWidth: number, graphWidth: number): number {
+  if (containerWidth <= 0 || graphWidth <= 0) return 1;
+  return Math.max(MIN_GRAPH_SCALE, Math.min(1, containerWidth / graphWidth));
+}
+
 /** A known error-rate fraction wins, an unknown one falls back to a bare
  * pass/fail flag (the trace-derived graph, which has no rate, only whether
  * any call failed). */
@@ -254,12 +267,12 @@ export function ServiceGraph({
     [visibleEdges],
   );
 
-  // Fit-to-width: never let the laid-out graph overflow its container. Only
-  // scales down (a small graph in a wide panel keeps its natural size) —
-  // see `useContainerWidth`, the same live-width pattern every inline-SVG
-  // chart here uses.
+  // Fit-to-width, down to a readable floor (`graphScale`): a small graph in
+  // a wide panel keeps its natural size, a wide one in a narrow panel
+  // scrolls sideways past MIN_GRAPH_SCALE. See `useContainerWidth`, the same
+  // live-width pattern every inline-SVG chart here uses.
   const containerWidth = useContainerWidth(outerRef, width);
-  const scale = containerWidth > 0 ? Math.min(1, containerWidth / width) : 1;
+  const scale = graphScale(containerWidth, width);
   const scaledWidth = width * scale;
   const scaledHeight = height * scale;
 

@@ -1,4 +1,4 @@
-/* breakpoint: mobile <=600px — mirrors ApiKeys.css */
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 
 .github-page {
   padding: 24px;
@@ -6,7 +6,7 @@
   margin: 0 auto;
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   .github-page {
     padding: 12px;
   }
@@ -142,7 +142,7 @@
   margin-top: 6px;
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   .github-installation-row {
     flex-direction: column;
     align-items: stretch;

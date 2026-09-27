@@ -1003,7 +1003,7 @@ th[aria-sort="descending"] .th-sort::after {
   z-index: 100;
 }
 
-@media (max-width: 600px) {
+@media (max-width: 719px) {
   .dialog-backdrop {
     padding: 8px;
   }
@@ -1147,8 +1147,9 @@ th[aria-sort="descending"] .th-sort::after {
 /* `opacity`, not `visibility: hidden` — the latter also drops the buttons
    from keyboard tab order and defeats a `:focus-within` reveal, so a
    keyboard/touch user could never reach them; the override below keeps them
-   reachable without a hover at all, on a narrow viewport or any device that
-   reports no hover capability (touch). */
+   reachable without a hover at all, below the shell's tablet width (1024px,
+   AppNav.tsx TABLET_QUERY) or on any device that reports no hover
+   capability (touch). */
 .attrtable-actions {
   opacity: 0;
   display: inline-flex;
@@ -1189,7 +1190,7 @@ th[aria-sort="descending"] .th-sort::after {
   margin-left: 6px;
 }
 
-@media (max-width: 900px), (hover: none) {
+@media (max-width: 1023px), (hover: none) {
   .attrtable-actions {
     opacity: 1;
     max-width: none;
@@ -1279,4 +1280,44 @@ button.attrtable-section {
   text-transform: none;
   letter-spacing: normal;
   color: var(--faint);
+}
+
+/* ---------- touch targets ----------
+   A coarse pointer (finger) gets at least a 32px hit area on the small
+   controls below; a mouse keeps the compact look. Inline buttons that sit in
+   text rows grow an invisible `::after` hit area so the row height does not
+   change; controls inside an `overflow: hidden` group (segmented toggles, a
+   filter chip) would clip that, so they grow a min-height instead. */
+@media (pointer: coarse) {
+  .attrtable-actions button,
+  .copy-value-button,
+  .attribute-value-toggle {
+    position: relative;
+  }
+
+  .attrtable-actions button::after,
+  .copy-value-button::after,
+  .attribute-value-toggle::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, 32px);
+    height: max(100%, 32px);
+    transform: translate(-50%, -50%);
+  }
+
+  .trace-volume-mode button,
+  .flame-view-toggle button,
+  .qrow-filter-remove,
+  .query-remove,
+  .chip-x {
+    min-width: 32px;
+    min-height: 32px;
+  }
+
+  .facet-check,
+  .sidebar-toggle {
+    min-height: 32px;
+  }
 }

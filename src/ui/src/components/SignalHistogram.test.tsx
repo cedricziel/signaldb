@@ -2,6 +2,7 @@ import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import {
+  bucketAtX,
   bucketizeSeries,
   padBuckets,
   SignalHistogram,
@@ -243,7 +244,7 @@ describe("SignalHistogram interaction", () => {
   it("moves the tab stop to the bucket the pointer enters", () => {
     renderChart(series);
     const cols = screen.getAllByTestId("svol-col");
-    fireEvent.mouseEnter(cols[1]!);
+    fireEvent.pointerEnter(cols[1]!);
     expect(cols[1]).toHaveAttribute("tabindex", "0");
     expect(cols[0]).toHaveAttribute("tabindex", "-1");
   });
@@ -324,21 +325,41 @@ describe("SignalHistogram tooltip placement", () => {
   it("follows the pointer", () => {
     renderChart(series);
     const col = screen.getAllByTestId("svol-col")[1]!;
-    fireEvent.mouseEnter(col, { clientX: 220, clientY: 40 });
+    fireEvent.pointerEnter(col, { clientX: 220, clientY: 40 });
     const tip = screen.getByRole("tooltip");
     // jsdom reports a zero-origin container, so offsets equal the client point.
     expect(tip.style.left).toBe("220px");
     expect(tip.style.top).toBe("40px");
 
-    fireEvent.mouseMove(col, { clientX: 260, clientY: 55 });
+    fireEvent.pointerMove(col, { clientX: 260, clientY: 55 });
     expect(screen.getByRole("tooltip").style.left).toBe("260px");
+  });
+
+  it("keeps a tapped bucket's tooltip up after the finger lifts", () => {
+    renderChart(series);
+    const col = screen.getAllByTestId("svol-col")[1]!;
+    fireEvent.pointerEnter(col, { pointerType: "touch", clientX: 220 });
+    fireEvent.pointerLeave(col, { pointerType: "touch" });
+    expect(screen.getByRole("tooltip")).toBeInTheDocument();
+  });
+
+  it("scrubs to the bucket under a dragging finger", () => {
+    renderChart(series);
+    const cols = screen.getAllByTestId("svol-col");
+    fireEvent.pointerEnter(cols[0]!, { pointerType: "touch", clientX: 5 });
+    // The touch stays captured by the first column; its x (the right end of
+    // the stubbed 1200px strip) picks the last bucket.
+    fireEvent.pointerMove(cols[0]!, { pointerType: "touch", clientX: 1199 });
+    const last = cols[cols.length - 1]!;
+    expect(last).toHaveAttribute("aria-describedby", "svol-tip");
+    expect(last).toHaveAttribute("tabindex", "0");
   });
 
   it("flips to the left of the pointer past the midline", () => {
     renderChart(series);
     const col = screen.getAllByTestId("svol-col")[1]!;
     // The suite stubs a 1200px-wide container (src/test/setup.ts).
-    fireEvent.mouseEnter(col, { clientX: 900, clientY: 30 });
+    fireEvent.pointerEnter(col, { clientX: 900, clientY: 30 });
     expect(screen.getByRole("tooltip").style.transform).toContain("-100%");
   });
 
@@ -437,7 +458,7 @@ describe("SignalHistogram tooltip width", () => {
   // width for every bucket, so it neither wraps nor jitters while hovering.
   it("reserves the width of the largest value in the window", () => {
     renderChart(series);
-    fireEvent.mouseEnter(screen.getAllByTestId("svol-col")[1]!, {
+    fireEvent.pointerEnter(screen.getAllByTestId("svol-col")[1]!, {
       clientX: 10,
       clientY: 10,
     });
@@ -452,14 +473,34 @@ describe("SignalHistogram tooltip width", () => {
   it("keeps the reservation stable across buckets", () => {
     renderChart(series);
     const cols = screen.getAllByTestId("svol-col");
-    fireEvent.mouseEnter(cols[1]!, { clientX: 10, clientY: 10 });
+    fireEvent.pointerEnter(cols[1]!, { clientX: 10, clientY: 10 });
     const wide = screen
       .getByRole("tooltip")
       .style.getPropertyValue("--viz-val-ch");
-    fireEvent.mouseLeave(cols[1]!);
-    fireEvent.mouseEnter(cols[2]!, { clientX: 20, clientY: 10 });
+    fireEvent.pointerLeave(cols[1]!);
+    fireEvent.pointerEnter(cols[2]!, { clientX: 20, clientY: 10 });
     expect(
       screen.getByRole("tooltip").style.getPropertyValue("--viz-val-ch"),
     ).toBe(wide);
+  });
+});
+
+describe("bucketAtX", () => {
+  const rect = { left: 100, width: 400 };
+
+  it("maps an x to the column under it", () => {
+    expect(bucketAtX(100, rect, 4)).toBe(0);
+    expect(bucketAtX(299, rect, 4)).toBe(1);
+    expect(bucketAtX(499, rect, 4)).toBe(3);
+  });
+
+  it("clamps a finger that strays past either end", () => {
+    expect(bucketAtX(20, rect, 4)).toBe(0);
+    expect(bucketAtX(900, rect, 4)).toBe(3);
+  });
+
+  it("returns the first bucket for an empty or unmeasured strip", () => {
+    expect(bucketAtX(150, rect, 0)).toBe(0);
+    expect(bucketAtX(150, { left: 0, width: 0 }, 4)).toBe(0);
   });
 });

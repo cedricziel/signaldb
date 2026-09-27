@@ -8,6 +8,10 @@ import type { ComponentType, ReactNode } from "react";
  * capture viewport (1280x800) that is the same box the old fixed
  * `1280x800` wrapper drew.
  *
+ * It is also the `app-main` size container the app's `.app-main` column is
+ * (AppNav.css), so a page's `@container app-main` rules resolve without the
+ * shell around it; inside `Shell/*` stories the nearer `.app-main` wins.
+ *
  * `grow` is for pages that scroll the document instead of an inner pane
  * (Overview, Catalog, Evals): at least one viewport tall, taller when the
  * content is.
@@ -22,11 +26,11 @@ export function PageFrame({
   return (
     <div
       data-page-frame=""
-      style={
-        fit === "fill"
-          ? { width: "100%", height: "100vh" }
-          : { width: "100%", minHeight: "100vh" }
-      }
+      style={{
+        width: "100%",
+        container: "app-main / inline-size",
+        ...(fit === "fill" ? { height: "100vh" } : { minHeight: "100vh" }),
+      }}
     >
       {children}
     </div>

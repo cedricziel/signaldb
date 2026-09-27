@@ -1,4 +1,4 @@
-/* breakpoints: tablet <=900px, mobile <=600px */
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 .explore {
   display: flex;
   flex-direction: column;
@@ -118,7 +118,7 @@
   border-bottom: 1px solid var(--border);
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   /* The search input otherwise shares a row with the chips/qlmode toggle at
      an unreadably narrow width; give it the full row instead. */
   .search-form {
@@ -238,7 +238,7 @@
   max-width: 160px;
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   /* The label/operator/value inputs plus Add/Cancel otherwise run off the
      right edge of the page at this width instead of wrapping. */
   .chip-form {
@@ -321,17 +321,19 @@
    user preference — see lib/sidebarWidth.ts, which applies it to <html>
    before first paint and on drag, same as lib/theme.ts does for --theme. The
    248px fallback here only covers the sliver of time (or test render) before
-   that runs. */
+   that runs. The saved width applies up to about a third of the main column
+   (`cqi` resolves against the `app-main` container), so a width chosen on a
+   wide screen never leaves the list a sliver on a laptop or tablet. */
 .logs-body,
 .traces-body,
 .errors-body {
   display: grid;
-  grid-template-columns: var(--sidebar-w, 248px) 1fr;
+  grid-template-columns: min(var(--sidebar-w, 248px), 32cqi) 1fr;
   flex: 1;
   min-height: 0;
 }
 
-@media (max-width: 900px) {
+@container app-main (max-width: 720px) {
   .logs-body,
   .traces-body,
   .errors-body {
@@ -350,9 +352,10 @@
 }
 
 /* ---------- mobile sidebar drawer ----------
-   Below the tablet breakpoint the sidebar above is plain `display:none` —
-   these back the "Filters" toggle (useMobileSidebar) that reveals it again
-   as a dismissible overlay instead. See components/MobileSidebarDrawer.tsx. */
+   Below the drawer breakpoint (main column <=720px) the sidebar above is
+   plain `display:none` — these back the "Filters" toggle (useMobileSidebar)
+   that reveals it again as a dismissible overlay instead. See
+   components/MobileSidebarDrawer.tsx. */
 
 .mobile-filters-toggle {
   display: none;
@@ -371,14 +374,15 @@
 
 /* `.mobile-sidebar-drawer`'s own `display: contents` above promotes this
    button into whatever grid/flex the drawer sits in once real layout rules
-   (below) only apply under 900px — without a default here, a drawer left
-   open across a resize past that breakpoint leaves the button as a stray
-   grid item instead of disappearing with the rest of the drawer chrome. */
+   (below) only apply below the drawer breakpoint — without a default here,
+   a drawer left open across a resize past that breakpoint leaves the button
+   as a stray grid item instead of disappearing with the rest of the drawer
+   chrome. */
 .mobile-sidebar-close {
   display: none;
 }
 
-@media (max-width: 900px) {
+@container app-main (max-width: 720px) {
   .mobile-filters-toggle {
     display: inline-flex;
     align-items: center;
@@ -464,7 +468,7 @@
 .sidebar {
   /* Also fixed here, so a sidebar dropped into a flex container matches the
      grid-based ones rather than shrinking to its content. */
-  width: var(--sidebar-w, 248px);
+  width: min(var(--sidebar-w, 248px), 32cqi);
   flex: none;
   position: relative;
   border-right: 1px solid var(--border);
@@ -561,6 +565,14 @@
 .field-row:hover .sem-info,
 .field-row:focus-within .sem-info {
   opacity: 1;
+}
+
+/* No hover to reveal it on touch. Kept beside the base rule: global.css
+   loads first, so a copy there would lose to the opacity above. */
+@media (max-width: 1023px), (hover: none) {
+  .field-row .sem-info {
+    opacity: 1;
+  }
 }
 
 /* Group headers in the fields sidebar (semantic title, e.g. "Kubernetes"):
@@ -756,7 +768,7 @@ span.level-debug {
   font-size: 10px;
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   /* Timestamp, level and service leave the message a few characters on a
      phone; drop the message onto its own line under them instead. */
   .logrow {
@@ -832,6 +844,9 @@ span.level-debug {
 .svol-bars {
   position: relative;
   display: flex;
+  /* A sideways finger drag scrubs the bars (SignalHistogram); vertical
+     still scrolls the page. */
+  touch-action: pan-y;
   align-items: flex-end;
   gap: 2px;
   flex: 1;
@@ -887,7 +902,7 @@ span.level-debug {
   padding: 3px 0 4px 78px;
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   /* The bucket-width select and log-scale toggle otherwise wrap under each
      other, mid-row, next to the start/end axis labels — give them their own
      centered row underneath instead. */

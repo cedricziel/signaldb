@@ -232,7 +232,7 @@ function RegistryView({
             activeName={kind === "metrics" ? name : undefined}
           />
         </nav>
-        {/* At <=900px this pane renders above the nav/lists (schema.css) so
+        {/* When the main column is <=720px this pane renders above the nav/lists (schema.css) so
             it is reachable without scrolling past ~850px of sections. */}
         <div ref={paneRef} className="schema-definition-slot">
           {kind && name ? (

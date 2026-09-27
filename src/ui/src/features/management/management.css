@@ -1,4 +1,4 @@
-/* breakpoints: tablet <=900px, mobile <=600px */
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 
 .manage-panel {
   width: min(920px, 100%);
@@ -163,7 +163,7 @@
   grid-template-columns: 1.8fr 1fr auto;
 }
 
-@media (max-width: 900px) {
+@container app-main (max-width: 720px) {
   .manage-grid {
     grid-template-columns: 1fr;
   }
@@ -177,7 +177,7 @@
   }
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   .manage-panel {
     padding: 16px;
   }
