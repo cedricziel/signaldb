@@ -77,14 +77,16 @@ these:
 | `delete_eval_set`               | Delete an eval set and its cases by name (requires `evals:write`; not OAuth-grantable).                                                                                                                                                                                                                                                                         |
 | `append_eval_cases`             | Append cases to an eval set; ids it already holds are skipped and reported (requires `evals:write`; not OAuth-grantable).                                                                                                                                                                                                                                       |
 | `append_eval_cases_from_traces` | Append one case per matching agent trace the set doesn't hold yet, newest first, up to `sample` (default 50); `failing_evaluator` keeps traces with a failing result of that evaluator. Reports `matches`, `already_present`, `added` (requires `evals:write` and `traces:read`; not OAuth-grantable).                                                          |
+| `upload_eval_results`           | Upload a JSONL/CSV results file (`content`, `format`) as one offline run of `agent`/`version`/`set` (`run_id` optional; generated and named in errors, so a retry with it is safe). Any invalid row rejects the file and every problem is listed; returns the run id and per-evaluator summary (requires `evals:write`; not OAuth-grantable).                   |
 
 Every processor tool takes the `tenant` parameter validated the same way as
 the query tools above. Changes apply at ingest within
 `[processors].reload_interval` (default 30s) — see [Processors](processors.md#applies-within-reload_interval).
 
-The eval set tools take the same `tenant` parameter and, like the query
-tools, a required `dataset`: a set belongs to one dataset, and one MCP session
-may span several, so there is no implicit default.
+The eval set tools and `upload_eval_results` take the same `tenant`
+parameter and, like the query tools, a required `dataset`: a set or a run
+belongs to one dataset, and one MCP session may span several, so there is no
+implicit default. See [Upload a results file](evaluations.md#upload-a-results-file).
 
 Each query tool requires a `dataset` argument, targeting the dataset your
 tenant may access (the router validates access and rejects the rest). Large

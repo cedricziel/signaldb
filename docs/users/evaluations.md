@@ -5,6 +5,9 @@ status: living
 sources:
   - src/ui/src/api/evals.ts
   - src/ui/src/features/evals/**
+  - src/common/src/evals/**
+  - src/router/src/endpoints/evals.rs
+  - src/signaldb-cli/src/commands/evals.rs
   - openspec/changes/agent-offline-evals/**
 ---
 
@@ -134,6 +137,157 @@ toxicity) — the case page shows each result on the span it scored.
   result, with the implementation versions seen, the span type it scores,
   its output kind, and whether it ran offline, in production or both.
 
+## Upload a results file
+
+A harness that doesn't export OpenTelemetry can upload its results as a file
+instead. Each row is one evaluator result; SignalDB turns it into the same
+`gen_ai.evaluation.result` log record described above, so the run shows up on
+the Evaluate pages and in the Query IR exactly as if it had been sent over
+OTLP.
+
+The file is JSONL (one JSON object per line) or CSV with a header row:
+
+| Column        | Required | Becomes                                                               |
+| ------------- | -------- | --------------------------------------------------------------------- |
+| `case_id`     | yes      | `signaldb.eval.case_id` (at most 128 bytes)                           |
+| `name`        | yes      | `gen_ai.evaluation.name`: the evaluator                               |
+| `score`       | one of   | `gen_ai.evaluation.score.value` (a number)                            |
+| `label`       | one of   | `gen_ai.evaluation.score.label`                                       |
+| `error`       | one of   | `error.type`: the evaluator itself failed                             |
+| `explanation` | no       | `gen_ai.evaluation.explanation`                                       |
+| `trace_id`    | no       | the record's trace id (32 hex characters); omit for run-level results |
+| `span_id`     | no       | the record's span id (16 hex characters); needs a `trace_id`          |
+| `evaluator`   | no       | `signaldb.eval.evaluator`, e.g. `trajectory-match@2.1.0`              |
+| `trial`       | no       | `signaldb.eval.trial` (a non-negative integer)                        |
+
+Every row needs a `score`, a `label` or an `error`. An empty CSV cell or a
+JSON `null` counts as absent; other columns or keys are ignored. CSV headers
+are matched case-insensitively.
+
+The run comes from the request: the agent (`gen_ai.agent.name`, and the
+records' `service.name`), its version (`gen_ai.agent.version` and
+`service.version`), the eval set name (it needn't exist as a stored
+[eval set](eval-sets.md)), and an optional run id — a UUID is generated when
+you leave it out. Every record is stamped with the upload time, plus one
+nanosecond per row, so rows keep their file order within the run.
+
+The whole file is checked before anything is written. If any row is invalid,
+the upload is rejected with a `400` and nothing is stored; `details` lists
+every problem (the first 100), each with the file line it starts on (a CSV
+header is line 1), the column, and why. A missing required CSV column is one
+problem naming the column. Files are capped at 100,000 rows and 32 MiB.
+
+```bash
+curl -sS -X POST \
+  "$SIGNALDB_URL/api/v1/evals/results?agent=support-triage&version=v1.9.0&set=triage-golden-200" \
+  -H "Authorization: Bearer $SIGNALDB_API_KEY" -H "X-Tenant-ID: acme" \
+  -H "Content-Type: text/csv" --data-binary @results.csv
+```
+
+The format comes from the `format` query parameter (`csv` or `jsonl`) when
+given, otherwise from the `Content-Type`: `text/csv`, or
+`application/x-ndjson` / `application/jsonl`. The upload needs an API key
+with the `evals:write` scope and answers `201` with the run id and a summary
+per evaluator:
+
+```json
+{
+  "run_id": "1f0b7c1e-7c55-4c43-9b8e-3f1a2d6c9e10",
+  "agent": "support-triage",
+  "version": "v1.9.0",
+  "set": "triage-golden-200",
+  "rows": 600,
+  "cases": 200,
+  "span_linked": 596,
+  "run_level": 4,
+  "evaluators": [
+    {
+      "name": "Correctness",
+      "results": 200,
+      "errors": 3,
+      "mean": 0.87,
+      "pass_rate": 0.91
+    }
+  ],
+  "_links": {
+    "query": { "href": "/api/v1/query", "method": "POST" },
+    "runs": { "href": "/evals/runs" }
+  }
+}
+```
+
+`mean` leaves out evaluator errors; `pass_rate` is passes / (passes + fails)
+under the [pass rule](#how-results-are-read), and `null` when no result has a
+verdict. The results appear in queries as soon as the writer commits them
+(within seconds).
+
+### Durability and retries
+
+A `201` means the results are durable: the router forwards them to a writer,
+which acks only after they are in its write-ahead log. The router keeps no
+log of its own, so an upload that fails or times out (a `5xx`, a `504`, a
+dropped connection) may or may not have been written.
+
+Retrying it is safe as long as you send the same file with the same run id.
+The upload's ingest id is a fingerprint of the tenant, dataset, agent,
+version, eval set, run id, format and file bytes, and the writer drops a
+batch whose ingest id it has already made durable within its dedup window
+(`[writer].ingest_dedup_window`, 1 hour by default), so a retry of an upload
+that did land is acknowledged without being written twice. Without a run id,
+the server generates a new one per request and a retry is a second run; the
+CLI and the MCP tool therefore choose the run id themselves when you leave it
+out and name it when an upload fails. Uploading a different file under an
+existing run id adds its results to that run.
+
+### From the CLI, and as a CI gate
+
+```bash
+export SIGNALDB_URL=https://signaldb.example.com SIGNALDB_API_KEY=sk-... SIGNALDB_TENANT_ID=acme
+signaldb-cli evals upload results.jsonl \
+  --agent support-triage --version "$GIT_SHA" --set triage-golden-200 \
+  --compare-to latest:v1.8.0 \
+  --fail-if "Correctness.pass_rate < 0.9" \
+  --fail-if "ToolTrajectory.mean < 0.85"
+```
+
+Without `--run-id`, the command generates one and prints it before
+uploading; if the upload fails without an answer, rerun it with
+`--run-id <that id>` (see [Durability and retries](#durability-and-retries)).
+The command prints the run id, the per-evaluator summary and a link: to the
+Compare page (`/evals/compare?baseline=…&candidate=…`) with `--compare-to`,
+or to the Runs page otherwise. `--compare-to` takes a run id, or
+`latest:<version>` for the newest other run of the same agent and eval set at
+that version in the last 30 days (found with a Query IR read, so the key also
+needs `logs:read`). The format comes from the file extension (`.csv`,
+`.jsonl`, `.ndjson`) unless `--format csv|jsonl` says otherwise.
+
+Each `--fail-if` is `<evaluator>.mean|pass_rate <op> <number>` with `<`,
+`<=`, `>`, `>=`, `==` or `!=`, checked against the upload's summary. The
+command exits non-zero, listing each condition that held, when any does; a
+condition naming an evaluator the run doesn't have, or a metric it has no
+value for, fails too. Conditions are checked for syntax before anything is
+uploaded. The run is uploaded either way, so a blocked release still has its
+results to compare.
+
+In GitHub Actions:
+
+```yaml
+- name: Gate on eval results
+  env:
+    SIGNALDB_URL: ${{ vars.SIGNALDB_URL }}
+    SIGNALDB_API_KEY: ${{ secrets.SIGNALDB_EVALS_KEY }}
+    SIGNALDB_TENANT_ID: acme
+  run: |
+    signaldb-cli evals upload eval-results.jsonl \
+      --agent support-triage --version "${{ github.sha }}" --set triage-golden-200 \
+      --run-id "gh-${{ github.run_id }}" \
+      --compare-to latest:${{ vars.RELEASED_VERSION }} \
+      --fail-if "Correctness.pass_rate < 0.9"
+```
+
+The MCP server offers the same upload as the `upload_eval_results` tool
+(see [MCP](mcp.md)).
+
 ## Querying results yourself
 
 Every figure is a [Query IR](querying-ir.md) read over `logs`, so the CLI
@@ -189,7 +343,5 @@ reference answers) per tenant and dataset, behind an HTTP API. See
 
 ## Coming next
 
-Eval sets in the UI, uploading results
-as JSONL/CSV with a CI gate (`signaldb-cli evals upload --fail-if`), and
-accepting results sent as span events. See the `agent-offline-evals`
-OpenSpec change.
+Eval sets and the Upload results dialog in the UI, and accepting results
+sent as span events. See the `agent-offline-evals` OpenSpec change.
