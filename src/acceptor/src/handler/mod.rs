@@ -9,7 +9,7 @@ mod processors_apply;
 pub mod prometheus_handler;
 pub mod retry_dedup;
 #[cfg(test)]
-mod test_support;
+pub(crate) mod test_support;
 pub mod wal_retry;
 
 pub use common::wal::manager::WalManager;

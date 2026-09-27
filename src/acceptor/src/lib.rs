@@ -19,6 +19,7 @@ pub mod cli;
 pub mod handler;
 pub mod middleware;
 pub mod services;
+pub mod type_warning;
 
 use std::{net::SocketAddr, sync::Arc};
 
