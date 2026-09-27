@@ -815,6 +815,8 @@ td.num {
   color: inherit;
   text-transform: inherit;
   letter-spacing: inherit;
+  /* Keeps the ::after sort arrow on the label's line in a narrow column. */
+  white-space: nowrap;
   cursor: pointer;
 }
 
