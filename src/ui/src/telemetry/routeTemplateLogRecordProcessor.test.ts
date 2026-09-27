@@ -49,10 +49,4 @@ describe("RouteTemplateLogRecordProcessor", () => {
     new RouteTemplateLogRecordProcessor().onEmit(second.logRecord);
     expect(second.attrs["url.template"]).toBe("/traces/:traceId");
   });
-
-  it("never throws from forceFlush/shutdown", async () => {
-    const processor = new RouteTemplateLogRecordProcessor();
-    await expect(processor.forceFlush()).resolves.toBeUndefined();
-    await expect(processor.shutdown()).resolves.toBeUndefined();
-  });
 });

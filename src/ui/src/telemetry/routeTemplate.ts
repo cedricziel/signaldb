@@ -1,52 +1,29 @@
-// Turns a matched route into a low-cardinality `url.template`: id-like params
-// become `:<name>`, while params naming a small fixed set stay literal so pages
-// remain distinguishable.
+// Builds `url.template` from the matched routes' declared paths, so ids never
+// reach it. Params naming a small fixed set are filled in, keeping pages that
+// share a pattern (`/:signal`) distinguishable.
 
 /** `signal` (`/logs`, `/traces`, ...), `entity` (catalog entity type) and
  * `kind` (schema `DefinitionKind`) each take a handful of values. */
 const LOW_CARDINALITY_PARAMS = new Set(["signal", "entity", "kind"]);
 
-const SPLAT_PARAM = "*";
-
-function decodeSegment(segment: string): string {
-  try {
-    return decodeURIComponent(segment);
-  } catch {
-    return segment;
-  }
-}
-
 /**
- * `buildRouteTemplate("/traces/7c1e...", { traceId: "7c1e..." })` →
- * `"/traces/:traceId"`. Params arrive decoded while the pathname keeps its
- * percent-encoding, so segments are compared decoded.
+ * `buildRouteTemplate(["/", "traces/:traceId"], params)` →
+ * `"/traces/:traceId"`; `buildRouteTemplate(["/", ":signal"], { signal:
+ * "logs" })` → `"/logs"`.
  */
 export function buildRouteTemplate(
-  pathname: string,
+  routePaths: ReadonlyArray<string | undefined>,
   params: Readonly<Record<string, string | undefined>>,
 ): string {
-  const segments = pathname.split("/");
-  const decoded = segments.map(decodeSegment);
-
-  for (const [name, value] of Object.entries(params)) {
-    if (name === SPLAT_PARAM || !value || LOW_CARDINALITY_PARAMS.has(name)) {
-      continue;
-    }
-    decoded.forEach((segment, i) => {
-      if (segment === value) segments[i] = `:${name}`;
+  const segments = routePaths
+    .flatMap((path) => (path ?? "").split("/"))
+    .filter((segment) => segment !== "")
+    .map((segment) => {
+      const name = segment.startsWith(":") ? segment.slice(1) : undefined;
+      const value = name ? params[name] : undefined;
+      return name && value && LOW_CARDINALITY_PARAMS.has(name)
+        ? value
+        : segment;
     });
-  }
-
-  const splatSegments = (params[SPLAT_PARAM] ?? "")
-    .split("/")
-    .filter((segment) => segment !== "");
-  if (splatSegments.length > 0) {
-    segments.splice(
-      segments.length - splatSegments.length,
-      splatSegments.length,
-      SPLAT_PARAM,
-    );
-  }
-
-  return segments.join("/");
+  return `/${segments.join("/")}`;
 }
