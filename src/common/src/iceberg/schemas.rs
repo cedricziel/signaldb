@@ -230,20 +230,43 @@ impl TableSchema {
     /// Like [`Self::schema`], but with an explicit per-tenant
     /// materialized-labels resolution instead of the global config.
     pub fn schema_with_labels(&self, m: &crate::config::MaterializedLabels) -> Result<Schema> {
+        self.schema_with_labels_and_warm_index(m, false)
+    }
+
+    /// Like [`Self::schema_with_labels`], with the warm containment index
+    /// (see [`crate::attrs::warm_index::WARM_INDEX_COLUMN`]) appended when `warm_index`
+    /// is true and this table's resolved schema is the typed attribute
+    /// layout.
+    pub fn schema_with_labels_and_warm_index(
+        &self,
+        m: &crate::config::MaterializedLabels,
+        warm_index: bool,
+    ) -> Result<Schema> {
+        let derived = crate::schema::schema_parser::DerivedColumns {
+            attr_tokens: matches!(self, TableSchema::Logs),
+            warm_index,
+        };
+        self.resolved_schema()?
+            .to_iceberg_schema_with(self.materialized_labels_of(m), derived)
+    }
+
+    /// The [`AttributeTypeSignal`] this table belongs to, or `None` for a
+    /// custom table -- the same routing [`Self::materialized_labels_of`]
+    /// uses.
+    ///
+    /// [`AttributeTypeSignal`]: crate::config::AttributeTypeSignal
+    pub fn attribute_type_signal(&self) -> Option<crate::config::AttributeTypeSignal> {
+        use crate::config::AttributeTypeSignal;
         match self {
-            TableSchema::Traces => create_traces_schema_with(&m.traces),
-            TableSchema::Logs => create_logs_schema_with(&m.logs),
-            TableSchema::MetricsGauge => create_metrics_gauge_schema_with(&m.metrics),
-            TableSchema::MetricsSum => create_metrics_sum_schema_with(&m.metrics),
-            TableSchema::MetricsHistogram => create_metrics_histogram_schema_with(&m.metrics),
-            TableSchema::MetricsExponentialHistogram => {
-                create_metrics_exponential_histogram_schema_with(&m.metrics)
-            }
-            TableSchema::MetricsSummary => create_metrics_summary_schema_with(&m.metrics),
-            TableSchema::Profiles => create_profiles_schema_with(&m.profiles),
-            TableSchema::Custom(_) => Err(anyhow::anyhow!(
-                "Custom schemas must be loaded from configuration"
-            )),
+            TableSchema::Traces => Some(AttributeTypeSignal::Traces),
+            TableSchema::Logs => Some(AttributeTypeSignal::Logs),
+            TableSchema::MetricsGauge
+            | TableSchema::MetricsSum
+            | TableSchema::MetricsHistogram
+            | TableSchema::MetricsExponentialHistogram
+            | TableSchema::MetricsSummary => Some(AttributeTypeSignal::Metrics),
+            TableSchema::Profiles => Some(AttributeTypeSignal::Profiles),
+            TableSchema::Custom(_) => None,
         }
     }
 
