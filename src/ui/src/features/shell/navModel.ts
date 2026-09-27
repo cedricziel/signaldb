@@ -17,6 +17,10 @@ export type PageId =
   | "schema"
   | "processors"
   | "instrumentation"
+  | "evals"
+  | "compare"
+  | "runs"
+  | "evaluators"
   | "manage";
 
 export interface NavPage {
@@ -27,7 +31,7 @@ export interface NavPage {
 }
 
 export interface NavGroup {
-  title: "Monitor" | "Investigate" | "Configure";
+  title: "Monitor" | "Investigate" | "Evaluate" | "Configure";
   pages: NavPage[];
 }
 
@@ -48,6 +52,15 @@ export const NAV_GROUPS: NavGroup[] = [
       { id: "metrics", label: "Metrics", path: "/metrics" },
       { id: "profiles", label: "Profiles", path: "/profiles" },
       { id: "query", label: "Query", path: "/query" },
+    ],
+  },
+  {
+    title: "Evaluate",
+    pages: [
+      { id: "evals", label: "Agents & scores", path: "/evals" },
+      { id: "compare", label: "Compare", path: "/evals/compare" },
+      { id: "runs", label: "Runs", path: "/evals/runs" },
+      { id: "evaluators", label: "Evaluators", path: "/evals/evaluators" },
     ],
   },
   {
@@ -76,16 +89,11 @@ export const HOME_PATH = "/overview";
 /** Explore pages share the URL-backed window and tenant context; their
  * links carry it over (see `crossSignalSearch`). Configure/admin pages
  * don't read the range, and the tenant context is sticky in `App` anyway. */
-const EXPLORE_PAGES = new Set<PageId>([
-  "overview",
-  "errors",
-  "catalog",
-  "logs",
-  "traces",
-  "metrics",
-  "profiles",
-  "query",
-]);
+const EXPLORE_PAGES = new Set<PageId>(
+  NAV_GROUPS.filter((g) => g.title !== "Configure").flatMap((g) =>
+    g.pages.map((p) => p.id),
+  ),
+);
 
 export function pageHref(page: NavPage, state: ExploreState): string {
   return EXPLORE_PAGES.has(page.id)
@@ -109,15 +117,24 @@ export interface CurrentPage {
   label: string;
 }
 
-/** The page a pathname belongs to — the first segment decides, so deep
- * links (`/traces/:id`, `/catalog/service/...`, `/schema/...`) keep their
- * section highlighted. */
+/** The page a pathname belongs to — the longest page path that prefixes
+ * it wins, so deep links (`/traces/:id`, `/catalog/service/...`,
+ * `/evals/compare/case`) keep their own section highlighted. */
 export function currentPageFor(pathname: string): CurrentPage {
-  const first = pathname.split("/")[1] ?? "";
+  let best: CurrentPage | null = null;
+  let bestLen = 0;
   for (const group of NAV_GROUPS) {
-    const page = group.pages.find((p) => p.path === `/${first}`);
-    if (page) return { id: page.id, group: group.title, label: page.label };
+    for (const page of group.pages) {
+      const hit =
+        pathname === page.path || pathname.startsWith(`${page.path}/`);
+      if (hit && page.path.length > bestLen) {
+        best = { id: page.id, group: group.title, label: page.label };
+        bestLen = page.path.length;
+      }
+    }
   }
+  if (best) return best;
+  const first = pathname.split("/")[1] ?? "";
   const admin = ADMIN_PATHS[first];
   if (admin) {
     return {

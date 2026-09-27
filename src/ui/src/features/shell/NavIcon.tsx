@@ -16,6 +16,10 @@ export type NavIconName =
   | "schema"
   | "processors"
   | "instrumentation"
+  | "evals"
+  | "compare"
+  | "runs"
+  | "evaluators"
   | "manage"
   | "search"
   | "collapse"
@@ -107,6 +111,32 @@ const GLYPHS: Record<NavIconName, ReactNode> = {
     <>
       <circle cx="8" cy="8" r="5.5" />
       <circle cx="8" cy="8" r="2" />
+    </>
+  ),
+  evals: (
+    <>
+      <rect x="2" y="2" width="12" height="12" rx="1.5" />
+      <polyline points="5,8.5 7,10.5 11,5.5" {...round} />
+    </>
+  ),
+  compare: (
+    <>
+      <line x1="5" y1="2" x2="5" y2="14" />
+      <line x1="11" y1="2" x2="11" y2="14" />
+      <polyline points="2,6 5,3 8,6" {...round} />
+      <polyline points="8,10 11,13 14,10" {...round} />
+    </>
+  ),
+  runs: (
+    <>
+      <circle cx="8" cy="8" r="5.5" />
+      <path d="M7 5.8 L10.2 8 L7 10.2 Z" strokeLinejoin="round" />
+    </>
+  ),
+  evaluators: (
+    <>
+      <path d="M8 2 L13.5 5 V11 L8 14 L2.5 11 V5 Z" strokeLinejoin="round" />
+      <circle cx="8" cy="8" r="1.8" />
     </>
   ),
   manage: (

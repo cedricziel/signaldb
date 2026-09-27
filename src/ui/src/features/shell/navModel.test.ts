@@ -17,6 +17,17 @@ describe("currentPageFor", () => {
     });
   });
 
+  it("matches the longest path prefix, so nested Evaluate pages keep their own item", () => {
+    expect(currentPageFor("/evals")).toEqual({
+      id: "evals",
+      group: "Evaluate",
+      label: "Agents & scores",
+    });
+    expect(currentPageFor("/evals/runs").id).toBe("runs");
+    expect(currentPageFor("/evals/compare/case").id).toBe("compare");
+    expect(currentPageFor("/evalsx").id).toBeNull();
+  });
+
   it("labels admin routes under Admin, highlighting only Manage", () => {
     expect(currentPageFor("/manage")).toEqual({
       id: "manage",
@@ -48,6 +59,12 @@ describe("pageHref", () => {
   it("carries the window and tenant context, not view state, to explore pages", () => {
     expect(pageHref(page("traces"), state)).toBe(
       "/traces?tenant=acme&dataset=prod",
+    );
+  });
+
+  it("carries the window and tenant context to Evaluate pages", () => {
+    expect(pageHref(page("runs"), state)).toBe(
+      "/evals/runs?tenant=acme&dataset=prod",
     );
   });
 

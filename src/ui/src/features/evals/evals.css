@@ -1,0 +1,885 @@
+/* The Evaluate pages (Claude Design "Agent evaluations" handoff). No
+   breakpoints: grids and flex rows wrap on their own, and wide tables
+   scroll inside their card. */
+
+.evals {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  padding: 20px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--text);
+}
+
+.evals-head {
+  display: flex;
+  align-items: flex-end;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.evals-head-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1;
+  min-width: 260px;
+}
+
+.evals-head h1 {
+  margin: 0;
+  font-size: var(--text-title);
+  font-weight: 600;
+}
+
+.evals-sub {
+  color: var(--dim);
+  text-wrap: pretty;
+}
+
+.evals code,
+.evals .mono {
+  font-family: var(--mono);
+}
+
+.evals-sub code {
+  font-size: 12px;
+  color: var(--text);
+}
+
+.evals-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.evals-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.evals-bar-fill {
+  flex: 1;
+}
+
+.evals-bar-note {
+  font: 12px var(--mono);
+  color: var(--faint);
+}
+
+.evals-pill {
+  display: inline-flex;
+  align-items: center;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  font: 12px var(--mono);
+  overflow: hidden;
+}
+
+.evals-pill.set {
+  border-color: var(--dim);
+}
+
+.evals-pill-key {
+  padding: 0 4px 0 9px;
+  color: var(--dim);
+}
+
+.evals-pill select {
+  height: 26px;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  padding: 0 6px 0 2px;
+}
+
+.evals-pill.set select {
+  font-weight: 600;
+}
+
+.evals-segmented {
+  display: inline-flex;
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  font-size: 12px;
+}
+
+.evals-segmented button {
+  border: 0;
+  border-right: 1px solid var(--border);
+  padding: 0 10px;
+  font: inherit;
+  cursor: pointer;
+  background: var(--surface);
+  color: var(--dim);
+}
+
+.evals-segmented button:last-child {
+  border-right: 0;
+}
+
+.evals-segmented button[aria-pressed="true"] {
+  font-weight: 600;
+  background: var(--surface3);
+  color: var(--text);
+}
+
+.evals-divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+}
+
+/* Cards and tables */
+
+.evals-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  overflow: auto;
+}
+
+.evals-card-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+  padding: 12px 14px;
+  border-bottom: 1px solid var(--border);
+}
+
+.evals-card-head h2,
+.evals h2 {
+  margin: 0;
+  font-size: var(--text-section);
+  font-weight: 600;
+}
+
+.evals-caption {
+  font-size: 12px;
+  color: var(--faint);
+}
+
+.evals-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.evals-table th {
+  padding: 8px;
+  text-align: left;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.evals-table td {
+  padding: 10px 8px;
+  border-top: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.evals-table th:first-child,
+.evals-table td:first-child {
+  padding-left: 14px;
+}
+
+.evals-table th:last-child,
+.evals-table td:last-child {
+  padding-right: 14px;
+}
+
+.evals-table .num {
+  text-align: right;
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+.evals-table .mono {
+  font-size: 12px;
+}
+
+.evals-table .strong {
+  font-weight: 600;
+}
+
+.evals .dim {
+  color: var(--dim);
+}
+
+.evals .faint {
+  color: var(--faint);
+}
+
+.evals-table .nowrap {
+  white-space: nowrap;
+}
+
+.evals-row-name {
+  position: relative;
+}
+
+.evals-row-flag {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  background: var(--err);
+}
+
+/* Tags and badges */
+
+.evals-tag {
+  display: inline-block;
+  font: 600 11px var(--mono);
+  padding: 1px 6px;
+  border-radius: 3px;
+  background: var(--surface3);
+  white-space: nowrap;
+}
+
+.evals-tag.plain {
+  font-weight: 400;
+}
+
+.evals-tag.dashed {
+  border: 1px dashed var(--dim);
+  background: transparent;
+  color: var(--dim);
+}
+
+.evals-badge {
+  display: inline-block;
+  font: 600 10.5px var(--mono);
+  padding: 0 5px;
+  border-radius: 3px;
+  white-space: nowrap;
+  background: var(--surface3);
+  color: var(--text);
+}
+
+.evals-badge.pass {
+  background: color-mix(in oklab, var(--ok) 16%, transparent);
+  color: var(--ok-text);
+}
+
+.evals-badge.fail {
+  background: color-mix(in oklab, var(--err) 14%, transparent);
+  color: var(--err);
+}
+
+.evals-badge.partial {
+  background: color-mix(in oklab, var(--warn) 20%, transparent);
+  color: var(--warn-banner-text);
+}
+
+.evals-badge.missing {
+  border: 1px dashed var(--err);
+  background: transparent;
+  color: var(--err);
+}
+
+.evals .bad {
+  color: var(--err);
+}
+
+.evals .good {
+  color: var(--ok-text);
+}
+
+/* KPI tiles: shared KpiCard, with a warning or dashed border. */
+
+.kpi-card.evals-kpi-warn {
+  border-color: var(--warn);
+}
+
+.kpi-card.evals-kpi-warn .kpi-detail {
+  color: var(--warn-banner-text);
+}
+
+.kpi-card.evals-kpi-dashed {
+  border: 1px dashed var(--dim);
+}
+
+.evals-passbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 140px;
+}
+
+.evals-passbar .share-bar-wrap {
+  flex: 1;
+  min-width: 0;
+}
+
+.evals-passbar > span {
+  font: 12px var(--mono);
+  min-width: 44px;
+  text-align: right;
+}
+
+/* Banners and empty states */
+
+.evals-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 12px;
+  border-radius: 6px;
+}
+
+.evals-banner:not(.warn-callout) {
+  border: 1px dashed var(--dim);
+  background: var(--bg-inset);
+}
+
+.evals-banner.warn-callout {
+  border: 1px solid var(--warn);
+}
+
+.evals-banner > span:nth-child(2) {
+  flex: 1;
+}
+
+.evals-empty {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  gap: 24px;
+  padding: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.evals-empty-text {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 520px;
+}
+
+.evals-eyebrow {
+  font: 600 11px var(--mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--faint);
+}
+
+.evals-empty h2 {
+  font-size: 18px;
+  text-wrap: pretty;
+}
+
+.evals-empty p {
+  margin: 0;
+  color: var(--dim);
+  text-wrap: pretty;
+}
+
+.evals-code {
+  margin: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-inset);
+  font: 12px/1.6 var(--mono);
+  color: var(--text);
+  overflow: auto;
+}
+
+.evals-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+}
+
+.evals-steps li {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 12px 14px;
+  border-right: 1px solid var(--border);
+}
+
+.evals-steps li:last-child {
+  border-right: 0;
+}
+
+/* Mean score chart */
+
+.evals-chart {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.evals-legend {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font: 12px var(--mono);
+}
+
+.evals-legend i {
+  width: 12px;
+  height: 2px;
+}
+
+.evals-plot {
+  display: flex;
+  gap: 8px;
+}
+
+.evals-plot-y {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  width: 32px;
+  font: 11px var(--mono);
+  color: var(--faint);
+  text-align: right;
+}
+
+.evals-plot-area {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+.evals-plot-grid {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  pointer-events: none;
+}
+
+.evals-plot-grid div {
+  height: 1px;
+  background: var(--border);
+}
+
+.evals-plot-area svg {
+  position: absolute;
+  inset: 0;
+  overflow: visible;
+}
+
+.evals-marker {
+  position: absolute;
+  top: -4px;
+  bottom: 0;
+  border-left: 1px dashed var(--dim);
+  pointer-events: none;
+}
+
+.evals-marker span {
+  position: absolute;
+  top: 0;
+  left: 4px;
+  font: 600 11px var(--mono);
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--surface3);
+  white-space: nowrap;
+}
+
+.evals-buckets {
+  position: absolute;
+  inset: 0;
+  display: flex;
+}
+
+.evals-buckets button {
+  position: relative;
+  flex: 1;
+  border: 0;
+  padding: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.evals-buckets button:hover,
+.evals-buckets button:focus-visible {
+  background: var(--bg-inset);
+}
+
+.evals-plot-x {
+  display: flex;
+  justify-content: space-between;
+  padding-left: 40px;
+  font: 11px var(--mono);
+  color: var(--faint);
+}
+
+/* Compare */
+
+.evals-filter {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: 12px var(--ui);
+  cursor: pointer;
+}
+
+.evals-filter[aria-pressed="true"] {
+  border-color: var(--dim);
+  background: var(--surface3);
+}
+
+.evals-filter i {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.evals-filter b {
+  font-family: var(--mono);
+}
+
+.evals-picker-label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+}
+
+.evals-picker {
+  height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: 12px var(--mono);
+  padding: 0 6px;
+}
+
+.evals-tools {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  font: 12px var(--mono);
+}
+
+.evals-tool {
+  padding: 0 4px;
+  border-radius: 3px;
+  border: 1px solid transparent;
+  background: var(--surface3);
+}
+
+.evals-tool.skipped {
+  background: transparent;
+  color: var(--err);
+  text-decoration: line-through;
+}
+
+.evals-tool.reordered,
+.evals-tool.repeated {
+  background: color-mix(in oklab, var(--warn) 22%, transparent);
+  color: var(--warn-banner-text);
+}
+
+.evals-tool.new {
+  background: transparent;
+  border-color: var(--dim);
+}
+
+.evals-tools-legend {
+  display: flex;
+  gap: 12px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+/* Case drilldown */
+
+.evals-meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 22px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  font: 12px var(--mono);
+}
+
+.evals-case-body {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.evals-case-main {
+  flex: 1.55 1 640px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.evals-panes {
+  display: grid;
+  grid-auto-flow: column;
+  grid-auto-columns: minmax(420px, 1fr);
+  gap: 14px;
+  overflow-x: auto;
+}
+
+.evals-traj-head,
+.evals-traj-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr) minmax(0, 1.25fr);
+  align-items: center;
+  gap: 8px;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--border);
+}
+
+.evals-traj-head {
+  padding: 6px 12px;
+  font-size: 11px;
+  color: var(--dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.evals-traj-row {
+  min-height: 36px;
+  box-sizing: border-box;
+}
+
+.evals-traj-row.ghost {
+  border: 1px dashed var(--err);
+  background: color-mix(in oklab, var(--err) 7%, transparent);
+  color: var(--err);
+}
+
+.evals-traj-name {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  font: 12px var(--mono);
+}
+
+.evals-traj-name > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evals-traj-name .indent {
+  flex: none;
+  width: 10px;
+}
+
+.evals-kind {
+  flex: none;
+  font: 600 10px var(--mono);
+  padding: 0 5px;
+  border-radius: 3px;
+  background: var(--surface3);
+  color: var(--dim);
+}
+
+.evals-traj-row.ghost .evals-kind {
+  border: 1px dashed var(--err);
+  background: transparent;
+  color: var(--err);
+}
+
+.evals-timing {
+  position: relative;
+  height: 14px;
+  border-radius: 2px;
+  background: var(--bg-inset);
+}
+
+.evals-timing i {
+  position: absolute;
+  top: 3px;
+  height: 8px;
+  background: var(--svc-c);
+}
+
+.evals-timing i.agent {
+  background: var(--dim);
+}
+
+.evals-timing i.tool {
+  background: var(--svc-l);
+}
+
+.evals-timing span {
+  position: absolute;
+  right: 4px;
+  top: -2px;
+  font: 10.5px var(--mono);
+  color: var(--faint);
+}
+
+.evals-traj-scores {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 4px;
+}
+
+.evals-convo {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.evals-convo-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 10px;
+}
+
+.evals-msg {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.evals-msg-role {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--dim);
+}
+
+.evals-msg-body {
+  flex: 1;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  text-wrap: pretty;
+  white-space: pre-wrap;
+}
+
+.evals-msg-body.user {
+  border-color: transparent;
+  background: var(--surface2);
+}
+
+.evals-cards {
+  flex: 1 1 380px;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 10px;
+}
+
+.evals-score-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+
+.evals-score-card.failing::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 3px;
+  border-radius: 6px 0 0 6px;
+  background: var(--err);
+}
+
+.evals-score-card > button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.evals-score-card p {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.55;
+  text-wrap: pretty;
+}
+
+.evals-fields {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 3px 12px;
+  margin: 0;
+  padding: 8px 10px;
+  border-radius: 4px;
+  background: var(--bg-inset);
+  font: 11.5px var(--mono);
+}
+
+.evals-fields dt {
+  color: var(--dim);
+}
+
+.evals-fields dd {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.evals-back {
+  font-size: 12px;
+  width: max-content;
+}
