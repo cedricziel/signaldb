@@ -175,7 +175,24 @@ describe("setupSteps", () => {
     ]);
   });
 
-  it("drops the team step when the member count is unknown", () => {
+  // The step count must not depend on whether the member probe has
+  // answered, or the header reads 0/5 on one load and 3/6 on the next.
+  it("keeps the team step for an admin while the member count is unknown", () => {
+    const steps = setupSteps({
+      rows: [],
+      githubLinked: undefined,
+      memberCount: undefined,
+      canManage: true,
+    });
+    expect(steps).toHaveLength(6);
+    expect(steps.at(-1)).toMatchObject({
+      id: "team",
+      done: false,
+      detail: "checking…",
+    });
+  });
+
+  it("drops the team step for a member who cannot manage the tenant", () => {
     const steps = setupSteps({
       rows: [],
       githubLinked: true,

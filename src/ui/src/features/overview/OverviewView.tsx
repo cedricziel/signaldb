@@ -110,7 +110,7 @@ export function OverviewView({ state, update }: Props) {
   const steps = setupSteps({
     rows,
     githubLinked: state.tenant ? githubLinked : undefined,
-    memberCount: canManage ? members.data : undefined,
+    memberCount: members.data,
     canManage,
   });
 
