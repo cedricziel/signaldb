@@ -220,7 +220,7 @@ export function OverviewView({ state, update }: Props) {
                   </Link>
                 </div>
                 <div className="overview-map">
-                  <ZoomPan>
+                  <ZoomPan controls={(map.data?.nodes.length ?? 0) > 0}>
                     <ServiceGraph
                       nodes={map.data?.nodes ?? []}
                       edges={map.data?.edges ?? []}
@@ -433,7 +433,7 @@ function ServicesCard({
           <i style={{ background: HEALTH_VAR.degraded }} />
           {counts.degraded} degraded
         </span>
-        <span className="critical">
+        <span className={counts.critical > 0 ? "critical" : undefined}>
           <i style={{ background: HEALTH_VAR.critical }} />
           {counts.critical} critical
         </span>
