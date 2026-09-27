@@ -18,6 +18,8 @@
     "../../src/ui/src/**/*.stories.tsx",
     "../../src/ui/src/test/**",
     "../../src/ui/src/stories/**",
-    "../../src/ui/src/**/testFixtures.ts"
+    "../../src/ui/src/**/testFixtures.ts",
+    "../../src/ui/src/**/testUtils.tsx",
+    "../../src/ui/src/**/*Stories.tsx"
   ]
 }
