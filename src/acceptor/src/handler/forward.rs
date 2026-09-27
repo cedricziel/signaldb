@@ -57,8 +57,8 @@ pub fn classify_forward_failure(error: &anyhow::Error) -> ForwardFailureKind {
 }
 
 /// Overwrite the `traceparent`/`tracestate` fields in the metadata JSON with
-/// the current span's context, and stamp `ingest_id` (the WAL entry id this
-/// DoPut carries). Returns the input with only `ingest_id` added when it is
+/// the current span's context, and stamp `ingest_id` (the batch fingerprint
+/// this DoPut carries). Returns the input with only `ingest_id` added when it is
 /// not a JSON object (falls back to a bare object) so every DoPut can be
 /// deduplicated on the writer side.
 fn stamp_ingest_metadata(metadata_json: &str, ingest_id: Uuid) -> String {
@@ -93,11 +93,12 @@ fn build_first_message_metadata(metadata_json: Option<&str>, ingest_id: Uuid) ->
 ///
 /// `metadata_json` is attached as `app_metadata` on the first FlightData
 /// message (the schema message) so the writer can route the batch to the
-/// right table. `ingest_id` is the acceptor WAL entry id for this batch; it
-/// is stamped into that same metadata as `"ingest_id"` so the writer can
-/// deduplicate resends of the same entry, and it also selects which writer
-/// receives the batch (see [`InMemoryFlightTransport::get_client_for_capability_keyed`]),
-/// so every resend of a given entry is pinned to the same writer.
+/// right table. `ingest_id` is the batch's content fingerprint; it is stamped
+/// into that same metadata as `"ingest_id"` so the writer can deduplicate a
+/// resend of the same batch, whichever acceptor WAL entry carries it, and it
+/// also selects which writer receives the batch (see
+/// [`InMemoryFlightTransport::get_client_for_capability_keyed`]), so every
+/// resend is pinned to the same writer.
 ///
 /// Returns an error if no storage service is discoverable, the batch cannot
 /// be encoded, or the Flight put fails. The caller decides whether the data
@@ -168,6 +169,7 @@ pub fn spawn_forward_and_mark(
     flight_transport: Arc<InMemoryFlightTransport>,
     wal: Arc<Wal>,
     wal_entry_id: Uuid,
+    ingest_id: Uuid,
     record_batch: RecordBatch,
     metadata_json: Option<String>,
     signal: &'static str,
@@ -178,7 +180,7 @@ pub fn spawn_forward_and_mark(
                 &flight_transport,
                 record_batch,
                 metadata_json.as_deref(),
-                wal_entry_id,
+                ingest_id,
             )
             .await
             {

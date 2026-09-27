@@ -159,11 +159,12 @@ gets `413 Payload Too Large`.
 
 Retrying an export is safe. If your exporter times out waiting for a response
 that SignalDB had in fact already accepted, the identical resend is
-acknowledged without being stored a second time, as long as it arrives within
-`[acceptor].retry_dedup_window` (default 5 minutes). This matters most for the
-OpenTelemetry Collector, whose `otlp` exporter times out after 5 seconds by
-default and then retries: without it, every slow export showed up as every
-span, log record and data point twice. Only a byte-identical batch counts as
+acknowledged without being stored a second time, even when it reaches a
+different acceptor replica or arrives after an acceptor restart, as long as it
+arrives within `[writer].ingest_dedup_window` (default 1 hour). This matters
+most for the OpenTelemetry Collector, whose `otlp` exporter times out after 5
+seconds by default and then retries: without it, every slow export showed up as
+every span, log record and data point twice. Only a byte-identical batch counts as
 a resend; an export that differs in any record is always stored.
 
 A successful export returns `200 OK` with an `Export*ServiceResponse`

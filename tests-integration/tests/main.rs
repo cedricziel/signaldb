@@ -24,6 +24,7 @@ mod e2e;
 mod querier;
 mod writer;
 
+mod acceptor_resend_dedup;
 mod dataset_restriction_e2e;
 mod flight_message_limits;
 mod logql_queries;

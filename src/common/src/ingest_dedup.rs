@@ -1,17 +1,20 @@
 //! In-memory, windowed cache of ids seen recently, for recognizing a resend
 //! of something already durably ingested.
 //!
-//! Two users, each keyed by a uuid:
+//! Both users key it by a batch's content fingerprint, a uuid the acceptor
+//! derives from tenant, dataset, signal and serialized bytes:
 //!
-//! - The writer: `do_put`'s `app_metadata` carries an `ingest_id` -- the
-//!   acceptor WAL entry uuid a batch was forwarded for -- so a resend that the
-//!   acceptor's rendezvous hashing routes back to the same writer is deduped
-//!   instead of re-inserted (issue #1734 step 2). Window:
+//! - The writer: `do_put`'s `app_metadata` carries it as `ingest_id`, so a
+//!   copy of a batch that the acceptor's rendezvous hashing routes back to
+//!   the same writer is deduped instead of re-inserted (issue #1734 step 2),
+//!   whether it is an acceptor retry or a client's resend through another
+//!   acceptor replica. Window:
 //!   [`WriterConfig::ingest_dedup_window`](crate::config::WriterConfig),
 //!   rebuilt at startup from ingest ids still in that writer's WAL.
 //! - The acceptor: a client that gave up waiting (an OTLP exporter timeout)
-//!   resends a byte-identical export that already landed in the WAL; the
-//!   acceptor keys the cache by a fingerprint of the batch. Window:
+//!   resends a byte-identical export that already landed in the WAL; a
+//!   resend returning to the same acceptor is retired before it is forwarded.
+//!   Window:
 //!   [`AcceptorConfig::retry_dedup_window`](crate::config::AcceptorConfig).
 //!
 //! The cache is deliberately not the SQL catalog or an external store: an
@@ -23,6 +26,20 @@ use std::collections::hash_map::{Entry, HashMap};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 use uuid::Uuid;
+
+/// The `ingest_id` recorded in a WAL entry's metadata JSON, if any. The
+/// acceptor stores the batch fingerprint there so its retry consumer forwards
+/// under the same id as the hot path; the writer stores the id it received so
+/// a restart can rebuild its cache. Missing or unparseable ids read as `None`.
+pub fn ingest_id_from_metadata(metadata_json: &str) -> Option<Uuid> {
+    #[derive(serde::Deserialize)]
+    struct IngestIdOnly {
+        ingest_id: Option<Uuid>,
+    }
+    serde_json::from_str::<IngestIdOnly>(metadata_json)
+        .ok()?
+        .ingest_id
+}
 
 /// A source of wall-clock time, injectable so tests can move past the dedup
 /// window instantly instead of sleeping for it.
@@ -180,6 +197,20 @@ impl IngestDedup {
 mod tests {
     use super::*;
     use std::sync::Mutex as StdMutex;
+
+    #[test]
+    fn ingest_id_is_read_back_from_wal_metadata() {
+        let id = Uuid::new_v4();
+        let metadata = format!(r#"{{"signal_type":"traces","ingest_id":"{id}"}}"#);
+
+        assert_eq!(ingest_id_from_metadata(&metadata), Some(id));
+        assert_eq!(ingest_id_from_metadata(r#"{"signal_type":"traces"}"#), None);
+        assert_eq!(
+            ingest_id_from_metadata(r#"{"ingest_id":"not-a-uuid"}"#),
+            None
+        );
+        assert_eq!(ingest_id_from_metadata("not json"), None);
+    }
 
     /// A clock whose value is set explicitly by the test, so window expiry
     /// can be asserted without sleeping.

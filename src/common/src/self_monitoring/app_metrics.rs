@@ -115,9 +115,10 @@ pub struct AppMetrics {
     // Ingest ids (from `do_put`'s `app_metadata`, #1734) recognized as a
     // repeat within the writer's dedup window, by tenant and signal. Its
     // freshly appended WAL entries are marked processed immediately instead
-    // of committed again; a rising rate that isn't explained by a known
-    // acceptor retry storm means the acceptor's writer pinning (rendezvous
-    // hashing on ingest id) is unstable.
+    // of committed again. It counts acceptor forward retries and client
+    // resends that reached a different acceptor (or one that restarted); a
+    // rising rate explained by neither means the acceptor's writer pinning
+    // (rendezvous hashing on ingest id) is unstable.
     pub ingest_duplicates_dropped: Counter<u64>,
 
     // By tenant and signal. A steady rate means clients give up before the

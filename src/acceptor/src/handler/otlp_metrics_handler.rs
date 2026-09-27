@@ -24,7 +24,7 @@ use super::forward::{spawn_forward_and_mark, spawn_retire_resend};
 use super::ingest_error::IngestError;
 use super::metrics_partition;
 use super::processors_apply::apply_metric_processors;
-use super::retry_dedup::RetryDedup;
+use super::retry_dedup::{RetryDedup, stamp_batch_fingerprint};
 
 pub struct MetricsHandler {
     /// Flight transport for forwarding telemetry
@@ -213,14 +213,14 @@ impl MetricsHandler {
                     wal_metadata["tracestate"] = tracestate.into();
                 }
             }
-            let wal_metadata_str = serde_json::to_string(&wal_metadata).ok();
-
-            let fingerprint = self.retry_dedup.fingerprint(
+            let ingest_id = stamp_batch_fingerprint(
+                &mut wal_metadata,
                 &tenant_context.tenant_id,
                 &tenant_context.dataset_id,
                 &WalOperation::WriteMetrics,
                 &batch_bytes,
             );
+            let wal_metadata_str = serde_json::to_string(&wal_metadata).ok();
             let wal_entry_id = match wal
                 .append(WalOperation::WriteMetrics, batch_bytes, wal_metadata_str)
                 .await
@@ -245,7 +245,7 @@ impl MetricsHandler {
                 "Metrics written to WAL"
             );
 
-            let resend = self.retry_dedup.is_resend(fingerprint);
+            let resend = self.retry_dedup.is_resend(ingest_id);
 
             let mut metadata = serde_json::json!({
                 "schema_version": "v1",
@@ -282,6 +282,7 @@ impl MetricsHandler {
                     self.flight_transport.clone(),
                     wal.clone(),
                     wal_entry_id,
+                    ingest_id,
                     record_batch,
                     Some(metadata.to_string()),
                     "metrics",
