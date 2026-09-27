@@ -2,11 +2,11 @@ Each numbered group is one PR in a stack (under ~500 changed lines each).
 
 ## 1. IR: `count_distinct`
 
-- [ ] 1.1 Failing tests in `cargo test -p querier` (IR lowering) for `count_distinct` over logs and traces: plain, scoped, nulls skipped, unsupported types rejected, and the version gate rejecting an earlier `irVersion`.
-- [ ] 1.2 Add `count_distinct` to the IR aggregate enum and validation (`common`), lower it to DataFusion `approx_distinct` (`querier`), bump the IR version.
-- [ ] 1.3 Integration test in `tests-integration`: a `POST /api/v1/query` counting distinct `session.id` over ingested OTLP logs.
-- [ ] 1.4 Update the OpenAPI spec for the new aggregate `fn`; regenerate `src/signaldb-sdk` and `src/ui/src/api/gen`.
-- [ ] 1.5 Docs: `docs/users/querying-ir.md` aggregate table and a `count_distinct` example; update the MCP `query-ir` skill text if it lists aggregate functions.
+- [x] 1.1 Failing tests in `cargo test -p querier` (IR lowering) for `count_distinct` over logs and traces: plain, scoped, nulls skipped, unsupported types rejected, and the version gate rejecting an earlier `irVersion`.
+- [x] 1.2 Add `count_distinct` to the IR aggregate enum and validation (`common`), lower it to DataFusion `approx_distinct` (`querier`), bump the IR version.
+- [x] 1.3 Integration test in `tests-integration`: a `POST /api/v1/query` counting distinct `session.id` over ingested OTLP logs.
+- [x] 1.4 Update the OpenAPI spec for the new aggregate `fn`; regenerate `src/signaldb-sdk` and `src/ui/src/api/gen`. (No change needed: the OpenAPI spec does not enumerate IR aggregate functions, so neither client changes.)
+- [x] 1.5 Docs: `docs/users/querying-ir.md` aggregate table and a `count_distinct` example; update the MCP `query-ir` skill text if it lists aggregate functions.
 
 ## 2. UI self-instrumentation
 
