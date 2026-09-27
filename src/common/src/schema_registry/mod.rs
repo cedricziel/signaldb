@@ -88,7 +88,8 @@ static BUNDLED: Lazy<Vec<BundledRegistry>> = Lazy::new(|| {
 /// Namespace of the bundled OpenTelemetry semconv snapshot.
 const OTEL_NAMESPACE: &str = "otel";
 
-/// The bundled registries, in precedence order (`signaldb` before `otel`).
+/// The bundled registries, in precedence order
+/// ([`schema_model::RESERVED_NAMESPACES`]).
 pub fn bundled_registries() -> &'static [BundledRegistry] {
     &BUNDLED
 }

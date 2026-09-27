@@ -406,3 +406,30 @@ async fn a_fresh_resolver_reloads_custom_registries_from_the_catalog() {
         .expect("resolve");
     assert_eq!(res.hits.len(), 1);
 }
+
+#[tokio::test]
+async fn otel_genai_is_bundled_read_only_and_reserved() {
+    let names: Vec<&str> = bundled_registries()
+        .iter()
+        .map(|r| r.resolved.namespace.as_str())
+        .collect();
+    assert_eq!(names, ["signaldb", "otel-genai", "otel"]);
+    assert!(is_bundled("otel-genai"));
+
+    let r = resolver().await;
+    let version = bundled_registries()
+        .iter()
+        .find(|b| b.resolved.namespace == "otel-genai")
+        .map(|b| b.resolved.version.clone())
+        .expect("otel-genai");
+    let err = r.delete("t1", "otel-genai", &version).await.unwrap_err();
+    assert!(matches!(err, StoreError::ReadOnly { .. }), "{err:?}");
+
+    let mut doc = acme("1.0.0");
+    doc.name = "otel-genai".to_string();
+    let err = r.create("t1", &doc).await.unwrap_err();
+    assert!(
+        matches!(&err, StoreError::ReservedNamespace(ns) if ns == "otel-genai"),
+        "{err:?}"
+    );
+}

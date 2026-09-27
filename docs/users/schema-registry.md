@@ -8,6 +8,7 @@ sources:
   - src/schema-model/src/**
   - src/signaldb-cli/src/commands/**
   - src/mcp-server/src/server.rs
+  - otel/registry-genai/**
 ---
 
 # Schema registry — semantic conventions and custom registries
@@ -19,11 +20,12 @@ with the attributes that identify them, and metric definitions with their
 instrument, unit, and the entities they describe — and resolves any attribute
 key, entity type, or metric name to its definitions for your tenant.
 
-Three kinds of registry exist:
+Four kinds of registry exist:
 
 | Namespace       | Source  | What it is                                                                                         |
 | --------------- | ------- | -------------------------------------------------------------------------------------------------- |
 | `otel`          | bundled | The OpenTelemetry semantic conventions, vendored at the version SignalDB itself emits (`1.43.0`)   |
+| `otel-genai`    | bundled | The OpenTelemetry GenAI conventions (`gen_ai.*`, `mcp.*`), vendored at a pinned upstream commit    |
 | `signaldb`      | bundled | SignalDB's own `signaldb.*` conventions (its self-monitoring telemetry)                            |
 | _anything else_ | custom  | Registries **you** upload for your tenant, in the same OTel Weaver model, versioned `name@version` |
 
@@ -33,11 +35,18 @@ custom registry may describe a key that `otel` also describes — both
 definitions coexist; lookups return every one, ordered by precedence:
 
 ```
-your custom registries (namespace A→Z, newest version first) → signaldb → otel
+your custom registries (namespace A→Z, newest version first) → signaldb → otel-genai → otel
 ```
 
 The first hit is the _primary_ definition; the rest are alternatives and are
 never hidden.
+
+OpenTelemetry moved the GenAI and MCP conventions out of core semconv into
+[their own repository](https://github.com/open-telemetry/semantic-conventions-genai);
+the `otel` registry keeps only deprecated copies. That is why `otel-genai`
+comes before `otel`: resolving `gen_ai.agent.id` returns the current
+`otel-genai` definition first and the deprecated `otel` one as an alternative.
+Upstream has no GenAI release yet, so its version is the vendored commit.
 
 The `signaldb` registry's source is
 [`otel/registry/`](https://github.com/cedricziel/signaldb/tree/main/otel/registry)
@@ -126,7 +135,7 @@ Write a registry document. It is a Weaver semantic-convention file with the
 manifest fields at the top; a minimal one:
 
 ```yaml
-name: acme # namespace — anything but otel/signaldb
+name: acme # namespace — anything but otel/otel-genai/signaldb
 version: 1.0.0
 schema_url: https://acme.example/schemas/1.0.0
 dependencies:
@@ -193,8 +202,8 @@ attributes but never new identifying ones. Errors name the offending path
 an invalid document leaves the previous one served.
 
 Registries are documents: replacing uploads the whole file (a
-`weaver`-managed repo can push its files unchanged). Namespaces `otel` and
-`signaldb` are reserved. Group types other than `attribute_group`, `entity`,
+`weaver`-managed repo can push its files unchanged). Namespaces `otel`,
+`otel-genai`, and `signaldb` are reserved. Group types other than `attribute_group`, `entity`,
 and `metric` are stored but not resolved.
 
 ## Where the registry shows up
@@ -212,11 +221,11 @@ and `metric` are stored but not resolved.
 
 - **`403 missing schema:read scope`** — the key carries explicit scopes
   without `schema:read`; create a key with it (or use a session).
-- **`409 … is bundled and read-only`** — you tried to mutate `otel` or
-  `signaldb`; upload a custom registry that `ref`s or `extends` them instead.
+- **`409 … is bundled and read-only`** — you tried to mutate `otel`,
+  `otel-genai`, or `signaldb`; upload a custom registry that `ref`s or `extends` them instead.
 - **`422` with `dependencies[0]: unknown dependency namespace`** — the
-  document names a dependency you have not uploaded; only `otel`, `signaldb`,
-  and your own custom registries can be dependencies.
+  document names a dependency you have not uploaded; only `otel`, `otel-genai`,
+  `signaldb`, and your own custom registries can be dependencies.
 - **My tenant's definition should win but `otel` is primary** — the key is
   spelled differently (dotted OTel keys, e.g. `k8s.pod.uid`, not the
   underscore form Loki labels use), or the custom registry belongs to another

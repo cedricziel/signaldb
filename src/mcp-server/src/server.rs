@@ -40,7 +40,7 @@
 //!   `resolve_entity` / `resolve_metric`, `search_schema` — schema-registry
 //!   lookup: what an attribute key, entity type, or metric name *means*,
 //!   precedence-ordered across the tenant's visible registries (custom →
-//!   signaldb → otel), so a model can learn the vocabulary before building a
+//!   signaldb → otel-genai → otel), so a model can learn the vocabulary before building a
 //!   query
 //! - `create_schema_registry` / `replace_schema_registry` /
 //!   `delete_schema_registry` / `validate_schema_registry` — custom-registry
@@ -3601,7 +3601,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List the schema registries visible to your tenant, in precedence order (custom tenant registries first, then the bundled `signaldb` and OpenTelemetry `otel` semantic conventions), with attribute/entity/metric counts. Use `resolve_attribute`, `resolve_entity`, `resolve_metric`, or `search_schema` to look up what a specific name means."
+        description = "List the schema registries visible to your tenant, in precedence order (custom tenant registries first, then the bundled `signaldb`, OpenTelemetry GenAI `otel-genai`, and OpenTelemetry `otel` semantic conventions), with attribute/entity/metric counts. Use `resolve_attribute`, `resolve_entity`, `resolve_metric`, or `search_schema` to look up what a specific name means."
     )]
     async fn list_schema_registries(
         &self,
