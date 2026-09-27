@@ -152,6 +152,7 @@ export function App() {
           update={update}
           who={who}
           canManage={canManage}
+          isDemo={isDemo}
           nav={nav}
         />
         <div className="app-column">

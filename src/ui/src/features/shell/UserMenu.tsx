@@ -6,15 +6,17 @@ import { useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { clearPersistedTenantContext, toErrorMessage } from "../../api/http";
 import { deleteSession, type WhoamiResponse } from "../../api/session";
-import type { ExploreState } from "../../lib/urlState";
 import { clearRecentQueries } from "../../lib/recentQueries";
-import { useIsDemo, useWhoami } from "../../lib/useWhoami";
 import { isDarkTheme, toggleTheme } from "../../lib/theme";
 import { useEscapeKey } from "../../hooks/useEscapeKey";
 import "./UserMenu.css";
 
 interface Props {
-  state: ExploreState;
+  /** The signed-in identity; nothing renders without a user. */
+  who: WhoamiResponse | undefined;
+  canManage: boolean;
+  /** Hides mutating surfaces in the read-only demo account. */
+  isDemo: boolean;
   /**
    * `topbar` (the default): avatar + name + caret, the popover dropping
    * below. `sidebar`: the nav sidebar's footer row — avatar, then name over
@@ -27,13 +29,13 @@ interface Props {
 }
 
 export function UserMenu({
-  state,
+  who,
+  canManage,
+  isDemo,
   variant = "topbar",
   expanded = true,
 }: Props) {
   const [open, setOpen] = useState(false);
-  const { data: who, canManage } = useWhoami(state);
-  const isDemo = useIsDemo();
   const toggle = () => setOpen((prev) => !prev);
   const close = () => setOpen(false);
 
