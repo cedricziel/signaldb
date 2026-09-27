@@ -354,6 +354,13 @@ jobs:
           docker run --rm -v "$PWD/otel/registry:/registry" \
             otel/weaver:v0.25.1 registry check -r /registry
 
+      # SignalDB groups over the GenAI conventions. Separate registry (see its
+      # manifest) and a newer Weaver: GenAI's model uses file_format definition/2.
+      - name: Weaver registry check (GenAI)
+        run: |
+          docker run --rm -v "$PWD/otel/registry-genai:/registry" \
+            otel/weaver:v0.26.1 registry check -r /registry
+
       # The sample custom registries schema-model's validator accepts must
       # pass Weaver too (accept-set ⊆ Weaver, modulo namespaced re-description).
       - name: Weaver check schema-model fixtures
