@@ -1697,6 +1697,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn series_columns_matches_stream_identity() {
+        let resolved: Vec<&str> = ql_ir::STREAM_IDENTITY
+            .iter()
+            .map(|field| {
+                LOG_FIELD_PAIRS
+                    .iter()
+                    .find(|(logical, _)| logical == field)
+                    .map(|(_, column)| *column)
+                    .unwrap_or_else(|| panic!("{field}: no LOG_FIELD_PAIRS entry"))
+            })
+            .collect();
+        assert_eq!(
+            resolved, SERIES_COLUMNS,
+            "ql_ir::STREAM_IDENTITY must resolve to exactly logs::SERIES_COLUMNS, in order"
+        );
+    }
+
     /// `column_for_label` backs `get_label_values`, `by` grouping,
     /// `on`/`ignoring`, `label_replace`, `unwrap`, and attr-demand
     /// recording, and `logql::label_expr` imports this same function — the
