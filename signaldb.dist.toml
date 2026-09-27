@@ -397,6 +397,28 @@ target_partitions = 0
 # DataFusion permits.
 sort_spill_reservation_mb = 10
 
+# [querier.warm_index]
+# Tuning for the warm containment-index scan prefilter. Only has an effect
+# on a table the writer actually built with the warm index ([schema].
+# warm_index); every other table is scanned unchanged regardless of these
+# settings.
+#
+# Whether the querier probes the warm index at all.
+# enabled = true
+#
+# Fewer candidate files than this and probing isn't worth the I/O.
+# min_files = 4
+#
+# Files to sample before committing to a full probe.
+# sample_files = 16
+#
+# Sample keep ratio above which the predicate isn't selective enough to be
+# worth a full probe (e.g. a value present in nearly every file).
+# max_keep_ratio = 0.5
+#
+# Bound on in-flight per-file bloom-filter probes.
+# probe_concurrency = 16
+
 [writer]
 # Writer commit-coalescing policy — how the writer batches ingested data
 # into Iceberg commits. Coalescing caps the Iceberg snapshot (and catalog

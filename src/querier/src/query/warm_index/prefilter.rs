@@ -59,9 +59,15 @@ pub(crate) struct PrefilterOutcome {
 #[derive(Debug, Clone)]
 pub(crate) struct KeptFile {
     pub file: PartitionedFile,
-    // Read by WI-5's `TableProvider` wiring, not by anything in this module.
-    #[allow(dead_code)]
-    pub row_groups: Option<Vec<usize>>,
+    pub row_groups: Option<KeptRowGroups>,
+}
+
+/// The row groups of one file that survived the probe, plus the file's total
+/// row-group count — needed to size a `ParquetAccessPlan` for the file.
+#[derive(Debug, Clone)]
+pub(crate) struct KeptRowGroups {
+    pub kept: Vec<usize>,
+    pub total: usize,
 }
 
 impl KeptFile {
@@ -161,14 +167,23 @@ async fn probe_many(
     clauses: &[ProbeClause],
     concurrency: usize,
 ) -> Vec<FileProbe> {
-    stream::iter(
+    // Boxed eagerly (rather than left as the closure's own opaque `impl
+    // Future`): the actual cause isn't recursion in the caller — a plain,
+    // non-recursive `TableProvider::scan` (`WI-5`'s `WarmIndexTable`,
+    // `#[async_trait]`-boxed like every `scan` impl) calling this still
+    // trips rustc's HRTB inference on the closure ("implementation of
+    // `FnOnce` is not general enough"), because that boxed future needs the
+    // closure to be region-polymorphic rather than tied to one concrete
+    // lifetime.
+    let futures: Vec<std::pin::Pin<Box<dyn std::future::Future<Output = FileProbe> + Send + '_>>> =
         files
             .iter()
-            .map(|file| probe_file(store, metadata_cache, file, clauses)),
-    )
-    .buffered(concurrency.max(1))
-    .collect()
-    .await
+            .map(|file| Box::pin(probe_file(store, metadata_cache, file, clauses)) as _)
+            .collect();
+    stream::iter(futures)
+        .buffered(concurrency.max(1))
+        .collect()
+        .await
 }
 
 /// Keeps every file unprobed, for a gate decision that skips probing outright.
@@ -267,7 +282,7 @@ pub(crate) async fn prefilter_files(
                 } else {
                     kept.push(KeptFile {
                         file: file.clone(),
-                        row_groups: Some(rgs),
+                        row_groups: Some(KeptRowGroups { kept: rgs, total }),
                     });
                 }
             }
