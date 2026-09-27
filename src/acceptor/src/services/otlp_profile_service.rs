@@ -10,8 +10,10 @@ use tonic::{Request, Response, Status};
 use crate::handler::IngestError;
 use crate::handler::otlp_profiles_handler::ProfileHandler;
 use crate::middleware::get_tenant_context;
+use crate::type_warning::WithOffTypeWarning;
 use common::auth::TenantContext;
 use common::ratelimit::TenantRateLimiter;
+use common::schema::type_authority::TypeSnapshots;
 use common::storage_usage::StorageUsageTracker;
 use prost::Message;
 use std::sync::Arc;
@@ -41,6 +43,7 @@ pub struct ProfileAcceptorService<H: ProfileHandlerTrait> {
     handler: H,
     rate_limiter: Option<Arc<TenantRateLimiter>>,
     storage_quota: Option<Arc<StorageUsageTracker>>,
+    type_snapshots: Option<Arc<TypeSnapshots>>,
 }
 
 impl<H: ProfileHandlerTrait> ProfileAcceptorService<H> {
@@ -49,6 +52,7 @@ impl<H: ProfileHandlerTrait> ProfileAcceptorService<H> {
             handler,
             rate_limiter: None,
             storage_quota: None,
+            type_snapshots: None,
         }
     }
 
@@ -61,6 +65,14 @@ impl<H: ProfileHandlerTrait> ProfileAcceptorService<H> {
     /// Enforce per-tenant storage quotas on this service.
     pub fn with_storage_quota(mut self, storage_quota: Arc<StorageUsageTracker>) -> Self {
         self.storage_quota = Some(storage_quota);
+        self
+    }
+
+    /// Surface off-type attribute warnings (resource/scope only — see
+    /// `type_warning::profiles_warning`) via `partial_success`. Read-only:
+    /// this service never places values or writes `attribute_types`.
+    pub fn with_type_snapshots(mut self, type_snapshots: Arc<TypeSnapshots>) -> Self {
+        self.type_snapshots = Some(type_snapshots);
         self
     }
 }
@@ -110,6 +122,14 @@ impl<H: ProfileHandlerTrait + Send + Sync + 'static> ProfilesService for Profile
             .map(|sp| sp.profiles.len() as u64)
             .sum();
         let rpc_start = std::time::Instant::now();
+
+        // Computed before the handler takes ownership of the request.
+        let off_type_warning = crate::type_warning::off_type_warning(
+            self.type_snapshots.as_ref(),
+            &tenant_context,
+            "profiles",
+            &request_inner,
+        );
 
         // Anti-loop guard: processing the _system tenant's own telemetry must
         // not generate more self-monitoring telemetry.
@@ -169,7 +189,9 @@ impl<H: ProfileHandlerTrait + Send + Sync + 'static> ProfilesService for Profile
             )],
         );
 
-        Ok(Response::new(ExportProfilesServiceResponse::default()))
+        Ok(Response::new(
+            ExportProfilesServiceResponse::with_off_type_warning(off_type_warning),
+        ))
     }
 }
 
