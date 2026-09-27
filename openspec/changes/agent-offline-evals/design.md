@@ -143,13 +143,17 @@ links are shareable.
 
 Eval sets live in the SQL catalog (`eval_sets`, `eval_cases`), per tenant
 and dataset, following the processors pattern:
-`GET|POST /api/v1/evalsets`, `GET|PUT|DELETE /api/v1/evalsets/{name}`,
-`POST /api/v1/evalsets/{name}/cases` (append, including from a trace
-query), `GET /api/v1/evalsets/{name}/cases?format=jsonl`. Uploads:
+`GET|POST /api/v1/eval-sets`, `GET|PUT|DELETE /api/v1/eval-sets/{name}`,
+`POST /api/v1/eval-sets/{name}/cases` (append, and later from a trace
+query). JSONL export is written by the clients from the set's cases.
+New API-key scopes `evals:read` and `evals:write` guard them (and, later,
+the upload endpoint). Uploads:
 `POST /api/v1/evals/results` with the file and run metadata, validated
 synchronously (400 with row errors), then converted to log records and
 written through the ingest path. Every endpoint has an explicit operation
-id and per-endpoint privilege checks (http-api skill).
+id and per-endpoint privilege checks (http-api skill). Eval sets are the
+reference shape for those rules (`ApiError` bodies, `_links`), where
+processors still lag.
 
 ## Risks / Trade-offs
 
