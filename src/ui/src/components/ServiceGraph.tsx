@@ -31,9 +31,12 @@ export interface ServiceGraphNode {
   errorRate?: number;
   /** At least one call into this node failed. */
   failed?: boolean;
-  /** Shown under the name, e.g. "420ms in service" or "120 req/s · p95 40ms"
+  /** Shown under the name, e.g. "420ms in service" or "120 req/s · 2% err"
    * — for an external node, its kind ("database", "http", …). */
   metricLine?: string;
+  /** Shown beside the name, e.g. "p95 40ms". Never truncated: a long name
+   * gives way to it. */
+  latency?: string;
 }
 
 export interface ServiceGraphEdge {
@@ -168,6 +171,9 @@ function tooltipRows(hovered: Hovered): VizTooltipRow[] {
     const rows: VizTooltipRow[] = [];
     if (hovered.node.metricLine) {
       rows.push({ label: "time", value: hovered.node.metricLine });
+    }
+    if (hovered.node.latency) {
+      rows.push({ label: "latency", value: hovered.node.latency });
     }
     if (hovered.node.errorRate !== undefined) {
       rows.push({
@@ -397,7 +403,10 @@ export function ServiceGraph({
                       aria-hidden
                     />
                   )}
-                  {node.label}
+                  <span className="sg-node-label">{node.label}</span>
+                  {node.latency && (
+                    <span className="sg-node-latency">{node.latency}</span>
+                  )}
                 </span>
                 {node.metricLine && (
                   <span className="sg-node-metric">{node.metricLine}</span>
