@@ -693,11 +693,13 @@ mod tests {
             ],
         )
         .unwrap();
+        let batch =
+            common::testing::to_typed_layout("traces", "physical-v5", &batch, &["span_attributes"]);
         let ctx = SessionContext::new();
         let sp = Arc::new(MemorySchemaProvider::new());
         sp.register_table(
             "traces".to_string(),
-            Arc::new(MemTable::try_new(schema, vec![vec![batch]]).unwrap()),
+            Arc::new(MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap()),
         )
         .unwrap();
         let cat = Arc::new(MemoryCatalogProvider::new());
